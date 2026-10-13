@@ -68,6 +68,16 @@ async fn result(State(state): State<Bridge>, Json(metrics): Json<Metrics>) -> St
     }
 }
 
+/// FFmpeg screen encoders owned by this test process.
+async fn capture_processes() -> Result<usize> {
+    let output = tokio::process::Command::new("pgrep")
+        .args(["-P", &std::process::id().to_string(), "ffmpeg"])
+        .stdin(Stdio::null())
+        .output()
+        .await?;
+    Ok(String::from_utf8_lossy(&output.stdout).lines().count())
+}
+
 #[tokio::test]
 #[ignore = "real macOS screen capture; requires Screen Recording permission, FFmpeg, and Chrome"]
 async fn macos_live_webrtc() -> Result<()> {
@@ -75,7 +85,10 @@ async fn macos_live_webrtc() -> Result<()> {
     let (width, height) = nanocodex_hand::main_display_pixel_dimensions()?;
     let expected = nanocodex_hand::VideoSettings::from_environment(width, height, 3840, 24000)?;
     let source = super::native_video();
-    let mut video = Video::start(&source, None).await?;
+    let mut video = Video::new(source, None, None);
+    if capture_processes().await? != 0 {
+        return Err("screen capture started before any viewer joined".into());
+    }
     let (outgoing, receiver) = mpsc::channel(128);
     let (incoming, mut messages) = mpsc::channel(128);
     let token = uuid::Uuid::new_v4().to_string();
@@ -143,6 +156,9 @@ async fn macos_live_webrtc() -> Result<()> {
                         if !metrics.codec.eq_ignore_ascii_case("video/H264") {
                             return Err("Chromium did not report H.264 decoding".into());
                         }
+                        if capture_processes().await? == 0 {
+                            return Err("no FFmpeg capture is running for the attached viewer".into());
+                        }
                         return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(());
                     }
                 },
@@ -162,9 +178,21 @@ async fn macos_live_webrtc() -> Result<()> {
     let _ = browser.kill().await;
     let _ = browser.wait().await;
     drop(server);
+    outcome.map_err(|_| "timed out after 120s waiting for Chromium to decode 60 frames; check Screen Recording permission" )??;
+    // The last viewer leaving must stop the native encoder, not just its peer.
+    video.remove("local-chromium");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while capture_processes().await? != 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await
+    .map_err(|_| "screen capture kept running after the last viewer left")??;
+    eprintln!("macOS live WebRTC capture stopped after the last viewer left");
     drop(video);
     drop(profile);
-    outcome.map_err(|_| "timed out after 120s waiting for Chromium to decode 60 frames; check Screen Recording permission" )?
+    Ok(())
 }
 
 // Only signaling and aggregate decoder metrics cross HTTP. No screenshots or media are logged.

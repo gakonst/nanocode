@@ -623,13 +623,8 @@ async fn session(
     .map_err(|_| SessionError::Closed)?
     .map_err(|_| SessionError::Closed)?;
     tracing::info!(target: "nanocodex2", stage = "screen.socket.connected", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
-    let video = Video::start_with_microphone(video, audio, microphone_factory)
-        .await
-        .map_err(|error| {
-            tracing::error!(target: "nanocodex2", stage = "screen.video.start_failed", %error,
-                "WebRTC encoder unavailable; retrying video startup (JPEG transport disabled)");
-            SessionError::MediaFailed
-        })?;
+    // Capture starts with the first viewer, not with publication.
+    let video = Video::new(video.clone(), audio.cloned(), microphone_factory);
     session_loop(
         target,
         machine,
@@ -1585,7 +1580,7 @@ mod tests {
                 ))
             })
         });
-        let mut video = Video::start(&source, None).await.unwrap();
+        let mut video = Video::new(source, None, None);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         for viewer in ["owner", "survivor"] {
             video.add(viewer, Vec::new(), deadline).unwrap();
@@ -2096,9 +2091,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_video_start_and_capture_recover_without_jpeg_live_view() {
+    async fn screen_capture_runs_only_while_a_viewer_is_attached() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Live(Arc<AtomicUsize>);
+        impl Drop for Live {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        async fn settles(live: &AtomicUsize, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while live.load(Ordering::SeqCst) != expected {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("expected {expected} running captures"));
+        }
+        // Skips trickled ICE candidates, which may arrive in any order.
+        async fn next_of(wire: &mut TestWire, kind: &str, viewer: Option<&str>) -> Value {
+            loop {
+                let value = wire_read(wire).await;
+                if value["signal"]["type"] == "candidate" {
+                    continue;
+                }
+                assert_eq!(value["type"], kind, "unexpected message: {value}");
+                if let Some(viewer) = viewer {
+                    assert_eq!(value["viewer_id"], viewer);
+                }
+                return value;
+            }
+        }
+        async fn observe(wire: &mut TestWire, generation: &str) {
+            wire_send(wire, json!({"type":"agent_call","request_id":"snapshot","agent_id":"a","surface_id":"desktop","generation":generation,"deadline_at":now_ms()+3000,"input":{"action":"observe"}})).await;
+            let snapshot = next_of(wire, "agent_result", None).await;
+            assert_eq!(snapshot["status"], "ok");
+            assert_eq!(snapshot["jpeg"], "/9j/a");
+        }
+        async fn publish(wire: &mut TestWire, connection: &str, generation: &str) {
+            wire_send(wire, json!({"type":"ready","connection_id":connection})).await;
+            let catalog = wire_read(wire).await;
+            assert_eq!(catalog["type"], "catalog");
+            assert!(catalog["surfaces"][0].get("transport").is_none());
+            assert!(catalog["surfaces"][0].get("frame_window").is_none());
+            wire_send(wire, json!({"type":"published","generation":generation})).await;
+        }
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let live = Arc::new(AtomicUsize::new(0));
+        let (fail, failed) = oneshot::channel::<()>();
+        let failure = Arc::new(std::sync::Mutex::new(Some(failed)));
+        let source: VideoSource = {
+            let (attempts, live) = (attempts.clone(), live.clone());
+            Arc::new(move || {
+                // The second capture fails after it is established.
+                let failed = (attempts.fetch_add(1, Ordering::SeqCst) == 1)
+                    .then(|| failure.lock().unwrap().take())
+                    .flatten();
+                live.fetch_add(1, Ordering::SeqCst);
+                let running = Live(live.clone());
+                Box::pin(async move {
+                    let frames = futures_util::stream::unfold(
+                        tokio::time::interval(Duration::from_millis(20)),
+                        |mut tick| async move {
+                            tick.tick().await;
+                            Some((Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1])), tick))
+                        },
+                    );
+                    let stopped = futures_util::stream::once(async move {
+                        match failed {
+                            Some(failed) => {
+                                let _ = failed.await;
+                            }
+                            None => std::future::pending().await,
+                        }
+                        Err(error("fixture encoder stopped"))
+                    });
+                    Ok(crate::capture::Capture::packets(
+                        futures_util::stream::select(frames, stopped),
+                        Some(crate::capture::Task(tokio::spawn(async move {
+                            let _running = running;
+                            std::future::pending::<()>().await
+                        }))),
+                    ))
+                })
+            })
+        };
+        let backend: Backend = Arc::new(|_| {
+            Box::pin(async { Ok(json!({"status":"ok","jpeg":"/9j/a","width":1,"height":1})) })
+        });
+        // One loopback broker for host sockets and authenticated ICE requests.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = PublisherTarget::from_attachment(
             &format!(
@@ -2108,136 +2191,93 @@ mod tests {
             "test-token",
         )
         .unwrap();
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let observed = attempts.clone();
-        let (fail, failed) = oneshot::channel();
-        let failure = Arc::new(std::sync::Mutex::new(Some(failed)));
-        let source: VideoSource = Arc::new(move || {
-            let attempt = observed.fetch_add(1, Ordering::SeqCst);
-            let failed = if attempt == 1 {
-                failure.lock().unwrap().take()
-            } else {
-                None
-            };
-            Box::pin(async move {
-                if attempt == 0 {
-                    return Err(error("fixture encoder unavailable"));
+        let (hosts, mut accepted) = tokio::sync::mpsc::unbounded_channel();
+        let _broker = crate::capture::Task(tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut prefix = [0; 4];
+                while stream.peek(&mut prefix).await.unwrap() < prefix.len() {
+                    tokio::task::yield_now().await;
                 }
-                Ok(crate::capture::Capture::packets(
-                    futures_util::stream::once(async {
-                        Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1]))
-                    })
-                    .chain(futures_util::stream::once(async move {
-                        if let Some(failed) = failed {
-                            let _ = failed.await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                        Err(error("fixture encoder stopped"))
-                    })),
-                    None,
-                ))
-            })
-        });
-        let captures = Arc::new(AtomicUsize::new(0));
-        let count = captures.clone();
-        let backend: Backend = Arc::new(move |input| {
-            let captures = count.clone();
-            Box::pin(async move {
-                if input["action"] == "observe" {
-                    captures.fetch_add(1, Ordering::SeqCst);
+                if &prefix == b"GET " {
+                    let _ = hosts.send(tokio_tungstenite::accept_async(stream).await.unwrap());
+                } else {
+                    tokio::spawn(async move {
+                        let mut request = [0; 4096];
+                        let _ = stream.read(&mut request).await;
+                        let body = r#"{"iceServers":[]}"#;
+                        let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
+                    });
                 }
-                Ok(json!({"status":"ok","jpeg":"/9j/a","width":1,"height":1}))
-            })
-        });
-        let peer = tokio::spawn(async move {
-            // The failed initial encoder never advertises any surface or frame.
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
-            wire_send(&mut wire, json!({"type":"ready","connection_id":"failed"})).await;
-            let next = tokio::time::timeout(Duration::from_secs(2), wire.next())
-                .await
-                .unwrap();
-            assert!(matches!(
-                next,
-                None | Some(Err(_)) | Some(Ok(Message::Close(_)))
-            ));
-            let (stream, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
-                .await
-                .unwrap()
-                .unwrap();
-            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
-            wire_send(
-                &mut wire,
-                json!({"type":"ready","connection_id":"recovered"}),
-            )
-            .await;
-            let catalog = wire_read(&mut wire).await;
-            assert_eq!(catalog["type"], "catalog");
-            assert!(catalog["surfaces"][0].get("transport").is_none());
-            assert!(catalog["surfaces"][0].get("frame_window").is_none());
-            wire_send(&mut wire, json!({"type":"published","generation":"g"})).await;
-            // Complete publication's authenticated ICE prefetch independently.
-            let (mut http, _) = listener.accept().await.unwrap();
-            let mut bytes = [0; 4096];
-            assert!(http.read(&mut bytes).await.unwrap() > 0);
-            http.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 17\r\nConnection: close\r\n\r\n{\"iceServers\":[]}").await.unwrap();
-            drop(http);
-            for viewer in ["v", "stale"] {
-                wire_send(
-                    &mut wire,
-                    json!({"type":"frame_request","viewer_id":viewer,"count":6}),
-                )
-                .await;
             }
-            wire_send(&mut wire, json!({"type":"agent_call","request_id":"snapshot","agent_id":"a","surface_id":"desktop","generation":"g","deadline_at":now_ms()+3000,"input":{"action":"observe"}})).await;
-            let snapshot = wire_read(&mut wire).await;
-            assert_eq!(snapshot["type"], "agent_result");
-            assert_eq!(snapshot["status"], "ok");
-            assert_eq!(snapshot["jpeg"], "/9j/a");
-            assert_eq!(
-                captures.load(Ordering::SeqCst),
-                2,
-                "only initial capture and on-demand agent observation"
-            );
-            fail.send(()).unwrap();
-            let next = tokio::time::timeout(Duration::from_secs(2), wire.next())
+        }));
+        let host = tokio::spawn({
+            let target = target.clone();
+            async move {
+                Publisher::start(
+                    &target,
+                    &Machine::new("test", "Test").unwrap(),
+                    backend,
+                    Options {
+                        video: Some(source),
+                        ..Options::default()
+                    },
+                )
                 .await
-                .unwrap();
-            assert!(matches!(
-                next,
-                None | Some(Err(_)) | Some(Ok(Message::Close(_)))
-            ));
-            let (stream, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
-                .await
-                .unwrap()
-                .unwrap();
-            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
-            wire_send(
-                &mut wire,
-                json!({"type":"ready","connection_id":"recovered-again"}),
-            )
-            .await;
-            let catalog = wire_read(&mut wire).await;
-            assert_eq!(catalog["type"], "catalog");
-            assert!(catalog["surfaces"][0].get("transport").is_none());
-            wire_send(&mut wire, json!({"type":"published","generation":"g2"})).await;
-            assert_eq!(captures.load(Ordering::SeqCst), 2);
-            wire
+            }
         });
-        let publisher = Publisher::start(
-            &target,
-            &Machine::new("test", "Test").unwrap(),
-            backend,
-            Options {
-                video: Some(source),
-                ..Options::default()
-            },
+        let mut wire = accepted.recv().await.unwrap();
+        publish(&mut wire, "first", "g").await;
+        let publisher = host.await.unwrap().unwrap();
+        // Publication and agent screenshots never start the live capture.
+        observe(&mut wire, "g").await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+
+        // A viewer starts capture before its offer; leaving stops it.
+        wire_send(
+            &mut wire,
+            json!({"type":"viewer","viewer_id":"v1","surface_id":"desktop"}),
         )
+        .await;
+        let offer = next_of(&mut wire, "signal", Some("v1")).await;
+        assert_eq!(offer["signal"]["type"], "offer");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+        wire_send(&mut wire, json!({"type":"viewer_left","viewer_id":"v1"})).await;
+        settles(&live, 0).await;
+
+        // The next viewer gets a fresh capture.
+        wire_send(
+            &mut wire,
+            json!({"type":"viewer","viewer_id":"v2","surface_id":"desktop"}),
+        )
+        .await;
+        let offer = next_of(&mut wire, "signal", Some("v2")).await;
+        assert_eq!(offer["signal"]["type"], "offer");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+
+        // Losing an established capture reconnects; the new session stays idle.
+        fail.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(Ok(message)) = wire.next().await {
+                if message.is_close() {
+                    break;
+                }
+            }
+        })
         .await
-        .unwrap();
-        let _wire = peer.await.unwrap();
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        .expect("failed capture must end the session");
+        settles(&live, 0).await;
+        let mut wire = tokio::time::timeout(Duration::from_secs(3), accepted.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        publish(&mut wire, "recovered", "g2").await;
+        observe(&mut wire, "g2").await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
         publisher.shutdown().await.unwrap();
     }
 

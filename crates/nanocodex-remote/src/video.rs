@@ -1,4 +1,5 @@
-//! Continuous 60 Hz H.264 capture, independent of agent screenshots and input.
+//! 60 Hz H.264 capture, independent of agent screenshots and input. Screen and
+//! desktop-audio capture run only while a WebRTC viewer is joining or attached.
 //! Encoders expose packet boundaries; legacy Annex B remains supported. Only signaling crosses the
 //! account broker; media and leased input use authenticated WebRTC peers.
 use crate::capture::{CaptureData, PacketStream};
@@ -14,7 +15,7 @@ use std::{
 };
 use tokio::{
     io::AsyncReadExt,
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, oneshot, watch},
 };
 use webrtc::{
     api::{
@@ -231,8 +232,11 @@ struct EncodedFrame {
 }
 
 pub struct Video {
+    source: VideoSource,
+    audio_source: Option<VideoSource>,
     frames: broadcast::Sender<EncodedFrame>,
-    audio: Option<crate::audio::Audio>,
+    /// Present only while a viewer is joining or attached.
+    media: Option<Media>,
     microphone_factory: Option<SinkFactory>,
     peers: HashMap<String, Peer>,
     preparing: crate::preparation::Preparations<Result<(Peer, Value)>>,
@@ -240,81 +244,134 @@ pub struct Video {
     incoming: mpsc::Receiver<Event>,
     motion: Arc<Motion>,
     failed: Arc<AtomicBool>,
-    _capture: Task,
+}
+#[derive(Clone)]
+enum MediaState {
+    Starting,
+    /// The first video frame arrived; desktop audio is optional.
+    Ready(Option<Arc<TrackLocalStaticSample>>),
+    Failed,
+}
+/// One screen (and desktop-audio) capture shared by every current viewer.
+/// Dropping it stops both producers.
+struct Media {
+    state: watch::Receiver<MediaState>,
+    _task: Task,
+}
+impl Media {
+    fn start(
+        source: VideoSource,
+        audio_source: Option<VideoSource>,
+        frames: broadcast::Sender<EncodedFrame>,
+        failed: Arc<AtomicBool>,
+    ) -> Self {
+        let (state, receiver) = watch::channel(MediaState::Starting);
+        let task = Task(tokio::spawn(async move {
+            let (ready, first_frame) = oneshot::channel();
+            let video = Task(tokio::spawn(capture_frames(source, frames, failed, ready)));
+            let audio = async {
+                match crate::audio::Audio::start(audio_source.as_ref()?).await {
+                    Ok(audio) => Some(audio),
+                    Err(error) => {
+                        tracing::warn!(%error, "desktop audio unavailable");
+                        None
+                    }
+                }
+            };
+            let (first_frame, audio) = tokio::join!(first_frame, audio);
+            if first_frame.is_err() {
+                state.send_replace(MediaState::Failed);
+                return;
+            }
+            state.send_replace(MediaState::Ready(audio.as_ref().map(|a| a.track.clone())));
+            let _running = (video, audio);
+            std::future::pending::<()>().await
+        }));
+        Self {
+            state: receiver,
+            _task: task,
+        }
+    }
+    fn failed(&self) -> bool {
+        matches!(*self.state.borrow(), MediaState::Failed)
+    }
+}
+/// Reads one capture until it stops. A startup failure fails only the joining
+/// viewers; losing an established capture fails the shared video.
+async fn capture_frames(
+    source: VideoSource,
+    frames: broadcast::Sender<EncodedFrame>,
+    failed: Arc<AtomicBool>,
+    ready: oneshot::Sender<()>,
+) {
+    let mut ready = Some(ready);
+    let mut phase = "capture_start";
+    let mut packet_bytes = 0usize;
+    let result: Result<()> = async {
+        let capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
+        let _owner = capture.owner;
+        let mut packets = packet_stream(capture.data);
+        loop {
+            phase = "capture_read";
+            let data = tokio::time::timeout(Duration::from_secs(5), packets.try_next())
+                .await??
+                .ok_or("encoder stopped")?;
+            packet_bytes = data.len();
+            phase = "packet_validation";
+            crate::frames::validate_packet(&data)?;
+            let _ = frames.send(EncodedFrame {
+                data,
+                captured_at: Instant::now(),
+            });
+            if let Some(ready) = ready.take() {
+                let _ = ready.send(());
+            }
+        }
+    }
+    .await;
+    let Err(error) = result else { return };
+    if ready.is_some() {
+        tracing::error!(target: "nanocodex2", stage = "screen.video.start_failed", phase, %error,
+            "WebRTC encoder unavailable for joining viewers (JPEG transport disabled)");
+        return;
+    }
+    tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase, packet_bytes, timed_out = error.downcast_ref::<tokio::time::error::Elapsed>().is_some(), webrtc_error = ?error.downcast_ref::<webrtc::Error>().map(std::mem::discriminant));
+    failed.store(true, Ordering::Release);
 }
 impl Video {
-    pub async fn start(source: &VideoSource, audio_source: Option<&VideoSource>) -> Result<Self> {
-        Self::start_with_microphone(source, audio_source, None).await
-    }
-    pub async fn start_with_microphone(
-        source: &VideoSource,
-        audio_source: Option<&VideoSource>,
+    /// Capture starts with the first viewer and stops when the last one leaves.
+    pub fn new(
+        source: VideoSource,
+        audio_source: Option<VideoSource>,
         microphone_factory: Option<SinkFactory>,
-    ) -> Result<Self> {
-        let capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
+    ) -> Self {
         // Complete encoded frames are shared without copying payloads. Each
         // viewer owns its own packetizer and sender, so network backpressure
         // cannot hold capture or another viewer's RTP stream.
         let (frames, _) = broadcast::channel::<EncodedFrame>(2);
         let (events, incoming) = mpsc::channel(128);
-        let failed = Arc::new(AtomicBool::new(false));
-        let (ready, waiting) = tokio::sync::oneshot::channel();
-        let captured = frames.clone();
-        let failure = failed.clone();
-        let task = Task(tokio::spawn(async move {
-            let _owner = capture.owner;
-            let mut ready = Some(ready);
-            let mut packets = packet_stream(capture.data);
-            let mut phase = "capture_read";
-            let mut packet_bytes = 0usize;
-            let result: Result<()> = async {
-                loop {
-                    phase = "capture_read";
-                    let data = tokio::time::timeout(Duration::from_secs(5), packets.try_next())
-                        .await??
-                        .ok_or("encoder stopped")?;
-                    packet_bytes = data.len();
-                    phase = "packet_validation";
-                    crate::frames::validate_packet(&data)?;
-                    let _ = captured.send(EncodedFrame {
-                        data,
-                        captured_at: Instant::now(),
-                    });
-                    if let Some(ready) = ready.take() {
-                        let _ = ready.send(());
-                    }
-                }
-            }
-            .await;
-            if let Err(error) = result {
-                tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase, packet_bytes, timed_out = error.downcast_ref::<tokio::time::error::Elapsed>().is_some(), webrtc_error = ?error.downcast_ref::<webrtc::Error>().map(std::mem::discriminant));
-                failure.store(true, Ordering::Release);
-            }
-        }));
-        tokio::time::timeout(Duration::from_secs(10), waiting).await??;
-        let audio = if let Some(source) = audio_source {
-            match crate::audio::Audio::start(source).await {
-                Ok(audio) => Some(audio),
-                Err(error) => {
-                    tracing::warn!(%error, "desktop audio unavailable");
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        Ok(Self {
+        Self {
+            source,
+            audio_source,
             frames,
-            audio,
+            media: None,
             microphone_factory,
             peers: HashMap::new(),
             preparing: crate::preparation::Preparations::new(),
             events,
             incoming,
             motion: Arc::new(Motion::default()),
-            failed,
-            _capture: task,
-        })
+            failed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    /// Whether screen capture is currently running or starting.
+    pub fn capturing(&self) -> bool {
+        self.media.is_some()
+    }
+    fn release_idle_media(&mut self) {
+        if self.peers.is_empty() && self.preparing.is_empty() {
+            self.media = None;
+        }
     }
     pub async fn next(&mut self) -> Option<Event> {
         loop {
@@ -339,7 +396,10 @@ impl Video {
                             self.peers.insert(id, peer);
                             (offer, true)
                         },
-                        _ => (json!({"type":"viewer_left","viewer_id":id}), false),
+                        _ => {
+                            self.release_idle_media();
+                            (json!({"type":"viewer_left","viewer_id":id}), false)
+                        },
                     };
                     return Some(Event { value, outgoing, created: Instant::now(), active: None });
                 },
@@ -422,6 +482,7 @@ impl Video {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
+        self.release_idle_media();
     }
     pub async fn control(&mut self, id: &str, value: &Value) -> Result<()> {
         if let Some(peer) = self.peers.get(id) {
@@ -456,9 +517,18 @@ impl Video {
         {
             return Err("viewer capacity or duplicate".into());
         }
+        if self.media.as_ref().is_none_or(Media::failed) {
+            self.media = Some(Media::start(
+                self.source.clone(),
+                self.audio_source.clone(),
+                self.frames.clone(),
+                self.failed.clone(),
+            ));
+        }
+        let media = self.media.as_ref().expect("media started").state.clone();
         let builder = PeerBuilder {
             frames: self.frames.clone(),
-            audio: self.audio.as_ref().map(|a| a.track.clone()),
+            media,
             microphone_factory: self.microphone_factory.clone(),
             motion: self.motion.clone(),
             failed: self.failed.clone(),
@@ -480,13 +550,22 @@ impl Video {
 }
 struct PeerBuilder {
     frames: broadcast::Sender<EncodedFrame>,
-    audio: Option<Arc<TrackLocalStaticSample>>,
+    media: watch::Receiver<MediaState>,
     microphone_factory: Option<SinkFactory>,
     motion: Arc<Motion>,
     failed: Arc<AtomicBool>,
 }
 impl PeerBuilder {
-    async fn build(self, id: &str, servers: Vec<RTCIceServer>) -> Result<(Peer, Value)> {
+    async fn build(mut self, id: &str, servers: Vec<RTCIceServer>) -> Result<(Peer, Value)> {
+        // Offer only after capture works, with exactly the tracks it produced.
+        let media = self
+            .media
+            .wait_for(|state| !matches!(state, MediaState::Starting))
+            .await
+            .map(|state| state.clone());
+        let Ok(MediaState::Ready(audio)) = media else {
+            return Err("screen capture unavailable".into());
+        };
         let diagnostics = Arc::new(crate::diagnostics::Budget::default());
         let track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
@@ -610,7 +689,7 @@ impl PeerBuilder {
             while sender.read_rtcp().await.is_ok() {}
         }));
         let mut rtcp = vec![rtcp];
-        if let Some(audio) = &self.audio {
+        if let Some(audio) = &audio {
             let transceiver = connection
                 .add_transceiver_from_track(
                     audio.clone(),
@@ -629,7 +708,7 @@ impl PeerBuilder {
                 while sender.read_rtcp().await.is_ok() {}
             })));
         }
-        if self.audio.is_none() && microphone.available() {
+        if audio.is_none() && microphone.available() {
             connection
                 .add_transceiver_from_kind(
                     RTPCodecType::Audio,
@@ -1129,13 +1208,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_capture_start_retires_joining_viewer_and_next_viewer_retries() {
+        crate::tls::ensure_crypto_provider();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let source: VideoSource = Arc::new(move || {
+            let attempt = observed.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if attempt == 0 {
+                    return Err("fixture encoder unavailable".into());
+                }
+                Ok(Capture::packets(
+                    stream::once(async { Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1])) })
+                        .chain(stream::pending()),
+                    None,
+                ))
+            })
+        });
+        let mut video = Video::new(source, None, None);
+        assert!(!video.capturing());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        video.add("first", Vec::new(), deadline).unwrap();
+        assert!(video.capturing());
+        let event = tokio::time::timeout(Duration::from_secs(5), video.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.value,
+            json!({"type":"viewer_left","viewer_id":"first"})
+        );
+        assert!(!video.capturing(), "failed startup must release capture");
+        assert!(
+            !video.failed(),
+            "startup failure is local to joining viewers"
+        );
+        video.add("second", Vec::new(), deadline).unwrap();
+        let offer = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = video.next().await.unwrap();
+                if event.value["signal"]["type"] != "candidate" {
+                    return event.value;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(offer["viewer_id"], "second");
+        assert_eq!(offer["signal"]["type"], "offer");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        video.remove("second");
+        assert!(!video.capturing(), "the last viewer leaving stops capture");
+    }
+
+    #[tokio::test]
     async fn closing_a_removed_peer_does_not_fail_the_shared_video() {
         crate::tls::ensure_crypto_provider();
         let failed = Arc::new(AtomicBool::new(false));
         let (frames, _) = broadcast::channel(2);
         let builder = PeerBuilder {
             frames,
-            audio: None,
+            media: watch::channel(MediaState::Ready(None)).1,
             microphone_factory: None,
             motion: Arc::new(Motion::default()),
             failed: failed.clone(),

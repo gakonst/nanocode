@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use nanocode_agent_core::{HarnessFamily, Lineage, ModelSelection};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,15 @@ pub struct SessionRecord {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inherited_transcript: Vec<nanocode_agent_core::input::PromptMessage>,
+
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) has_events: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) event_preview: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +84,9 @@ impl SessionRecord {
             start_checkpoint: None,
             initial: None,
             inherited_transcript: Vec::new(),
+            metadata: BTreeMap::new(),
+            has_events: false,
+            event_preview: None,
         }
     }
 
@@ -125,6 +137,9 @@ impl SessionRecord {
             start_checkpoint: None,
             initial: None,
             inherited_transcript: Vec::new(),
+            metadata: BTreeMap::new(),
+            has_events: false,
+            event_preview: None,
         }
     }
 
@@ -165,8 +180,31 @@ impl SessionRecord {
             } else {
                 next.inherited_transcript
             },
+            metadata: if next.metadata.is_empty() {
+                self.metadata.clone()
+            } else {
+                next.metadata
+            },
+            has_events: self.has_events || next.has_events,
+            event_preview: self.event_preview.clone().or(next.event_preview),
         }
     }
+
+    pub(crate) fn record_events(&mut self, events: &[nanocode_durability_core::StoreEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        self.has_events = true;
+        if self.event_preview.is_none() {
+            self.event_preview = events
+                .iter()
+                .find_map(|event| event.text.as_deref().and_then(preview_text));
+        }
+    }
+}
+
+pub(crate) fn preview_text(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.chars().take(500).collect())
 }
 
 fn now_ms() -> u64 {
@@ -182,7 +220,7 @@ fn now_ms() -> u64 {
 pub use store::*;
 
 mod store {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
     use nanocode_agent_core::{HarnessFamily, Lineage, ModelSelection, Origin};
     use serde::Serialize;
@@ -191,10 +229,12 @@ mod store {
     use super::{BranchBoundary, SessionRecord};
     use crate::{
         AdmittedTurn, CheckpointFormat, DurableSession, DurableState, EncodedPayload, Error,
-        OperationStatus, OwnerId, PayloadReader, Result, StateStore, Transition,
+        EventHits, EventPage, EventQuery, EventRange, OperationStatus, OwnerId, PayloadReader,
+        Result, SessionWrite, StateCommit, StateCursor, StateQuery, StateReader, StateStore,
+        StateSummary, StoreError, SummaryUpdate, Transition,
         format::Formats,
         session::reduce_peeked,
-        shared_store::{SharedStore, WeakSharedStore},
+        shared_store::{SharedReader, SharedStore, WeakSharedStore},
     };
 
     pub use nanocode_agent_core::session::TranscriptItem;
@@ -206,6 +246,125 @@ mod store {
         pub record: SessionRecord,
 
         pub preview: Option<String>,
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub struct SessionQuery {
+        pub workspace: Option<PathBuf>,
+        pub model: Option<ModelSelection>,
+        pub family: Option<HarnessFamily>,
+        pub origin: Option<Origin>,
+        pub parent_session_id: Option<String>,
+        pub text: Vec<String>,
+        pub after: Option<StateCursor>,
+        pub limit: usize,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct SessionPage {
+        pub sessions: Vec<SessionSummary>,
+        pub next: Option<StateCursor>,
+    }
+
+    #[derive(Clone)]
+    pub struct SessionReader {
+        reader: SharedReader,
+    }
+
+    impl SessionReader {
+        pub fn new<R: StateReader + 'static>(reader: R) -> Result<Self> {
+            Ok(Self {
+                reader: SharedReader::new(reader)?,
+            })
+        }
+
+        pub async fn query(&self, query: &SessionQuery) -> Result<SessionPage> {
+            let scope = query
+                .workspace
+                .as_ref()
+                .map(|workspace| {
+                    workspace.to_str().map(str::to_owned).ok_or_else(|| {
+                        Error::InvalidState(format!(
+                            "session query workspace {} is not UTF-8",
+                            workspace.display()
+                        ))
+                    })
+                })
+                .transpose()?;
+            let attributes = [
+                ("model", query.model.as_ref().map(ToString::to_string)),
+                ("family", query.family.as_ref().map(ToString::to_string)),
+                ("origin", query.origin.map(origin_name).transpose()?),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| Some((key.to_owned(), value?)))
+            .collect();
+            let page = self
+                .reader
+                .clone()
+                .query_states(&StateQuery {
+                    scope,
+                    parent: query.parent_session_id.clone(),
+                    attributes,
+                    text: query.text.clone(),
+                    after: query.after.clone(),
+                    limit: query.limit,
+                })
+                .await?;
+            let sessions = page
+                .states
+                .into_iter()
+                .map(|state| {
+                    let record: SessionRecord = serde_json::from_str(&state.summary.value)?;
+                    if record.session_id != state.state_id {
+                        return Err(Error::InvalidState(format!(
+                            "indexed state {} summarizes session {}",
+                            state.state_id, record.session_id
+                        )));
+                    }
+                    Ok(SessionSummary {
+                        record,
+                        preview: state.summary.preview,
+                    })
+                })
+                .collect::<Result<_>>()?;
+            Ok(SessionPage {
+                sessions,
+                next: page.next,
+            })
+        }
+
+        pub async fn events(&self, session_id: &str, range: &EventRange) -> Result<EventPage> {
+            Ok(self.reader.clone().read_events(session_id, range).await?)
+        }
+
+        pub async fn search_events(&self, query: &EventQuery) -> Result<EventHits> {
+            Ok(self.reader.clone().query_events(query).await?)
+        }
+
+        pub async fn read_records(
+            &self,
+            session_id: &str,
+            keys: &[String],
+        ) -> Result<Vec<Option<String>>> {
+            Ok(self.reader.clone().read_records(session_id, keys).await?)
+        }
+
+        pub async fn state(&self, session_id: &str) -> Result<Option<DurableState>> {
+            let stored = self.reader.clone().read_state(session_id).await?;
+            if stored.payload.is_none() {
+                return Ok(None);
+            }
+            reduce_peeked(stored).map(Some)
+        }
+
+        pub async fn resolve(
+            &self,
+            session_id: &str,
+            payload: &EncodedPayload,
+        ) -> Result<EncodedPayload> {
+            payload.read(&mut self.reader.clone(), session_id).await
+        }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -299,6 +458,7 @@ mod store {
 
     #[derive(Clone)]
     pub struct SessionStore {
+        reader: Option<SessionReader>,
         store: SharedStore,
         formats: Formats,
     }
@@ -327,6 +487,7 @@ mod store {
 
         pub fn new<S: StateStore + 'static>(store: S) -> Result<Self> {
             Ok(Self {
+                reader: None,
                 store: SharedStore::new(store)?,
                 formats: Formats::default(),
             })
@@ -339,6 +500,16 @@ mod store {
         pub async fn flush(&self) -> Result<()> {
             self.store.clone().flush().await?;
             Ok(())
+        }
+
+        pub fn with_reader<R: StateReader + 'static>(mut self, reader: R) -> Result<Self> {
+            self.reader = Some(SessionReader::new(reader)?);
+            Ok(self)
+        }
+
+        #[must_use]
+        pub fn reader(&self) -> Option<SessionReader> {
+            self.reader.clone()
         }
 
         pub async fn list(&self) -> Result<Vec<SessionSummary>> {
@@ -356,21 +527,39 @@ mod store {
             Ok(sessions)
         }
 
+        pub async fn query(&self, query: &SessionQuery) -> Result<SessionPage> {
+            self.require_reader()?.query(query).await
+        }
+
+        pub async fn events(&self, session_id: &str, range: &EventRange) -> Result<EventPage> {
+            self.require_reader()?.events(session_id, range).await
+        }
+
+        pub async fn search_events(&self, query: &EventQuery) -> Result<EventHits> {
+            self.require_reader()?.search_events(query).await
+        }
+
+        pub async fn read_records(
+            &self,
+            session_id: &str,
+            keys: &[String],
+        ) -> Result<Vec<Option<String>>> {
+            self.require_reader()?.read_records(session_id, keys).await
+        }
+
+        fn require_reader(&self) -> Result<&SessionReader> {
+            self.reader.as_ref().ok_or_else(|| {
+                Error::Store(StoreError::Backend(
+                    "this store does not support non-fencing reads".to_owned(),
+                ))
+            })
+        }
+
         pub async fn summary(&self, id: &str) -> Result<Option<SessionSummary>> {
             let Some(state) = self.peek(id).await? else {
                 return Ok(None);
             };
-
-            let created_child = state.session().is_some_and(|record| {
-                matches!(
-                    record.lineage.origin,
-                    Origin::Fork | Origin::SideConversation | Origin::Subagent
-                )
-            });
-            if state.operations().is_empty()
-                && state.latest_checkpoint().is_none()
-                && !created_child
-            {
+            if !is_listed(&state) {
                 return Ok(None);
             }
             let preview = self.first_prompt(id, &state).await?;
@@ -383,6 +572,7 @@ mod store {
                     self.infer_record(id, &checkpoint)?
                 }
             };
+            let preview = preview.or_else(|| record.event_preview.clone());
             Ok(Some(SessionSummary { record, preview }))
         }
 
@@ -435,13 +625,24 @@ mod store {
         }
 
         pub async fn session(&self, record: SessionRecord) -> Result<DurableSession> {
-            DurableSession::open_shared_described(
+            let session = DurableSession::open_shared_described(
                 self.store.clone(),
                 record.session_id.clone(),
                 None,
                 Some(record),
             )
-            .await
+            .await?;
+            self.publish_opened(session).await
+        }
+
+        async fn publish_opened(&self, session: DurableSession) -> Result<DurableSession> {
+            if self.reader.is_some() {
+                let state = session.state().await?;
+                if state.session().is_some() && is_listed(&state) {
+                    session.append(SessionWrite::default()).await?;
+                }
+            }
+            Ok(session)
         }
 
         pub async fn prepare_session(&self, record: SessionRecord) -> Result<DurableSession> {
@@ -477,8 +678,14 @@ mod store {
 
         pub async fn resume(&self, id: &str) -> Result<DurableSession> {
             let record = self.resume_record(id).await?;
-            DurableSession::open_shared_described(self.store.clone(), id.to_owned(), None, record)
-                .await
+            let session = DurableSession::open_shared_described(
+                self.store.clone(),
+                id.to_owned(),
+                None,
+                record,
+            )
+            .await?;
+            self.publish_opened(session).await
         }
 
         pub async fn prepare_resume(&self, id: &str) -> Result<DurableSession> {
@@ -648,7 +855,8 @@ mod store {
                 BranchPoint::Before(_) => None,
                 _ => self.first_prompt(id, &state).await?,
             };
-            self.publish(record.clone(), checkpoint).await?;
+            self.publish(record.clone(), checkpoint, preview.clone())
+                .await?;
             Ok(SessionSummary { record, preview })
         }
 
@@ -708,6 +916,7 @@ mod store {
             &self,
             record: SessionRecord,
             checkpoint: Option<EncodedPayload>,
+            preview: Option<String>,
         ) -> Result<()> {
             let mut store = self.store.clone();
             let id = record.session_id.clone();
@@ -726,13 +935,21 @@ mod store {
             }
             state.set_session(Some(record));
             let records = state.stage_records();
+            let summary = match summarize(&state, preview)? {
+                Some(summary) => SummaryUpdate::Set(summary),
+                None => SummaryUpdate::Unchanged,
+            };
             store
-                .replace(
+                .commit(
                     &id,
                     &target.owner,
                     0,
-                    &state.checkpoint_payload()?,
-                    &records,
+                    StateCommit {
+                        payload: &state.checkpoint_payload()?,
+                        records: &records,
+                        events: &[],
+                        summary: &summary,
+                    },
                 )
                 .await?;
             Ok(())
@@ -824,6 +1041,9 @@ mod store {
                 start_checkpoint: None,
                 initial: None,
                 inherited_transcript: Vec::new(),
+                metadata: BTreeMap::new(),
+                has_events: false,
+                event_preview: None,
             })
         }
 
@@ -913,6 +1133,56 @@ mod store {
         id.ends_with(":subagents") || id.ends_with(":process-routes")
     }
 
+    pub(crate) fn is_listed(state: &DurableState) -> bool {
+        let created_child = state.session().is_some_and(|record| {
+            matches!(
+                record.lineage.origin,
+                Origin::Fork | Origin::SideConversation | Origin::Subagent
+            )
+        });
+        let has_events = state.session().is_some_and(|record| record.has_events);
+        !state.operations().is_empty()
+            || state.latest_checkpoint().is_some()
+            || created_child
+            || has_events
+    }
+
+    pub(crate) fn summarize(
+        state: &DurableState,
+        preview: Option<String>,
+    ) -> Result<Option<StateSummary>> {
+        let Some(record) = state.session().filter(|_| is_listed(state)) else {
+            return Ok(None);
+        };
+        let attributes = BTreeMap::from([
+            ("model".to_owned(), record.model.to_string()),
+            ("family".to_owned(), record.family().to_string()),
+            ("origin".to_owned(), origin_name(record.lineage.origin)?),
+        ]);
+        Ok(Some(StateSummary {
+            scope: record
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.to_str())
+                .map(str::to_owned),
+            parent: record.lineage.parent_session_id.clone(),
+            title: record.title.clone(),
+            preview: preview.or_else(|| record.event_preview.clone()),
+            attributes,
+            updated_at_ms: record.updated_at_ms,
+            value: serde_json::to_string(record)?,
+        }))
+    }
+
+    fn origin_name(origin: Origin) -> Result<String> {
+        match serde_json::to_value(origin)? {
+            Value::String(name) => Ok(name),
+            other => Err(Error::InvalidState(format!(
+                "session origin serialized as {other} instead of a string"
+            ))),
+        }
+    }
+
     fn is_portable(value: &Value) -> bool {
         value
             .get("format")
@@ -929,7 +1199,7 @@ mod store {
         Ok(checkpoint)
     }
 
-    fn prompt_text(input: &Value) -> Option<String> {
+    pub(crate) fn prompt_text(input: &Value) -> Option<String> {
         fn find(value: &Value, depth: usize) -> Option<&str> {
             if depth > 8 {
                 return None;
@@ -949,7 +1219,7 @@ mod store {
                 _ => None,
             }
         }
-        find(input, 0).map(|text| text.chars().take(500).collect())
+        find(input, 0).and_then(super::preview_text)
     }
 
     fn admitted_turns<'a>(turns: &'a [StoredTurn], state: &DurableState) -> Vec<AdmittedTurn<'a>> {

@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
+    ops::Range,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
@@ -11,9 +12,12 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 use crate::{
-    DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result, StateStore,
-    SteerState, StepStatus, StoreError, StoreReplacement, StoredState, Transition,
-    shared_store::SharedStore, state::RetainedCheckpoint,
+    DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result,
+    SessionRecord, StateCommit, StateStore, SteerState, StepStatus, StoreError, StoreEvent,
+    StoreReplacement, StoredState, SummaryUpdate, Transition,
+    catalog::{is_listed, prompt_text, summarize},
+    shared_store::SharedStore,
+    state::RetainedCheckpoint,
 };
 
 const COMMAND_CAPACITY: usize = 64;
@@ -134,6 +138,79 @@ struct AgentAcquisition {
 pub enum InitialAcquisition {
     Committed,
     Existing(Option<EncodedPayload>),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum TitleChange {
+    #[default]
+    Unchanged,
+    Set(String),
+    Clear,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MetadataExpectation {
+    pub title: Option<Option<String>>,
+    pub values: BTreeMap<String, Option<serde_json::Value>>,
+}
+
+impl MetadataExpectation {
+    fn matches(&self, record: &SessionRecord) -> bool {
+        self.title
+            .as_ref()
+            .is_none_or(|title| *title == record.title)
+            && self
+                .values
+                .iter()
+                .all(|(key, value)| record.metadata.get(key) == value.as_ref())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MetadataWrite {
+    pub expect: Option<MetadataExpectation>,
+    pub title: TitleChange,
+    pub values: BTreeMap<String, Option<serde_json::Value>>,
+}
+
+impl MetadataWrite {
+    fn apply(&self, record: &mut SessionRecord) {
+        if self
+            .expect
+            .as_ref()
+            .is_some_and(|expect| !expect.matches(record))
+        {
+            return;
+        }
+        match &self.title {
+            TitleChange::Unchanged => {}
+            TitleChange::Set(title) => record.title = Some(title.clone()),
+            TitleChange::Clear => record.title = None,
+        }
+        for (key, value) in &self.values {
+            match value {
+                Some(value) => {
+                    record.metadata.insert(key.clone(), value.clone());
+                }
+                None => {
+                    record.metadata.remove(key);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionWrite {
+    pub events: Vec<StoreEvent>,
+    pub metadata: Option<MetadataWrite>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionReceipt {
+    pub revision: u64,
+    pub events: Range<u64>,
+    pub record: Option<SessionRecord>,
 }
 
 enum Command {
@@ -283,7 +360,16 @@ enum Command {
     CommitCheckpoint {
         caller: Caller,
         checkpoint: EncodedPayload,
+        write: SessionWrite,
+        result: oneshot::Sender<Result<SessionReceipt>>,
+    },
+    Stage {
+        write: SessionWrite,
         result: oneshot::Sender<Result<()>>,
+    },
+    Append {
+        write: SessionWrite,
+        result: oneshot::Sender<Result<SessionReceipt>>,
     },
     DiscardUnused {
         caller: Caller,
@@ -313,9 +399,12 @@ impl Command {
             | Self::FailAttempt { result, .. }
             | Self::Cancel { result, .. }
             | Self::PruneReceipts { result, .. }
-            | Self::CommitCheckpoint { result, .. }
             | Self::DiscardUnused { result, .. }
+            | Self::Stage { result, .. }
             | Self::Acquire { result } => drop(result.send(Err(error))),
+            Self::CommitCheckpoint { result, .. } | Self::Append { result, .. } => {
+                drop(result.send(Err(error)));
+            }
             Self::RecoverFailure { result, .. } => drop(result.send(Err(error))),
             Self::State { result } => drop(result.send(Err(error))),
             Self::LatestCheckpoint { result } => drop(result.send(Err(error))),
@@ -357,6 +446,8 @@ struct Driver {
     claimed: HashMap<String, Caller>,
     running: HashSet<String>,
     poisoned: bool,
+    staged: Vec<SessionWrite>,
+    preview: Option<(String, Option<String>)>,
 
     committed_records: HashSet<String>,
     commands: mpsc::Receiver<CommandRequest>,
@@ -887,6 +978,7 @@ impl Driver {
             Command::CommitCheckpoint {
                 caller,
                 checkpoint,
+                write,
                 result,
             } => {
                 let outcome = match self.authorize(&caller) {
@@ -895,15 +987,20 @@ impl Driver {
                             operation_id: "standalone-checkpoint".to_owned(),
                             pending_id: pending_id.to_owned(),
                         }),
-                        None => {
-                            self.apply_terminal(Transition::CheckpointCommitted { checkpoint })
-                                .await
-                        }
+                        None => match self.stage(write) {
+                            Ok(()) => {
+                                self.applied(Transition::CheckpointCommitted { checkpoint })
+                                    .await
+                            }
+                            Err(error) => Err(error),
+                        },
                     },
                     Err(error) => Err(error),
                 };
                 drop(result.send(outcome));
             }
+            Command::Stage { write, result } => drop(result.send(self.stage(write))),
+            Command::Append { write, result } => drop(result.send(self.append(write).await)),
             Command::DiscardUnused { caller, result } => {
                 let outcome = match self.authorize(&caller) {
                     Ok(()) => self.discard_unused().await,
@@ -1436,6 +1533,11 @@ impl Driver {
     }
 
     async fn apply(&mut self, entry: Transition) -> Result<()> {
+        self.applied(entry).await?;
+        Ok(())
+    }
+
+    async fn applied(&mut self, entry: Transition) -> Result<SessionReceipt> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -1447,7 +1549,59 @@ impl Driver {
         self.persist(next).await
     }
 
-    async fn persist(&mut self, mut next: DurableState) -> Result<()> {
+    fn stage(&mut self, write: SessionWrite) -> Result<()> {
+        if !write.events.is_empty() && !self.store.supports_events() {
+            return Err(StoreError::NotCommitted(
+                "this store does not record state events".to_owned(),
+            )
+            .into());
+        }
+        if write.metadata.is_some() && self.state.session().is_none() {
+            return Err(Error::InvalidState(
+                "session metadata requires a session record".to_owned(),
+            ));
+        }
+        if write != SessionWrite::default() {
+            self.staged.push(write);
+        }
+        Ok(())
+    }
+
+    async fn append(&mut self, write: SessionWrite) -> Result<SessionReceipt> {
+        self.stage(write)?;
+        let revision = self.state.revision().checked_add(1).ok_or_else(|| {
+            Error::InvalidState("state revision exceeded the u64 range".to_owned())
+        })?;
+        let mut next = self.state.clone();
+        next.advance_revision(revision)?;
+        self.persist(next).await
+    }
+
+    async fn preview(&mut self, state: &DurableState) -> Result<Option<String>> {
+        let Some((_, operation)) = state
+            .operations()
+            .iter()
+            .min_by_key(|(_, operation)| operation.accepted_order())
+        else {
+            return Ok(None);
+        };
+        let key = operation.input.key();
+        if let Some((cached, preview)) = &self.preview
+            && cached == key
+        {
+            return Ok(preview.clone());
+        }
+        let input: serde_json::Value = operation
+            .input
+            .load(&mut *self.store, &self.state_id)
+            .await?
+            .decode()?;
+        let preview = prompt_text(&input);
+        self.preview = Some((key.to_owned(), preview.clone()));
+        Ok(preview)
+    }
+
+    async fn persist(&mut self, mut next: DurableState) -> Result<SessionReceipt> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -1457,49 +1611,100 @@ impl Driver {
                 next.revision()
             )));
         }
+        let preview = if next.session().is_some() {
+            self.preview(&next).await?
+        } else {
+            None
+        };
+        if let Some(record) = next.session_mut() {
+            for metadata in self
+                .staged
+                .iter()
+                .filter_map(|write| write.metadata.as_ref())
+            {
+                metadata.apply(record);
+            }
+        }
+        let events: Vec<StoreEvent> = self
+            .staged
+            .iter()
+            .flat_map(|write| write.events.iter().cloned())
+            .collect();
+        if let Some(record) = next.session_mut() {
+            record.record_events(&events);
+        }
         let mut records = next.stage_records();
         records.retain(|record| !self.committed_records.contains(&record.key));
         if let Some(session) = next.session_mut() {
             session.touch();
         }
         let payload = next.checkpoint_payload()?;
+        let summary = match summarize(&next, preview)? {
+            Some(summary) => SummaryUpdate::Set(summary),
+            None if is_listed(&self.state) => SummaryUpdate::Remove,
+            None => SummaryUpdate::Unchanged,
+        };
         let Some(owner) = &self.owner else {
             return Err(Error::InvalidState(format!(
                 "state {} was persisted before its owner was acquired",
                 self.state_id
             )));
         };
-        let revision = match self
+        let committed = match self
             .store
-            .replace(
+            .commit(
                 &self.state_id,
                 owner,
                 self.state.revision(),
-                &payload,
-                &records,
+                StateCommit {
+                    payload: &payload,
+                    records: &records,
+                    events: &events,
+                    summary: &summary,
+                },
             )
             .await
         {
-            Ok(revision) => revision,
+            Ok(committed) => committed,
             Err(error @ StoreError::NotCommitted(_)) => return Err(error.into()),
             Err(error) => {
                 self.poisoned = true;
                 return Err(error.into());
             }
         };
-        if revision != expected_revision {
+        if committed.revision != expected_revision {
             self.poisoned = true;
             return Err(Error::InvalidState(format!(
-                "store returned revision {revision} after replacing expected revision {expected_revision}"
+                "store returned revision {} after replacing expected revision {expected_revision}",
+                committed.revision
             )));
         }
+        let assigned = match committed.first_event {
+            None if events.is_empty() => Some(0..0),
+            Some(first) if first > 0 && !events.is_empty() => u64::try_from(events.len())
+                .ok()
+                .and_then(|count| first.checked_add(count))
+                .map(|end| first..end),
+            Some(_) | None => None,
+        };
+        let Some(assigned) = assigned else {
+            self.poisoned = true;
+            return Err(Error::InvalidState(
+                "store acknowledged an event sequence range that does not match the committed events".to_owned(),
+            ));
+        };
         if self.committed_records.len() + records.len() > COMMITTED_RECORD_LIMIT {
             self.committed_records.clear();
         }
         self.committed_records
             .extend(records.into_iter().map(|record| record.key));
+        self.staged.clear();
         self.state = next;
-        Ok(())
+        Ok(SessionReceipt {
+            revision: committed.revision,
+            events: assigned,
+            record: self.state.session().cloned(),
+        })
     }
 
     async fn describe(
@@ -1542,7 +1747,8 @@ impl Driver {
         let revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
-        self.persist(DurableState::retracted(revision)).await
+        self.persist(DurableState::retracted(revision)).await?;
+        Ok(())
     }
 
     async fn apply_terminal(&mut self, entry: Transition) -> Result<()> {
@@ -1561,7 +1767,8 @@ impl Driver {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
         next.advance_revision(revision)?;
-        self.persist(next).await
+        self.persist(next).await?;
+        Ok(())
     }
 }
 
@@ -1811,6 +2018,8 @@ impl DurableSession {
             claimed: HashMap::new(),
             running: HashSet::new(),
             poisoned: false,
+            staged: Vec::new(),
+            preview: None,
             committed_records: HashSet::new(),
             commands: receiver,
             releases: release_receiver,
@@ -2338,6 +2547,34 @@ impl DurableSession {
         outcome
     }
 
+    pub async fn stage(&self, write: SessionWrite) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Stage { write, result }).await?;
+        receive(receiver).await
+    }
+
+    pub async fn append(&self, write: SessionWrite) -> Result<SessionReceipt> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Append { write, result }).await?;
+        receive(receiver).await
+    }
+
+    pub async fn commit_checkpoint(
+        &self,
+        checkpoint: EncodedPayload,
+        write: SessionWrite,
+    ) -> Result<SessionReceipt> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::CommitCheckpoint {
+            caller: Caller::Direct(self.caller_id.clone()),
+            checkpoint,
+            write,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
     pub async fn cancel(&self, operation_id: impl Into<String>) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::Cancel {
@@ -2729,10 +2966,12 @@ impl DurableOwner {
         self.send(Command::CommitCheckpoint {
             caller: self.caller()?,
             checkpoint,
+            write: SessionWrite::default(),
             result,
         })
         .await?;
-        receive(receiver).await
+        receive(receiver).await?;
+        Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {

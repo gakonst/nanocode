@@ -4,9 +4,13 @@ use nanocode_platform::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
+use crate::{
+    Committed, EventHits, EventPage, EventQuery, EventRange, OwnedState, OwnerId, OwnerToken,
+    StateCommit, StatePage, StateQuery, StateReader, StateStore, StoreError, StoreEvent,
+    StoreFuture, StoredState, SummaryUpdate,
+};
 #[cfg(not(target_family = "wasm"))]
 use crate::{Error, StoreUpdate};
-use crate::{OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture};
 
 const COMMAND_CAPACITY: usize = 64;
 
@@ -50,6 +54,16 @@ enum Command {
         records: Vec<crate::StoreRecord>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
+    Commit {
+        state_id: String,
+        owner: OwnerToken,
+        expected_revision: u64,
+        payload: String,
+        records: Vec<crate::StoreRecord>,
+        events: Vec<StoreEvent>,
+        summary: SummaryUpdate,
+        result: oneshot::Sender<Result<Committed, StoreError>>,
+    },
     Peek {
         state_id: String,
         result: oneshot::Sender<Result<crate::StoredState, StoreError>>,
@@ -73,6 +87,7 @@ struct StoreRequest {
 pub struct SharedStore {
     commands: mpsc::Sender<StoreRequest>,
     batches_companion_acquisition: bool,
+    supports_events: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +118,7 @@ impl SharedStore {
         let batches_companion_acquisition = store.batches_companion_acquisition();
         #[cfg(target_family = "wasm")]
         let batches_companion_acquisition = false;
+        let supports_events = store.supports_events();
         let (commands, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
         spawn_driver(async move {
             while let Some(StoreRequest {
@@ -161,6 +177,34 @@ impl SharedStore {
                                 ),
                             );
                         }
+                        Command::Commit {
+                            state_id,
+                            owner,
+                            expected_revision,
+                            payload,
+                            records: new_records,
+                            events,
+                            summary,
+                            result,
+                        } => {
+                            drop(
+                                result.send(
+                                    store
+                                        .commit(
+                                            &state_id,
+                                            &owner,
+                                            expected_revision,
+                                            StateCommit {
+                                                payload: &payload,
+                                                records: &new_records,
+                                                events: &events,
+                                                summary: &summary,
+                                            },
+                                        )
+                                        .await,
+                                ),
+                            );
+                        }
                         #[cfg(not(target_family = "wasm"))]
                         Command::AcquireWith {
                             state_id,
@@ -213,6 +257,7 @@ impl SharedStore {
         Ok(Self {
             commands,
             batches_companion_acquisition,
+            supports_events,
         })
     }
 }
@@ -240,6 +285,49 @@ impl StateStore for SharedStore {
 
     fn batches_companion_acquisition(&self) -> bool {
         self.batches_companion_acquisition
+    }
+
+    fn supports_events(&self) -> bool {
+        self.supports_events
+    }
+
+    fn commit<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        expected_revision: u64,
+        commit: StateCommit<'a>,
+    ) -> StoreFuture<'a, Result<Committed, StoreError>> {
+        let span = tracing::info_span!(
+            "durability.store",
+            operation = "commit",
+            state.id = state_id,
+            payload.bytes = commit.payload.len(),
+            record.count = commit.records.len(),
+            event.count = commit.events.len(),
+            queue.duration_ms = tracing::field::Empty
+        );
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(StoreRequest {
+                    command: Command::Commit {
+                        state_id: state_id.to_owned(),
+                        owner: owner.clone(),
+                        expected_revision,
+                        payload: commit.payload.to_owned(),
+                        records: commit.records.to_vec(),
+                        events: commit.events.to_vec(),
+                        summary: commit.summary.clone(),
+                        result,
+                    },
+                    span,
+                    queued: Instant::now(),
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -485,6 +573,143 @@ impl StateStore for SharedStore {
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
+    }
+}
+
+enum ReadCommand {
+    State {
+        state_id: String,
+        result: oneshot::Sender<Result<StoredState, StoreError>>,
+    },
+    Records {
+        state_id: String,
+        keys: Vec<String>,
+        result: oneshot::Sender<Result<Vec<Option<String>>, StoreError>>,
+    },
+    Events {
+        state_id: String,
+        range: EventRange,
+        result: oneshot::Sender<Result<EventPage, StoreError>>,
+    },
+    States {
+        query: StateQuery,
+        result: oneshot::Sender<Result<StatePage, StoreError>>,
+    },
+    Hits {
+        query: EventQuery,
+        result: oneshot::Sender<Result<EventHits, StoreError>>,
+    },
+}
+
+#[derive(Clone)]
+pub(crate) struct SharedReader {
+    commands: mpsc::Sender<ReadCommand>,
+}
+
+impl SharedReader {
+    pub(crate) fn new<R>(mut reader: R) -> crate::Result<Self>
+    where
+        R: StateReader + 'static,
+    {
+        let (commands, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
+        spawn_driver(async move {
+            while let Some(command) = receiver.recv().await {
+                match command {
+                    ReadCommand::State { state_id, result } => {
+                        drop(result.send(reader.read_state(&state_id).await));
+                    }
+                    ReadCommand::Records {
+                        state_id,
+                        keys,
+                        result,
+                    } => {
+                        drop(result.send(reader.read_records(&state_id, &keys).await));
+                    }
+                    ReadCommand::Events {
+                        state_id,
+                        range,
+                        result,
+                    } => {
+                        drop(result.send(reader.read_events(&state_id, &range).await));
+                    }
+                    ReadCommand::States { query, result } => {
+                        drop(result.send(reader.query_states(&query).await));
+                    }
+                    ReadCommand::Hits { query, result } => {
+                        drop(result.send(reader.query_events(&query).await));
+                    }
+                }
+            }
+        })?;
+        Ok(Self { commands })
+    }
+
+    async fn request<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<Result<T, StoreError>>) -> ReadCommand,
+    ) -> Result<T, StoreError> {
+        let (result, receiver) = oneshot::channel();
+        self.commands
+            .send(command(result))
+            .await
+            .map_err(|_| stopped())?;
+        receiver.await.map_err(|_| stopped())?
+    }
+}
+
+impl StateReader for SharedReader {
+    fn read_state<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>> {
+        Box::pin(self.request(|result| ReadCommand::State {
+            state_id: state_id.to_owned(),
+            result,
+        }))
+    }
+
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(self.request(|result| ReadCommand::Records {
+            state_id: state_id.to_owned(),
+            keys: keys.to_vec(),
+            result,
+        }))
+    }
+
+    fn read_events<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        range: &'a EventRange,
+    ) -> StoreFuture<'a, Result<EventPage, StoreError>> {
+        Box::pin(self.request(|result| ReadCommand::Events {
+            state_id: state_id.to_owned(),
+            range: range.clone(),
+            result,
+        }))
+    }
+
+    fn query_states<'a>(
+        &'a mut self,
+        query: &'a StateQuery,
+    ) -> StoreFuture<'a, Result<StatePage, StoreError>> {
+        Box::pin(self.request(|result| ReadCommand::States {
+            query: query.clone(),
+            result,
+        }))
+    }
+
+    fn query_events<'a>(
+        &'a mut self,
+        query: &'a EventQuery,
+    ) -> StoreFuture<'a, Result<EventHits, StoreError>> {
+        Box::pin(self.request(|result| ReadCommand::Hits {
+            query: query.clone(),
+            result,
+        }))
     }
 }
 

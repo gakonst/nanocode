@@ -15,20 +15,23 @@ pub use backend::{Branches, DurableAgentExt, DurableBackendRegistration, agent_e
 pub use branch::{BranchTurn, CheckpointBranch};
 pub use catalog::{BranchBoundary, InitialSettings, SessionRecord};
 pub use catalog::{
-    BranchPoint, IntoSessionStore, LIST_LIMIT, SessionStore, SessionSummary, StoredSession,
-    StoredTurn, TranscriptItem, TurnStatus,
+    BranchPoint, IntoSessionStore, LIST_LIMIT, SessionPage, SessionQuery, SessionReader,
+    SessionStore, SessionSummary, StoredSession, StoredTurn, TranscriptItem, TurnStatus,
 };
 pub use child_journal::{JournalClaim, JournalSeed};
 pub use format::{AdmittedTurn, CheckpointFormat, FormatFuture};
 pub use memory::MemoryStore;
 pub use nanocode_durability_core::{
-    EncodedPayload, Error, OwnedState, OwnerId, OwnerToken, Result, StateStore, StoreError,
-    StoreFuture, StoreRecord, StoreReplacement, StoreUpdate, StoredState,
+    Committed, EncodedPayload, Error, EventCursor, EventHit, EventHits, EventOrder, EventPage,
+    EventQuery, EventRange, IndexedState, OwnedState, OwnerId, OwnerToken, Result, StateCommit,
+    StateCursor, StatePage, StateQuery, StateReader, StateStore, StateSummary, StoreError,
+    StoreEvent, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate, StoredEvent, StoredState,
+    SummaryUpdate,
 };
 pub use paged::{PagedWriter, PayloadReader, Prepared, Sequence, load_sequence};
 pub use session::{
     Admission, AutomaticAdmission, BeginStep, DurableOwner, DurableSession, InitialAcquisition,
-    StoredSteer,
+    MetadataExpectation, MetadataWrite, SessionReceipt, SessionWrite, StoredSteer, TitleChange,
 };
 pub use shared_store::SharedStore;
 pub use state::{

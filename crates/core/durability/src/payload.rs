@@ -185,6 +185,19 @@ impl EncodedPayload {
         self.load_record(store, state_id, record).await
     }
 
+    pub async fn read(&self, reader: &mut dyn crate::StateReader, state_id: &str) -> Result<Self> {
+        if self.content.is_some() {
+            return Ok(self.clone());
+        }
+        let record = reader
+            .read_records(state_id, std::slice::from_ref(&self.key.to_string()))
+            .await?
+            .pop()
+            .flatten()
+            .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key)))?;
+        self.load_record(reader, state_id, record).await
+    }
+
     pub async fn load_many(
         values: &[Self],
         store: &mut dyn crate::StateStore,
@@ -207,9 +220,9 @@ impl EncodedPayload {
         Ok(result)
     }
 
-    async fn load_record(
+    async fn load_record<S: RecordSource + ?Sized>(
         &self,
-        store: &mut dyn crate::StateStore,
+        store: &mut S,
         state_id: &str,
         record: String,
     ) -> Result<Self> {
@@ -227,7 +240,7 @@ impl EncodedPayload {
                 .collect();
             let mut content = String::new();
             for page in keys.chunks(16) {
-                let chunks = store.read_records(state_id, page).await?;
+                let chunks = store.records(state_id, page).await?;
                 if chunks.len() != page.len() {
                     return Err(Error::InvalidState("record batch length mismatch".into()));
                 }
@@ -248,8 +261,10 @@ impl EncodedPayload {
             let mut content = String::new();
             for index in 0..count {
                 let chunk = store
-                    .read_record(state_id, &format!("{}/{index}", self.key))
+                    .records(state_id, &[format!("{}/{index}", self.key)])
                     .await?
+                    .pop()
+                    .flatten()
                     .ok_or_else(|| {
                         Error::InvalidState(format!("missing payload chunk {}/{index}", self.key))
                     })?;
@@ -268,6 +283,34 @@ impl EncodedPayload {
             content: Some(content.into()),
             pending: Vec::new(),
         })
+    }
+}
+
+trait RecordSource {
+    fn records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>>;
+}
+
+impl RecordSource for dyn crate::StateStore + '_ {
+    fn records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>> {
+        self.read_records(state_id, keys)
+    }
+}
+
+impl RecordSource for dyn crate::StateReader + '_ {
+    fn records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>> {
+        self.read_records(state_id, keys)
     }
 }
 

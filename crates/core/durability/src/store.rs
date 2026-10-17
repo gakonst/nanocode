@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
@@ -91,6 +91,134 @@ pub struct StoreReplacement {
     pub records: Vec<StoreRecord>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct StoreEvent {
+    pub kind: String,
+    pub at_ms: u64,
+    pub body: String,
+    pub text: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct StoredEvent {
+    pub seq: u64,
+    pub revision: u64,
+    pub event: StoreEvent,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct StateSummary {
+    pub scope: Option<String>,
+    pub parent: Option<String>,
+    pub title: Option<String>,
+    pub preview: Option<String>,
+    pub attributes: BTreeMap<String, String>,
+    pub updated_at_ms: u64,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SummaryUpdate {
+    #[default]
+    Unchanged,
+    Set(StateSummary),
+    Remove,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct StateCommit<'a> {
+    pub payload: &'a str,
+    pub records: &'a [StoreRecord],
+    pub events: &'a [StoreEvent],
+    pub summary: &'a SummaryUpdate,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Committed {
+    pub revision: u64,
+    pub first_event: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EventOrder {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EventRange {
+    pub after: Option<u64>,
+    pub before: Option<u64>,
+    pub kinds: Vec<String>,
+    pub order: EventOrder,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EventPage {
+    pub events: Vec<StoredEvent>,
+    pub next: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize)]
+pub struct StateCursor {
+    pub updated_at_ms: u64,
+    pub state_id: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StateQuery {
+    pub scope: Option<String>,
+    pub parent: Option<String>,
+    pub attributes: BTreeMap<String, String>,
+    pub text: Vec<String>,
+    pub after: Option<StateCursor>,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct IndexedState {
+    pub state_id: String,
+    pub revision: u64,
+    pub summary: StateSummary,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StatePage {
+    pub states: Vec<IndexedState>,
+    pub next: Option<StateCursor>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize)]
+pub struct EventCursor {
+    pub at_ms: u64,
+    pub state_id: String,
+    pub seq: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EventQuery {
+    pub scope: Option<String>,
+    pub state_id: Option<String>,
+    pub kinds: Vec<String>,
+    pub text: Vec<String>,
+    pub after: Option<EventCursor>,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct EventHit {
+    pub state_id: String,
+    pub event: StoredEvent,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EventHits {
+    pub hits: Vec<EventHit>,
+    pub next: Option<EventCursor>,
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub type StoreUpdate =
     Box<dyn FnOnce(&StoredState) -> Result<Option<StoreReplacement>, StoreError> + Send>;
@@ -131,6 +259,33 @@ async fn acquire_updated<S: StateStore + ?Sized>(
         };
     }
     Ok(owned)
+}
+
+async fn commit_replaced<S: StateStore + ?Sized>(
+    store: &mut S,
+    state_id: &str,
+    owner: &OwnerToken,
+    expected_revision: u64,
+    commit: StateCommit<'_>,
+) -> Result<Committed, StoreError> {
+    if !commit.events.is_empty() {
+        return Err(StoreError::NotCommitted(
+            "this store does not record state events".to_owned(),
+        ));
+    }
+    let revision = store
+        .replace(
+            state_id,
+            owner,
+            expected_revision,
+            commit.payload,
+            commit.records,
+        )
+        .await?;
+    Ok(Committed {
+        revision,
+        first_event: None,
+    })
 }
 
 async fn acquire_companion<S: StateStore + ?Sized>(
@@ -217,6 +372,10 @@ pub trait StateStore: Send {
         false
     }
 
+    fn supports_events(&self) -> bool {
+        false
+    }
+
     fn acquire_with_companion<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -243,6 +402,22 @@ pub trait StateStore: Send {
         payload: &'a str,
         records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>>;
+
+    fn commit<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        expected_revision: u64,
+        commit: StateCommit<'a>,
+    ) -> StoreFuture<'a, Result<Committed, StoreError>> {
+        Box::pin(commit_replaced(
+            self,
+            state_id,
+            owner,
+            expected_revision,
+            commit,
+        ))
+    }
 
     fn flush(&mut self) -> StoreFuture<'_, Result<(), StoreError>> {
         Box::pin(async { Ok(()) })
@@ -304,6 +479,10 @@ pub trait StateStore {
         false
     }
 
+    fn supports_events(&self) -> bool {
+        false
+    }
+
     fn acquire_with_companion<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -331,7 +510,83 @@ pub trait StateStore {
         records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>>;
 
+    fn commit<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        expected_revision: u64,
+        commit: StateCommit<'a>,
+    ) -> StoreFuture<'a, Result<Committed, StoreError>> {
+        Box::pin(commit_replaced(
+            self,
+            state_id,
+            owner,
+            expected_revision,
+            commit,
+        ))
+    }
+
     fn flush(&mut self) -> StoreFuture<'_, Result<(), StoreError>> {
         Box::pin(async { Ok(()) })
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub trait StateReader: Send {
+    fn read_state<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>>;
+
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>>;
+
+    fn read_events<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        range: &'a EventRange,
+    ) -> StoreFuture<'a, Result<EventPage, StoreError>>;
+
+    fn query_states<'a>(
+        &'a mut self,
+        query: &'a StateQuery,
+    ) -> StoreFuture<'a, Result<StatePage, StoreError>>;
+
+    fn query_events<'a>(
+        &'a mut self,
+        query: &'a EventQuery,
+    ) -> StoreFuture<'a, Result<EventHits, StoreError>>;
+}
+
+#[cfg(target_family = "wasm")]
+pub trait StateReader {
+    fn read_state<'a>(
+        &'a mut self,
+        state_id: &'a str,
+    ) -> StoreFuture<'a, Result<StoredState, StoreError>>;
+
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>>;
+
+    fn read_events<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        range: &'a EventRange,
+    ) -> StoreFuture<'a, Result<EventPage, StoreError>>;
+
+    fn query_states<'a>(
+        &'a mut self,
+        query: &'a StateQuery,
+    ) -> StoreFuture<'a, Result<StatePage, StoreError>>;
+
+    fn query_events<'a>(
+        &'a mut self,
+        query: &'a EventQuery,
+    ) -> StoreFuture<'a, Result<EventHits, StoreError>>;
 }

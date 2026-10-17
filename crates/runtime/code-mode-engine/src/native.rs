@@ -69,6 +69,22 @@ const BOOTSTRAP: &str = include_str!("bootstrap.js");
 
 const CODE_TOOLS: &str = include_str!("code-tools.mjs");
 const CODE_VALUES: &str = include_str!("code-values.mjs");
+const DEFAULT_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_MAX_STACK_SIZE_BYTES: usize = 1024 * 1024;
+
+fn runtime_memory_limit() -> usize {
+    std::env::var("NANOCODE_CODE_MODE_MEMORY_LIMIT_BYTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_MEMORY_LIMIT_BYTES)
+}
+
+fn runtime_max_stack_size() -> usize {
+    std::env::var("NANOCODE_CODE_MODE_MAX_STACK_SIZE_BYTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_MAX_STACK_SIZE_BYTES)
+}
 
 type SavedFunction = Persistent<Function<'static>>;
 
@@ -233,6 +249,8 @@ fn run_worker(
     runtime.set_interrupt_handler(Some(Box::new(move || {
         interrupt_signal.load(Ordering::Acquire)
     })));
+    runtime.set_memory_limit(runtime_memory_limit());
+    runtime.set_max_stack_size(runtime_max_stack_size());
     let prewarmed_context = match Context::full(&runtime) {
         Ok(context) => context,
         Err(error) => {
@@ -252,6 +270,7 @@ fn run_worker(
         match command_rx.recv() {
             Ok(HostCommand::Start(start)) => {
                 interrupted.store(false, Ordering::Release);
+                let cell_id = start.execution_id;
                 let context = match Context::full(&runtime) {
                     Ok(context) => context,
                     Err(error) => {
@@ -260,14 +279,30 @@ fn run_worker(
                             %error,
                             "failed to create a fresh embedded QuickJS context"
                         );
-                        return;
+                        let _ = event_tx.send(RuntimeEvent::Error {
+                            cell_id,
+                            message: format!(
+                                "failed to create a fresh embedded QuickJS context: {error}"
+                            ),
+                            stored: HashMap::new(),
+                        });
+                        continue;
                     }
                 };
                 let result = run_execution(&context, start, command_rx, event_tx.clone());
                 drop(context);
                 runtime.run_gc();
-                if result.is_err() {
-                    return;
+                if let Err(error) = result {
+                    if interrupted.load(Ordering::Acquire)
+                        || error == "embedded QuickJS host stopped"
+                    {
+                        return;
+                    }
+                    let _ = event_tx.send(RuntimeEvent::Error {
+                        cell_id,
+                        message: error,
+                        stored: HashMap::new(),
+                    });
                 }
             }
             Ok(HostCommand::ToolResult { .. }) => {}
@@ -352,12 +387,28 @@ fn run_execution_in_context<'js>(
                     value,
                     success,
                 }) if result_execution_id == execution_id => {
-                    resolve_tool(ctx, &state, id, &value, success)?;
+                    if let Err(message) = resolve_tool(ctx, &state, id, &value, success) {
+                        return send_terminal(
+                            &state,
+                            ExecutionTerminal::Error {
+                                message,
+                                stored: HashMap::new(),
+                            },
+                        );
+                    }
                     drain_jobs(ctx);
                 }
                 CommandPoll::TimerReady => {
                     if let Some(id) = next_due_timeout(&state) {
-                        invoke_timeout(ctx, &state, id)?;
+                        if let Err(message) = invoke_timeout(ctx, &state, id) {
+                            return send_terminal(
+                                &state,
+                                ExecutionTerminal::Error {
+                                    message,
+                                    stored: HashMap::new(),
+                                },
+                            );
+                        }
                         drain_jobs(ctx);
                     }
                 }
@@ -592,16 +643,17 @@ fn completed_terminal(
                 .map_err(|error| format!("embedded QuickJS returned an invalid result: {error}"))
         }
         PromiseState::Rejected => {
-            let result = promise
-                .result::<String>()
-                .ok_or_else(|| "embedded QuickJS promise lost its rejection".to_owned())?
-                .catch(ctx);
-            match result {
-                Err(error) => Err(format!("embedded QuickJS execution rejected: {error}")),
-                Ok(_) => {
-                    Err("rejected embedded QuickJS promise returned a successful value".to_owned())
-                }
-            }
+            let message = match promise.result::<()>() {
+                Some(result) => match result.catch(ctx) {
+                    Err(error) => error.to_string(),
+                    Ok(()) => "embedded QuickJS execution rejected".to_owned(),
+                },
+                None => "embedded QuickJS promise lost its rejection".to_owned(),
+            };
+            Ok(Some(ExecutionTerminal::Error {
+                message,
+                stored: HashMap::new(),
+            }))
         }
     }
 }

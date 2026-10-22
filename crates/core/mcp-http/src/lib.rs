@@ -1,16 +1,13 @@
 #[cfg(not(target_family = "wasm"))]
 pub mod oauth;
-#[cfg(not(target_family = "wasm"))]
 pub mod streamable_http;
 
-#[cfg(not(target_family = "wasm"))]
 #[derive(Clone)]
 pub enum SecretSource {
     Value(String),
     Environment(String),
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl SecretSource {
     pub fn resolve(&self) -> Result<String, String> {
         match self {
@@ -22,7 +19,6 @@ impl SecretSource {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut message = error.to_string();
     let mut source = error.source();

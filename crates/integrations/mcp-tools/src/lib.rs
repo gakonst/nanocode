@@ -1,26 +1,39 @@
-#![cfg(not(target_family = "wasm"))]
+#![cfg_attr(
+    target_family = "wasm",
+    allow(
+        dead_code,
+        reason = "tool search, reloads and the native tool surface serve native hosts"
+    )
+)]
 
+#[cfg(not(target_family = "wasm"))]
 pub use nanocode_home::SessionEnvironment;
+#[cfg(not(target_family = "wasm"))]
 use nanocode_tool_provider::DynamicToolProvider;
 use nanocode_tools::{Tool, ToolContext, ToolInput, ToolOutput, ToolOutputContent, ToolResult};
 
 mod catalog;
 mod client;
 mod config;
+#[cfg(not(target_family = "wasm"))]
 mod native;
 mod pagination;
 mod search;
+#[cfg(not(target_family = "wasm"))]
 pub mod stdio;
 
+#[cfg(not(target_family = "wasm"))]
+use std::sync::OnceLock;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
+#[cfg(not(target_family = "wasm"))]
 use async_trait::async_trait;
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
 use nanocode_mcp::{
@@ -34,8 +47,14 @@ use tracing::{Instrument, info_span};
 pub use config::{
     McpPaymentManagement, McpPaymentProvider, McpPendingPayment, McpServer, McpToolExposure,
 };
+#[cfg(not(target_family = "wasm"))]
 pub use nanocode_mcp_http::oauth::{McpOAuthCredentials, McpOAuthRefreshGuard, McpOAuthStore};
 pub use nanocode_mcp_http::streamable_http::BearerSource;
+
+#[cfg(not(target_family = "wasm"))]
+pub type McpFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
+#[cfg(target_family = "wasm")]
+pub type McpFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
 
 const MAX_TOOL_SEARCH_SOURCE_DESCRIPTION_BYTES: usize = 4 * 1024;
 const CODEX_ENCRYPTED_CONTENT_META_KEY: &str = "codex/encryptedContent";
@@ -45,12 +64,18 @@ pub struct Mcp {
     servers: Arc<[NamedServer]>,
     state: Arc<ProviderState>,
     search: Arc<McpSearch>,
+    #[cfg(not(target_family = "wasm"))]
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
+    #[cfg(not(target_family = "wasm"))]
     oauth_metadata: Arc<nanocode_mcp_http::oauth::OAuthMetadataCache>,
+    #[cfg(target_family = "wasm")]
+    http_sender: Option<Arc<dyn nanocode_http::layer::Sender>>,
 
+    #[cfg(not(target_family = "wasm"))]
     session: Arc<OnceLock<SessionEnvironment>>,
     started: AtomicBool,
 
+    #[cfg(not(target_family = "wasm"))]
     startup_tasks: OnceLock<tokio::task::JoinSet<()>>,
 }
 
@@ -68,11 +93,15 @@ struct NamedServer {
 #[derive(Default)]
 pub struct McpBuilder {
     servers: BTreeMap<String, McpServer>,
+    #[cfg(not(target_family = "wasm"))]
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
+    #[cfg(target_family = "wasm")]
+    http_sender: Option<Arc<dyn nanocode_http::layer::Sender>>,
     duplicate: Option<String>,
     discovery_timeout: Option<Duration>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone)]
 pub struct McpHandle {
     servers: Arc<[NamedServer]>,
@@ -82,6 +111,7 @@ pub struct McpHandle {
     session: Arc<OnceLock<SessionEnvironment>>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub struct McpLogin {
     authorization_url: String,
     completion: tokio::task::JoinHandle<Result<usize, McpControlError>>,
@@ -157,6 +187,7 @@ impl Mcp {
         McpBuilder::default()
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[must_use]
     pub fn handle(&self) -> McpHandle {
         McpHandle {
@@ -171,9 +202,9 @@ impl Mcp {
     pub fn prepared_snapshot<'call>(
         &'call self,
         max_timeout: Duration,
-    ) -> futures_util::future::BoxFuture<'call, Result<Vec<PreparedMcpTool>, String>> {
+    ) -> McpFuture<'call, Result<Vec<PreparedMcpTool>, String>> {
         Box::pin(async move {
-            DynamicToolProvider::start(self);
+            self.start_servers();
             self.state.prepared_entries().await.map(|entries| {
                 entries
                     .into_iter()
@@ -191,10 +222,9 @@ impl Mcp {
     pub fn prepared_servers(
         &self,
         max_timeout: Duration,
-    ) -> futures_util::future::BoxFuture<'_, BTreeMap<String, Result<Vec<PreparedMcpTool>, String>>>
-    {
+    ) -> McpFuture<'_, BTreeMap<String, Result<Vec<PreparedMcpTool>, String>>> {
         Box::pin(async move {
-            DynamicToolProvider::start(self);
+            self.start_servers();
             self.state
                 .server_entries()
                 .await
@@ -228,7 +258,7 @@ impl PreparedMcpTool {
     pub fn call(
         &self,
         arguments: JsonObject,
-    ) -> futures_util::future::BoxFuture<'_, Result<CallToolResult, McpCallError>> {
+    ) -> McpFuture<'_, Result<CallToolResult, McpCallError>> {
         Box::pin(async move {
             self.entry
                 .client
@@ -237,7 +267,7 @@ impl PreparedMcpTool {
                 .map_err(McpCallError::Auth)?;
             let params =
                 CallToolParams::new(self.entry.remote_name.clone()).with_arguments(arguments);
-            tokio::time::timeout(self.timeout, self.entry.client.call_tool(params))
+            nanocode_platform::timeout(self.timeout, self.entry.client.call_tool(params))
                 .await
                 .map_err(|_| McpCallError::Timeout(self.timeout))?
         })
@@ -267,12 +297,37 @@ impl PreparedMcpTool {
         &'call self,
         input: Value,
         context: ToolContext<'call>,
-    ) -> futures_util::future::BoxFuture<'call, ToolOutput> {
+    ) -> McpFuture<'call, ToolOutput> {
         Box::pin(async move { execute_mcp_entry(&self.entry, input, self.timeout, context).await })
     }
 }
 
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+impl Tool for PreparedMcpTool {
+    fn definition(&self) -> ToolDefinition {
+        self.entry.definition.clone()
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.entry.supports_parallel_tool_calls
+    }
+
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        let input = input.decode_json::<Value>()?;
+        Ok(execute_mcp_entry(&self.entry, input, self.timeout, context).await)
+    }
+}
+
 impl McpBuilder {
+    #[cfg(target_family = "wasm")]
+    #[must_use]
+    pub fn http_sender(mut self, sender: Arc<dyn nanocode_http::layer::Sender>) -> Self {
+        self.http_sender = Some(sender);
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
     #[must_use]
     pub fn oauth_store(mut self, store: Arc<dyn McpOAuthStore>) -> Self {
         self.oauth_store = Some(store);
@@ -337,20 +392,27 @@ impl McpBuilder {
             servers,
             state,
             search,
+            #[cfg(not(target_family = "wasm"))]
             oauth_store: self.oauth_store,
+            #[cfg(not(target_family = "wasm"))]
             oauth_metadata: Arc::new(nanocode_mcp_http::oauth::OAuthMetadataCache::default()),
+            #[cfg(target_family = "wasm")]
+            http_sender: self.http_sender,
+            #[cfg(not(target_family = "wasm"))]
             session: Arc::new(OnceLock::new()),
             started: AtomicBool::new(false),
+            #[cfg(not(target_family = "wasm"))]
             startup_tasks: OnceLock::new(),
         })
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl McpHandle {
     pub fn reload<'call>(
         &'call self,
         server_name: &'call str,
-    ) -> futures_util::future::BoxFuture<'call, Result<usize, McpControlError>> {
+    ) -> McpFuture<'call, Result<usize, McpControlError>> {
         Box::pin(async move {
             let span = info_span!(
                 target: "nanocode_code_mode",
@@ -437,7 +499,7 @@ impl McpHandle {
     pub fn login<'call>(
         &'call self,
         server_name: &'call str,
-    ) -> futures_util::future::BoxFuture<'call, Result<McpLogin, McpControlError>> {
+    ) -> McpFuture<'call, Result<McpLogin, McpControlError>> {
         Box::pin(async move {
             let span = info_span!(
                 target: "nanocode_code_mode",
@@ -533,13 +595,14 @@ impl McpHandle {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl McpLogin {
     #[must_use]
     pub fn authorization_url(&self) -> &str {
         &self.authorization_url
     }
 
-    pub fn wait(self) -> futures_util::future::BoxFuture<'static, Result<usize, McpControlError>> {
+    pub fn wait(self) -> McpFuture<'static, Result<usize, McpControlError>> {
         Box::pin(async move {
             self.completion
                 .await
@@ -548,25 +611,26 @@ impl McpLogin {
     }
 }
 
-#[async_trait]
-impl DynamicToolProvider for Mcp {
-    fn bind_session(&self, session: &SessionEnvironment) {
-        let _ = self.session.set(session.clone());
-    }
-
-    fn start(&self) {
+impl Mcp {
+    fn start_servers(&self) {
         if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
+        #[cfg(not(target_family = "wasm"))]
         let mut startup_tasks = tokio::task::JoinSet::new();
         for server in &*self.servers {
             let name = server.name.clone();
             let model_namespace = server.model_namespace.clone();
             let config = server.config.clone();
             let state = Arc::clone(&self.state);
+            #[cfg(not(target_family = "wasm"))]
             let oauth_store = self.oauth_store.clone();
+            #[cfg(not(target_family = "wasm"))]
             let oauth_metadata = Arc::clone(&self.oauth_metadata);
+            #[cfg(not(target_family = "wasm"))]
             let session = self.session.get().cloned();
+            #[cfg(target_family = "wasm")]
+            let sender = self.http_sender.clone();
             let span = info_span!(
                 target: "nanocode_code_mode",
                 parent: None,
@@ -577,8 +641,9 @@ impl DynamicToolProvider for Mcp {
                 status = tracing::field::Empty,
                 tool.count = tracing::field::Empty,
             );
-            startup_tasks.spawn(async move {
-                let result = client::connect(
+            let startup = async move {
+                #[cfg(not(target_family = "wasm"))]
+                let connected = client::connect(
                     &name,
                     &config,
                     session.as_ref(),
@@ -586,8 +651,10 @@ impl DynamicToolProvider for Mcp {
                     oauth_metadata,
                     &span,
                 )
-                .await
-                .map(|connected| {
+                .await;
+                #[cfg(target_family = "wasm")]
+                let connected = client::connect(&name, &config, sender.as_ref(), &span).await;
+                let result = connected.map(|connected| {
                     let entries = ToolEntry::new_many(
                         &name,
                         &model_namespace,
@@ -616,9 +683,26 @@ impl DynamicToolProvider for Mcp {
                     span.record("tool.count", catalog.entries.len());
                 }
                 state.complete_server(&name, 0, result);
-            });
+            };
+            #[cfg(not(target_family = "wasm"))]
+            startup_tasks.spawn(startup);
+            #[cfg(target_family = "wasm")]
+            nanocode_platform::spawn_local(startup);
         }
+        #[cfg(not(target_family = "wasm"))]
         let _ = self.startup_tasks.set(startup_tasks);
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[async_trait]
+impl DynamicToolProvider for Mcp {
+    fn bind_session(&self, session: &SessionEnvironment) {
+        let _ = self.session.set(session.clone());
+    }
+
+    fn start(&self) {
+        self.start_servers();
     }
 
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -701,7 +785,7 @@ async fn execute_mcp_entry(
             entry.server_name, entry.remote_name
         ));
     }
-    let result = match tokio::time::timeout(
+    let result = match nanocode_platform::timeout(
         timeout,
         entry.client.call_tool(params).instrument(span.clone()),
     )
@@ -863,7 +947,8 @@ struct SearchInput {
     limit: Option<usize>,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for McpSearch {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::tool_search(

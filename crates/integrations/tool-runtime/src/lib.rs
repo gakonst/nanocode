@@ -4,6 +4,8 @@ pub use nanocode_tool_host::*;
 pub mod attachment;
 #[cfg(not(target_family = "wasm"))]
 pub mod mcp;
+#[cfg(target_family = "wasm")]
+pub use nanocode_mcp_tools as mcp;
 #[cfg(not(target_family = "wasm"))]
 mod prepared;
 pub mod remote;

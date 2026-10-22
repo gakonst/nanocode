@@ -8,7 +8,7 @@ pub use std::time::Instant;
 pub use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(not(target_family = "wasm"))]
-pub use tokio::time::sleep;
+pub use tokio::time::{error::Elapsed, sleep, timeout};
 
 #[cfg(not(target_family = "wasm"))]
 pub fn system_time() -> SystemTime {
@@ -23,6 +23,36 @@ pub fn system_time() -> SystemTime {
 #[cfg(target_family = "wasm")]
 pub fn sleep(duration: Duration) -> LocalFuture<'static, ()> {
     host::current().sleep(duration)
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Debug, Eq, PartialEq)]
+pub struct Elapsed;
+
+#[cfg(target_family = "wasm")]
+impl std::fmt::Display for Elapsed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("deadline has elapsed")
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl std::error::Error for Elapsed {}
+
+#[cfg(target_family = "wasm")]
+pub async fn timeout<F: std::future::Future>(
+    duration: Duration,
+    future: F,
+) -> Result<F::Output, Elapsed> {
+    let mut future = std::pin::pin!(future);
+    let mut delay = sleep(duration);
+    std::future::poll_fn(|context| {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(context) {
+            return std::task::Poll::Ready(Ok(output));
+        }
+        delay.as_mut().poll(context).map(|()| Err(Elapsed))
+    })
+    .await
 }
 
 #[cfg(not(target_family = "wasm"))]

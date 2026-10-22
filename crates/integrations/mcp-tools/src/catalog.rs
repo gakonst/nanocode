@@ -464,7 +464,7 @@ impl ProviderState {
                 }
             }
         };
-        drop(tokio::time::timeout(self.discovery_timeout, wait).await);
+        drop(nanocode_platform::timeout(self.discovery_timeout, wait).await);
     }
 }
 

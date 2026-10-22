@@ -10,25 +10,28 @@ homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Native Streamable HTTP transport and OAuth flows for the Nanocode MCP client"
+description = "Streamable HTTP transport and native OAuth flows for the Nanocode MCP client"
 autotests = false
 autobenches = false
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+[dependencies]
 arc-swap.workspace = true
 nanocode-sync.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
-getrandom.workspace = true
 http.workspace = true
 nanocode-mcp.workspace = true
 nanocode-http.workspace = true
+nanocode-platform.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+getrandom.workspace = true
 nanocode-tls.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-tracing.workspace = true
 url.workspace = true
 
 [lints]

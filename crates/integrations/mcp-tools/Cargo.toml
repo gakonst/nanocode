@@ -8,27 +8,32 @@ license.workspace = true
 repository.workspace = true
 autotests = false
 autobenches = false
-description = "MCP tool discovery, catalog and native process adapters"
+description = "MCP tool discovery, catalog, Streamable HTTP and native process adapters"
 
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-nanocode-home.workspace = true
+[dependencies]
 nanocode-types.workspace = true
-nanocode-tls.workspace = true
 sha1.workspace = true
 nanocode-tools.workspace = true
-nanocode-tool-provider.workspace = true
-nanocode-process.workspace = true
 nanocode-mcp.workspace = true
 nanocode-mcp-http.workspace = true
+nanocode-http.workspace = true
+nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 http.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-home.workspace = true
+nanocode-tls.workspace = true
+nanocode-tool-provider.workspace = true
+nanocode-process.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 
 [lints]

@@ -47,7 +47,7 @@ where
     };
 
     let timeout = DEFAULT_MCP_PAGINATION_TIMEOUT;
-    tokio::time::timeout(timeout, collect)
+    nanocode_platform::timeout(timeout, collect)
         .await
         .map_err(|_| format!("{method} pagination timed out after {timeout:?}"))?
 }

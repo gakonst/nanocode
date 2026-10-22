@@ -1,20 +1,21 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use arc_swap::ArcSwap;
 use futures_util::StreamExt;
-use http::{HeaderName, HeaderValue, Method};
+use http::{
+    HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
+    header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
+};
+use nanocode_http::layer::{Body, Request, Sender};
 use nanocode_mcp::{
     Error as SessionError, Inbound, Message, Outgoing, RequestId, TransportError,
     protocol::{INITIALIZE, INITIALIZED},
     sse,
 };
+use nanocode_platform::{sleep, timeout};
 use nanocode_sync::{SingleFlight, Slot};
-use reqwest::{
-    StatusCode,
-    header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
-};
-use tokio::task::{JoinHandle, JoinSet};
 
+#[cfg(not(target_family = "wasm"))]
 use crate::oauth::OAuthRuntime;
 
 const HEADER_SESSION_ID: HeaderName = HeaderName::from_static("mcp-session-id");
@@ -34,11 +35,13 @@ const CLOSED_BEFORE_RESPONSE: &str =
 pub enum HttpAuth {
     None,
     Bearer(String),
+    #[cfg(not(target_family = "wasm"))]
     OAuth(Arc<OAuthRuntime>),
     Source(Arc<dyn BearerSource>),
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 pub trait BearerSource: Send + Sync {
     async fn token(&self) -> Result<String, String>;
 
@@ -65,14 +68,29 @@ struct SessionState {
     initialize: Option<Message>,
 }
 
+enum Client {
+    #[cfg(not(target_family = "wasm"))]
+    Reqwest(reqwest::Client),
+    Sender {
+        sender: Arc<dyn Sender>,
+        headers: HeaderMap,
+    },
+}
+
+struct Reply {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Body,
+}
+
 struct Shared {
     url: String,
-    client: reqwest::Client,
+    client: Client,
     auth: HttpAuth,
     inbound: Inbound,
     session: ArcSwap<SessionState>,
     reinitialize: SingleFlight<Result<(), String>>,
-    listener: Slot<JoinHandle<()>>,
+    listener: Slot<Background>,
 }
 
 enum PostError {
@@ -104,6 +122,71 @@ struct Cursor {
     retry: Option<Duration>,
 }
 
+#[cfg(not(target_family = "wasm"))]
+type Background = tokio::task::JoinHandle<()>;
+#[cfg(target_family = "wasm")]
+type Background = futures_util::future::AbortHandle;
+
+#[cfg(not(target_family = "wasm"))]
+type Tasks = tokio::task::JoinSet<()>;
+#[cfg(target_family = "wasm")]
+type Tasks =
+    futures_util::stream::FuturesUnordered<futures_util::future::LocalBoxFuture<'static, ()>>;
+
+#[cfg(not(target_family = "wasm"))]
+fn spawn_background(future: impl Future<Output = ()> + Send + 'static) -> Background {
+    tokio::spawn(future)
+}
+
+#[cfg(target_family = "wasm")]
+fn spawn_background(future: impl Future<Output = ()> + 'static) -> Background {
+    let (handle, registration) = futures_util::future::AbortHandle::new_pair();
+    nanocode_platform::spawn_local(async move {
+        let _ = futures_util::future::Abortable::new(future, registration).await;
+    });
+    handle
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn run_task(tasks: &mut Tasks, task: impl Future<Output = ()> + Send + 'static) {
+    tasks.spawn(task);
+}
+
+#[cfg(target_family = "wasm")]
+fn run_task(tasks: &mut Tasks, task: impl Future<Output = ()> + 'static) {
+    tasks.push(Box::pin(task));
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn next_message(outgoing: &mut Outgoing, tasks: &mut Tasks) -> Option<Message> {
+    loop {
+        tokio::select! {
+            message = outgoing.next() => return message,
+            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn next_message(outgoing: &mut Outgoing, tasks: &mut Tasks) -> Option<Message> {
+    std::future::poll_fn(|context| {
+        while let std::task::Poll::Ready(Some(())) = tasks.poll_next_unpin(context) {}
+        outgoing.poll_next_unpin(context)
+    })
+    .await
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn stop_tasks(mut tasks: Tasks) {
+    tasks.abort_all();
+}
+
+#[cfg(target_family = "wasm")]
+fn stop_tasks(tasks: Tasks) {
+    drop(tasks);
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub fn spawn(
     url: String,
     client: reqwest::Client,
@@ -111,6 +194,27 @@ pub fn spawn(
     outgoing: Outgoing,
     inbound: Inbound,
 ) {
+    start(url, Client::Reqwest(client), auth, outgoing, inbound);
+}
+
+pub fn spawn_with_sender(
+    url: String,
+    sender: Arc<dyn Sender>,
+    headers: HeaderMap,
+    auth: HttpAuth,
+    outgoing: Outgoing,
+    inbound: Inbound,
+) {
+    start(
+        url,
+        Client::Sender { sender, headers },
+        auth,
+        outgoing,
+        inbound,
+    );
+}
+
+fn start(url: String, client: Client, auth: HttpAuth, outgoing: Outgoing, inbound: Inbound) {
     let shared = Arc::new(Shared {
         url,
         client,
@@ -120,18 +224,14 @@ pub fn spawn(
         reinitialize: SingleFlight::default(),
         listener: Slot::default(),
     });
-    drop(tokio::spawn(drive(shared, outgoing)));
+    drop(spawn_background(drive(shared, outgoing)));
 }
 
 async fn drive(shared: Arc<Shared>, mut outgoing: Outgoing) {
-    let mut tasks = JoinSet::new();
+    let mut tasks = Tasks::default();
     let mut initialized = false;
     loop {
-        let message = tokio::select! {
-            message = outgoing.next() => message,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => continue,
-        };
-        let Some(message) = message else {
+        let Some(message) = next_message(&mut outgoing, &mut tasks).await else {
             break;
         };
         if !initialized {
@@ -170,12 +270,12 @@ async fn drive(shared: Arc<Shared>, mut outgoing: Outgoing) {
             }
         }
         let shared = Arc::clone(&shared);
-        tasks.spawn(async move { shared.dispatch(message).await });
+        run_task(&mut tasks, async move { shared.dispatch(message).await });
     }
     if let Some(listener) = shared.listener.take() {
         listener.abort();
     }
-    tasks.abort_all();
+    stop_tasks(tasks);
     shared.delete_session().await;
 }
 
@@ -189,9 +289,9 @@ fn negotiated_version(message: &Message) -> Option<HeaderValue> {
         .and_then(|version| HeaderValue::from_str(version).ok())
 }
 
-fn content_type(response: &reqwest::Response) -> Option<String> {
+fn content_type(response: &Reply) -> Option<String> {
     response
-        .headers()
+        .headers
         .get(CONTENT_TYPE)
         .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
 }
@@ -200,6 +300,7 @@ fn is_mime(content_type: Option<&str>, mime: &str) -> bool {
     content_type.is_some_and(|content_type| content_type.as_bytes().starts_with(mime.as_bytes()))
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn client_error(error: &reqwest::Error) -> TransportError {
     let message = format!("Client error: {}", crate::error_chain(error));
     if error.is_connect() || error.is_builder() {
@@ -209,14 +310,22 @@ fn client_error(error: &reqwest::Error) -> TransportError {
     }
 }
 
-fn challenged(response: &reqwest::Response) -> bool {
-    response.status() == StatusCode::UNAUTHORIZED
-        && response.headers().contains_key(WWW_AUTHENTICATE)
+fn sender_error(error: &nanocode_http::layer::Error) -> TransportError {
+    let message = format!("Client error: {}", error.detail());
+    if error.is_unsent() {
+        TransportError::unsent(message)
+    } else {
+        TransportError::new(message)
+    }
 }
 
-fn challenge_error(response: &reqwest::Response) -> Option<TransportError> {
-    let status = response.status();
-    let header = response.headers().get(WWW_AUTHENTICATE)?;
+fn challenged(response: &Reply) -> bool {
+    response.status == StatusCode::UNAUTHORIZED && response.headers.contains_key(WWW_AUTHENTICATE)
+}
+
+fn challenge_error(response: &Reply) -> Option<TransportError> {
+    let status = response.status;
+    let header = response.headers.get(WWW_AUTHENTICATE)?;
     let Ok(header) = header.to_str() else {
         return Some(TransportError::with_status(
             "unexpected server response: invalid www-authenticate header value",
@@ -231,19 +340,131 @@ fn challenge_error(response: &reqwest::Response) -> Option<TransportError> {
     Some(TransportError::with_status(message, status.as_u16()))
 }
 
+impl Reply {
+    #[cfg(not(target_family = "wasm"))]
+    fn from_reqwest(response: reqwest::Response) -> Self {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = futures_util::stream::unfold(response, |mut response| async move {
+            match response.chunk().await {
+                Ok(Some(chunk)) => Some((Ok(chunk.to_vec()), response)),
+                Ok(None) => None,
+                Err(error) => Some((
+                    Err(nanocode_http::layer::Error::new(crate::error_chain(&error))),
+                    response,
+                )),
+            }
+        });
+        Self {
+            status,
+            headers,
+            body: Box::pin(body),
+        }
+    }
+
+    async fn chunk(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.body
+            .next()
+            .await
+            .transpose()
+            .map_err(|error| sender_error(&error))
+    }
+
+    async fn bytes(mut self) -> Result<Vec<u8>, TransportError> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = self.chunk().await? {
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+
+    async fn text(self) -> Result<String, TransportError> {
+        self.bytes()
+            .await
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+impl Client {
+    async fn send(
+        &self,
+        method: &Method,
+        url: &str,
+        headers: HeaderMap,
+        body: &[u8],
+    ) -> Result<Reply, TransportError> {
+        match self {
+            #[cfg(not(target_family = "wasm"))]
+            Self::Reqwest(client) => {
+                let mut request = client.request(method.clone(), url).headers(headers);
+                if !body.is_empty() {
+                    request = request.body(body.to_vec());
+                }
+                let response = request
+                    .send()
+                    .await
+                    .map(nanocode_http::decode_response)
+                    .map_err(|error| client_error(&error))?;
+                Ok(Reply::from_reqwest(response))
+            }
+            Self::Sender {
+                sender,
+                headers: defaults,
+            } => {
+                let mut merged = defaults.clone();
+                merged.extend(headers);
+                let response = sender
+                    .send(Request {
+                        method: method.clone(),
+                        url: url.to_owned(),
+                        headers: merged,
+                        body: body.to_vec(),
+                    })
+                    .await
+                    .map_err(|error| sender_error(&error))?;
+                let (status, headers, body, _) = response.into_parts();
+                Ok(Reply {
+                    status,
+                    headers,
+                    body,
+                })
+            }
+        }
+    }
+}
+
 impl Shared {
     fn state(&self) -> SessionState {
         SessionState::clone(&self.session.load())
     }
 
+    async fn attempt(
+        &self,
+        method: &Method,
+        headers: &HeaderMap,
+        body: &[u8],
+        token: Option<&str>,
+    ) -> Result<Reply, TransportError> {
+        let mut headers = headers.clone();
+        if let Some(token) = token {
+            let mut value = HeaderValue::try_from(format!("Bearer {token}"))
+                .map_err(|error| TransportError::unsent(format!("Client error: {error}")))?;
+            value.set_sensitive(true);
+            headers.insert(AUTHORIZATION, value);
+        }
+        self.client.send(method, &self.url, headers, body).await
+    }
+
     async fn send(
         &self,
         method: &Method,
-        build: impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
-    ) -> Result<reqwest::Response, TransportError> {
+        headers: HeaderMap,
+        body: &[u8],
+    ) -> Result<Reply, TransportError> {
         let token = match &self.auth {
             HttpAuth::None => None,
             HttpAuth::Bearer(token) => Some(token.clone()),
+            #[cfg(not(target_family = "wasm"))]
             HttpAuth::OAuth(runtime) => Some(
                 runtime
                     .access_token()
@@ -252,33 +473,21 @@ impl Shared {
             ),
             HttpAuth::Source(source) => Some(source.token().await.map_err(TransportError::unsent)?),
         };
-        let request = |token: Option<&str>| {
-            let mut request = build(self.client.request(method.clone(), &self.url));
-            if let Some(token) = token {
-                request = request.bearer_auth(token);
-            }
-            request
-        };
-        let response = request(token.as_deref())
-            .send()
-            .await
-            .map(nanocode_http::decode_response)
-            .map_err(|error| client_error(&error))?;
+        let response = self
+            .attempt(method, &headers, body, token.as_deref())
+            .await?;
         let Some(sent) = token.as_deref().filter(|_| challenged(&response)) else {
             return Ok(response);
         };
         let fresh = match &self.auth {
+            #[cfg(not(target_family = "wasm"))]
             HttpAuth::OAuth(runtime) => runtime.refresh_after_rejection(sent).await,
             HttpAuth::Source(source) => source.rejected(sent).await,
             HttpAuth::None | HttpAuth::Bearer(_) => return Ok(response),
         };
         match fresh {
             Ok(fresh) if fresh != sent => {
-                let retried = request(Some(&fresh))
-                    .send()
-                    .await
-                    .map(nanocode_http::decode_response)
-                    .map_err(|error| client_error(&error))?;
+                let retried = self.attempt(method, &headers, body, Some(&fresh)).await?;
                 if let HttpAuth::Source(source) = &self.auth
                     && challenged(&retried)
                     && let Err(error) = source.rejected(&fresh).await
@@ -302,23 +511,18 @@ impl Shared {
         let body = initialize
             .to_vec()
             .map_err(|error| TransportError::unsent(format!("Deserialize error: {error}")))?;
-        let response = self
-            .send(&Method::POST, |request| {
-                request
-                    .header(ACCEPT, ACCEPT_MCP)
-                    .header(CONTENT_TYPE, JSON_MIME_TYPE)
-                    .body(body.clone())
-            })
+        let mut response = self
+            .send(&Method::POST, post_headers(HeaderMap::new()), &body)
             .await?;
         if let Some(error) = challenge_error(&response) {
             return Err(error);
         }
-        let status = response.status();
+        let status = response.status;
         if matches!(status, StatusCode::ACCEPTED | StatusCode::NO_CONTENT) {
             return Err("unexpected server response: expect initialized, accepted".into());
         }
         let session_id = response
-            .headers()
+            .headers
             .get(&HEADER_SESSION_ID)
             .and_then(|value| value.to_str().ok())
             .map(Arc::from);
@@ -340,12 +544,13 @@ impl Shared {
             ));
         }
         if is_mime(content_type.as_deref(), EVENT_STREAM_MIME_TYPE) {
-            let mut response = response;
             let mut parser = sse::Parser::new(MAX_SSE_EVENT_BYTES);
             let mut events = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|error| {
-                TransportError::new(format!("SSE error: {}", client_error(&error)))
-            })? {
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|error| TransportError::new(format!("SSE error: {error}")))?
+            {
                 parser
                     .feed(&chunk, &mut events)
                     .map_err(|error| TransportError::new(format!("SSE error: {error}")))?;
@@ -368,10 +573,7 @@ impl Shared {
             return Err("unexpected server response: empty sse stream".into());
         }
         if is_mime(content_type.as_deref(), JSON_MIME_TYPE) {
-            let body = response
-                .bytes()
-                .await
-                .map_err(|error| client_error(&error))?;
+            let body = response.bytes().await?;
             let message = Message::from_slice(&body)
                 .map_err(|error| TransportError::new(format!("Deserialize error: {error}")))?;
             return Ok((message, session_id));
@@ -445,20 +647,6 @@ impl Shared {
         Ok(())
     }
 
-    fn with_session<'a>(
-        state: &'a SessionState,
-    ) -> impl Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder + 'a {
-        move |mut request| {
-            if let Some(id) = &state.id {
-                request = request.header(HEADER_SESSION_ID, id.as_ref());
-            }
-            if let Some(version) = &state.protocol_version {
-                request = request.header(HEADER_PROTOCOL_VERSION, version.clone());
-            }
-            request
-        }
-    }
-
     async fn post(
         self: &Arc<Self>,
         message: &Message,
@@ -469,20 +657,14 @@ impl Shared {
                 "Deserialize error: {error}"
             )))
         })?;
-        let session = Self::with_session(state);
         let response = self
-            .send(&Method::POST, |request| {
-                session(request)
-                    .header(ACCEPT, ACCEPT_MCP)
-                    .header(CONTENT_TYPE, JSON_MIME_TYPE)
-                    .body(body.clone())
-            })
+            .send(&Method::POST, post_headers(session_headers(state)), &body)
             .await
             .map_err(PostError::Failed)?;
         if let Some(error) = challenge_error(&response) {
             return Err(PostError::Failed(error));
         }
-        let status = response.status();
+        let status = response.status;
         if matches!(status, StatusCode::ACCEPTED | StatusCode::NO_CONTENT) {
             return Ok(());
         }
@@ -491,7 +673,7 @@ impl Shared {
         }
         let content_type = content_type(&response);
         let empty = response
-            .headers()
+            .headers
             .get(CONTENT_LENGTH)
             .is_some_and(|length| length.as_bytes() == b"0");
         if status.is_success() && empty && !message.is_request() {
@@ -525,10 +707,7 @@ impl Shared {
                 .await;
         }
         if is_mime(content_type.as_deref(), JSON_MIME_TYPE) {
-            let body = response
-                .bytes()
-                .await
-                .map_err(|error| PostError::Failed(client_error(&error)))?;
+            let body = response.bytes().await.map_err(PostError::Failed)?;
             return match Message::from_slice(&body) {
                 Ok(reply) => {
                     self.inbound
@@ -554,7 +733,7 @@ impl Shared {
 
     async fn follow_response_stream(
         self: &Arc<Self>,
-        response: reqwest::Response,
+        response: Reply,
         request_id: Option<&RequestId>,
     ) -> Result<(), PostError> {
         let mut cursor = Cursor::default();
@@ -591,7 +770,7 @@ impl Shared {
 
     async fn consume(
         &self,
-        mut response: reqwest::Response,
+        mut response: Reply,
         cursor: &mut Cursor,
         close_on_response: bool,
     ) -> StreamEnd {
@@ -601,7 +780,7 @@ impl Shared {
             let chunk = match response.chunk().await {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => return StreamEnd::Closed,
-                Err(error) => return StreamEnd::Failed(client_error(&error).to_string()),
+                Err(error) => return StreamEnd::Failed(error.to_string()),
             };
             if let Err(error) = parser.feed(&chunk, &mut events) {
                 return StreamEnd::Fatal(error.to_string());
@@ -634,7 +813,7 @@ impl Shared {
                     return StreamEnd::Closed;
                 }
                 if close_on_response && is_response {
-                    let _ = tokio::time::timeout(RESPONSE_DRAIN_TIMEOUT, async {
+                    let _ = timeout(RESPONSE_DRAIN_TIMEOUT, async {
                         while let Ok(Some(_)) = response.chunk().await {}
                     })
                     .await;
@@ -649,12 +828,12 @@ impl Shared {
         cursor: &mut Cursor,
         initial_wait: Duration,
         pending: Option<&RequestId>,
-    ) -> Option<reqwest::Response> {
+    ) -> Option<Reply> {
         let mut wait = initial_wait;
         let mut attempt = 0_u32;
         loop {
             if !wait.is_zero() {
-                tokio::time::sleep(wait).await;
+                sleep(wait).await;
             }
             if !self.inbound.is_alive() || pending.is_some_and(|id| !self.inbound.is_pending(id)) {
                 return None;
@@ -670,27 +849,26 @@ impl Shared {
         }
     }
 
-    async fn get(&self, last_event_id: Option<&str>) -> Result<Option<reqwest::Response>, String> {
+    async fn get(&self, last_event_id: Option<&str>) -> Result<Option<Reply>, String> {
         let state = self.state();
-        let session = Self::with_session(&state);
+        let mut headers = session_headers(&state);
+        headers.insert(ACCEPT, HeaderValue::from_static(ACCEPT_MCP));
+        if let Some(last_event_id) = last_event_id {
+            let value = HeaderValue::from_str(last_event_id)
+                .map_err(|error| format!("Client error: {error}"))?;
+            headers.insert(HEADER_LAST_EVENT_ID, value);
+        }
         let response = self
-            .send(&Method::GET, |request| {
-                let mut request = session(request).header(ACCEPT, ACCEPT_MCP);
-                if let Some(last_event_id) = last_event_id {
-                    request = request.header(HEADER_LAST_EVENT_ID, last_event_id);
-                }
-                request
-            })
+            .send(&Method::GET, headers, &[])
             .await
             .map_err(|error| error.to_string())?;
-        if response.status() == StatusCode::METHOD_NOT_ALLOWED {
+        if response.status == StatusCode::METHOD_NOT_ALLOWED {
             return Ok(None);
         }
-        if !response.status().is_success() {
+        if !response.status.is_success() {
             return Err(format!(
                 "Client error: HTTP status {} for url ({})",
-                response.status(),
-                self.url
+                response.status, self.url
             ));
         }
         let content_type = content_type(&response);
@@ -707,7 +885,9 @@ impl Shared {
             previous.abort();
         }
         if self.session.load().id.is_some()
-            && let Some(raced) = self.listener.put(tokio::spawn(Arc::clone(self).listen()))
+            && let Some(raced) = self
+                .listener
+                .put(spawn_background(Arc::clone(self).listen()))
         {
             raced.abort();
         }
@@ -752,23 +932,22 @@ impl Shared {
         let Some(session_id) = state.id.clone() else {
             return;
         };
-        let session = Self::with_session(&state);
-        match tokio::time::timeout(
+        match timeout(
             SESSION_CLEANUP_TIMEOUT,
-            self.send(&Method::DELETE, &session),
+            self.send(&Method::DELETE, session_headers(&state), &[]),
         )
         .await
         {
-            Ok(Ok(response)) if response.status() == StatusCode::METHOD_NOT_ALLOWED => {
+            Ok(Ok(response)) if response.status == StatusCode::METHOD_NOT_ALLOWED => {
                 tracing::debug!("this server doesn't support deleting session");
             }
-            Ok(Ok(response)) if response.status().is_success() => {
+            Ok(Ok(response)) if response.status.is_success() => {
                 tracing::info!(session_id = session_id.as_ref(), "delete session success");
             }
             Ok(Ok(response)) => tracing::error!(
                 session_id = session_id.as_ref(),
                 "fail to delete session: HTTP status {}",
-                response.status()
+                response.status
             ),
             Ok(Err(error)) => tracing::error!(
                 session_id = session_id.as_ref(),
@@ -780,6 +959,25 @@ impl Shared {
             ),
         }
     }
+}
+
+fn session_headers(state: &SessionState) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(id) = &state.id
+        && let Ok(value) = HeaderValue::from_str(id)
+    {
+        headers.insert(HEADER_SESSION_ID, value);
+    }
+    if let Some(version) = &state.protocol_version {
+        headers.insert(HEADER_PROTOCOL_VERSION, version.clone());
+    }
+    headers
+}
+
+fn post_headers(mut headers: HeaderMap) -> HeaderMap {
+    headers.insert(ACCEPT, HeaderValue::from_static(ACCEPT_MCP));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(JSON_MIME_TYPE));
+    headers
 }
 
 fn with_request_id(message: Message, request_id: Option<&RequestId>) -> Message {

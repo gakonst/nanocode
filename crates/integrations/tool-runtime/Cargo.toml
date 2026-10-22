@@ -19,6 +19,7 @@ nanocode-types.workspace = true
 nanocode-home.workspace = true
 nanocode-media.workspace = true
 nanocode-sync.workspace = true
+nanocode-mcp-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -26,7 +27,6 @@ tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-process.workspace = true
-nanocode-mcp-tools.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true

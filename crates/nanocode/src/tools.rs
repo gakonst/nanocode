@@ -1,5 +1,7 @@
 pub use nanocode_backend_codex::tools::*;
 
+#[cfg(target_family = "wasm")]
+pub use nanocode_tool_runtime::mcp;
 #[cfg(not(target_family = "wasm"))]
 pub use nanocode_tool_runtime::{
     ForegroundOutput, ambient_sensitive_environment, mcp, remote, run_bash, shell,

@@ -1,31 +1,48 @@
 use std::sync::Arc;
 
-use http::{
-    HeaderName, HeaderValue,
-    header::{PROXY_AUTHORIZATION, USER_AGENT},
-};
+#[cfg(not(target_family = "wasm"))]
+use http::header::PROXY_AUTHORIZATION;
+use http::{HeaderMap, HeaderName, HeaderValue, header::USER_AGENT};
 use nanocode_mcp::{
     CallToolParams, CallToolResult, Error as SessionError, Implementation, Inbound, Outgoing,
     Session, Tool,
 };
 use serde_json::Value;
+#[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncReadExt;
 use tracing::{Instrument, Span, info_span};
 
+#[cfg(not(target_family = "wasm"))]
+use nanocode_mcp_http::oauth::{
+    McpOAuthStore, OAuthMetadataCache, OAuthRuntime, transport_from_credentials,
+};
+#[cfg(not(target_family = "wasm"))]
+use nanocode_mcp_http::streamable_http::BearerSource;
 use nanocode_mcp_http::{
     SecretSource, error_chain,
-    oauth::{McpOAuthStore, OAuthMetadataCache, OAuthRuntime, transport_from_credentials},
-    streamable_http::{self, BearerSource, HttpAuth},
+    streamable_http::{self, HttpAuth},
 };
 
 use super::McpCallError;
 use super::config::{McpPaymentManagement, McpPaymentProvider, McpServer, McpTransport};
 use super::pagination::collect_paginated;
+#[cfg(not(target_family = "wasm"))]
 use super::stdio;
 
 const MCP_CLIENT_NAME: &str = "nanocode-mcp-client";
 const MCP_USER_AGENT: &str = concat!("nanocode-mcp-client/", env!("CARGO_PKG_VERSION"));
+#[cfg(not(target_family = "wasm"))]
 const MCP_STDERR_CHUNK_BYTES: usize = 8 * 1024;
+
+#[cfg(target_family = "wasm")]
+pub(crate) enum OAuthRuntime {}
+
+#[cfg(target_family = "wasm")]
+impl OAuthRuntime {
+    async fn refresh_if_needed(&self) -> Result<(), String> {
+        match *self {}
+    }
+}
 
 pub(crate) type Client = Arc<ClientInner>;
 
@@ -202,6 +219,7 @@ pub(crate) struct ConnectedServer {
     pub tools: Vec<Tool>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 struct HttpConnect<'a> {
     server_name: &'a str,
     server: &'a McpServer,
@@ -214,6 +232,7 @@ struct HttpConnect<'a> {
     parent: &'a Span,
 }
 
+#[cfg(not(target_family = "wasm"))]
 struct StoredOAuthConnect<'a> {
     server_name: &'a str,
     server: &'a McpServer,
@@ -224,6 +243,57 @@ struct StoredOAuthConnect<'a> {
     parent: &'a Span,
 }
 
+#[cfg(target_family = "wasm")]
+pub(crate) async fn connect(
+    server_name: &str,
+    server: &McpServer,
+    sender: Option<&Arc<dyn nanocode_http::layer::Sender>>,
+    parent: &Span,
+) -> Result<ConnectedServer, String> {
+    let McpTransport::StreamableHttp {
+        url,
+        bearer,
+        source,
+        headers,
+    } = &server.transport
+    else {
+        return Err(format!(
+            "MCP server `{server_name}` uses stdio, which needs a native target"
+        ));
+    };
+    let sender = sender.ok_or_else(|| {
+        format!("MCP server `{server_name}` needs an HTTP sender (McpBuilder::http_sender)")
+    })?;
+    if url.trim().is_empty() {
+        return Err("Streamable HTTP URL must not be empty".to_owned());
+    }
+    let headers = resolve_http_headers(headers)?;
+    streamable_http::validate_custom_headers(headers.keys())?;
+    let auth = match (bearer, source) {
+        (Some(bearer), _) => {
+            let token = bearer.resolve()?;
+            if token.trim().is_empty() {
+                return Err("resolved bearer token must not be empty".to_owned());
+            }
+            HttpAuth::Bearer(token)
+        }
+        (None, Some(source)) => HttpAuth::Source(Arc::clone(source)),
+        (None, None) => HttpAuth::None,
+    };
+    let (session, outgoing, inbound): (Session, Outgoing, Inbound) = Session::new();
+    streamable_http::spawn_with_sender(
+        url.clone(),
+        Arc::clone(sender),
+        headers,
+        auth,
+        outgoing,
+        inbound,
+    );
+    let session = connect_session(server, session, parent).await?;
+    finish_startup(server, session, None, parent).await
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub(crate) async fn connect(
     server_name: &str,
     server: &McpServer,
@@ -321,6 +391,7 @@ pub(crate) async fn connect(
     result
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, String> {
     let HttpConnect {
         server_name,
@@ -379,6 +450,7 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, String>
     finish_startup(server, session, None, parent).await
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn connect_http_session(
     server: &McpServer,
     url: &str,
@@ -393,9 +465,8 @@ async fn connect_http_session(
 
 fn resolve_http_headers(
     headers: &std::collections::BTreeMap<String, SecretSource>,
-) -> Result<reqwest::header::HeaderMap, String> {
-    let mut default_headers =
-        reqwest::header::HeaderMap::with_capacity(headers.len().saturating_add(1));
+) -> Result<HeaderMap, String> {
+    let mut default_headers = HeaderMap::with_capacity(headers.len().saturating_add(1));
     default_headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
     for (name, source) in headers {
         let name = name
@@ -410,6 +481,7 @@ fn resolve_http_headers(
     Ok(default_headers)
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn connect_stored_oauth(input: StoredOAuthConnect<'_>) -> Result<ConnectedServer, String> {
     let StoredOAuthConnect {
         server_name,
@@ -511,7 +583,9 @@ async fn connect_session(
 
     let client_info = Implementation::new(MCP_CLIENT_NAME, env!("CARGO_PKG_VERSION"));
     let result =
-        match tokio::time::timeout(server.startup_timeout, session.initialize(client_info)).await {
+        match nanocode_platform::timeout(server.startup_timeout, session.initialize(client_info))
+            .await
+        {
             Ok(Ok(_)) => Ok(session),
             Ok(Err(error)) => Err(format!("MCP initialize failed: {}", error_chain(&error))),
             Err(_) => Err(startup_timeout(server, "initialize")),
@@ -531,6 +605,7 @@ async fn connect_session(
     result
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn drain_server_stderr(server_name: String, stderr: tokio::process::ChildStderr) {
     drop(tokio::spawn(async move {
         let mut stderr = stderr;
@@ -600,7 +675,7 @@ async fn finish_startup(
     let tools = if !client.session.supports_tools() {
         Ok(Vec::new())
     } else {
-        match tokio::time::timeout(
+        match nanocode_platform::timeout(
             server.startup_timeout,
             client.list_all_tools().instrument(span.clone()),
         )

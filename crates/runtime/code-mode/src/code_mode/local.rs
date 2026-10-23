@@ -20,6 +20,7 @@ use crate::{
 pub struct LocalCells {
     sessions: Atom<HashMap<Arc<str>, Arc<LocalSession>>>,
     prelude: Option<Arc<str>>,
+    host_tools: Vec<Arc<dyn Tool>>,
 }
 
 struct LocalSession {
@@ -36,6 +37,12 @@ impl LocalCells {
     #[must_use]
     pub fn prelude(mut self, source: impl Into<Arc<str>>) -> Self {
         self.prelude = Some(source.into());
+        self
+    }
+
+    #[must_use]
+    pub fn host_tools(mut self, tools: impl IntoIterator<Item = Arc<dyn Tool>>) -> Self {
+        self.host_tools.extend(tools);
         self
     }
 
@@ -62,19 +69,24 @@ impl LocalCells {
     }
 }
 
-struct LocalTools(Vec<(Arc<dyn Tool>, ToolDefinition)>);
+struct LocalTools {
+    tools: Vec<(Arc<dyn Tool>, ToolDefinition)>,
+    hidden: usize,
+}
 
 impl LocalTools {
-    fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
-        Self(
-            tools
-                .into_iter()
-                .map(|tool| {
-                    let definition = tool.definition();
-                    (tool, definition)
-                })
-                .collect(),
-        )
+    fn new(tools: Vec<Arc<dyn Tool>>, host_tools: &[Arc<dyn Tool>]) -> Self {
+        let listed = tools.len();
+        let tools = tools
+            .into_iter()
+            .chain(host_tools.iter().cloned())
+            .map(|tool| {
+                let definition = tool.definition();
+                (tool, definition)
+            })
+            .collect::<Vec<_>>();
+        let hidden = tools.len() - listed;
+        Self { tools, hidden }
     }
 }
 
@@ -96,7 +108,7 @@ fn identifier(name: &str) -> String {
 
 impl CodeModeToolset for LocalTools {
     fn nested_tool_metadata(&self) -> Vec<Value> {
-        self.0
+        self.tools[..self.tools.len() - self.hidden]
             .iter()
             .filter_map(|(_, definition)| {
                 let kind = match definition {
@@ -125,8 +137,9 @@ impl CodeModeToolset for LocalTools {
     ) -> HostFuture<'a, ToolOutput> {
         Box::pin(async move {
             let Some((tool, definition)) = self
-                .0
+                .tools
                 .iter()
+                .rev()
                 .find(|(_, definition)| definition.name() == name)
             else {
                 return ToolOutput::error(format!("unsupported nested tool call: {name}"));
@@ -211,7 +224,7 @@ impl CodeModeHost for LocalCells {
         observer: Option<&'a mut dyn CodeModeObserver>,
     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
         let session = self.session(context.session_id());
-        let tools: Arc<dyn CodeModeToolset> = Arc::new(LocalTools::new(tools));
+        let tools: Arc<dyn CodeModeToolset> = Arc::new(LocalTools::new(tools, &self.host_tools));
         let context = OwnedToolContext::from_context(context);
         Box::pin(async move {
             let mut ignore = IgnoreCodeModeUpdates;

@@ -124,7 +124,7 @@
     }
     try {
       const prelude = preludeSource
-        ? new Function("tools", preludeSource)(tools) ?? {}
+        ? new Function("tools", "call", preludeSource)(tools, invokeTool) ?? {}
         : {};
       const preludeNames = Object.keys(prelude);
       const script = new AsyncFunction(

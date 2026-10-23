@@ -34,7 +34,7 @@
     }
   }
 
-  return async function runCell(source, definitionsJson, schemasJson) {
+  return async function runCell(source, definitionsJson, schemasJson, preludeSource) {
     const definitions = jsonParse(definitionsJson);
     let schemas;
     const stored = new Map();
@@ -123,6 +123,10 @@
       });
     }
     try {
+      const prelude = preludeSource
+        ? new Function("tools", preludeSource)(tools) ?? {}
+        : {};
+      const preludeNames = Object.keys(prelude);
       const script = new AsyncFunction(
         "tools",
         "ALL_TOOLS",
@@ -138,6 +142,7 @@
         "exit",
         "setTimeout",
         "clearTimeout",
+        ...preludeNames,
         source,
       );
       try {
@@ -156,6 +161,7 @@
           exit,
           nativeSetTimeout,
           nativeClearTimeout,
+          ...preludeNames.map((name) => prelude[name]),
         );
       } catch (error) {
         if (error !== EXIT) throw error;

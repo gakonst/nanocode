@@ -1,4 +1,5 @@
 mod audio;
+mod local;
 mod output;
 use crate::code_mode_spec as spec;
 
@@ -8,18 +9,31 @@ use std::{
         Arc,
         atomic::{AtomicU8, AtomicU64, Ordering},
     },
-    time::Instant,
+    time::Duration,
 };
 
-use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
+
+#[cfg(not(target_family = "wasm"))]
+type CallFuture<'a> = futures_util::future::BoxFuture<'a, CompletedNestedCall>;
+#[cfg(target_family = "wasm")]
+type CallFuture<'a> = futures_util::future::LocalBoxFuture<'a, CompletedNestedCall>;
+
+#[cfg(not(target_family = "wasm"))]
+fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) {
+    drop(tokio::spawn(future));
+}
+
+#[cfg(target_family = "wasm")]
+fn spawn(future: impl std::future::Future<Output = ()> + 'static) {
+    nanocode_platform::spawn_local(future);
+}
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
 
+use nanocode_platform::Instant;
 use nanocode_sync::{Atom, Leased, Owned, Sequencer, Signal, Slot, Turn};
-use tokio::{
-    sync::{Notify, mpsc, oneshot, watch},
-    time::Duration,
-};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{Instrument, info_span};
 
 use super::{ToolContext, ToolOutputBody, ToolOutputContent};
@@ -29,6 +43,9 @@ pub use crate::embedded::{
     NestedToolCall,
 };
 pub use crate::{CodeModeToolObservation, CodeModeToolset};
+pub use local::LocalCells;
+#[cfg(target_family = "wasm")]
+pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
 use nanocode_code_mode_engine::{EmbeddedHost as ExecutionWorker, RuntimeEvent};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use spec::{exec_spec, wait_spec};
@@ -54,6 +71,7 @@ pub struct CodeModeRuntime {
     current_turn: Arc<AtomicU64>,
     preempt: watch::Sender<(u64, u64)>,
     preempt_consumed: Arc<AtomicU64>,
+    prelude: Option<Arc<str>>,
 }
 
 #[derive(Clone)]
@@ -297,7 +315,14 @@ impl CodeModeRuntime {
             current_turn,
             preempt: watch::channel((0, 0)).0,
             preempt_consumed: Arc::new(AtomicU64::new(0)),
+            prelude: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_prelude(mut self, prelude: impl Into<Arc<str>>) -> Self {
+        self.prelude = Some(prelude.into());
+        self
     }
 
     pub fn control(&self) -> CodeModeControl {
@@ -407,6 +432,7 @@ impl CodeModeRuntime {
                 stored,
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
+                self.prelude.clone(),
             ));
             self.cells.update(|registry| {
                 registry.live_cells.insert(cell_id, Arc::clone(&cell));
@@ -845,6 +871,7 @@ impl LiveCell {
         stored: HashMap<String, Arc<RawValue>>,
         shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
         host: Arc<Slot<EmbeddedHost>>,
+        prelude: Option<Arc<str>>,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
         let (terminate, terminate_rx) = oneshot::channel();
@@ -869,11 +896,12 @@ impl LiveCell {
         let session_id = context.session_id.clone();
         let finished = Arc::new(Signal::new());
         let guard = Finished(Arc::clone(&finished));
-        let actor = tokio::spawn(
+        spawn(
             run_cell_actor(
                 host,
                 id,
                 source,
+                prelude,
                 Arc::clone(&tools),
                 context,
                 stored,
@@ -885,7 +913,6 @@ impl LiveCell {
             .instrument(actor_span)
             .map(move |()| drop(guard)),
         );
-        drop(actor);
         Self {
             tools,
             id,
@@ -923,10 +950,10 @@ impl LiveCell {
             self.relay.take();
             return;
         };
-        drop(tokio::spawn(async move {
+        spawn(async move {
             let _finished = finished;
             relay_cell_updates(observation, stop, sink).await;
-        }));
+        });
     }
 
     async fn finish_relay(&self, stop: bool) {
@@ -1160,12 +1187,14 @@ async fn observe_updates(
         }
         ObservationMode::Terminate => (None, true, None),
     };
-    let mut yield_timer = yield_after.map(|yield_after| Box::pin(tokio::time::sleep(yield_after)));
+    let yield_deadline =
+        yield_after.and_then(|yield_after| Instant::now().checked_add(yield_after));
+    let mut yield_timer =
+        yield_after.map(|yield_after| Box::pin(nanocode_platform::sleep(yield_after)));
     let mut preempt_remaining = None;
     loop {
-        let yield_deadline_elapsed = yield_timer
-            .as_ref()
-            .is_some_and(|yield_timer| yield_timer.deadline() <= tokio::time::Instant::now());
+        let yield_deadline_elapsed =
+            yield_deadline.is_some_and(|yield_deadline| yield_deadline <= Instant::now());
         if preempt_remaining.is_none() && preempt.as_ref().is_some_and(Preemption::take) {
             preempt_remaining = Some(observation.updates.len() + observation.replay.len());
         }
@@ -1433,8 +1462,7 @@ impl EmbeddedHost {
         updates: &mpsc::UnboundedSender<CellUpdate>,
         actor_started_at: Instant,
     ) -> Result<CellTerminal, HostFailure> {
-        let mut pending_calls: FuturesUnordered<BoxFuture<'_, CompletedNestedCall>> =
-            FuturesUnordered::new();
+        let mut pending_calls: FuturesUnordered<CallFuture<'_>> = FuturesUnordered::new();
         let mut pending_receipts = PendingCallReceipts {
             calls: HashMap::new(),
             updates: updates.clone(),
@@ -1494,7 +1522,7 @@ impl EmbeddedHost {
                                 context,
                                 actor_started_at,
                             );
-                            pending_calls.push(nested_call.boxed());
+                            pending_calls.push(Box::pin(nested_call));
                         }
                         RuntimeEvent::Notify { text, .. } => {
                             let _ = updates.send(CellUpdate::Notification {
@@ -1572,6 +1600,7 @@ async fn run_cell_actor(
     shared_host: Arc<Slot<EmbeddedHost>>,
     cell_id: u64,
     source: String,
+    prelude: Option<Arc<str>>,
     tools: Arc<dyn CodeModeToolset>,
     context: OwnedToolContext,
     stored: HashMap<String, Arc<RawValue>>,
@@ -1610,7 +1639,13 @@ async fn run_cell_actor(
     tracing::Span::current().record("host.reused", reused);
     let run = async {
         host.worker
-            .start_cell(cell_id, &source, stored, tools.nested_tool_metadata())
+            .start_cell(
+                cell_id,
+                &source,
+                stored,
+                tools.nested_tool_metadata(),
+                prelude,
+            )
             .map_err(HostFailure::new)?;
         host.drive_cell(
             cell_id,

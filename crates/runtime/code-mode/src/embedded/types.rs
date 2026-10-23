@@ -139,7 +139,6 @@ pub struct CodeModeNotification {
 }
 
 impl CodeModeNotification {
-    #[cfg(not(target_family = "wasm"))]
     pub fn new(call_id: &str, text: String) -> Self {
         Self {
             call_id: call_id.to_owned(),

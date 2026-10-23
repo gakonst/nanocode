@@ -16,6 +16,9 @@ use crate::cell::{
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
 
+const MAX_STACK_BYTES: usize = 512 * 1024;
+const HOST_STACK_BYTES: usize = 192 * 1024;
+
 const EXHAUSTED: &str = "Script stopped: one synchronous run exceeded this host's CPU budget for a cell. Split long loops with await (for example await new Promise((resolve) => setTimeout(resolve, 0))).";
 
 thread_local! {
@@ -61,6 +64,13 @@ impl EmbeddedHost {
     pub fn spawn() -> Result<Self, String> {
         let runtime = Runtime::new()
             .map_err(|error| format!("failed to initialize embedded QuickJS runtime: {error}"))?;
+        let here = 0_u8;
+        let stack = std::ptr::addr_of!(here) as usize;
+        runtime.set_max_stack_size(
+            stack
+                .saturating_sub(HOST_STACK_BYTES)
+                .clamp(64 * 1024, MAX_STACK_BYTES),
+        );
         let budget = Rc::new(Cell::new(INTERRUPT_CHECKS.get()));
         let remaining = Rc::clone(&budget);
         runtime.set_interrupt_handler(Some(Box::new(move || {

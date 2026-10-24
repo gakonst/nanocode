@@ -1,4 +1,5 @@
 mod audio;
+pub mod bytes;
 mod cell;
 #[cfg(not(target_family = "wasm"))]
 mod native;

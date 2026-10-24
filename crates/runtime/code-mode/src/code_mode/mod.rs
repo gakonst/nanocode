@@ -44,6 +44,7 @@ pub use crate::embedded::{
 };
 pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
+pub use nanocode_code_mode_engine::bytes;
 #[cfg(target_family = "wasm")]
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
 use nanocode_code_mode_engine::{EmbeddedHost as ExecutionWorker, RuntimeEvent};

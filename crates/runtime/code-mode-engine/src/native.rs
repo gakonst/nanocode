@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -14,8 +15,9 @@ use serde_json::{Value, value::RawValue};
 use tokio::sync::mpsc;
 
 use crate::cell::{
-    RuntimeEvent, clear_pending, completed_terminal, drain_jobs, invoke_timeout, new_state,
-    next_due_timeout, next_timeout_wait, resolve_tool, send_terminal, start_execution,
+    Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs, invoke_timeout,
+    new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal, start_execution,
+    track_rejections,
 };
 
 pub struct EmbeddedHost {
@@ -150,6 +152,7 @@ fn run_worker(
             return;
         }
     };
+    let rejections = track_rejections(&runtime);
     let interrupt_signal = Arc::clone(interrupted);
     runtime.set_interrupt_handler(Some(Box::new(move || {
         interrupt_signal.load(Ordering::Acquire)
@@ -184,7 +187,8 @@ fn run_worker(
                         return;
                     }
                 };
-                let result = run_execution(&context, start, command_rx, event_tx.clone());
+                let result =
+                    run_execution(&context, start, command_rx, event_tx.clone(), &rejections);
                 drop(context);
                 runtime.run_gc();
                 if result.is_err() {
@@ -202,8 +206,9 @@ fn run_execution(
     start: StartExecution,
     command_rx: &std_mpsc::Receiver<HostCommand>,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    rejections: &Rejections,
 ) -> Result<(), String> {
-    context.with(|ctx| run_execution_in_context(&ctx, start, command_rx, event_tx))
+    context.with(|ctx| run_execution_in_context(&ctx, start, command_rx, event_tx, rejections))
 }
 
 fn run_execution_in_context(
@@ -211,9 +216,10 @@ fn run_execution_in_context(
     start: StartExecution,
     command_rx: &std_mpsc::Receiver<HostCommand>,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    rejections: &Rejections,
 ) -> Result<(), String> {
     let execution_id = start.execution_id;
-    let state = new_state(execution_id, event_tx, start.stored);
+    let state = new_state(execution_id, event_tx, start.stored, Rc::clone(rejections));
     let promise = start_execution(
         ctx,
         &state,
@@ -235,12 +241,12 @@ fn run_execution_in_context(
                     success,
                 }) if result_execution_id == execution_id => {
                     resolve_tool(ctx, &state, id, encoded, success)?;
-                    drain_jobs(ctx);
+                    drain_jobs(ctx, &state);
                 }
                 CommandPoll::TimerReady => {
                     if let Some(id) = next_due_timeout(&state) {
                         invoke_timeout(ctx, &state, id)?;
-                        drain_jobs(ctx);
+                        drain_jobs(ctx, &state);
                     }
                 }
                 CommandPoll::Command(HostCommand::Shutdown) | CommandPoll::Disconnected => {

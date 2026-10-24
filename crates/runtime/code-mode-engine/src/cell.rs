@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, time::Duration
 
 use nanocode_platform::Instant;
 use rquickjs::{
-    CatchResultExt, Coerced, Ctx, Exception, FromJs, Function, Persistent, Promise,
+    CatchResultExt, Coerced, Ctx, Exception, FromJs, Function, Persistent, Promise, Runtime,
     context::EvalOptions,
     function::{Func, Opt, Rest},
     promise::PromiseState,
@@ -63,6 +63,40 @@ pub(crate) const CODE_VALUES: &str = include_str!("code-values.mjs");
 
 pub(crate) type SavedFunction = Persistent<Function<'static>>;
 
+pub(crate) type Rejections = Rc<RefCell<Vec<Rejection>>>;
+
+pub(crate) struct Rejection {
+    promise: Persistent<rquickjs::Value<'static>>,
+    reason: Persistent<rquickjs::Value<'static>>,
+}
+
+pub(crate) fn track_rejections(runtime: &Runtime) -> Rejections {
+    let rejections = Rejections::default();
+    let tracked = Rc::clone(&rejections);
+    runtime.set_host_promise_rejection_tracker(Some(Box::new(
+        move |ctx, promise, reason, handled| {
+            let Ok(mut rejections) = tracked.try_borrow_mut() else {
+                return;
+            };
+            if handled {
+                rejections.retain(|rejection| {
+                    rejection
+                        .promise
+                        .clone()
+                        .restore(&ctx)
+                        .is_ok_and(|rejected| rejected != promise)
+                });
+            } else {
+                rejections.push(Rejection {
+                    promise: Persistent::save(&ctx, promise),
+                    reason: Persistent::save(&ctx, reason),
+                });
+            }
+        },
+    )));
+    rejections
+}
+
 pub(crate) struct ExecutionState {
     pub(crate) execution_id: u64,
     pub(crate) event_tx: mpsc::UnboundedSender<RuntimeEvent>,
@@ -71,6 +105,9 @@ pub(crate) struct ExecutionState {
     pending_timeouts: HashMap<u64, PendingTimeout>,
     next_tool_id: u64,
     next_timeout_id: u64,
+    rejections: Rejections,
+    uncaught: Option<SavedFunction>,
+    failure: Option<String>,
 }
 
 pub(crate) struct PendingTimeout {
@@ -98,7 +135,9 @@ pub(crate) fn new_state(
     execution_id: u64,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     stored: HashMap<String, Arc<RawValue>>,
+    rejections: Rejections,
 ) -> Rc<RefCell<ExecutionState>> {
+    rejections.borrow_mut().clear();
     Rc::new(RefCell::new(ExecutionState {
         execution_id,
         event_tx,
@@ -107,6 +146,9 @@ pub(crate) fn new_state(
         pending_timeouts: HashMap::new(),
         next_tool_id: 1,
         next_timeout_id: 1,
+        rejections,
+        uncaught: None,
+        failure: None,
     }))
 }
 
@@ -114,6 +156,10 @@ pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
     let mut state = state.borrow_mut();
     state.pending_tools.clear();
     state.pending_timeouts.clear();
+    state.uncaught = None;
+    let rejections = std::mem::take(&mut *state.rejections.borrow_mut());
+    drop(state);
+    drop(rejections);
 }
 
 pub(crate) fn start_execution<'js>(
@@ -151,7 +197,15 @@ pub(crate) fn start_execution<'js>(
         .call::<_, Function<'js>>((create_tools, value_helpers))
         .catch(ctx)
         .map_err(|error| format!("failed to initialize embedded QuickJS bootstrap: {error}"))?;
+    let uncaught = run_cell
+        .get::<_, Function<'js>>("uncaught")
+        .catch(ctx)
+        .map_err(|error| format!("failed to read the QuickJS rejection handler: {error}"))?;
+    state.borrow_mut().uncaught = Some(Persistent::save(ctx, uncaught));
     remove_native_globals(ctx)?;
+    if prelude.is_some() {
+        crate::bytes::install(ctx)?;
+    }
 
     let (tools, schemas) = split_schemas(tools);
     let tools = serde_json::to_string(&tools)
@@ -162,7 +216,7 @@ pub(crate) fn start_execution<'js>(
         .call::<_, Promise<'js>>((source, tools, schemas, prelude.unwrap_or_default()))
         .catch(ctx)
         .map_err(|error| format!("embedded QuickJS execution failed to start: {error}"))?;
-    drain_jobs(ctx);
+    drain_jobs(ctx, state);
     Ok(promise)
 }
 
@@ -457,11 +511,18 @@ pub(crate) fn send_terminal(
     state: &Rc<RefCell<ExecutionState>>,
     terminal: ExecutionTerminal,
 ) -> Result<(), String> {
-    let state = state.borrow();
+    let mut state = state.borrow_mut();
     let cell_id = state.execution_id;
     let stored = shared_values(terminal.stored);
     let event = match (terminal.kind, terminal.message) {
-        (TerminalKind::Done, _) => RuntimeEvent::Done { cell_id, stored },
+        (TerminalKind::Done, _) => match state.failure.take() {
+            Some(message) => RuntimeEvent::Error {
+                cell_id,
+                message,
+                stored,
+            },
+            None => RuntimeEvent::Done { cell_id, stored },
+        },
         (TerminalKind::Error, Some(message)) => RuntimeEvent::Error {
             cell_id,
             message,
@@ -554,8 +615,38 @@ pub(crate) fn next_due_timeout(state: &Rc<RefCell<ExecutionState>>) -> Option<u6
         .map(|(id, _)| id)
 }
 
-pub(crate) fn drain_jobs(ctx: &Ctx<'_>) {
-    while ctx.execute_pending_job() {}
+pub(crate) fn drain_jobs(ctx: &Ctx<'_>, state: &Rc<RefCell<ExecutionState>>) {
+    loop {
+        while ctx.execute_pending_job() {}
+        let (rejections, uncaught) = {
+            let state = state.borrow();
+            let rejections = std::mem::take(&mut *state.rejections.borrow_mut());
+            (rejections, state.uncaught.clone())
+        };
+        if rejections.is_empty() {
+            return;
+        }
+        for rejection in rejections {
+            let reported = uncaught
+                .clone()
+                .ok_or(())
+                .and_then(|uncaught| uncaught.restore(ctx).map_err(drop))
+                .and_then(|uncaught| {
+                    let reason = rejection.reason.restore(ctx).map_err(drop)?;
+                    uncaught
+                        .call::<_, Option<String>>((reason, true))
+                        .catch(ctx)
+                        .map_err(drop)
+                });
+            let message = match reported {
+                Ok(message) => message,
+                Err(()) => Some("Unhandled promise rejection".to_owned()),
+            };
+            if let Some(message) = message {
+                state.borrow_mut().failure.get_or_insert(message);
+            }
+        }
+    }
 }
 
 pub(crate) fn normalize_delay_ms(value: f64) -> u64 {

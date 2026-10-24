@@ -10,13 +10,14 @@ use serde_json::{Value, value::RawValue};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use crate::cell::{
-    ExecutionState, RuntimeEvent, clear_pending, completed_terminal, drain_jobs, invoke_timeout,
-    new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal, start_execution,
+    ExecutionState, Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs,
+    invoke_timeout, new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal,
+    start_execution, track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
 
-const MAX_STACK_BYTES: usize = 512 * 1024;
+const MAX_STACK_BYTES: usize = 640 * 1024;
 const HOST_STACK_BYTES: usize = 192 * 1024;
 
 const EXHAUSTED: &str = "Script stopped: one synchronous run exceeded this host's CPU budget for a cell. Split long loops with await (for example await new Promise((resolve) => setTimeout(resolve, 0))).";
@@ -35,6 +36,7 @@ struct Engine {
     execution: Option<Execution>,
     failure: Option<String>,
     budget: Rc<Cell<u64>>,
+    rejections: Rejections,
     runtime: Runtime,
 }
 
@@ -81,6 +83,7 @@ impl EmbeddedHost {
             remaining.set(left - 1);
             false
         })));
+        let rejections = track_rejections(&runtime);
         let key = NEXT_ENGINE.get();
         NEXT_ENGINE.set(key.wrapping_add(1));
         ENGINES.with_borrow_mut(|engines| {
@@ -90,6 +93,7 @@ impl EmbeddedHost {
                     execution: None,
                     failure: None,
                     budget,
+                    rejections,
                     runtime,
                 },
             )
@@ -116,7 +120,12 @@ impl EmbeddedHost {
             }
             let context = Context::full(&engine.runtime)
                 .map_err(|error| format!("failed to create embedded QuickJS context: {error}"))?;
-            let state = new_state(execution_id, self.event_tx.clone(), stored);
+            let state = new_state(
+                execution_id,
+                self.event_tx.clone(),
+                stored,
+                Rc::clone(&engine.rejections),
+            );
             let promise = context.with(|ctx| {
                 start_execution(&ctx, &state, source.to_owned(), tools, prelude.as_deref())
                     .map(|promise| Persistent::save(&ctx, promise))
@@ -148,7 +157,7 @@ impl EmbeddedHost {
             };
             execution.context.with(|ctx| {
                 resolve_tool(&ctx, &execution.state, id, encoded, success)?;
-                drain_jobs(&ctx);
+                drain_jobs(&ctx, &execution.state);
                 Ok(())
             })
         })
@@ -192,7 +201,7 @@ impl EmbeddedHost {
                         };
                         execution.context.with(|ctx| {
                             invoke_timeout(&ctx, &execution.state, id)?;
-                            drain_jobs(&ctx);
+                            drain_jobs(&ctx, &execution.state);
                             Ok(())
                         })
                     })?;

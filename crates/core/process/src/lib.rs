@@ -173,10 +173,19 @@ pub fn effective_token_limit(requested: Option<usize>) -> usize {
     requested.map_or(usize::MAX, |value| value.saturating_mul(BYTES_PER_TOKEN))
 }
 
+/// Secret values shorter than this are not redacted: replacing a one- to three-byte value such
+/// as `1` or `on` everywhere would garble all output while hiding nothing a guess would not
+/// find. This is the rule tempoxyz/pyramid applied to its per-thread secrets before redaction
+/// moved here.
+pub const MIN_REDACTED_SECRET_BYTES: usize = 4;
+
+/// Replaces every secret value of at least [`MIN_REDACTED_SECRET_BYTES`] bytes in `output`
+/// with `[REDACTED]`, longest first, then truncates it to `limit` bytes; the flag says whether
+/// it was truncated.
 pub fn redact_and_limit(mut output: String, secrets: &[String], limit: usize) -> (String, bool) {
     let mut secrets = secrets
         .iter()
-        .filter(|secret| !secret.is_empty())
+        .filter(|secret| secret.len() >= MIN_REDACTED_SECRET_BYTES)
         .collect::<Vec<_>>();
     secrets.sort_unstable_by_key(|secret| std::cmp::Reverse(secret.len()));
     for secret in secrets {

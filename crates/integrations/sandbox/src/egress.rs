@@ -13,7 +13,7 @@ use std::{
     error::Error,
     future::Future,
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
@@ -147,10 +147,44 @@ impl Tls {
 
 pub struct Allowlist {
     pub hosts: Vec<String>,
+    /// Host patterns, matched like `hosts`, that may reach non-public addresses (see
+    /// [`is_public`]) when dialed directly. Every other host is resolved, and the proxy
+    /// connects only to a public address it found, so neither an allowlisted name that resolves
+    /// to, say, 127.0.0.1 or the cloud metadata service nor an IP literal reaches them. Hosts
+    /// reached through `tailnet` are not checked: the SOCKS server resolves them.
+    pub private_hosts: Vec<String>,
     pub injections: Vec<Injection>,
     pub tls: Arc<Tls>,
     pub tailnet: Option<SocketAddr>,
     pub refusal: fn(&str) -> String,
+}
+
+/// Whether the proxy may dial `address` for a host outside `Allowlist::private_hosts`: not
+/// an address of this machine or its networks in the IANA special-purpose registries (RFC 6890):
+/// unspecified and "this network" (0.0.0.0/8, ::), loopback (127.0.0.0/8, ::1), private
+/// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) and unique local (fc00::/7, which holds AWS's
+/// IPv6 metadata address), link-local (169.254.0.0/16, which holds the cloud metadata service,
+/// and fe80::/10), multicast and broadcast. IPv4-mapped IPv6 addresses are judged as IPv4.
+/// Shared address space (100.64.0.0/10) stays reachable: Tailscale addresses its devices there.
+#[must_use]
+pub const fn is_public(address: IpAddr) -> bool {
+    match address.to_canonical() {
+        IpAddr::V4(v4) => {
+            !(v4.octets()[0] == 0
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast())
+        }
+        IpAddr::V6(v6) => {
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast())
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -347,18 +381,78 @@ async fn unreachable<S: AsyncWrite + Unpin>(client: &mut S, rules: &Rules, host:
     respond(client, "502 Bad Gateway").await;
 }
 
-async fn dial(rules: &Rules, host: &str, port: u16) -> Option<TcpStream> {
+enum Dialed {
+    Connected(TcpStream),
+    /// The host resolved only to addresses `is_public` refuses.
+    Private,
+    Failed,
+}
+
+async fn dial(rules: &Rules, host: &str, port: u16) -> Dialed {
     let name = host.trim_end_matches('.').to_ascii_lowercase();
     let connect = async {
         match rules.allowlist.tailnet {
-            Some(server) if name.ends_with(".ts.net") => socks(server, &name, port).await,
-            _ => TcpStream::connect((host, port)).await,
+            Some(server) if name.ends_with(".ts.net") => socks(server, &name, port).await.map(Some),
+            _ => direct(rules, host, port).await,
         }
     };
-    tokio::time::timeout(CONNECT_TIMEOUT, connect)
-        .await
-        .ok()?
-        .ok()
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
+        Ok(Ok(Some(stream))) => Dialed::Connected(stream),
+        Ok(Ok(None)) => Dialed::Private,
+        _ => Dialed::Failed,
+    }
+}
+
+/// Resolves `host` once and connects to the first address it may reach, so a name that
+/// resolves again to another address (DNS rebinding) cannot slip past the check. `None` when
+/// every address was refused.
+async fn direct(rules: &Rules, host: &str, port: u16) -> io::Result<Option<TcpStream>> {
+    let private = rules
+        .allowlist
+        .private_hosts
+        .iter()
+        .any(|pattern| host_matches(pattern, host));
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let mut failure = None;
+    for address in tokio::net::lookup_host((literal, port)).await? {
+        if !private && !is_public(address.ip()) {
+            continue;
+        }
+        match TcpStream::connect(address).await {
+            Ok(stream) => return Ok(Some(stream)),
+            Err(error) => failure = Some(error),
+        }
+    }
+    failure.map_or(Ok(None), Err)
+}
+
+async fn upstream<S: AsyncWrite + Unpin>(
+    client: &mut S,
+    rules: &Rules,
+    host: String,
+    port: u16,
+) -> Option<TcpStream> {
+    match dial(rules, &host, port).await {
+        Dialed::Connected(stream) => Some(stream),
+        Dialed::Private => {
+            let body = format!(
+                "{host} resolves only to private, loopback or link-local addresses, which this proxy does not reach."
+            );
+            rules
+                .log
+                .unreachable
+                .update(|unreachable| unreachable.push(host.clone()));
+            respond_text(client, "403 Forbidden", &body).await;
+            None
+        }
+        Dialed::Failed => {
+            unreachable(client, rules, host).await;
+            None
+        }
+    }
 }
 
 async fn socks(server: SocketAddr, host: &str, port: u16) -> io::Result<TcpStream> {
@@ -404,8 +498,7 @@ async fn connect<C: Client>(mut client: C, rules: &Rules, authority: &str, rest:
         .injections
         .iter()
         .find(|injection| host_matches(&injection.host, &host));
-    let Some(mut upstream) = dial(rules, &host, port).await else {
-        unreachable(&mut client, rules, host).await;
+    let Some(mut upstream) = upstream(&mut client, rules, host.clone(), port).await else {
         return;
     };
     if let Some(injection) = injection {
@@ -511,8 +604,7 @@ async fn forward<C: Client>(
     if !allowed(&mut client, rules, &host).await {
         return;
     }
-    let Some(mut upstream) = dial(rules, &host, port).await else {
-        unreachable(&mut client, rules, host).await;
+    let Some(mut upstream) = upstream(&mut client, rules, host, port).await else {
         return;
     };
     let has_host = head

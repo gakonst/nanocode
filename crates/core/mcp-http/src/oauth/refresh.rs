@@ -133,11 +133,13 @@ impl OAuthRuntime {
     ) -> Result<(), String> {
         let runtime = Arc::clone(self);
         // Per store too: hosts with a store per user may reuse server names.
+        let store = self.store.refresh_key().map_or_else(
+            || format!("{:p}", Arc::as_ptr(&self.store)),
+            |key| format!("key:{key}"),
+        );
         let refresh = refresh_for(&format!(
-            "{:p}\0{}\0{}",
-            Arc::as_ptr(&self.store),
-            self.server_name,
-            self.server_url
+            "{store}\0{}\0{}",
+            self.server_name, self.server_url
         ));
         refresh
             .run(|| async move {

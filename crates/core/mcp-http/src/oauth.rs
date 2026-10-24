@@ -246,6 +246,13 @@ pub trait McpOAuthStore: Send + Sync {
     ) -> futures_util::future::BoxFuture<'call, ()> {
         Box::pin(async {})
     }
+
+    /// Names the credentials this store holds, so `OAuthRuntime` refreshes of one sign-in join
+    /// in process across store instances, such as the user's ID for a host that builds a store
+    /// per call. `None` (the default) joins refreshes per store instance only.
+    fn refresh_key(&self) -> Option<String> {
+        None
+    }
 }
 
 pub struct OAuthRuntime {

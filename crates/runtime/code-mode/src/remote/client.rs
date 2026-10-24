@@ -208,6 +208,7 @@ fn requested_yield(operation: &RemoteOperation) -> Duration {
             .and_then(|line| line.trim_start().strip_prefix("// @exec:"))
             .and_then(|pragma| serde_json::from_str::<Value>(pragma).ok()),
         RemoteOperation::Wait { input, .. } => serde_json::from_str::<Value>(input).ok(),
+        RemoteOperation::Call { input, .. } => Some(input.clone()),
         _ => None,
     };
     requested
@@ -829,8 +830,13 @@ impl Drop for Pending {
             if let Some(session_id) = self.session_id.take() {
                 let id = self.client.next.fetch_add(1, Ordering::Relaxed);
                 let _ = self.client.outgoing.send((
-                    self.client
-                        .request_frame(id, RemoteOperation::CancelTurn { session_id }),
+                    self.client.request_frame(
+                        id,
+                        RemoteOperation::CancelTurn {
+                            session_id,
+                            turn_id: None,
+                        },
+                    ),
                     RemoteDelivery::Durable,
                 ));
             }
@@ -982,6 +988,7 @@ impl RemoteTransport for RemoteClient {
         Box::pin(async move {
             let client = &self.client;
             client.not_dispatched()?;
+            let requested = requested_yield(&operation);
             let id = client.next.fetch_add(1, Ordering::Relaxed);
             let frame = client.request_frame(id, operation);
             fits(&frame, client.max_frame_bytes)
@@ -1016,7 +1023,7 @@ impl RemoteTransport for RemoteClient {
             let result = client
                 .deadline(
                     reply,
-                    Duration::ZERO,
+                    requested,
                     "remote operation deadline elapsed; outcome unknown; no retry",
                 )
                 .await?;

@@ -178,7 +178,9 @@ fn config(policy: SocketPolicy) -> tungstenite::protocol::WebSocketConfig {
 type DialedSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 pub(super) enum Dial {
-    Rejected(CodeModeHostError),
+    /// Retrying cannot help; the status is the brain's HTTP refusal of the upgrade, if that was
+    /// the reason.
+    Rejected(CodeModeHostError, Option<u16>),
     Failed(CodeModeHostError),
 }
 
@@ -189,7 +191,7 @@ async fn connect(
     dial(&target, policy)
         .await
         .map_err(|failure| match failure {
-            Dial::Rejected(error) | Dial::Failed(error) => error,
+            Dial::Rejected(error, _) | Dial::Failed(error) => error,
         })
 }
 
@@ -197,15 +199,15 @@ pub(super) async fn dial(
     target: &crate::attachment::AttachmentTarget,
     policy: SocketPolicy,
 ) -> Result<DialedSocket, Dial> {
-    validate_policy(policy).map_err(Dial::Rejected)?;
+    validate_policy(policy).map_err(|issue| Dial::Rejected(issue, None))?;
     nanocode_tls::install_default_rustls_crypto_provider();
     let mut request = target
         .endpoint()
         .as_str()
         .into_client_request()
-        .map_err(|issue| Dial::Rejected(error(issue)))?;
+        .map_err(|issue| Dial::Rejected(error(issue), None))?;
     let mut bearer = http::HeaderValue::from_str(&format!("Bearer {}", target.bearer()))
-        .map_err(|issue| Dial::Rejected(error(issue)))?;
+        .map_err(|issue| Dial::Rejected(error(issue), None))?;
     bearer.set_sensitive(true);
     request
         .headers_mut()
@@ -221,10 +223,13 @@ pub(super) async fn dial(
         tungstenite::Error::Http(response)
             if matches!(response.status().as_u16(), 401 | 403 | 410) =>
         {
-            Dial::Rejected(error(format!(
-                "brain rejected the runner credential with HTTP {}",
-                response.status()
-            )))
+            Dial::Rejected(
+                error(format!(
+                    "brain rejected the runner credential with HTTP {}",
+                    response.status()
+                )),
+                Some(response.status().as_u16()),
+            )
         }
         issue => Dial::Failed(error(issue)),
     })
@@ -1223,6 +1228,9 @@ pub(super) struct Executor {
     results: mpsc::UnboundedReceiver<Done>,
     running: HashMap<u64, Running>,
     calls: HashMap<String, CancellationToken>,
+    /// Child tokens of `calls` for the `Call`s of one turn, by session and turn ID, so a
+    /// turn-scoped `CancelTurn` cancels only that turn's calls. `EndTurn` drops a turn's entry.
+    turn_calls: HashMap<(String, String), CancellationToken>,
     retained: HashMap<u64, String>,
     connection: u64,
     resumable: bool,
@@ -1259,6 +1267,7 @@ impl Executor {
             results,
             running: HashMap::new(),
             calls: HashMap::new(),
+            turn_calls: HashMap::new(),
             retained: HashMap::new(),
             connection: 0,
             resumable: false,
@@ -1295,6 +1304,7 @@ impl Executor {
         while self.results.try_recv().is_ok() {}
         self.running.clear();
         self.calls.clear();
+        self.turn_calls.clear();
         self.retained.clear();
         self.resumable = false;
     }
@@ -1303,6 +1313,8 @@ impl Executor {
     /// runs cells for the session, then answers the request. A tool's failure is logged, as the
     /// attachment endpoint does, and not retried.
     fn end_turn(&mut self, id: u64, session_id: String, turn_id: String, hook_event_name: String) {
+        self.turn_calls
+            .remove(&(session_id.clone(), turn_id.clone()));
         let tools: Vec<Arc<dyn crate::Tool>> = self.tools.registered_tools().cloned().collect();
         let finished = self.finished.clone();
         self.tasks.spawn(async move {
@@ -1426,7 +1438,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 executor.end_turn(id, session_id, turn_id, hook_event_name);
                                 continue;
                             }
-                            let session_id = match &operation { RemoteOperation::Execute { context, .. } | RemoteOperation::Wait { context, .. } | RemoteOperation::Call { context, .. } => &context.session_id, RemoteOperation::Cancel { session_id } | RemoteOperation::CancelTurn { session_id } | RemoteOperation::DetachTurn { session_id } | RemoteOperation::BeginTurn { session_id } | RemoteOperation::Preempt { session_id } | RemoteOperation::SettlePreempt { session_id } | RemoteOperation::EndTurn { session_id, .. } => session_id }.clone();
+                            let session_id = match &operation { RemoteOperation::Execute { context, .. } | RemoteOperation::Wait { context, .. } | RemoteOperation::Call { context, .. } => &context.session_id, RemoteOperation::Cancel { session_id } | RemoteOperation::CancelTurn { session_id, .. } | RemoteOperation::DetachTurn { session_id } | RemoteOperation::BeginTurn { session_id } | RemoteOperation::Preempt { session_id } | RemoteOperation::SettlePreempt { session_id } | RemoteOperation::EndTurn { session_id, .. } => session_id }.clone();
                             if matches!(&operation, RemoteOperation::Execute { selected_tools: Some(_), .. } | RemoteOperation::Call { selected_tools: Some(_), .. }) && executor.tools.has_dynamic_providers() {
                                 executor.finish(id, Err("hand tool selection is unavailable with dynamic hand providers; nothing was dispatched".into()));
                                 continue;
@@ -1454,12 +1466,24 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 executor.finish(id, Err("hand tool selection cannot change within a session".into()));
                                 continue;
                             }
-                            if matches!(&operation, RemoteOperation::Cancel { .. } | RemoteOperation::CancelTurn { .. })
-                                && let Some(calls) = executor.calls.remove(&session_id)
-                            {
-                                calls.cancel();
+                            if matches!(&operation, RemoteOperation::Cancel { .. } | RemoteOperation::CancelTurn { turn_id: None, .. }) {
+                                if let Some(calls) = executor.calls.remove(&session_id) {
+                                    calls.cancel();
+                                }
+                                executor.turn_calls.retain(|(session, _), _| session != &session_id);
                             }
-                            let cancelled = executor.calls.entry(session_id.clone()).or_default().clone();
+                            if let RemoteOperation::CancelTurn { turn_id: Some(turn_id), .. } = &operation {
+                                if let Some(calls) = executor.turn_calls.remove(&(session_id.clone(), turn_id.clone())) {
+                                    calls.cancel();
+                                }
+                                executor.finish(id, Ok(None));
+                                continue;
+                            }
+                            let session_calls = executor.calls.entry(session_id.clone()).or_default().clone();
+                            let cancelled = match &operation {
+                                RemoteOperation::Call { context: RemoteContext { turn_id: Some(turn_id), .. }, .. } => executor.turn_calls.entry((session_id.clone(), turn_id.clone())).or_insert_with(|| session_calls.child_token()).clone(),
+                                _ => session_calls,
+                            };
                             if let RemoteOperation::Execute { hand: Some(hand), .. } = &operation {
                                 executor.callbacks.name.set(Some(hand.clone()));
                             }

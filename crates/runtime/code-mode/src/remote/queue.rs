@@ -186,9 +186,12 @@ pub async fn serve_queue<Q: CommandQueue>(
                 let in_flight = sending.read(|sending| sending.keys().cloned().collect());
                 let polled = queue.poll(&in_flight).await?;
                 watching.extend(polled.watch);
-                for (session_id, turn) in polled.cancel {
-                    if cancelled.insert(turn) {
-                        notify(&client, RemoteOperation::CancelTurn { session_id });
+                for (session_id, turn_id) in polled.cancel {
+                    if cancelled.insert((session_id.clone(), turn_id.clone())) {
+                        notify(&client, RemoteOperation::CancelTurn {
+                            session_id,
+                            turn_id: Some(turn_id),
+                        });
                     }
                 }
                 for call in polled.calls {

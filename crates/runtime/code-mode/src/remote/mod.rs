@@ -129,8 +129,14 @@ pub enum RemoteOperation {
     DetachTurn {
         session_id: String,
     },
+    /// Cancels the current turn of `session_id`: its cells and every `Call` in flight for the
+    /// session. With `turn_id`, only the `Call`s whose context names that turn are cancelled,
+    /// so stopping one turn leaves other turns' calls in the same session running; cells are
+    /// left alone, since a hand tracks them by session only.
     CancelTurn {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
     },
     Cancel {
         session_id: String,
@@ -397,6 +403,7 @@ impl CodeModeHost for RemoteCodeModeHost {
                 .request(
                     RemoteOperation::CancelTurn {
                         session_id: session_id.into(),
+                        turn_id: None,
                     },
                     Vec::new(),
                     None,
@@ -433,6 +440,7 @@ impl CodeModeHost for RemoteCodeModeHost {
                 .request(
                     RemoteOperation::CancelTurn {
                         session_id: session_id.into(),
+                        turn_id: None,
                     },
                     Vec::new(),
                     Some(observer),

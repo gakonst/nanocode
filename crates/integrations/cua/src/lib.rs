@@ -184,6 +184,31 @@ impl ComputerConfig {
         Self::new(executable)
     }
 
+    /// The provider's arguments.
+    #[must_use]
+    pub fn args(mut self, args: impl IntoIterator<Item = impl Into<OsString>>) -> Self {
+        self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Sets `name` in the provider's environment, on top of the inherited `PROVIDER_ENVIRONMENT`.
+    #[must_use]
+    pub fn env(mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.environment.insert(name.into(), value.into());
+        self
+    }
+
+    /// Passes every variable of this process whose name starts with `prefix` to the provider, as
+    /// it is now, such as a host's own tuning variables for its provider.
+    #[must_use]
+    pub fn inherit_env_prefix(mut self, prefix: &str) -> Self {
+        self.environment.extend(
+            std::env::vars_os()
+                .filter(|(name, _)| name.as_encoded_bytes().starts_with(prefix.as_bytes())),
+        );
+        self
+    }
+
     /// Pins the provider's catalog, so [`ComputerTools::connect`] registers
     /// these tools without starting the provider; each session starts it on
     /// its first call and refuses calls, before dispatching any, while its
@@ -260,6 +285,17 @@ pub struct ProviderTool {
 }
 
 impl ProviderTool {
+    /// A tool called `name` with an object input schema and nothing else, for a pinned catalog
+    /// checked with [`CatalogCheck::Names`].
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            metadata: BTreeMap::new(),
+            input_schema: json!({"type": "object"}),
+        }
+    }
+
     pub fn model_visible(&self) -> bool {
         self.metadata
             .get("_meta")

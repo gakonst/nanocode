@@ -1248,6 +1248,27 @@ async fn complete_login(
     saved
 }
 
+/// The client type the OAuth functions here take.
+pub type HttpClient = reqwest::Client;
+
+/// A client for a web backend's OAuth requests to third parties' URLs (discovery, registration,
+/// token exchange and revocation): with the rustls provider installed, `user_agent` (some servers
+/// refuse requests without one), no redirects, so none sends a token elsewhere, HTTPS only when
+/// `https_only`, and each request bounded by `timeout`.
+pub fn http_client(
+    user_agent: &str,
+    https_only: bool,
+    timeout: Duration,
+) -> reqwest::Result<HttpClient> {
+    nanocode_tls::install_default_rustls_crypto_provider();
+    reqwest::Client::builder()
+        .user_agent(user_agent)
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(https_only)
+        .timeout(timeout)
+        .build()
+}
+
 fn oauth_http_client(headers: BTreeMap<String, SecretSource>) -> Result<reqwest::Client, String> {
     let mut resolved = reqwest::header::HeaderMap::with_capacity(headers.len());
     for (name, source) in headers {

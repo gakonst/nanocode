@@ -86,3 +86,89 @@ where
         self.resumes.clone()
     }
 }
+
+/// What a WebSocket message is to [`websocket`]: text for the link, a ping with the pong that
+/// answers it, a pong, the peer's close, or another message, such as a binary one, that fails the
+/// link with this text.
+pub enum SocketMessage<M> {
+    Text(String),
+    Ping(M),
+    Pong,
+    Close,
+    Invalid(&'static str),
+}
+
+/// A [`MessageLink`] over a WebSocket whose library reads and writes messages as `M`, which
+/// `classify` tells apart, with the WebSocket's ping and pong: it answers the peer's pings, and the
+/// returned future writes `ping()` every `interval` and resolves with why the connection is lost,
+/// when a ping write fails or nothing answered for `timeout`. A host runs it beside the link, such
+/// as [`serve_queue`](super::serve_queue)'s `failed`. A read error fails the link as
+/// `socket read failed` and a close ends it as [`PEER_CLOSED`].
+#[cfg(not(target_family = "wasm"))]
+#[expect(clippy::type_complexity, reason = "the link's boxed message stream")]
+pub fn websocket<St, Si, M, E>(
+    stream: St,
+    sink: Arc<Mutex<Si>>,
+    max_frame_bytes: Option<usize>,
+    resumes: Option<String>,
+    classify: fn(M) -> SocketMessage<M>,
+    ping: fn() -> M,
+    (interval, timeout): (std::time::Duration, std::time::Duration),
+) -> (
+    MessageLink<futures_util::stream::BoxStream<'static, Result<String, &'static str>>, Si, M>,
+    impl Future<Output = &'static str> + Send,
+)
+where
+    St: Stream<Item = Result<M, E>> + Send + 'static,
+    Si: Sink<M> + Unpin + Send + 'static,
+    M: Send + 'static,
+{
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::time::Instant;
+
+    let start = Instant::now();
+    // When the peer last answered, as milliseconds since `start`.
+    let answered = Arc::new(AtomicU64::new(0));
+    let (writer, pong) = (Arc::clone(&sink), Arc::clone(&answered));
+    let messages = stream.filter_map(move |message| {
+        let (sink, pong) = (Arc::clone(&writer), Arc::clone(&pong));
+        let message = message.map(classify).map_err(drop);
+        async move {
+            match message {
+                Ok(SocketMessage::Text(text)) => Some(Ok(text)),
+                Ok(SocketMessage::Ping(reply)) => {
+                    drop(sink.lock().await.send(reply).await);
+                    None
+                }
+                Ok(SocketMessage::Pong) => {
+                    let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    pong.store(elapsed, Ordering::Relaxed);
+                    None
+                }
+                Ok(SocketMessage::Invalid(error)) => Some(Err(error)),
+                Ok(SocketMessage::Close) => Some(Err(PEER_CLOSED)),
+                Err(_) => Some(Err("socket read failed")),
+            }
+        }
+    });
+    let link = MessageLink::new(
+        messages.boxed(),
+        Arc::clone(&sink),
+        max_frame_bytes,
+        resumes,
+    );
+    let heartbeat = async move {
+        let mut heartbeat = tokio::time::interval(interval);
+        loop {
+            heartbeat.tick().await;
+            let last = start + std::time::Duration::from_millis(answered.load(Ordering::Relaxed));
+            if last.elapsed() >= timeout {
+                return "heartbeat lost";
+            }
+            if sink.lock().await.send(ping()).await.is_err() {
+                return "socket write failed";
+            }
+        }
+    };
+    (link, heartbeat)
+}

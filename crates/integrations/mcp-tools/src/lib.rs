@@ -905,6 +905,15 @@ pub fn tool_output(
     Ok(output)
 }
 
+/// [`tool_output`] for a `tools/call` result held as JSON, such as one a host stored or received
+/// itself; a value that is no `CallToolResult` is shown as JSON.
+pub fn value_output(result: &Value, server_name: &str, remote_name: &str) -> ToolOutput {
+    serde_json::from_value(result.clone())
+        .ok()
+        .and_then(|parsed| tool_output(parsed, server_name, remote_name).ok())
+        .unwrap_or_else(|| ToolOutput::json(result))
+}
+
 fn direct_mcp_content(
     content: &[ContentBlock],
 ) -> Result<Option<Vec<ToolOutputContent>>, serde_json::Error> {

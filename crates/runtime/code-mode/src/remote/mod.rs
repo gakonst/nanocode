@@ -17,7 +17,9 @@ pub use compact::{ReceivedCalls, SentCalls, output_from_wire, output_to_wire};
 pub use executors::{
     CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
 };
-pub use message::MessageLink;
+#[cfg(not(target_family = "wasm"))]
+pub use message::websocket;
+pub use message::{MessageLink, SocketMessage};
 
 #[cfg(not(target_family = "wasm"))]
 pub use queue::{

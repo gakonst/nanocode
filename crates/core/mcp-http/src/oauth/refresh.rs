@@ -126,6 +126,32 @@ impl OAuthRuntime {
         }
     }
 
+    /// Call an API with the current access token. When `refused` says the
+    /// server refused the token, refresh it and call once more, and when it
+    /// refuses the refreshed token too, tell the store authorization is
+    /// required. Fails only when no token could be had.
+    pub async fn with_access_token<T, Call, Answer>(
+        self: &Arc<Self>,
+        mut call: Call,
+        refused: impl Fn(&T) -> bool,
+    ) -> Result<T, String>
+    where
+        Call: FnMut(String) -> Answer,
+        Answer: std::future::Future<Output = T>,
+    {
+        let token = self.access_token().await?;
+        let outcome = call(token.clone()).await;
+        if !refused(&outcome) {
+            return Ok(outcome);
+        }
+        let token = self.refresh_after_rejection(&token).await?;
+        let outcome = call(token.clone()).await;
+        if refused(&outcome) {
+            self.refused_after_refresh(&token).await;
+        }
+        Ok(outcome)
+    }
+
     async fn spawn_refresh(
         self: &Arc<Self>,
         reason: &'static str,

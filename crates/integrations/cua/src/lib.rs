@@ -38,6 +38,7 @@ const CUA_DRIVER_SEARCH: &[&str] = &[
     "/opt/homebrew/bin/cua-driver",
     "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
 ];
+const FORK_DRIVER_ARGS: &str = "mcp --direct";
 const NODE_SEARCH: &[&str] = &["/opt/homebrew/bin/node", "/usr/local/bin/node"];
 const CUA_REPL_SETTINGS: &[&str] = &[
     "CUA_REPL_SETTLE_MS",
@@ -174,8 +175,11 @@ impl ComputerConfig {
                     .find(|path| executable(path))
             })
             .ok_or("cua-driver CUA needs Node.js 22 or newer: install node or set CUA_REPL_NODE")?;
-        let driver = std::env::var_os("CUA_DRIVER_PATH")
-            .map(PathBuf::from)
+        let fork = fork_driver(&home).filter(|path| executable(path));
+        let explicit = std::env::var_os("CUA_DRIVER_PATH").map(PathBuf::from);
+        let direct = explicit.is_none() && fork.is_some();
+        let driver = explicit
+            .or(fork)
             .or_else(|| program("cua-driver"))
             .or_else(|| {
                 CUA_DRIVER_SEARCH
@@ -205,6 +209,12 @@ impl ComputerConfig {
             ]
             .into_iter()
             .map(|(key, value)| (OsString::from(key), value))
+            .chain(direct.then(|| {
+                (
+                    OsString::from("CUA_DRIVER_ARGS"),
+                    OsString::from(FORK_DRIVER_ARGS),
+                )
+            }))
             .chain(CUA_REPL_SETTINGS.iter().filter_map(|name| {
                 std::env::var_os(name).map(|value| (OsString::from(name), value))
             }))
@@ -306,6 +316,15 @@ fn nanocode_home(home: &std::path::Path) -> PathBuf {
     std::env::var_os("NANOCODE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".nanocode"))
+}
+
+pub fn fork_driver(home: &std::path::Path) -> Option<PathBuf> {
+    cfg!(target_os = "macos").then(|| {
+        std::env::var_os("NANOCODE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".nanocode"))
+            .join("cua-driver/cua-driver")
+    })
 }
 
 pub fn browser_socket(home: &std::path::Path) -> PathBuf {

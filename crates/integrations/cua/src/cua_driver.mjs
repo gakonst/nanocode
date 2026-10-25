@@ -479,7 +479,7 @@ class Driver {
   }
 
   async #launch() {
-    const child = spawn(this.#executable, ['mcp'], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+    const child = spawn(this.#executable, (env.CUA_DRIVER_ARGS || 'mcp').split(' ').filter(Boolean), { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
     this.#child = child;
     child.on('error', error => this.#fail(child, new Error(`Cannot start cua-driver (${this.#executable}): ${error.message}`)));
     child.on('exit', (code, signal) => this.#fail(child, new Error(`cua-driver exited (${signal ?? code})${this.#stderr ? ': ' + this.#stderr.trim().split('\n').slice(-3).join(' ') : ''}`)));

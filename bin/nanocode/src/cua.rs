@@ -3,13 +3,15 @@ use std::{
     process::Command,
 };
 
-use nanocode::cua::{ComputerConfig, browser, browser_socket};
+use nanocode::cua::{ComputerConfig, browser, browser_socket, fork_driver};
 
 use crate::{
     cli::{CuaArgs, CuaCommand},
     host::{self, Result},
 };
 
+const FORK_RELEASE: &str = "https://github.com/gakonst/cua/releases/download/nanocode-cua-driver-v0.38.0-perf.1/cua-driver-nanocode-0.38.0-perf.1-darwin-universal.tar.gz";
+const FORK_SHA256: &str = "2567a9586421509affab3753f38024a497ab495a142dfd04d7038d410bd576fd";
 const CUA_DRIVER_INSTALLER: &str =
     "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/install.sh";
 
@@ -58,7 +60,19 @@ pub async fn cua(args: CuaArgs) -> Result<()> {
             browser: names,
             skip_driver,
         } => {
-            if !skip_driver {
+            if !skip_driver && let Some(fork) = fork_driver(&home) {
+                let directory = fork.parent().ok_or("invalid cua-driver path")?;
+                std::fs::create_dir_all(directory)?;
+                println!("Installing nanocode's cua-driver build from {FORK_RELEASE}");
+                run(Command::new("/bin/bash").arg("-c").arg(format!(
+                    "set -euo pipefail; archive=$(mktemp); trap 'rm -f \"$archive\"' EXIT; curl -fsSL '{FORK_RELEASE}' -o \"$archive\"; echo '{FORK_SHA256}  '\"$archive\" | shasum -a 256 -c - >/dev/null; tar xzf \"$archive\" -C '{}' cua-driver",
+                    directory.display()
+                )))?;
+                println!(
+                    "cua-driver: {} (runs inside nanocode, so the app running nanocode needs Accessibility and Screen & System Audio Recording)",
+                    fork.display()
+                );
+            } else if !skip_driver {
                 match driver() {
                     Some(path) => println!("cua-driver: {}", path.display()),
                     None => {

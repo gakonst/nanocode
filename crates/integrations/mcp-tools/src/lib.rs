@@ -326,6 +326,18 @@ impl PreparedMcpTool {
         &self.entry.definition
     }
 
+    /// The tool as `tools/list` gives it: its remote name, description,
+    /// input schema and readOnlyHint, for hosts that list tools themselves.
+    pub fn listed(&self) -> Value {
+        let definition = self.definition();
+        json!({
+            "name": self.remote_name(),
+            "description": definition.description(),
+            "inputSchema": definition.parameters().map(|schema| schema.as_value().clone()),
+            "annotations": {"readOnlyHint": self.read_only()},
+        })
+    }
+
     pub fn supports_parallel_tool_calls(&self) -> bool {
         self.entry.supports_parallel_tool_calls
     }

@@ -239,13 +239,7 @@ pub trait McpOAuthStore: Send + Sync {
     /// The stored sign-in can no longer be used: the authorization server
     /// rejected its refresh token, it has none, or the server refused an
     /// access token just refreshed. Only authorizing again helps.
-    fn authorization_required<'call>(
-        &'call self,
-        _server_name: &'call str,
-        _server_url: &'call str,
-    ) -> futures_util::future::BoxFuture<'call, ()> {
-        Box::pin(async {})
-    }
+    async fn authorization_required(&self, _server_name: &str, _server_url: &str) {}
 
     /// Names the credentials this store holds, so `OAuthRuntime` refreshes of one sign-in join
     /// in process across store instances, such as the user's ID for a host that builds a store
@@ -754,6 +748,30 @@ pub struct OAuthServer {
     pub scopes: Vec<String>,
 }
 
+impl OAuthServer {
+    /// The issuer its metadata names, without a trailing slash, which keys a
+    /// web backend's registered client and the token sets it issued.
+    #[must_use]
+    pub fn issuer(&self) -> Option<&str> {
+        let issuer = self.metadata.issuer.as_deref();
+        issuer.map(|issuer| issuer.trim_end_matches('/'))
+    }
+
+    /// Every endpoint its metadata names (authorization, token, and
+    /// registration and revocation when offered), for hosts that vet them.
+    pub fn endpoints(&self) -> impl Iterator<Item = &str> {
+        let metadata = &self.metadata;
+        [
+            Some(metadata.authorization_endpoint.as_str()),
+            Some(metadata.token_endpoint.as_str()),
+            metadata.registration_endpoint.as_deref(),
+            metadata.revocation_endpoint(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
 pub async fn discover_server(
     http: &reqwest::Client,
     server_url: &Url,
@@ -836,6 +854,22 @@ pub async fn revoke_token(
 ) -> Result<(), TokenError> {
     let (status, _, body) = send_token_endpoint_request(http, endpoint, request).await?;
     nanocode_mcp::oauth::parse_revocation_response(status, &body)
+}
+
+/// Revoke a sign-in (RFC 7009): its refresh token when it has one, which
+/// ends the grant, else its access token.
+pub async fn revoke_sign_in(
+    http: &reqwest::Client,
+    endpoint: &str,
+    client: &ClientAuthentication,
+    access_token: &str,
+    refresh_token: Option<&str>,
+) -> Result<(), TokenError> {
+    let (token, hint) = refresh_token.map_or((access_token, "access_token"), |token| {
+        (token, "refresh_token")
+    });
+    let request = nanocode_mcp::oauth::revocation_request(client, token, Some(hint));
+    revoke_token(http, endpoint, request).await
 }
 
 pub struct WebLogin<'a> {

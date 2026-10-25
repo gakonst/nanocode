@@ -80,6 +80,24 @@ fn deserialize_output_budget<'de, D: serde::Deserializer<'de>>(
 }
 
 impl RemoteContext {
+    /// A context with only a call's IDs, as a host that queued the call
+    /// without a model session sends it: no model, history, instruction
+    /// revision or host context, and no token budget beyond the tool's own
+    /// (JavaScript's largest safe integer, the attachment protocol's).
+    #[must_use]
+    pub fn new(session_id: String, call_id: String, turn_id: Option<String>) -> Self {
+        Self {
+            model: String::new(),
+            session_id,
+            call_id,
+            turn_id,
+            history: Arc::default(),
+            output_token_budget: usize::try_from(9_007_199_254_740_991_u64).unwrap_or(usize::MAX),
+            instruction_revision: None,
+            host_context: None,
+        }
+    }
+
     pub fn from_context(context: ToolContext<'_>) -> Self {
         Self {
             model: context.model().into(),

@@ -56,7 +56,7 @@ pub struct CuaArgs {
 #[derive(Clone, Debug, Subcommand)]
 pub enum CuaCommand {
     #[command(
-        about = "Install cua-driver (and ask for its macOS permissions) and the nanocode extension's native host in each Chromium browser"
+        about = "Ask macOS for the permissions of nanocode's built-in cua-driver (elsewhere install cua-driver) and install the nanocode extension's native host in each Chromium browser"
     )]
     Install {
         #[arg(
@@ -64,7 +64,7 @@ pub enum CuaCommand {
             help = "Browser name (Chrome, Edge, Brave, ...) or an absolute Chromium user data directory; repeat for several (defaults to every one found)"
         )]
         browser: Vec<String>,
-        #[arg(long, help = "Leave cua-driver as it is")]
+        #[arg(long, help = "Leave cua-driver and its permissions as they are")]
         skip_driver: bool,
     },
     #[command(about = "Remove the nanocode extension's native host")]
@@ -77,6 +77,9 @@ pub enum CuaCommand {
     },
     #[command(about = "Show what computer use finds on this machine")]
     Status,
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    DriverMcp,
     #[command(hide = true)]
     BrowserHost {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

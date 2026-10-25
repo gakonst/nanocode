@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -40,9 +40,6 @@ impl Install {
 
     pub fn installed() -> Option<Self> {
         let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        if let Some(path) = crate::fork_driver(&home).filter(|path| path.is_file()) {
-            return Some(Self::new(path, true));
-        }
         SEARCH
             .iter()
             .map(|path| home.join(path))
@@ -112,13 +109,15 @@ pub fn text_of(result: &Value) -> String {
         .join("\n")
 }
 
-fn image_of(result: &Value) -> Option<String> {
-    result["content"]
+fn image_of(result: &Value) -> Option<(String, String)> {
+    let image = result["content"]
         .as_array()?
         .iter()
-        .find(|item| item["type"] == "image")?["data"]
-        .as_str()
-        .map(str::to_owned)
+        .find(|item| item["type"] == "image")?;
+    Some((
+        image["data"].as_str()?.to_owned(),
+        image["mimeType"].as_str().unwrap_or("image/png").to_owned(),
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +139,7 @@ impl Failure {
 pub struct Step {
     pub text: String,
     pub screenshot: Option<String>,
+    pub screenshot_mime: Option<String>,
     pub screenshot_omitted: bool,
 }
 
@@ -155,11 +155,56 @@ struct App {
     acted: Option<Instant>,
 }
 
+enum Connection {
+    Mcp(McpClient),
+    #[cfg(target_os = "macos")]
+    Embedded(crate::embedded::Server),
+}
+
+impl Connection {
+    async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, McpError> {
+        match self {
+            Self::Mcp(client) => client.call_tool(name, arguments).await,
+            #[cfg(target_os = "macos")]
+            Self::Embedded(server) => server
+                .call_tool(name, arguments)
+                .await
+                .map_err(McpError::Rpc),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Features {
+    wait: HashSet<String>,
+    select_text: bool,
+    jpeg: bool,
+}
+
+impl Features {
+    fn of(tools: &Value) -> Self {
+        let mut features = Self::default();
+        for tool in tools["tools"].as_array().into_iter().flatten() {
+            let name = tool["name"].as_str().unwrap_or_default();
+            let properties = &tool["inputSchema"]["properties"];
+            if cfg!(target_os = "macos") && properties.get("post_action_wait").is_some() {
+                features.wait.insert(name.to_owned());
+            }
+            features.select_text |= name == "select_text";
+            features.jpeg |=
+                name == "get_window_state" && properties.get("screenshot_format").is_some();
+        }
+        features
+    }
+}
+
 pub struct Driver {
-    install: Install,
+    install: Option<Install>,
     client: (String, String),
     policy: Option<Policy>,
-    session: Option<McpClient>,
+    jpeg: Option<u8>,
+    session: Option<Connection>,
+    features: Features,
     apps: HashMap<i64, App>,
 }
 
@@ -303,11 +348,32 @@ pub fn ax_action(name: &str) -> String {
 
 impl Driver {
     pub fn new(install: Install) -> Self {
+        Self::with(Some(install))
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn embedded() -> Self {
+        Self::with(None)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn detect() -> Option<Self> {
+        Some(Self::embedded())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn detect() -> Option<Self> {
+        Install::installed().map(Self::new)
+    }
+
+    fn with(install: Option<Install>) -> Self {
         Self {
             install,
             client: ("nanocode-cua".into(), env!("CARGO_PKG_VERSION").into()),
             policy: None,
+            jpeg: None,
             session: None,
+            features: Features::default(),
             apps: HashMap::new(),
         }
     }
@@ -325,20 +391,47 @@ impl Driver {
         self
     }
 
-    pub fn install(&self) -> &Install {
-        &self.install
+    pub fn jpeg(mut self, quality: u8) -> Self {
+        self.jpeg = Some(quality.clamp(1, 95));
+        self
+    }
+
+    pub fn install(&self) -> Option<&Install> {
+        self.install.as_ref()
+    }
+
+    async fn connect(&mut self) -> Result<Connection, String> {
+        let (connection, tools) = match &self.install {
+            Some(install) => {
+                let client =
+                    McpClient::start(install.command(), &self.client.0, &self.client.1).await?;
+                let tools = client
+                    .request("tools/list", json!({}))
+                    .await
+                    .unwrap_or_default();
+                (Connection::Mcp(client), tools)
+            }
+            #[cfg(target_os = "macos")]
+            None => {
+                let server = crate::embedded::Server::start(&self.client.0).await?;
+                let tools = server.tools().clone();
+                (Connection::Embedded(server), tools)
+            }
+            #[cfg(not(target_os = "macos"))]
+            None => return Err("cua-driver is not built into this platform's nanocode".into()),
+        };
+        self.features = Features::of(&tools);
+        Ok(connection)
     }
 
     async fn call(&mut self, name: &str, arguments: Value) -> Result<Value, Failure> {
         if self.session.is_none() {
             self.apps.clear();
-            let started = McpClient::start(self.install.command(), &self.client.0, &self.client.1)
-                .await
-                .map_err(|error| {
-                    Failure::refused(format!(
-                        "cua-driver could not start ({error}), so nothing ran."
-                    ))
-                })?;
+            let started = self.connect().await.map_err(|error| {
+                Failure::refused(format!(
+                    "cua-driver could not start ({error}), so nothing ran."
+                ))
+            })?;
             self.session = Some(started);
         }
         let Some(session) = self.session.as_ref() else {
@@ -619,10 +712,15 @@ impl Driver {
                 arguments.insert("include_accessibility_tree".into(), false.into());
                 arguments.insert("display_only".into(), true.into());
                 arguments.insert("max_image_dimension".into(), edge.into());
+                if let (Some(quality), true) = (self.jpeg, self.features.jpeg) {
+                    arguments.insert("screenshot_format".into(), "jpeg".into());
+                    arguments.insert("screenshot_quality".into(), quality.into());
+                }
                 let shot = self.window_state(pid, arguments).await?;
                 match image_of(&shot) {
-                    Some(data) if data.len() <= budget => {
+                    Some((data, mime)) if data.len() <= budget => {
                         step.screenshot = Some(data);
+                        step.screenshot_mime = Some(mime);
                         break;
                     }
                     Some(_) => step.screenshot_omitted = true,
@@ -658,6 +756,9 @@ impl Driver {
             let window = self.window(pid, false).await?;
             arguments.insert("pid".into(), pid.into());
             arguments.insert("window_id".into(), window.into());
+        }
+        if self.features.wait.contains(name) {
+            arguments.insert("post_action_wait".into(), "none".into());
         }
         let result = self.call(name, Value::Object(arguments)).await;
         self.apps.entry(pid).or_default().acted = Some(Instant::now());
@@ -835,6 +936,24 @@ impl Driver {
     }
 
     async fn select_text(&mut self, pid: i64, input: &Value) -> Result<(), Failure> {
+        if self.features.select_text {
+            let mut arguments = Map::new();
+            arguments.insert("element_token".into(), self.token(pid, input)?.into());
+            arguments.insert(
+                "text".into(),
+                input["text"].as_str().unwrap_or_default().into(),
+            );
+            for key in ["prefix", "suffix"] {
+                if let Some(value) = input[key].as_str().filter(|value| !value.is_empty()) {
+                    arguments.insert(key.into(), value.into());
+                }
+            }
+            arguments.insert(
+                "selection_type".into(),
+                input["selection_type"].as_str().unwrap_or("text").into(),
+            );
+            return self.act(pid, "select_text", arguments).await;
+        }
         let index = input["element_index"]
             .as_u64()
             .ok_or_else(|| Failure::refused("element_index is required"))?;

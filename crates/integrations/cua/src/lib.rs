@@ -3,6 +3,8 @@
 #[cfg(unix)]
 pub mod browser;
 pub mod driver;
+#[cfg(target_os = "macos")]
+pub mod embedded;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -39,7 +41,7 @@ const CUA_DRIVER_SEARCH: &[&str] = &[
     "/opt/homebrew/bin/cua-driver",
     "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
 ];
-const FORK_DRIVER_ARGS: &str = "mcp --direct";
+const EMBEDDED_DRIVER_ARGS: &str = "cua driver-mcp";
 const NODE_SEARCH: &[&str] = &["/opt/homebrew/bin/node", "/usr/local/bin/node"];
 const CUA_REPL_SETTINGS: &[&str] = &[
     "CUA_REPL_SETTLE_MS",
@@ -176,21 +178,24 @@ impl ComputerConfig {
                     .find(|path| executable(path))
             })
             .ok_or("cua-driver CUA needs Node.js 22 or newer: install node or set CUA_REPL_NODE")?;
-        let fork = fork_driver(&home).filter(|path| executable(path));
         let explicit = std::env::var_os("CUA_DRIVER_PATH").map(PathBuf::from);
-        let direct = explicit.is_none() && fork.is_some();
-        let driver = explicit
-            .or(fork)
-            .or_else(|| program("cua-driver"))
-            .or_else(|| {
-                CUA_DRIVER_SEARCH
-                    .iter()
-                    .map(|path| home.join(path))
-                    .find(|path| executable(path))
-            })
-            .ok_or(
-                "cua-driver is not installed: run nanocode cua install, or set CUA_DRIVER_PATH",
-            )?;
+        let embedded = explicit.is_none() && cfg!(target_os = "macos");
+        let driver = if embedded {
+            std::env::current_exe()
+                .map_err(|error| format!("cannot find the nanocode executable: {error}"))?
+        } else {
+            explicit
+                .or_else(|| program("cua-driver"))
+                .or_else(|| {
+                    CUA_DRIVER_SEARCH
+                        .iter()
+                        .map(|path| home.join(path))
+                        .find(|path| executable(path))
+                })
+                .ok_or(
+                    "cua-driver is not installed: run nanocode cua install, or set CUA_DRIVER_PATH",
+                )?
+        };
         let source = CUA_DRIVER_PROVIDER
             .replacen("__CATALOG__", CUA_DRIVER_CATALOG.trim(), 1)
             .replacen("__VERSION__", env!("CARGO_PKG_VERSION"), 1);
@@ -210,10 +215,10 @@ impl ComputerConfig {
             ]
             .into_iter()
             .map(|(key, value)| (OsString::from(key), value))
-            .chain(direct.then(|| {
+            .chain(embedded.then(|| {
                 (
                     OsString::from("CUA_DRIVER_ARGS"),
-                    OsString::from(FORK_DRIVER_ARGS),
+                    OsString::from(EMBEDDED_DRIVER_ARGS),
                 )
             }))
             .chain(CUA_REPL_SETTINGS.iter().filter_map(|name| {
@@ -317,15 +322,6 @@ fn nanocode_home(home: &std::path::Path) -> PathBuf {
     std::env::var_os("NANOCODE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".nanocode"))
-}
-
-pub fn fork_driver(home: &std::path::Path) -> Option<PathBuf> {
-    cfg!(target_os = "macos").then(|| {
-        std::env::var_os("NANOCODE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".nanocode"))
-            .join("cua-driver/cua-driver")
-    })
 }
 
 pub fn browser_socket(home: &std::path::Path) -> PathBuf {

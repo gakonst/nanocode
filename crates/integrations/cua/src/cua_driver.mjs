@@ -162,7 +162,7 @@ const DOCS = {
     '- \`performSecondaryAction()\` invokes an action the element lists (such as AXShowMenu, AXPick, AXConfirm, AXCancel, AXOpen); do not guess names.',
     '- \`pressKey()\` takes xdotool-style keys and chords: \`"Return"\`, \`"Tab"\`, \`"Up"\`, \`"Page_Down"\`, \`"super+c"\` (super is Command on macOS), \`"ctrl+shift+z"\`, \`"KP_0"\`.',
     '- Native \`paste\` puts the text on the system clipboard, pastes it and restores the previous clipboard text.',
-    '- Native \`selectText()\` focuses the field and moves the caret with arrow keys, so it needs the field\'s text in the latest state.',
+    '- Native \`selectText()\` uses cua-driver\'s \`select_text\`; an older cua-driver focuses the field and moves the caret with arrow keys, which needs the field\'s text in the latest state.',
     '- \`cua.driver.call(tool, args)\` calls a cua-driver MCP tool directly, for what the API above does not cover.',
     '',
     'Persist until the request is done end to end and the latest state visibly shows the result, or explain the concrete blocker.',
@@ -538,6 +538,12 @@ class Driver {
     return [...this.#tools.keys()];
   }
 
+  async supports(name, property) {
+    await this.start();
+    const tool = this.#tools.get(name);
+    return property ? Boolean(tool?.inputSchema?.properties?.[property]) : Boolean(tool);
+  }
+
   async call(name, args = {}) {
     await this.start();
     const tool = this.#tools.get(name);
@@ -715,10 +721,11 @@ class NativeApp {
     return this.#snapshot + ':' + index(value);
   }
 
-  async #act(name, args) {
+  async #act(name, args, wait = 'none') {
     const window = args.element_token ? null : await this.#resolveWindow();
+    const quick = MAC && wait === 'none' && await driver.supports(name, 'post_action_wait');
     try {
-      return await driver.call(name, { ...args, ...(window ? { pid: this.#info.pid, window_id: window.window_id } : {}) });
+      return await driver.call(name, { ...args, ...(window ? { pid: this.#info.pid, window_id: window.window_id } : {}), ...(quick ? { post_action_wait: 'none' } : {}) });
     } finally {
       this.#lastAction = Date.now();
     }
@@ -776,6 +783,10 @@ class NativeApp {
   }
 
   async selectText(elementIndex, text, options) {
+    if (await driver.supports('select_text')) {
+      await this.#act('select_text', { element_token: this.#token(elementIndex), text: String(text), prefix: options?.prefix || undefined, suffix: options?.suffix || undefined, selection_type: options?.selectionType ?? 'text' });
+      return;
+    }
     const row = this.#rows.get(index(elementIndex));
     const value = row && (/ value="((?:[^"\\]|\\.)*)"/.exec(row)?.[1] ?? /^\s*- \[\d+\] [^"]*"((?:[^"\\]|\\.)*)"/.exec(row)?.[1]);
     if (value === undefined || value === null) throw new Error('Element ' + elementIndex + ' shows no text value in the latest state; click into the field and use pressKey to move the caret instead');
@@ -824,7 +835,7 @@ class NativeApp {
     try { previous = (await driver.call('clipboard_read', { include_text: true })).structuredContent?.text; } catch {}
     await driver.call('clipboard_write', { text: String(text) });
     try {
-      await this.#act('press_key', { key: 'v', modifiers: [MAC ? 'cmd' : 'ctrl'] });
+      await this.#act('press_key', { key: 'v', modifiers: [MAC ? 'cmd' : 'ctrl'] }, 'default');
       await sleep(PASTE_SETTLE_MS);
     } finally {
       if (typeof previous === 'string') await driver.call('clipboard_write', { text: previous }).catch(() => {});

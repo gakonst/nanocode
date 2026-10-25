@@ -26,6 +26,11 @@ tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "s
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+cua-driver-core.workspace = true
+cua-driver-sdk.workspace = true
+cursor-overlay.workspace = true
+
 
 [lib]
 test = false

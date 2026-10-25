@@ -645,6 +645,7 @@ impl NativeToolRuntime {
                 &provider_summaries,
                 self.deferred_tools_guidance_enabled,
                 self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
+                false,
             ),
             code_mode::wait_spec(),
         ];

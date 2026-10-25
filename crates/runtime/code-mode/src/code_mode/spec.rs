@@ -19,6 +19,7 @@ pub fn exec_spec(
     provider_summaries: &[(String, String)],
     has_deferred_tools: bool,
     code_mode_only: bool,
+    compact: bool,
 ) -> ToolDefinition {
     ToolDefinition::custom(
         "exec",
@@ -27,6 +28,7 @@ pub fn exec_spec(
             provider_summaries,
             has_deferred_tools,
             code_mode_only,
+            compact,
         ),
         CustomToolFormat::grammar("lark", GRAMMAR),
     )

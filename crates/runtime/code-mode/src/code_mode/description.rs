@@ -112,16 +112,33 @@ const EXEC_DESCRIPTION: &str = r#"Run JavaScript code to orchestrate/compose too
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
 
+const EXEC_DESCRIPTION_COMPACT: &str = r#"Run JavaScript to orchestrate tool calls. Each call evaluates the code as a fresh async module.
+- Nested tools are async functions on the global `tools` object, named as JavaScript identifiers, for example `await tools.example_tool(...)` or `await tools.mcp__ologs__get_profile(...)`. Each takes a string or an object and returns a string or an object.
+- Send raw JavaScript source, not JSON, a quoted string or a markdown code fence.
+- An optional first line `// `exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}` sets when a cell that is still running yields (default 10000 ms) and the output token budget (default unlimited).
+- Await every promise: when the code finishes, the cell ends and unawaited promises are discarded.
+- Globals: `text(value)` appends output (other values as JSON); `image(urlOrItem, detail?)` appends an image from a base64 `data:` URL, `{ image_url }`, `{ file_id }` or an MCP `ImageContent` block; `audio(urlOrItem)` appends audio the same way; `generatedImage(result)` appends an image-generation result; `notify(value)` sends an extra output for this call at once; `store(key, value)` and `load(key)` keep serializable values across cells; `yield_control()` returns the output so far while the cell keeps running; `exit()` ends the cell successfully; `setTimeout` and `clearTimeout` (pending timers do not keep the cell alive); `ALL_TOOLS` lists `{ name, description }` of every nested tool."#;
+
+const MCP_TYPESCRIPT_COMPACT: &str = r#"type ImageContent = { type: "image"; data: string; mimeType: string };
+type ContentBlock = { type: "text"; text: string } | ImageContent | { type: "audio"; data: string; mimeType: string } | { type: "resource_link"; uri: string; name: string } | { type: "resource"; resource: { uri: string; text?: string; blob?: string } };
+type CallToolResult<TStructured = { [key: string]: unknown }> = { content: ContentBlock[]; isError?: boolean; structuredContent?: TStructured; [key: string]: unknown };"#;
+
 pub fn exec_description(
     definitions: &[ToolDefinition],
     provider_summaries: &[(String, String)],
     has_deferred_tools: bool,
     code_mode_only: bool,
+    compact: bool,
 ) -> String {
+    let base = if compact {
+        EXEC_DESCRIPTION_COMPACT
+    } else {
+        EXEC_DESCRIPTION
+    };
     let mut description = definitions.first().map_or_else(
-        || EXEC_DESCRIPTION.to_owned(),
+        || base.to_owned(),
         |definition| {
-            EXEC_DESCRIPTION.replacen(
+            base.replacen(
                 "tools.example_tool(...)",
                 &format!("tools.{}(...)", normalize_identifier(definition.name())),
                 1,
@@ -158,7 +175,12 @@ pub fn exec_description(
     {
         let _ = write!(
             description,
-            "\n\nShared MCP Types:\n```ts\n{MCP_TYPESCRIPT_PREAMBLE}\n```"
+            "\n\nShared MCP Types:\n```ts\n{}\n```",
+            if compact {
+                MCP_TYPESCRIPT_COMPACT
+            } else {
+                MCP_TYPESCRIPT_PREAMBLE
+            }
         );
     }
     let mut rendered_namespaces = BTreeSet::new();

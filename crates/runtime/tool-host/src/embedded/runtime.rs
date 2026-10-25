@@ -250,6 +250,7 @@ impl EmbeddedToolRuntime {
                 &summaries,
                 has_deferred_tools,
                 true,
+                true,
             );
             if let ToolDefinition::Custom { description, .. } = &mut exec {
                 if mode == EmbeddedToolMode::CodeOnly {

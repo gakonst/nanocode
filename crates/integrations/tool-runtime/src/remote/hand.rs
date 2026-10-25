@@ -60,9 +60,9 @@ impl Hand {
             name: None,
             headers: Vec::new(),
             directory: None,
+            activity: HandActivity::serving(&tools),
             tools,
             policy: SocketPolicy::runner(),
-            activity: HandActivity::default(),
             callback_hold: None,
         }
     }

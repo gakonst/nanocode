@@ -6,6 +6,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 pub trait HistorySource: Send + Sync {
@@ -207,11 +208,22 @@ pub enum ToolInputError {
     Decode(#[source] serde_json::Error),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningTask {
+    pub id: String,
+    pub label: String,
+    pub silent_for: Duration,
+}
+
 pub trait Tool: Send + Sync + 'static {
     fn definition(&self) -> ToolDefinition;
 
     fn supports_parallel_tool_calls(&self) -> bool {
         false
+    }
+
+    fn running_tasks(&self) -> Vec<RunningTask> {
+        Vec::new()
     }
 
     #[cfg(not(target_family = "wasm"))]

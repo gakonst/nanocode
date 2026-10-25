@@ -1,6 +1,13 @@
 use nanocode_home::SessionEnvironment;
 use serde::Serialize;
-use std::{ffi::OsString, future::Future, path::Path, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    ffi::OsString,
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 #[cfg(not(target_family = "wasm"))]
 pub type ProcessFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -109,6 +116,61 @@ pub trait ShellExecutor: Send + Sync {
     ) -> ProcessFuture<'a, ExecCommandResult>;
     fn write_stdin(&self, request: WriteStdin) -> ProcessFuture<'_, ExecCommandResult>;
     fn terminate_all(&self) -> ProcessFuture<'_, ()>;
+    fn running(&self) -> Vec<RunningProcess> {
+        Vec::new()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningProcess {
+    pub session_id: i64,
+    pub caller: Option<String>,
+    pub command: String,
+    pub workdir: PathBuf,
+    pub started_at: SystemTime,
+    pub in_call: bool,
+    pub silent_for: Duration,
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub struct LastActivity(std::sync::atomic::AtomicU64);
+
+#[cfg(not(target_family = "wasm"))]
+impl LastActivity {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(Self::clock()))
+    }
+
+    pub fn touch(&self) {
+        self.0
+            .fetch_max(Self::clock(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn silent_for(&self) -> Duration {
+        Duration::from_micros(
+            Self::clock().saturating_sub(self.0.load(std::sync::atomic::Ordering::Relaxed)),
+        )
+    }
+
+    fn clock() -> u64 {
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        u64::try_from(
+            ORIGIN
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_micros(),
+        )
+        .unwrap_or(u64::MAX)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Default for LastActivity {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub trait OutputSink: Send + Sync {

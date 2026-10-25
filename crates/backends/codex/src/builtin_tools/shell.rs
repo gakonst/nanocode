@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use nanocode_tools::ToolDefinition;
+use nanocode_tools::{RunningTask, ToolDefinition};
 use serde::Deserialize;
 
 use super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult};
@@ -30,6 +30,18 @@ impl Tool for ExecCommandHandler {
 
     fn supports_parallel_tool_calls(&self) -> bool {
         true
+    }
+
+    fn running_tasks(&self) -> Vec<RunningTask> {
+        self.sessions
+            .running()
+            .into_iter()
+            .map(|process| RunningTask {
+                id: process.session_id.to_string(),
+                label: process.command,
+                silent_for: process.silent_for,
+            })
+            .collect()
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {

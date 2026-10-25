@@ -88,6 +88,19 @@ impl ToolRuntime {
         }
     }
 
+    #[must_use]
+    pub fn running_tasks(&self) -> Vec<crate::contract::RunningTask> {
+        match &self.inner {
+            Runtime::Native(runtime) => runtime
+                .workspace
+                .iter()
+                .flat_map(|workspace| workspace.tools())
+                .flat_map(|tool| tool.running_tasks())
+                .collect(),
+            Runtime::Host(_) => Vec::new(),
+        }
+    }
+
     pub fn model_specs(&self, session_id: &str) -> Vec<ToolDefinition> {
         match &self.inner {
             Runtime::Native(runtime) => runtime.model_specs(session_id),

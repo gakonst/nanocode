@@ -1,4 +1,6 @@
-use std::io::Read;
+use std::{io::Read, sync::Arc};
+
+use nanocode_process_contracts::LastActivity;
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -11,6 +13,7 @@ pub(super) use nanocode_process_contracts::{effective_token_limit, redact_and_li
 pub(super) async fn drain(
     mut pipe: Option<impl AsyncRead + Unpin>,
     chunks: UnboundedSender<Vec<u8>>,
+    activity: Arc<LastActivity>,
 ) {
     let Some(mut pipe) = pipe.take() else {
         return;
@@ -20,6 +23,7 @@ pub(super) async fn drain(
         match pipe.read(&mut buffer).await {
             Ok(0) => return,
             Ok(length) => {
+                activity.touch();
                 if chunks.send(buffer[..length].to_vec()).is_err() {
                     return;
                 }
@@ -35,6 +39,7 @@ pub(super) async fn drain(
 pub(super) fn drain_blocking(
     mut pipe: Box<dyn Read + Send>,
     chunks: UnboundedSender<Vec<u8>>,
+    activity: Arc<LastActivity>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         let mut buffer = [0_u8; READ_BUFFER_LENGTH];
@@ -42,6 +47,7 @@ pub(super) fn drain_blocking(
             match pipe.read(&mut buffer) {
                 Ok(0) => return,
                 Ok(length) => {
+                    activity.touch();
                     if chunks.send(buffer[..length].to_vec()).is_err() {
                         return;
                     }

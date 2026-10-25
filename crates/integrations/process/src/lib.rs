@@ -35,8 +35,8 @@ const MAX_SESSIONS: usize = 64;
 const PROTECTED_SESSIONS: usize = 8;
 
 pub use nanocode_process_contracts::{
-    ExecCommand, ExecCommandResult, ForegroundCommand, ForegroundExecutor, ProcessExecutors,
-    ShellExecutor, WriteStdin,
+    ExecCommand, ExecCommandResult, ForegroundCommand, ForegroundExecutor, LastActivity,
+    ProcessExecutors, RunningProcess, ShellExecutor, WriteStdin,
 };
 
 #[derive(Clone, Default)]
@@ -93,16 +93,6 @@ impl ForegroundExecutor for EnvironmentForeground {
 }
 
 type Sessions = Arc<Atom<HashMap<i64, Arc<Session>>>>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RunningProcess {
-    pub session_id: i64,
-    pub caller: Option<String>,
-    pub command: String,
-    pub workdir: PathBuf,
-    pub started_at: SystemTime,
-    pub in_call: bool,
-}
 
 pub type SecretEnvironment = Arc<dyn Fn() -> Vec<(OsString, OsString)> + Send + Sync>;
 
@@ -298,6 +288,9 @@ impl ShellSessions {
             let yield_time = duration_ms(request.yield_time_ms, default, minimum, maximum);
             let max_output_tokens = request.max_output_tokens;
             let chars = request.chars;
+            if !chars.is_empty() {
+                session.activity.touch();
+            }
             session
                 .last_used
                 .store(self.uses.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
@@ -346,6 +339,7 @@ impl ShellSessions {
                     workdir: session.launch.workdir.clone(),
                     started_at: session.launch.started_at,
                     in_call: session.busy.load(Ordering::SeqCst) > 0,
+                    silent_for: session.activity.silent_for(),
                 })
                 .collect::<Vec<_>>()
         });
@@ -388,6 +382,7 @@ struct Session {
     last_used: AtomicU64,
     busy: AtomicUsize,
     exited: Arc<AtomicBool>,
+    activity: Arc<LastActivity>,
 }
 
 struct Busy<'a>(&'a Session);
@@ -452,12 +447,17 @@ impl Session {
     ) -> std::io::Result<Arc<Self>> {
         let tty = matches!(spawned.stdin.as_ref(), Some(process::ProcessStdin::Pty(_)));
         let (chunks, output) = mpsc::unbounded_channel();
+        let activity = Arc::new(LastActivity::new());
         let drains = match spawned.output {
             process::ProcessOutput::Pipes { stdout, stderr } => vec![
-                tokio::spawn(output::drain(stdout, chunks.clone())),
-                tokio::spawn(output::drain(stderr, chunks)),
+                tokio::spawn(output::drain(stdout, chunks.clone(), Arc::clone(&activity))),
+                tokio::spawn(output::drain(stderr, chunks, Arc::clone(&activity))),
             ],
-            process::ProcessOutput::Pty(reader) => vec![output::drain_blocking(reader, chunks)],
+            process::ProcessOutput::Pty(reader) => vec![output::drain_blocking(
+                reader,
+                chunks,
+                Arc::clone(&activity),
+            )],
         };
         let process_group = spawned.process_group;
         let exited = spawned.child.exited();
@@ -481,6 +481,7 @@ impl Session {
             last_used: AtomicU64::new(0),
             busy: AtomicUsize::new(0),
             exited,
+            activity,
         }))
     }
 
@@ -745,6 +746,9 @@ impl ShellExecutor for ShellSessions {
     }
     fn terminate_all(&self) -> nanocode_process_contracts::ProcessFuture<'_, ()> {
         Self::terminate_all(self)
+    }
+    fn running(&self) -> Vec<RunningProcess> {
+        Self::running(self)
     }
 }
 

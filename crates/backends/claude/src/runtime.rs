@@ -204,10 +204,7 @@ impl RuntimeBackend for ClaudeHarness {
                     claude_tools(root.clone(), &handle, selected, additive)
                 }
             });
-            #[cfg(not(target_family = "wasm"))]
-            {
-                builder = builder.code_only(true);
-            }
+            builder = builder.code_only(cfg!(not(target_family = "wasm")) || remote);
             if let Some(checkpoint) = spec.checkpoint {
                 builder = builder.resume(checkpoint)?;
             }

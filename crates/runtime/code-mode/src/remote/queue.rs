@@ -69,22 +69,23 @@ pub trait CommandQueue: Send + Sync + 'static {
     type Origin: Clone + Send + Sync + 'static;
     type Error: std::fmt::Display + Send + 'static;
 
-    fn poll<'a>(
-        &'a self,
-        in_flight: &'a HashSet<String>,
-    ) -> HostFuture<'a, Result<Polled<Self::Origin>, Self::Error>>;
-    fn admit<'a>(
-        &'a self,
-        calls: &'a [(u64, String, Self::Origin)],
-    ) -> HostFuture<'a, Result<(), Self::Error>>;
-    fn recorded<'a>(&'a self, command: &'a str) -> HostFuture<'a, Result<Recorded, Self::Error>>;
-    fn settle<'a>(
-        &'a self,
-        command: &'a str,
+    fn poll(
+        &self,
+        in_flight: &HashSet<String>,
+    ) -> impl Future<Output = Result<Polled<Self::Origin>, Self::Error>> + Send;
+    fn admit(
+        &self,
+        calls: &[(u64, String, Self::Origin)],
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn recorded(&self, command: &str)
+    -> impl Future<Output = Result<Recorded, Self::Error>> + Send;
+    fn settle(
+        &self,
+        command: &str,
         queued: bool,
         settlement: Settlement,
-    ) -> HostFuture<'a, Result<(), Self::Error>>;
-    fn turn_ended<'a>(&'a self, session_id: &'a str, turn_id: &'a str) -> HostFuture<'a, bool>;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn turn_ended(&self, session_id: &str, turn_id: &str) -> impl Future<Output = bool> + Send;
     fn unsettled(&self, command: &str, error: &str);
 }
 

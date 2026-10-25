@@ -9,6 +9,8 @@ use crate::{Error, Result};
 
 const INLINE_BYTES: usize = 16 * 1024;
 
+const STEP_INLINE_BYTES: usize = 1024;
+
 const CHUNK_MIN: usize = 2 * 1024;
 const CHUNK_AVG: usize = 8 * 1024;
 const CHUNK_MAX: usize = 32 * 1024;
@@ -345,6 +347,33 @@ impl EncodedPayload {
             key: self.key.to_string(),
             value: layout.root.clone(),
         });
+    }
+
+    fn step_inline(&self) -> Option<&str> {
+        self.content.as_deref().filter(|content| {
+            content.len() < STEP_INLINE_BYTES
+                && self.layout.is_none()
+                && self.key.starts_with(KEY_PREFIX)
+        })
+    }
+
+    pub(crate) fn is_step_inline(&self) -> bool {
+        self.step_inline().is_some()
+    }
+
+    pub(crate) fn stage_step_unless(
+        &mut self,
+        records: &mut Vec<crate::StoreRecord>,
+        known: &dyn Fn(&str) -> bool,
+    ) {
+        if self.step_inline().is_none() {
+            self.stage_unless(records, known);
+            return;
+        }
+        records.extend(self.pending.drain(..).filter(|record| !known(&record.key)));
+        for mut child in std::mem::take(&mut self.children) {
+            child.stage_unless(records, known);
+        }
     }
 
     pub async fn load(&self, store: &mut dyn crate::StateStore, state_id: &str) -> Result<Self> {
@@ -771,3 +800,34 @@ impl PartialEq for EncodedPayload {
     }
 }
 impl Eq for EncodedPayload {}
+
+pub(crate) mod step {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::{EncodedPayload, STEP_INLINE_BYTES};
+
+    pub fn serialize<S: Serializer>(
+        payload: &EncodedPayload,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match payload.step_inline() {
+            Some(content) => serializer.collect_str(&format_args!("={content}")),
+            None => serializer.serialize_str(&payload.key),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<EncodedPayload, D::Error> {
+        let value = std::borrow::Cow::<str>::deserialize(deserializer)?;
+        let Some(content) = value.strip_prefix('=') else {
+            return Ok(EncodedPayload::by_key(&value));
+        };
+        if content.len() >= STEP_INLINE_BYTES {
+            return Err(serde::de::Error::custom(
+                "an inline step payload exceeds its size limit",
+            ));
+        }
+        Ok(EncodedPayload::from_json(content.into()))
+    }
+}

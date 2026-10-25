@@ -6,6 +6,8 @@ const STATE_FORMAT: u8 = 4;
 
 const SEALED_STATE_FORMAT: u8 = 5;
 
+const INLINE_STATE_FORMAT: u8 = 6;
+
 const RECEIPT_PAGE: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -136,7 +138,7 @@ impl OperationStatus {
 pub enum StepStatus {
     EffectPending,
 
-    Completed(EncodedPayload),
+    Completed(#[serde(with = "crate::payload::step")] EncodedPayload),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -144,6 +146,7 @@ pub enum StepStatus {
 pub struct StepState {
     pub kind: String,
 
+    #[serde(with = "crate::payload::step")]
     pub input: EncodedPayload,
 
     pub status: StepStatus,
@@ -230,9 +233,9 @@ impl OperationState {
             _ => {}
         }
         for step in self.steps.values_mut() {
-            step.input.stage_unless(records, known);
+            step.input.stage_step_unless(records, known);
             if let StepStatus::Completed(output) = &mut step.status {
-                output.stage_unless(records, known);
+                output.stage_step_unless(records, known);
             }
         }
         for steer in &mut self.steers {
@@ -592,10 +595,21 @@ impl JournalState {
             .map(|(_, checkpoint)| checkpoint)
     }
 
+    fn inlines_steps(&self) -> bool {
+        self.operations.values().any(|operation| {
+            operation.steps.values().any(|step| {
+                step.input.is_step_inline()
+                    || matches!(&step.status, StepStatus::Completed(output) if output.is_step_inline())
+            })
+        })
+    }
+
     pub fn checkpoint_payload<R: serde::Serialize>(&self, session: Option<&R>) -> Result<String> {
         serde_json::to_string(&RetainedCheckpointRef {
             nanocode_durable_state: DurableCheckpointRef {
-                format: if self.sealed.is_empty() {
+                format: if self.inlines_steps() {
+                    INLINE_STATE_FORMAT
+                } else if self.sealed.is_empty() {
                     STATE_FORMAT
                 } else {
                     SEALED_STATE_FORMAT
@@ -656,7 +670,8 @@ impl JournalState {
         }
         let sealed = checkpoint.sealed;
         if !(checkpoint.format == STATE_FORMAT && sealed.is_empty()
-            || checkpoint.format == SEALED_STATE_FORMAT)
+            || checkpoint.format == SEALED_STATE_FORMAT
+            || checkpoint.format == INLINE_STATE_FORMAT)
         {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",

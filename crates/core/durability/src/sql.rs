@@ -359,34 +359,38 @@ impl Replacement<'_> {
                 &counters.staged,
             ],
         ));
-        statements.push(statement(self.dialect, &HEAD, vec![self.state_id]));
     }
 
-    fn outcome(&self, results: &[Vec<SqlRow>]) -> Result<u64, StoreError> {
-        let [.., replaced, head] = results else {
+    fn replaced(results: &[Vec<SqlRow>]) -> Result<Option<u64>, StoreError> {
+        let [.., replaced] = results else {
             return Err(StoreError::Backend(
                 "SQL host answered too few statements for a replacement".to_owned(),
             ));
         };
-        if let Some(row) = single(replaced)? {
-            return counter(row, 0);
-        }
+        single(replaced)?.map(|row| counter(row, 0)).transpose()
+    }
+
+    fn refusal(&self, head: &[SqlRow]) -> StoreError {
+        self.diagnose(head).unwrap_or_else(|error| error)
+    }
+
+    fn diagnose(&self, head: &[SqlRow]) -> Result<StoreError, StoreError> {
         let Some(head) = single(head)? else {
-            return Err(StoreError::Fenced);
+            return Ok(StoreError::Fenced);
         };
         if text(head, 0)? != self.owner.owner_id().as_str()
             || counter(head, 1)? != self.owner.fence()
         {
-            return Err(StoreError::Fenced);
+            return Ok(StoreError::Fenced);
         }
         let actual = counter(head, 2)?;
         if actual != self.expected_revision {
-            return Err(StoreError::Conflict {
+            return Ok(StoreError::Conflict {
                 expected: self.expected_revision,
                 actual,
             });
         }
-        Err(StoreError::Backend(format!(
+        Ok(StoreError::Backend(format!(
             "SQL host refused to replace revision {actual} of state {} while reporting it as current",
             self.state_id
         )))
@@ -548,10 +552,20 @@ impl<H: Sql + ?Sized> SqlStore<H> {
 
     async fn replace_state(&mut self, replacement: Replacement<'_>) -> Result<u64, StoreError> {
         let counters = replacement.counters()?;
-        let mut statements = Vec::with_capacity(replacement.records.len() + 2);
+        let mut statements = Vec::with_capacity(replacement.records.len() + 1);
         replacement.statements(&counters, &mut statements);
         let results = self.transaction("replace", statements).await?;
-        replacement.outcome(&results)
+        match Replacement::replaced(&results)? {
+            Some(revision) => Ok(revision),
+            None => Err(self.refusal(&replacement).await),
+        }
+    }
+
+    async fn refusal(&mut self, replacement: &Replacement<'_>) -> StoreError {
+        match self.query("head", &HEAD, vec![replacement.state_id]).await {
+            Ok(head) => replacement.refusal(&head),
+            Err(error) => error,
+        }
     }
 
     async fn commit_all(
@@ -593,20 +607,23 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         } else {
             self.transaction("commit_many", statements).await
         };
-        prepared
-            .iter()
-            .zip(ranges)
-            .map(|(entry, range)| {
-                let (replacement, _) = entry.as_ref().map_err(Clone::clone)?;
-                let results = results.as_ref().map_err(Clone::clone)?;
-                replacement
-                    .outcome(&results[range])
-                    .map(|revision| Committed {
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        for (entry, range) in prepared.iter().zip(ranges) {
+            let outcome = match (entry, &results) {
+                (Err(error), _) | (Ok(_), Err(error)) => Err(error.clone()),
+                (Ok((replacement, _)), Ok(results)) => match Replacement::replaced(&results[range])
+                {
+                    Ok(Some(revision)) => Ok(Committed {
                         revision,
                         first_event: None,
-                    })
-            })
-            .collect()
+                    }),
+                    Ok(None) => Err(self.refusal(replacement).await),
+                    Err(error) => Err(error),
+                },
+            };
+            outcomes.push(outcome);
+        }
+        outcomes
     }
 }
 

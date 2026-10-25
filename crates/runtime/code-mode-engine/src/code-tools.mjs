@@ -34,6 +34,11 @@ export function createCodeTools(names, invoke) {
 
 
       if (typeof name !== "string" || name === "then") return undefined;
+      const deferred = /^(mcp__.+?__)(.+)$/.exec(name);
+      const caller = deferred && deferred[1] + "call_tool";
+      if (caller && Object.prototype.hasOwnProperty.call(target, caller)) {
+        return (input) => target[caller]({ name: deferred[2], arguments: input ?? {} });
+      }
       return {
         missing() {
           return helpers.observe(helpers.unavailable(name));

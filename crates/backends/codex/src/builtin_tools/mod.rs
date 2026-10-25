@@ -37,7 +37,7 @@ pub mod web_search;
 #[path = "web_search/host.rs"]
 mod web_search_host;
 #[cfg(target_family = "wasm")]
-pub use web_search_host::{web_search_tool, web_search_tool_with_model};
+pub use web_search_host::web_search_tool;
 
 pub use nanocode_tools::tool;
 
@@ -89,15 +89,7 @@ pub fn tool_runtime(
             Vec::new()
         };
         if let Some(gateway) = config.responses_gateway.as_deref() {
-            handlers = gateway_unsupported::wrap(
-                handlers,
-                &format!("the {} Responses gateway", gateway.name()),
-            );
-        } else if let Some(gateway) = config.chat_gateway.as_deref() {
-            handlers = gateway_unsupported::wrap(
-                handlers,
-                &format!("the {} Chat Completions gateway", gateway.name()),
-            );
+            handlers = gateway_unsupported::wrap(handlers, gateway.name());
         }
         if tools.workspace_enabled() {
             handlers.push(std::sync::Arc::new(plan::UpdatePlanTool::new()));

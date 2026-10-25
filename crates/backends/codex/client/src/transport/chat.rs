@@ -156,14 +156,6 @@ impl ChatGateway {
             .unwrap_or_default()
     }
 
-    #[must_use]
-    pub const fn name(&self) -> &'static str {
-        match self.provider {
-            Provider::OpenRouter => "openrouter",
-            Provider::WorkersAi => "workers-ai",
-        }
-    }
-
     #[doc(hidden)]
     #[must_use]
     pub fn default_api_base_url(&self) -> &str {

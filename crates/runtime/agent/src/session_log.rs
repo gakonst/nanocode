@@ -522,7 +522,7 @@ fn reference(value: &str) -> Result<PayloadReference, StoreError> {
     serde_json::from_str(value).map_err(|error| invalid(format!("payload reference: {error}")))
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     nanocode_platform::system_time()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {

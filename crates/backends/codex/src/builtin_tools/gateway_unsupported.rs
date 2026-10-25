@@ -9,12 +9,12 @@ struct GatewayUnsupportedTool {
     message: String,
 }
 
-pub(super) fn wrap(handlers: Vec<Arc<dyn Tool>>, gateway: &str) -> Vec<Arc<dyn Tool>> {
+pub(super) fn wrap(handlers: Vec<Arc<dyn Tool>>, gateway: &'static str) -> Vec<Arc<dyn Tool>> {
     handlers
         .into_iter()
         .map(|inner| {
             let message = format!(
-                "{} is unavailable through {gateway}: the built-in adapter is not configured for auxiliary endpoints or authentication through gateways. No request was sent. Register an explicit adapter tool to provide it.",
+                "{} is unavailable through the {gateway} Responses gateway: the built-in adapter is not configured for auxiliary endpoints or authentication through Responses gateways. No request was sent. Register an explicit adapter tool to provide it.",
                 inner.definition().name()
             );
             Arc::new(GatewayUnsupportedTool { inner, message }) as Arc<dyn Tool>

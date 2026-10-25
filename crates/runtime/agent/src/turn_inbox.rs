@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fmt,
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -22,12 +22,20 @@ use crate::{
         AGENT_EVENT_PROTOCOL_VERSION, AcceptedInput, AgentEvent, AgentEventKind, AgentEventTiming,
     },
     input::{Prompt, PromptInput},
-    session_log::{LogEntry, LoggedEvent, SessionLog, Started, TurnRecord, TurnState},
+    session_log::{LogEntry, LoggedEvent, SessionLog, Started, TurnRecord, TurnState, now},
     stored_event::Stored,
 };
 
 pub trait InboxHost: Send + Sync + 'static {
     fn publish(&self, events: Vec<LoggedEvent>) -> HostFuture<'_, Result<(), String>>;
+
+    fn live_deltas(&self) -> bool {
+        false
+    }
+
+    fn publish_live(&self, _events: Vec<LoggedEvent>) -> HostFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
 
     fn annotate(&self) -> Map<String, Value> {
         Map::new()
@@ -149,6 +157,165 @@ struct Shared<H: ?Sized> {
     host: Arc<dyn InboxHost>,
     state: Atom<Requests>,
     session_id: String,
+    streams: Mutex<Vec<Stream>>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Streamed {
+    Assistant,
+    ToolInput,
+}
+
+struct Stream {
+    kind: Streamed,
+    key: String,
+    event: AgentEvent,
+    timing: AgentEventTiming,
+    received_ns: u64,
+    text: String,
+    offset: usize,
+}
+
+enum Role {
+    Delta(Streamed, String, String),
+    Final(Streamed, String),
+    Boundary { ends_run: bool },
+    Other,
+}
+
+#[derive(Default, Deserialize)]
+struct StreamFields {
+    #[serde(default)]
+    item_id: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+fn role(event: &SessionEvent) -> Role {
+    let SessionEvent::Agent { event, .. } = event else {
+        return Role::Other;
+    };
+    let streamed = match event.kind {
+        AgentEventKind::AssistantDelta | AgentEventKind::AssistantMessage => Streamed::Assistant,
+        AgentEventKind::ToolInputDelta | AgentEventKind::ToolCall => Streamed::ToolInput,
+        AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
+            return Role::Boundary { ends_run: true };
+        }
+        AgentEventKind::RunError
+        | AgentEventKind::RunSteered
+        | AgentEventKind::ModelCallFailed
+        | AgentEventKind::ModelAttemptFailed
+        | AgentEventKind::ModelAttemptRetrying => return Role::Boundary { ends_run: false },
+        _ => return Role::Other,
+    };
+    let fields: StreamFields = serde_json::from_str(event.payload.get()).unwrap_or_default();
+    let key = match streamed {
+        Streamed::Assistant => fields.item_id,
+        Streamed::ToolInput => fields.call_id,
+    };
+    let Some(key) = key else {
+        return Role::Other;
+    };
+    match (event.kind, fields.text) {
+        (AgentEventKind::AssistantDelta | AgentEventKind::ToolInputDelta, Some(text)) => {
+            Role::Delta(streamed, key, text)
+        }
+        (AgentEventKind::AssistantDelta | AgentEventKind::ToolInputDelta, None) => Role::Other,
+        _ => Role::Final(streamed, key),
+    }
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+fn rewritten(
+    event: &AgentEvent,
+    text: Option<&str>,
+    offset: usize,
+) -> Result<AgentEvent, serde_json::Error> {
+    let mut fields: Map<String, Value> = serde_json::from_str(event.payload.get())?;
+    if let Some(text) = text {
+        fields.insert("text".into(), Value::String(text.to_owned()));
+    }
+    fields.insert("offset".into(), Value::from(offset));
+    let mut event = event.clone();
+    event.payload = Arc::from(serde_json::value::to_raw_value(&fields)?);
+    Ok(event)
+}
+
+impl Stream {
+    fn merged(&self) -> Result<SessionEvent, serde_json::Error> {
+        Ok(SessionEvent::Agent {
+            event: rewritten(&self.event, Some(&self.text), self.offset)?,
+            timing: self.timing,
+            received_ns: self.received_ns,
+        })
+    }
+}
+
+fn stream(
+    streams: &mut Vec<Stream>,
+    kind: Streamed,
+    key: String,
+    text: &str,
+    event: SessionEvent,
+) -> Result<SessionEvent, serde_json::Error> {
+    let SessionEvent::Agent {
+        event,
+        timing,
+        received_ns,
+    } = event
+    else {
+        return Ok(event);
+    };
+    let index = match streams
+        .iter()
+        .position(|stream| stream.kind == kind && stream.key == key)
+    {
+        Some(index) => index,
+        None => {
+            streams.push(Stream {
+                kind,
+                key,
+                event: event.clone(),
+                timing,
+                received_ns,
+                text: String::new(),
+                offset: 0,
+            });
+            streams.len() - 1
+        }
+    };
+    let entry = &mut streams[index];
+    let offset = entry.offset + utf16_len(&entry.text);
+    entry.text.push_str(text);
+    entry.event = event.clone();
+    entry.timing = timing;
+    entry.received_ns = received_ns;
+    Ok(SessionEvent::Agent {
+        event: rewritten(&event, None, offset)?,
+        timing,
+        received_ns,
+    })
+}
+
+fn flush(
+    streams: &mut Vec<Stream>,
+    ends_run: bool,
+) -> Result<Vec<SessionEvent>, serde_json::Error> {
+    let mut merged = Vec::new();
+    for entry in streams.iter_mut().filter(|entry| !entry.text.is_empty()) {
+        merged.push(entry.merged()?);
+        entry.offset += utf16_len(&entry.text);
+        entry.text.clear();
+    }
+    if ends_run {
+        streams.clear();
+    }
+    Ok(merged)
 }
 
 #[derive(Default, Deserialize)]
@@ -245,59 +412,138 @@ impl<H: ?Sized> Shared<H> {
 
 struct LogSink<H: ?Sized>(Arc<Shared<H>>);
 
+impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
+    async fn persist(&self, events: Vec<SessionEvent>) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let annotation = self.0.host.annotate();
+        let unannotated = Map::new();
+        let compact = self.0.log.compact.then_some(&*self.0.session_id);
+        let (entries, live): (Vec<_>, Vec<_>) = events
+            .iter()
+            .map(|event| {
+                let request_id = self.0.attribute(event);
+                let mut body = serde_json::value::to_raw_value(&Envelope {
+                    event,
+                    annotation: &annotation,
+                })?;
+                if !annotation.is_empty()
+                    && !self.0.log.event_fits(request_id.as_deref(), body.get())
+                {
+                    body = serde_json::value::to_raw_value(&Envelope {
+                        event,
+                        annotation: &unannotated,
+                    })?;
+                }
+                let stored = serde_json::value::to_raw_value(&Stored { event, compact })?;
+                Ok((
+                    LogEntry {
+                        request_id,
+                        event: stored,
+                    },
+                    body,
+                ))
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(|error| format!("encode agent event: {error}"))?
+            .into_iter()
+            .unzip();
+        let logged = self
+            .0
+            .log
+            .append(&entries)
+            .await
+            .map_err(|error| error.to_string())?;
+        let published = logged
+            .into_iter()
+            .zip(&entries)
+            .zip(live)
+            .map(|((mut logged, entry), live)| {
+                if logged.event.get() == entry.event.get() {
+                    logged.event = live;
+                }
+                logged
+            })
+            .collect();
+        self.0.host.publish(published).await
+    }
+
+    async fn publish_live(&self, events: Vec<SessionEvent>) -> Result<(), String> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let annotation = self.0.host.annotate();
+        let created_at = now();
+        let live = events
+            .iter()
+            .map(|event| {
+                Ok(LoggedEvent {
+                    seq: 0,
+                    request_id: self.0.attribute(event),
+                    created_at,
+                    event: serde_json::value::to_raw_value(&Envelope {
+                        event,
+                        annotation: &annotation,
+                    })?,
+                })
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(|error| format!("encode agent event: {error}"))?;
+        self.0.host.publish_live(live).await
+    }
+
+    fn route(&self, events: Vec<SessionEvent>) -> Result<Vec<(bool, Vec<SessionEvent>)>, String> {
+        let encode = |error: serde_json::Error| format!("encode agent event: {error}");
+        let mut streams = self
+            .0
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut segments: Vec<(bool, Vec<SessionEvent>)> = Vec::new();
+        let mut push = |live: bool, event: SessionEvent| match segments.last_mut() {
+            Some((kind, events)) if *kind == live => events.push(event),
+            _ => segments.push((live, vec![event])),
+        };
+        for event in events {
+            match role(&event) {
+                Role::Delta(kind, key, text) => {
+                    push(
+                        true,
+                        stream(&mut streams, kind, key, &text, event).map_err(encode)?,
+                    );
+                }
+                Role::Final(kind, key) => {
+                    streams.retain(|entry| entry.kind != kind || entry.key != key);
+                    push(false, event);
+                }
+                Role::Boundary { ends_run } => {
+                    for merged in flush(&mut streams, ends_run).map_err(encode)? {
+                        push(false, merged);
+                    }
+                    push(false, event);
+                }
+                Role::Other => push(false, event),
+            }
+        }
+        Ok(segments)
+    }
+}
+
 impl<H: Sql + Send + Sync + ?Sized + 'static> EventSink for LogSink<H> {
     fn deliver(&self, events: Vec<SessionEvent>) -> HostFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            let annotation = self.0.host.annotate();
-            let unannotated = Map::new();
-            let compact = self.0.log.compact.then_some(&*self.0.session_id);
-            let (entries, live): (Vec<_>, Vec<_>) = events
-                .iter()
-                .map(|event| {
-                    let request_id = self.0.attribute(event);
-                    let mut body = serde_json::value::to_raw_value(&Envelope {
-                        event,
-                        annotation: &annotation,
-                    })?;
-                    if !annotation.is_empty()
-                        && !self.0.log.event_fits(request_id.as_deref(), body.get())
-                    {
-                        body = serde_json::value::to_raw_value(&Envelope {
-                            event,
-                            annotation: &unannotated,
-                        })?;
-                    }
-                    let stored = serde_json::value::to_raw_value(&Stored { event, compact })?;
-                    Ok((
-                        LogEntry {
-                            request_id,
-                            event: stored,
-                        },
-                        body,
-                    ))
-                })
-                .collect::<Result<Vec<_>, serde_json::Error>>()
-                .map_err(|error| format!("encode agent event: {error}"))?
-                .into_iter()
-                .unzip();
-            let logged = self
-                .0
-                .log
-                .append(&entries)
-                .await
-                .map_err(|error| error.to_string())?;
-            let published = logged
-                .into_iter()
-                .zip(&entries)
-                .zip(live)
-                .map(|((mut logged, entry), live)| {
-                    if logged.event.get() == entry.event.get() {
-                        logged.event = live;
-                    }
-                    logged
-                })
-                .collect();
-            self.0.host.publish(published).await
+            if !self.0.host.live_deltas() {
+                return self.persist(events).await;
+            }
+            for (live, events) in self.route(events)? {
+                if live {
+                    self.publish_live(events).await?;
+                } else {
+                    self.persist(events).await?;
+                }
+            }
+            Ok(())
         })
     }
 }
@@ -369,6 +615,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
             host,
             state: Atom::default(),
             session_id,
+            streams: Mutex::new(Vec::new()),
         });
         let (events, pump) =
             SessionEvents::start(stream, subagents, window, LogSink(Arc::clone(&shared)));

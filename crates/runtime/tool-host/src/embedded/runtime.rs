@@ -21,6 +21,13 @@ const EXEC_DESCRIPTION: &str = r"Run JavaScript in the embedded host.
 - JavaScript runs inside the Node or browser host supplied by the embedding application.";
 const DEFERRED_TOOLS_DESCRIPTION: &str = r"Some deferred nested tools are omitted from this description. They remain available on the global `tools` object and are listed in `ALL_TOOLS`. Use `tool_search` to discover remote tools before calling them.";
 
+const BRIEF_TOOLS: [&str; 4] = [
+    "send_agent_message",
+    "list_agents",
+    "close_agent",
+    "interrupt_agent",
+];
+
 pub struct EmbeddedToolRuntime {
     working_directory: Arc<str>,
     host: Option<Arc<dyn CodeModeHost>>,
@@ -241,18 +248,35 @@ impl EmbeddedToolRuntime {
                     )
                 })
                 .collect::<Vec<_>>();
+            let (deferred, visible_definitions): (Vec<_>, Vec<_>) = visible_definitions
+                .into_iter()
+                .partition(|definition| definition.name().starts_with("mcp__"));
+            let brief_names = if self.brief.is_empty() {
+                BRIEF_TOOLS.iter().map(|name| (*name).to_owned()).collect()
+            } else {
+                self.brief.to_vec()
+            };
             let (brief, visible_definitions): (Vec<_>, Vec<_>) = visible_definitions
                 .into_iter()
-                .partition(|definition| self.brief.iter().any(|name| name == definition.name()));
+                .partition(|definition| brief_names.iter().any(|name| name == definition.name()));
             let summaries = brief.iter().map(summary).collect::<Vec<_>>();
             let mut exec = crate::code_mode_spec::exec_spec(
                 &visible_definitions,
                 &summaries,
-                has_deferred_tools,
+                has_deferred_tools || !deferred.is_empty(),
                 true,
                 true,
             );
             if let ToolDefinition::Custom { description, .. } = &mut exec {
+                if !deferred.is_empty() {
+                    let names = deferred
+                        .iter()
+                        .map(|definition| normalize_identifier(definition.name()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    *description =
+                        format!("{description}\nDeferred nested tools: {names}.").into_boxed_str();
+                }
                 if mode == EmbeddedToolMode::CodeOnly {
                     *description = description
                         .replace("Use `tool_search`", "Use `tools.tool_search`")

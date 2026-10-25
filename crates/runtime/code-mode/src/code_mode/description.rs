@@ -117,6 +117,7 @@ const EXEC_DESCRIPTION_COMPACT: &str = r#"Run JavaScript to orchestrate tool cal
 - Send raw JavaScript source, not JSON, a quoted string or a markdown code fence.
 - An optional first line `// `exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}` sets when a cell that is still running yields (default 10000 ms) and the output token budget (default unlimited).
 - Await every promise: when the code finishes, the cell ends and unawaited promises are discarded.
+- Cells run in QuickJS, not Node: there is no `require`, `import()` or npm. Exports of a `WebAssembly` instance, when the host provides one, are async functions to await.
 - Globals: `text(value)` appends output (other values as JSON); `image(urlOrItem, detail?)` appends an image from a base64 `data:` URL, `{ image_url }`, `{ file_id }` or an MCP `ImageContent` block; `audio(urlOrItem)` appends audio the same way; `generatedImage(result)` appends an image-generation result; `notify(value)` sends an extra output for this call at once; `store(key, value)` and `load(key)` keep serializable values across cells; `yield_control()` returns the output so far while the cell keeps running; `exit()` ends the cell successfully; `setTimeout` and `clearTimeout` (pending timers do not keep the cell alive); `ALL_TOOLS` lists `{ name, description }` of every nested tool."#;
 
 const MCP_TYPESCRIPT_COMPACT: &str = r#"type ImageContent = { type: "image"; data: string; mimeType: string };

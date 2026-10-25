@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::BTreeMap,
     sync::{
         Mutex,
@@ -55,6 +54,8 @@ const CHUNK: usize = 1 << 20;
 
 const LATIN1: &str = "(buffer, offset, length) => { const view = new Uint8Array(buffer, offset ?? 0, length ?? buffer.byteLength - (offset ?? 0)); let text = \"\"; for (let at = 0; at < view.length; at += 8192) text += String.fromCharCode.apply(null, view.subarray(at, at + 8192)); return text; }";
 
+const SLICE: &str = "(text, start, size) => { let end = Math.min(text.length, start + size); if (end < text.length) { const code = text.charCodeAt(end - 1); if (code >= 0xd800 && code < 0xdc00) end--; } return [start === 0 && end === text.length ? text : text.substring(start, end), end, text.length]; }";
+
 fn view<'js>(
     ctx: &Ctx<'js>,
     buffer: &ArrayBuffer<'js>,
@@ -77,14 +78,48 @@ fn view<'js>(
     while at < end {
         let length = (end - at).min(CHUNK);
         let text: rquickjs::String<'js> = latin1.call((buffer.clone(), at, length))?;
-        bytes.extend(
-            text.to_string()?
-                .chars()
-                .map(|character| character as u32 as u8),
-        );
+        let text = text.to_cstring()?;
+        let mut units = AsRef::<[u8]>::as_ref(&text).iter();
+        while let Some(&byte) = units.next() {
+            bytes.push(if byte < 0x80 {
+                byte
+            } else {
+                ((byte & 0x03) << 6) | (units.next().copied().unwrap_or(0) & 0x3f)
+            });
+        }
         at += length;
     }
     Ok(bytes)
+}
+
+fn utf8<'js>(ctx: &Ctx<'js>, text: rquickjs::String<'js>) -> rquickjs::Result<Vec<u8>> {
+    let slice: rquickjs::Function<'js> = ctx.eval(SLICE)?;
+    let mut bytes = Vec::new();
+    let mut at = 0_usize;
+    loop {
+        let result: rquickjs::Array<'js> = slice.call((text.clone(), at, CHUNK))?;
+        let piece: rquickjs::String<'js> = result.get(0)?;
+        let end = result.get::<f64>(1)? as usize;
+        let total = result.get::<f64>(2)? as usize;
+        if at == 0 {
+            bytes.reserve_exact(total);
+        }
+        let start = bytes.len();
+        bytes.extend_from_slice(AsRef::<[u8]>::as_ref(&piece.to_cstring()?));
+        let mut index = start;
+        while index + 2 < bytes.len() {
+            if bytes[index] == 0xed && bytes[index + 1] >= 0xa0 {
+                bytes[index..index + 3].copy_from_slice("\u{fffd}".as_bytes());
+                index += 3;
+            } else {
+                index += 1;
+            }
+        }
+        if end >= total || end <= at {
+            return Ok(bytes);
+        }
+        at = end;
+    }
 }
 
 fn source<'js>(
@@ -94,14 +129,22 @@ fn source<'js>(
     length: Opt<usize>,
 ) -> rquickjs::Result<Vec<u8>> {
     if let Some(text) = value.as_string() {
-        return text
-            .to_string()
-            .map(String::into_bytes)
-            .map_err(|_| Exception::throw_type(ctx, "the string is not well-formed UTF-16"));
+        return utf8(ctx, text.clone());
     }
     let buffer = ArrayBuffer::from_value(value.clone())
         .ok_or_else(|| Exception::throw_type(ctx, "expected a string or an ArrayBuffer"))?;
     view(ctx, &buffer, offset, length)
+}
+
+fn text<'js>(ctx: &Ctx<'js>, bytes: &[u8], fatal: bool) -> rquickjs::Result<rquickjs::String<'js>> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => rquickjs::String::from_str(ctx.clone(), text),
+        Err(_) if fatal => Err(Exception::throw_type(
+            ctx,
+            "The encoded data was not valid utf-8",
+        )),
+        Err(_) => rquickjs::String::from_str(ctx.clone(), &String::from_utf8_lossy(bytes)),
+    }
 }
 
 pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
@@ -133,16 +176,20 @@ pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
          fatal: Opt<bool>|
          -> rquickjs::Result<rquickjs::String<'js>> {
             let bytes = view(&ctx, &buffer, offset, length)?;
-            let text = if fatal.0.unwrap_or(false) {
-                Cow::Borrowed(std::str::from_utf8(&bytes).map_err(|_| {
-                    Exception::throw_type(&ctx, "The encoded data was not valid utf-8")
-                })?)
-            } else {
-                String::from_utf8_lossy(&bytes)
-            };
-            rquickjs::String::from_str(ctx.clone(), &text)
+            text(&ctx, &bytes, fatal.0.unwrap_or(false))
         },
     );
+    let take_text = Func::from(
+        |ctx: Ctx<'js>, id: f64, fatal: Opt<bool>| -> rquickjs::Result<rquickjs::String<'js>> {
+            let bytes = take(id as u64).ok_or_else(|| {
+                Exception::throw_reference(&ctx, &format!("byte buffer {id} is gone"))
+            })?;
+            text(&ctx, &bytes, fatal.0.unwrap_or(false))
+        },
+    );
+    let discard = Func::from(|id: f64| {
+        take(id as u64);
+    });
     let encode = Func::from(
         |ctx: Ctx<'js>, value: Value<'js>| -> rquickjs::Result<ArrayBuffer<'js>> {
             let bytes = source(&ctx, &value, Opt(None), Opt(None))?;
@@ -183,6 +230,8 @@ pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
     bytes
         .set("put", put_bytes)
         .and_then(|()| bytes.set("take", take_bytes))
+        .and_then(|()| bytes.set("text", take_text))
+        .and_then(|()| bytes.set("discard", discard))
         .and_then(|()| bytes.set("decode", decode))
         .and_then(|()| bytes.set("encode", encode))
         .and_then(|()| bytes.set("toBase64", to_base64))

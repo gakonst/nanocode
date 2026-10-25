@@ -70,16 +70,30 @@ impl Browser {
             return false;
         };
         entries.flatten().any(|entry| {
+            let profile = entry.path();
             ["Secure Preferences", "Preferences"].iter().any(|file| {
-                fs::read(entry.path().join(file))
+                fs::read(profile.join(file))
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                     .is_some_and(|preferences| {
                         preferences["extensions"]["settings"][EXTENSION_ID].is_object()
                     })
-            })
+            }) || extension_state_mentions(&profile)
         })
     }
+}
+
+fn extension_state_mentions(profile: &Path) -> bool {
+    let Ok(files) = fs::read_dir(profile.join("Extension State")) else {
+        return false;
+    };
+    files.flatten().any(|file| {
+        fs::read(file.path()).is_ok_and(|bytes| {
+            bytes
+                .windows(EXTENSION_ID.len())
+                .any(|window| window == EXTENSION_ID.as_bytes())
+        })
+    })
 }
 
 pub fn browsers(home: &Path) -> Vec<Browser> {

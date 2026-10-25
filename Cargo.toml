@@ -67,6 +67,9 @@ categories = ["api-bindings", "asynchronous", "development-tools"]
 publish = true
 
 [workspace.dependencies]
+cua-driver-core = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92", default-features = false }
+cua-driver-sdk = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92" }
+cursor-overlay = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92" }
 nanocode-backend-claude-tools = { version = "0.6.7", path = "crates/backends/claude/tools" }
 nanocode-agent-types = { version = "0.6.7", path = "crates/core/agent-types" }
 nanocode-durability-core = { version = "0.6.7", path = "crates/core/durability" }

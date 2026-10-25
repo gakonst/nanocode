@@ -198,7 +198,8 @@ impl BranchSpawner {
         let prompt_cache_key = self
             .prompt_cache_key
             .as_ref()
-            .map_or_else(|| Arc::clone(&self.lineage_id), Arc::clone);
+            .filter(|key| !crate::prompt_cache::is_prefix_key(key))
+            .map(Arc::clone);
         let spawner = Self {
             config: Arc::new(config),
             instant_tool_steering: self.instant_tool_steering,
@@ -208,7 +209,7 @@ impl BranchSpawner {
             child_journal: None,
             lineage_id: Arc::from(session_id_text.as_str()),
             provider_session_id: Arc::clone(&self.provider_session_id),
-            prompt_cache_key: Some(prompt_cache_key),
+            prompt_cache_key,
             shared_prompt_cache: self.shared_prompt_cache.clone(),
 
             before_compaction: None,

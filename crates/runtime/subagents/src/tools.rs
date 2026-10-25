@@ -985,7 +985,7 @@ impl Tool for SubmitResult {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SUBMIT_RESULT_TOOL,
-            "Submits the current child subagent turn's final JSON output. This tool is unavailable to the root agent; root agents return final output as assistant text. Supply only output matching the task schema. After an accepted receipt, send a brief final assistant message with no further tool calls; do not finish with an empty response. If superseded, incorporate pending instructions and submit the updated result. Invalid values can be corrected and retried.",
+            "Submits the current child subagent turn's final JSON output. Supply only output matching the task schema. After an accepted receipt, send a brief final assistant message with no further tool calls; do not finish with an empty response. If superseded, incorporate pending instructions and submit the updated result. Invalid values can be corrected and retried.",
             schema(r##"{
                 "type": "object",
                 "properties": {
@@ -1346,10 +1346,8 @@ impl Tool for ChangeAgentLifecycle {
 
 fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn Tool>> {
     registry.register_handle(parent.clone());
-    vec![
-        Arc::new(SubmitResult {
-            registry: Arc::downgrade(registry),
-        }),
+    let child = parent.session_id() != parent.root_session_id();
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(SpawnAgent {
             parent,
             registry: Arc::downgrade(registry),
@@ -1371,7 +1369,16 @@ fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn To
             registry: Arc::downgrade(registry),
             operation: LifecycleOperation::Close,
         }),
-    ]
+    ];
+    if child {
+        tools.insert(
+            0,
+            Arc::new(SubmitResult {
+                registry: Arc::downgrade(registry),
+            }),
+        );
+    }
+    tools
 }
 
 pub fn install_tools<T: ToolCollection>(

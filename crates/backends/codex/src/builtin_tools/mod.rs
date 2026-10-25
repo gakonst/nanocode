@@ -16,7 +16,7 @@ pub use standard::StandardTool;
 #[cfg(not(target_family = "wasm"))]
 mod gateway_unsupported;
 mod host;
-pub use host::host_tools;
+pub use host::{host_file_tools, host_tools};
 mod plan;
 mod shell;
 #[cfg(not(target_family = "wasm"))]

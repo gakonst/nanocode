@@ -39,20 +39,7 @@ pub fn host_tools(
 ) -> Result<Tools, ToolsBuildError> {
     let workspace: Arc<Path> = workspace.into();
     let jobs = Arc::new(HostJobs::default());
-    let mut tools = Tools::builder().without_defaults();
-    for schema in text_files::definitions() {
-        let name = schema["name"].as_str().unwrap_or_default().to_owned();
-        tools = tools.tool(HostFileTool {
-            definition: ToolDefinition::function(
-                name.clone(),
-                schema["description"].as_str().unwrap_or_default(),
-                schema["input_schema"].clone(),
-            ),
-            name,
-            workspace: Arc::clone(&workspace),
-            files: Arc::clone(&files),
-        });
-    }
+    let mut tools = file_tools(Arc::clone(&workspace), files);
     tools = tools.tool(HostBashTool(ClaudeBash::new(HostBash {
         workspace,
         shell,
@@ -67,6 +54,33 @@ pub fn host_tools(
     tools
         .build()
         .map(|tools| tools.with_code_mode_policy(crate::code_mode_policy::claude_tool_policy()))
+}
+
+pub fn host_file_tools(
+    workspace: PathBuf,
+    files: Arc<dyn FileHost>,
+) -> Result<Tools, ToolsBuildError> {
+    file_tools(workspace.into(), files)
+        .build()
+        .map(|tools| tools.with_code_mode_policy(crate::code_mode_policy::claude_tool_policy()))
+}
+
+fn file_tools(workspace: Arc<Path>, files: Arc<dyn FileHost>) -> nanocode_tool_host::ToolsBuilder {
+    let mut tools = Tools::builder().without_defaults();
+    for schema in text_files::definitions() {
+        let name = schema["name"].as_str().unwrap_or_default().to_owned();
+        tools = tools.tool(HostFileTool {
+            definition: ToolDefinition::function(
+                name.clone(),
+                schema["description"].as_str().unwrap_or_default(),
+                schema["input_schema"].clone(),
+            ),
+            name,
+            workspace: Arc::clone(&workspace),
+            files: Arc::clone(&files),
+        });
+    }
+    tools
 }
 
 struct HostFileTool {

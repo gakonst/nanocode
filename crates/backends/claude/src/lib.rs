@@ -39,7 +39,7 @@ mod claude_tools;
 pub use claude_tools::install_shared_tools;
 mod code_mode_policy;
 mod host_tools;
-pub use host_tools::host_tools;
+pub use host_tools::{host_file_tools, host_tools};
 #[cfg(not(target_family = "wasm"))]
 mod defaults;
 #[cfg(not(target_family = "wasm"))]

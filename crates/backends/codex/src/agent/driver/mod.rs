@@ -52,13 +52,11 @@ impl AgentDriver {
                 .with_retained_snapshot(self.spawner.restored_snapshot.take()),
             )
         });
-        let prompt_cache_key = self
-            .spawner
-            .prompt_cache_key
-            .as_ref()
-            .map_or_else(|| Arc::clone(&self.spawner.lineage_id), Arc::clone);
-        let prompt_cache =
-            ModelPromptCache::new(prompt_cache_key, self.spawner.shared_prompt_cache.clone());
+        let prompt_cache = ModelPromptCache::new(
+            self.spawner.prompt_cache_key.clone(),
+            Arc::clone(&self.spawner.lineage_id),
+            self.spawner.shared_prompt_cache.clone(),
+        );
         let mut model = if let Some(initial) = self.initial_model.take() {
             ModelRun::from_checkpoint(
                 self.events.clone(),

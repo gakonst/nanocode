@@ -24,3 +24,14 @@ pub fn host_tools(
         .build()
         .map(|tools| tools.with_code_mode_policy(standard_tool_policy()))
 }
+
+pub fn host_file_tools(
+    workspace: PathBuf,
+    files: Arc<dyn FileHost>,
+) -> Result<Tools, ToolsBuildError> {
+    Tools::builder()
+        .without_defaults()
+        .tool(HostApplyPatchHandler::new(workspace, files))
+        .build()
+        .map(|tools| tools.with_code_mode_policy(standard_tool_policy()))
+}

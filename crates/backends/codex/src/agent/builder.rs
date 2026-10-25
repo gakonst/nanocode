@@ -47,6 +47,7 @@ where
 #[derive(Clone, Default)]
 pub(super) struct PromptCacheConfig {
     pub(super) key: Option<String>,
+    pub(super) per_session: bool,
     pub(super) shared: Option<SharedPromptCache>,
 }
 
@@ -271,10 +272,16 @@ impl<F> CodexBuilder<F> {
         self
     }
 
+    #[must_use]
+    pub const fn per_session_prompt_cache_key(mut self) -> Self {
+        self.prompt_cache.per_session = true;
+        self
+    }
+
     #[doc(hidden)]
     #[must_use]
     pub fn default_prompt_cache_key(mut self, prompt_cache_key: impl Into<String>) -> Self {
-        if self.prompt_cache.key.is_none() {
+        if self.prompt_cache.per_session && self.prompt_cache.key.is_none() {
             self.prompt_cache.key = Some(prompt_cache_key.into());
         }
         self

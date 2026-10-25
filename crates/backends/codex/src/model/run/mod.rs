@@ -592,7 +592,8 @@ impl ModelRun {
             &self.events,
             &self.transport_stats,
             &self.provider_session_id,
-            self.prompt_cache.key(),
+            &self.prompt_cache,
+            self.model,
             tools,
             &self.config.base_system_prompt(),
         )

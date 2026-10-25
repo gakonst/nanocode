@@ -18,7 +18,11 @@ pub(super) fn build_agent(
     let session_id_text = session_id.to_string();
     let context_source =
         tracing::info_span!("codex.session.context").in_scope(|| codex.context.build());
-    let PromptCacheConfig { key, shared } = prompt_cache;
+    let PromptCacheConfig {
+        key,
+        per_session,
+        shared,
+    } = prompt_cache;
 
     let is_resume = resume.is_some()
         || lineage
@@ -48,7 +52,8 @@ pub(super) fn build_agent(
     } else {
         (
             Arc::<str>::from(session_id_text.as_str()),
-            key.map(Arc::from),
+            key.map(Arc::from)
+                .or_else(|| per_session.then(|| Arc::from(session_id_text.as_str()))),
             None,
         )
     };

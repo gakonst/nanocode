@@ -627,15 +627,17 @@ pub(super) fn attempt_factory(
     events: &EventSink,
     transport_stats: &Arc<TransportStats>,
     provider_session_id: &str,
-    prompt_cache_key: &str,
+    prompt_cache: &ModelPromptCache,
+    model: Model,
     tools: &ToolRuntime,
     system_prompt: &str,
 ) -> Result<ResponsesAttemptFactory> {
     let (tool_specs, code_mode_tool_names) = model_tool_contract(tools, events.request_id());
+    let prompt_cache_key = prompt_cache.key(model, &tool_specs, system_prompt)?;
     Ok(ResponsesAttemptFactory::new(
         request_profile(
             provider_session_id,
-            prompt_cache_key,
+            &prompt_cache_key,
             tool_specs,
             code_mode_tool_names,
             system_prompt,

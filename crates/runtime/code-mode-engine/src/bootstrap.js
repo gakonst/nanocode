@@ -442,7 +442,7 @@
     }
     try {
       const prelude = preludeSource
-        ? new Function("tools", "call", preludeSource)(
+        ? (typeof preludeSource === "function" ? preludeSource : compilePrelude(preludeSource))(
           tools,
           (name, input) => invokeTool(name, input, true),
         ) ?? {}
@@ -530,6 +530,8 @@
       });
     }
   };
+  const compilePrelude = (preludeSource) => new Function("tools", "call", preludeSource);
+  runCell.compile = compilePrelude;
   runCell.uncaught = uncaught;
   return runCell;
 })

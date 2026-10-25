@@ -195,6 +195,18 @@ pub(crate) fn new_state(
     }))
 }
 
+#[cfg(target_family = "wasm")]
+pub(crate) fn begin_execution(
+    state: &Rc<RefCell<ExecutionState>>,
+    execution_id: u64,
+    stored: HashMap<String, Arc<RawValue>>,
+) {
+    let mut state = state.borrow_mut();
+    state.rejections.borrow_mut().clear();
+    state.execution_id = execution_id;
+    state.stored = stored;
+}
+
 pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
     let mut state = state.borrow_mut();
     state.pending_tools.clear();
@@ -205,6 +217,7 @@ pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
     drop(rejections);
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn start_execution<'js>(
     ctx: &Ctx<'js>,
     state: &Rc<RefCell<ExecutionState>>,
@@ -212,6 +225,24 @@ pub(crate) fn start_execution<'js>(
     tools: Vec<Value>,
     prelude: Option<&str>,
 ) -> Result<Promise<'js>, String> {
+    let run_cell = prepare_execution(ctx, state, prelude.is_some())?;
+    let prelude = prelude.map_or_else(
+        || Ok(rquickjs::Value::new_undefined(ctx.clone())),
+        |prelude| {
+            rquickjs::String::from_str(ctx.clone(), prelude)
+                .map(rquickjs::String::into_value)
+                .catch(ctx)
+                .map_err(|error| format!("failed to pass the QuickJS prelude: {error}"))
+        },
+    )?;
+    run_execution(ctx, state, &run_cell, source, tools, prelude)
+}
+
+pub(crate) fn prepare_execution<'js>(
+    ctx: &Ctx<'js>,
+    state: &Rc<RefCell<ExecutionState>>,
+    bytes: bool,
+) -> Result<Function<'js>, String> {
     install_native_functions(ctx, state)?;
 
     let factory_source = format!(
@@ -246,17 +277,40 @@ pub(crate) fn start_execution<'js>(
         .map_err(|error| format!("failed to read the QuickJS rejection handler: {error}"))?;
     state.borrow_mut().uncaught = Some(Persistent::save(ctx, uncaught));
     remove_native_globals(ctx)?;
-    if prelude.is_some() {
+    if bytes {
         crate::bytes::install(ctx)?;
     }
+    Ok(run_cell)
+}
 
+#[cfg(target_family = "wasm")]
+pub(crate) fn compile_prelude<'js>(
+    ctx: &Ctx<'js>,
+    run_cell: &Function<'js>,
+    prelude: &str,
+) -> Result<Function<'js>, String> {
+    run_cell
+        .get::<_, Function<'js>>("compile")
+        .and_then(|compile| compile.call((prelude,)))
+        .catch(ctx)
+        .map_err(|error| format!("failed to compile the QuickJS prelude: {error}"))
+}
+
+pub(crate) fn run_execution<'js>(
+    ctx: &Ctx<'js>,
+    state: &Rc<RefCell<ExecutionState>>,
+    run_cell: &Function<'js>,
+    source: String,
+    tools: Vec<Value>,
+    prelude: rquickjs::Value<'js>,
+) -> Result<Promise<'js>, String> {
     let (tools, schemas) = split_schemas(tools);
     let tools = serde_json::to_string(&tools)
         .map_err(|error| format!("failed to encode QuickJS tool metadata: {error}"))?;
     let schemas = serde_json::to_string(&schemas)
         .map_err(|error| format!("failed to encode QuickJS tool schemas: {error}"))?;
     let promise = run_cell
-        .call::<_, Promise<'js>>((source, tools, schemas, prelude.unwrap_or_default()))
+        .call::<_, Promise<'js>>((source, tools, schemas, prelude))
         .catch(ctx)
         .map_err(|error| format!("embedded QuickJS execution failed to start: {error}"))?;
     drain_jobs(ctx, state);

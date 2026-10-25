@@ -3,21 +3,25 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::Arc,
+    time::Duration,
 };
 
-use rquickjs::{Context, Persistent, Promise, Runtime};
+use rquickjs::{CatchResultExt, Context, Function, Persistent, Promise, Runtime};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use crate::cell::{
-    ExecutionState, Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs,
-    invoke_timeout, new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal,
-    start_execution, track_rejections,
+    ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, compile_prelude,
+    completed_terminal, drain_jobs, invoke_timeout, new_state, next_due_timeout,
+    next_timeout_wait, prepare_execution, resolve_tool, run_execution, send_terminal,
+    track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
 
 const HOST_STACK_BYTES: usize = 192 * 1024;
+
+const PREPARE_AFTER: Duration = Duration::from_millis(20);
 
 const EXHAUSTED: &str = "Script stopped: one synchronous run exceeded this host's CPU budget for a cell. Split long loops with await (for example await new Promise((resolve) => setTimeout(resolve, 0))).";
 
@@ -33,10 +37,79 @@ pub fn set_interrupt_checks(checks: u64) {
 
 struct Engine {
     execution: Option<Execution>,
+    retired: Option<Execution>,
+    prepared: Option<Prepared>,
+    prelude: Option<Option<Arc<str>>>,
     failure: Option<String>,
     budget: Rc<Cell<u64>>,
     rejections: Rejections,
+    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     runtime: Runtime,
+}
+
+struct Prepared {
+    context: Context,
+    state: Rc<RefCell<ExecutionState>>,
+    run_cell: Persistent<Function<'static>>,
+    prelude: Option<(Arc<str>, Persistent<Function<'static>>)>,
+}
+
+impl Engine {
+    fn retire(&mut self) {
+        if let Some(retired) = self.retired.take() {
+            retired.close(&self.runtime);
+        }
+    }
+
+    fn prepare(&self, prelude: Option<&Arc<str>>) -> Result<Prepared, String> {
+        let context = Context::full(&self.runtime)
+            .map_err(|error| format!("failed to create embedded QuickJS context: {error}"))?;
+        let state = new_state(
+            0,
+            self.event_tx.clone(),
+            HashMap::new(),
+            Rc::clone(&self.rejections),
+        );
+        let (run_cell, prelude) = context.with(|ctx| {
+            let run_cell = prepare_execution(&ctx, &state, prelude.is_some())?;
+            let prelude = prelude
+                .map(|source| {
+                    compile_prelude(&ctx, &run_cell, source)
+                        .map(|compiled| (Arc::clone(source), Persistent::save(&ctx, compiled)))
+                })
+                .transpose()?;
+            Ok::<_, String>((Persistent::save(&ctx, run_cell), prelude))
+        })?;
+        Ok(Prepared {
+            context,
+            state,
+            run_cell,
+            prelude,
+        })
+    }
+}
+
+fn prepare_later(key: u64) {
+    nanocode_platform::spawn_local(Box::pin(async move {
+        nanocode_platform::sleep(PREPARE_AFTER).await;
+        let Some(mut engine) = ENGINES
+            .try_with(|engines| engines.borrow_mut().remove(&key))
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        engine.retire();
+        if engine.execution.is_none()
+            && engine.prepared.is_none()
+            && engine.failure.is_none()
+            && let Some(prelude) = engine.prelude.clone()
+        {
+            engine.budget.set(INTERRUPT_CHECKS.get());
+            engine.prepared = engine.prepare(prelude.as_ref()).ok();
+        }
+        ENGINES.with_borrow_mut(|engines| engines.insert(key, engine));
+    }));
 }
 
 struct Execution {
@@ -57,7 +130,6 @@ impl Execution {
 
 pub struct EmbeddedHost {
     key: u64,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     events: mpsc::UnboundedReceiver<RuntimeEvent>,
 }
 
@@ -81,22 +153,25 @@ impl EmbeddedHost {
         let rejections = track_rejections(&runtime);
         let key = NEXT_ENGINE.get();
         NEXT_ENGINE.set(key.wrapping_add(1));
+        let (event_tx, events) = mpsc::unbounded_channel();
         ENGINES.with_borrow_mut(|engines| {
             engines.insert(
                 key,
                 Engine {
                     execution: None,
+                    retired: None,
+                    prepared: None,
+                    prelude: None,
                     failure: None,
                     budget,
                     rejections,
+                    event_tx,
                     runtime,
                 },
             )
         });
-        let (event_tx, events) = mpsc::unbounded_channel();
         Ok(Self {
             key,
-            event_tx,
             events,
         })
     }
@@ -113,16 +188,36 @@ impl EmbeddedHost {
             if let Some(previous) = engine.execution.take() {
                 previous.close(&engine.runtime);
             }
-            let context = Context::full(&engine.runtime)
-                .map_err(|error| format!("failed to create embedded QuickJS context: {error}"))?;
-            let state = new_state(
-                execution_id,
-                self.event_tx.clone(),
-                stored,
-                Rc::clone(&engine.rejections),
-            );
+            engine.retire();
+            let prepared = engine
+                .prepared
+                .take()
+                .filter(|prepared| {
+                    prepared.prelude.as_ref().map(|(source, _)| source) == prelude.as_ref()
+                })
+                .map_or_else(|| engine.prepare(prelude.as_ref()), Ok)?;
+            engine.prelude = Some(prelude);
+            begin_execution(&prepared.state, execution_id, stored);
+            let Prepared {
+                context,
+                state,
+                run_cell,
+                prelude,
+            } = prepared;
             let promise = context.with(|ctx| {
-                start_execution(&ctx, &state, source.to_owned(), tools, prelude.as_deref())
+                let run_cell = run_cell
+                    .restore(&ctx)
+                    .catch(&ctx)
+                    .map_err(|error| format!("failed to restore the QuickJS cell runner: {error}"))?;
+                let prelude = match prelude {
+                    Some((_, compiled)) => compiled
+                        .restore(&ctx)
+                        .catch(&ctx)
+                        .map_err(|error| format!("failed to restore the QuickJS prelude: {error}"))?
+                        .into_value(),
+                    None => rquickjs::Value::new_undefined(ctx.clone()),
+                };
+                run_execution(&ctx, &state, &run_cell, source.to_owned(), tools, prelude)
                     .map(|promise| Persistent::save(&ctx, promise))
             });
             engine.execution = Some(Execution {
@@ -210,10 +305,11 @@ impl EmbeddedHost {
             .try_with(|engines| engines.borrow_mut().remove(&self.key))
             .ok()
             .flatten();
-        if let Some(mut engine) = engine
-            && let Some(execution) = engine.execution.take()
-        {
-            execution.close(&engine.runtime);
+        if let Some(mut engine) = engine {
+            if let Some(execution) = engine.execution.take() {
+                execution.close(&engine.runtime);
+            }
+            engine.retire();
         }
     }
 
@@ -228,7 +324,7 @@ impl EmbeddedHost {
         engine.budget.set(INTERRUPT_CHECKS.get());
         let result = run(&mut engine);
         let exhausted = engine.budget.get() == 0;
-        let result = settle(&mut engine, result, exhausted);
+        let result = settle(self.key, &mut engine, result, exhausted);
         if let Err(error) = &result {
             engine.failure.get_or_insert_with(|| error.clone());
         }
@@ -237,7 +333,12 @@ impl EmbeddedHost {
     }
 }
 
-fn settle(engine: &mut Engine, result: Result<(), String>, exhausted: bool) -> Result<(), String> {
+fn settle(
+    key: u64,
+    engine: &mut Engine,
+    result: Result<(), String>,
+    exhausted: bool,
+) -> Result<(), String> {
     let Some(execution) = engine.execution.as_ref() else {
         return result;
     };
@@ -273,8 +374,12 @@ fn settle(engine: &mut Engine, result: Result<(), String>, exhausted: bool) -> R
         }
         finished => finished,
     };
-    if let Some(execution) = engine.execution.take() {
-        execution.close(&engine.runtime);
+    if let Some(mut execution) = engine.execution.take() {
+        clear_pending(&execution.state);
+        execution.promise = None;
+        engine.retire();
+        engine.retired = Some(execution);
+        prepare_later(key);
     }
     finished
 }
@@ -285,10 +390,11 @@ impl Drop for EmbeddedHost {
             .try_with(|engines| engines.borrow_mut().remove(&self.key))
             .ok()
             .flatten();
-        if let Some(mut engine) = engine
-            && let Some(execution) = engine.execution.take()
-        {
-            execution.close(&engine.runtime);
+        if let Some(mut engine) = engine {
+            if let Some(execution) = engine.execution.take() {
+                execution.close(&engine.runtime);
+            }
+            engine.retire();
         }
     }
 }

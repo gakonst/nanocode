@@ -2209,6 +2209,8 @@ dependencies = [
  "base64 0.22.1",
  "base64-simd",
  "libc",
+ "nanocode-mcp",
+ "nanocode-mcp-tools",
  "nanocode-tool-contracts",
  "nanocode-types",
  "serde",

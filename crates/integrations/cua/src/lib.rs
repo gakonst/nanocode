@@ -2,6 +2,7 @@
 
 #[cfg(unix)]
 pub mod browser;
+pub mod driver;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};

@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
+    hash::{Hash as _, Hasher as _},
     path::PathBuf,
     process::Stdio,
     sync::Arc,
@@ -188,12 +189,12 @@ impl ComputerConfig {
         let source = CUA_DRIVER_PROVIDER
             .replacen("__CATALOG__", CUA_DRIVER_CATALOG.trim(), 1)
             .replacen("__VERSION__", env!("CARGO_PKG_VERSION"), 1);
+        let script = provider_script(&home, &source)?;
         let mut config = Self::new(node);
-        config.args = ["--expose-internals", "--input-type=module", "--eval"]
-            .into_iter()
-            .map(OsString::from)
-            .chain([OsString::from(source)])
-            .collect();
+        config.args = vec![
+            OsString::from("--expose-internals"),
+            script.into_os_string(),
+        ];
         config.environment =
             [
                 ("CUA_DRIVER_PATH", driver.clone().into_os_string()),
@@ -301,11 +302,35 @@ impl ComputerConfig {
     }
 }
 
-pub fn browser_socket(home: &std::path::Path) -> PathBuf {
+fn nanocode_home(home: &std::path::Path) -> PathBuf {
     std::env::var_os("NANOCODE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".nanocode"))
-        .join("browser/browser.sock")
+}
+
+pub fn browser_socket(home: &std::path::Path) -> PathBuf {
+    nanocode_home(home).join("browser/browser.sock")
+}
+
+fn provider_script(home: &std::path::Path, source: &str) -> Result<PathBuf, ToolError> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    let directory = nanocode_home(home).join("cua");
+    let path = directory.join(format!("cua-driver-{:016x}.mjs", hasher.finish()));
+    if std::fs::read(&path).is_ok_and(|bytes| bytes == source.as_bytes()) {
+        return Ok(path);
+    }
+    let failed = |error: std::io::Error| {
+        ToolError::from(format!(
+            "cannot write the cua-driver provider to {}: {error}",
+            path.display()
+        ))
+    };
+    std::fs::create_dir_all(&directory).map_err(failed)?;
+    let temporary = directory.join(format!(".cua-driver-{}.tmp", std::process::id()));
+    std::fs::write(&temporary, source).map_err(failed)?;
+    std::fs::rename(&temporary, &path).map_err(failed)?;
+    Ok(path)
 }
 
 fn program(name: &str) -> Option<PathBuf> {

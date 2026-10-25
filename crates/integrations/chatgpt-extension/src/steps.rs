@@ -30,6 +30,12 @@ pub struct Tabs {
     tabs: HashMap<u64, Tab>,
     titles: HashMap<String, String>,
     active: HashMap<(String, String), Instant>,
+    /// Tab groups already collapsed once: a group the member expanded stays open.
+    collapsed: HashSet<u64>,
+    /// Browser management failed once on this connection (OpenAI's gate is
+    /// off for this browser, or the extension didn't answer), so groups
+    /// aren't collapsed on it.
+    unmanaged: bool,
 }
 
 pub const GROUP_TITLE_MAX: usize = 32;
@@ -383,6 +389,40 @@ impl Tabs {
         Err("page did not finish loading".into())
     }
 
+    /// Collapses the new tab's group the first time it is seen, so agent tabs
+    /// don't spread across the tab strip. The extension creates groups expanded
+    /// and only lets callers change them through its browser management
+    /// command, which OpenAI gates per browser. Best effort.
+    fn collapse(&mut self, ext: &mut Extension, namespace: &str, common: &Value, tab: u64) {
+        if self.unmanaged {
+            return;
+        }
+        let mut call = |module: &str, method: &str, args: Value| {
+            let mut params = common.clone();
+            params["type"] = "browser_management_call".into();
+            params["browser_id"] = namespace.into();
+            params["namespace"] = module.into();
+            params["method"] = method.into();
+            params["args"] = args;
+            ext.rpc("executeUnhandledCommand", params)
+                .map(|result| result["value"].clone())
+        };
+        let Ok(info) = call("tabs", "get", json!([tab])) else {
+            // Gated off, unsupported or unanswered: don't make every later
+            // open wait on it again.
+            self.unmanaged = true;
+            return;
+        };
+        let Some(group) = info["groupId"].as_i64().and_then(|g| u64::try_from(g).ok()) else {
+            return;
+        };
+        if !self.collapsed.contains(&group)
+            && call("tabGroups", "update", json!([group, {"collapsed": true}])).is_ok()
+        {
+            self.collapsed.insert(group);
+        }
+    }
+
     pub(crate) fn step(
         &mut self,
         ext: &mut Extension,
@@ -406,10 +446,11 @@ impl Tabs {
             None
         };
         let tab = if opened {
-            let created = ext.rpc("createTab", common)?;
+            let created = ext.rpc("createTab", common.clone())?;
             let tab = created["id"]
                 .as_u64()
                 .ok_or("extension returned no tab ID")?;
+            self.collapse(ext, namespace, &common, tab);
             self.tabs.insert(
                 tab,
                 Tab {

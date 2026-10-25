@@ -30,7 +30,7 @@ pub(super) async fn connect(cell: Cell) -> Option<Computer> {
     let cua = cell?;
     cua.tools
         .get_or_init(|| async {
-            let connected = match crate::ComputerConfig::installed() {
+            let connected = match crate::ComputerConfig::detect() {
                 Ok(config) => {
                     if let Some(missing) = config.unavailable() {
                         let _ = cua.unavailable.set(missing);

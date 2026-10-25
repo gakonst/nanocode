@@ -1,0 +1,102 @@
+[
+  {
+    "name": "js",
+    "description": "Control native apps and browser tabs on the user's computer by reading or operating their UI, in the background: apps are not raised or focused, and browser work happens in a tab group of its own. Prefer purpose-built connectors, APIs or CLIs when available.\n\nOn the first invocation of `cua_repl`, or after resetting it, execute exactly one of the API calls shown below, optionally assigning its result to a variable. The tool result includes the documentation and, for an app or a tab, its initial UI state. Read it before continuing, and use only the APIs it describes.\n\nWhen you need an inventory of apps, browsers and this session's tabs:\n\n```javascript\nawait cua.getState();\n```\n\nIf the user names an app, get it by name, bundle ID or path (a missing app is launched in the background):\n\n```javascript\nlet app = await cua.getApp(\"Example App\");\n```\n\nTo open a URL in the user's browser (`\"chrome\"`, which is whichever Chromium browser runs the nanocode extension), in a background tab group; pass a short, emoji-prefixed `sessionName` (e.g. `\"🔎 Task\"`) when starting a task:\n\n```javascript\nlet tab = await cua.createBrowserTab(\"chrome\", url, { sessionName });\n```\n\nA tab this session opened earlier, by its `id`:\n\n```javascript\nlet tab = await cua.getTab(tabId, { browser: \"chrome\" });\n```\n\nTo add other content to the tool result, use `nodeRepl.write(value)` for text or other values and `await nodeRepl.emitImage(image)` for images. The APIs listed above already display their documentation or UI state; do not wrap their results in `write` or `emitImage`.\n\nIf your context begins with a summary of an existing computer use task, call `await cua.rewriteDocumentation()` before continuing the computer use task to ensure you have a complete view of the necessary documentation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "description": "JavaScript to execute using the initialized cua_repl runtime.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "title": {
+          "description": "Short user-facing description of what the code does.",
+          "maxLength": 80,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "js_add_node_module_dir",
+    "description": "Add an absolute `node_modules` directory for package imports. The directory remains available after `js_reset`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Absolute path to a node_modules directory to add to Node package resolution.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "js_reset",
+    "description": "Reset the persistent cua_repl JavaScript session. All JavaScript bindings are discarded. The next cua_repl.js call starts a fresh session. This does not close browser tabs or native apps, or erase their state.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "turn_ended",
+    "description": "Notify cua_repl that a turn ended, so the browser tabs the turn used are closed. Repeated notifications for the same session and turn are ignored.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "hook_event_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "session_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "turn_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "hook_event_name",
+        "session_id",
+        "turn_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "idempotentHint": true
+    },
+    "_meta": {
+      "ui": {
+        "visibility": []
+      }
+    }
+  }
+]

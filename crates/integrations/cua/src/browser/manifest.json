@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "nanocode",
+  "description": "Lets nanocode computer use work in this browser, in background tabs grouped per session, without touching your own tabs.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqkEtVrwuePHNUiGQVH+DauB4CstRwUw0E3rXjFXoKr2s10C/zs3Vwe9PjyWm1kK8VPXB4ypOG3c1EGwjS7EfoR7PW6xiItruEgRpMdTRmUV3PbKFfwQC/tS52Fm048s/Bh00XA6DIzAHR9LIVqDUf4EFL+NPbsbSZEbnmNmPJnJMLc/Fzw7F8UrHErOIQysZfCqwog0Y9FGtXAgTfbQSOV5q8MKAowDsFNi+Db9NoYhDBHqfH2M7hBFJcSUp36tYi6lJEJBFtmqRtovXxtPmMxHeXoWwG2TeZmFW3g2zlxEolTG4oXfRHys1LqN5/NHm8VpeeGfSEwRzdgmhnOzONQIDAQAB",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "tabGroups",
+    "nativeMessaging",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "nanocode"
+  }
+}

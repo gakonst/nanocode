@@ -40,6 +40,48 @@ pub enum Command {
         #[arg(help = "Session id to resume")]
         id: Option<String>,
     },
+    #[cfg(unix)]
+    #[command(
+        about = "Set up computer use: cua-driver for native apps and the nanocode browser extension for background tab groups"
+    )]
+    Cua(CuaArgs),
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct CuaArgs {
+    #[command(subcommand)]
+    pub command: CuaCommand,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum CuaCommand {
+    #[command(
+        about = "Install cua-driver (and ask for its macOS permissions) and the nanocode extension's native host in each Chromium browser"
+    )]
+    Install {
+        #[arg(
+            long,
+            help = "Browser name (Chrome, Edge, Brave, ...) or an absolute Chromium user data directory; repeat for several (defaults to every one found)"
+        )]
+        browser: Vec<String>,
+        #[arg(long, help = "Leave cua-driver as it is")]
+        skip_driver: bool,
+    },
+    #[command(about = "Remove the nanocode extension's native host")]
+    Uninstall {
+        #[arg(
+            long,
+            help = "Browser name or user data directory (defaults to every one found)"
+        )]
+        browser: Vec<String>,
+    },
+    #[command(about = "Show what computer use finds on this machine")]
+    Status,
+    #[command(hide = true)]
+    BrowserHost {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

@@ -4,6 +4,8 @@ mod actions;
 mod app;
 mod cli;
 mod commands;
+#[cfg(unix)]
+mod cua;
 mod events;
 mod extras;
 mod focus;
@@ -55,7 +57,7 @@ fn install_telemetry(
     let interactive = !matches!(
         cli.command,
         Some(Command::Exec(_) | Command::Hand(_) | Command::Sessions(_) | Command::Models)
-    );
+    ) && !is_cua(cli);
     let output = match (args.log_filter().is_some(), interactive) {
         (false, _) => nanocode_observability::LogOutput::Disabled,
         (true, false) => nanocode_observability::LogOutput::Stderr,
@@ -69,6 +71,16 @@ fn install_telemetry(
             .shutdown_timeout(TELEMETRY_SHUTDOWN)
             .install()?,
     ))
+}
+
+#[cfg(unix)]
+const fn is_cua(cli: &Cli) -> bool {
+    matches!(cli.command, Some(Command::Cua(_)))
+}
+
+#[cfg(not(unix))]
+const fn is_cua(_: &Cli) -> bool {
+    false
 }
 
 pub fn run() -> ExitCode {
@@ -130,6 +142,8 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     let outcome = runtime.block_on(async move {
         match cli.command {
             Some(Command::Hand(args)) => hand(args).await,
+            #[cfg(unix)]
+            Some(Command::Cua(args)) => cua::cua(args).await,
             Some(Command::Sessions(mut args)) => {
                 args.home = args.home.or(cli.session.home);
                 list_sessions(args).await
@@ -523,7 +537,7 @@ async fn hand(args: HandArgs) -> Result<()> {
     let mut tools = nanocode::hand::tools(directory.clone())?.into_builder();
     if args.cua {
         let computer =
-            nanocode::ComputerTools::connect(nanocode::ComputerConfig::installed()?).await?;
+            nanocode::ComputerTools::connect(nanocode::ComputerConfig::detect()?).await?;
         tools = tools.tool(computer.js()).tool(computer.reset());
     }
     let tools = tools.build()?;

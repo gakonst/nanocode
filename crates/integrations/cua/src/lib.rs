@@ -1,5 +1,8 @@
 #![cfg(not(target_family = "wasm"))]
 
+#[cfg(unix)]
+pub mod browser;
+
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nanocode_tool_contracts::{
@@ -26,6 +29,22 @@ use tokio::{
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const INTERRUPTED: &str = "CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
 const PINNED_CATALOG: &str = include_str!("catalog.json");
+const CUA_DRIVER_PROVIDER: &str = include_str!("cua_driver.mjs");
+const CUA_DRIVER_CATALOG: &str = include_str!("cua_driver_catalog.json");
+const CUA_DRIVER_SEARCH: &[&str] = &[
+    ".local/bin/cua-driver",
+    "/usr/local/bin/cua-driver",
+    "/opt/homebrew/bin/cua-driver",
+    "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+];
+const NODE_SEARCH: &[&str] = &["/opt/homebrew/bin/node", "/usr/local/bin/node"];
+const CUA_REPL_SETTINGS: &[&str] = &[
+    "CUA_REPL_SETTLE_MS",
+    "CUA_REPL_LAUNCH_TIMEOUT_MS",
+    "CUA_REPL_BROWSER_WAIT_MS",
+    "CUA_REPL_PAGE_SETTLE_MS",
+    "CUA_DRIVER_PERMISSION_MODE",
+];
 const CONFIRMATION_POLICY: &str = "No confirmation policy applies.";
 const PROVIDER_ENVIRONMENT: &[&str] = &[
     "PATH",
@@ -154,6 +173,71 @@ impl ComputerConfig {
         Ok(config)
     }
 
+    pub fn cua_driver() -> Result<Self, ToolError> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or("cua-driver CUA requires HOME")?;
+        let node = std::env::var_os("CUA_REPL_NODE")
+            .map(PathBuf::from)
+            .or_else(|| program("node"))
+            .or_else(|| {
+                NODE_SEARCH
+                    .iter()
+                    .map(PathBuf::from)
+                    .find(|path| executable(path))
+            })
+            .ok_or("cua-driver CUA needs Node.js 22 or newer: install node or set CUA_REPL_NODE")?;
+        let driver = std::env::var_os("CUA_DRIVER_PATH")
+            .map(PathBuf::from)
+            .or_else(|| program("cua-driver"))
+            .or_else(|| {
+                CUA_DRIVER_SEARCH
+                    .iter()
+                    .map(|path| home.join(path))
+                    .find(|path| executable(path))
+            })
+            .ok_or(
+                "cua-driver is not installed: run nanocode cua install, or set CUA_DRIVER_PATH",
+            )?;
+        let source = CUA_DRIVER_PROVIDER
+            .replacen("__CATALOG__", CUA_DRIVER_CATALOG.trim(), 1)
+            .replacen("__VERSION__", env!("CARGO_PKG_VERSION"), 1);
+        let mut config = Self::new(node);
+        config.args = ["--expose-internals", "--input-type=module", "--eval"]
+            .into_iter()
+            .map(OsString::from)
+            .chain([OsString::from(source)])
+            .collect();
+        config.environment =
+            [
+                ("CUA_DRIVER_PATH", driver.clone().into_os_string()),
+                (
+                    "CUA_REPL_BROWSER_SOCKET",
+                    browser_socket(&home).into_os_string(),
+                ),
+            ]
+            .into_iter()
+            .map(|(key, value)| (OsString::from(key), value))
+            .chain(CUA_REPL_SETTINGS.iter().filter_map(|name| {
+                std::env::var_os(name).map(|value| (OsString::from(name), value))
+            }))
+            .collect();
+        config.required = vec![config.executable.clone(), driver];
+        config.provider_catalog = Some(serde_json::from_str(CUA_DRIVER_CATALOG)?);
+        Ok(config)
+    }
+
+    pub fn detect() -> Result<Self, ToolError> {
+        match std::env::var("NANOCODE_CUA").as_deref() {
+            Ok("cua-driver") => Self::cua_driver(),
+            Ok("sky") => Self::installed(),
+            Ok(other) => {
+                Err(format!("NANOCODE_CUA must be cua-driver or sky, not {other:?}").into())
+            }
+            Err(_) => Self::cua_driver(),
+        }
+    }
+
     pub fn unavailable(&self) -> Option<String> {
         self.required
             .iter()
@@ -251,6 +335,31 @@ impl ComputerConfig {
         self.restart_after_failure = true;
         self
     }
+}
+
+pub fn browser_socket(home: &std::path::Path) -> PathBuf {
+    std::env::var_os("NANOCODE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".nanocode"))
+        .join("browser/browser.sock")
+}
+
+fn program(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|directory| directory.join(name))
+        .find(|path| executable(path))
+}
+
+#[cfg(unix)]
+fn executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    path.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn executable(path: &std::path::Path) -> bool {
+    path.is_file()
 }
 
 #[async_trait]
@@ -727,7 +836,7 @@ impl Process {
             .kill_on_drop(true);
         let mut child = command.spawn().map_err(|error| {
             format!(
-                "Cannot start upstream Sky MCP provider {}: {error}. Check the host provider installation.",
+                "Cannot start CUA provider {}: {error}. Check the provider installation.",
                 config.executable.display()
             )
         })?;

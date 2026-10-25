@@ -18,7 +18,7 @@ use crate::client::{
 #[cfg(not(target_family = "wasm"))]
 use super::RetryAfter;
 use super::{
-    freeform,
+    GatewayHeader, freeform,
     host::{HostConnectRequest, HostHttpBody, HostTransport},
     http::{HttpMetadata, ResponsesHttpStream, SseDecoder, map_host_error},
 };
@@ -26,6 +26,7 @@ use super::{
 pub const OPENROUTER_API_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const WORKERS_AI_API_BASE_URL: &str = "https://api.cloudflare.com/client/v4/accounts";
 const WORKERS_AI_MODEL_PREFIX: &str = "@cf/";
+const SESSION_AFFINITY: &str = "x-session-affinity";
 
 pub const DEFAULT_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -201,6 +202,16 @@ impl ChatGateway {
         }
     }
 
+    fn affinity(&self, request: &str) -> Option<GatewayHeader> {
+        if self.provider != Provider::WorkersAi {
+            return None;
+        }
+        let body: Value = serde_json::from_str(request).ok()?;
+        let key = body.get("prompt_cache_key").and_then(Value::as_str)?;
+        (!key.is_empty() && http::HeaderValue::from_str(key).is_ok())
+            .then(|| GatewayHeader::plain(SESSION_AFFINITY, key))
+    }
+
     fn prepare(&self, request: &str) -> Result<(String, ChatStream, bool), ResponsesError> {
         let body: Value = serde_json::from_str(request).map_err(ResponsesError::EncodeRequest)?;
 
@@ -235,10 +246,14 @@ impl ChatGateway {
         auth: &OpenAiAuthSnapshot,
         request: &str,
     ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
+        let affinity = self.affinity(request);
         let (body, mut stream, compact) = self.prepare(request)?;
         let endpoint = format!("{}/chat/completions", api_base_url.trim_end_matches('/'));
-        let pending = client
-            .post(endpoint)
+        let mut pending = client.post(endpoint);
+        if let Some(affinity) = &affinity {
+            pending = pending.header(affinity.name(), affinity.value());
+        }
+        let pending = pending
             .bearer_auth(auth.bearer())
             .header(header::CONTENT_TYPE, "application/json")
             .header(
@@ -276,6 +291,7 @@ impl ChatGateway {
         thread_id: &str,
         request: &str,
     ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
+        let affinity = self.affinity(request);
         let (body, mut stream, compact) = self.prepare(request)?;
         let endpoint = format!("{}/chat/completions", api_base_url.trim_end_matches('/'));
         let response = stall(
@@ -289,7 +305,8 @@ impl ChatGateway {
                     session_id,
                     thread_id,
                     None,
-                ),
+                )
+                .with_headers(affinity.as_slice()),
                 &body,
             ),
         )
@@ -849,6 +866,7 @@ fn translate(body: &Value, model: Model) -> Result<Translation, ResponsesError> 
     let mut pending_images: Vec<Value> = Vec::new();
     let mut pending: HashSet<String> = HashSet::new();
     let mut seen_call_ids: HashSet<String> = HashSet::new();
+    let mut answered: HashSet<String> = HashSet::new();
     let mut reasoning_effort = effort(model, body.get("reasoning").and_then(|r| r.get("effort")))?;
     for item in &history {
         let kind = item
@@ -1014,13 +1032,28 @@ fn translate(body: &Value, model: Model) -> Result<Translation, ResponsesError> 
                     .get("call_id")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                if !pending.remove(call_id) {
-                    return Err(reject(
-                        "invalid_history",
-                        "tool output has no matching call in full history",
-                    ));
-                }
                 let output = item.get("output").unwrap_or(&Value::Null);
+                if !pending.remove(call_id) {
+                    let earlier = answered.contains(call_id).then(|| {
+                        messages.iter_mut().rev().find(|message| {
+                            message["role"] == "tool" && message["tool_call_id"] == call_id
+                        })
+                    });
+                    let Some(Some(earlier)) = earlier else {
+                        return Err(reject(
+                            "invalid_history",
+                            "tool output has no matching call in full history",
+                        ));
+                    };
+                    let more = text_content(output, true, model)?;
+                    let joined = match earlier["content"].as_str() {
+                        Some(text) if !text.is_empty() => format!("{text}\n{more}"),
+                        _ => more,
+                    };
+                    earlier["content"] = Value::String(joined);
+                    continue;
+                }
+                answered.insert(call_id.to_owned());
                 if kind == "tool_search_output" {
                     let content = json!({ "tools": item.get("tools") }).to_string();
                     messages.push(

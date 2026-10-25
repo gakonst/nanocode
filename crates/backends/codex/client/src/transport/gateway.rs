@@ -40,6 +40,14 @@ impl GatewayHeader {
         &self.value
     }
 
+    pub(crate) fn plain(name: &'static str, value: &str) -> Self {
+        Self {
+            name,
+            value: Arc::from(value),
+            secret: false,
+        }
+    }
+
     pub(crate) const fn secret_value(&self) -> Option<&Arc<str>> {
         if self.secret { Some(&self.value) } else { None }
     }

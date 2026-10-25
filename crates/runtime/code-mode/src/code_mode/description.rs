@@ -140,7 +140,7 @@ pub fn exec_description(
             let _ = write!(description, "\n- `tools.{name}`: {}", summary.trim());
         }
         description.push_str(
-            "\nInspect the matching `ALL_TOOLS` entry for complete guidance before using an unfamiliar runtime-provided tool.",
+            "\nBefore using one for the first time, read its `ALL_TOOLS` entry for complete guidance and `toolSchema(name)` for its input schema.",
         );
     }
     if has_deferred_tools {

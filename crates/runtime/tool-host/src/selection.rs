@@ -114,6 +114,8 @@ pub struct Tools {
     code_mode_policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
 
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
+
+    pub(crate) brief_code_tools: Arc<[String]>,
 }
 
 impl Default for Tools {
@@ -164,6 +166,7 @@ impl Default for Tools {
             #[cfg(not(target_family = "wasm"))]
             excluded_code_tools: HashSet::new(),
             recovery: None,
+            brief_code_tools: Arc::from([]),
         }
     }
 }
@@ -414,6 +417,12 @@ impl Tools {
     }
 
     #[must_use]
+    pub fn brief_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.brief_code_tools = names.into_iter().collect();
+        self
+    }
+
+    #[must_use]
     pub fn for_session(mut self, session: &crate::SessionEnvironment) -> Self {
         self.embedded_session_id = Some(Arc::from(session.session_id()));
         if let Some(host) = &self.embedded_host {
@@ -496,6 +505,12 @@ pub struct ToolsBuilder {
 pub use nanocode_tools::ToolsBuildError;
 
 impl ToolsBuilder {
+    #[must_use]
+    pub fn brief_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.tools = self.tools.brief_code_tools(names);
+        self
+    }
+
     #[must_use]
     pub fn code_mode_host(mut self, host: impl crate::embedded::CodeModeHost) -> Self {
         self.tools = self.tools.code_mode_host(host);

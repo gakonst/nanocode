@@ -29,6 +29,7 @@ pub struct EmbeddedToolRuntime {
     callable_tool_names: ArcSwap<HashSet<String>>,
     policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
+    brief: Arc<[String]>,
 }
 
 struct LocalTool {
@@ -61,6 +62,7 @@ impl EmbeddedToolRuntime {
             callable_tool_names: ArcSwap::default(),
             policies: Vec::new(),
             recovery: None,
+            brief: Arc::from([]),
         }
     }
 
@@ -78,6 +80,7 @@ impl EmbeddedToolRuntime {
         self.session_id.clone_from(&tools.embedded_session_id);
         self.policies = tools.code_mode_policies();
         self.recovery = tools.recovery();
+        self.brief = Arc::clone(&tools.brief_code_tools);
         self.local
             .extend(tools.registered.iter().map(|registered| LocalTool {
                 name: Arc::from(registered.handler.definition().name()),
@@ -238,9 +241,13 @@ impl EmbeddedToolRuntime {
                     )
                 })
                 .collect::<Vec<_>>();
+            let (brief, visible_definitions): (Vec<_>, Vec<_>) = visible_definitions
+                .into_iter()
+                .partition(|definition| self.brief.iter().any(|name| name == definition.name()));
+            let summaries = brief.iter().map(summary).collect::<Vec<_>>();
             let mut exec = crate::code_mode_spec::exec_spec(
                 &visible_definitions,
-                &[],
+                &summaries,
                 has_deferred_tools,
                 true,
             );
@@ -589,4 +596,40 @@ impl EmbeddedToolRuntimeControl {
             );
         }
     }
+}
+
+fn summary(definition: &ToolDefinition) -> (String, String) {
+    let description = definition.description().trim();
+    let first = description
+        .split_once(". ")
+        .map_or(description, |(sentence, _)| sentence)
+        .trim_end_matches('.');
+    let schema = definition.parameters().map(|schema| schema.as_value());
+    let required = schema
+        .and_then(|schema| schema.get("required"))
+        .and_then(serde_json::Value::as_array);
+    let arguments = schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(serde_json::Value::as_object)
+        .map(|properties| {
+            properties
+                .keys()
+                .map(|name| {
+                    let needed = required.is_some_and(|required| {
+                        required.iter().any(|value| value.as_str() == Some(name))
+                    });
+                    if needed {
+                        name.clone()
+                    } else {
+                        format!("{name}?")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    (
+        normalize_identifier(definition.name()),
+        format!("{first}. Arguments: {{ {arguments} }}."),
+    )
 }

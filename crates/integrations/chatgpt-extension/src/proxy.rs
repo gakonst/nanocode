@@ -133,10 +133,28 @@ impl Extension {
         self.next += 1;
         let id = format!("{}{}", self.prefix, self.next);
         let body = frame(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
-        self.output
-            .send(body)
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "extension disconnected"))?;
         let deadline = Instant::now() + Duration::from_secs(15);
+        // The output channel is bounded: wait for room only until the deadline.
+        let mut body = body;
+        loop {
+            match self.output.try_send(body) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(returned)) if Instant::now() < deadline => {
+                    body = returned;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(mpsc::TrySendError::Full(_)) => {
+                    return Err(format!("{method}: the browser is not reading").into());
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "extension disconnected",
+                    )
+                    .into());
+                }
+            }
+        }
         loop {
             let reply = self
                 .responses

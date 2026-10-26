@@ -582,7 +582,11 @@ pub(super) fn export_secrets_after_profile<'a>(
         let private = format!("{SECRET_COPY_PREFIX}{name}");
         environment.retain(|(candidate, _)| candidate != private.as_str());
         environment.push((private.clone().into(), value.clone()));
-        prefix.push_str(&format!("export {name}=\"${private}\"; unset {private}; "));
+        // A read-only or special name (UID, PPID...) fails in a subshell
+        // first, so it can't abort the command under zsh or sh.
+        prefix.push_str(&format!(
+            "( export {name}=\"${private}\" ) 2>/dev/null && export {name}=\"${private}\"; unset {private}; "
+        ));
     }
     if prefix.is_empty() {
         return script.into();

@@ -171,18 +171,6 @@ fn run_worker(
     runtime.set_interrupt_handler(Some(Box::new(move || {
         interrupt_signal.load(Ordering::Acquire)
     })));
-    let prewarmed_context = match Context::full(&runtime) {
-        Ok(context) => context,
-        Err(error) => {
-            let _ = startup.set(format!(
-                "failed to create embedded QuickJS context: {error}"
-            ));
-            return;
-        }
-    };
-    drop(prewarmed_context);
-    runtime.run_gc();
-
     loop {
         match command_rx.recv() {
             Ok(HostCommand::Start(start)) => {

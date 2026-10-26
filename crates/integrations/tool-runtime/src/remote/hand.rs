@@ -156,6 +156,7 @@ impl Hand {
     {
         Box::pin(async move {
             validate_policy(self.policy)?;
+            let _ = nanocode_process::raise_open_file_limit();
             let directory = match self.directory {
                 Some(directory) => directory,
                 None => std::env::current_dir().map_err(error)?,

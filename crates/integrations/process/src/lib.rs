@@ -733,6 +733,32 @@ impl Drop for CancelExecution {
 
 pub use nanocode_home::shell::default_shell_name;
 
+#[cfg(unix)]
+#[must_use]
+pub fn raise_open_file_limit() -> Option<u64> {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let limit = getrlimit(Resource::Nofile);
+    let current = limit.current.unwrap_or(u64::MAX);
+    let mut target = limit.maximum.unwrap_or(u64::MAX);
+    while target > current {
+        let raised = Rlimit {
+            current: Some(target),
+            maximum: limit.maximum,
+        };
+        if setrlimit(Resource::Nofile, raised).is_ok() {
+            return Some(target);
+        }
+        target = target.min(1 << 21) / 2;
+    }
+    Some(current)
+}
+
+#[cfg(not(unix))]
+#[must_use]
+pub const fn raise_open_file_limit() -> Option<u64> {
+    None
+}
+
 impl ShellExecutor for ShellSessions {
     fn execute<'a>(
         &'a self,

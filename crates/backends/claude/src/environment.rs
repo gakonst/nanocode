@@ -174,14 +174,7 @@ fn host_lines() -> Vec<String> {
     {
         lines.push(format!("Shell: {shell}"));
     }
-    if let Some(version) = std::process::Command::new("uname")
-        .arg("-sr")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|version| version.trim().to_owned())
-        .filter(|version| !version.is_empty())
+    if let Some(version) = nanocode_home::shell::os_version().filter(|version| !version.is_empty())
     {
         lines.push(format!("OS Version: {version}"));
     }

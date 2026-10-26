@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolDefinition {
     Function {
@@ -233,7 +233,7 @@ impl ToolDefinition {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CustomToolFormat {
     #[serde(rename = "type")]
     pub kind: Box<str>,
@@ -271,6 +271,12 @@ impl From<Value> for JsonSchema {
     }
 }
 
+impl PartialEq for JsonSchema {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct JsonValue(std::sync::Arc<Value>);
@@ -285,5 +291,11 @@ impl JsonValue {
 impl From<Value> for JsonValue {
     fn from(value: Value) -> Self {
         Self(std::sync::Arc::new(value))
+    }
+}
+
+impl PartialEq for JsonValue {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0) || self.0 == other.0
     }
 }

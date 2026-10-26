@@ -486,7 +486,37 @@ pub fn assign_missing_response_item_id(item: &mut ResponseItem) {
     item.set_id(Some(new_response_item_id(prefix)));
 }
 
+struct RequestPrefix {
+    cache_lineage: Box<str>,
+    tools: Vec<crate::client::ToolDefinition>,
+    instructions: Box<str>,
+    items: [ResponseItem; 2],
+}
+
 pub fn responses_lite_request_prefix(
+    cache_lineage: &str,
+    tools: Vec<crate::client::ToolDefinition>,
+    instructions: &str,
+) -> Result<[ResponseItem; 2], serde_json::Error> {
+    static LAST: arc_swap::ArcSwapOption<RequestPrefix> = arc_swap::ArcSwapOption::const_empty();
+    if let Some(last) = LAST.load().as_deref()
+        && *last.cache_lineage == *cache_lineage
+        && *last.instructions == *instructions
+        && last.tools == tools
+    {
+        return Ok(last.items.clone());
+    }
+    let items = build_request_prefix(cache_lineage, tools.clone(), instructions)?;
+    LAST.store(Some(std::sync::Arc::new(RequestPrefix {
+        cache_lineage: cache_lineage.into(),
+        tools,
+        instructions: instructions.into(),
+        items: items.clone(),
+    })));
+    Ok(items)
+}
+
+fn build_request_prefix(
     cache_lineage: &str,
     tools: Vec<crate::client::ToolDefinition>,
     instructions: &str,

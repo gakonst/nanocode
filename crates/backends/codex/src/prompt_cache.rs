@@ -115,18 +115,45 @@ fn prefix_key(
     instructions: &str,
     seed: &str,
 ) -> Result<String> {
-    let encoded = serde_json::to_vec(&(model.as_str(), tools, instructions))
-        .map_err(NanocodeError::SerializePromptPrefix)?;
-    let digest = Sha256::digest(encoded);
-    let hex = digest[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let hex = prefix_digest(model, tools, instructions)?;
     if !model.is_custom() {
         return Ok(format!("{PREFIX_KEY_TAG}{hex}"));
     }
     let bucket = Sha256::digest(seed.as_bytes())[0] % CUSTOM_MODEL_KEY_BUCKETS;
     Ok(format!("{PREFIX_KEY_TAG}{hex}-{bucket}"))
+}
+
+struct PrefixDigest {
+    model: Model,
+    tools: Vec<ToolDefinition>,
+    instructions: Box<str>,
+    hex: Arc<str>,
+}
+
+fn prefix_digest(model: Model, tools: &[ToolDefinition], instructions: &str) -> Result<Arc<str>> {
+    static LAST: ArcSwapOption<PrefixDigest> = ArcSwapOption::const_empty();
+    if let Some(last) = LAST.load().as_deref()
+        && last.model == model
+        && *last.instructions == *instructions
+        && last.tools == tools
+    {
+        return Ok(Arc::clone(&last.hex));
+    }
+    let encoded = serde_json::to_vec(&(model.as_str(), tools, instructions))
+        .map_err(NanocodeError::SerializePromptPrefix)?;
+    let digest = Sha256::digest(encoded);
+    let hex: Arc<str> = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        .into();
+    LAST.store(Some(Arc::new(PrefixDigest {
+        model,
+        tools: tools.to_vec(),
+        instructions: instructions.into(),
+        hex: Arc::clone(&hex),
+    })));
+    Ok(hex)
 }
 
 fn prefix_fingerprint(model: Model, profile: &RequestProfile) -> Result<PrefixFingerprint> {

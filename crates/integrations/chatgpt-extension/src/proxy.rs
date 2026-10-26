@@ -1,12 +1,12 @@
 use crate::{
     Bridge, EDGE_EXTENSION_ID, EDGE_ORIGIN, EXTENSION_ID, Error, ORIGIN,
-    bridge::{host_path, random_prefix},
+    bridge::{host_path, random_prefix, started_path},
     native::{frame, read_body, standalone_reply, write_body},
     steps::Tabs,
 };
 use serde_json::{Value, json};
 use std::{
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -206,6 +206,8 @@ impl Drop for Extension {
 pub struct Connection {
     extension: Extension,
     controls: bool,
+    /// The official extension did not answer the handshake.
+    refused: bool,
     record: PathBuf,
     manifest: PathBuf,
     launcher: PathBuf,
@@ -214,12 +216,30 @@ pub struct Connection {
 }
 
 impl Bridge {
+    /// Records that the browser started the launcher, and why it stopped, for [`Bridge::launches`].
     pub fn connect(
         &self,
         manifest: &Path,
         browser: &str,
         args: &[String],
     ) -> Result<Connection, Error> {
+        let marker = started_path(&self.record_path(&self.browser_root(browser)?)?);
+        let _ = fs::write(&marker, "");
+        let result = self.open(manifest, browser, args);
+        let failure = match result {
+            Err(ref error) => Some(error.to_string()),
+            Ok(ref connection) if connection.refused => {
+                Some("the ChatGPT extension did not answer the getInfo handshake".into())
+            }
+            Ok(_) => None,
+        };
+        if let Some(failure) = failure {
+            let _ = fs::write(&marker, failure);
+        }
+        result
+    }
+
+    fn open(&self, manifest: &Path, browser: &str, args: &[String]) -> Result<Connection, Error> {
         let origin = args.first().ok_or("missing extension origin")?;
         let root = self.browser_root(browser)?;
         if manifest != host_path(&root) {
@@ -245,7 +265,8 @@ impl Bridge {
         }
         let mut extension =
             Extension::start(upstream.executable.as_deref(), args, self.namespace_name())?;
-        let controls = (origin == ORIGIN || origin == EDGE_ORIGIN) && {
+        let chatgpt = origin == ORIGIN || origin == EDGE_ORIGIN;
+        let controls = chatgpt && {
             let expected = if origin == EDGE_ORIGIN {
                 EDGE_EXTENSION_ID
             } else {
@@ -258,6 +279,7 @@ impl Bridge {
         Ok(Connection {
             extension,
             controls,
+            refused: chatgpt && !controls,
             record: record_path,
             manifest: manifest.to_path_buf(),
             launcher,

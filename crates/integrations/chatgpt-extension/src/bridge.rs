@@ -10,6 +10,7 @@ use std::{
     io::{self, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,6 +25,19 @@ pub struct Registration {
 pub struct Upstream {
     pub executable: Option<PathBuf>,
     pub origins: Value,
+}
+
+/// A registration's native-host manifest, and the browser's last start of its launcher since that
+/// manifest was written (see [`Bridge::launches`]).
+#[derive(Clone, Debug)]
+pub struct Launch {
+    pub root: PathBuf,
+    pub manifest: PathBuf,
+    /// When the manifest was last written.
+    pub registered: SystemTime,
+    /// When the browser last started the launcher, and why that connection stopped: empty while
+    /// it runs or after a clean start. `None` when it has not started since `registered`.
+    pub started: Option<(SystemTime, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +134,11 @@ fn random_hex() -> Result<String, Error> {
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| "cannot generate random bytes")?;
     Ok(random.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Written by [`Bridge::connect`] each time the browser starts the launcher.
+pub(crate) fn started_path(record: &Path) -> PathBuf {
+    record.with_extension("started")
 }
 
 pub(crate) fn random_prefix(namespace: &str) -> Result<String, Error> {
@@ -593,6 +612,7 @@ impl Bridge {
         }
         fs::remove_file(record_path)?;
         let _ = fs::remove_file(launcher);
+        let _ = fs::remove_file(started_path(record_path));
         Ok(())
     }
 
@@ -605,6 +625,34 @@ impl Bridge {
             self.uninstall_one(&record)?;
         }
         Ok(())
+    }
+
+    /// Each registration's last launch, to tell a browser that never started the launcher since it
+    /// was registered, or started it and failed, from one that connected.
+    pub fn launches(&self) -> Vec<Launch> {
+        let mut result = Vec::new();
+        for record_path in self.records().unwrap_or_default() {
+            let Ok(record) = self.read_record(&record_path) else {
+                continue;
+            };
+            let manifest = host_path(&record.root);
+            let Ok(registered) = fs::metadata(&manifest).and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            let marker = started_path(&record_path);
+            let started = fs::metadata(&marker)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .filter(|started| *started >= registered)
+                .map(|started| (started, fs::read_to_string(&marker).unwrap_or_default()));
+            result.push(Launch {
+                root: record.root,
+                manifest,
+                registered,
+                started,
+            });
+        }
+        result
     }
 
     pub fn reconcile_all(&self) -> Result<usize, Error> {

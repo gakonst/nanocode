@@ -8,7 +8,7 @@ mod proxy;
 mod relay;
 mod steps;
 
-pub use bridge::{Bridge, Guard, Launcher, Registration, Upstream, host_path};
+pub use bridge::{Bridge, Guard, Launch, Launcher, Registration, Upstream, host_path};
 pub use browsers::{
     browser_dirs, browser_for_bundle, chatgpt_installed, config_base, default_browser,
     default_from_handlers, extension_enabled, extension_on, profiles,

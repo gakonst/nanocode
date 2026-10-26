@@ -296,7 +296,7 @@ where
         (false, None) => {
             let mut images = Vec::with_capacity(paths.len());
             for path in paths {
-                if !path.is_absolute() {
+                if !(path.is_absolute() || cfg!(target_family = "wasm") && path.has_root()) {
                     return Err(format!(
                         "referenced image path `{}` must be absolute",
                         path.display()

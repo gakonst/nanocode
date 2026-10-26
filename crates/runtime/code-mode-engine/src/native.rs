@@ -12,7 +12,7 @@ use std::{
 
 use rquickjs::{Context, Ctx, Runtime};
 use serde_json::{Value, value::RawValue};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::cell::{
     Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs, invoke_timeout,
@@ -25,7 +25,7 @@ pub struct EmbeddedHost {
     events: mpsc::UnboundedReceiver<RuntimeEvent>,
     interrupted: Arc<AtomicBool>,
     startup: Arc<OnceLock<String>>,
-    worker: Option<thread::JoinHandle<()>>,
+    stopped: Option<oneshot::Receiver<()>>,
 }
 
 struct StartExecution {
@@ -61,10 +61,13 @@ impl EmbeddedHost {
         let startup = Arc::new(OnceLock::new());
         let worker_interrupted = Arc::clone(&interrupted);
         let worker_startup = Arc::clone(&startup);
-        let worker = thread::Builder::new()
+        let (stopped_tx, stopped) = oneshot::channel();
+        thread::Builder::new()
             .name("nanocode-code-mode-quickjs".to_owned())
             .spawn(move || {
                 run_worker(&command_rx, &event_tx, &worker_startup, &worker_interrupted);
+                drop((command_rx, event_tx));
+                let _ = stopped_tx.send(());
             })
             .map_err(|error| format!("failed to start embedded QuickJS code-mode host: {error}"))?;
         Ok(Self {
@@ -72,7 +75,7 @@ impl EmbeddedHost {
             events,
             interrupted,
             startup,
-            worker: Some(worker),
+            stopped: Some(stopped),
         })
     }
 
@@ -131,8 +134,8 @@ impl EmbeddedHost {
     pub async fn terminate(&mut self) {
         self.interrupted.store(true, Ordering::Release);
         let _ = self.command_tx.send(HostCommand::Shutdown);
-        if let Some(worker) = self.worker.take() {
-            let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+        if let Some(stopped) = self.stopped.take() {
+            let _ = stopped.await;
         }
     }
 }

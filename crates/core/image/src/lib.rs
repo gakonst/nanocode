@@ -297,6 +297,13 @@ pub async fn prepare_user_input(input: &PromptInput) -> Vec<ContentItem> {
         prepare_user_content(input)
     }
     #[cfg(not(target_family = "wasm"))]
+    if !input
+        .iter()
+        .any(|item| matches!(item, UserInput::Image { .. } | UserInput::LocalImage { .. }))
+    {
+        return prepare_user_content(input);
+    }
+    #[cfg(not(target_family = "wasm"))]
     match tokio::task::spawn_blocking(move || prepare_user_content(input)).await {
         Ok(content) => content,
         Err(error) => {

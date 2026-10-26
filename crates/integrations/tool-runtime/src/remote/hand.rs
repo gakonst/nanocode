@@ -42,8 +42,8 @@ pub enum HandEvent {
     Revoked,
     Replaced,
     /// The brain refused the hand for good: `status` is the HTTP status of a
-    /// refused upgrade (401, 403, 410 or 426) or 1008 for a policy close.
-    /// `Hand::run` returns an error after it.
+    /// refused upgrade (401, 403, 410 or 426). `Hand::run` returns an error
+    /// after it.
     Rejected {
         status: u16,
     },
@@ -166,7 +166,7 @@ impl Hand {
                 None => Self::machine_name()?,
             };
             crate::attachment::RemoteRunner::new(&name).map_err(error)?;
-            let options = ExecutorOptions {
+            let mut options = ExecutorOptions {
                 name: Some(name),
                 runtime_id: Some(uuid::Uuid::new_v4().to_string()),
                 callback_timeout: None,
@@ -179,8 +179,12 @@ impl Hand {
                         .map_err(error)?;
                     let headers = request_headers(&self.headers)?;
                     let mut backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
-                    let mut executor =
-                        Executor::new(directory, self.tools, options, self.activity.clone());
+                    let mut executor = Executor::new(
+                        directory.clone(),
+                        self.tools.clone(),
+                        options.clone(),
+                        self.activity.clone(),
+                    );
                     loop {
                         let endpoint = target.endpoint().to_string();
                         events(HandEvent::Connecting {
@@ -195,6 +199,7 @@ impl Hand {
                                     events(HandEvent::Connected { endpoint });
                                 })
                                 .await;
+                                let mut fenced = false;
                                 match served.result {
                                     Err(issue)
                                         if issue.message()
@@ -209,20 +214,25 @@ impl Hand {
                                         events(HandEvent::Replaced);
                                         return Ok(());
                                     }
-                                    // A policy close (1008) fences this runtime for good, as
-                                    // a refused upgrade does; redialing would be refused again.
                                     result if served.close_code == Some(POLICY_CLOSE) => {
                                         executor.reset().await;
-                                        events(HandEvent::Rejected {
-                                            status: POLICY_CLOSE,
-                                        });
+                                        options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+                                        executor = Executor::new(
+                                            directory.clone(),
+                                            self.tools.clone(),
+                                            options.clone(),
+                                            self.activity.clone(),
+                                        );
+                                        fenced = true;
                                         let reason = result.err().map_or_else(
                                             || "no reason".to_owned(),
                                             |issue| issue.message().to_owned(),
                                         );
-                                        return Err(error(format!(
-                                            "brain closed the connection with policy violation (1008): {reason}"
-                                        )));
+                                        events(HandEvent::Disconnected {
+                                            reason: format!(
+                                                "the brain fenced this runtime with a policy close (1008): {reason}; reconnecting as a new runtime"
+                                            ),
+                                        });
                                     }
                                     Ok(()) => events(HandEvent::Disconnected {
                                         reason: "the brain closed the connection".into(),
@@ -233,6 +243,9 @@ impl Hand {
                                 }
                                 if started.elapsed() >= crate::attachment::STABLE_CONNECTION {
                                     backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
+                                }
+                                if fenced {
+                                    backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
                                 }
                             }
                             Err(Dial::Rejected(issue, status)) => {

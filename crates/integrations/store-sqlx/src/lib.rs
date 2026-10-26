@@ -81,7 +81,16 @@ pub async fn commit_staged(
     connection: &mut PgConnection,
 ) -> Result<(), StoreError> {
     writes
-        .commit_to(&mut SqlStore::new(SqlxTransaction::new(connection)))
+        .commit_to(&mut SqlStore::new(SqlxTransaction::new(connection)).migrated())
+        .await
+}
+
+pub async fn stage_records(
+    writes: &StagedWrites,
+    connection: &mut PgConnection,
+) -> Result<(), StoreError> {
+    writes
+        .stage_records(&mut SqlStore::new(SqlxTransaction::new(connection)).migrated())
         .await
 }
 

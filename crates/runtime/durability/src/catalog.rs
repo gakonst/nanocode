@@ -632,6 +632,22 @@ mod store {
             Ok(Some(SessionSummary { record, preview }))
         }
 
+        pub async fn record(&self, id: &str) -> Result<Option<SessionRecord>> {
+            let Some(state) = self.peek(id).await? else {
+                return Ok(None);
+            };
+            if !is_listed(&state) {
+                return Ok(None);
+            }
+            match state.session() {
+                Some(record) => Ok(Some(record.clone())),
+                None => match self.native_checkpoint(id, &state).await? {
+                    Some(checkpoint) => self.infer_record(id, &checkpoint).map(Some),
+                    None => Ok(None),
+                },
+            }
+        }
+
         pub async fn load(&self, id: &str) -> Result<StoredSession> {
             let state = self.require(id).await?;
             let (checkpoint, checkpoint_payload) = match self.loaded_checkpoint(id, &state).await? {

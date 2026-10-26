@@ -492,6 +492,14 @@ pub trait StateStore: Send {
         Box::pin(async { Ok(None) })
     }
 
+    fn put_records<'a>(
+        &'a mut self,
+        _state_id: &'a str,
+        _records: &'a [crate::StoreRecord],
+    ) -> StoreFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn commit<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -636,6 +644,14 @@ pub trait StateStore {
         _records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<Option<u64>, StoreError>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn put_records<'a>(
+        &'a mut self,
+        _state_id: &'a str,
+        _records: &'a [crate::StoreRecord],
+    ) -> StoreFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async { Ok(false) })
     }
 
     fn commit<'a>(

@@ -170,6 +170,12 @@ impl McpServer {
     }
 
     #[must_use]
+    pub const fn reuse_connections(mut self, reuse: bool) -> Self {
+        self.http.reuse_connections = reuse;
+        self
+    }
+
+    #[must_use]
     pub const fn startup_timeout(mut self, timeout: Duration) -> Self {
         self.startup_timeout = timeout;
         self

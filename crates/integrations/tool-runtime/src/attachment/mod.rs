@@ -10,7 +10,7 @@ pub use pool::{
 };
 pub(crate) mod process_routes;
 mod protocol;
-pub(crate) use driver::{INITIAL_TRANSPORT_BACKOFF, STABLE_CONNECTION};
+pub(crate) use driver::{INITIAL_TRANSPORT_BACKOFF, MAX_TRANSPORT_BACKOFF, STABLE_CONNECTION};
 pub(crate) use protocol::HEARTBEAT_INTERVAL;
 pub use protocol::{
     AttachmentCall, CommandStatus, DiagnosticStage, EndpointFrame, ReceiptTiming, RunnerFrame,

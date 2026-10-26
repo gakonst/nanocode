@@ -289,6 +289,20 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         })
     }
 
+    fn put_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        records: &'a [StoreRecord],
+    ) -> StoreFuture<'a, Result<bool, StoreError>> {
+        Box::pin(async move {
+            let stored = self.base.put_records(state_id, records).await?;
+            if stored {
+                self.cache.put(state_id, written(records)).await;
+            }
+            Ok(stored)
+        })
+    }
+
     fn commit<'a>(
         &'a mut self,
         state_id: &'a str,

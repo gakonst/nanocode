@@ -422,8 +422,11 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, McpServ
     streamable_http::validate_custom_headers(default_headers.keys())?;
     let replays_plaintext_proxy_credentials = default_headers.contains_key(PROXY_AUTHORIZATION);
     nanocode_tls::install_default_rustls_crypto_provider();
-    let http_client = reqwest::Client::builder()
-        .pool_max_idle_per_host(0)
+    let mut http_client = reqwest::Client::builder();
+    if !server.http.reuse_connections {
+        http_client = http_client.pool_max_idle_per_host(0);
+    }
+    let http_client = http_client
         .redirect(nanocode_mcp_http::same_origin_redirect_policy(
             replays_plaintext_proxy_credentials,
         ))

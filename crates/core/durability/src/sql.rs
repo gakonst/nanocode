@@ -219,6 +219,13 @@ const INSERT_RECORD: Dialects = [
     "INSERT INTO blobs (id, state_id, key, value) SELECT CAST($7::text AS BIGINT), $1::text, $2::text, $3::text WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $4::text AND fence = $5::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $6::text ON CONFLICT DO NOTHING",
 ];
 const INSERT_RECORDS: &str = "INSERT INTO blobs (id, state_id, key, value) SELECT CAST(staged.value ->> 0 AS BIGINT), $1::text, staged.value ->> 1, staged.value ->> 2 FROM json_array_elements($5::text::json) AS staged (value) WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ON CONFLICT DO NOTHING";
+const PUT_RECORD: &str =
+    "INSERT INTO blobs VALUES (CAST(?1 AS INTEGER), ?2, ?3, ?4) ON CONFLICT DO NOTHING";
+const PUT_RECORDS: &str = "INSERT INTO blobs (id, state_id, key, value) SELECT CAST(staged.value ->> 0 AS BIGINT), $1::text, staged.value ->> 1, staged.value ->> 2 FROM json_array_elements($2::text::json) AS staged (value) ON CONFLICT DO NOTHING";
+const MISPLACED: Dialects = [
+    "SELECT CAST(COUNT(*) AS TEXT) FROM json_each(?2) AS staged LEFT JOIN blobs ON blobs.id = CAST(json_extract(staged.value, '$[0]') AS INTEGER) WHERE blobs.state_id IS NOT ?1 OR blobs.key IS NOT json_extract(staged.value, '$[1]')",
+    "SELECT CAST(COUNT(*) AS TEXT) FROM jsonb_array_elements($2::text::jsonb) AS staged (value) LEFT JOIN blobs ON blobs.id = CAST(staged.value ->> 0 AS BIGINT) WHERE blobs.state_id IS DISTINCT FROM $1::text OR blobs.key IS DISTINCT FROM staged.value ->> 1",
+];
 const REPLACE: Dialects = [
     "INSERT INTO states SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 AND NOT EXISTS (SELECT 1 FROM json_each(?7) AS staged LEFT JOIN blobs ON blobs.id = CAST(json_extract(staged.value, '$[0]') AS INTEGER) WHERE blobs.state_id IS NOT ?1 OR blobs.key IS NOT json_extract(staged.value, '$[1]')) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload RETURNING revision",
     "INSERT INTO states (id, revision, payload) SELECT $1::text, $2::text, $3::text WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $4::text AND fence = $5::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $6::text AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements($7::text::jsonb) AS staged (value) LEFT JOIN blobs ON blobs.id = CAST(staged.value ->> 0 AS BIGINT) WHERE blobs.state_id IS DISTINCT FROM $1::text OR blobs.key IS DISTINCT FROM staged.value ->> 1) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload WHERE states.revision = $6::text RETURNING revision",
@@ -604,6 +611,64 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         }
     }
 
+    async fn put(&mut self, state_id: &str, records: &[StoreRecord]) -> Result<bool, StoreError> {
+        if records.is_empty() {
+            return Ok(true);
+        }
+        let dialect = self.host.dialect();
+        let keys = records
+            .iter()
+            .map(|record| record.key.clone())
+            .collect::<Vec<_>>();
+        let ids = keys
+            .iter()
+            .map(|key| row_id(state_id, key))
+            .collect::<Vec<_>>();
+        let staged = located(state_id, &keys)?;
+        let values = (dialect == SqlDialect::Postgres)
+            .then(|| {
+                serde_json::to_string(
+                    &records
+                        .iter()
+                        .zip(&ids)
+                        .map(|(record, id)| [id.as_str(), &record.key, &record.value])
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .transpose()
+            .map_err(|error| StoreError::NotCommitted(format!("records: {error}")))?;
+        let mut statements = match &values {
+            Some(values) => vec![SqlStatement {
+                sql: PUT_RECORDS,
+                params: vec![state_id, values],
+            }],
+            None => records
+                .iter()
+                .zip(&ids)
+                .map(|(record, id)| SqlStatement {
+                    sql: PUT_RECORD,
+                    params: vec![id, state_id, &record.key, &record.value],
+                })
+                .collect(),
+        };
+        statements.push(statement(dialect, &MISPLACED, vec![state_id, &staged]));
+        let results = self.transaction("put_records", statements).await?;
+        let misplaced = results
+            .last()
+            .and_then(|rows| single(rows).transpose())
+            .transpose()?
+            .map(|row| counter(row, 0))
+            .transpose()?
+            .unwrap_or(0);
+        if misplaced > 0 {
+            return Err(StoreError::NotCommitted(format!(
+                "{misplaced} of {} records of state {state_id} collide with another record's row id",
+                records.len()
+            )));
+        }
+        Ok(true)
+    }
+
     async fn refusal(&mut self, replacement: &Replacement<'_>) -> StoreError {
         match self.query("head", &HEAD, vec![replacement.state_id]).await {
             Ok(head) => replacement.refusal(&head),
@@ -749,6 +814,14 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
             })
             .await
         })
+    }
+
+    fn put_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        records: &'a [StoreRecord],
+    ) -> StoreFuture<'a, Result<bool, StoreError>> {
+        Box::pin(self.put(state_id, records))
     }
 
     fn replace_to<'a>(

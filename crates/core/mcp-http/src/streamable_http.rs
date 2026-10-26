@@ -65,6 +65,7 @@ pub fn validate_custom_headers<'a>(
 pub struct HttpOptions {
     pub max_response_bytes: Option<usize>,
     pub standalone_stream: bool,
+    pub reuse_connections: bool,
 }
 
 impl Default for HttpOptions {
@@ -72,6 +73,7 @@ impl Default for HttpOptions {
         Self {
             max_response_bytes: None,
             standalone_stream: true,
+            reuse_connections: false,
         }
     }
 }

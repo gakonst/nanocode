@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use nanocode_sync::Atom;
 
@@ -16,6 +19,7 @@ struct Staged {
     payload: Option<Arc<str>>,
     payloads: Vec<Arc<str>>,
     records: BTreeMap<String, Arc<str>>,
+    stored: BTreeSet<String>,
 }
 
 type States = BTreeMap<String, Arc<Staged>>;
@@ -35,6 +39,41 @@ impl StagedWrites {
 
     pub fn discard(&self) {
         self.0.set(BTreeMap::new());
+    }
+
+    pub async fn stage_records<T: StateStore + ?Sized>(
+        &self,
+        store: &mut T,
+    ) -> Result<(), StoreError> {
+        let states = self.0.get();
+        for (state_id, staged) in states
+            .iter()
+            .filter(|(_, staged)| staged.revision != staged.base_revision)
+        {
+            let records = staged
+                .records
+                .iter()
+                .filter(|(key, _)| !staged.stored.contains(*key))
+                .map(|(key, value)| StoreRecord {
+                    key: key.clone(),
+                    value: value.to_string(),
+                })
+                .collect::<Vec<_>>();
+            if records.is_empty() {
+                continue;
+            }
+            if !store.put_records(state_id, &records).await? {
+                return Ok(());
+            }
+            self.0.update(|states| {
+                if let Some(staged) = states.get_mut(state_id) {
+                    Arc::make_mut(staged)
+                        .stored
+                        .extend(records.iter().map(|record| record.key.clone()));
+                }
+            });
+        }
+        Ok(())
     }
 
     pub async fn commit_to<T: StateStore + ?Sized>(&self, store: &mut T) -> Result<(), StoreError> {
@@ -59,6 +98,7 @@ impl StagedWrites {
             let mut records: Vec<_> = staged
                 .records
                 .iter()
+                .filter(|(key, _)| !staged.stored.contains(*key))
                 .map(|(key, value)| StoreRecord {
                     key: key.clone(),
                     value: value.to_string(),
@@ -235,6 +275,7 @@ impl<S: StateStore> StagedStore<S> {
                     payload: state.payload.map(Arc::from),
                     payloads: Vec::new(),
                     records: BTreeMap::new(),
+                    stored: BTreeSet::new(),
                 }
             }
         };

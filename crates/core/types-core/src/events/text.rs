@@ -10,6 +10,7 @@ pub struct AssistantText {
 pub struct AssistantTextUpdate<'a> {
     pub key: String,
     pub text: &'a str,
+    pub delta: Option<&'a str>,
     pub complete: bool,
 }
 
@@ -30,6 +31,7 @@ impl AssistantText {
                 Some(AssistantTextUpdate {
                     key,
                     text,
+                    delta: Some(&delta.text),
                     complete: false,
                 })
             }
@@ -39,6 +41,7 @@ impl AssistantText {
                 Some(AssistantTextUpdate {
                     key,
                     text: &message.text,
+                    delta: None,
                     complete: true,
                 })
             }

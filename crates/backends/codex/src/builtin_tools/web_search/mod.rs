@@ -222,7 +222,10 @@ fn auth_failure(error: &OpenAiAuthError) -> RequestFailure {
 #[async_trait::async_trait]
 impl Tool for WebSearchHandler {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function("web__run", DESCRIPTION, commands_schema())
+        static DEFINITION: std::sync::LazyLock<ToolDefinition> = std::sync::LazyLock::new(|| {
+            ToolDefinition::function("web__run", DESCRIPTION, commands_schema())
+        });
+        DEFINITION.clone()
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {

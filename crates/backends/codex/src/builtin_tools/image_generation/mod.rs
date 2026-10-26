@@ -29,6 +29,12 @@ const MAX_EDIT_IMAGES: usize = 5;
 const MAX_OUTPUT_HINT_BYTES: usize = 1_024;
 
 fn definition() -> ToolDefinition {
+    static DEFINITION: std::sync::LazyLock<ToolDefinition> =
+        std::sync::LazyLock::new(build_definition);
+    DEFINITION.clone()
+}
+
+fn build_definition() -> ToolDefinition {
     ToolDefinition::function(
         "image_gen__imagegen",
         DESCRIPTION,

@@ -35,6 +35,14 @@ impl StandardTool {
 
     #[must_use]
     pub fn definition(self) -> ToolDefinition {
+        static DEFINITIONS: [std::sync::OnceLock<ToolDefinition>; 5] =
+            [const { std::sync::OnceLock::new() }; 5];
+        DEFINITIONS[self as usize]
+            .get_or_init(|| self.build_definition())
+            .clone()
+    }
+
+    fn build_definition(self) -> ToolDefinition {
         match self {
             Self::ExecCommand => exec_command_definition(self.name()),
             Self::WriteStdin => write_stdin_definition(self.name()),

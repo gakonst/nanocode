@@ -12,22 +12,24 @@ homepage.workspace = true
 repository.workspace = true
 keywords = ["ai", "agents", "sandbox", "landlock", "bubblewrap"]
 categories.workspace = true
-description = "Run a command confined to read-only paths, one writable directory and an allowlisted egress proxy on Linux"
+description = "Run a command confined to read-only paths, one writable directory and an allowlisted egress proxy (Landlock confinement on Linux only)"
 include = ["src/**", "Cargo.toml"]
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock.workspace = true
-libc.workspace = true
+[target.'cfg(unix)'.dependencies]
 nanocode-sync.workspace = true
 rcgen.workspace = true
-rustix = { workspace = true, features = ["fs", "process", "std"] }
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 rustls-native-certs.workspace = true
-seccompiler.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "time"] }
 tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+seccompiler.workspace = true
 
 [lints]
 workspace = true

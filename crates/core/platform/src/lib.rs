@@ -79,7 +79,30 @@ pub fn uuid_v4() -> uuid::Uuid {
 
 #[cfg(not(target_family = "wasm"))]
 pub fn uuid_v7() -> uuid::Uuid {
-    uuid::Uuid::now_v7()
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the system clock predates the Unix epoch")
+        .as_millis();
+    assert!(
+        millis < 1 << 48,
+        "the system clock exceeds the UUIDv7 timestamp range"
+    );
+    let floor = (millis as u64) << 12;
+    let next = |last: u64| floor.max(last + 1);
+    let stamp = next(
+        LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+            Some(next(last))
+        })
+        .unwrap_or_else(|last| last),
+    );
+    let [.., high, low] = stamp.to_be_bytes();
+    let mut bytes = [0; 10];
+    bytes[0] = high & 0x0f;
+    bytes[1] = low;
+    fill_random(&mut bytes[2..]).expect("the system could not provide UUID randomness");
+    uuid::Builder::from_unix_timestamp_millis(stamp >> 12, &bytes).into_uuid()
 }
 
 #[cfg(target_family = "wasm")]

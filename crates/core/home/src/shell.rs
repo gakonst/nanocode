@@ -223,8 +223,10 @@ pub fn get_shell_by_model_provided_path(path: &str) -> Shell {
 }
 
 pub fn default_user_shell() -> Shell {
-    let user_shell_path = user_shell_path();
-    default_user_shell_from_path(user_shell_path.as_deref())
+    static SHELL: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
+    SHELL
+        .get_or_init(|| default_user_shell_from_path(user_shell_path().as_deref()))
+        .clone()
 }
 
 fn default_user_shell_from_path(user_shell_path: Option<&Path>) -> Shell {

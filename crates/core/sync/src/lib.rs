@@ -5,7 +5,7 @@ use futures_util::future::{FutureExt, Shared};
 use tokio::sync::{mpsc, oneshot};
 
 pub struct Signal {
-    finish: ArcSwapOption<oneshot::Sender<()>>,
+    finish: Slot<oneshot::Sender<()>>,
     finished: Shared<oneshot::Receiver<()>>,
 }
 
@@ -20,18 +20,18 @@ impl Signal {
     pub fn new() -> Self {
         let (finish, finished) = oneshot::channel();
         Self {
-            finish: ArcSwapOption::from_pointee(finish),
+            finish: Slot::new(Some(finish)),
             finished: finished.shared(),
         }
     }
 
     pub fn fire(&self) {
-        drop(self.finish.swap(None));
+        drop(self.finish.take());
     }
 
     #[must_use]
     pub fn is_fired(&self) -> bool {
-        self.finish.load().is_none()
+        self.finish.is_empty()
     }
 
     pub async fn wait(&self) {

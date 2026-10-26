@@ -435,14 +435,14 @@ struct SessionState {
     drains: Option<Vec<JoinHandle<()>>>,
     output: mpsc::UnboundedReceiver<Vec<u8>>,
     captured: CapturedOutput,
-    secrets: Vec<String>,
+    secrets: nanocode_process_contracts::Redactor,
 }
 
 impl Session {
     fn new(
         id: i64,
         spawned: process::SpawnedProcess,
-        secrets: Vec<String>,
+        secrets: nanocode_process_contracts::Redactor,
         launch: Launch,
     ) -> std::io::Result<Arc<Self>> {
         let tty = matches!(spawned.stdin.as_ref(), Some(process::ProcessStdin::Pty(_)));
@@ -590,9 +590,10 @@ impl SessionState {
     fn take_output(&mut self, max_output_tokens: Option<usize>) -> (String, Option<usize>) {
         self.collect();
         let captured = self.captured.take();
-        let raw = String::from_utf8_lossy(&captured.with_omission_marker()).into_owned();
+        let mut raw = String::from_utf8_lossy(&captured.with_omission_marker()).into_owned();
+        self.secrets.text(&mut raw);
         let limit = output::effective_token_limit(max_output_tokens);
-        let (output, _) = output::redact_and_limit(raw, &self.secrets, limit);
+        let (output, _) = output::redact_and_limit(raw, &[], limit);
         (output, Some(captured.total_bytes.saturating_add(3) / 4))
     }
 }

@@ -27,6 +27,8 @@ pub struct Polled<O> {
     pub cancel: Vec<(String, String)>,
     pub cancel_calls: Vec<(String, String)>,
     pub watch: Vec<(String, String)>,
+    /// Commands are still outstanding: poll again after `busy_poll`.
+    pub busy: bool,
 }
 
 impl<O> Default for Polled<O> {
@@ -36,6 +38,7 @@ impl<O> Default for Polled<O> {
             cancel: Vec::new(),
             cancel_calls: Vec::new(),
             watch: Vec::new(),
+            busy: false,
         }
     }
 }
@@ -89,12 +92,20 @@ pub trait CommandQueue: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
     fn turn_ended(&self, session_id: &str, turn_id: &str) -> impl Future<Output = bool> + Send;
     fn unsettled(&self, command: &str, error: &str);
+    /// Resolves when new commands may have been queued, to poll at once.
+    fn changed(&self) -> impl Future<Output = ()> + Send {
+        std::future::pending()
+    }
 }
 
 #[derive(Clone, Copy)]
 pub struct QueueOptions {
     pub operation_timeout: Option<Duration>,
+    /// How long to wait between polls while nothing is outstanding.
     pub poll: Duration,
+    /// How long to wait between polls while calls are in flight, turns are
+    /// watched or the last poll was busy.
+    pub busy_poll: Duration,
     pub end_check: Duration,
 }
 
@@ -192,7 +203,7 @@ pub async fn serve_queue<Q: CommandQueue>(
         }
     }
     let mut failed = std::pin::pin!(failed);
-    let mut tick = tokio::time::interval(options.poll);
+    let mut next = Instant::now();
     let mut cancelled = HashSet::new();
     let mut cancelled_calls = HashSet::new();
     let mut watching = HashSet::new();
@@ -201,9 +212,11 @@ pub async fn serve_queue<Q: CommandQueue>(
         tokio::select! {
             reason = &mut driver => return Ok(reason),
             error = &mut failed => return Err(error),
-            _ = tick.tick() => {
+            () = queue.changed() => next = Instant::now(),
+            () = tokio::time::sleep_until(next) => {
                 let in_flight = sending.read(|sending| sending.keys().cloned().collect());
                 let polled = queue.poll(&in_flight).await?;
+                let busy = polled.busy || !polled.calls.is_empty() || !in_flight.is_empty();
                 watching.extend(polled.watch);
                 for (session_id, turn_id) in polled.cancel {
                     if cancelled.insert((session_id.clone(), turn_id.clone())) {
@@ -239,6 +252,10 @@ pub async fn serve_queue<Q: CommandQueue>(
                     }
                     checked = Instant::now();
                 }
+                // Measured from the end of this poll, so a slow one is not
+                // followed by another at once.
+                let busy = busy || !watching.is_empty();
+                next = Instant::now() + if busy { options.busy_poll } else { options.poll };
             }
         }
     }

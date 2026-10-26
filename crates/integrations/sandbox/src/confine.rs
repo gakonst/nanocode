@@ -20,6 +20,8 @@ use tokio::process::Command;
 
 const ABI: ABI = ABI::V6;
 
+pub const ARGUMENT: &str = "tool-sandbox";
+
 const DEVICES: [&str; 5] = [
     "/dev/null",
     "/dev/zero",
@@ -156,10 +158,10 @@ fn confine(policy: &Policy, own: &File) -> io::Result<()> {
 }
 
 impl Policy {
-    pub fn command(&self, launcher: &Path, argument: &str, program: &Path) -> io::Result<Command> {
+    pub fn command(&self, launcher: &Path, program: &Path) -> io::Result<Command> {
         let mut command = Command::new(launcher);
         command
-            .arg(argument)
+            .arg(ARGUMENT)
             .arg(serde_json::to_string(self)?)
             .arg(program)
             .current_dir(&self.write)
@@ -172,9 +174,9 @@ impl Policy {
     }
 }
 
-pub fn launch_if_requested(argument: &str) {
+pub fn launch_if_requested() {
     let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().is_none_or(|first| first != argument) {
+    if arguments.next().is_none_or(|first| first != ARGUMENT) {
         return;
     }
     let error = (|| -> io::Result<io::Error> {
@@ -190,7 +192,7 @@ pub fn launch_if_requested(argument: &str) {
         Ok(std::process::Command::new(program).args(arguments).exec())
     })();
     match error {
-        Ok(error) | Err(error) => eprintln!("{argument}: {error}"),
+        Ok(error) | Err(error) => eprintln!("{ARGUMENT}: {error}"),
     }
     std::process::exit(126);
 }

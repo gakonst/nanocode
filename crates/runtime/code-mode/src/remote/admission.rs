@@ -51,13 +51,13 @@ pub enum Admission {
 pub fn admit_runtime(
     previous: Option<&str>,
     connected_before: bool,
-    live: Option<(&str, bool)>,
+    live: Option<(impl AsRef<str>, bool)>,
     advertised: &str,
 ) -> Admission {
     let replaces = previous.is_some_and(|previous| previous != advertised);
     match live {
         _ if replaces && connected_before => Admission::Fence,
-        Some((current, _)) if current != advertised => Admission::Wait,
+        Some((current, _)) if current.as_ref() != advertised => Admission::Wait,
         Some((_, true)) => Admission::Retry,
         Some((_, false)) | None => Admission::Take { replaces },
     }

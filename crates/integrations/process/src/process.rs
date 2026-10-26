@@ -22,6 +22,8 @@ use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use nanocode_process_contracts::{MIN_REDACTED_SECRET_BYTES, REDACTED, Redactor};
+
 use super::selection::Shell;
 
 const SENSITIVE_ENV_PARTS: [&str; 11] = [
@@ -512,19 +514,27 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+/// The environment for a command and a redactor for its output: inherited or
+/// overridden values of sensitive-looking variables show as `[REDACTED]`,
+/// and each of `secret_overrides` as `[secret NAME]`.
 pub(super) fn sanitized_environment(
     overrides: &[(OsString, OsString)],
     secret_overrides: &[(OsString, OsString)],
-) -> (Vec<(OsString, OsString)>, Vec<String>) {
+) -> (Vec<(OsString, OsString)>, Redactor) {
     let mut environment = Vec::new();
-    let mut secrets = Vec::new();
+    let mut redactor = Redactor::raw(MIN_REDACTED_SECRET_BYTES);
+    for (name, value) in secret_overrides {
+        if let Some(value) = value.to_str() {
+            redactor.add(value, &format!("[secret {}]", name.to_string_lossy()));
+        }
+    }
     for (name, value) in env::vars_os() {
         if crate::SessionEnvironment::controls(&name) {
             continue;
         }
         if is_sensitive_name(&name) {
             if let Some(value) = value.to_str().filter(|value| value.len() >= 8) {
-                secrets.push(value.to_owned());
+                redactor.add(value, REDACTED);
             }
         } else {
             environment.push((name, value));
@@ -537,19 +547,14 @@ pub(super) fn sanitized_environment(
         if is_sensitive_name(name)
             && let Some(value) = value.to_str().filter(|value| value.len() >= 8)
         {
-            secrets.push(value.to_owned());
+            redactor.add(value, REDACTED);
         }
     }
     for (name, value) in secret_overrides {
         environment.retain(|(candidate, _)| candidate != name);
         environment.push((name.clone(), value.clone()));
-        if let Some(value) = value.to_str().filter(|value| !value.is_empty()) {
-            secrets.push(value.to_owned());
-        }
     }
-    secrets.sort_unstable_by_key(|secret| std::cmp::Reverse(secret.len()));
-    secrets.dedup();
-    (environment, secrets)
+    (environment, redactor)
 }
 
 fn normalize_environment(environment: &mut Vec<(OsString, OsString)>) {

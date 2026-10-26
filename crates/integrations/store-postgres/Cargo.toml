@@ -14,6 +14,7 @@ description = "Postgres state store for Nanocode durability"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-durability-core.workspace = true
+nanocode-sync.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tokio-postgres.workspace = true
 

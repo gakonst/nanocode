@@ -1,11 +1,13 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Mutex,
+        Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
+
+use nanocode_sync::{Atom, Slot};
 
 use base64::{
     Engine,
@@ -21,7 +23,12 @@ use rquickjs::{
     function::{Func, Opt},
 };
 
-static BUFFERS: Mutex<BTreeMap<u64, (Instant, Vec<u8>)>> = Mutex::new(BTreeMap::new());
+struct Buffer {
+    at: Instant,
+    bytes: Slot<Vec<u8>>,
+}
+
+static BUFFERS: OnceLock<Atom<BTreeMap<u64, Arc<Buffer>>>> = OnceLock::new();
 const UNCLAIMED: Duration = Duration::from_secs(600);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -32,22 +39,28 @@ const LENIENT: GeneralPurpose = GeneralPurpose::new(
         .with_decode_padding_mode(DecodePaddingMode::RequireNone),
 );
 
+fn buffers() -> &'static Atom<BTreeMap<u64, Arc<Buffer>>> {
+    BUFFERS.get_or_init(Atom::default)
+}
+
 pub fn put(bytes: Vec<u8>) -> u64 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    let mut buffers = BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    buffers.retain(|_, (at, _)| at.elapsed() < UNCLAIMED);
-    buffers.insert(id, (Instant::now(), bytes));
+    let buffer = Arc::new(Buffer {
+        at: Instant::now(),
+        bytes: Slot::new(Some(bytes)),
+    });
+    buffers().update(|buffers| {
+        buffers.retain(|_, buffer| buffer.at.elapsed() < UNCLAIMED);
+        buffers.insert(id, Arc::clone(&buffer));
+    });
     id
 }
 
 pub fn take(id: u64) -> Option<Vec<u8>> {
-    BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&id)
-        .map(|(_, bytes)| bytes)
+    buffers()
+        .update(|buffers| buffers.remove(&id))?
+        .bytes
+        .take()
 }
 
 const CHUNK: usize = 1 << 20;

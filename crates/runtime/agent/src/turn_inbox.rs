@@ -2,14 +2,14 @@ use std::{
     collections::HashMap,
     fmt,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, Owned};
 use nanocode_tool_host::embedded::HostFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -157,7 +157,7 @@ struct Shared<H: ?Sized> {
     host: Arc<dyn InboxHost>,
     state: Atom<Requests>,
     session_id: String,
-    streams: Mutex<Vec<Stream>>,
+    streams: Owned<Vec<Stream>>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -493,13 +493,11 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
         self.0.host.publish_live(live).await
     }
 
-    fn route(&self, events: Vec<SessionEvent>) -> Result<Vec<(bool, Vec<SessionEvent>)>, String> {
+    fn route(
+        streams: &mut Vec<Stream>,
+        events: Vec<SessionEvent>,
+    ) -> Result<Vec<(bool, Vec<SessionEvent>)>, String> {
         let encode = |error: serde_json::Error| format!("encode agent event: {error}");
-        let mut streams = self
-            .0
-            .streams
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         let mut segments: Vec<(bool, Vec<SessionEvent>)> = Vec::new();
         let mut push = |live: bool, event: SessionEvent| match segments.last_mut() {
             Some((kind, events)) if *kind == live => events.push(event),
@@ -510,7 +508,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
                 Role::Delta(kind, key, text) => {
                     push(
                         true,
-                        stream(&mut streams, kind, key, &text, event).map_err(encode)?,
+                        stream(streams, kind, key, &text, event).map_err(encode)?,
                     );
                 }
                 Role::Final(kind, key) => {
@@ -518,7 +516,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
                     push(false, event);
                 }
                 Role::Boundary { ends_run } => {
-                    for merged in flush(&mut streams, ends_run).map_err(encode)? {
+                    for merged in flush(streams, ends_run).map_err(encode)? {
                         push(false, merged);
                     }
                     push(false, event);
@@ -536,7 +534,8 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> EventSink for LogSink<H> {
             if !self.0.host.live_deltas() {
                 return self.persist(events).await;
             }
-            for (live, events) in self.route(events)? {
+            let segments = Self::route(&mut *self.0.streams.acquire().await, events)?;
+            for (live, events) in segments {
                 if live {
                     self.publish_live(events).await?;
                 } else {
@@ -615,7 +614,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
             host,
             state: Atom::default(),
             session_id,
-            streams: Mutex::new(Vec::new()),
+            streams: Owned::new(Vec::new()),
         });
         let (events, pump) =
             SessionEvents::start(stream, subagents, window, LogSink(Arc::clone(&shared)));

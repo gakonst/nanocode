@@ -283,14 +283,14 @@ impl StateStore for PostgresStore {
 }
 
 pub struct PostgresSql {
-    client: tokio::sync::Mutex<Client>,
+    client: nanocode_sync::Owned<Client>,
 }
 
 impl PostgresSql {
     #[must_use]
     pub fn new(client: Client) -> Self {
         Self {
-            client: tokio::sync::Mutex::new(client),
+            client: nanocode_sync::Owned::new(client),
         }
     }
 }
@@ -302,7 +302,7 @@ impl Sql for PostgresSql {
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
         Box::pin(async move {
-            let mut client = self.client.lock().await;
+            let mut client = self.client.acquire().await;
             let transaction = client.transaction().await.map_err(backend)?;
             let mut results = Vec::with_capacity(statements.len());
             for statement in statements {

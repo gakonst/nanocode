@@ -3355,6 +3355,7 @@ dependencies = [
  "base64 0.22.1",
  "base64-simd",
  "nanocode-platform",
+ "nanocode-sync",
  "nanocode-tool-contracts",
  "rquickjs",
  "serde",
@@ -3376,6 +3377,7 @@ dependencies = [
  "libc",
  "nanocode-mcp",
  "nanocode-mcp-tools",
+ "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-types",
  "serde",
@@ -3651,6 +3653,7 @@ name = "nanocode-store-postgres"
 version = "0.6.7"
 dependencies = [
  "nanocode-durability-core",
+ "nanocode-sync",
  "tokio",
  "tokio-postgres",
 ]

@@ -11,7 +11,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError, Weak,
+        Arc, Weak,
         atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -832,16 +832,22 @@ const CALLBACK_DROPPED: &str = "the hand's connection to its brain dropped while
 struct Outgoing {
     wire: Arc<Atom<Option<mpsc::UnboundedSender<String>>>>,
     limit: Arc<AtomicUsize>,
-    backlog: Arc<Mutex<VecDeque<String>>>,
+    backlog: Arc<Atom<VecDeque<Arc<str>>>>,
+    flushing: Arc<AtomicBool>,
+    resumed: Arc<AtomicBool>,
 }
 
 impl Outgoing {
-    fn backlog(&self) -> MutexGuard<'_, VecDeque<String>> {
-        self.backlog.lock().unwrap_or_else(PoisonError::into_inner)
+    fn connect(&self, wire: mpsc::UnboundedSender<String>) {
+        self.resumed.store(false, Ordering::SeqCst);
+        self.wire.set(Some(wire));
+    }
+    fn clear_backlog(&self) {
+        self.backlog.set(VecDeque::new());
     }
     fn queue(&self, text: String) {
-        let mut backlog = self.backlog();
-        let text = if backlog.is_empty() {
+        let text = if self.backlog.read(VecDeque::is_empty) && !self.flushing.load(Ordering::SeqCst)
+        {
             match self.offer(text) {
                 Ok(()) => return,
                 Err((text, _)) => text,
@@ -849,20 +855,49 @@ impl Outgoing {
         } else {
             text
         };
-        if backlog.len() >= MAX_BUFFERED_FRAMES {
-            backlog.pop_front();
+        let text = Arc::<str>::from(text);
+        self.backlog.update(|backlog| {
+            if backlog.len() >= MAX_BUFFERED_FRAMES {
+                backlog.pop_front();
+            }
+            backlog.push_back(Arc::clone(&text));
+        });
+        if self.resumed.load(Ordering::SeqCst) && self.claim() {
+            let _ = self.drain();
         }
-        backlog.push_back(text);
+    }
+    fn claim(&self) -> bool {
+        self.flushing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     }
     fn flush(&self) -> Result<(), CodeModeHostError> {
-        let mut backlog = self.backlog();
-        while let Some(text) = backlog.pop_front() {
-            if let Err((text, issue)) = self.offer(text) {
-                backlog.push_front(text);
-                return Err(issue);
+        self.resumed.store(true, Ordering::SeqCst);
+        if self.claim() { self.drain() } else { Ok(()) }
+    }
+    fn drain(&self) -> Result<(), CodeModeHostError> {
+        loop {
+            let mut frames = self.backlog.update(std::mem::take).into_iter();
+            while let Some(text) = frames.next() {
+                if let Err((_, issue)) = self.offer(text.to_string()) {
+                    let unsent = std::iter::once(text).chain(frames).collect::<VecDeque<_>>();
+                    self.backlog.update(|backlog| {
+                        let mut held = unsent.clone();
+                        held.extend(backlog.iter().cloned());
+                        while held.len() > MAX_BUFFERED_FRAMES {
+                            held.pop_front();
+                        }
+                        *backlog = held;
+                    });
+                    self.flushing.store(false, Ordering::SeqCst);
+                    return Err(issue);
+                }
+            }
+            self.flushing.store(false, Ordering::SeqCst);
+            if self.backlog.read(VecDeque::is_empty) || !self.claim() {
+                return Ok(());
             }
         }
-        Ok(())
     }
     fn encode(&self, frame: &Frame) -> Result<String, CodeModeHostError> {
         frame.encode(self.limit.load(Ordering::Relaxed))
@@ -1728,6 +1763,8 @@ impl Executor {
             wire: Arc::default(),
             limit: Arc::new(AtomicUsize::new(usize::MAX)),
             backlog: Arc::default(),
+            flushing: Arc::default(),
+            resumed: Arc::default(),
         };
         let bus = Arc::new(CallbackBus {
             outgoing: outgoing.clone(),
@@ -1863,7 +1900,7 @@ impl Executor {
             timer.abort();
         }
         self.bus.fail_pending();
-        self.outgoing.backlog().clear();
+        self.outgoing.clear_backlog();
         self.tasks.abort_all();
         while self.tasks.join_next().await.is_some() {}
         for (_, (runtime, _)) in self.runtimes.0.drain() {
@@ -2049,7 +2086,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         .outgoing
         .limit
         .store(policy.max_frame_bytes, Ordering::Relaxed);
-    executor.outgoing.wire.set(Some(wire));
+    executor.outgoing.connect(wire);
     let outgoing = executor.outgoing.clone();
     let bus = Arc::clone(&executor.bus);
     let hands: Arc<dyn HandCalls> = executor.callbacks.clone();

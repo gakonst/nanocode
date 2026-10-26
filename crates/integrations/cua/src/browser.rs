@@ -1,10 +1,11 @@
+use nanocode_sync::Atom;
 use serde_json::{Value, json};
 use std::{
     fs,
     io::{self, BufRead, BufReader, Read, Write},
     os::unix::{fs::PermissionsExt as _, net::UnixStream},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -232,49 +233,47 @@ fn read_frame(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(body))
 }
 
-fn write_frame(output: &Mutex<io::Stdout>, body: &[u8]) -> io::Result<()> {
+fn write_frame(output: &mut impl Write, body: &[u8]) -> io::Result<()> {
     let length = u32::try_from(body.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "message too large"))?;
-    let mut output = output
-        .lock()
-        .map_err(|_| io::Error::other("stdout lock poisoned"))?;
     output.write_all(&length.to_ne_bytes())?;
     output.write_all(body)?;
     output.flush()
 }
 
 pub fn serve_host(socket: &Path) -> io::Result<()> {
-    let provider: Arc<Mutex<Option<UnixStream>>> = Arc::default();
-    let output = Arc::new(Mutex::new(io::stdout()));
+    let provider: Arc<Atom<Option<Arc<UnixStream>>>> = Arc::default();
     let forward = Arc::clone(&provider);
     thread::spawn(move || {
         let mut input = io::stdin().lock();
         while let Ok(Some(body)) = read_frame(&mut input) {
-            if let Ok(mut current) = forward.lock()
-                && let Some(stream) = current.as_mut()
-                && (stream.write_all(&body).is_err() || stream.write_all(b"\n").is_err())
-            {
-                *current = None;
+            if let Some(stream) = Option::clone(&forward.get()) {
+                let mut writer = &*stream;
+                if writer.write_all(&body).is_err() || writer.write_all(b"\n").is_err() {
+                    forward.try_update(|current| {
+                        current
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &stream))
+                            .then(|| *current = None)
+                    });
+                }
             }
         }
         std::process::exit(0);
     });
+    let mut output = io::stdout();
     loop {
         let Ok(stream) = UnixStream::connect(socket) else {
             thread::sleep(RECONNECT);
             continue;
         };
-        if let Ok(mut current) = provider.lock() {
-            *current = Some(stream.try_clone()?);
-        }
+        provider.set(Some(Arc::new(stream.try_clone()?)));
         for line in BufReader::new(stream).lines() {
             let Ok(line) = line else { break };
-            write_frame(&output, line.as_bytes())?;
+            write_frame(&mut output, line.as_bytes())?;
         }
-        if let Ok(mut current) = provider.lock() {
-            *current = None;
-        }
-        write_frame(&output, DISCONNECTED)?;
+        provider.set(None);
+        write_frame(&mut output, DISCONNECTED)?;
         thread::sleep(RECONNECT);
     }
 }

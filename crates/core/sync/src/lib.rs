@@ -2,7 +2,6 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use futures_util::future::{FutureExt, Shared};
-use sync_wrapper::SyncWrapper;
 use tokio::sync::{mpsc, oneshot};
 
 pub struct Signal {
@@ -106,7 +105,7 @@ impl<T: Clone> Atom<T> {
 }
 
 pub struct Slot<T> {
-    value: ArcSwapOption<SyncWrapper<T>>,
+    value: crossbeam_utils::atomic::AtomicCell<Option<Box<T>>>,
     occupied: std::sync::atomic::AtomicIsize,
 }
 
@@ -116,35 +115,29 @@ impl<T> Default for Slot<T> {
     }
 }
 
-fn unshared<T>(value: Arc<SyncWrapper<T>>) -> T {
-    Arc::try_unwrap(value)
-        .expect("a slot never shares the value it holds")
-        .into_inner()
-}
-
 impl<T> Slot<T> {
     #[must_use]
     pub fn new(value: Option<T>) -> Self {
         Self {
             occupied: std::sync::atomic::AtomicIsize::new(isize::from(value.is_some())),
-            value: ArcSwapOption::from(value.map(|value| Arc::new(SyncWrapper::new(value)))),
+            value: crossbeam_utils::atomic::AtomicCell::new(value.map(Box::new)),
         }
     }
 
     pub fn put(&self, value: T) -> Option<T> {
-        let previous = self.value.swap(Some(Arc::new(SyncWrapper::new(value))));
+        let previous = self.value.swap(Some(Box::new(value)));
         if previous.is_none() {
             self.occupied
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        previous.map(unshared)
+        previous.map(|previous| *previous)
     }
 
     pub fn take(&self) -> Option<T> {
         let value = self.value.swap(None)?;
         self.occupied
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-        Some(unshared(value))
+        Some(*value)
     }
 
     #[must_use]
@@ -251,6 +244,9 @@ impl<T: Clone> Inbox<T> {
 
     pub fn drain(&self) -> Vec<T> {
         let mut values = Vec::new();
+        if self.head.load().is_none() {
+            return values;
+        }
         let mut next = self.head.swap(None);
         while let Some(node) = next.take() {
             match Arc::try_unwrap(node) {

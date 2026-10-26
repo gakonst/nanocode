@@ -3700,9 +3700,9 @@ name = "nanocode-sync"
 version = "0.6.7"
 dependencies = [
  "arc-swap",
+ "crossbeam-utils",
  "futures-util",
  "nanocode-platform",
- "sync_wrapper",
  "tokio",
 ]
 

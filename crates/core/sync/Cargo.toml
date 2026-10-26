@@ -12,8 +12,8 @@ autobenches = false
 
 [dependencies]
 arc-swap.workspace = true
+crossbeam-utils.workspace = true
 futures-util.workspace = true
-sync_wrapper.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

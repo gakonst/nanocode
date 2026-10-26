@@ -256,34 +256,34 @@ impl CustomToolFormat {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
-pub struct JsonSchema(Value);
+pub struct JsonSchema(std::sync::Arc<Value>);
 
 impl JsonSchema {
     #[must_use]
-    pub const fn as_value(&self) -> &Value {
+    pub fn as_value(&self) -> &Value {
         &self.0
     }
 }
 
 impl From<Value> for JsonSchema {
     fn from(value: Value) -> Self {
-        Self(value)
+        Self(std::sync::Arc::new(value))
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
-pub struct JsonValue(Value);
+pub struct JsonValue(std::sync::Arc<Value>);
 
 impl JsonValue {
     #[must_use]
-    pub const fn as_value(&self) -> &Value {
+    pub fn as_value(&self) -> &Value {
         &self.0
     }
 }
 
 impl From<Value> for JsonValue {
     fn from(value: Value) -> Self {
-        Self(value)
+        Self(std::sync::Arc::new(value))
     }
 }

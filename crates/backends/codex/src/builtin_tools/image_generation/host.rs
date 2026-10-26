@@ -4,6 +4,7 @@ use std::{
 };
 
 use nanocode_process_contracts::FileHost;
+use nanocode_tool_host::image::ImageHistory;
 use nanocode_tools::ToolDefinition;
 use serde::Serialize;
 
@@ -23,6 +24,7 @@ struct HostImageGeneration {
     transport: Arc<dyn HostTransport>,
     files: Arc<dyn FileHost>,
     workspace: PathBuf,
+    images: ImageHistory,
 }
 
 #[must_use]
@@ -32,6 +34,23 @@ pub fn image_generation_tool(
     files: Arc<dyn FileHost>,
     workspace: PathBuf,
 ) -> impl Tool {
+    image_generation_tool_with_images(
+        api_base_url,
+        transport,
+        files,
+        workspace,
+        ImageHistory::default(),
+    )
+}
+
+#[must_use]
+pub fn image_generation_tool_with_images(
+    api_base_url: &str,
+    transport: Arc<dyn HostTransport>,
+    files: Arc<dyn FileHost>,
+    workspace: PathBuf,
+    images: ImageHistory,
+) -> impl Tool {
     let api_base_url = api_base_url.trim_end_matches('/');
     HostImageGeneration {
         generation_endpoint: format!("{api_base_url}/images/generations"),
@@ -39,6 +58,7 @@ pub fn image_generation_tool(
         transport,
         files,
         workspace,
+        images,
     }
 }
 
@@ -49,10 +69,18 @@ impl HostImageGeneration {
             Err(error) => return error,
         };
         let local_image_url = |path: PathBuf| async move { self.local_image_url(&path).await };
-        let request = match request_for_args(&args, context.history(), local_image_url).await {
-            Ok(request) => request,
-            Err(error) => return ToolOutput::error(error),
+        let inline_image = |url: String| async move {
+            match self.images.inline(&url).await {
+                Ok(Some(data)) => Ok(data),
+                Ok(None) => Ok(url),
+                Err(error) => Err(format!("unable to load conversation image: {error}")),
+            }
         };
+        let request =
+            match request_for_args(&args, context.history(), local_image_url, inline_image).await {
+                Ok(request) => request,
+                Err(error) => return ToolOutput::error(error),
+            };
         let session = context.session_id();
         let response = match request {
             ImageRequest::Generate(request) => {

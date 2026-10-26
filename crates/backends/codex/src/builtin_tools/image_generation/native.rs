@@ -41,7 +41,14 @@ impl ImageGenerationHandler {
             Ok(args) => args,
             Err(error) => return error,
         };
-        let request = match request_for_args(&args, context.history(), local_image_url).await {
+        let request = match request_for_args(
+            &args,
+            context.history(),
+            local_image_url,
+            |url| async move { Ok(url) },
+        )
+        .await
+        {
             Ok(request) => request,
             Err(error) => return ToolOutput::error(error),
         };

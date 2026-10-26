@@ -29,7 +29,7 @@ mod runtime_config;
 
 pub use runtime_config::{ImageGenerationConfig, WebSearchConfig};
 pub mod image_generation;
-pub use image_generation::image_generation_tool;
+pub use image_generation::{image_generation_tool, image_generation_tool_with_images};
 #[cfg(not(target_family = "wasm"))]
 pub mod web_search;
 #[cfg(target_family = "wasm")]

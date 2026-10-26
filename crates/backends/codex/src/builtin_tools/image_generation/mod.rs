@@ -19,7 +19,7 @@ mod host;
 #[cfg(not(target_family = "wasm"))]
 mod native;
 
-pub use host::image_generation_tool;
+pub use host::{image_generation_tool, image_generation_tool_with_images};
 #[cfg(not(target_family = "wasm"))]
 pub use native::ImageGenerationHandler;
 
@@ -263,14 +263,17 @@ enum ImageRequest {
     Edit(ImageEditRequest),
 }
 
-async fn request_for_args<F, Fut>(
+async fn request_for_args<F, Fut, G, GFut>(
     args: &ImagegenArgs,
     history: &[ResponseItem],
     local_image_url: F,
+    inline_image: G,
 ) -> Result<ImageRequest, String>
 where
     F: Fn(PathBuf) -> Fut,
     Fut: Future<Output = Result<String, String>>,
+    G: Fn(String) -> GFut,
+    GFut: Future<Output = Result<String, String>>,
 {
     let background = if args.transparent_background {
         "transparent"
@@ -314,12 +317,17 @@ where
                     "`num_last_images_to_include` must be between 1 and {MAX_EDIT_IMAGES}"
                 ));
             }
-            let images = recent_images(history, count);
+            let mut images = recent_images(history, count);
             if images.len() != count {
                 return Err(format!(
                     "requested the last {count} conversation images, but only {} were available",
                     images.len()
                 ));
+            }
+            for image in &mut images {
+                if let ImageReference::Inline { image_url } = image {
+                    *image_url = inline_image(std::mem::take(image_url)).await?;
+                }
             }
             images
         }

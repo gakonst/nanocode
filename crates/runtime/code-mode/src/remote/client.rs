@@ -22,7 +22,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    HAND_RESTARTED, NOT_RECEIVED, ReceivedCalls, RemoteCodeModeHost, RemoteContext,
+    HAND_RESTARTED, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls, RemoteCodeModeHost, RemoteContext,
     RemoteFrame as Frame, RemoteOperation, RemoteTransport, encode_output,
 };
 use crate::{
@@ -34,6 +34,8 @@ pub const PEER_CLOSED: &str = "runner disconnected";
 pub const LOCAL_CLOSED: &str = "remote connection closed";
 
 pub type ResumedReply = HostFuture<'static, Result<Option<Value>, CodeModeHostError>>;
+
+pub type CallReply = HostFuture<'static, Result<Value, CodeModeHostError>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoteDelivery {
@@ -107,7 +109,7 @@ struct Waiter {
 }
 
 struct Client {
-    outgoing: mpsc::UnboundedSender<(Frame, RemoteDelivery)>,
+    outgoing: mpsc::UnboundedSender<(Vec<Frame>, RemoteDelivery)>,
     pending: Atom<HashMap<u64, Waiter>>,
     callbacks: Atom<Callbacks>,
     receipts: Atom<Receipts>,
@@ -137,7 +139,7 @@ fn error(value: impl std::fmt::Display) -> CodeModeHostError {
 }
 
 fn replied(message: String) -> CodeModeHostError {
-    if message == NOT_RECEIVED {
+    if message == NOT_RECEIVED || message == REQUEST_IN_USE {
         CodeModeHostError::unsent(message)
     } else {
         CodeModeHostError::new(message)
@@ -272,7 +274,7 @@ impl RemoteClient {
                 );
                 receivers.push((*id, receiver));
             }
-            let _ = outgoing.send((Frame::Resume { pending }, RemoteDelivery::Immediate));
+            let _ = outgoing.send((vec![Frame::Resume { pending }], RemoteDelivery::Immediate));
         } else {
             for id in pending {
                 let (replies, receiver) = mpsc::unbounded_channel();
@@ -311,7 +313,7 @@ impl RemoteClient {
     pub fn ack(&self, ids: Vec<u64>) -> Result<(), CodeModeHostError> {
         self.client
             .outgoing
-            .send((Frame::Ack { ids }, RemoteDelivery::Immediate))
+            .send((vec![Frame::Ack { ids }], RemoteDelivery::Immediate))
             .map_err(error)
     }
 
@@ -329,6 +331,88 @@ impl RemoteClient {
     pub fn into_host(self, definitions: Vec<ToolDefinition>) -> RemoteCodeModeHost {
         RemoteCodeModeHost::new(self, definitions)
     }
+
+    pub fn calls(&self, calls: Vec<(u64, RemoteOperation)>) -> Vec<CallReply> {
+        let mut frames = Vec::new();
+        let mut replies = Vec::new();
+        for (id, operation) in calls {
+            match prepare_call(&self.client, id, operation) {
+                Ok((frame, reply)) => {
+                    frames.push(frame);
+                    replies.push(reply);
+                }
+                Err(issue) => replies.push(Box::pin(async move { Err(issue) })),
+            }
+        }
+        if !frames.is_empty()
+            && self
+                .client
+                .outgoing
+                .send((frames, RemoteDelivery::Immediate))
+                .is_err()
+        {
+            return replies
+                .into_iter()
+                .map(|reply| -> CallReply {
+                    drop(reply);
+                    Box::pin(async {
+                        Err(CodeModeHostError::unsent(
+                            "remote connection closed; the operation was not dispatched",
+                        ))
+                    })
+                })
+                .collect();
+        }
+        replies
+    }
+}
+
+fn prepare_call(
+    client: &Arc<Client>,
+    id: u64,
+    operation: RemoteOperation,
+) -> Result<(Frame, CallReply), CodeModeHostError> {
+    client.not_dispatched()?;
+    let requested = requested_yield(&operation);
+    let frame = client.request_frame(id, operation);
+    fits(&frame, client.max_frame_bytes).map_err(|issue| {
+        CodeModeHostError::unsent(format!("{issue}; the operation was not dispatched"))
+    })?;
+    let mut replies = client.waiter(id);
+    let guard = Pending {
+        client: Arc::clone(client),
+        id,
+        session_id: None,
+        origin: None,
+        complete: false,
+    };
+    let reply = Box::pin(async move {
+        let reply = async {
+            while let Some(frame) = replies.recv().await {
+                match frame {
+                    Frame::Reply { result, .. } => {
+                        return result
+                            .map_err(replied)?
+                            .ok_or_else(|| error("hand omitted the tool result"));
+                    }
+                    Frame::Update { .. } => {}
+                    _ => return Err(error("unexpected operation reply")),
+                }
+            }
+            Err(error(
+                "remote reply channel closed; operation outcome unknown",
+            ))
+        };
+        guard
+            .client
+            .deadline(
+                reply,
+                requested,
+                "remote operation deadline elapsed; outcome unknown; no retry",
+            )
+            .await?
+    });
+    Ok((frame, reply))
 }
 
 impl Client {
@@ -360,7 +444,7 @@ impl Client {
                 abort.abort();
             }
         }
-        self.outgoing.send((frame, delivery)).map_err(error)
+        self.outgoing.send((vec![frame], delivery)).map_err(error)
     }
 
     fn receive(
@@ -389,7 +473,7 @@ impl Client {
                         .collect()
                 });
                 self.outgoing
-                    .send((Frame::Resume { pending }, RemoteDelivery::Immediate))
+                    .send((vec![Frame::Resume { pending }], RemoteDelivery::Immediate))
                     .map_err(error)?;
             }
             Frame::CallbackCancel { id } => {
@@ -545,7 +629,7 @@ impl Client {
                         result: Err(format!("{issue}; the brain callback's result was not sent")),
                     };
                 }
-                let _ = outgoing.send((frame, delivery));
+                let _ = outgoing.send((vec![frame], delivery));
             }
             if let Some(client) = client.upgrade() {
                 client.running.update(|running| {
@@ -681,7 +765,7 @@ impl Client {
 async fn drive(
     client: Weak<Client>,
     link: impl RemoteLink,
-    mut frames: mpsc::UnboundedReceiver<(Frame, RemoteDelivery)>,
+    mut frames: mpsc::UnboundedReceiver<(Vec<Frame>, RemoteDelivery)>,
     mut stopped: oneshot::Receiver<()>,
 ) -> String {
     let mut callbacks = FuturesUnordered::new();
@@ -737,13 +821,13 @@ async fn drive(
                     let mut batch = Vec::new();
                     let mut delivery = RemoteDelivery::Immediate;
                     while let Poll::Ready(next) = frames.poll_recv(cx) {
-                        let Some((frame, needs)) = next else {
+                        let Some((frames, needs)) = next else {
                             return Poll::Ready(Ok(()));
                         };
                         if needs == RemoteDelivery::Durable {
                             delivery = needs;
                         }
-                        batch.push(frame);
+                        batch.extend(frames);
                     }
                     if !batch.is_empty() {
                         let ids = batch
@@ -779,7 +863,7 @@ async fn drive(
                         if !acks.is_empty() {
                             let _ = client
                                 .outgoing
-                                .send((Frame::Ack { ids: acks }, RemoteDelivery::Immediate));
+                                .send((vec![Frame::Ack { ids: acks }], RemoteDelivery::Immediate));
                         }
                         link.changed();
                         receiving = link.receive();
@@ -835,13 +919,13 @@ impl Drop for Pending {
             if let Some(session_id) = self.session_id.take() {
                 let id = self.client.next.fetch_add(1, Ordering::Relaxed);
                 let _ = self.client.outgoing.send((
-                    self.client.request_frame(
+                    vec![self.client.request_frame(
                         id,
                         RemoteOperation::CancelTurn {
                             session_id,
                             turn_id: None,
                         },
-                    ),
+                    )],
                     RemoteDelivery::Durable,
                 ));
             }
@@ -992,48 +1076,12 @@ impl RemoteTransport for RemoteClient {
     fn call(&self, operation: RemoteOperation) -> HostFuture<'_, Result<Value, CodeModeHostError>> {
         Box::pin(async move {
             let client = &self.client;
-            client.not_dispatched()?;
-            let requested = requested_yield(&operation);
             let id = client.next.fetch_add(1, Ordering::Relaxed);
-            let frame = client.request_frame(id, operation);
-            fits(&frame, client.max_frame_bytes)
-                .map_err(|issue| error(format!("{issue}; the operation was not dispatched")))?;
-            let mut replies = client.waiter(id);
-            let mut guard = Pending {
-                client: Arc::clone(client),
-                id,
-                session_id: None,
-                origin: None,
-                complete: false,
-            };
+            let (frame, reply) = prepare_call(client, id, operation)?;
             client
                 .dispatch(frame, RemoteDelivery::Immediate)
                 .map_err(|_| error("remote connection closed; the operation was not dispatched"))?;
-            let reply = async {
-                while let Some(frame) = replies.recv().await {
-                    match frame {
-                        Frame::Reply { result, .. } => {
-                            return result
-                                .map_err(replied)?
-                                .ok_or_else(|| error("hand omitted the tool result"));
-                        }
-                        Frame::Update { .. } => {}
-                        _ => return Err(error("unexpected operation reply")),
-                    }
-                }
-                Err(error(
-                    "remote reply channel closed; operation outcome unknown",
-                ))
-            };
-            let result = client
-                .deadline(
-                    reply,
-                    requested,
-                    "remote operation deadline elapsed; outcome unknown; no retry",
-                )
-                .await?;
-            guard.complete = true;
-            result
+            reply.await
         })
     }
 

@@ -1997,6 +1997,15 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             if let Some(bytes) = max_frame_bytes { outgoing.limit.fetch_min(bytes, Ordering::Relaxed); }
                             executor.resumable |= resumable;
                             let work = Arc::new(Pending::new(id, &operation));
+                            let known = executor.running.get(&id).map(|running| Arc::clone(&running.work)).or_else(|| executor.retained.get(&id).map(|retained| Arc::clone(&retained.work)));
+                            if let Some(known) = known {
+                                if known.id != work.id {
+                                    outgoing.send(&Frame::Reply { id, result: Err(REQUEST_IN_USE.into()) })?;
+                                } else if let Some(retained) = executor.retained.get(&id) {
+                                    outgoing.push(retained.text.clone())?;
+                                }
+                                continue;
+                            }
                             let session_id = work.session_id.clone();
                             executor.running.insert(id, Running { resumable, connection, work: Arc::clone(&work), cancel: None });
                             executor.publish();

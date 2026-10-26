@@ -1,19 +1,35 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
+    pin::pin,
     sync::Arc,
     time::Duration,
 };
 
+use futures_util::{
+    FutureExt, Stream, StreamExt,
+    future::{BoxFuture, Either},
+    stream::FuturesUnordered,
+};
 use nanocode_sync::Atom;
 use serde_json::Value;
-use tokio::time::Instant;
+use tokio::{sync::mpsc, time::Instant};
 
 use super::{
-    NOT_RECEIVED, RemoteClient, RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink,
-    RemoteOperation, RemoteTransport, output_from_wire,
+    NOT_RECEIVED, RemoteClient, RemoteContext, RemoteLink, RemoteOperation, RemoteTransport,
+    output_from_wire,
 };
-use crate::embedded::{CodeModeHostError, HostFuture};
+use crate::embedded::CodeModeHostError;
+
+const DERIVED_REQUESTS: u64 = 1 << 52;
+
+#[must_use]
+pub fn request_id(call_id: &str) -> u64 {
+    let hash = call_id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    DERIVED_REQUESTS | ((hash ^ (hash >> 52)) & (DERIVED_REQUESTS - 1))
+}
 
 pub struct QueuedCall<O> {
     pub name: String,
@@ -24,34 +40,32 @@ pub struct QueuedCall<O> {
 
 pub struct Polled<O> {
     pub calls: Vec<QueuedCall<O>>,
+    pub stop: Vec<(String, String)>,
     pub cancel: Vec<(String, String)>,
-    pub cancel_calls: Vec<(String, String)>,
     pub watch: Vec<(String, String)>,
-    /// Commands are still outstanding: poll again after `busy_poll`.
-    pub busy: bool,
 }
 
 impl<O> Default for Polled<O> {
     fn default() -> Self {
         Self {
             calls: Vec::new(),
+            stop: Vec::new(),
             cancel: Vec::new(),
-            cancel_calls: Vec::new(),
             watch: Vec::new(),
-            busy: false,
         }
     }
 }
 
-pub struct Recorded {
-    pub queued: bool,
-    pub request: Option<u64>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Admit {
+    Send,
+    Wait,
+    Refuse(String),
 }
 
 pub enum Settlement {
     Completed(Value),
     Unavailable(String),
-    Requeue,
     Unknown,
 }
 
@@ -65,7 +79,7 @@ impl Settlement {
             Self::Unavailable(message) => {
                 Some(serde_json::json!({"status": "unavailable", "message": message}))
             }
-            Self::Requeue | Self::Unknown => None,
+            Self::Unknown => None,
         }
     }
 }
@@ -74,189 +88,219 @@ pub trait CommandQueue: Send + Sync + 'static {
     type Origin: Clone + Send + Sync + 'static;
     type Error: std::fmt::Display + Send + 'static;
 
-    fn poll(
-        &self,
-        in_flight: &HashSet<String>,
-    ) -> impl Future<Output = Result<Polled<Self::Origin>, Self::Error>> + Send;
+    fn poll(&self) -> impl Future<Output = Result<Polled<Self::Origin>, Self::Error>> + Send;
     fn admit(
         &self,
-        calls: &[(u64, String, Self::Origin)],
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn recorded(&self, command: &str)
-    -> impl Future<Output = Result<Recorded, Self::Error>> + Send;
+        calls: &[QueuedCall<Self::Origin>],
+    ) -> impl Future<Output = Result<Vec<Admit>, Self::Error>> + Send {
+        std::future::ready(Ok(vec![Admit::Send; calls.len()]))
+    }
     fn settle(
         &self,
-        command: &str,
-        queued: bool,
-        settlement: Settlement,
+        settled: &[(String, Settlement)],
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn turn_ended(&self, session_id: &str, turn_id: &str) -> impl Future<Output = bool> + Send;
-    fn unsettled(&self, command: &str, error: &str);
-    /// Resolves when new commands may have been queued, to poll at once.
-    fn changed(&self) -> impl Future<Output = ()> + Send {
-        std::future::pending()
-    }
+    fn turns_ended(
+        &self,
+        turns: &[(String, String)],
+    ) -> impl Future<Output = Vec<bool>> + Send;
+    fn unsettled(&self, commands: &[String], error: &str);
 }
 
 #[derive(Clone, Copy)]
 pub struct QueueOptions {
     pub operation_timeout: Option<Duration>,
-    /// How long to wait between polls while nothing is outstanding.
     pub poll: Duration,
-    /// How long to wait between polls while calls are in flight, turns are
-    /// watched or the last poll was busy.
     pub busy_poll: Duration,
     pub end_check: Duration,
+    pub cancels_calls: bool,
 }
 
-type Sending<O> = Arc<Atom<HashMap<String, O>>>;
+type Flights = Arc<Atom<HashMap<String, String>>>;
 
-struct QueueLink<L, Q: CommandQueue> {
-    link: L,
-    queue: Arc<Q>,
-    sending: Sending<Q::Origin>,
-}
+type Stopped = Arc<Atom<HashMap<String, String>>>;
 
-impl<L: RemoteLink, Q: CommandQueue> RemoteLink for QueueLink<L, Q> {
-    fn send(
-        &self,
-        frames: Vec<RemoteFrame>,
-        delivery: RemoteDelivery,
-    ) -> HostFuture<'_, Result<(), CodeModeHostError>> {
-        Box::pin(async move {
-            let mut calls = Vec::new();
-            for frame in &frames {
-                match frame {
-                    RemoteFrame::Request {
-                        id,
-                        operation: RemoteOperation::Call { context, .. },
-                        ..
-                    } => {
-                        let origin = self
-                            .sending
-                            .read(|sending| sending.get(&context.call_id).cloned())
-                            .ok_or_else(|| CodeModeHostError::unsent("unadmitted call"))?;
-                        calls.push((*id, context.call_id.clone(), origin));
-                    }
-                    frame if frame.dispatches() => {
-                        return Err(CodeModeHostError::unsent(
-                            "a command queue sends only tool calls",
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-            if !calls.is_empty() {
-                self.queue
-                    .admit(&calls)
-                    .await
-                    .map_err(|error| CodeModeHostError::unsent(format!("{error:#}")))?;
-            }
-            self.link.send(frames, delivery).await
-        })
-    }
-
-    fn receive(&self) -> HostFuture<'_, Result<Vec<RemoteFrame>, CodeModeHostError>> {
-        self.link.receive()
-    }
-
-    fn close<'a>(&'a self, reason: &'a str) -> HostFuture<'a, ()> {
-        self.link.close(reason)
-    }
-
-    fn changed(&self) {
-        self.link.changed();
-    }
-
-    fn max_frame_bytes(&self) -> Option<usize> {
-        self.link.max_frame_bytes()
-    }
-
-    fn resumes(&self) -> Option<String> {
-        self.link.resumes()
-    }
+enum Done {
+    Reply {
+        command: String,
+        request: u64,
+        result: Result<Option<Value>, CodeModeHostError>,
+    },
+    Refused {
+        command: String,
+        reason: String,
+    },
 }
 
 pub async fn serve_queue<Q: CommandQueue>(
     link: impl RemoteLink,
     queue: Arc<Q>,
-    sent: Vec<(u64, String)>,
+    wakeups: impl Stream<Item = ()> + Send,
     options: QueueOptions,
     failed: impl Future<Output = Q::Error>,
 ) -> Result<String, Q::Error> {
-    let sending: Sending<Q::Origin> = Arc::default();
-    let link = QueueLink {
-        link,
-        queue: Arc::clone(&queue),
-        sending: Arc::clone(&sending),
-    };
-    let pending = sent.iter().map(|(request, _)| *request).collect();
+    let first = queue.poll().await?;
+    let flights: Flights = Arc::default();
+    let stopped: Stopped = Arc::default();
+    let pending = first
+        .calls
+        .iter()
+        .map(|call| request_id(&call.context.call_id))
+        .collect();
     let (client, mut driver, resumed) =
         RemoteClient::resuming(link, options.operation_timeout, pending);
-    let mut commands: HashMap<u64, String> = sent.into_iter().collect();
-    for (request, reply) in resumed {
-        if let Some(command) = commands.remove(&request) {
-            let (queue, client) = (Arc::clone(&queue), client.clone());
-            tokio::spawn(async move {
-                settle(&*queue, &client, &command, reply.await).await;
-            });
-        }
+    let mut replies: FuturesUnordered<BoxFuture<'static, Done>> = FuturesUnordered::new();
+    for (call, (request, reply)) in first.calls.iter().zip(resumed) {
+        let command = call.context.call_id.clone();
+        flights.update(|flights| {
+            flights.insert(command.clone(), call.context.session_id.clone());
+        });
+        replies.push(Box::pin(reply.map(move |result| Done::Reply {
+            command,
+            request,
+            result,
+        })));
     }
-    let mut failed = std::pin::pin!(failed);
-    let mut next = Instant::now();
-    let mut cancelled = HashSet::new();
-    let mut cancelled_calls = HashSet::new();
+    let (done, settling) = mpsc::unbounded_channel();
+    let (retry, mut retries) = mpsc::unbounded_channel();
+    tokio::spawn(settle(
+        Arc::clone(&queue),
+        client.clone(),
+        Arc::clone(&flights),
+        Arc::clone(&stopped),
+        settling,
+        retry,
+    ));
+    let mut failed = pin!(failed);
+    let mut wakeups = pin!(wakeups);
+    let mut awake = true;
     let mut watching = HashSet::new();
+    let mut cancelled = HashSet::new();
     let mut checked = Instant::now();
+    let mut polled = Some(first);
+    let mut next = Instant::now();
     loop {
+        if let Some(polled) = polled.take() {
+            let calls = polled.calls.len();
+            watching.extend(polled.watch);
+            for (session_id, turn_id) in polled.cancel {
+                if cancelled.insert((session_id.clone(), turn_id.clone())) {
+                    notify(
+                        &client,
+                        RemoteOperation::CancelTurn {
+                            session_id,
+                            turn_id: Some(turn_id),
+                        },
+                    );
+                }
+            }
+            for (command, reason) in polled.stop {
+                let first = stopped.update(|stopped| {
+                    stopped.insert(command.clone(), reason.clone()).is_none()
+                });
+                if !first {
+                    continue;
+                }
+                let session = flights.read(|flights| flights.get(&command).cloned());
+                match session {
+                    Some(session_id) if options.cancels_calls => notify(
+                        &client,
+                        RemoteOperation::CancelCall {
+                            session_id,
+                            call_id: command,
+                        },
+                    ),
+                    Some(_) => {}
+                    None => drop(done.send(Done::Refused { command, reason })),
+                }
+            }
+            let fresh = polled
+                .calls
+                .into_iter()
+                .filter(|call| {
+                    let command = &call.context.call_id;
+                    !flights.read(|flights| flights.contains_key(command))
+                        && !stopped.read(|stopped| stopped.contains_key(command))
+                })
+                .collect::<Vec<_>>();
+            if !fresh.is_empty() {
+                let admitted = queue.admit(&fresh).await?;
+                let mut sending = Vec::new();
+                for (index, call) in fresh.into_iter().enumerate() {
+                    match admitted.get(index).cloned().unwrap_or(Admit::Wait) {
+                        Admit::Send => sending.push(call),
+                        Admit::Wait => {}
+                        Admit::Refuse(reason) => drop(done.send(Done::Refused {
+                            command: call.context.call_id,
+                            reason,
+                        })),
+                    }
+                }
+                let mut operations = Vec::new();
+                let mut sent = Vec::new();
+                for call in sending {
+                    let command = call.context.call_id.clone();
+                    let request = request_id(&command);
+                    flights.update(|flights| {
+                        flights.insert(command.clone(), call.context.session_id.clone());
+                    });
+                    sent.push((command, request));
+                    operations.push((
+                        request,
+                        RemoteOperation::Call {
+                            name: call.name,
+                            input: call.input,
+                            selected_tools: None,
+                            context: call.context,
+                        },
+                    ));
+                }
+                for ((command, request), reply) in sent.into_iter().zip(client.calls(operations))
+                {
+                    replies.push(Box::pin(reply.map(move |result| Done::Reply {
+                        command,
+                        request,
+                        result: result.map(Some),
+                    })));
+                }
+            }
+            if !watching.is_empty() && checked.elapsed() >= options.end_check {
+                let turns = watching.iter().cloned().collect::<Vec<_>>();
+                let ended = queue.turns_ended(&turns).await;
+                for ((session_id, turn_id), ended) in turns.into_iter().zip(ended) {
+                    if ended {
+                        watching.remove(&(session_id.clone(), turn_id.clone()));
+                        notify(
+                            &client,
+                            RemoteOperation::EndTurn {
+                                session_id,
+                                turn_id,
+                                hook_event_name: "Stop".into(),
+                            },
+                        );
+                    }
+                }
+                checked = Instant::now();
+            }
+            let busy = calls > 0
+                || !flights.read(HashMap::is_empty)
+                || !watching.is_empty();
+            next = Instant::now() + if busy { options.busy_poll } else { options.poll };
+        }
+        let wakeup = if awake {
+            Either::Left(wakeups.next())
+        } else {
+            Either::Right(std::future::pending())
+        };
         tokio::select! {
             reason = &mut driver => return Ok(reason),
             error = &mut failed => return Err(error),
-            () = queue.changed() => next = Instant::now(),
-            () = tokio::time::sleep_until(next) => {
-                let in_flight = sending.read(|sending| sending.keys().cloned().collect());
-                let polled = queue.poll(&in_flight).await?;
-                let busy = polled.busy || !polled.calls.is_empty() || !in_flight.is_empty();
-                watching.extend(polled.watch);
-                for (session_id, turn_id) in polled.cancel {
-                    if cancelled.insert((session_id.clone(), turn_id.clone())) {
-                        notify(&client, RemoteOperation::CancelTurn {
-                            session_id,
-                            turn_id: Some(turn_id),
-                        });
-                    }
-                }
-                for (session_id, call_id) in polled.cancel_calls {
-                    if cancelled_calls.insert(call_id.clone()) {
-                        notify(&client, RemoteOperation::CancelCall { session_id, call_id });
-                    }
-                }
-                for call in polled.calls {
-                    dispatch(&queue, &client, &sending, call);
-                }
-                if !watching.is_empty() && checked.elapsed() >= options.end_check {
-                    let mut ended = Vec::new();
-                    for (session_id, turn_id) in &watching {
-                        if queue.turn_ended(session_id, turn_id).await {
-                            ended.push((session_id.clone(), turn_id.clone()));
-                        }
-                    }
-                    for key in ended {
-                        watching.remove(&key);
-                        let (session_id, turn_id) = key;
-                        notify(&client, RemoteOperation::EndTurn {
-                            session_id,
-                            turn_id,
-                            hook_event_name: "Stop".into(),
-                        });
-                    }
-                    checked = Instant::now();
-                }
-                // Measured from the end of this poll, so a slow one is not
-                // followed by another at once.
-                let busy = busy || !watching.is_empty();
-                next = Instant::now() + if busy { options.busy_poll } else { options.poll };
-            }
+            woken = wakeup => match woken {
+                Some(()) => next = Instant::now(),
+                None => awake = false,
+            },
+            Some(()) = retries.recv() => next = Instant::now(),
+            Some(finished) = replies.next(), if !replies.is_empty() => drop(done.send(finished)),
+            () = tokio::time::sleep_until(next) => polled = Some(queue.poll().await?),
         }
     }
 }
@@ -268,72 +312,100 @@ fn notify(client: &RemoteClient, operation: RemoteOperation) {
     });
 }
 
-fn dispatch<Q: CommandQueue>(
-    queue: &Arc<Q>,
-    client: &RemoteClient,
-    sending: &Sending<Q::Origin>,
-    call: QueuedCall<Q::Origin>,
-) {
-    let command = call.context.call_id.clone();
-    sending.update(|sending| {
-        sending.insert(command.clone(), call.origin.clone());
-    });
-    let operation = RemoteOperation::Call {
-        name: call.name,
-        input: call.input,
-        selected_tools: None,
-        context: call.context,
-    };
-    let (queue, client, sending) = (Arc::clone(queue), client.clone(), Arc::clone(sending));
-    tokio::spawn(async move {
-        let result = client.call(operation).await.map(Some);
-        settle(&*queue, &client, &command, result).await;
-        sending.update(|sending| {
-            sending.remove(&command);
-        });
-    });
-}
-
 async fn settle<Q: CommandQueue>(
-    queue: &Q,
-    client: &RemoteClient,
-    command: &str,
-    result: Result<Option<Value>, CodeModeHostError>,
+    queue: Arc<Q>,
+    client: RemoteClient,
+    flights: Flights,
+    stopped: Stopped,
+    mut done: mpsc::UnboundedReceiver<Done>,
+    retry: mpsc::UnboundedSender<()>,
 ) {
-    if let Err(error) = try_settle(queue, client, command, result).await {
-        queue.unsettled(command, &error);
-    }
-}
-
-async fn try_settle<Q: CommandQueue>(
-    queue: &Q,
-    client: &RemoteClient,
-    command: &str,
-    result: Result<Option<Value>, CodeModeHostError>,
-) -> Result<(), String> {
-    let host = |error: Q::Error| format!("{error:#}");
-    let recorded = queue.recorded(command).await.map_err(host)?;
-    let settlement = match result {
-        Ok(Some(value)) => {
-            let output = output_from_wire(value).map_err(|error| error.to_string())?;
-            let wire = output.into_wire().map_err(|error| error.to_string())?;
-            Settlement::Completed(serde_json::to_value(wire).map_err(|error| error.to_string())?)
+    while let Some(first) = done.recv().await {
+        let mut batch = vec![first];
+        while let Ok(more) = done.try_recv() {
+            batch.push(more);
         }
-        Err(error) if error.message() == NOT_RECEIVED && !recorded.queued => Settlement::Requeue,
-        Err(_) if client.failure().is_some() => return Ok(()),
-        Err(error) if recorded.queued => Settlement::Unavailable(error.to_string()),
-        _ => Settlement::Unknown,
-    };
-    let receipt = matches!(
-        settlement,
-        Settlement::Completed(_) | Settlement::Unavailable(_)
-    );
-    queue
-        .settle(command, recorded.queued, settlement)
-        .await
-        .map_err(host)?;
-    if receipt && let Some(request) = recorded.request {
-        drop(client.ack(vec![request]));
+        let mut settled = Vec::new();
+        let mut acks = Vec::new();
+        let mut released = Vec::new();
+        for finished in batch {
+            match finished {
+                Done::Refused { command, reason } => {
+                    settled.push((command, Settlement::Unavailable(reason)));
+                }
+                Done::Reply {
+                    command,
+                    request,
+                    result,
+                } => match result {
+                    Ok(Some(value)) => {
+                        acks.push(request);
+                        let completed = output_from_wire(value)
+                            .and_then(|output| {
+                                output.into_wire().map_err(|issue| {
+                                    CodeModeHostError::new(issue.to_string())
+                                })
+                            })
+                            .and_then(|wire| {
+                                serde_json::to_value(wire)
+                                    .map_err(|issue| CodeModeHostError::new(issue.to_string()))
+                            });
+                        settled.push((
+                            command,
+                            completed.map_or(Settlement::Unknown, Settlement::Completed),
+                        ));
+                    }
+                    Ok(None) => settled.push((command, Settlement::Unknown)),
+                    Err(_) if client.failure().is_some() => released.push(command),
+                    Err(error) if error.message() == NOT_RECEIVED => {
+                        match stopped.read(|stopped| stopped.get(&command).cloned()) {
+                            Some(reason) => {
+                                settled.push((command, Settlement::Unavailable(reason)));
+                            }
+                            None => released.push(command),
+                        }
+                    }
+                    Err(error) if error.is_unsent() => {
+                        settled.push((command, Settlement::Unavailable(error.to_string())));
+                    }
+                    Err(_) => settled.push((command, Settlement::Unknown)),
+                },
+            }
+        }
+        if !settled.is_empty() {
+            match queue.settle(&settled).await {
+                Ok(()) => {
+                    if !acks.is_empty() {
+                        drop(client.ack(acks));
+                    }
+                    let commands = settled
+                        .iter()
+                        .map(|(command, _)| command.clone())
+                        .collect::<Vec<_>>();
+                    stopped.update(|stopped| {
+                        for command in &commands {
+                            stopped.remove(command);
+                        }
+                    });
+                    released.extend(commands);
+                }
+                Err(error) => {
+                    let commands = settled
+                        .into_iter()
+                        .map(|(command, _)| command)
+                        .collect::<Vec<_>>();
+                    queue.unsettled(&commands, &format!("{error:#}"));
+                    released.extend(commands);
+                }
+            }
+        }
+        if !released.is_empty() {
+            flights.update(|flights| {
+                for command in &released {
+                    flights.remove(command);
+                }
+            });
+            let _ = retry.send(());
+        }
     }
-    Ok(())
 }

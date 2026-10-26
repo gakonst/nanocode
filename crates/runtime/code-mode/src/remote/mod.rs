@@ -12,8 +12,8 @@ use nanocode_sync::Atom;
 
 pub use admission::{Admission, CatalogError, admit_runtime, read_catalog};
 pub use client::{
-    LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery, RemoteLink,
-    ResumedReply,
+    CallReply, LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery,
+    RemoteLink, ResumedReply,
 };
 pub use compact::{ReceivedCalls, SentCalls, encode_output, output_from_wire, output_to_wire};
 pub use executors::{
@@ -21,11 +21,11 @@ pub use executors::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use message::websocket;
-pub use message::{MessageLink, SocketMessage};
+pub use message::{MessageLink, MessageWriter, SocketMessage};
 
 #[cfg(not(target_family = "wasm"))]
 pub use queue::{
-    CommandQueue, Polled, QueueOptions, QueuedCall, Recorded, Settlement, serve_queue,
+    Admit, CommandQueue, Polled, QueueOptions, QueuedCall, Settlement, request_id, serve_queue,
 };
 
 use crate::embedded::{CodeModeNotification, CodeModeUpdate, NestedToolCall};
@@ -646,6 +646,9 @@ pub const HAND_RESTARTED: &str = "the hand reconnected as a new runtime, so it n
 
 pub const NOT_RECEIVED: &str =
     "the hand never received this operation before its connection dropped; it was not dispatched";
+
+pub const REQUEST_IN_USE: &str =
+    "the hand is already running or retaining another operation under this request id; it was not dispatched";
 
 pub struct RemoteCatalog {
     pub definitions: Vec<ToolDefinition>,

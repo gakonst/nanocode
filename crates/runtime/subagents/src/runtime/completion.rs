@@ -37,7 +37,7 @@ impl SubagentControl {
         if !self
             .agents(root_session_id)
             .await
-            .is_ok_and(|agents| !agents.is_empty())
+            .is_ok_and(|agents| agents.iter().any(|entry| entry.status.is_active()))
         {
             return None;
         }

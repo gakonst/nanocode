@@ -122,12 +122,19 @@ pub struct QueueOptions {
     pub cancels_calls: bool,
 }
 
-type Replied = BoxFuture<'static, (String, u64, Result<Option<Value>, CodeModeHostError>)>;
+type Replied = BoxFuture<'static, (String, u64, bool, Result<Option<Value>, CodeModeHostError>)>;
+
+enum Released {
+    Settled(Vec<String>),
+    Retry(Vec<String>),
+    Refused(Vec<String>),
+}
 
 enum Done {
     Reply {
         command: String,
         request: u64,
+        resumed: bool,
         stopped: Option<String>,
         result: Result<Option<Value>, CodeModeHostError>,
     },
@@ -156,7 +163,7 @@ pub async fn serve_queue<Q: CommandQueue>(
         let command = call.context.call_id.clone();
         flights.insert(command.clone(), call.context.session_id.clone());
         replies.push(Box::pin(
-            reply.map(move |result| (command, request, result)),
+            reply.map(move |result| (command, request, true, result)),
         ));
     }
     let (done, settling) = mpsc::unbounded_channel();
@@ -251,7 +258,7 @@ pub async fn serve_queue<Q: CommandQueue>(
                 }
                 for ((command, request), reply) in sent.into_iter().zip(client.calls(operations)) {
                     replies.push(Box::pin(
-                        reply.map(move |result| (command, request, result.map(Some))),
+                        reply.map(move |result| (command, request, false, result.map(Some))),
                     ));
                 }
             }
@@ -293,18 +300,22 @@ pub async fn serve_queue<Q: CommandQueue>(
                 Some(()) => next = Instant::now(),
                 None => awake = false,
             },
-            Some((commands, retry)) = released.recv() => {
+            Some(release) = released.recv() => {
+                let commands = match release {
+                    Released::Retry(commands) => {
+                        next = Instant::now();
+                        commands
+                    }
+                    Released::Settled(commands) | Released::Refused(commands) => commands,
+                };
                 for command in commands {
                     flights.remove(&command);
                     stopped.remove(&command);
                 }
-                if retry {
-                    next = Instant::now();
-                }
             },
-            Some((command, request, result)) = replies.next(), if !replies.is_empty() => {
+            Some((command, request, resumed, result)) = replies.next(), if !replies.is_empty() => {
                 let stopped = stopped.get(&command).cloned();
-                let _ = done.send(Done::Reply { command, request, stopped, result });
+                let _ = done.send(Done::Reply { command, request, resumed, stopped, result });
             },
             () = tokio::time::sleep_until(next) => match queue.poll().await {
                 Ok(next) => polled = Some(next),
@@ -327,7 +338,7 @@ async fn settle<Q: CommandQueue>(
     queue: Arc<Q>,
     client: RemoteClient,
     mut done: mpsc::UnboundedReceiver<Done>,
-    release: mpsc::UnboundedSender<(Vec<String>, bool)>,
+    release: mpsc::UnboundedSender<Released>,
 ) {
     while let Some(first) = done.recv().await {
         let mut batch = vec![first];
@@ -337,15 +348,17 @@ async fn settle<Q: CommandQueue>(
         let mut settled = Vec::new();
         let mut acks = Vec::new();
         let mut released = Vec::new();
+        let mut refused = Vec::new();
         let mut finished = Vec::new();
-        for finished in batch {
-            match finished {
+        for item in batch {
+            match item {
                 Done::Refused { command, reason } => {
                     settled.push((command, Settlement::Unavailable(reason)));
                 }
                 Done::Reply {
                     command,
                     request,
+                    resumed,
                     stopped,
                     result,
                 } => match result {
@@ -370,7 +383,8 @@ async fn settle<Q: CommandQueue>(
                     Err(_) if client.failure().is_some() => released.push(command),
                     Err(error) if error.message() == NOT_RECEIVED => match stopped {
                         Some(reason) => settled.push((command, Settlement::Unavailable(reason))),
-                        None => released.push(command),
+                        None if resumed => released.push(command),
+                        None => refused.push(command),
                     },
                     Err(error) if error.is_unsent() => {
                         settled.push((command, Settlement::Unavailable(error.to_string())));
@@ -398,10 +412,13 @@ async fn settle<Q: CommandQueue>(
             }
         }
         if !finished.is_empty() {
-            let _ = release.send((finished, false));
+            let _ = release.send(Released::Settled(finished));
+        }
+        if !refused.is_empty() {
+            let _ = release.send(Released::Refused(refused));
         }
         if !released.is_empty() {
-            let _ = release.send((released, true));
+            let _ = release.send(Released::Retry(released));
         }
     }
 }

@@ -1955,8 +1955,9 @@ impl Executor {
             .as_ref()
             .is_some_and(|running| running.connection != self.connection);
         let status = status.as_deref();
+        let refused = matches!(&live, Err(message) if message == NOT_RECEIVED);
         let text = match running {
-            Some(running) if running.resumable => {
+            Some(running) if running.resumable && !refused => {
                 let retained = match full {
                     Some(full) => reply_text(&self.outgoing, id, Ok(Some(full)), status)?,
                     None => reply_text(&self.outgoing, id, live.clone(), status)?,

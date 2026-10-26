@@ -51,6 +51,7 @@ pub struct McpServer {
     pub(crate) disabled_tools: Vec<String>,
     pub(crate) payment: Option<Arc<dyn McpPaymentProvider>>,
     pub(crate) unsupported_option: Option<&'static str>,
+    pub(crate) http: nanocode_mcp_http::streamable_http::HttpOptions,
 }
 
 #[async_trait]
@@ -123,6 +124,7 @@ impl McpServer {
             disabled_tools: Vec::new(),
             payment: None,
             unsupported_option: None,
+            http: nanocode_mcp_http::streamable_http::HttpOptions::default(),
         }
     }
 
@@ -145,12 +147,25 @@ impl McpServer {
             disabled_tools: Vec::new(),
             payment: None,
             unsupported_option: None,
+            http: nanocode_mcp_http::streamable_http::HttpOptions::default(),
         }
     }
 
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn max_response_bytes(mut self, bytes: usize) -> Self {
+        self.http.max_response_bytes = Some(bytes);
+        self
+    }
+
+    #[must_use]
+    pub const fn standalone_stream(mut self, open: bool) -> Self {
+        self.http.standalone_stream = open;
         self
     }
 

@@ -291,11 +291,12 @@ pub(crate) async fn connect(
         (None, None) => HttpAuth::None,
     };
     let (session, outgoing, inbound): (Session, Outgoing, Inbound) = Session::new();
-    streamable_http::spawn_with_sender(
+    streamable_http::spawn_with_sender_options(
         url.clone(),
         Arc::clone(sender),
         headers,
         auth,
+        server.http,
         outgoing,
         inbound,
     );
@@ -469,7 +470,14 @@ async fn connect_http_session(
     parent: &Span,
 ) -> Result<Session, McpServerError> {
     let (session, outgoing, inbound): (Session, Outgoing, Inbound) = Session::new();
-    streamable_http::spawn(url.to_owned(), http_client, auth, outgoing, inbound);
+    streamable_http::spawn_with_options(
+        url.to_owned(),
+        http_client,
+        auth,
+        server.http,
+        outgoing,
+        inbound,
+    );
     connect_session(server, session, parent).await
 }
 

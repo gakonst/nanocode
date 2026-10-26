@@ -61,6 +61,27 @@ pub fn validate_custom_headers<'a>(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct HttpOptions {
+    pub max_response_bytes: Option<usize>,
+    pub standalone_stream: bool,
+}
+
+impl Default for HttpOptions {
+    fn default() -> Self {
+        Self {
+            max_response_bytes: None,
+            standalone_stream: true,
+        }
+    }
+}
+
+fn exceeded(limit: usize) -> TransportError {
+    TransportError::new(format!(
+        "MCP response exceeded its max_response_bytes of {limit} bytes; its outcome is unknown"
+    ))
+}
+
 #[derive(Clone, Default)]
 struct SessionState {
     id: Option<Arc<str>>,
@@ -91,6 +112,7 @@ struct Shared {
     session: ArcSwap<SessionState>,
     reinitialize: SingleFlight<Result<(), String>>,
     listener: Slot<Background>,
+    options: HttpOptions,
 }
 
 enum PostError {
@@ -194,7 +216,26 @@ pub fn spawn(
     outgoing: Outgoing,
     inbound: Inbound,
 ) {
-    start(url, Client::Reqwest(client), auth, outgoing, inbound);
+    spawn_with_options(url, client, auth, HttpOptions::default(), outgoing, inbound);
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn spawn_with_options(
+    url: String,
+    client: reqwest::Client,
+    auth: HttpAuth,
+    options: HttpOptions,
+    outgoing: Outgoing,
+    inbound: Inbound,
+) {
+    start(
+        url,
+        Client::Reqwest(client),
+        auth,
+        options,
+        outgoing,
+        inbound,
+    );
 }
 
 pub fn spawn_with_sender(
@@ -205,16 +246,44 @@ pub fn spawn_with_sender(
     outgoing: Outgoing,
     inbound: Inbound,
 ) {
-    start(
+    spawn_with_sender_options(
         url,
-        Client::Sender { sender, headers },
+        sender,
+        headers,
         auth,
+        HttpOptions::default(),
         outgoing,
         inbound,
     );
 }
 
-fn start(url: String, client: Client, auth: HttpAuth, outgoing: Outgoing, inbound: Inbound) {
+pub fn spawn_with_sender_options(
+    url: String,
+    sender: Arc<dyn Sender>,
+    headers: HeaderMap,
+    auth: HttpAuth,
+    options: HttpOptions,
+    outgoing: Outgoing,
+    inbound: Inbound,
+) {
+    start(
+        url,
+        Client::Sender { sender, headers },
+        auth,
+        options,
+        outgoing,
+        inbound,
+    );
+}
+
+fn start(
+    url: String,
+    client: Client,
+    auth: HttpAuth,
+    options: HttpOptions,
+    outgoing: Outgoing,
+    inbound: Inbound,
+) {
     let shared = Arc::new(Shared {
         url,
         client,
@@ -223,6 +292,7 @@ fn start(url: String, client: Client, auth: HttpAuth, outgoing: Outgoing, inboun
         session: ArcSwap::default(),
         reinitialize: SingleFlight::default(),
         listener: Slot::default(),
+        options,
     });
     drop(spawn_background(drive(shared, outgoing)));
 }
@@ -373,16 +443,19 @@ impl Reply {
             .map_err(|error| sender_error(&error))
     }
 
-    async fn bytes(mut self) -> Result<Vec<u8>, TransportError> {
+    async fn bytes(mut self, limit: Option<usize>) -> Result<Vec<u8>, TransportError> {
         let mut bytes = Vec::new();
         while let Some(chunk) = self.chunk().await? {
             bytes.extend_from_slice(&chunk);
+            if let Some(limit) = limit.filter(|limit| bytes.len() > *limit) {
+                return Err(exceeded(limit));
+            }
         }
         Ok(bytes)
     }
 
-    async fn text(self) -> Result<String, TransportError> {
-        self.bytes()
+    async fn text(self, limit: Option<usize>) -> Result<String, TransportError> {
+        self.bytes(limit)
             .await
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
     }
@@ -539,7 +612,10 @@ impl Shared {
             .map(Arc::from);
         let content_type = content_type(&response);
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text(self.options.max_response_bytes)
+                .await
+                .unwrap_or_default();
             if !status.is_server_error()
                 && is_mime(content_type.as_deref(), JSON_MIME_TYPE)
                 && let Ok(message @ Message::Error { .. }) = Message::from_slice(body.as_bytes())
@@ -555,13 +631,22 @@ impl Shared {
             ));
         }
         if is_mime(content_type.as_deref(), EVENT_STREAM_MIME_TYPE) {
-            let mut parser = sse::Parser::new(MAX_SSE_EVENT_BYTES);
+            let mut parser = sse::Parser::new(self.event_limit());
             let mut events = Vec::new();
+            let mut read = 0_usize;
             while let Some(chunk) = response
                 .chunk()
                 .await
                 .map_err(|error| TransportError::new(format!("SSE error: {error}")))?
             {
+                read = read.saturating_add(chunk.len());
+                if let Some(limit) = self
+                    .options
+                    .max_response_bytes
+                    .filter(|limit| read > *limit)
+                {
+                    return Err(exceeded(limit));
+                }
                 parser
                     .feed(&chunk, &mut events)
                     .map_err(|error| TransportError::new(format!("SSE error: {error}")))?;
@@ -584,7 +669,7 @@ impl Shared {
             return Err("unexpected server response: empty sse stream".into());
         }
         if is_mime(content_type.as_deref(), JSON_MIME_TYPE) {
-            let body = response.bytes().await?;
+            let body = response.bytes(self.options.max_response_bytes).await?;
             let message = Message::from_slice(&body)
                 .map_err(|error| TransportError::new(format!("Deserialize error: {error}")))?;
             return Ok((message, session_id));
@@ -692,9 +777,9 @@ impl Shared {
         }
         if !status.is_success() {
             let body = response
-                .text()
+                .text(self.options.max_response_bytes)
                 .await
-                .unwrap_or_else(|_| "<failed to read response body>".to_owned());
+                .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
             if !status.is_server_error() && is_mime(content_type.as_deref(), JSON_MIME_TYPE) {
                 match Message::from_slice(body.as_bytes()) {
                     Ok(Message::Error { id, error }) => {
@@ -722,7 +807,10 @@ impl Shared {
                 .await;
         }
         if is_mime(content_type.as_deref(), JSON_MIME_TYPE) {
-            let body = response.bytes().await.map_err(PostError::Failed)?;
+            let body = response
+                .bytes(self.options.max_response_bytes)
+                .await
+                .map_err(PostError::Failed)?;
             return match Message::from_slice(&body) {
                 Ok(reply) => {
                     self.inbound
@@ -762,7 +850,9 @@ impl Shared {
                 StreamEnd::Response => return Ok(()),
                 StreamEnd::Fatal(error) => {
                     tracing::warn!("fatal sse stream error: {error}");
-                    return Err(PostError::Failed(CLOSED_BEFORE_RESPONSE.into()));
+                    return Err(PostError::Failed(TransportError::new(format!(
+                        "{CLOSED_BEFORE_RESPONSE}: {error}"
+                    ))));
                 }
                 _ if cursor.last_event_id.is_none() => {
                     tracing::debug!(
@@ -789,14 +879,24 @@ impl Shared {
         cursor: &mut Cursor,
         close_on_response: bool,
     ) -> StreamEnd {
-        let mut parser = sse::Parser::new(MAX_SSE_EVENT_BYTES);
+        let mut parser = sse::Parser::new(self.event_limit());
         let mut events = Vec::new();
+        let mut read = 0_usize;
         loop {
             let chunk = match response.chunk().await {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => return StreamEnd::Closed,
                 Err(error) => return StreamEnd::Failed(error.to_string()),
             };
+            read = read.saturating_add(chunk.len());
+            if close_on_response
+                && let Some(limit) = self
+                    .options
+                    .max_response_bytes
+                    .filter(|limit| read > *limit)
+            {
+                return StreamEnd::Fatal(exceeded(limit).to_string());
+            }
             if let Err(error) = parser.feed(&chunk, &mut events) {
                 return StreamEnd::Fatal(error.to_string());
             }
@@ -895,11 +995,18 @@ impl Shared {
         Ok(Some(response))
     }
 
+    fn event_limit(&self) -> usize {
+        self.options
+            .max_response_bytes
+            .map_or(MAX_SSE_EVENT_BYTES, |limit| limit.min(MAX_SSE_EVENT_BYTES))
+    }
+
     fn restart_listener(self: &Arc<Self>) {
         if let Some(previous) = self.listener.take() {
             previous.abort();
         }
-        if self.session.load().id.is_some()
+        if self.options.standalone_stream
+            && self.session.load().id.is_some()
             && let Some(raced) = self
                 .listener
                 .put(spawn_background(Arc::clone(self).listen()))

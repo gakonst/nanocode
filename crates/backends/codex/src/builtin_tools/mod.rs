@@ -19,7 +19,6 @@ mod host;
 pub use host::{host_file_tools, host_tools};
 mod plan;
 mod shell;
-#[cfg(not(target_family = "wasm"))]
 mod view_image;
 #[cfg(not(target_family = "wasm"))]
 pub mod workspace_runtime;
@@ -29,8 +28,8 @@ pub use workspace_runtime::WorkspaceTools;
 mod runtime_config;
 
 pub use runtime_config::{ImageGenerationConfig, WebSearchConfig};
-#[cfg(not(target_family = "wasm"))]
 pub mod image_generation;
+pub use image_generation::image_generation_tool;
 #[cfg(not(target_family = "wasm"))]
 pub mod web_search;
 #[cfg(target_family = "wasm")]

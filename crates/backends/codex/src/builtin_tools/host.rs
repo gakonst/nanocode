@@ -8,6 +8,7 @@ use super::{
     code_mode_policy::standard_tool_policy,
     plan::UpdatePlanTool,
     shell::{ExecCommandHandler, WriteStdinHandler},
+    view_image::HostViewImageHandler,
 };
 
 pub fn host_tools(
@@ -17,7 +18,11 @@ pub fn host_tools(
 ) -> Result<Tools, ToolsBuildError> {
     Tools::builder()
         .without_defaults()
-        .tool(HostApplyPatchHandler::new(workspace.clone(), files))
+        .tool(HostApplyPatchHandler::new(
+            workspace.clone(),
+            Arc::clone(&files),
+        ))
+        .tool(HostViewImageHandler::new(workspace.clone(), files))
         .tool(ExecCommandHandler::new(workspace, Arc::clone(&shell)))
         .tool(WriteStdinHandler::new(shell))
         .tool(UpdatePlanTool::new())
@@ -31,7 +36,11 @@ pub fn host_file_tools(
 ) -> Result<Tools, ToolsBuildError> {
     Tools::builder()
         .without_defaults()
-        .tool(HostApplyPatchHandler::new(workspace, files))
+        .tool(HostApplyPatchHandler::new(
+            workspace.clone(),
+            Arc::clone(&files),
+        ))
+        .tool(HostViewImageHandler::new(workspace, files))
         .build()
         .map(|tools| tools.with_code_mode_policy(standard_tool_policy()))
 }

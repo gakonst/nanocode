@@ -41,6 +41,21 @@ impl StagedWrites {
         self.0.set(BTreeMap::new());
     }
 
+    #[must_use]
+    pub fn changed_states(&self) -> Vec<String> {
+        self.0.read(|states| {
+            states
+                .iter()
+                .filter(|(_, staged)| staged.revision != staged.base_revision)
+                .map(|(state_id, _)| state_id.clone())
+                .collect()
+        })
+    }
+
+    pub fn retain(&self, mut keep: impl FnMut(&str) -> bool) {
+        self.0.update(|states| states.retain(|state_id, _| keep(state_id)));
+    }
+
     pub async fn stage_records<T: StateStore + ?Sized>(
         &self,
         store: &mut T,

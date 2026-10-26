@@ -99,21 +99,6 @@ struct EmbeddedHost {
     worker: ExecutionWorker,
 }
 
-fn prewarmed_host() -> Slot<EmbeddedHost> {
-    let host = match spawn_host() {
-        Ok(host) => Some(host),
-        Err(error) => {
-            tracing::warn!(
-                target: "nanocode_code_mode",
-                %error,
-                "embedded QuickJS code mode prewarm failed; the first cell will retry"
-            );
-            None
-        }
-    };
-    Slot::new(host)
-}
-
 fn spawn_host() -> Result<EmbeddedHost, String> {
     let started_at = Instant::now();
     let span = info_span!(
@@ -363,7 +348,7 @@ impl CodeModeRuntime {
                 live_cells: HashMap::new(),
             })),
             stored: Arc::default(),
-            host: Arc::new(prewarmed_host()),
+            host: Arc::default(),
             current_turn,
             preempt: watch::channel((0, 0)).0,
             preempt_consumed: Arc::new(AtomicU64::new(0)),

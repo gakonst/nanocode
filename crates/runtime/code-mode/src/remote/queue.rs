@@ -35,7 +35,16 @@ pub struct QueuedCall<O> {
     pub name: String,
     pub input: Value,
     pub context: RemoteContext,
+    pub request: Option<u64>,
     pub origin: O,
+}
+
+impl<O> QueuedCall<O> {
+    #[must_use]
+    pub fn request_id(&self) -> u64 {
+        self.request
+            .unwrap_or_else(|| request_id(&self.context.call_id))
+    }
 }
 
 pub struct Polled<O> {
@@ -141,11 +150,7 @@ pub async fn serve_queue<Q: CommandQueue>(
     let first = queue.poll().await?;
     let flights: Flights = Arc::default();
     let stopped: Stopped = Arc::default();
-    let pending = first
-        .calls
-        .iter()
-        .map(|call| request_id(&call.context.call_id))
-        .collect();
+    let pending = first.calls.iter().map(QueuedCall::request_id).collect();
     let (client, mut driver, resumed) =
         RemoteClient::resuming(link, options.operation_timeout, pending);
     let mut replies: FuturesUnordered<BoxFuture<'static, Done>> = FuturesUnordered::new();
@@ -239,7 +244,7 @@ pub async fn serve_queue<Q: CommandQueue>(
                 let mut sent = Vec::new();
                 for call in sending {
                     let command = call.context.call_id.clone();
-                    let request = request_id(&command);
+                    let request = call.request_id();
                     flights.update(|flights| {
                         flights.insert(command.clone(), call.context.session_id.clone());
                     });

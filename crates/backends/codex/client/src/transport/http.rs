@@ -25,14 +25,30 @@ const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 async fn idle<T>(read: impl std::future::Future<Output = T>) -> Result<T, ResponsesError> {
     tokio::time::timeout(STREAM_IDLE_TIMEOUT, read)
         .await
-        .map_err(|_| ResponsesError::HttpRequest {
-            detail: format!(
-                "the Responses stream sent no data for {} s; the stream stalled",
-                STREAM_IDLE_TIMEOUT.as_secs()
-            ),
-            retryable: true,
-            timeout: true,
-        })
+        .map_err(|_| stream_stalled())
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn idle_within<T>(
+    timer: &mut super::idle::IdleTimer,
+    read: impl std::future::Future<Output = T>,
+) -> Result<T, ResponsesError> {
+    timer
+        .within(STREAM_IDLE_TIMEOUT, read)
+        .await
+        .ok_or_else(stream_stalled)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn stream_stalled() -> ResponsesError {
+    ResponsesError::HttpRequest {
+        detail: format!(
+            "the Responses stream sent no data for {} s; the stream stalled",
+            STREAM_IDLE_TIMEOUT.as_secs()
+        ),
+        retryable: true,
+        timeout: true,
+    }
 }
 
 #[derive(Clone)]
@@ -63,6 +79,8 @@ pub(crate) struct ResponsesHttpStream {
     response: Option<Box<dyn HostHttpBody>>,
     decoder: SseDecoder,
     ended: bool,
+    #[cfg(not(target_family = "wasm"))]
+    idle: super::idle::IdleTimer,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -230,6 +248,7 @@ impl ResponsesHttp {
                 layered: None,
                 decoder: SseDecoder::default(),
                 ended: false,
+                idle: super::idle::IdleTimer::default(),
             },
             metadata,
         ))
@@ -288,6 +307,7 @@ impl ResponsesHttp {
                 }),
                 decoder,
                 ended: false,
+                idle: super::idle::IdleTimer::default(),
             },
             metadata,
         ))
@@ -325,6 +345,8 @@ impl ResponsesHttpStream {
             layered: None,
             decoder: SseDecoder::default(),
             ended: true,
+            #[cfg(not(target_family = "wasm"))]
+            idle: super::idle::IdleTimer::default(),
         }
     }
 
@@ -337,6 +359,7 @@ impl ResponsesHttpStream {
             layered: None,
             decoder: SseDecoder::default(),
             ended: false,
+            idle: super::idle::IdleTimer::default(),
         };
         #[cfg(target_family = "wasm")]
         Self {
@@ -358,7 +381,9 @@ impl ResponsesHttpStream {
                 .as_mut()
                 .and_then(|layered| layered.pending.take())
             {
-                idle(pending).await?.map_err(map_layer_error)?;
+                idle_within(&mut self.idle, pending)
+                    .await?
+                    .map_err(map_layer_error)?;
             }
             if let Some(text) = self.buffered_text()? {
                 return Ok(text);
@@ -376,20 +401,20 @@ impl ResponsesHttpStream {
             }
             #[cfg(not(target_family = "wasm"))]
             let pushed = if let Some(host) = self.host.as_mut() {
-                idle(host.next())
+                idle_within(&mut self.idle, host.next())
                     .await?
                     .map_err(map_host_error)?
                     .map(|chunk| self.decoder.push(&chunk))
             } else if let Some(layered) = self.layered.as_mut() {
                 use futures_util::StreamExt;
 
-                idle(layered.body.next())
+                idle_within(&mut self.idle, layered.body.next())
                     .await?
                     .transpose()
                     .map_err(map_layer_error)?
                     .map(|chunk| self.decoder.push(&chunk))
             } else if let Some(response) = self.response.as_mut() {
-                idle(response.chunk())
+                idle_within(&mut self.idle, response.chunk())
                     .await?
                     .map_err(map_http_error)?
                     .map(|chunk| self.decoder.push(&chunk))

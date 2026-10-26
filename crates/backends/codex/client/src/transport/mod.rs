@@ -13,6 +13,7 @@ pub(crate) mod freeform;
 pub(crate) mod gateway;
 
 pub mod host;
+pub(crate) mod idle;
 mod retry_after;
 #[cfg(target_family = "wasm")]
 pub(crate) use host::socket;

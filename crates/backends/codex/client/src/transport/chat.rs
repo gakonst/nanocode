@@ -1446,6 +1446,7 @@ pub(crate) struct ChatStream {
     finish_reason: Option<String>,
     retained: usize,
     stall_timeout: Duration,
+    idle: super::idle::IdleTimer,
 }
 
 impl ChatStream {
@@ -1468,6 +1469,7 @@ impl ChatStream {
             finish_reason: None,
             retained: 0,
             stall_timeout: DEFAULT_STALL_TIMEOUT,
+            idle: super::idle::IdleTimer::default(),
         }
     }
 
@@ -1852,12 +1854,18 @@ impl ChatStream {
             let pushed = match self.body.as_mut() {
                 None => return Err(ResponsesError::UnexpectedEnd),
                 #[cfg(not(target_family = "wasm"))]
-                Some(ChatBody::Http(response)) => stall(self.stall_timeout, response.chunk())
-                    .await?
+                Some(ChatBody::Http(response)) => self
+                    .idle
+                    .within(self.stall_timeout, response.chunk())
+                    .await
+                    .ok_or_else(|| stalled(self.stall_timeout))?
                     .map_err(map_http_error)?
                     .map(|chunk| self.decoder.push(&chunk)),
-                Some(ChatBody::Host(body)) => stall(self.stall_timeout, body.next())
-                    .await?
+                Some(ChatBody::Host(body)) => self
+                    .idle
+                    .within(self.stall_timeout, body.next())
+                    .await
+                    .ok_or_else(|| stalled(self.stall_timeout))?
                     .map_err(map_host_error)?
                     .map(|chunk| self.decoder.push(&chunk)),
             };

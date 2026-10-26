@@ -5350,7 +5350,7 @@ impl State {
             crate::ClaudeLifecycleDecision::Continue => {}
         }
 
-        let retained = if context.pending_continuation {
+        let mut retained = if context.pending_continuation {
             let start = unfinished_server_turn_start(&messages)
                 .or_else(|| current_server_turn_start(&messages))
                 .or_else(|| {
@@ -5391,28 +5391,46 @@ impl State {
         messages.push(Message::text(Role::User, COMPACTION_INSTRUCTIONS).into());
         let forced = format!("{step}-text");
         let mut response = None;
+        let mut stripped_thinking = false;
         for (force_text, step) in [(false, step), (true, forced.as_str())] {
-            let outcome = self
-                .response(
-                    &messages,
-                    tools.clone(),
-                    cancel,
-                    None,
-                    0,
-                    ResponseContext {
-                        origin: cursor.host_context(self),
-                        disable_tools: true,
-                        force_text,
-                        container: context.container.as_deref(),
-                        previous_message_id: context.previous_message_id.as_deref(),
-                        template: Some(&template),
-                        wire_profile: cursor.wire_profile.as_ref(),
-                        effect: cursor.effect(self, step),
-                        journal: None,
-                    },
-                )
-                .await
-                .map_err(|failure| failure.error)?;
+            let outcome = loop {
+                let effect = cursor.effect(self, step);
+                let outcome = self
+                    .response(
+                        &messages,
+                        tools.clone(),
+                        cancel,
+                        None,
+                        0,
+                        ResponseContext {
+                            origin: cursor.host_context(self),
+                            disable_tools: true,
+                            force_text,
+                            container: context.container.as_deref(),
+                            previous_message_id: context.previous_message_id.as_deref(),
+                            template: Some(&template),
+                            wire_profile: cursor.wire_profile.as_ref(),
+                            effect: if stripped_thinking {
+                                effect.map(|effect| effect.scoped("unsigned-thinking"))
+                            } else {
+                                effect
+                            },
+                            journal: None,
+                        },
+                    )
+                    .await;
+                match outcome {
+                    // As in a model step: thinking another API key's
+                    // organization signed is refused, so drop it and retry once.
+                    Err(failure) if !stripped_thinking && unsigned_thinking(&failure.error) => {
+                        history::strip_thinking(&mut messages);
+                        history::strip_thinking(&mut retained);
+                        history::strip_thinking(&mut context.messages);
+                        stripped_thinking = true;
+                    }
+                    outcome => break outcome.map_err(|failure| failure.error)?,
+                }
+            };
             if let Some(upgrade) = outcome.upgrade {
                 context.recovery_notices.push(upgrade.notice);
             }

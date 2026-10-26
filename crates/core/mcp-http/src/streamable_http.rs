@@ -26,6 +26,10 @@ const JSON_MIME_TYPE: &str = "application/json";
 const ACCEPT_MCP: &str = "text/event-stream, application/json";
 const RESERVED_HEADERS: [&str; 3] = ["accept", "mcp-session-id", "last-event-id"];
 const MAX_SSE_EVENT_BYTES: usize = 16 * 1024 * 1024;
+/// The most one response may carry: a JSON or error body, or all of a
+/// request's event stream, resumptions included.
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const TOO_LARGE: &str = "response exceeded 4 MiB";
 const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const RESPONSE_DRAIN_TIMEOUT: Duration = Duration::from_millis(50);
 const SSE_RETRY_BASE: Duration = Duration::from_secs(1);
@@ -120,6 +124,7 @@ enum StreamEnd {
 struct Cursor {
     last_event_id: Option<String>,
     retry: Option<Duration>,
+    received: usize,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -376,6 +381,9 @@ impl Reply {
     async fn bytes(mut self) -> Result<Vec<u8>, TransportError> {
         let mut bytes = Vec::new();
         while let Some(chunk) = self.chunk().await? {
+            if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(TransportError::new(TOO_LARGE));
+            }
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes)
@@ -557,11 +565,16 @@ impl Shared {
         if is_mime(content_type.as_deref(), EVENT_STREAM_MIME_TYPE) {
             let mut parser = sse::Parser::new(MAX_SSE_EVENT_BYTES);
             let mut events = Vec::new();
+            let mut received = 0;
             while let Some(chunk) = response
                 .chunk()
                 .await
                 .map_err(|error| TransportError::new(format!("SSE error: {error}")))?
             {
+                received += chunk.len();
+                if received > MAX_RESPONSE_BYTES {
+                    return Err(TransportError::new(TOO_LARGE));
+                }
                 parser
                     .feed(&chunk, &mut events)
                     .map_err(|error| TransportError::new(format!("SSE error: {error}")))?;
@@ -797,6 +810,10 @@ impl Shared {
                 Ok(None) => return StreamEnd::Closed,
                 Err(error) => return StreamEnd::Failed(error.to_string()),
             };
+            cursor.received = cursor.received.saturating_add(chunk.len());
+            if close_on_response && cursor.received > MAX_RESPONSE_BYTES {
+                return StreamEnd::Fatal(TOO_LARGE.to_owned());
+            }
             if let Err(error) = parser.feed(&chunk, &mut events) {
                 return StreamEnd::Fatal(error.to_string());
             }

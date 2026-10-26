@@ -25,11 +25,16 @@ pub(super) fn cell(explicit: Option<Computer>) -> Arc<Cua> {
 
 #[cfg(not(target_family = "wasm"))]
 pub(super) async fn connect(cell: Cell) -> Option<Computer> {
+    #[cfg(feature = "cua")]
     use tracing::Instrument as _;
 
     let cua = cell?;
     cua.tools
         .get_or_init(|| async {
+            #[cfg(not(feature = "cua"))]
+            let connected: Result<Computer, &str> =
+                Err("computer use is not built in (nanocode without its `cua` feature)");
+            #[cfg(feature = "cua")]
             let connected = match crate::ComputerConfig::detect() {
                 Ok(config) => {
                     if let Some(missing) = config.unavailable() {
@@ -60,6 +65,9 @@ pub(super) fn unavailable(cell: &Cell) -> Option<String> {
 pub(super) fn shared(computer: Option<&Computer>) -> Vec<Arc<dyn nanocode_tool_contracts::Tool>> {
     computer
         .map(|computer| {
+            #[cfg(not(feature = "cua"))]
+            match *computer {}
+            #[cfg(feature = "cua")]
             computer
                 .tools()
                 .map(|tool| Arc::new(tool) as Arc<dyn nanocode_tool_contracts::Tool>)

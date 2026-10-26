@@ -24,13 +24,18 @@ tokio = { workspace = true, features = ["sync"] }
 serde_json.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-nanocode-cua.workspace = true
+nanocode-cua = { workspace = true, optional = true }
 nanocode-home.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
 nanocode-process.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+# Computer use (trycua cua-driver and the browser extension). Off, the host
+# offers no computer tools and reports why.
+cua = ["dep:nanocode-cua"]
 
 [lints]
 workspace = true

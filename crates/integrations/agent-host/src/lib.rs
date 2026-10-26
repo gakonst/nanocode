@@ -10,8 +10,12 @@ use std::{marker::PhantomData, sync::Arc};
 use nanocode_agent::configuration::{NativeDefaults, RunnerServices};
 #[cfg(not(target_family = "wasm"))]
 use nanocode_agent_core::{NanocodeError, WeakAgent};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "cua"))]
 pub use nanocode_cua::{ComputerConfig, ComputerTools};
+/// Built without the `cua` feature: no computer tools can exist.
+#[cfg(all(not(target_family = "wasm"), not(feature = "cua")))]
+#[derive(Clone)]
+pub enum ComputerTools {}
 #[cfg(not(target_family = "wasm"))]
 pub use nanocode_tool_runtime::attachment::{
     AttachmentError, Runner, RunnerEvent, RunnerHandle, RunnerInfo, RunnerPool, RunnerProtocol,

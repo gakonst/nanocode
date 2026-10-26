@@ -158,9 +158,9 @@ pub use tools as oai_tools;
 #[doc(inline)]
 pub use nanocode_backend_claude::tools as claude_tools;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "cua"))]
 pub use nanocode_cua as cua;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), feature = "cua"))]
 pub use nanocode_cua::{ComputerConfig, ComputerTools};
 
 pub mod prelude {
@@ -182,7 +182,7 @@ pub mod prelude {
 
     pub use crate::durability::{MemoryStore, SessionStore};
     pub use crate::{AgentEvents, CodexBuilder, OpenAi};
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(all(not(target_family = "wasm"), feature = "cua"))]
     pub use crate::{ComputerConfig, ComputerTools};
 }
 

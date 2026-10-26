@@ -235,6 +235,7 @@ pub struct ResponsesService {
 }
 
 impl ResponsesService {
+    #[cfg(target_family = "wasm")]
     #[must_use]
     pub(crate) fn new(config: Arc<ModelConfig>) -> Self {
         let platform = platform::ServicePlatform::new(&config);
@@ -278,6 +279,7 @@ impl ResponsesService {
         self
     }
 
+    #[cfg(target_family = "wasm")]
     #[must_use]
     pub(crate) fn standard_with_max_attempts(
         config: Arc<ModelConfig>,

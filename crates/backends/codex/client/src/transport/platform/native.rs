@@ -16,11 +16,6 @@ pub(crate) struct ServicePlatform {
 }
 
 impl ServicePlatform {
-    pub(crate) fn new(config: &ModelConfig) -> Self {
-        crate::client::transport::install_default_rustls_crypto_provider();
-        Self::with_http_client(config, reqwest::Client::new())
-    }
-
     pub(crate) fn with_http_client(config: &ModelConfig, client: reqwest::Client) -> Self {
         Self {
             http: ResponsesHttp::new(

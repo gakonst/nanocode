@@ -1,10 +1,18 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use nanocode_platform::Instant;
 use rquickjs::{
-    CatchResultExt, Coerced, Ctx, Exception, FromJs, Function, Persistent, Promise, Runtime,
+    CatchResultExt, Coerced, Context, Ctx, Exception, FromJs, Function, Module, Object, Persistent,
+    Promise, Runtime, WriteOptions,
     context::EvalOptions,
     function::{Func, Opt, Rest},
+    loader::{ImportAttributes, Resolver, bundle::Bundle},
     promise::PromiseState,
 };
 use serde::Deserialize;
@@ -60,6 +68,60 @@ pub(crate) const BOOTSTRAP: &str = include_str!("bootstrap.js");
 
 pub(crate) const CODE_TOOLS: &str = include_str!("code-tools.mjs");
 pub(crate) const CODE_VALUES: &str = include_str!("code-values.mjs");
+
+const BOOTSTRAP_MODULE: &str = "nanocode:bootstrap";
+
+type BootstrapBundle = &'static [(&'static str, &'static [u8])];
+
+thread_local! {
+    static LOADING_BOOTSTRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct BootstrapResolver;
+
+impl Resolver for BootstrapResolver {
+    fn resolve<'js>(
+        &mut self,
+        _ctx: &Ctx<'js>,
+        base: &str,
+        name: &str,
+        _attributes: Option<ImportAttributes<'js>>,
+    ) -> rquickjs::Result<String> {
+        if name == BOOTSTRAP_MODULE && LOADING_BOOTSTRAP.get() {
+            Ok(name.to_owned())
+        } else {
+            Err(rquickjs::Error::new_resolving(base, name))
+        }
+    }
+}
+
+pub(crate) fn install_bootstrap(runtime: &Runtime) -> Result<(), String> {
+    static BUNDLE: OnceLock<Result<BootstrapBundle, String>> = OnceLock::new();
+    let bundle = BUNDLE.get_or_init(|| compile_bootstrap(runtime)).clone()?;
+    runtime.set_loader(BootstrapResolver, Bundle(bundle));
+    Ok(())
+}
+
+fn compile_bootstrap(runtime: &Runtime) -> Result<BootstrapBundle, String> {
+    let values = CODE_VALUES
+        .split_once("export const")
+        .ok_or_else(|| "shared value helper export marker is missing".to_owned())?
+        .0;
+    let source = format!(
+        "export const bootstrap = {};\n{CODE_TOOLS}\n{values}\nexport {{ createValueHelpers }};\n",
+        BOOTSTRAP.trim_end()
+    );
+    let context = Context::full(runtime)
+        .map_err(|error| format!("failed to create the QuickJS bootstrap compiler: {error}"))?;
+    let bytecode = context.with(|ctx| {
+        Module::declare(ctx.clone(), BOOTSTRAP_MODULE, source)
+            .and_then(|module| module.write(WriteOptions::default()))
+            .catch(&ctx)
+            .map_err(|error| format!("failed to compile the embedded QuickJS bootstrap: {error}"))
+    })?;
+    let bytecode: &'static [u8] = Box::leak(bytecode.into_boxed_slice());
+    Ok(Box::leak(Box::new([(BOOTSTRAP_MODULE, bytecode)])))
+}
 
 pub(crate) type SavedFunction = Persistent<Function<'static>>;
 
@@ -245,26 +307,24 @@ pub(crate) fn prepare_execution<'js>(
 ) -> Result<Function<'js>, String> {
     install_native_functions(ctx, state)?;
 
-    let factory_source = format!(
-        "({})",
-        CODE_TOOLS.replacen("export function", "function", 1)
-    );
-    let create_tools = ctx
-        .eval::<Function<'js>, _>(factory_source)
+    LOADING_BOOTSTRAP.set(true);
+    let module = Module::import(ctx, BOOTSTRAP_MODULE)
+        .and_then(|imported| imported.finish::<Object<'js>>())
+        .catch(ctx)
+        .map_err(|error| format!("failed to load the embedded QuickJS bootstrap: {error}"));
+    LOADING_BOOTSTRAP.set(false);
+    let module = module?;
+    let create_tools = module
+        .get::<_, Function<'js>>("createCodeTools")
         .catch(ctx)
         .map_err(|error| format!("failed to evaluate shared tool facade: {error}"))?;
-    let values_factory = CODE_VALUES
-        .split_once("export const")
-        .ok_or_else(|| "shared value helper export marker is missing".to_owned())?
-        .0;
-    let value_helpers = ctx
-        .eval::<rquickjs::Object<'js>, _>(format!(
-            "(() => {{{values_factory}\nreturn createValueHelpers();}})()"
-        ))
+    let value_helpers = module
+        .get::<_, Function<'js>>("createValueHelpers")
+        .and_then(|create| create.call::<_, Object<'js>>(()))
         .catch(ctx)
         .map_err(|error| format!("failed to evaluate shared value helpers: {error}"))?;
-    let bootstrap = ctx
-        .eval::<Function<'js>, _>(BOOTSTRAP)
+    let bootstrap = module
+        .get::<_, Function<'js>>("bootstrap")
         .catch(ctx)
         .map_err(|error| format!("failed to evaluate embedded QuickJS bootstrap: {error}"))?;
     let run_cell = bootstrap

@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use crate::cell::{
     ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, compile_prelude,
-    completed_terminal, drain_jobs, invoke_timeout, new_state, next_due_timeout,
+    completed_terminal, drain_jobs, install_bootstrap, invoke_timeout, new_state, next_due_timeout,
     next_timeout_wait, prepare_execution, resolve_tool, run_execution, send_terminal,
     track_rejections,
 };
@@ -140,6 +140,7 @@ impl EmbeddedHost {
         let here = 0_u8;
         let stack = std::ptr::addr_of!(here) as usize;
         runtime.set_max_stack_size(stack.saturating_sub(HOST_STACK_BYTES).max(64 * 1024));
+        install_bootstrap(&runtime)?;
         let budget = Rc::new(Cell::new(INTERRUPT_CHECKS.get()));
         let remaining = Rc::clone(&budget);
         runtime.set_interrupt_handler(Some(Box::new(move || {
@@ -170,10 +171,7 @@ impl EmbeddedHost {
                 },
             )
         });
-        Ok(Self {
-            key,
-            events,
-        })
+        Ok(Self { key, events })
     }
 
     pub fn start_cell(
@@ -205,10 +203,9 @@ impl EmbeddedHost {
                 prelude,
             } = prepared;
             let promise = context.with(|ctx| {
-                let run_cell = run_cell
-                    .restore(&ctx)
-                    .catch(&ctx)
-                    .map_err(|error| format!("failed to restore the QuickJS cell runner: {error}"))?;
+                let run_cell = run_cell.restore(&ctx).catch(&ctx).map_err(|error| {
+                    format!("failed to restore the QuickJS cell runner: {error}")
+                })?;
                 let prelude = match prelude {
                     Some((_, compiled)) => compiled
                         .restore(&ctx)

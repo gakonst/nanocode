@@ -15,9 +15,9 @@ use serde_json::{Value, value::RawValue};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::cell::{
-    Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs, invoke_timeout,
-    new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal, start_execution,
-    track_rejections,
+    Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs, install_bootstrap,
+    invoke_timeout, new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal,
+    start_execution, track_rejections,
 };
 
 pub struct EmbeddedHost {
@@ -162,6 +162,10 @@ fn run_worker(
             return;
         }
     };
+    if let Err(error) = install_bootstrap(&runtime) {
+        let _ = startup.set(error);
+        return;
+    }
     let rejections = track_rejections(&runtime);
     let interrupt_signal = Arc::clone(interrupted);
     runtime.set_interrupt_handler(Some(Box::new(move || {

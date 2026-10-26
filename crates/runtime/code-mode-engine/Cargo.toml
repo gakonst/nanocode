@@ -16,7 +16,7 @@ nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true
 base64.workspace = true
 base64-simd.workspace = true
-rquickjs.workspace = true
+rquickjs = { workspace = true, features = ["loader"] }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
@@ -25,7 +25,7 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-rquickjs = { workspace = true, features = ["bindgen"] }
+rquickjs = { workspace = true, features = ["bindgen", "loader"] }
 tokio = { workspace = true, features = ["macros", "sync"] }
 
 [lints]

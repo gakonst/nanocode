@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::{
     super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult},
-    host::{DATA_URL_PREFIX, ViewImageArguments, detail, output, resolve},
+    host::{ViewImageArguments, detail, output, resolve},
 };
 
 pub(crate) struct ViewImageHandler {
@@ -96,7 +96,7 @@ impl Tool for ViewImageHandler {
     }
 }
 
-const DATA_URL_PREFIX_BYTES: u64 = DATA_URL_PREFIX.len() as u64;
+const DATA_URL_PREFIX_BYTES: u64 = "data:application/octet-stream;base64,".len() as u64;
 const VIEW_IMAGE_WIRE_COPIES: u64 = 2;
 const VIEW_IMAGE_WIRE_HEADROOM_BYTES: u64 = 4 * 1024;
 const INITIAL_IMAGE_READ_CAPACITY_BYTES: u64 = 64 * 1024;

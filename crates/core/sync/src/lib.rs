@@ -356,10 +356,26 @@ struct Queue {
     waiting: std::collections::VecDeque<(u64, Arc<Signal>)>,
 }
 
+const LINE_FREE: u8 = 0;
+const LINE_HELD: u8 = 1;
+const LINE_SWITCHING: u8 = 2;
+const LINE_QUEUED: u8 = 3;
+const FAST_TICKET: u64 = u64::MAX;
+
 #[derive(Default)]
 struct Line {
+    mode: std::sync::atomic::AtomicU8,
     queue: Atom<Queue>,
     tickets: std::sync::atomic::AtomicU64,
+}
+
+fn back_off(spins: &mut u32) {
+    if *spins < 64 {
+        *spins += 1;
+        std::hint::spin_loop();
+    } else {
+        std::thread::yield_now();
+    }
 }
 
 #[derive(Clone, Default)]
@@ -372,6 +388,21 @@ pub struct Turn {
 
 impl Drop for Turn {
     fn drop(&mut self) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        if self.ticket == FAST_TICKET {
+            let mut spins = 0;
+            loop {
+                match self
+                    .line
+                    .mode
+                    .compare_exchange(LINE_HELD, LINE_FREE, AcqRel, Acquire)
+                {
+                    Ok(_) => return,
+                    Err(LINE_SWITCHING) => back_off(&mut spins),
+                    Err(_) => break,
+                }
+            }
+        }
         let next = self.line.queue.update(|queue| {
             queue.waiting.retain(|(ticket, _)| *ticket != self.ticket);
             if queue.holder != Some(self.ticket) {
@@ -399,8 +430,56 @@ impl Sequencer {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
+    fn fast(&self) -> Turn {
+        Turn {
+            line: Arc::clone(&self.0),
+            ticket: FAST_TICKET,
+        }
+    }
+
     pub async fn enter(&self) -> Turn {
-        if let Some(turn) = self.try_enter() {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+        let mut spins = 0;
+        loop {
+            match self.0.mode.load(Acquire) {
+                LINE_FREE => {
+                    if self
+                        .0
+                        .mode
+                        .compare_exchange(LINE_FREE, LINE_HELD, AcqRel, Acquire)
+                        .is_ok()
+                    {
+                        return self.fast();
+                    }
+                }
+                LINE_HELD => {
+                    if self
+                        .0
+                        .mode
+                        .compare_exchange(LINE_HELD, LINE_SWITCHING, AcqRel, Acquire)
+                        .is_ok()
+                    {
+                        let turn = Turn {
+                            line: Arc::clone(&self.0),
+                            ticket: self.ticket(),
+                        };
+                        let admitted = Arc::new(Signal::new());
+                        self.0.queue.update(|queue| {
+                            queue.holder = Some(FAST_TICKET);
+                            queue
+                                .waiting
+                                .push_back((turn.ticket, Arc::clone(&admitted)));
+                        });
+                        self.0.mode.store(LINE_QUEUED, Release);
+                        admitted.wait().await;
+                        return turn;
+                    }
+                }
+                LINE_SWITCHING => back_off(&mut spins),
+                _ => break,
+            }
+        }
+        if let Some(turn) = self.try_enter_queued() {
             return turn;
         }
         let turn = Turn {
@@ -427,6 +506,19 @@ impl Sequencer {
 
     #[must_use]
     pub fn try_enter(&self) -> Option<Turn> {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        match self.0.mode.load(Acquire) {
+            LINE_QUEUED => self.try_enter_queued(),
+            _ => self
+                .0
+                .mode
+                .compare_exchange(LINE_FREE, LINE_HELD, AcqRel, Acquire)
+                .ok()
+                .map(|_| self.fast()),
+        }
+    }
+
+    fn try_enter_queued(&self) -> Option<Turn> {
         if self
             .0
             .queue

@@ -98,7 +98,7 @@ struct ActivityShared {
     draining: AtomicBool,
     busy: watch::Sender<usize>,
     tools: Vec<Weak<dyn Tool>>,
-    boards: Atom<Vec<Arc<Atom<Board>>>>,
+    boards: Atom<Vec<Arc<Board>>>,
 }
 
 impl Default for HandActivity {
@@ -132,7 +132,7 @@ impl HandActivity {
     pub fn items(&self) -> Vec<BusyItem> {
         let mut items = Vec::new();
         for board in self.shared.boards.get().iter() {
-            board.read(|board| board.items(&mut items));
+            board.items(&mut items);
         }
         for tool in self.shared.tools.iter().filter_map(Weak::upgrade) {
             items.extend(
@@ -165,15 +165,15 @@ impl HandActivity {
         self.shared.draining.load(Ordering::Acquire)
     }
 
-    fn attach(&self) -> Arc<Atom<Board>> {
-        let board = Arc::<Atom<Board>>::default();
+    fn attach(&self) -> Arc<Board> {
+        let board = Arc::<Board>::default();
         self.shared
             .boards
             .update(|boards| boards.push(Arc::clone(&board)));
         board
     }
 
-    fn detach(&self, board: &Arc<Atom<Board>>) {
+    fn detach(&self, board: &Arc<Board>) {
         self.shared
             .boards
             .update(|boards| boards.retain(|other| !Arc::ptr_eq(other, board)));
@@ -1550,12 +1550,14 @@ struct Running {
     resumable: bool,
     connection: u64,
     work: Arc<Pending>,
+    ended: Arc<AtomicBool>,
     cancel: Option<CancellationToken>,
 }
 
 struct Retained {
     text: String,
     work: Arc<Pending>,
+    ended: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -1627,15 +1629,32 @@ impl Pending {
     }
 }
 
+struct Listed {
+    work: Arc<Pending>,
+    ended: Arc<AtomicBool>,
+    next: Option<Arc<Self>>,
+}
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        let mut next = self.next.take();
+        while let Some(node) = next {
+            next = Arc::try_unwrap(node)
+                .ok()
+                .and_then(|mut node| node.next.take());
+        }
+    }
+}
+
 #[derive(Default)]
 struct Board {
-    sessions: Vec<(String, Arc<ToolRuntime>, CallbackCatalog)>,
-    pending: Vec<Arc<Pending>>,
+    sessions: Atom<Vec<(String, Arc<ToolRuntime>, CallbackCatalog)>>,
+    work: Atom<Option<Arc<Listed>>>,
 }
 
 impl Board {
     fn items(&self, items: &mut Vec<BusyItem>) {
-        for (session_id, runtime, catalog) in &self.sessions {
+        for (session_id, runtime, catalog) in self.sessions.get().iter() {
             catalog.state.read(|state| {
                 items.extend(state.origins.iter().map(|origin| BusyItem {
                     kind: BusyKind::Cell,
@@ -1652,7 +1671,13 @@ impl Board {
                     .map(|task| BusyItem::task(task, Some(session_id))),
             );
         }
-        for work in &self.pending {
+        let mut next = Option::clone(&self.work.get());
+        while let Some(node) = next {
+            next = node.next.clone();
+            if node.ended.load(Ordering::Acquire) {
+                continue;
+            }
+            let work = &node.work;
             let listed = work.kind == BusyKind::Cell
                 && items.iter().any(|item| {
                     item.kind == BusyKind::Cell
@@ -1685,7 +1710,9 @@ pub(super) struct Executor {
     connection: u64,
     resumable: bool,
     activity: HandActivity,
-    board: Arc<Atom<Board>>,
+    board: Arc<Board>,
+    listed: usize,
+    unlisted: usize,
     busy: bool,
     hold: Option<tokio::task::AbortHandle>,
 }
@@ -1735,9 +1762,61 @@ impl Executor {
             resumable: false,
             activity,
             board,
+            listed: 0,
+            unlisted: 0,
             busy: false,
             hold: None,
         }
+    }
+
+    fn list(&mut self, work: &Arc<Pending>) -> Arc<AtomicBool> {
+        let ended = Arc::new(AtomicBool::new(false));
+        let next = Option::clone(&self.board.work.get());
+        self.board.work.set(Some(Arc::new(Listed {
+            work: Arc::clone(work),
+            ended: Arc::clone(&ended),
+            next,
+        })));
+        self.listed += 1;
+        ended
+    }
+
+    fn unlist(&mut self, ended: &AtomicBool) {
+        ended.store(true, Ordering::Release);
+        self.unlisted += 1;
+        if self.unlisted * 2 <= self.listed {
+            return;
+        }
+        let mut live = Vec::new();
+        let mut next = Option::clone(&self.board.work.get());
+        while let Some(node) = next {
+            if !node.ended.load(Ordering::Acquire) {
+                live.push((Arc::clone(&node.work), Arc::clone(&node.ended)));
+            }
+            next = node.next.clone();
+        }
+        self.listed = live.len();
+        self.unlisted = 0;
+        let mut head = None;
+        for (work, ended) in live.into_iter().rev() {
+            head = Some(Arc::new(Listed {
+                work,
+                ended,
+                next: head,
+            }));
+        }
+        self.board.work.set(head);
+    }
+
+    fn publish_sessions(&self) {
+        self.board.sessions.set(
+            self.runtimes
+                .iter()
+                .map(|(session_id, (runtime, catalog))| {
+                    (session_id.clone(), Arc::clone(runtime), catalog.clone())
+                })
+                .collect(),
+        );
     }
 
     fn publish(&mut self) {
@@ -1751,25 +1830,6 @@ impl Executor {
                 .any(|(_, catalog)| catalog.state.read(|state| !state.origins.is_empty()));
         self.activity.report(self.busy, busy);
         self.busy = busy;
-        self.board.set(Board {
-            sessions: self
-                .runtimes
-                .iter()
-                .map(|(session_id, (runtime, catalog))| {
-                    (session_id.clone(), Arc::clone(runtime), catalog.clone())
-                })
-                .collect(),
-            pending: self
-                .running
-                .values()
-                .map(|running| Arc::clone(&running.work))
-                .chain(
-                    self.retained
-                        .values()
-                        .map(|retained| Arc::clone(&retained.work)),
-                )
-                .collect(),
-        });
     }
 
     async fn definitions(&mut self) -> Vec<ToolDefinition> {
@@ -1814,6 +1874,10 @@ impl Executor {
         self.calls.clear();
         self.turn_calls.clear();
         self.retained.clear();
+        self.board.work.set(None);
+        self.listed = 0;
+        self.unlisted = 0;
+        self.publish_sessions();
         self.resumable = false;
         self.publish();
     }
@@ -1854,8 +1918,8 @@ impl Executor {
             .as_ref()
             .is_some_and(|running| running.connection != self.connection);
         let status = status.as_deref();
-        let text = match running.filter(|running| running.resumable) {
-            Some(running) => {
+        let text = match running {
+            Some(running) if running.resumable => {
                 let retained = match full {
                     Some(full) => reply_text(&self.outgoing, id, Ok(Some(full)), status)?,
                     None => reply_text(&self.outgoing, id, live.clone(), status)?,
@@ -1870,14 +1934,21 @@ impl Executor {
                     since: Instant::now(),
                     ..Pending::clone(&running.work)
                 });
+                self.unlist(&running.ended);
+                let ended = self.list(&work);
                 self.retained.insert(
                     id,
                     Retained {
                         text: retained,
                         work,
+                        ended,
                     },
                 );
                 text
+            }
+            Some(running) => {
+                self.unlist(&running.ended);
+                reply_text(&self.outgoing, id, live, status)?
             }
             None => reply_text(&self.outgoing, id, live, status)?,
         };
@@ -1894,7 +1965,17 @@ impl Executor {
         }
         self.outgoing.flush()?;
         let wanted = pending.iter().copied().collect::<HashSet<_>>();
-        self.retained.retain(|id, _| wanted.contains(id));
+        let forgotten = self
+            .retained
+            .keys()
+            .filter(|id| !wanted.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        for id in forgotten {
+            if let Some(retained) = self.retained.remove(&id) {
+                self.unlist(&retained.ended);
+            }
+        }
         for id in pending {
             if let Some(retained) = self.retained.get(id) {
                 self.outgoing.push(retained.text.clone())?;
@@ -1991,7 +2072,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     let Some(frame) = frame? else { return Ok(()); };
                     match frame {
                         Frame::CallbackResult { id, result } => { if let Some(tx) = bus.pending.update(|pending| pending.remove(&id)).and_then(|entry| entry.reply.take()) { let _ = tx.send(result); } },
-                        Frame::Ack { ids } => { for id in ids { executor.retained.remove(&id); } },
+                        Frame::Ack { ids } => { for id in ids { if let Some(retained) = executor.retained.remove(&id) { executor.unlist(&retained.ended); } } },
                         Frame::Resume { pending } => executor.resume(&pending)?,
                         Frame::Request { id, operation, max_frame_bytes, compact, output_prefix, resumable } => {
                             if let Some(bytes) = max_frame_bytes { outgoing.limit.fetch_min(bytes, Ordering::Relaxed); }
@@ -2007,7 +2088,8 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 continue;
                             }
                             let session_id = work.session_id.clone();
-                            executor.running.insert(id, Running { resumable, connection, work: Arc::clone(&work), cancel: None });
+                            let ended = executor.list(&work);
+                            executor.running.insert(id, Running { resumable, connection, work: Arc::clone(&work), ended, cancel: None });
                             executor.publish();
                             if executor.activity.draining() && matches!(&operation, RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }) {
                                 executor.finish(id, Err(NOT_RECEIVED.into()));
@@ -2030,7 +2112,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 let selected = catalog.state.read(|state| state.selected_tools.clone());
                                 let excluded = executor.definitions().await.into_iter().filter(|definition| selected.as_ref().is_some_and(|names| !names.iter().any(|name| name == definition.name()))).map(|definition| definition.name().to_owned()).collect::<Vec<_>>();
                                 match executor.tools.clone().excluding_code_tools(excluded).into_builder().provider(catalog.clone()).hand_calls(Arc::clone(&hands)).build() {
-                                    Ok(selected) => { executor.runtimes.insert(session_id.clone(), (Arc::new(ToolRuntime::new_with_tools(executor.workspace.clone(), Vec::new(), &selected)), catalog)); },
+                                    Ok(selected) => { executor.runtimes.insert(session_id.clone(), (Arc::new(ToolRuntime::new_with_tools(executor.workspace.clone(), Vec::new(), &selected)), catalog)); executor.publish_sessions(); },
                                     Err(issue) => {
                                         executor.finish(id, Err(issue.to_string()));
                                         continue;
@@ -2087,7 +2169,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 executor.finish(id, Err(issue.to_string()));
                                 continue;
                             }
-                            let runtime = if matches!(&operation, RemoteOperation::Cancel { .. }) { executor.runtimes.0.remove(&session_id) } else { executor.runtimes.get(&session_id).map(|(runtime, catalog)| (Arc::clone(runtime), catalog.clone())) };
+                            let runtime = if matches!(&operation, RemoteOperation::Cancel { .. }) { let removed = executor.runtimes.0.remove(&session_id); executor.publish_sessions(); removed } else { executor.runtimes.get(&session_id).map(|(runtime, catalog)| (Arc::clone(runtime), catalog.clone())) };
                             let runtime = runtime.map(|(runtime, catalog)| {
                                 let turn = catalog.turn();
                                 (runtime, catalog, turn)

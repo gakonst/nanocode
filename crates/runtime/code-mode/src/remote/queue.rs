@@ -11,7 +11,6 @@ use futures_util::{
     future::{BoxFuture, Either},
     stream::FuturesUnordered,
 };
-use nanocode_sync::Atom;
 use serde_json::Value;
 use tokio::{sync::mpsc, time::Instant};
 
@@ -25,9 +24,11 @@ const DERIVED_REQUESTS: u64 = 1 << 52;
 
 #[must_use]
 pub fn request_id(call_id: &str) -> u64 {
-    let hash = call_id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    });
+    let hash = call_id
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
     DERIVED_REQUESTS | ((hash ^ (hash >> 52)) & (DERIVED_REQUESTS - 1))
 }
 
@@ -108,10 +109,7 @@ pub trait CommandQueue: Send + Sync + 'static {
         &self,
         settled: &[(String, Settlement)],
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-    fn turns_ended(
-        &self,
-        turns: &[(String, String)],
-    ) -> impl Future<Output = Vec<bool>> + Send;
+    fn turns_ended(&self, turns: &[(String, String)]) -> impl Future<Output = Vec<bool>> + Send;
     fn unsettled(&self, commands: &[String], error: &str);
 }
 
@@ -124,14 +122,13 @@ pub struct QueueOptions {
     pub cancels_calls: bool,
 }
 
-type Flights = Arc<Atom<HashMap<String, String>>>;
-
-type Stopped = Arc<Atom<HashMap<String, String>>>;
+type Replied = BoxFuture<'static, (String, u64, Result<Option<Value>, CodeModeHostError>)>;
 
 enum Done {
     Reply {
         command: String,
         request: u64,
+        stopped: Option<String>,
         result: Result<Option<Value>, CodeModeHostError>,
     },
     Refused {
@@ -148,32 +145,27 @@ pub async fn serve_queue<Q: CommandQueue>(
     failed: impl Future<Output = Q::Error>,
 ) -> Result<String, Q::Error> {
     let first = queue.poll().await?;
-    let flights: Flights = Arc::default();
-    let stopped: Stopped = Arc::default();
+    let mut flights: HashMap<String, String> = HashMap::new();
+    let mut stopped: HashMap<String, String> = HashMap::new();
     let pending = first.calls.iter().map(QueuedCall::request_id).collect();
-    let (client, mut driver, resumed) =
+    let (client, driver, resumed) =
         RemoteClient::resuming(link, options.operation_timeout, pending);
-    let mut replies: FuturesUnordered<BoxFuture<'static, Done>> = FuturesUnordered::new();
+    let mut driver = tokio::spawn(driver);
+    let mut replies: FuturesUnordered<Replied> = FuturesUnordered::new();
     for (call, (request, reply)) in first.calls.iter().zip(resumed) {
         let command = call.context.call_id.clone();
-        flights.update(|flights| {
-            flights.insert(command.clone(), call.context.session_id.clone());
-        });
-        replies.push(Box::pin(reply.map(move |result| Done::Reply {
-            command,
-            request,
-            result,
-        })));
+        flights.insert(command.clone(), call.context.session_id.clone());
+        replies.push(Box::pin(
+            reply.map(move |result| (command, request, result)),
+        ));
     }
     let (done, settling) = mpsc::unbounded_channel();
-    let (retry, mut retries) = mpsc::unbounded_channel();
+    let (release, mut released) = mpsc::unbounded_channel();
     tokio::spawn(settle(
         Arc::clone(&queue),
         client.clone(),
-        Arc::clone(&flights),
-        Arc::clone(&stopped),
         settling,
-        retry,
+        release,
     ));
     let mut failed = pin!(failed);
     let mut wakeups = pin!(wakeups);
@@ -183,7 +175,7 @@ pub async fn serve_queue<Q: CommandQueue>(
     let mut checked = Instant::now();
     let mut polled = Some(first);
     let mut next = Instant::now();
-    loop {
+    let result = loop {
         if let Some(polled) = polled.take() {
             let calls = polled.calls.len();
             watching.extend(polled.watch);
@@ -199,23 +191,23 @@ pub async fn serve_queue<Q: CommandQueue>(
                 }
             }
             for (command, reason) in polled.stop {
-                let first = stopped.update(|stopped| {
-                    stopped.insert(command.clone(), reason.clone()).is_none()
-                });
-                if !first {
+                if stopped.contains_key(&command) {
                     continue;
                 }
-                let session = flights.read(|flights| flights.get(&command).cloned());
-                match session {
+                stopped.insert(command.clone(), reason.clone());
+                match flights.get(&command) {
                     Some(session_id) if options.cancels_calls => notify(
                         &client,
                         RemoteOperation::CancelCall {
-                            session_id,
+                            session_id: session_id.clone(),
                             call_id: command,
                         },
                     ),
                     Some(_) => {}
-                    None => drop(done.send(Done::Refused { command, reason })),
+                    None => {
+                        flights.insert(command.clone(), String::new());
+                        let _ = done.send(Done::Refused { command, reason });
+                    }
                 }
             }
             let fresh = polled
@@ -223,49 +215,44 @@ pub async fn serve_queue<Q: CommandQueue>(
                 .into_iter()
                 .filter(|call| {
                     let command = &call.context.call_id;
-                    !flights.read(|flights| flights.contains_key(command))
-                        && !stopped.read(|stopped| stopped.contains_key(command))
+                    !flights.contains_key(command) && !stopped.contains_key(command)
                 })
                 .collect::<Vec<_>>();
             if !fresh.is_empty() {
-                let admitted = queue.admit(&fresh).await?;
-                let mut sending = Vec::new();
-                for (index, call) in fresh.into_iter().enumerate() {
-                    match admitted.get(index).cloned().unwrap_or(Admit::Wait) {
-                        Admit::Send => sending.push(call),
-                        Admit::Wait => {}
-                        Admit::Refuse(reason) => drop(done.send(Done::Refused {
-                            command: call.context.call_id,
-                            reason,
-                        })),
-                    }
-                }
+                let admitted = match queue.admit(&fresh).await {
+                    Ok(admitted) => admitted,
+                    Err(error) => break Err(error),
+                };
                 let mut operations = Vec::new();
                 let mut sent = Vec::new();
-                for call in sending {
+                for (index, call) in fresh.into_iter().enumerate() {
                     let command = call.context.call_id.clone();
-                    let request = call.request_id();
-                    flights.update(|flights| {
-                        flights.insert(command.clone(), call.context.session_id.clone());
-                    });
-                    sent.push((command, request));
-                    operations.push((
-                        request,
-                        RemoteOperation::Call {
-                            name: call.name,
-                            input: call.input,
-                            selected_tools: None,
-                            context: call.context,
-                        },
-                    ));
+                    match admitted.get(index).cloned().unwrap_or(Admit::Wait) {
+                        Admit::Send => {
+                            let request = call.request_id();
+                            flights.insert(command.clone(), call.context.session_id.clone());
+                            sent.push((command, request));
+                            operations.push((
+                                request,
+                                RemoteOperation::Call {
+                                    name: call.name,
+                                    input: call.input,
+                                    selected_tools: None,
+                                    context: call.context,
+                                },
+                            ));
+                        }
+                        Admit::Wait => {}
+                        Admit::Refuse(reason) => {
+                            flights.insert(command.clone(), String::new());
+                            let _ = done.send(Done::Refused { command, reason });
+                        }
+                    }
                 }
-                for ((command, request), reply) in sent.into_iter().zip(client.calls(operations))
-                {
-                    replies.push(Box::pin(reply.map(move |result| Done::Reply {
-                        command,
-                        request,
-                        result: result.map(Some),
-                    })));
+                for ((command, request), reply) in sent.into_iter().zip(client.calls(operations)) {
+                    replies.push(Box::pin(
+                        reply.map(move |result| (command, request, result.map(Some))),
+                    ));
                 }
             }
             if !watching.is_empty() && checked.elapsed() >= options.end_check {
@@ -286,10 +273,13 @@ pub async fn serve_queue<Q: CommandQueue>(
                 }
                 checked = Instant::now();
             }
-            let busy = calls > 0
-                || !flights.read(HashMap::is_empty)
-                || !watching.is_empty();
-            next = Instant::now() + if busy { options.busy_poll } else { options.poll };
+            let busy = calls > 0 || !flights.is_empty() || !watching.is_empty();
+            next = Instant::now()
+                + if busy {
+                    options.busy_poll
+                } else {
+                    options.poll
+                };
         }
         let wakeup = if awake {
             Either::Left(wakeups.next())
@@ -297,17 +287,33 @@ pub async fn serve_queue<Q: CommandQueue>(
             Either::Right(std::future::pending())
         };
         tokio::select! {
-            reason = &mut driver => return Ok(reason),
-            error = &mut failed => return Err(error),
+            reason = &mut driver => break Ok(reason.unwrap_or_else(|issue| issue.to_string())),
+            error = &mut failed => break Err(error),
             woken = wakeup => match woken {
                 Some(()) => next = Instant::now(),
                 None => awake = false,
             },
-            Some(()) = retries.recv() => next = Instant::now(),
-            Some(finished) = replies.next(), if !replies.is_empty() => drop(done.send(finished)),
-            () = tokio::time::sleep_until(next) => polled = Some(queue.poll().await?),
+            Some((commands, retry)) = released.recv() => {
+                for command in commands {
+                    flights.remove(&command);
+                    stopped.remove(&command);
+                }
+                if retry {
+                    next = Instant::now();
+                }
+            },
+            Some((command, request, result)) = replies.next(), if !replies.is_empty() => {
+                let stopped = stopped.get(&command).cloned();
+                let _ = done.send(Done::Reply { command, request, stopped, result });
+            },
+            () = tokio::time::sleep_until(next) => match queue.poll().await {
+                Ok(next) => polled = Some(next),
+                Err(error) => break Err(error),
+            },
         }
-    }
+    };
+    driver.abort();
+    result
 }
 
 fn notify(client: &RemoteClient, operation: RemoteOperation) {
@@ -320,10 +326,8 @@ fn notify(client: &RemoteClient, operation: RemoteOperation) {
 async fn settle<Q: CommandQueue>(
     queue: Arc<Q>,
     client: RemoteClient,
-    flights: Flights,
-    stopped: Stopped,
     mut done: mpsc::UnboundedReceiver<Done>,
-    retry: mpsc::UnboundedSender<()>,
+    release: mpsc::UnboundedSender<(Vec<String>, bool)>,
 ) {
     while let Some(first) = done.recv().await {
         let mut batch = vec![first];
@@ -333,6 +337,7 @@ async fn settle<Q: CommandQueue>(
         let mut settled = Vec::new();
         let mut acks = Vec::new();
         let mut released = Vec::new();
+        let mut finished = Vec::new();
         for finished in batch {
             match finished {
                 Done::Refused { command, reason } => {
@@ -341,15 +346,16 @@ async fn settle<Q: CommandQueue>(
                 Done::Reply {
                     command,
                     request,
+                    stopped,
                     result,
                 } => match result {
                     Ok(Some(value)) => {
                         acks.push(request);
                         let completed = output_from_wire(value)
                             .and_then(|output| {
-                                output.into_wire().map_err(|issue| {
-                                    CodeModeHostError::new(issue.to_string())
-                                })
+                                output
+                                    .into_wire()
+                                    .map_err(|issue| CodeModeHostError::new(issue.to_string()))
                             })
                             .and_then(|wire| {
                                 serde_json::to_value(wire)
@@ -362,14 +368,10 @@ async fn settle<Q: CommandQueue>(
                     }
                     Ok(None) => settled.push((command, Settlement::Unknown)),
                     Err(_) if client.failure().is_some() => released.push(command),
-                    Err(error) if error.message() == NOT_RECEIVED => {
-                        match stopped.read(|stopped| stopped.get(&command).cloned()) {
-                            Some(reason) => {
-                                settled.push((command, Settlement::Unavailable(reason)));
-                            }
-                            None => released.push(command),
-                        }
-                    }
+                    Err(error) if error.message() == NOT_RECEIVED => match stopped {
+                        Some(reason) => settled.push((command, Settlement::Unavailable(reason))),
+                        None => released.push(command),
+                    },
                     Err(error) if error.is_unsent() => {
                         settled.push((command, Settlement::Unavailable(error.to_string())));
                     }
@@ -378,39 +380,28 @@ async fn settle<Q: CommandQueue>(
             }
         }
         if !settled.is_empty() {
+            let commands = settled
+                .iter()
+                .map(|(command, _)| command.clone())
+                .collect::<Vec<_>>();
             match queue.settle(&settled).await {
                 Ok(()) => {
                     if !acks.is_empty() {
                         drop(client.ack(acks));
                     }
-                    let commands = settled
-                        .iter()
-                        .map(|(command, _)| command.clone())
-                        .collect::<Vec<_>>();
-                    stopped.update(|stopped| {
-                        for command in &commands {
-                            stopped.remove(command);
-                        }
-                    });
-                    released.extend(commands);
+                    finished = commands;
                 }
                 Err(error) => {
-                    let commands = settled
-                        .into_iter()
-                        .map(|(command, _)| command)
-                        .collect::<Vec<_>>();
                     queue.unsettled(&commands, &format!("{error:#}"));
                     released.extend(commands);
                 }
             }
         }
+        if !finished.is_empty() {
+            let _ = release.send((finished, false));
+        }
         if !released.is_empty() {
-            flights.update(|flights| {
-                for command in &released {
-                    flights.remove(command);
-                }
-            });
-            let _ = retry.send(());
+            let _ = release.send((released, true));
         }
     }
 }

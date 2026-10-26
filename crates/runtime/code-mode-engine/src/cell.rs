@@ -115,7 +115,12 @@ fn compile_bootstrap(runtime: &Runtime) -> Result<BootstrapBundle, String> {
         .map_err(|error| format!("failed to create the QuickJS bootstrap compiler: {error}"))?;
     let bytecode = context.with(|ctx| {
         Module::declare(ctx.clone(), BOOTSTRAP_MODULE, source)
-            .and_then(|module| module.write(WriteOptions::default()))
+            .and_then(|module| {
+                module.write(WriteOptions {
+                    strip_source: true,
+                    ..WriteOptions::default()
+                })
+            })
             .catch(&ctx)
             .map_err(|error| format!("failed to compile the embedded QuickJS bootstrap: {error}"))
     })?;

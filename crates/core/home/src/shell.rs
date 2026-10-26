@@ -78,10 +78,15 @@ fn detect_shell_type(shell_path: &Path) -> Option<ShellType> {
 
 #[cfg(unix)]
 fn user_shell_path() -> Option<PathBuf> {
-    User::from_uid(Uid::current())
-        .ok()
-        .flatten()
-        .map(|user| user.shell)
+    static SHELL: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    SHELL
+        .get_or_init(|| {
+            User::from_uid(Uid::current())
+                .ok()
+                .flatten()
+                .map(|user| user.shell)
+        })
+        .clone()
 }
 
 #[cfg(target_os = "macos")]

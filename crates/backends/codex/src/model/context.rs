@@ -432,13 +432,31 @@ fn detected_execution_environment() -> ExecutionEnvironment {
 #[cfg(target_os = "macos")]
 fn system_timezone() -> Result<String, iana_time_zone::GetTimezoneError> {
     const TZDIR: &str = "/var/db/timezone/zoneinfo/";
+    static KNOWN: arc_swap::ArcSwapOption<(std::path::PathBuf, String)> =
+        arc_swap::ArcSwapOption::const_empty();
     if std::env::var_os("TZFILE").is_none()
         && std::env::var_os("TZ").is_none()
         && let Ok(link) = std::fs::read_link("/etc/localtime")
-        && let Some(name) = link.to_str().and_then(|link| link.strip_prefix(TZDIR))
+    {
+        if let Some(known) = KNOWN.load().as_deref()
+            && known.0 == link
+        {
+            return Ok(known.1.clone());
+        }
+        if let Some(name) = indexed_timezone(&link, TZDIR) {
+            KNOWN.store(Some(Arc::new((link, name.clone()))));
+            return Ok(name);
+        }
+    }
+    iana_time_zone::get_timezone()
+}
+
+#[cfg(target_os = "macos")]
+fn indexed_timezone(link: &std::path::Path, tzdir: &str) -> Option<String> {
+    if let Some(name) = link.to_str().and_then(|link| link.strip_prefix(tzdir))
         && !name.starts_with("GMT")
         && !name.starts_with("UTC")
-        && let Ok(index) = std::fs::read(format!("{TZDIR}tzdata.zi"))
+        && let Ok(index) = std::fs::read(format!("{tzdir}tzdata.zi"))
         && index.split(|byte| *byte == b'\n').any(|line| {
             let mut fields = line.split(|byte| *byte == b' ');
             match fields.next() {
@@ -448,9 +466,9 @@ fn system_timezone() -> Result<String, iana_time_zone::GetTimezoneError> {
             }
         })
     {
-        return Ok(name.to_owned());
+        return Some(name.to_owned());
     }
-    iana_time_zone::get_timezone()
+    None
 }
 
 #[cfg(all(not(target_family = "wasm"), not(target_os = "macos")))]

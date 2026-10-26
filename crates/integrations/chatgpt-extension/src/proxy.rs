@@ -19,10 +19,14 @@ use std::{
 };
 
 const RESPONSES: usize = 256;
+/// Frames waiting for the stdout writer before senders block, so a browser
+/// that stops reading pushes back on OpenAI's host instead of growing memory;
+/// the stdout writes the proxy replaces were synchronous.
+const OUTGOING: usize = 64;
 
 pub(crate) struct Extension {
     responses: mpsc::Receiver<Value>,
-    output: mpsc::Sender<Vec<u8>>,
+    output: mpsc::SyncSender<Vec<u8>>,
     connected: Arc<AtomicBool>,
     upstream: Option<Child>,
     prefix: String,
@@ -32,7 +36,7 @@ pub(crate) struct Extension {
 impl Extension {
     fn start(original: Option<&Path>, args: &[String], namespace: &str) -> Result<Self, Error> {
         let (sender, responses) = mpsc::sync_channel(RESPONSES);
-        let (output, outgoing) = mpsc::channel::<Vec<u8>>();
+        let (output, outgoing) = mpsc::sync_channel::<Vec<u8>>(OUTGOING);
         let connected = Arc::new(AtomicBool::new(true));
         let prefix = random_prefix(namespace)?;
         let own_prefix = prefix.clone();

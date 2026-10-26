@@ -21,15 +21,32 @@ pub enum HandEndpoint {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum HandEvent {
-    Connecting { endpoint: String },
-    Connected { endpoint: String },
-    Listening { endpoint: String },
-    BrainConnected { peer: SocketAddr },
-    Disconnected { reason: String },
-    Retrying { delay: Duration },
+    Connecting {
+        endpoint: String,
+    },
+    Connected {
+        endpoint: String,
+    },
+    Listening {
+        endpoint: String,
+    },
+    BrainConnected {
+        peer: SocketAddr,
+    },
+    Disconnected {
+        reason: String,
+    },
+    Retrying {
+        delay: Duration,
+    },
     Revoked,
     Replaced,
-    Rejected { status: u16 },
+    /// The brain refused the hand for good: `status` is the HTTP status of a
+    /// refused upgrade (401, 403, 410 or 426) or 1008 for a policy close.
+    /// `Hand::run` returns an error after it.
+    Rejected {
+        status: u16,
+    },
 }
 
 pub struct Hand {
@@ -171,12 +188,14 @@ impl Hand {
                         });
                         match dial(&target, &headers, policy).await {
                             Ok(socket) => {
-                                events(HandEvent::Connected { endpoint });
                                 let started = Instant::now();
-                                match serve(socket, &mut executor, policy).await {
-                                    Ok(()) => events(HandEvent::Disconnected {
-                                        reason: "the brain closed the connection".into(),
-                                    }),
+                                // Connected only once the brain serves the socket: it may
+                                // still refuse this runtime after the upgrade.
+                                let served = serve(socket, &mut executor, policy, || {
+                                    events(HandEvent::Connected { endpoint });
+                                })
+                                .await;
+                                match served.result {
                                     Err(issue)
                                         if issue.message()
                                             == nanocode_tool_host::attachment::ATTACHMENT_REVOKED_REASON =>
@@ -190,6 +209,24 @@ impl Hand {
                                         events(HandEvent::Replaced);
                                         return Ok(());
                                     }
+                                    // A policy close (1008) fences this runtime for good, as
+                                    // a refused upgrade does; redialing would be refused again.
+                                    result if served.close_code == Some(POLICY_CLOSE) => {
+                                        executor.reset().await;
+                                        events(HandEvent::Rejected {
+                                            status: POLICY_CLOSE,
+                                        });
+                                        let reason = result.err().map_or_else(
+                                            || "no reason".to_owned(),
+                                            |issue| issue.message().to_owned(),
+                                        );
+                                        return Err(error(format!(
+                                            "brain closed the connection with policy violation (1008): {reason}"
+                                        )));
+                                    }
+                                    Ok(()) => events(HandEvent::Disconnected {
+                                        reason: "the brain closed the connection".into(),
+                                    }),
                                     Err(issue) => events(HandEvent::Disconnected {
                                         reason: issue.to_string(),
                                     }),
@@ -258,6 +295,8 @@ impl Hand {
 }
 
 const MAX_NAME_BYTES: usize = 48;
+/// WebSocket close code 1008 (policy violation, RFC 6455 section 7.4.1).
+const POLICY_CLOSE: u16 = 1008;
 
 #[cfg(unix)]
 fn host_name() -> Result<String, CodeModeHostError> {

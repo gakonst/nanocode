@@ -12,13 +12,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError, Weak,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use nanocode_process::LastActivity;
-use nanocode_sync::{Atom, Owned, Slot};
+use nanocode_sync::{Atom, Owned, Signal, Slot};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
@@ -254,6 +254,12 @@ struct Liveness {
     origin: tokio::time::Instant,
     last_inbound_us: AtomicU64,
     probe_us: AtomicU64,
+    /// Fired by the first text frame or ping from the peer: a pong may answer
+    /// our own ping before the peer took the connection, but a peer only
+    /// sends frames or pings once it serves the socket.
+    heard: Signal,
+    /// The code of the peer's close frame, 0 before one arrives.
+    close_code: AtomicU16,
 }
 
 impl Liveness {
@@ -262,7 +268,12 @@ impl Liveness {
             origin: tokio::time::Instant::now(),
             last_inbound_us: AtomicU64::new(0),
             probe_us: AtomicU64::new(0),
+            heard: Signal::new(),
+            close_code: AtomicU16::new(0),
         })
+    }
+    fn close_code(&self) -> Option<u16> {
+        Some(self.close_code.load(Ordering::Relaxed)).filter(|code| *code != 0)
     }
     fn elapsed_us(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX)
@@ -461,14 +472,23 @@ async fn read<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
         let message = message.map_err(error)?;
         liveness.touch();
         match message {
-            Message::Text(text) => return serde_json::from_str(&text).map(Some).map_err(error),
+            Message::Text(text) => {
+                liveness.heard.fire();
+                return serde_json::from_str(&text).map(Some).map_err(error);
+            }
             Message::Close(frame) => {
+                if let Some(frame) = &frame {
+                    liveness
+                        .close_code
+                        .store(u16::from(frame.code), Ordering::Relaxed);
+                }
                 return match frame.filter(|frame| !frame.reason.is_empty()) {
                     Some(frame) => Err(error(frame.reason.as_str())),
                     None => Ok(None),
                 };
             }
-            Message::Ping(_) | Message::Pong(_) => {}
+            Message::Ping(_) => liveness.heard.fire(),
+            Message::Pong(_) => {}
             _ => return Err(error("remote code mode requires JSON text frames")),
         }
     }
@@ -1490,9 +1510,9 @@ async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     activity: HandActivity,
 ) -> Result<(), CodeModeHostError> {
     let mut executor = Executor::new(workspace.to_owned(), tools, options, activity);
-    let result = serve(socket, &mut executor, policy).await;
+    let served = serve(socket, &mut executor, policy, || {}).await;
     executor.reset().await;
-    result
+    served.result
 }
 
 struct Sessions(HashMap<String, (Arc<ToolRuntime>, CallbackCatalog)>);
@@ -1896,11 +1916,37 @@ impl Drop for Executor {
     }
 }
 
+/// How a served connection ended: its result and the code of the peer's
+/// close frame, if one arrived.
+pub(super) struct Served {
+    pub(super) result: Result<(), CodeModeHostError>,
+    pub(super) close_code: Option<u16>,
+}
+
+/// Serves one connection. `heard` runs once the peer first sends a frame or
+/// a ping, which a brain does only after it took the connection.
 pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    socket: WebSocketStream<S>,
+    executor: &mut Executor,
+    policy: SocketPolicy,
+    heard: impl FnOnce() + Send,
+) -> Served {
+    let liveness = Liveness::new();
+    let result = serve_link(socket, executor, policy, &liveness, heard).await;
+    Served {
+        result,
+        close_code: liveness.close_code(),
+    }
+}
+
+async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut socket: WebSocketStream<S>,
     executor: &mut Executor,
     policy: SocketPolicy,
+    liveness: &Arc<Liveness>,
+    heard: impl FnOnce() + Send,
 ) -> Result<(), CodeModeHostError> {
+    let mut heard = Some(heard);
     executor.connection += 1;
     let connection = executor.connection;
     let catalog = Frame::Catalog {
@@ -1915,10 +1961,9 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     };
     write(&mut socket, catalog.encode(policy.max_frame_bytes)?, policy).await?;
     let (sink, mut socket) = socket.split();
-    let liveness = Liveness::new();
     let watchdog = liveness.watch(policy.request_timeout / 2);
     tokio::pin!(watchdog);
-    let (wire, mut writer) = writer(sink, policy, Arc::clone(&liveness), Arc::default());
+    let (wire, mut writer) = writer(sink, policy, Arc::clone(liveness), Arc::default());
     executor
         .outgoing
         .limit
@@ -1932,12 +1977,17 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             executor.publish();
             tokio::select! {
                 result = &mut writer.0 => return result.map_err(error)?,
+                () = liveness.heard.wait(), if heard.is_some() => {
+                    if let Some(heard) = heard.take() {
+                        heard();
+                    }
+                },
                 Some(done) = executor.results.recv() => {
                     if let Err(issue) = executor.deliver(done) {
                         tracing::error!(%issue, "remote reply could not be encoded");
                     }
                 },
-                frame = read_live(&mut socket, &liveness, watchdog.as_mut()) => {
+                frame = read_live(&mut socket, liveness, watchdog.as_mut()) => {
                     let Some(frame) = frame? else { return Ok(()); };
                     match frame {
                         Frame::CallbackResult { id, result } => { if let Some(tx) = bus.pending.update(|pending| pending.remove(&id)).and_then(|entry| entry.reply.take()) { let _ = tx.send(result); } },

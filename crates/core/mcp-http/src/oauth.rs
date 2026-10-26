@@ -655,8 +655,16 @@ async fn discover_from_resource_metadata(
     else {
         return Ok(None);
     };
-    resource_metadata.validate_resource(base_url)?;
-    discovery.resource = Some(resource_metadata.resource.clone().unwrap_or_default());
+    // A missing or mismatched `resource` is tolerated: the server's own URL
+    // becomes the resource indicator, and its authorization servers are
+    // still used.
+    discovery.resource = match resource_metadata.validate_resource(base_url) {
+        Ok(()) => Some(resource_metadata.resource.clone().unwrap_or_default()),
+        Err(error) => {
+            tracing::debug!("ignoring protected resource metadata resource: {error}");
+            None
+        }
+    };
     if let Some(scopes) = resource_metadata
         .scopes_supported
         .clone()

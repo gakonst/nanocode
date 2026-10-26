@@ -557,6 +557,52 @@ pub(super) fn sanitized_environment(
     (environment, redactor)
 }
 
+/// The script a login shell runs so that `secret_overrides` win over its
+/// profile: a profile that sets a variable of the same name runs after the
+/// environment is applied and would replace the host's value. For POSIX
+/// shells each secret is also passed under a private name and exported again
+/// from it before the script; other shells and non-login shells read no
+/// profile this way and run the script unchanged. Names that are not shell
+/// identifiers keep only the environment.
+pub(super) fn export_secrets_after_profile<'a>(
+    script: &'a str,
+    shell: &Shell,
+    login: bool,
+    secret_overrides: &[(OsString, OsString)],
+    environment: &mut Vec<(OsString, OsString)>,
+) -> std::borrow::Cow<'a, str> {
+    if !login || !matches!(shell.name(), "zsh" | "bash" | "sh") {
+        return script.into();
+    }
+    let mut prefix = String::new();
+    for (name, value) in secret_overrides {
+        let Some(name) = name.to_str().filter(|name| is_shell_identifier(name)) else {
+            continue;
+        };
+        let private = format!("{SECRET_COPY_PREFIX}{name}");
+        environment.retain(|(candidate, _)| candidate != private.as_str());
+        environment.push((private.clone().into(), value.clone()));
+        prefix.push_str(&format!("export {name}=\"${private}\"; unset {private}; "));
+    }
+    if prefix.is_empty() {
+        return script.into();
+    }
+    // One line, so the script's line numbers are unchanged.
+    prefix.push_str(script);
+    prefix.into()
+}
+
+/// Prefix of the private copies `export_secrets_after_profile` passes.
+const SECRET_COPY_PREFIX: &str = "__NANOCODE_SECRET_";
+
+fn is_shell_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 fn normalize_environment(environment: &mut Vec<(OsString, OsString)>) {
     for (name, value) in NORMALIZED_ENVIRONMENT {
         environment.retain(|(candidate, _)| candidate != name);

@@ -319,8 +319,11 @@ fn sender_error(error: &nanocode_http::layer::Error) -> TransportError {
     }
 }
 
+/// Whether the server rejected the token sent. Any 401 counts, with or
+/// without the `WWW-Authenticate` header the spec requires, since some
+/// servers omit it.
 fn challenged(response: &Reply) -> bool {
-    response.status == StatusCode::UNAUTHORIZED && response.headers.contains_key(WWW_AUTHENTICATE)
+    response.status == StatusCode::UNAUTHORIZED
 }
 
 fn challenge_error(response: &Reply) -> Option<TransportError> {

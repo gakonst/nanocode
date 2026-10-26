@@ -159,30 +159,32 @@ impl ShellSessions {
                 .secrets
                 .as_ref()
                 .map_or_else(Vec::new, |secrets| secrets());
-            let (environment, secrets) =
+            let (mut environment, secrets) =
                 process::sanitized_environment(&self.environment, &host_secrets);
+            let login = command.login.unwrap_or(true);
+            let script = process::export_secrets_after_profile(
+                &command.script,
+                &shell,
+                login,
+                &host_secrets,
+                &mut environment,
+            );
 
             let terminations = self.terminations.load(Ordering::SeqCst);
-            let spawned = match process::spawn(
-                &command.script,
-                &workdir,
-                &shell,
-                command.login.unwrap_or(true),
-                command.tty,
-                &environment,
-            ) {
-                Ok(spawned) => spawned,
-                Err(error) => {
-                    return ExecCommandResult::failed(
-                        started_at.elapsed(),
-                        format!(
-                            "exec_command failed for `{}`: CreateProcess {{ message: {:?} }}",
-                            command.script,
-                            error.to_string()
-                        ),
-                    );
-                }
-            };
+            let spawned =
+                match process::spawn(&script, &workdir, &shell, login, command.tty, &environment) {
+                    Ok(spawned) => spawned,
+                    Err(error) => {
+                        return ExecCommandResult::failed(
+                            started_at.elapsed(),
+                            format!(
+                                "exec_command failed for `{}`: CreateProcess {{ message: {:?} }}",
+                                command.script,
+                                error.to_string()
+                            ),
+                        );
+                    }
+                };
             let launch = Launch {
                 command: command.script.clone(),
                 workdir,

@@ -25,6 +25,7 @@ nanocode-tool-contracts.workspace = true
 "nanocode-home" = { "workspace" = true }
 "chrono" = { "workspace" = true  }
 "futures-util" = { "workspace" = true }
+"http" = { "workspace" = true }
 "nanocode-code-mode" = { "workspace" = true  }
 "nanocode-tool-host" = { "workspace" = true }
 "serde" = { "workspace" = true }

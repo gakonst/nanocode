@@ -202,6 +202,27 @@ pub trait FileHost: Send + Sync {
         contents: &'a str,
     ) -> ProcessFuture<'a, Result<(), String>>;
     fn remove<'a>(&'a self, path: &'a Path) -> ProcessFuture<'a, Result<(), String>>;
+    fn read_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> ProcessFuture<'a, Result<Option<Vec<u8>>, String>> {
+        Box::pin(async move { Ok(self.read(path).await?.map(String::into_bytes)) })
+    }
+    fn write_bytes<'a>(
+        &'a self,
+        path: &'a Path,
+        bytes: &'a [u8],
+    ) -> ProcessFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let contents = std::str::from_utf8(bytes).map_err(|error| {
+                format!(
+                    "`{}` is not UTF-8 and this host writes only text: {error}",
+                    path.display()
+                )
+            })?;
+            self.write(path, contents).await
+        })
+    }
 }
 
 pub trait ProcessExecutors: Send + Sync {

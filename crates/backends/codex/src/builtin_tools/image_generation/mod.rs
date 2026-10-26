@@ -1,266 +1,65 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fmt::Display,
+    future::Future,
+    path::{Path, PathBuf},
+};
 
-use crate::client::{
-    auth::{OpenAiAuth, OpenAiAuthMode, OpenAiAuthSnapshot},
-    responses::{
-        ContentItem, FunctionOutputBody, FunctionOutputContent, ImageReference, ResponseItem,
-        valid_image_file_id,
-    },
+use crate::client::responses::{
+    ContentItem, FunctionOutputBody, FunctionOutputContent, ImageReference, ResponseItem,
+    valid_image_file_id,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use nanocode_tools::ToolDefinition;
-use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{
-    ImageDetail, ImageGenerationConfig, Tool, ToolContext, ToolInput, ToolOutput,
-    ToolOutputContent, ToolResult, image::load_for_prompt_data_url,
-};
+use super::{ImageDetail, ToolOutput, ToolOutputContent};
+
+mod host;
+#[cfg(not(target_family = "wasm"))]
+mod native;
+
+pub use host::image_generation_tool;
+#[cfg(not(target_family = "wasm"))]
+pub use native::ImageGenerationHandler;
 
 const DESCRIPTION: &str = include_str!("imagegen_description.md");
 const IMAGE_MODEL: &str = "gpt-image-2";
 const MAX_EDIT_IMAGES: usize = 5;
 const MAX_OUTPUT_HINT_BYTES: usize = 1_024;
 
-pub struct ImageGenerationHandler {
-    client: reqwest::Client,
-    generation_endpoint: String,
-    edit_endpoint: String,
-    auth: OpenAiAuth,
-    save_root: PathBuf,
-    http_layer: Option<std::sync::Arc<dyn nanocode_http::layer::Layer>>,
-}
-
-impl ImageGenerationHandler {
-    pub fn with_client(config: ImageGenerationConfig, client: reqwest::Client) -> Self {
-        let api_base_url = config.api_base_url.trim_end_matches('/');
-        Self {
-            client,
-            generation_endpoint: format!("{api_base_url}/images/generations"),
-            edit_endpoint: format!("{api_base_url}/images/edits"),
-            auth: config.auth,
-            save_root: config.save_root,
-            http_layer: config.http_layer,
-        }
-    }
-
-    async fn run(&self, input: &str, context: ToolContext<'_>) -> ToolOutput {
-        let args = match serde_json::from_str::<ImagegenArgs>(input) {
-            Ok(args) => args,
-            Err(error) => {
-                return ToolOutput::error(format!(
-                    "failed to parse image_gen.imagegen arguments: {error}"
-                ));
-            }
-        };
-        let request = match request_for_args(&args, context.history()).await {
-            Ok(request) => request,
-            Err(error) => return ToolOutput::error(error),
-        };
-        let response = match request {
-            ImageRequest::Generate(request) => {
-                self.post_image_request(&self.generation_endpoint, &request, "image generation")
-                    .await
-            }
-            ImageRequest::Edit(request) => {
-                self.post_image_request(&self.edit_endpoint, &request, "image edit")
-                    .await
-            }
-        };
-        let (response, imagegen_request_id) = match response {
-            Ok(response) => response,
-            Err(error) => return error.output(),
-        };
-        let generation_id = response
-            .generation_id
-            .as_deref()
-            .and_then(safe_image_id)
-            .or_else(|| {
-                response
-                    .data
-                    .first()
-                    .and_then(|data| data.generation_id.as_deref())
-                    .and_then(safe_image_id)
-            });
-        let metadata = image_ids(imagegen_request_id.clone(), generation_id.clone());
-        let Some(data) = response.data.into_iter().next() else {
-            return ImageRequestFailure {
-                message: "image generation returned no image data".to_owned(),
-                imagegen_request_id,
-                generation_id,
-            }
-            .output();
-        };
-        let mut structured_result = metadata.clone();
-        let mut output_items = Vec::new();
-        match (data.b64_json, data.file_id) {
-            (Some(result), None) if !result.is_empty() => {
-                let saved_path = save_result(
-                    &self.save_root,
-                    context.session_id(),
-                    context.call_id(),
-                    &result,
-                )
-                .await
-                .ok();
-                let image_url = format!("data:image/png;base64,{result}");
-                output_items.push(ToolOutputContent::InputImage {
-                    image_url: image_url.clone(),
-                    detail: ImageDetail::High,
-                });
-                structured_result["image_url"] = Value::String(image_url);
-                if let Some(output_hint) =
-                    saved_path.as_ref().and_then(|path| image_output_hint(path))
-                {
-                    output_items.push(ToolOutputContent::InputText {
-                        text: output_hint.clone(),
-                    });
-                    structured_result["output_hint"] = Value::String(output_hint);
-                }
-            }
-            (None, Some(file_id)) if valid_image_file_id(&file_id) => {
-                output_items.push(ToolOutputContent::InputImageFile {
-                    file_id: file_id.clone(),
-                    detail: ImageDetail::High,
-                });
-                structured_result["file_id"] = Value::String(file_id);
-            }
-            _ => {
-                return ImageRequestFailure {
-                    message: "image generation returned an invalid image reference".to_owned(),
-                    imagegen_request_id,
-                    generation_id,
-                }
-                .output();
-            }
-        }
-        ToolOutput::content(output_items)
-            .with_structured_result(structured_result)
-            .with_metadata(metadata)
-    }
-
-    async fn post_image_request<R: Serialize + ?Sized>(
-        &self,
-        endpoint: &str,
-        request: &R,
-        operation: &str,
-    ) -> Result<(ImageResponse, Option<String>), ImageRequestFailure> {
-        let auth = self
-            .auth
-            .snapshot()
-            .await
-            .map_err(|error| error.to_string())?;
-        let response = self.send_authorized(endpoint, request, &auth).await?;
-        let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED
-            && auth.mode() == OpenAiAuthMode::ChatGpt
-        {
-            self.auth
-                .recover_unauthorized(&auth)
-                .await
-                .map_err(|error| error.to_string())?;
-            let refreshed = self
-                .auth
-                .snapshot()
-                .await
-                .map_err(|error| error.to_string())?;
-            self.send_authorized(endpoint, request, &refreshed).await?
-        } else {
-            response
-        };
-        let status = response.status();
-        let imagegen_request_id = response
-            .headers()
-            .get("x-codex-imagegen-request-id")
-            .and_then(|value| value.to_str().ok())
-            .and_then(safe_image_id);
-        let body = response.bytes().await.map_err(|_| ImageRequestFailure {
-            message: format!("failed to read {operation} response"),
-            imagegen_request_id: imagegen_request_id.clone(),
-            generation_id: None,
-        })?;
-        let generation_id = serde_json::from_slice::<Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("generation_id")
-                    .and_then(Value::as_str)
-                    .and_then(safe_image_id)
-            });
-        if !status.is_success() {
-            return Err(ImageRequestFailure {
-                message: format!("{operation} returned HTTP {status}"),
-                imagegen_request_id,
-                generation_id,
-            });
-        }
-        let parsed = serde_json::from_slice(&body).map_err(|_| ImageRequestFailure {
-            message: format!("failed to decode {operation} response"),
-            imagegen_request_id: imagegen_request_id.clone(),
-            generation_id,
-        })?;
-        Ok((parsed, imagegen_request_id))
-    }
-
-    async fn send_authorized<R: Serialize + ?Sized>(
-        &self,
-        endpoint: &str,
-        body: &R,
-        auth: &OpenAiAuthSnapshot,
-    ) -> Result<reqwest::Response, String> {
-        let mut request = self
-            .client
-            .post(endpoint)
-            .header(USER_AGENT, concat!("nanocode/", env!("CARGO_PKG_VERSION")))
-            .header(AUTHORIZATION, format!("Bearer {}", auth.bearer()));
-        if let Some(account_id) = auth.account_id() {
-            request = request.header("ChatGPT-Account-ID", account_id);
-        }
-        if auth.is_fedramp() {
-            request = request.header("X-OpenAI-Fedramp", "true");
-        }
-        let request = request
-            .json(body)
-            .build()
-            .map_err(|error| format!("image request failed: {error}"))?;
-        nanocode_http::execute(&self.client, self.http_layer.as_deref(), request)
-            .await
-            .map_err(|error| format!("image request failed: {error}"))
-    }
-}
-
-#[async_trait::async_trait]
-impl Tool for ImageGenerationHandler {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            "image_gen__imagegen",
-            DESCRIPTION,
-            json!({
-                "type": "object",
-                "properties": {
-                    "prompt": { "type": "string" },
-                    "transparent_background": { "type": "boolean", "default": false },
-                    "referenced_image_paths": {
-                        "type": ["array", "null"],
-                        "items": {
-                            "type": "string",
-                            "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute."
-                        }
-                    },
-                    "num_last_images_to_include": {
-                        "type": ["integer", "null"]
+fn definition() -> ToolDefinition {
+    ToolDefinition::function(
+        "image_gen__imagegen",
+        DESCRIPTION,
+        json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string" },
+                "transparent_background": { "type": "boolean", "default": false },
+                "referenced_image_paths": {
+                    "type": ["array", "null"],
+                    "items": {
+                        "type": "string",
+                        "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute."
                     }
                 },
-                "required": ["prompt"],
-                "additionalProperties": false
-            }),
-        )
-    }
+                "num_last_images_to_include": {
+                    "type": ["integer", "null"]
+                }
+            },
+            "required": ["prompt"],
+            "additionalProperties": false
+        }),
+    )
+}
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input = input.function_json()?;
-        Ok(self.run(input.get(), context).await)
-    }
+fn parse_args(input: &str) -> Result<ImagegenArgs, ToolOutput> {
+    serde_json::from_str::<ImagegenArgs>(input).map_err(|error| {
+        ToolOutput::error(format!(
+            "failed to parse image_gen.imagegen arguments: {error}"
+        ))
+    })
 }
 
 #[derive(Deserialize)]
@@ -354,16 +153,125 @@ fn image_ids(request_id: Option<String>, generation_id: Option<String>) -> Value
     result
 }
 
+fn decode_response(
+    success: bool,
+    status: impl Display,
+    body: &[u8],
+    imagegen_request_id: Option<String>,
+    operation: &str,
+) -> Result<(ImageResponse, Option<String>), ImageRequestFailure> {
+    let generation_id = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("generation_id")
+                .and_then(Value::as_str)
+                .and_then(safe_image_id)
+        });
+    if !success {
+        return Err(ImageRequestFailure {
+            message: format!("{operation} returned HTTP {status}"),
+            imagegen_request_id,
+            generation_id,
+        });
+    }
+    let parsed = serde_json::from_slice(body).map_err(|_| ImageRequestFailure {
+        message: format!("failed to decode {operation} response"),
+        imagegen_request_id: imagegen_request_id.clone(),
+        generation_id,
+    })?;
+    Ok((parsed, imagegen_request_id))
+}
+
+async fn response_output<F, Fut>(
+    response: ImageResponse,
+    imagegen_request_id: Option<String>,
+    save_root: &Path,
+    session_id: &str,
+    call_id: &str,
+    write: F,
+) -> ToolOutput
+where
+    F: FnOnce(PathBuf, Vec<u8>) -> Fut,
+    Fut: Future<Output = Result<PathBuf, String>>,
+{
+    let generation_id = response
+        .generation_id
+        .as_deref()
+        .and_then(safe_image_id)
+        .or_else(|| {
+            response
+                .data
+                .first()
+                .and_then(|data| data.generation_id.as_deref())
+                .and_then(safe_image_id)
+        });
+    let metadata = image_ids(imagegen_request_id.clone(), generation_id.clone());
+    let Some(data) = response.data.into_iter().next() else {
+        return ImageRequestFailure {
+            message: "image generation returned no image data".to_owned(),
+            imagegen_request_id,
+            generation_id,
+        }
+        .output();
+    };
+    let mut structured_result = metadata.clone();
+    let mut output_items = Vec::new();
+    match (data.b64_json, data.file_id) {
+        (Some(result), None) if !result.is_empty() => {
+            let saved_path = save_result(save_root, session_id, call_id, &result, write)
+                .await
+                .ok();
+            let image_url = format!("data:image/png;base64,{result}");
+            output_items.push(ToolOutputContent::InputImage {
+                image_url: image_url.clone(),
+                detail: ImageDetail::High,
+            });
+            structured_result["image_url"] = Value::String(image_url);
+            if let Some(output_hint) = saved_path.as_ref().and_then(|path| image_output_hint(path))
+            {
+                output_items.push(ToolOutputContent::InputText {
+                    text: output_hint.clone(),
+                });
+                structured_result["output_hint"] = Value::String(output_hint);
+            }
+        }
+        (None, Some(file_id)) if valid_image_file_id(&file_id) => {
+            output_items.push(ToolOutputContent::InputImageFile {
+                file_id: file_id.clone(),
+                detail: ImageDetail::High,
+            });
+            structured_result["file_id"] = Value::String(file_id);
+        }
+        _ => {
+            return ImageRequestFailure {
+                message: "image generation returned an invalid image reference".to_owned(),
+                imagegen_request_id,
+                generation_id,
+            }
+            .output();
+        }
+    }
+    ToolOutput::content(output_items)
+        .with_structured_result(structured_result)
+        .with_metadata(metadata)
+}
+
 #[derive(Debug, PartialEq)]
 enum ImageRequest {
     Generate(ImageGenerationRequest),
     Edit(ImageEditRequest),
 }
 
-async fn request_for_args(
+async fn request_for_args<F, Fut>(
     args: &ImagegenArgs,
     history: &[ResponseItem],
-) -> Result<ImageRequest, String> {
+    local_image_url: F,
+) -> Result<ImageRequest, String>
+where
+    F: Fn(PathBuf) -> Fut,
+    Fut: Future<Output = Result<String, String>>,
+{
     let background = if args.transparent_background {
         "transparent"
     } else {
@@ -445,32 +353,6 @@ async fn request_for_args(
     }))
 }
 
-async fn local_image_url(path: PathBuf) -> Result<String, String> {
-    let bytes = tokio::fs::read(&path).await.map_err(|error| {
-        format!(
-            "unable to read referenced image at `{}`: {error}",
-            path.display()
-        )
-    })?;
-    let display_path = path.clone();
-    tokio::task::spawn_blocking(move || {
-        load_for_prompt_data_url(&path, bytes, ImageDetail::Original)
-    })
-    .await
-    .map_err(|error| {
-        format!(
-            "unable to process referenced image at `{}`: {error}",
-            display_path.display()
-        )
-    })?
-    .map_err(|error| {
-        format!(
-            "unable to process referenced image at `{}`: {error}",
-            display_path.display()
-        )
-    })
-}
-
 fn recent_images(history: &[ResponseItem], count: usize) -> Vec<ImageReference> {
     let mut images = Vec::with_capacity(count);
     'history: for item in history.iter().rev() {
@@ -528,26 +410,21 @@ fn content_image(item: &ContentItem) -> Option<ImageReference> {
     }
 }
 
-async fn save_result(
+async fn save_result<F, Fut>(
     save_root: &Path,
     session_id: &str,
     call_id: &str,
     result: &str,
-) -> Result<PathBuf, String> {
+    write: F,
+) -> Result<PathBuf, String>
+where
+    F: FnOnce(PathBuf, Vec<u8>) -> Fut,
+    Fut: Future<Output = Result<PathBuf, String>>,
+{
     let bytes = BASE64_STANDARD
         .decode(result.trim().as_bytes())
         .map_err(|error| format!("generated image was not valid base64: {error}"))?;
-    let path = artifact_path(save_root, session_id, call_id);
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("generated image path `{}` has no parent", path.display()))?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(|error| format!("unable to create `{}`: {error}", parent.display()))?;
-    tokio::fs::write(&path, bytes)
-        .await
-        .map_err(|error| format!("unable to write `{}`: {error}", path.display()))?;
-    Ok(path)
+    write(artifact_path(save_root, session_id, call_id), bytes).await
 }
 
 fn artifact_path(save_root: &Path, session_id: &str, call_id: &str) -> PathBuf {

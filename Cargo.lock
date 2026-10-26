@@ -3228,6 +3228,7 @@ dependencies = [
  "base64-simd",
  "chrono",
  "futures-util",
+ "http",
  "iana-time-zone",
  "image",
  "nanocode-agent-config",

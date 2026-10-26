@@ -1,13 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use nanocode_tools::ToolDefinition;
-use serde::Deserialize;
-use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::{
-    ImageDetail, StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolOutputContent,
-    ToolResult,
+    super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult},
+    host::{DATA_URL_PREFIX, ViewImageArguments, detail, output, resolve},
 };
 
 pub(crate) struct ViewImageHandler {
@@ -43,14 +41,9 @@ impl Tool for ViewImageHandler {
 
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
         let arguments = input.decode_json::<ViewImageArguments>()?;
-        let detail = match arguments.detail.as_deref() {
-            None | Some("high") => ImageDetail::High,
-            Some("original") => ImageDetail::Original,
-            Some(detail) => {
-                return Ok(ToolOutput::error(format!(
-                    "view_image.detail only supports `high` or `original`; omit `detail` for default high resized behavior, got `{detail}`"
-                )));
-            }
+        let detail = match detail(arguments.detail.as_deref()) {
+            Ok(detail) => detail,
+            Err(error) => return Ok(error),
         };
         let path = resolve(&self.workspace, Path::new(&arguments.path));
         let mut file = match tokio::fs::File::open(&path).await {
@@ -99,24 +92,10 @@ impl Tool for ViewImageHandler {
                 }
             }
         };
-
-        let mut image_url = String::with_capacity(
-            DATA_URL_PREFIX.len() + base64_simd::STANDARD.encoded_length(bytes.len()),
-        );
-        image_url.push_str(DATA_URL_PREFIX);
-        base64_simd::STANDARD.encode_append(bytes, &mut image_url);
-        Ok(ToolOutput::content(vec![ToolOutputContent::InputImage {
-            image_url: image_url.clone(),
-            detail,
-        }])
-        .with_structured_result(json!({
-            "image_url": image_url,
-            "detail": detail,
-        })))
+        Ok(output(&bytes, detail))
     }
 }
 
-const DATA_URL_PREFIX: &str = "data:application/octet-stream;base64,";
 const DATA_URL_PREFIX_BYTES: u64 = DATA_URL_PREFIX.len() as u64;
 const VIEW_IMAGE_WIRE_COPIES: u64 = 2;
 const VIEW_IMAGE_WIRE_HEADROOM_BYTES: u64 = 4 * 1024;
@@ -197,20 +176,4 @@ fn read_error(path: &Path, error: std::io::Error) -> ToolOutput {
         "unable to read image at `{}`: {error}",
         path.display()
     ))
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ViewImageArguments {
-    path: String,
-    #[serde(default)]
-    detail: Option<String>,
-}
-
-fn resolve(workspace: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_owned()
-    } else {
-        workspace.join(path)
-    }
 }

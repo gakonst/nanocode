@@ -1183,6 +1183,7 @@ impl Tool for CallbackTool {
             context,
             hand: None,
             compact: true,
+            output_prefix: true,
         })
         .await
     }
@@ -1215,6 +1216,7 @@ impl HandCalls for HandCallbacks {
                 context,
                 hand: Some(hand.into()),
                 compact: true,
+                output_prefix: true,
             })
             .await
             .unwrap_or_else(|error| ToolOutput::error(error.to_string()))
@@ -1941,7 +1943,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         Frame::CallbackResult { id, result } => { if let Some(tx) = bus.pending.update(|pending| pending.remove(&id)).and_then(|entry| entry.reply.take()) { let _ = tx.send(result); } },
                         Frame::Ack { ids } => { for id in ids { executor.retained.remove(&id); } },
                         Frame::Resume { pending } => executor.resume(&pending)?,
-                        Frame::Request { id, operation, max_frame_bytes, compact, resumable } => {
+                        Frame::Request { id, operation, max_frame_bytes, compact, output_prefix, resumable } => {
                             if let Some(bytes) = max_frame_bytes { outgoing.limit.fetch_min(bytes, Ordering::Relaxed); }
                             executor.resumable |= resumable;
                             let work = Arc::new(Pending::new(id, &operation));
@@ -2049,7 +2051,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                     let Some((runtime, catalog, turn)) = runtime else {
                                         return match operation { RemoteOperation::Execute { .. } | RemoteOperation::Wait { .. } | RemoteOperation::Call { .. } => Err(error("this hand has no cells for the session: it restarted or reconnected since the cell started, so the cell's outcome is unknown")), _ => Ok(None) };
                                     };
-                                    let mut observer = Observer { id, outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact) };
+                                    let mut observer = Observer { id, outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact).output_prefix(output_prefix) };
                                     match operation {
                                         RemoteOperation::Execute { source, context, .. } => {
                                             let mut origin = CallbackOriginGuard { catalog:catalog.clone(), origin:context.call_id.clone(), retained:false };
@@ -2074,7 +2076,12 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                         RemoteOperation::Call { name, input, context, .. } => {
                                             let owned = context.owned();
                                             tokio::select! {
-                                                output = runtime.execute_nested_tool(&name, input, owned.as_context()) => output_to_wire(output, compact).map(Some),
+                                                output = runtime.execute_nested_tool(&name, input, owned.as_context()) => encode_output(output, compact, output_prefix).and_then(|value| {
+                                                    if resumable && value.get("output_prefix").is_some() {
+                                                        full = Some(output_to_wire(output_from_wire(value.clone())?, compact)?);
+                                                    }
+                                                    Ok(Some(value))
+                                                }),
                                                 () = cancelled.cancelled() => Err(error(CALL_CANCELLED)),
                                             }
                                         },

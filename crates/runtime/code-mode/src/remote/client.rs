@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::{
     HAND_RESTARTED, NOT_RECEIVED, ReceivedCalls, RemoteCodeModeHost, RemoteContext,
-    RemoteFrame as Frame, RemoteOperation, RemoteTransport, output_to_wire,
+    RemoteFrame as Frame, RemoteOperation, RemoteTransport, encode_output,
 };
 use crate::{
     Tool, ToolDefinition, ToolInput,
@@ -427,10 +427,18 @@ impl Client {
                 context,
                 hand,
                 compact,
+                output_prefix,
             } => {
-                return Ok(Some(
-                    self.callback(id, name, input, freeform, context, hand, compact),
-                ));
+                return Ok(Some(self.callback(
+                    id,
+                    name,
+                    input,
+                    freeform,
+                    context,
+                    hand,
+                    compact,
+                    output_prefix,
+                )));
             }
             _ => return Err(error("unexpected runner frame")),
         }
@@ -447,6 +455,7 @@ impl Client {
         context: RemoteContext,
         hand: Option<String>,
         compact: bool,
+        output_prefix: bool,
     ) -> HostFuture<'static, ()> {
         let key = (
             context.session_id.clone(),
@@ -499,7 +508,7 @@ impl Client {
                         let owned = authoritative.owned();
                         let mut output = hands.call(&hand, &name, input, owned.as_context()).await;
                         hold(&mut output);
-                        return output_to_wire(output, compact);
+                        return encode_output(output, compact, output_prefix);
                     }
                     let Some((Some(tool), mut authoritative)) = local else {
                         return Err(error(format!("brain callback tool `{name}` unavailable")));
@@ -521,7 +530,7 @@ impl Client {
                         .await
                         .map_err(error)?;
                     hold(&mut output);
-                    output_to_wire(output, compact)
+                    encode_output(output, compact, output_prefix)
                 },
                 registration,
             );
@@ -622,6 +631,7 @@ impl Client {
             operation,
             max_frame_bytes: self.max_frame_bytes,
             compact: true,
+            output_prefix: true,
             resumable: self.resumes.is_some(),
         }
     }

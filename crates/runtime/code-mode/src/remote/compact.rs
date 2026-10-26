@@ -33,7 +33,37 @@ fn encodes(text: &str, value: &Value) -> bool {
                 .is_ok_and(|encoded| encoded == text))
 }
 
+fn prefix<'a>(text: &'a str, structured: &Value) -> Option<&'a str> {
+    let output = structured.get("output")?.as_str().filter(|output| !output.is_empty())?;
+    text.strip_suffix(output)
+}
+
+fn joined(prefix: Value, structured: Option<&Value>) -> Result<String, CodeModeHostError> {
+    match (
+        prefix,
+        structured
+            .and_then(|structured| structured.get("output"))
+            .and_then(Value::as_str),
+    ) {
+        (Value::String(mut text), Some(output)) => {
+            text.push_str(output);
+            Ok(text)
+        }
+        _ => Err(error(
+            "output_prefix needs a string prefix and a structured result with a string output",
+        )),
+    }
+}
+
 pub fn output_to_wire(output: ToolOutput, compact: bool) -> Result<Value, CodeModeHostError> {
+    encode_output(output, compact, false)
+}
+
+pub fn encode_output(
+    output: ToolOutput,
+    compact: bool,
+    output_prefix: bool,
+) -> Result<Value, CodeModeHostError> {
     let mut value = serde_json::to_value(output.into_wire().map_err(error)?).map_err(error)?;
     if let Some(fields) = value.as_object_mut() {
         if fields.get("structured_result") == fields.get("output") {
@@ -42,9 +72,24 @@ pub fn output_to_wire(output: ToolOutput, compact: bool) -> Result<Value, CodeMo
             && let (Some(Value::String(text)), Some(structured)) =
                 (fields.get("output"), fields.get("structured_result"))
             && !structured.is_null()
-            && encodes(text, structured)
         {
-            fields.remove("output");
+            let head = if encodes(text, structured) {
+                Some(None)
+            } else if output_prefix {
+                prefix(text, structured).map(|head| Some(head.to_owned()))
+            } else {
+                None
+            };
+            match head {
+                Some(None) => {
+                    fields.remove("output");
+                }
+                Some(Some(head)) => {
+                    fields.remove("output");
+                    fields.insert("output_prefix".into(), Value::String(head));
+                }
+                None => {}
+            }
         }
     }
     Ok(value)
@@ -53,10 +98,14 @@ pub fn output_to_wire(output: ToolOutput, compact: bool) -> Result<Value, CodeMo
 pub fn output_from_wire(mut value: Value) -> Result<ToolOutput, CodeModeHostError> {
     if let Some(fields) = value.as_object_mut()
         && !fields.contains_key("output")
-        && let Some(structured) = fields.get("structured_result")
     {
-        let text = serde_json::to_string(structured).map_err(error)?;
-        fields.insert("output".into(), Value::String(text));
+        if let Some(head) = fields.remove("output_prefix") {
+            let text = joined(head, fields.get("structured_result"))?;
+            fields.insert("output".into(), Value::String(text));
+        } else if let Some(structured) = fields.get("structured_result") {
+            let text = serde_json::to_string(structured).map_err(error)?;
+            fields.insert("output".into(), Value::String(text));
+        }
     }
     ToolOutput::from_wire(serde_json::from_value::<ToolOutputWire>(value).map_err(error)?)
         .map_err(error)
@@ -65,6 +114,7 @@ pub fn output_from_wire(mut value: Value) -> Result<ToolOutput, CodeModeHostErro
 #[derive(Default)]
 pub struct SentCalls {
     compact: bool,
+    output_prefix: bool,
     started: HashSet<String>,
     completed: HashSet<String>,
 }
@@ -76,6 +126,12 @@ impl SentCalls {
             compact,
             ..Self::default()
         }
+    }
+
+    #[must_use]
+    pub const fn output_prefix(mut self, output_prefix: bool) -> Self {
+        self.output_prefix = output_prefix;
+        self
     }
 
     #[must_use]
@@ -141,8 +197,17 @@ impl SentCalls {
         }
         let output = serde_json::to_value(&call.output).unwrap_or(Value::Null);
         if output != call.structured_result {
+            let head = match &call.output {
+                ToolOutputBody::Text(text) if self.output_prefix => {
+                    prefix(text, &call.structured_result)
+                }
+                _ => None,
+            };
             if matches!(&call.output, ToolOutputBody::Text(text) if encodes(text, &call.structured_result))
             {
+                fields.insert("structured_result".into(), call.structured_result.clone());
+            } else if let Some(head) = head {
+                fields.insert("output_prefix".into(), Value::String(head.to_owned()));
                 fields.insert("structured_result".into(), call.structured_result.clone());
             } else {
                 fields.insert("output".into(), output);
@@ -177,6 +242,11 @@ fn call_id(fields: &Map<String, Value>) -> String {
 }
 
 fn expand_result(fields: &mut Map<String, Value>) -> Result<(), CodeModeHostError> {
+    if let Some(head) = fields.remove("output_prefix") {
+        let text = joined(head, fields.get("structured_result"))?;
+        fields.insert("output".into(), Value::String(text));
+        return Ok(());
+    }
     match (fields.get("output"), fields.get("structured_result")) {
         (Some(_), Some(_)) => {}
         (Some(output), None) => {

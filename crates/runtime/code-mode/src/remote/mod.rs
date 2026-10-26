@@ -15,7 +15,7 @@ pub use client::{
     LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery, RemoteLink,
     ResumedReply,
 };
-pub use compact::{ReceivedCalls, SentCalls, output_from_wire, output_to_wire};
+pub use compact::{ReceivedCalls, SentCalls, encode_output, output_from_wire, output_to_wire};
 pub use executors::{
     CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
 };
@@ -551,6 +551,8 @@ pub enum RemoteFrame {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         compact: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        output_prefix: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         resumable: bool,
     },
     Reply {
@@ -571,6 +573,8 @@ pub enum RemoteFrame {
         hand: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         compact: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        output_prefix: bool,
     },
     CallbackCancel {
         id: u64,

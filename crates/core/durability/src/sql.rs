@@ -218,6 +218,7 @@ const INSERT_RECORD: Dialects = [
     "INSERT INTO blobs SELECT CAST(?7 AS INTEGER), ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 ON CONFLICT DO NOTHING",
     "INSERT INTO blobs (id, state_id, key, value) SELECT CAST($7::text AS BIGINT), $1::text, $2::text, $3::text WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $4::text AND fence = $5::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $6::text ON CONFLICT DO NOTHING",
 ];
+const INSERT_RECORDS: &str = "INSERT INTO blobs (id, state_id, key, value) SELECT CAST(staged.value ->> 0 AS BIGINT), $1::text, staged.value ->> 1, staged.value ->> 2 FROM json_array_elements($5::text::json) AS staged (value) WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ON CONFLICT DO NOTHING";
 const REPLACE: Dialects = [
     "INSERT INTO states SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 AND NOT EXISTS (SELECT 1 FROM json_each(?7) AS staged LEFT JOIN blobs ON blobs.id = CAST(json_extract(staged.value, '$[0]') AS INTEGER) WHERE blobs.state_id IS NOT ?1 OR blobs.key IS NOT json_extract(staged.value, '$[1]')) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload RETURNING revision",
     "INSERT INTO states (id, revision, payload) SELECT $1::text, $2::text, $3::text WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $4::text AND fence = $5::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $6::text AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements($7::text::jsonb) AS staged (value) LEFT JOIN blobs ON blobs.id = CAST(staged.value ->> 0 AS BIGINT) WHERE blobs.state_id IS DISTINCT FROM $1::text OR blobs.key IS DISTINCT FROM staged.value ->> 1) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload WHERE states.revision = $6::text RETURNING revision",
@@ -297,6 +298,7 @@ struct Replacement<'a> {
     state_id: &'a str,
     owner: &'a OwnerToken,
     expected_revision: u64,
+    revision: u64,
     payload: &'a str,
     records: &'a [StoreRecord],
 }
@@ -307,45 +309,80 @@ struct Counters {
     revision: String,
     ids: Vec<String>,
     staged: String,
+    values: Option<String>,
 }
 
 impl Replacement<'_> {
     fn counters(&self) -> Result<Counters, StoreError> {
-        let revision = self.expected_revision.checked_add(1).ok_or_else(|| {
-            StoreError::NotCommitted("SQL durability revision overflow".to_owned())
-        })?;
+        if self.revision <= self.expected_revision {
+            return Err(StoreError::NotCommitted(format!(
+                "a replacement of revision {} must advance it, not set {}",
+                self.expected_revision, self.revision
+            )));
+        }
         let keys = self
             .records
             .iter()
             .map(|record| record.key.clone())
             .collect::<Vec<_>>();
+        let ids = keys
+            .iter()
+            .map(|key| row_id(self.state_id, key))
+            .collect::<Vec<_>>();
+        let values = (self.dialect == SqlDialect::Postgres && !self.records.is_empty())
+            .then(|| {
+                serde_json::to_string(
+                    &self
+                        .records
+                        .iter()
+                        .zip(&ids)
+                        .map(|(record, id)| [id.as_str(), &record.key, &record.value])
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .transpose()
+            .map_err(|error| StoreError::NotCommitted(format!("records: {error}")))?;
         Ok(Counters {
             fence: self.owner.fence().to_string(),
             expected: self.expected_revision.to_string(),
-            revision: revision.to_string(),
-            ids: keys.iter().map(|key| row_id(self.state_id, key)).collect(),
+            revision: self.revision.to_string(),
             staged: located(self.state_id, &keys)
                 .map_err(|error| StoreError::NotCommitted(error.to_string()))?,
+            ids,
+            values,
         })
     }
 
     fn statements<'a>(&'a self, counters: &'a Counters, statements: &mut Vec<SqlStatement<'a>>) {
         let owner = self.owner.owner_id().as_str();
-        statements.extend(self.records.iter().zip(&counters.ids).map(|(record, id)| {
-            statement(
-                self.dialect,
-                &INSERT_RECORD,
-                vec![
+        if let Some(values) = &counters.values {
+            statements.push(SqlStatement {
+                sql: INSERT_RECORDS,
+                params: vec![
                     self.state_id,
-                    &record.key,
-                    &record.value,
                     owner,
                     &counters.fence,
                     &counters.expected,
-                    id,
+                    values,
                 ],
-            )
-        }));
+            });
+        } else {
+            statements.extend(self.records.iter().zip(&counters.ids).map(|(record, id)| {
+                statement(
+                    self.dialect,
+                    &INSERT_RECORD,
+                    vec![
+                        self.state_id,
+                        &record.key,
+                        &record.value,
+                        owner,
+                        &counters.fence,
+                        &counters.expected,
+                        id,
+                    ],
+                )
+            }));
+        }
         statements.push(statement(
             self.dialect,
             &REPLACE,
@@ -552,7 +589,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
 
     async fn replace_state(&mut self, replacement: Replacement<'_>) -> Result<u64, StoreError> {
         let counters = replacement.counters()?;
-        let mut statements = Vec::with_capacity(replacement.records.len() + 1);
+        let mut statements = Vec::with_capacity(counters.ids.len() + 1);
         replacement.statements(&counters, &mut statements);
         let results = self.transaction("replace", statements).await?;
         match Replacement::replaced(&results)? {
@@ -586,6 +623,9 @@ impl<H: Sql + ?Sized> SqlStore<H> {
                     state_id: &commit.state_id,
                     owner: &commit.owner,
                     expected_revision: commit.expected_revision,
+                    revision: commit.expected_revision.checked_add(1).ok_or_else(|| {
+                        StoreError::NotCommitted("SQL durability revision overflow".to_owned())
+                    })?,
                     payload: &commit.payload,
                     records: &commit.records,
                 };
@@ -689,14 +729,45 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
         records: &'a [StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         let dialect = self.host.dialect();
-        Box::pin(self.replace_state(Replacement {
-            dialect,
-            state_id,
-            owner,
-            expected_revision,
-            payload,
-            records,
-        }))
+        Box::pin(async move {
+            self.replace_state(Replacement {
+                dialect,
+                state_id,
+                owner,
+                expected_revision,
+                revision: expected_revision.checked_add(1).ok_or_else(|| {
+                    StoreError::NotCommitted("SQL durability revision overflow".to_owned())
+                })?,
+                payload,
+                records,
+            })
+            .await
+        })
+    }
+
+    fn replace_to<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        expected_revision: u64,
+        revision: u64,
+        payload: &'a str,
+        records: &'a [StoreRecord],
+    ) -> StoreFuture<'a, Result<Option<u64>, StoreError>> {
+        let dialect = self.host.dialect();
+        Box::pin(async move {
+            self.replace_state(Replacement {
+                dialect,
+                state_id,
+                owner,
+                expected_revision,
+                revision,
+                payload,
+                records,
+            })
+            .await
+            .map(Some)
+        })
     }
 
     fn commit_many(

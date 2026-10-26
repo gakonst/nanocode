@@ -14,8 +14,8 @@ description = "Postgres durability over a host's sqlx pool or transaction"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-durability-core.workspace = true
+nanocode-sync.workspace = true
 sqlx.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

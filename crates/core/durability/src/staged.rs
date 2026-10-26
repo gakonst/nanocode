@@ -65,6 +65,21 @@ impl StagedWrites {
                 .into_iter()
                 .map(|(key, value)| StoreRecord { key, value })
                 .collect();
+            if let Some(payload) = staged.payloads.last()
+                && store
+                    .replace_to(
+                        &state_id,
+                        &acquired.owner,
+                        staged.base_revision,
+                        staged.revision,
+                        payload,
+                        &records,
+                    )
+                    .await?
+                    .is_some()
+            {
+                continue;
+            }
             let mut revision = staged.base_revision;
             for payload in &staged.payloads {
                 revision = store

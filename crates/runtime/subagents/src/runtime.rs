@@ -2666,9 +2666,9 @@ impl Registry {
             .hydrate(store.as_ref(), root_session_id)
             .await?;
         let mut agents = journal.agents;
-        for (id, key) in journal.agent_records {
-            agents.push(durable::load_agent(store.as_ref(), root_session_id, id, &key).await?);
-        }
+        agents.extend(
+            durable::load_agents(store.as_ref(), root_session_id, journal.agent_records).await?,
+        );
         agents.sort_by_key(|agent| agent.descriptor.id);
         let spawning_turns = agents
             .iter()

@@ -270,6 +270,34 @@ impl ChildJournalStore for SharedJournal {
         false
     }
 
+    fn load_records(&self, keys: Vec<String>) -> BackendFuture<std::io::Result<Vec<String>>> {
+        let mut store = self.store.clone();
+        let state_id = Arc::clone(&self.state_id);
+        let fallback = keys
+            .iter()
+            .map(|key| self.load_record(key.clone()))
+            .collect::<Vec<_>>();
+        Box::pin(async move {
+            let wanted = keys
+                .iter()
+                .map(|key| EncodedPayload::by_key(key))
+                .collect::<Vec<_>>();
+            if let Ok(loaded) = EncodedPayload::load_many(&wanted, &mut store, &state_id).await
+                && let Ok(records) = loaded
+                    .iter()
+                    .map(|payload| payload.json().map(str::to_owned))
+                    .collect::<Result<Vec<_>, _>>()
+            {
+                return Ok(records);
+            }
+            let mut records = Vec::with_capacity(fallback.len());
+            for load in fallback {
+                records.push(load.await?);
+            }
+            Ok(records)
+        })
+    }
+
     fn load_record(&self, key: String) -> BackendFuture<std::io::Result<String>> {
         let mut store = self.store.clone();
         let state_id = Arc::clone(&self.state_id);

@@ -8,6 +8,7 @@ mod child_journal;
 mod format;
 mod memory;
 mod paged;
+mod record_cache;
 mod session;
 mod shared_store;
 mod state;
@@ -26,6 +27,7 @@ pub use catalog::{
 pub use child_journal::{JournalClaim, JournalSeed};
 pub use format::{AdmittedTurn, CheckpointFormat, FormatFuture};
 pub use memory::MemoryStore;
+pub use record_cache::{CachedStore, RecordCache};
 pub use nanocode_durability_core::{
     BlobKey, BlobStore, BlobUrl, Committed, EncodedPayload, Error, EventCursor, EventHit,
     EventHits, EventOrder, EventPage, EventQuery, EventRange, IndexedState, KeyValue,

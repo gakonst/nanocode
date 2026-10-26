@@ -160,6 +160,20 @@ pub trait ChildJournalStore: Send + Sync + 'static {
 
     fn load_record(&self, key: String) -> BackendFuture<std::io::Result<String>>;
 
+    fn load_records(&self, keys: Vec<String>) -> BackendFuture<std::io::Result<Vec<String>>> {
+        let loads = keys
+            .into_iter()
+            .map(|key| self.load_record(key))
+            .collect::<Vec<_>>();
+        Box::pin(async move {
+            let mut records = Vec::with_capacity(loads.len());
+            for load in loads {
+                records.push(load.await?);
+            }
+            Ok(records)
+        })
+    }
+
     fn record_child(&self, _checkpoint: SessionCheckpoint) -> BackendFuture<std::io::Result<()>> {
         Box::pin(async { Ok(()) })
     }

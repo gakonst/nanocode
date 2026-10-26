@@ -3407,6 +3407,7 @@ dependencies = [
  "nanocode-agent-core",
  "nanocode-durability-core",
  "nanocode-platform",
+ "nanocode-sync",
  "serde",
  "serde_json",
  "tokio",

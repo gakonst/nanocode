@@ -61,6 +61,20 @@ pub trait SubagentStore: Send + Sync {
         root_session_id: &'a str,
         key: &'a str,
     ) -> SubagentStoreFuture<'a, std::io::Result<String>>;
+
+    fn load_records<'a>(
+        &'a self,
+        root_session_id: &'a str,
+        keys: Vec<String>,
+    ) -> SubagentStoreFuture<'a, std::io::Result<Vec<String>>> {
+        Box::pin(async move {
+            let mut records = Vec::with_capacity(keys.len());
+            for key in &keys {
+                records.push(self.load_record(root_session_id, key).await?);
+            }
+            Ok(records)
+        })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -433,21 +447,79 @@ fn encode_agent(
     Ok(key)
 }
 
-pub(super) async fn load_agent(
+pub(super) async fn load_agents(
     store: &dyn SubagentStore,
     root_session_id: &str,
+    agents: Vec<(AgentId, Arc<str>)>,
+) -> std::io::Result<Vec<PersistedAgent>> {
+    let keys = agents
+        .iter()
+        .map(|(_, key)| key.to_string())
+        .collect::<Vec<_>>();
+    let records = verified(store, root_session_id, keys).await?;
+    let records = agents
+        .iter()
+        .zip(&records)
+        .map(|((_, key), json)| {
+            serde_json::from_str::<AgentRecord>(json).map_err(|error| {
+                std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
+            })
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let profiles = verified(
+        store,
+        root_session_id,
+        records
+            .iter()
+            .map(|record| record.profile.to_string())
+            .collect(),
+    )
+    .await?;
+    agents
+        .into_iter()
+        .zip(records)
+        .zip(profiles)
+        .map(|(((id, key), record), profile)| {
+            let profile = serde_json::from_str(&profile).map_err(|error| {
+                std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
+            })?;
+            agent_from(id, &key, record, profile)
+        })
+        .collect()
+}
+
+async fn verified(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    keys: Vec<String>,
+) -> std::io::Result<Vec<String>> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let records = store.load_records(root_session_id, keys.clone()).await?;
+    if records.len() != keys.len() {
+        return Err(std::io::Error::other(format!(
+            "subagent journal store answered {} of {} records",
+            records.len(),
+            keys.len()
+        )));
+    }
+    for (key, json) in keys.iter().zip(&records) {
+        if !key_matches(json, key) {
+            return Err(std::io::Error::other(format!(
+                "subagent journal record {key} does not match its content"
+            )));
+        }
+    }
+    Ok(records)
+}
+
+fn agent_from(
     id: AgentId,
     key: &str,
+    record: AgentRecord,
+    profile: AgentProfile,
 ) -> std::io::Result<PersistedAgent> {
-    let invalid = |error: serde_json::Error| {
-        std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
-    };
-    let record: AgentRecord =
-        serde_json::from_str(&load_verified(store, root_session_id, key).await?)
-            .map_err(invalid)?;
-    let profile: AgentProfile =
-        serde_json::from_str(&load_verified(store, root_session_id, &record.profile).await?)
-            .map_err(invalid)?;
     if profile.descriptor.id != id {
         return Err(std::io::Error::other(format!(
             "subagent journal record {key} does not describe agent {id}"
@@ -954,6 +1026,14 @@ impl SubagentStore for JournalStore {
         key: &'a str,
     ) -> SubagentStoreFuture<'a, std::io::Result<String>> {
         self.0.load_record(key.to_owned())
+    }
+
+    fn load_records<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+        keys: Vec<String>,
+    ) -> SubagentStoreFuture<'a, std::io::Result<Vec<String>>> {
+        self.0.load_records(keys)
     }
 
     fn record_session<'a>(

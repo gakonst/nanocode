@@ -458,6 +458,12 @@ impl<H: Sql + ?Sized> SqlStore<H> {
 
     pub const FORMAT: u32 = MIGRATIONS.len() as u32;
 
+    #[must_use]
+    pub const fn migrated(mut self) -> Self {
+        self.ready = true;
+        self
+    }
+
     pub async fn migrate(&mut self) -> Result<(), StoreError> {
         migrate_format(&*self.host, "records", &MIGRATIONS).await?;
         self.ready = true;

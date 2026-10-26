@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
         mpsc as std_mpsc,
     },
@@ -24,6 +24,7 @@ pub struct EmbeddedHost {
     command_tx: std_mpsc::Sender<HostCommand>,
     events: mpsc::UnboundedReceiver<RuntimeEvent>,
     interrupted: Arc<AtomicBool>,
+    startup: Arc<OnceLock<String>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -56,24 +57,30 @@ impl EmbeddedHost {
     pub fn spawn() -> Result<Self, String> {
         let (command_tx, command_rx) = std_mpsc::channel();
         let (event_tx, events) = mpsc::unbounded_channel();
-        let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
         let interrupted = Arc::new(AtomicBool::new(false));
+        let startup = Arc::new(OnceLock::new());
         let worker_interrupted = Arc::clone(&interrupted);
+        let worker_startup = Arc::clone(&startup);
         let worker = thread::Builder::new()
             .name("nanocode-code-mode-quickjs".to_owned())
             .spawn(move || {
-                run_worker(&command_rx, &event_tx, &ready_tx, &worker_interrupted);
+                run_worker(&command_rx, &event_tx, &worker_startup, &worker_interrupted);
             })
             .map_err(|error| format!("failed to start embedded QuickJS code-mode host: {error}"))?;
-        ready_rx
-            .recv()
-            .map_err(|_| "embedded QuickJS code-mode host ended during startup".to_owned())??;
         Ok(Self {
             command_tx,
             events,
             interrupted,
+            startup,
             worker: Some(worker),
         })
+    }
+
+    fn unavailable(&self, fallback: &str) -> String {
+        self.startup
+            .get()
+            .cloned()
+            .unwrap_or_else(|| fallback.to_owned())
     }
 
     pub fn start_cell(
@@ -92,14 +99,14 @@ impl EmbeddedHost {
                 stored,
                 prelude,
             }))
-            .map_err(|_| "embedded QuickJS code-mode host is unavailable".to_owned())
+            .map_err(|_| self.unavailable("embedded QuickJS code-mode host is unavailable"))
     }
 
     pub async fn read_event(&mut self) -> Result<RuntimeEvent, String> {
-        self.events
-            .recv()
-            .await
-            .ok_or_else(|| "embedded QuickJS code-mode host ended before a result".to_owned())
+        match self.events.recv().await {
+            Some(event) => Ok(event),
+            None => Err(self.unavailable("embedded QuickJS code-mode host ended before a result")),
+        }
     }
 
     pub fn send_tool_result(
@@ -140,15 +147,15 @@ impl Drop for EmbeddedHost {
 fn run_worker(
     command_rx: &std_mpsc::Receiver<HostCommand>,
     event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
-    ready_tx: &std_mpsc::SyncSender<Result<(), String>>,
+    startup: &OnceLock<String>,
     interrupted: &Arc<AtomicBool>,
 ) {
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {
-            let _ = ready_tx.send(Err(format!(
+            let _ = startup.set(format!(
                 "failed to initialize embedded QuickJS runtime: {error}"
-            )));
+            ));
             return;
         }
     };
@@ -160,17 +167,14 @@ fn run_worker(
     let prewarmed_context = match Context::full(&runtime) {
         Ok(context) => context,
         Err(error) => {
-            let _ = ready_tx.send(Err(format!(
+            let _ = startup.set(format!(
                 "failed to create embedded QuickJS context: {error}"
-            )));
+            ));
             return;
         }
     };
     drop(prewarmed_context);
     runtime.run_gc();
-    if ready_tx.send(Ok(())).is_err() {
-        return;
-    }
 
     loop {
         match command_rx.recv() {

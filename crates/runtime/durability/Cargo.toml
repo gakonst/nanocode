@@ -22,6 +22,7 @@ arc-swap.workspace = true
 futures-util.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-platform.workspace = true
+nanocode-sync.workspace = true
 nanocode-agent-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true

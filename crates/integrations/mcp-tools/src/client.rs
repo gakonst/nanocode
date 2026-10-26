@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[cfg(not(target_family = "wasm"))]
 use http::header::PROXY_AUTHORIZATION;
@@ -23,11 +26,11 @@ use nanocode_mcp_http::{
     streamable_http::{self, HttpAuth},
 };
 
-use super::McpCallError;
 use super::config::{McpPaymentManagement, McpPaymentProvider, McpServer, McpTransport};
 use super::pagination::collect_paginated;
 #[cfg(not(target_family = "wasm"))]
 use super::stdio;
+use super::{McpCallError, McpServerError};
 
 const MCP_CLIENT_NAME: &str = "nanocode-mcp-client";
 const MCP_USER_AGENT: &str = concat!("nanocode-mcp-client/", env!("CARGO_PKG_VERSION"));
@@ -119,16 +122,23 @@ impl ClientInner {
         }
     }
 
-    async fn list_all_tools(&self) -> Result<Vec<Tool>, String> {
-        collect_paginated("tools/list", |cursor| async move {
-            let result = self
-                .session
-                .list_tools(cursor)
-                .await
-                .map_err(|error| error_chain(&error))?;
-            Ok((result.tools, result.next_cursor))
+    async fn list_all_tools(&self) -> Result<Vec<Tool>, McpServerError> {
+        let refused = AtomicBool::new(false);
+        let tools = collect_paginated("tools/list", |cursor| {
+            let refused = &refused;
+            async move {
+                let result = self.session.list_tools(cursor).await.map_err(|error| {
+                    refused.store(is_refusal(&error), Ordering::Relaxed);
+                    error_chain(&error)
+                })?;
+                Ok((result.tools, result.next_cursor))
+            }
         })
-        .await
+        .await;
+        tools.map_err(|message| McpServerError {
+            message,
+            refused: refused.load(Ordering::Relaxed),
+        })
     }
 
     pub(crate) async fn native_tools(&self) -> Result<Vec<Tool>, String> {
@@ -136,7 +146,7 @@ impl ClientInner {
             return Ok(Vec::new());
         }
         self.refresh_oauth().await?;
-        self.list_all_tools().await
+        self.list_all_tools().await.map_err(|error| error.message)
     }
 
     pub(crate) fn supports_resources(&self) -> bool {
@@ -249,7 +259,7 @@ pub(crate) async fn connect(
     server: &McpServer,
     sender: Option<&Arc<dyn nanocode_http::layer::Sender>>,
     parent: &Span,
-) -> Result<ConnectedServer, String> {
+) -> Result<ConnectedServer, McpServerError> {
     let McpTransport::StreamableHttp {
         url,
         bearer,
@@ -257,15 +267,15 @@ pub(crate) async fn connect(
         headers,
     } = &server.transport
     else {
-        return Err(format!(
-            "MCP server `{server_name}` uses stdio, which needs a native target"
-        ));
+        return Err(
+            format!("MCP server `{server_name}` uses stdio, which needs a native target").into(),
+        );
     };
     let sender = sender.ok_or_else(|| {
         format!("MCP server `{server_name}` needs an HTTP sender (McpBuilder::http_sender)")
     })?;
     if url.trim().is_empty() {
-        return Err("Streamable HTTP URL must not be empty".to_owned());
+        return Err("Streamable HTTP URL must not be empty".to_owned().into());
     }
     let headers = resolve_http_headers(headers)?;
     streamable_http::validate_custom_headers(headers.keys())?;
@@ -273,7 +283,7 @@ pub(crate) async fn connect(
         (Some(bearer), _) => {
             let token = bearer.resolve()?;
             if token.trim().is_empty() {
-                return Err("resolved bearer token must not be empty".to_owned());
+                return Err("resolved bearer token must not be empty".to_owned().into());
             }
             HttpAuth::Bearer(token)
         }
@@ -301,7 +311,7 @@ pub(crate) async fn connect(
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<OAuthMetadataCache>,
     parent: &Span,
-) -> Result<ConnectedServer, String> {
+) -> Result<ConnectedServer, McpServerError> {
     let (transport_name, auth_mode) = match &server.transport {
         McpTransport::Stdio { .. } => ("stdio", "none"),
         McpTransport::StreamableHttp { bearer, .. } if bearer.is_some() => {
@@ -335,7 +345,7 @@ pub(crate) async fn connect(
             cwd,
         } => {
             if command.trim().is_empty() {
-                return Err("stdio command must not be empty".to_owned());
+                return Err("stdio command must not be empty".to_owned().into());
             }
             let mut command = tokio::process::Command::new(command);
             command.args(args).envs(env);
@@ -392,7 +402,7 @@ pub(crate) async fn connect(
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, String> {
+async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, McpServerError> {
     let HttpConnect {
         server_name,
         server,
@@ -405,7 +415,7 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, String>
         parent,
     } = input;
     if url.trim().is_empty() {
-        return Err("Streamable HTTP URL must not be empty".to_owned());
+        return Err("Streamable HTTP URL must not be empty".to_owned().into());
     }
     let default_headers = resolve_http_headers(headers)?;
     streamable_http::validate_custom_headers(default_headers.keys())?;
@@ -422,7 +432,7 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, String>
     if let Some(bearer) = bearer {
         let token = bearer.resolve()?;
         if token.trim().is_empty() {
-            return Err("resolved bearer token must not be empty".to_owned());
+            return Err("resolved bearer token must not be empty".to_owned().into());
         }
         let session =
             connect_http_session(server, url, http_client, HttpAuth::Bearer(token), parent).await?;
@@ -457,7 +467,7 @@ async fn connect_http_session(
     http_client: reqwest::Client,
     auth: HttpAuth,
     parent: &Span,
-) -> Result<Session, String> {
+) -> Result<Session, McpServerError> {
     let (session, outgoing, inbound): (Session, Outgoing, Inbound) = Session::new();
     streamable_http::spawn(url.to_owned(), http_client, auth, outgoing, inbound);
     connect_session(server, session, parent).await
@@ -482,7 +492,9 @@ fn resolve_http_headers(
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn connect_stored_oauth(input: StoredOAuthConnect<'_>) -> Result<ConnectedServer, String> {
+async fn connect_stored_oauth(
+    input: StoredOAuthConnect<'_>,
+) -> Result<ConnectedServer, McpServerError> {
     let StoredOAuthConnect {
         server_name,
         server,
@@ -571,7 +583,7 @@ async fn connect_session(
     server: &McpServer,
     session: Session,
     parent: &Span,
-) -> Result<Session, String> {
+) -> Result<Session, McpServerError> {
     let span = info_span!(
         target: "nanocode_code_mode",
         parent: parent,
@@ -587,8 +599,11 @@ async fn connect_session(
             .await
         {
             Ok(Ok(_)) => Ok(session),
-            Ok(Err(error)) => Err(format!("MCP initialize failed: {}", error_chain(&error))),
-            Err(_) => Err(startup_timeout(server, "initialize")),
+            Ok(Err(error)) => Err(McpServerError {
+                message: format!("MCP initialize failed: {}", error_chain(&error)),
+                refused: is_refusal(&error),
+            }),
+            Err(_) => Err(startup_timeout(server, "initialize").into()),
         };
     span.record(
         "status",
@@ -656,7 +671,7 @@ async fn finish_startup(
     session: Session,
     oauth: Option<Arc<OAuthRuntime>>,
     parent: &Span,
-) -> Result<ConnectedServer, String> {
+) -> Result<ConnectedServer, McpServerError> {
     let client = Arc::new(ClientInner {
         session,
         oauth,
@@ -685,8 +700,11 @@ async fn finish_startup(
                 .into_iter()
                 .filter(|tool| server.includes_tool(&tool.name))
                 .collect::<Vec<_>>()),
-            Ok(Err(error)) => Err(format!("MCP tools/list failed: {error}")),
-            Err(_) => Err(startup_timeout(server, "tools/list")),
+            Ok(Err(error)) => Err(McpServerError {
+                message: format!("MCP tools/list failed: {}", error.message),
+                refused: error.refused,
+            }),
+            Err(_) => Err(startup_timeout(server, "tools/list").into()),
         }
     };
     span.record("status", if tools.is_ok() { "completed" } else { "failed" });
@@ -699,6 +717,17 @@ async fn finish_startup(
     }
     let tools = tools?;
     Ok(ConnectedServer { client, tools })
+}
+
+/// Whether the server definitely turned the request down: a JSON-RPC error
+/// or an HTTP 4xx other than 401, not a missing answer, a 5xx or a 401.
+fn is_refusal(error: &SessionError) -> bool {
+    let refusal = |status: u16| status != 401 && (400..500).contains(&status);
+    match error {
+        SessionError::Rpc(error) => error.status().is_none_or(refusal),
+        SessionError::Transport(error) => error.status().is_some_and(refusal),
+        _ => false,
+    }
 }
 
 fn startup_timeout(server: &McpServer, operation: &str) -> String {

@@ -68,8 +68,11 @@ impl McpHandle {
                     client,
                 });
                 let error = result.as_ref().err().cloned();
-                self.state
-                    .complete_server(&configured.name, generation, result);
+                self.state.complete_server(
+                    &configured.name,
+                    generation,
+                    result.map_err(Into::into),
+                );
                 if let Some(error) = error {
                     return Err(format!(
                         "MCP discovery failed for {}: {error}",

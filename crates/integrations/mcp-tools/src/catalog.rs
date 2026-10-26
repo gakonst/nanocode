@@ -13,6 +13,7 @@ use sha1::{Digest, Sha1};
 use tokio::sync::watch;
 
 use super::{
+    McpServerError,
     client::Client,
     config::{McpServer, McpToolExposure},
     search::{SearchEngine, tokenize},
@@ -44,6 +45,7 @@ struct Catalog {
     active: BTreeSet<String>,
     clients: BTreeMap<String, Client>,
     failures: BTreeMap<String, String>,
+    refused: BTreeSet<String>,
     search_index: Option<Arc<SearchIndex>>,
     pending_servers: BTreeSet<String>,
     generations: BTreeMap<String, u64>,
@@ -134,6 +136,7 @@ impl ProviderState {
                 active: BTreeSet::new(),
                 clients: BTreeMap::new(),
                 failures: BTreeMap::new(),
+                refused: BTreeSet::new(),
                 search_index: None,
                 pending_servers,
                 generations,
@@ -147,7 +150,7 @@ impl ProviderState {
         &self,
         server_name: &str,
         generation: u64,
-        result: Result<ConnectedCatalog, String>,
+        result: Result<ConnectedCatalog, McpServerError>,
     ) {
         let result = result.map(|ConnectedCatalog { client, entries }| {
             (
@@ -182,7 +185,7 @@ impl ProviderState {
     fn complete(
         catalog: &mut Catalog,
         server_name: &str,
-        result: &Result<(Client, Vec<Arc<ToolEntry>>), String>,
+        result: &Result<(Client, Vec<Arc<ToolEntry>>), McpServerError>,
     ) -> Option<usize> {
         match result {
             Ok((client, entries)) => {
@@ -220,7 +223,10 @@ impl ProviderState {
             Err(error) => {
                 catalog
                     .failures
-                    .insert(server_name.to_owned(), error.clone());
+                    .insert(server_name.to_owned(), error.message.clone());
+                if error.refused {
+                    catalog.refused.insert(server_name.to_owned());
+                }
             }
         }
         catalog.pending_servers.remove(server_name);
@@ -247,6 +253,7 @@ impl ProviderState {
                 .and_modify(|generation| *generation = generation.saturating_add(1))
                 .or_insert(0);
             catalog.failures.remove(server_name);
+            catalog.refused.remove(server_name);
             catalog.pending_servers.insert(server_name.to_owned());
             generation
         });
@@ -382,7 +389,7 @@ impl ProviderState {
 
     pub(crate) async fn server_entries(
         &self,
-    ) -> BTreeMap<String, Result<Vec<Arc<ToolEntry>>, String>> {
+    ) -> BTreeMap<String, Result<Vec<Arc<ToolEntry>>, McpServerError>> {
         self.wait_for_startup().await;
         let catalog = self.catalog.get();
         let mut servers = BTreeMap::new();
@@ -390,10 +397,17 @@ impl ProviderState {
             servers.insert(server.clone(), Ok(Vec::new()));
         }
         for server in &catalog.pending_servers {
-            servers.insert(server.clone(), Err("MCP discovery timed out".to_owned()));
+            servers.insert(
+                server.clone(),
+                Err("MCP discovery timed out".to_owned().into()),
+            );
         }
         for (server, error) in &catalog.failures {
-            servers.insert(server.clone(), Err(error.clone()));
+            let error = McpServerError {
+                message: error.clone(),
+                refused: catalog.refused.contains(server),
+            };
+            servers.insert(server.clone(), Err(error));
         }
         for entry in catalog.entries.values() {
             if entry.tool_exposure.is_callable()

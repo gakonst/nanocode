@@ -197,6 +197,26 @@ impl McpCallError {
     }
 }
 
+/// Why an MCP server failed to start or list its tools. `refused` is true
+/// when the server answered with a definite refusal (a JSON-RPC error or an
+/// HTTP 4xx other than 401), so trying again would get the same answer;
+/// false for no answer, a timeout, a 5xx or a 401.
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct McpServerError {
+    pub message: String,
+    pub refused: bool,
+}
+
+impl From<String> for McpServerError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            refused: false,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum McpBuildError {
     #[error("at least one MCP server is required")]
@@ -263,7 +283,7 @@ impl Mcp {
     pub fn prepared_servers(
         &self,
         max_timeout: Duration,
-    ) -> McpFuture<'_, BTreeMap<String, Result<Vec<PreparedMcpTool>, String>>> {
+    ) -> McpFuture<'_, BTreeMap<String, Result<Vec<PreparedMcpTool>, McpServerError>>> {
         Box::pin(async move {
             self.start_servers();
             self.state
@@ -541,7 +561,7 @@ impl McpHandle {
                     .complete_server(server_name, generation, Err(error.clone()));
                 Err(McpControlError::Reload {
                     server: server_name.to_owned(),
-                    error,
+                    error: error.message,
                 })
             }
         }

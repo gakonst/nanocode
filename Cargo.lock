@@ -3419,6 +3419,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "nanocode-platform",
+ "nanocode-sync",
  "serde",
  "serde_json",
  "sha2 0.11.0",

@@ -1,7 +1,6 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::BTreeMap, sync::Arc};
+
+use nanocode_sync::Atom;
 
 use crate::{
     Committed, OwnedState, OwnerId, OwnerToken, StateCommit, StateStore, StoreError, StoreFuture,
@@ -14,42 +13,39 @@ struct Staged {
     base_revision: u64,
     owner: OwnerToken,
     revision: u64,
-    payload: Option<String>,
-    payloads: Vec<String>,
-    records: BTreeMap<String, String>,
+    payload: Option<Arc<str>>,
+    payloads: Vec<Arc<str>>,
+    records: BTreeMap<String, Arc<str>>,
 }
 
+type States = BTreeMap<String, Arc<Staged>>;
+
 #[derive(Clone, Debug, Default)]
-pub struct StagedWrites(Arc<Mutex<BTreeMap<String, Staged>>>);
+pub struct StagedWrites(Arc<Atom<States>>);
 
 impl StagedWrites {
-    fn lock(&self) -> MutexGuard<'_, BTreeMap<String, Staged>> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lock()
-            .values()
-            .all(|staged| staged.revision == staged.base_revision)
+        self.0.read(|states| {
+            states
+                .values()
+                .all(|staged| staged.revision == staged.base_revision)
+        })
     }
 
     pub fn discard(&self) {
-        self.lock().clear();
+        self.0.set(BTreeMap::new());
     }
 
     pub async fn commit_to<T: StateStore + ?Sized>(&self, store: &mut T) -> Result<(), StoreError> {
-        let staged: Vec<_> = self
-            .lock()
+        let states = self.0.get();
+        for (state_id, staged) in states
             .iter()
             .filter(|(_, staged)| staged.revision != staged.base_revision)
-            .map(|(state_id, staged)| (state_id.clone(), staged.clone()))
-            .collect();
-        for (state_id, staged) in staged {
+        {
+            let state_id = state_id.as_str();
             let acquired = store
-                .acquire(&state_id, staged.owner.owner_id().clone())
+                .acquire(state_id, staged.owner.owner_id().clone())
                 .await?;
             if Some(acquired.owner.fence()) != staged.base_fence.checked_add(1) {
                 return Err(StoreError::Fenced);
@@ -62,13 +58,16 @@ impl StagedWrites {
             }
             let mut records: Vec<_> = staged
                 .records
-                .into_iter()
-                .map(|(key, value)| StoreRecord { key, value })
+                .iter()
+                .map(|(key, value)| StoreRecord {
+                    key: key.clone(),
+                    value: value.to_string(),
+                })
                 .collect();
             if let Some(payload) = staged.payloads.last()
                 && store
                     .replace_to(
-                        &state_id,
+                        state_id,
                         &acquired.owner,
                         staged.base_revision,
                         staged.revision,
@@ -84,7 +83,7 @@ impl StagedWrites {
             for payload in &staged.payloads {
                 revision = store
                     .commit(
-                        &state_id,
+                        state_id,
                         &acquired.owner,
                         revision,
                         StateCommit {
@@ -102,8 +101,8 @@ impl StagedWrites {
         Ok(())
     }
 
-    fn get(&self, state_id: &str) -> Option<Staged> {
-        self.lock().get(state_id).cloned()
+    fn get(&self, state_id: &str) -> Option<Arc<Staged>> {
+        self.0.read(|states| states.get(state_id).cloned())
     }
 
     fn write(
@@ -114,8 +113,19 @@ impl StagedWrites {
         payload: &str,
         records: &[StoreRecord],
     ) -> Result<u64, StoreError> {
-        let mut states = self.lock();
-        let staged = states.get_mut(state_id).ok_or(StoreError::Fenced)?;
+        self.0.modify(|states| {
+            let staged = Arc::make_mut(states.get_mut(state_id).ok_or(StoreError::Fenced)?);
+            Self::staged_write(staged, owner, expected_revision, payload, records)
+        })
+    }
+
+    fn staged_write(
+        staged: &mut Staged,
+        owner: &OwnerToken,
+        expected_revision: u64,
+        payload: &str,
+        records: &[StoreRecord],
+    ) -> Result<u64, StoreError> {
         if staged.owner != *owner {
             return Err(StoreError::Fenced);
         }
@@ -129,7 +139,7 @@ impl StagedWrites {
             staged
                 .records
                 .get(&record.key)
-                .is_some_and(|value| *value != record.value)
+                .is_some_and(|value| **value != *record.value)
         }) {
             return Err(StoreError::NotCommitted(
                 "a staged record already has different content".to_owned(),
@@ -142,11 +152,12 @@ impl StagedWrites {
             staged
                 .records
                 .entry(record.key.clone())
-                .or_insert_with(|| record.value.clone());
+                .or_insert_with(|| Arc::from(record.value.as_str()));
         }
+        let payload = Arc::<str>::from(payload);
         staged.revision = revision;
-        staged.payload = Some(payload.to_owned());
-        staged.payloads.push(payload.to_owned());
+        staged.payload = Some(Arc::clone(&payload));
+        staged.payloads.push(payload);
         Ok(revision)
     }
 }
@@ -174,14 +185,20 @@ impl<S: StateStore> StagedStore<S> {
         state_id: &str,
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
-        let staged = self
-            .writes
-            .get(state_id)
-            .map(|staged| staged.records)
-            .unwrap_or_default();
+        let staged = self.writes.get(state_id);
+        let staged_record = |key: &str| {
+            staged
+                .as_ref()
+                .and_then(|staged| staged.records.get(key))
+                .map(|value| value.to_string())
+        };
         let missing: Vec<_> = keys
             .iter()
-            .filter(|key| !staged.contains_key(*key))
+            .filter(|key| {
+                !staged
+                    .as_ref()
+                    .is_some_and(|staged| staged.records.contains_key(*key))
+            })
             .cloned()
             .collect();
         let mut read = if missing.is_empty() {
@@ -192,10 +209,7 @@ impl<S: StateStore> StagedStore<S> {
         .into_iter();
         Ok(keys
             .iter()
-            .map(|key| match staged.get(key) {
-                Some(value) => Some(value.clone()),
-                None => read.next().flatten(),
-            })
+            .map(|key| staged_record(key).or_else(|| read.next().flatten()))
             .collect())
     }
 
@@ -205,7 +219,7 @@ impl<S: StateStore> StagedStore<S> {
         owner_id: OwnerId,
     ) -> Result<OwnedState, StoreError> {
         let staged = match self.writes.get(state_id) {
-            Some(staged) => staged,
+            Some(staged) => Staged::clone(&staged),
             None => {
                 let fence = self
                     .base
@@ -218,7 +232,7 @@ impl<S: StateStore> StagedStore<S> {
                     base_revision: state.revision,
                     owner: OwnerToken::new(owner_id.clone(), fence),
                     revision: state.revision,
-                    payload: state.payload,
+                    payload: state.payload.map(Arc::from),
                     payloads: Vec::new(),
                     records: BTreeMap::new(),
                 }
@@ -229,14 +243,20 @@ impl<S: StateStore> StagedStore<S> {
                 StoreError::NotCommitted("staged owner fence overflow".to_owned())
             })?;
         let owner = OwnerToken::new(owner_id, fence);
-        let mut states = self.writes.lock();
-        let entry = states.entry(state_id.to_owned()).or_insert(staged);
-        entry.owner = owner.clone();
+        let entry = self.writes.0.update(|states| {
+            let entry = Arc::make_mut(
+                states
+                    .entry(state_id.to_owned())
+                    .or_insert_with(|| Arc::new(staged.clone())),
+            );
+            entry.owner = owner.clone();
+            (entry.revision, entry.payload.clone())
+        });
         Ok(OwnedState {
             owner,
             state: StoredState {
-                revision: entry.revision,
-                payload: entry.payload.clone(),
+                revision: entry.0,
+                payload: entry.1.as_deref().map(str::to_owned),
             },
         })
     }
@@ -273,7 +293,7 @@ impl<S: StateStore> StateStore for StagedStore<S> {
             match self.writes.get(state_id) {
                 Some(staged) => Ok(StoredState {
                     revision: staged.revision,
-                    payload: staged.payload,
+                    payload: staged.payload.as_deref().map(str::to_owned),
                 }),
                 None => self.base.peek(state_id).await,
             }
@@ -286,15 +306,15 @@ impl<S: StateStore> StateStore for StagedStore<S> {
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
         Box::pin(async move {
             let mut states = self.base.list_states(limit).await?;
-            let staged: Vec<_> = self
-                .writes
-                .lock()
-                .iter()
-                .filter(|(state_id, staged)| {
-                    staged.payload.is_some() && !states.contains(*state_id)
-                })
-                .map(|(state_id, _)| state_id.clone())
-                .collect();
+            let staged: Vec<_> = self.writes.0.read(|staged| {
+                staged
+                    .iter()
+                    .filter(|(state_id, staged)| {
+                        staged.payload.is_some() && !states.contains(*state_id)
+                    })
+                    .map(|(state_id, _)| state_id.clone())
+                    .collect()
+            });
             states.splice(0..0, staged);
             states.truncate(limit);
             Ok(states)
@@ -311,8 +331,9 @@ impl<S: StateStore> StateStore for StagedStore<S> {
                 keys.extend(
                     staged
                         .records
-                        .into_keys()
+                        .keys()
                         .filter(|key| !keys.contains(key))
+                        .cloned()
                         .collect::<Vec<_>>(),
                 );
             }
@@ -326,7 +347,7 @@ impl<S: StateStore> StateStore for StagedStore<S> {
     ) -> StoreFuture<'a, Result<Option<OwnerToken>, StoreError>> {
         Box::pin(async move {
             match self.writes.get(state_id) {
-                Some(staged) => Ok(Some(staged.owner)),
+                Some(staged) => Ok(Some(staged.owner.clone())),
                 None => self.base.owner(state_id).await,
             }
         })

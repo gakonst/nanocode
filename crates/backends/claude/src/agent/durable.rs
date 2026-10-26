@@ -179,7 +179,7 @@ pub(super) struct Effect<'a> {
     model_call: bool,
 }
 impl Effect<'_> {
-    pub(super) fn scoped(&self, scope: &str) -> Effect<'_> {
+    pub(super) fn scoped(&self, scope: &str) -> Self {
         Effect {
             policy: self.policy,
             operation: self.operation,

@@ -3723,6 +3723,14 @@ async fn abandon_deferred(
 fn unsupported(message: &str) -> NanocodeError {
     NanocodeError::InvalidRequest(message.into())
 }
+/// Anthropic signs thinking blocks for the API key's organization, so a session
+/// resumed under another organization's key has its request refused with this.
+fn unsigned_thinking(error: &NanocodeError) -> bool {
+    matches!(error, NanocodeError::Response(_))
+        && error
+            .to_string()
+            .contains("Invalid `signature` in `thinking` block")
+}
 pub(crate) fn provider_error(error: impl std::fmt::Display) -> NanocodeError {
     unsupported(&format!("Claude Messages: {error}"))
 }
@@ -6274,29 +6282,63 @@ impl State {
             }
             self.publish_side_view(Some(pending.as_slice().into()));
             self.publish_side_request(&cursor.template, cursor.wire_profile.as_ref());
-            let response = self
-                .response(
-                    &pending,
-                    cursor.template.tools.clone(),
-                    cancel,
-                    Some(&request.events),
-                    index,
-                    ResponseContext {
-                        origin: cursor.host_context(self),
-                        disable_tools: false,
-                        force_text: false,
-                        container: conversation.container.as_deref(),
-                        previous_message_id: previous_message_id.as_deref(),
-                        template: Some(&cursor.template),
-                        wire_profile: cursor.wire_profile.as_ref(),
-                        effect: cursor.effect(
-                            self,
-                            &format!("model-{}", index.saturating_add(cursor.model_step_offset)),
-                        ),
-                        journal: Some(&mut *journal),
-                    },
-                )
-                .await;
+            let step = format!("model-{}", index.saturating_add(cursor.model_step_offset));
+            let mut stripped_thinking = false;
+            let response = loop {
+                let effect = cursor.effect(self, &step);
+                let response = self
+                    .response(
+                        &pending,
+                        cursor.template.tools.clone(),
+                        cancel,
+                        Some(&request.events),
+                        index,
+                        ResponseContext {
+                            origin: cursor.host_context(self),
+                            disable_tools: false,
+                            force_text: false,
+                            container: conversation.container.as_deref(),
+                            previous_message_id: previous_message_id.as_deref(),
+                            template: Some(&cursor.template),
+                            wire_profile: cursor.wire_profile.as_ref(),
+                            // The retry sends other messages, so it is its own durable step.
+                            effect: if stripped_thinking {
+                                effect.map(|effect| effect.scoped("unsigned-thinking"))
+                            } else {
+                                effect
+                            },
+                            journal: Some(&mut *journal),
+                        },
+                    )
+                    .await;
+                match response {
+                    Err(failure)
+                        if !stripped_thinking
+                            && failure.recovery.is_none()
+                            && unsigned_thinking(&failure.error)
+                            && pending.iter().flat_map(|message| &message.content).any(
+                                |block| {
+                                    matches!(
+                                        block,
+                                        ContentBlock::Thinking { .. }
+                                            | ContentBlock::RedactedThinking { .. }
+                                    )
+                                },
+                            ) =>
+                    {
+                        tracing::warn!(
+                            target: "nanocode_claude",
+                            session_id = %self.session_id,
+                            model_call_index = index.saturating_add(1),
+                            "Claude refused the history's thinking signatures, which belong to another API key's organization; dropping thinking blocks from the session's history and retrying once"
+                        );
+                        history::strip_thinking(&mut pending);
+                        history::strip_thinking(&mut conversation.messages);
+                        stripped_thinking = true;
+                    }
+                    response => break response,
+                }
+            };
             let response = match response {
                 Ok(response) => response,
                 Err(failure) => {

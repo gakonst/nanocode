@@ -155,6 +155,10 @@ pub enum RemoteOperation {
     Cancel {
         session_id: String,
     },
+    CancelCall {
+        session_id: String,
+        call_id: String,
+    },
     BeginTurn {
         session_id: String,
     },
@@ -536,6 +540,8 @@ pub enum RemoteFrame {
         resumable: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tool_selection: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cancels_calls: bool,
     },
     Request {
         id: u64,
@@ -645,6 +651,7 @@ pub struct RemoteCatalog {
     pub max_frame_bytes: Option<usize>,
     pub resumable: bool,
     pub tool_selection: bool,
+    pub cancels_calls: bool,
 }
 
 impl RemoteCatalog {
@@ -683,6 +690,7 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 max_frame_bytes,
                 resumable,
                 tool_selection,
+                cancels_calls,
             } => Ok(Self {
                 definitions,
                 name,
@@ -691,6 +699,7 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 max_frame_bytes,
                 resumable,
                 tool_selection,
+                cancels_calls,
             }),
             _ => Err(CodeModeHostError::new(NO_CATALOG)),
         }

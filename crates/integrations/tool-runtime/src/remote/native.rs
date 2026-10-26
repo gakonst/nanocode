@@ -607,6 +607,7 @@ impl SocketTransport {
             max_frame_bytes,
             resumable: _,
             tool_selection,
+            cancels_calls: _,
         } = match catalog {
             Some(text) => RemoteCatalog::decode(&text, policy.max_frame_bytes)?,
             None => tokio::time::timeout(policy.request_timeout, read(&mut socket, &liveness))
@@ -803,8 +804,7 @@ impl RemoteTransport for SocketTransport {
 
 const BRAIN_DISCONNECTED: &str = "the hand is not connected to its brain";
 
-const CALL_CANCELLED: &str =
-    "the call's session was cancelled while it ran; its outcome is unknown and it was not retried";
+const CALL_CANCELLED: &str = "the call or its session was cancelled while it ran; its outcome is unknown and it was not retried";
 
 const CALLBACK_DROPPED: &str = "the hand's connection to its brain dropped while the callback ran; its outcome is unknown and it was not retried";
 
@@ -1528,6 +1528,7 @@ struct Running {
     resumable: bool,
     connection: u64,
     work: Arc<Pending>,
+    cancel: Option<CancellationToken>,
 }
 
 struct Retained {
@@ -1578,6 +1579,7 @@ impl Pending {
             RemoteOperation::DetachTurn { session_id } => request("detach turn", session_id),
             RemoteOperation::CancelTurn { session_id, .. } => request("cancel turn", session_id),
             RemoteOperation::Cancel { session_id } => request("cancel", session_id),
+            RemoteOperation::CancelCall { session_id, .. } => request("cancel call", session_id),
             RemoteOperation::BeginTurn { session_id } => request("begin turn", session_id),
             RemoteOperation::Preempt { session_id } => request("preempt", session_id),
             RemoteOperation::SettlePreempt { session_id } => request("settle preempt", session_id),
@@ -1907,6 +1909,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         max_frame_bytes: Some(policy.max_frame_bytes),
         resumable: executor.options.runtime_id.is_some(),
         tool_selection: !executor.tools.has_dynamic_providers(),
+        cancels_calls: true,
     };
     write(&mut socket, catalog.encode(policy.max_frame_bytes)?, policy).await?;
     let (sink, mut socket) = socket.split();
@@ -1943,7 +1946,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             executor.resumable |= resumable;
                             let work = Arc::new(Pending::new(id, &operation));
                             let session_id = work.session_id.clone();
-                            executor.running.insert(id, Running { resumable, connection, work: Arc::clone(&work) });
+                            executor.running.insert(id, Running { resumable, connection, work: Arc::clone(&work), cancel: None });
                             executor.publish();
                             if executor.activity.draining() && matches!(&operation, RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }) {
                                 executor.finish(id, Err(NOT_RECEIVED.into()));
@@ -1993,10 +1996,25 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 executor.finish(id, Ok(None));
                                 continue;
                             }
+                            if let RemoteOperation::CancelCall { call_id, .. } = &operation {
+                                for running in executor.running.values().filter(|running| running.work.session_id == session_id && running.work.id == *call_id) {
+                                    if let Some(cancel) = &running.cancel { cancel.cancel(); }
+                                }
+                                executor.finish(id, Ok(None));
+                                continue;
+                            }
                             let session_calls = executor.calls.entry(session_id.clone()).or_default().clone();
                             let cancelled = match &operation {
                                 RemoteOperation::Call { context: RemoteContext { turn_id: Some(turn_id), .. }, .. } => executor.turn_calls.entry((session_id.clone(), turn_id.clone())).or_insert_with(|| session_calls.child_token()).clone(),
                                 _ => session_calls,
+                            };
+                            let cancelled = match &operation {
+                                RemoteOperation::Call { .. } => {
+                                    let call = cancelled.child_token();
+                                    if let Some(running) = executor.running.get_mut(&id) { running.cancel = Some(call.clone()); }
+                                    call
+                                }
+                                _ => cancelled,
                             };
                             if let RemoteOperation::Execute { hand: Some(hand), .. } = &operation {
                                 executor.callbacks.name.set(Some(hand.clone()));
@@ -2066,7 +2084,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                         RemoteOperation::BeginTurn { .. } => { runtime.control().begin_turn(); catalog.begin_turn(); Ok(None) },
                                         RemoteOperation::Preempt { .. } => { runtime.control().preempt_turn().await; Ok(None) },
                                         RemoteOperation::SettlePreempt { .. } => { runtime.control().settle_preempt(); Ok(None) },
-                                        RemoteOperation::EndTurn { .. } => Ok(None),
+                                        RemoteOperation::EndTurn { .. } | RemoteOperation::CancelCall { .. } => Ok(None),
                                     }
                                 }.await.map_err(|e| e.to_string());
                                 let _ = finished.send(Done { id, live: result, full, status });

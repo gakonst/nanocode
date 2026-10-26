@@ -10,8 +10,8 @@ use serde_json::Value;
 use tokio::time::Instant;
 
 use super::{
-    RemoteClient, RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink, RemoteOperation,
-    RemoteTransport, output_from_wire,
+    NOT_RECEIVED, RemoteClient, RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink,
+    RemoteOperation, RemoteTransport, output_from_wire,
 };
 use crate::embedded::{CodeModeHostError, HostFuture};
 
@@ -25,6 +25,7 @@ pub struct QueuedCall<O> {
 pub struct Polled<O> {
     pub calls: Vec<QueuedCall<O>>,
     pub cancel: Vec<(String, String)>,
+    pub cancel_calls: Vec<(String, String)>,
     pub watch: Vec<(String, String)>,
 }
 
@@ -33,6 +34,7 @@ impl<O> Default for Polled<O> {
         Self {
             calls: Vec::new(),
             cancel: Vec::new(),
+            cancel_calls: Vec::new(),
             watch: Vec::new(),
         }
     }
@@ -192,6 +194,7 @@ pub async fn serve_queue<Q: CommandQueue>(
     let mut failed = std::pin::pin!(failed);
     let mut tick = tokio::time::interval(options.poll);
     let mut cancelled = HashSet::new();
+    let mut cancelled_calls = HashSet::new();
     let mut watching = HashSet::new();
     let mut checked = Instant::now();
     loop {
@@ -208,6 +211,11 @@ pub async fn serve_queue<Q: CommandQueue>(
                             session_id,
                             turn_id: Some(turn_id),
                         });
+                    }
+                }
+                for (session_id, call_id) in polled.cancel_calls {
+                    if cancelled_calls.insert(call_id.clone()) {
+                        notify(&client, RemoteOperation::CancelCall { session_id, call_id });
                     }
                 }
                 for call in polled.calls {
@@ -294,7 +302,7 @@ async fn try_settle<Q: CommandQueue>(
             let wire = output.into_wire().map_err(|error| error.to_string())?;
             Settlement::Completed(serde_json::to_value(wire).map_err(|error| error.to_string())?)
         }
-        Err(error) if error.is_unsent() && !recorded.queued => Settlement::Requeue,
+        Err(error) if error.message() == NOT_RECEIVED && !recorded.queued => Settlement::Requeue,
         Err(_) if client.failure().is_some() => return Ok(()),
         Err(error) if recorded.queued => Settlement::Unavailable(error.to_string()),
         _ => Settlement::Unknown,

@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use crate::{EncodedPayload, Error, Result, StoreRecord};
 
@@ -322,9 +325,76 @@ impl serde::Serialize for PageOperations<'_> {
 }
 
 #[derive(Clone, Debug, Default)]
+struct Archive {
+    operations: BTreeMap<String, OperationState>,
+    first: Option<(u64, String)>,
+}
+
+impl Archive {
+    fn insert(&mut self, operation_id: String, operation: OperationState) {
+        if self
+            .first
+            .as_ref()
+            .is_none_or(|(order, _)| operation.accepted_order < *order)
+        {
+            self.first = Some((operation.accepted_order, operation_id.clone()));
+        }
+        self.operations.insert(operation_id, operation);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Operations<'a> {
+    head: &'a BTreeMap<String, OperationState>,
+    archive: &'a Archive,
+}
+
+impl<'a> Operations<'a> {
+    pub fn iter(self) -> impl Iterator<Item = (&'a String, &'a OperationState)> + 'a {
+        self.archive.operations.iter().chain(self.head.iter())
+    }
+
+    pub fn values(self) -> impl Iterator<Item = &'a OperationState> + 'a {
+        self.iter().map(|(_, operation)| operation)
+    }
+
+    pub fn keys(self) -> impl Iterator<Item = &'a String> + 'a {
+        self.iter().map(|(operation_id, _)| operation_id)
+    }
+
+    #[must_use]
+    pub fn len(self) -> usize {
+        self.head.len() + self.archive.operations.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.head.is_empty() && self.archive.operations.is_empty()
+    }
+
+    #[must_use]
+    pub fn get(self, operation_id: &str) -> Option<&'a OperationState> {
+        self.head
+            .get(operation_id)
+            .or_else(|| self.archive.operations.get(operation_id))
+    }
+
+    #[must_use]
+    pub fn first_accepted(self) -> Option<(&'a String, &'a OperationState)> {
+        if let Some((_, operation_id)) = &self.archive.first {
+            return self.archive.operations.get_key_value(operation_id);
+        }
+        self.head
+            .iter()
+            .min_by_key(|(_, operation)| operation.accepted_order)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct JournalState {
     revision: u64,
     operations: BTreeMap<String, OperationState>,
+    archive: Arc<Archive>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
     sealed: SealedReceipts,
     unloaded: u64,
@@ -354,28 +424,10 @@ pub struct RetainedCheckpoint<R> {
 #[derive(serde::Serialize)]
 struct DurableCheckpointRef<'a> {
     format: u8,
-    operations: HeadOperations<'a>,
+    operations: &'a BTreeMap<String, OperationState>,
     latest_checkpoint: Option<&'a EncodedPayload>,
     #[serde(skip_serializing_if = "SealedReceipts::is_empty")]
     sealed: &'a SealedReceipts,
-}
-
-struct HeadOperations<'a> {
-    operations: &'a BTreeMap<String, OperationState>,
-    through: u64,
-}
-
-impl serde::Serialize for HeadOperations<'_> {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_map(
-            self.operations
-                .iter()
-                .filter(|(_, operation)| operation.accepted_order > self.through),
-        )
-    }
 }
 
 #[derive(serde::Serialize)]
@@ -399,12 +451,7 @@ impl JournalState {
             .drain(..)
             .filter(|record| !known(&record.key))
             .collect();
-        let through = self.sealed.through;
-        for operation in self
-            .operations
-            .values_mut()
-            .filter(|operation| operation.accepted_order > through)
-        {
+        for operation in self.operations.values_mut() {
             operation.stage_unless(&mut records, known);
         }
         if let Some((_, value)) = &mut self.latest_checkpoint {
@@ -421,8 +468,11 @@ impl JournalState {
     }
 
     #[must_use]
-    pub const fn operations(&self) -> &BTreeMap<String, OperationState> {
-        &self.operations
+    pub fn operations(&self) -> Operations<'_> {
+        Operations {
+            head: &self.operations,
+            archive: &self.archive,
+        }
     }
 
     #[must_use]
@@ -465,12 +515,12 @@ impl JournalState {
                         page.key()
                     )));
                 }
-                if self.unloaded == 0 || self.operations.contains_key(&operation_id) {
+                if self.unloaded == 0 || self.operations().get(&operation_id).is_some() {
                     return Err(Error::InvalidState(format!(
                         "sealed operation `{operation_id}` appears more than once"
                     )));
                 }
-                self.operations.insert(operation_id, operation);
+                Arc::make_mut(&mut self.archive).insert(operation_id, operation);
                 self.unloaded -= 1;
             }
         }
@@ -483,7 +533,7 @@ impl JournalState {
         if children.is_empty() {
             let mut orders = BTreeSet::new();
             if !self
-                .operations
+                .operations()
                 .values()
                 .all(|operation| orders.insert(operation.accepted_order))
             {
@@ -501,11 +551,9 @@ impl JournalState {
                 "receipts cannot be sealed before the sealed pages are loaded".to_owned(),
             ));
         }
-        let through = self.sealed.through;
         let mut head = self
             .operations
             .iter()
-            .filter(|(_, operation)| operation.accepted_order > through)
             .map(|(id, operation)| (id.as_str(), operation))
             .collect::<Vec<_>>();
         sort_accepted(&mut head);
@@ -535,6 +583,14 @@ impl JournalState {
             }
             self.sealed.count += RECEIPT_PAGE as u64;
         }
+        if !sealed.is_empty() {
+            let archive = Arc::make_mut(&mut self.archive);
+            for operation_id in sealed {
+                if let Some(operation) = self.operations.remove(&operation_id) {
+                    archive.insert(operation_id, operation);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -558,7 +614,7 @@ impl JournalState {
 
     #[must_use]
     pub fn operation(&self, operation_id: &str) -> Option<&OperationState> {
-        self.operations.get(operation_id)
+        self.operations().get(operation_id)
     }
 
     #[must_use]
@@ -614,10 +670,7 @@ impl JournalState {
                 } else {
                     SEALED_STATE_FORMAT
                 },
-                operations: HeadOperations {
-                    operations: &self.operations,
-                    through: self.sealed.through,
-                },
+                operations: &self.operations,
                 latest_checkpoint: self.latest_checkpoint(),
                 sealed: &self.sealed,
             },
@@ -630,6 +683,8 @@ impl JournalState {
         let mut changed = false;
         if !self.sealed.is_empty() && self.unloaded == 0 {
             self.sealed = SealedReceipts::default();
+            let archive = Arc::unwrap_or_clone(std::mem::take(&mut self.archive));
+            self.operations.extend(archive.operations);
             changed = true;
         }
         let before = self.operations.len();
@@ -715,6 +770,7 @@ impl JournalState {
         let state = Self {
             revision,
             operations: checkpoint.operations,
+            archive: Arc::default(),
             latest_checkpoint,
             unloaded: sealed.count,
             sealed,
@@ -821,7 +877,7 @@ impl JournalState {
                         "operation `{operation_id}` was accepted before the sealed receipts were loaded"
                     )));
                 }
-                if self.operations.contains_key(operation_id) {
+                if self.operations().get(operation_id).is_some() {
                     return Err(Error::InvalidState(format!(
                         "operation `{operation_id}` was accepted more than once"
                     )));
@@ -1210,6 +1266,11 @@ impl JournalState {
     }
 
     fn pending_operation_mut(&mut self, operation_id: &str) -> Result<&mut OperationState> {
+        if self.archive.operations.contains_key(operation_id) {
+            return Err(Error::InvalidState(format!(
+                "terminal operation `{operation_id}` was changed"
+            )));
+        }
         let operation = self.operations.get_mut(operation_id).ok_or_else(|| {
             Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
@@ -1222,7 +1283,7 @@ impl JournalState {
     }
 
     fn pending_operation(&self, operation_id: &str) -> Result<&OperationState> {
-        let operation = self.operations.get(operation_id).ok_or_else(|| {
+        let operation = self.operation(operation_id).ok_or_else(|| {
             Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
         if operation.status.is_terminal() {
@@ -1234,7 +1295,7 @@ impl JournalState {
     }
 
     fn ensure_prior_operations_terminal(&self, operation_id: &str) -> Result<()> {
-        let operation = self.operations.get(operation_id).ok_or_else(|| {
+        let operation = self.operation(operation_id).ok_or_else(|| {
             Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
         if let Some((pending_id, _)) = self.operations.iter().find(|(id, candidate)| {

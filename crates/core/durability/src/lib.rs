@@ -14,7 +14,7 @@ pub use sql::{
 };
 pub use staged::{StagedStore, StagedWrites};
 pub use state::{
-    DurableCheckpoint, IdentifiedSteerReceipt, JournalState, OperationState, OperationStatus,
+    DurableCheckpoint, IdentifiedSteerReceipt, JournalState, OperationState, OperationStatus, Operations,
     RetainedCheckpoint, SteerState, StepState, StepStatus, Transition,
 };
 pub use store::{

@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 use crate::{EncodedPayload, Result, SessionRecord, StateReader, StateStore, StoreRecord};
 use nanocode_durability_core::{DurableCheckpoint, JournalState};
 
 pub use nanocode_durability_core::{
-    IdentifiedSteerReceipt, OperationState, OperationStatus, SteerState, StepState, StepStatus,
-    Transition,
+    IdentifiedSteerReceipt, OperationState, OperationStatus, Operations, SteerState, StepState,
+    StepStatus, Transition,
 };
 
 pub(crate) type RetainedCheckpoint = nanocode_durability_core::RetainedCheckpoint<SessionRecord>;
@@ -23,7 +23,7 @@ impl DurableState {
     }
 
     #[must_use]
-    pub const fn operations(&self) -> &BTreeMap<String, OperationState> {
+    pub fn operations(&self) -> Operations<'_> {
         self.journal.operations()
     }
 

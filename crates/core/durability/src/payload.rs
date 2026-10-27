@@ -84,9 +84,9 @@ pub struct EncodedPayload {
     #[serde(skip)]
     layout: Option<Arc<Layout>>,
     #[serde(skip)]
-    pending: Vec<crate::StoreRecord>,
+    pending: Arc<[crate::StoreRecord]>,
     #[serde(skip)]
-    children: Vec<Self>,
+    children: Arc<[Self]>,
 }
 
 #[derive(Debug)]
@@ -244,8 +244,8 @@ impl EncodedPayload {
             key,
             content: Some(json),
             layout,
-            pending: Vec::new(),
-            children: Vec::new(),
+            pending: Arc::default(),
+            children: Arc::default(),
         }
     }
 
@@ -254,8 +254,8 @@ impl EncodedPayload {
             key: key.into(),
             content: None,
             layout: None,
-            pending: Vec::new(),
-            children: Vec::new(),
+            pending: Arc::default(),
+            children: Arc::default(),
         }
     }
 
@@ -281,12 +281,12 @@ impl EncodedPayload {
     }
 
     pub fn with_records(mut self, records: Vec<crate::StoreRecord>) -> Self {
-        self.pending = records;
+        self.pending = records.into();
         self
     }
 
     pub fn with_payloads(mut self, payloads: Vec<Self>) -> Self {
-        self.children = payloads;
+        self.children = payloads.into();
         self
     }
 
@@ -299,21 +299,29 @@ impl EncodedPayload {
         records: &mut Vec<crate::StoreRecord>,
         known: &dyn Fn(&str) -> bool,
     ) {
-        records.extend(self.pending.drain(..).filter(|record| !known(&record.key)));
-        for mut child in std::mem::take(&mut self.children) {
-            child.stage_unless(records, known);
-        }
-        let Some(content) = self.content.take() else {
-            return;
-        };
-        let layout = self.layout.take();
+        self.stage_tree(records, known);
+        self.release();
+    }
+
+    fn release(&mut self) {
+        self.content = None;
+        self.layout = None;
+        self.pending = Arc::default();
+        self.children = Arc::default();
+    }
+
+    fn stage_tree(&self, records: &mut Vec<crate::StoreRecord>, known: &dyn Fn(&str) -> bool) {
         if known(&self.key) {
             return;
         }
-        let layout = match layout {
-            Some(layout) => layout,
+        self.stage_closure(records, known);
+        let Some(content) = &self.content else {
+            return;
+        };
+        let layout = match &self.layout {
+            Some(layout) => Arc::clone(layout),
             None if content.len() >= INLINE_BYTES && self.key.starts_with(KEY_PREFIX) => {
-                Arc::new(Layout::of(&content))
+                Arc::new(Layout::of(content))
             }
             None => {
                 records.push(crate::StoreRecord {
@@ -370,9 +378,20 @@ impl EncodedPayload {
             self.stage_unless(records, known);
             return;
         }
-        records.extend(self.pending.drain(..).filter(|record| !known(&record.key)));
-        for mut child in std::mem::take(&mut self.children) {
-            child.stage_unless(records, known);
+        self.stage_closure(records, known);
+        self.pending = Arc::default();
+        self.children = Arc::default();
+    }
+
+    fn stage_closure(&self, records: &mut Vec<crate::StoreRecord>, known: &dyn Fn(&str) -> bool) {
+        records.extend(
+            self.pending
+                .iter()
+                .filter(|record| !known(&record.key))
+                .cloned(),
+        );
+        for child in self.children.iter() {
+            child.stage_tree(records, known);
         }
     }
 
@@ -560,8 +579,8 @@ impl EncodedPayload {
                 key: value.key.clone(),
                 content: Some(content.into()),
                 layout: None,
-                pending: Vec::new(),
-                children: Vec::new(),
+                pending: Arc::default(),
+                children: Arc::default(),
             });
         }
         Ok(loaded)

@@ -205,15 +205,6 @@ impl DurableExecution {
         self.context_records.store(Arc::new(keys));
         Ok(())
     }
-
-    fn remember_more(&self, keys: HashSet<String>) -> AgentResult<()> {
-        self.context_records.rcu(|known| {
-            let mut known = HashSet::clone(known);
-            known.extend(keys.iter().cloned());
-            known
-        });
-        Ok(())
-    }
 }
 
 async fn step_admission(
@@ -597,22 +588,16 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionStepAdmission>>> {
         Box::pin(async move {
             let mut cache = self.continuation_cache.take().unwrap_or_default();
-            let prepared = match context::prepare_cached_continuation(
-                state_json,
-                &history,
-                &prefix,
-                &mut cache,
-                &self.context_records.load(),
+            let continuation = match context::prepare_cached_continuation(
+                state_json, &history, &prefix, &mut cache,
             ) {
-                Ok(prepared) => prepared,
+                Ok(continuation) => continuation,
                 Err(error) => {
                     drop(self.continuation_cache.put(cache));
                     return Err(agent_error(error));
                 }
             };
-            let mut writes = vec![OwnerWrite::Advance {
-                continuation: prepared.payload,
-            }];
+            let mut writes = vec![OwnerWrite::Advance { continuation }];
             let kind = match next_step {
                 Some((step_id, kind, input_json)) => {
                     writes.push(OwnerWrite::BeginStep {
@@ -626,11 +611,10 @@ impl ExecutionPolicy for DurableExecution {
             };
             let outcomes = self.owner.commit_writes(operation_id, writes).await;
             if outcomes.is_ok() {
-                cache.committed(history, prefix);
+                cache.committed();
             }
             drop(self.continuation_cache.put(cache));
             let outcomes = outcomes.map_err(agent_error)?;
-            self.remember_more(prepared.keys)?;
             let Some(kind) = kind else {
                 return Ok(None);
             };
@@ -699,16 +683,11 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let mut cache = self.continuation_cache.take().unwrap_or_default();
-            let prepared = context::prepare_cached_continuation(
-                state_json,
-                &history,
-                &prefix,
-                &mut cache,
-                &self.context_records.load(),
-            );
+            let continuation =
+                context::prepare_cached_continuation(state_json, &history, &prefix, &mut cache);
             drop(self.continuation_cache.put(cache));
             self.owner
-                .advance_deferred(operation_id, prepared.map_err(agent_error)?.payload)
+                .advance_deferred(operation_id, continuation.map_err(agent_error)?)
                 .await
                 .map_err(agent_error)
         })

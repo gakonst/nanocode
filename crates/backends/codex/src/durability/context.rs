@@ -5,7 +5,7 @@ use std::{
 
 use nanocode_agent_core::TurnUsage;
 use nanocode_durability::{
-    EncodedPayload, Error, PagedWriter, PayloadReader, Prepared, Result, Sequence, SequenceCache,
+    EncodedPayload, Error, PagedWriter, PayloadReader, Prepared, Result, Sequence, SequenceLog,
     load_sequence,
 };
 use serde::{Deserialize, Serialize};
@@ -182,17 +182,15 @@ pub(crate) fn prepare_continuation(
 #[derive(Default)]
 pub(crate) struct ContinuationCache {
     history: ResponseHistory,
-    history_pages: SequenceCache,
+    history_log: SequenceLog,
     prefix: Arc<[ResponseItem]>,
-    prefix_pages: SequenceCache,
+    prefix_log: SequenceLog,
 }
 
 impl ContinuationCache {
-    pub(crate) fn committed(&mut self, history: ResponseHistory, prefix: Arc<[ResponseItem]>) {
-        self.history = history;
-        self.history_pages.committed();
-        self.prefix = prefix;
-        self.prefix_pages.committed();
+    pub(crate) fn committed(&mut self) {
+        self.history_log.release();
+        self.prefix_log.release();
     }
 }
 
@@ -201,25 +199,37 @@ pub(crate) fn prepare_cached_continuation(
     history: &ResponseHistory,
     prefix: &Arc<[ResponseItem]>,
     cache: &mut ContinuationCache,
-    known: &HashSet<String>,
-) -> Result<Prepared> {
-    let mut writer = PagedWriter::new(known);
-    let items = history.iter().collect::<Vec<_>>();
-    let unchanged = cache.history.shared_prefix_len(history);
-    let history_sequence = writer.sequence_cached(&items, unchanged, &mut cache.history_pages)?;
-    let unchanged = if Arc::ptr_eq(&cache.prefix, prefix) {
-        prefix.len()
-    } else {
-        0
-    };
-    let prefix_sequence = writer.sequence_cached(prefix, unchanged, &mut cache.prefix_pages)?;
+) -> Result<EncodedPayload> {
+    let unchanged = cache
+        .history
+        .shared_prefix_len(history)
+        .min(cache.history_log.len());
+    cache.history_log.sync(
+        unchanged,
+        history.iter_from(unchanged).map(EncodedPayload::encode),
+    )?;
+    cache.history = history.clone();
+    if !Arc::ptr_eq(&cache.prefix, prefix) || cache.prefix_log.len() != prefix.len() {
+        cache
+            .prefix_log
+            .sync(0, prefix.iter().map(EncodedPayload::encode))?;
+        cache.prefix = Arc::clone(prefix);
+    }
     let state =
         RawValue::from_string(state_json).map_err(nanocode_durability::Error::InvalidPayload)?;
-    writer.finish(&Continuation {
+    let payload = EncodedPayload::encode(&Continuation {
         state,
-        history: history_sequence,
-        prefix: prefix_sequence,
-    })
+        history: cache.history_log.sequence(),
+        prefix: cache.prefix_log.sequence(),
+    })?;
+    Ok(payload.with_payloads(
+        cache
+            .history_log
+            .frontier()
+            .chain(cache.prefix_log.frontier())
+            .cloned()
+            .collect(),
+    ))
 }
 
 pub(crate) async fn load_continuation(

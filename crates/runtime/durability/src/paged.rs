@@ -89,22 +89,111 @@ pub struct Prepared {
     pub keys: HashSet<String>,
 }
 
-#[derive(Clone, Default)]
-pub struct SequenceCache {
-    items: Vec<EncodedPayload>,
-    pages: Vec<Vec<EncodedPayload>>,
-    durable_items: usize,
-    durable_pages: Vec<usize>,
+#[derive(Serialize)]
+struct GroupRef<'a> {
+    entries: &'a [EncodedPayload],
 }
 
-impl SequenceCache {
-    pub fn committed(&mut self) {
-        self.durable_items = self.items.len();
-        self.durable_pages = self.pages.iter().map(Vec::len).collect();
+#[derive(Clone, Default)]
+pub struct SequenceLog {
+    levels: Vec<Vec<EncodedPayload>>,
+    released: Vec<usize>,
+}
+
+impl SequenceLog {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.levels.first().map_or(0, Vec::len)
     }
 
-    pub fn clear(&mut self) {
-        *self = Self::default();
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        let mut count = len;
+        for level in &mut self.levels {
+            level.truncate(count);
+            count /= GROUP;
+        }
+        while self.levels.last().is_some_and(Vec::is_empty) {
+            self.levels.pop();
+        }
+        self.released.truncate(self.levels.len());
+        for (released, level) in self.released.iter_mut().zip(&self.levels) {
+            *released = (*released).min(level.len());
+        }
+    }
+
+    pub fn push(&mut self, item: EncodedPayload) -> Result<()> {
+        let mut entry = item;
+        let mut level = 0;
+        loop {
+            if self.levels.len() == level {
+                self.levels.push(Vec::new());
+                self.released.push(0);
+            }
+            let entries = &mut self.levels[level];
+            entries.push(entry);
+            if !entries.len().is_multiple_of(GROUP) {
+                return Ok(());
+            }
+            let group = &entries[entries.len() - GROUP..];
+            entry =
+                EncodedPayload::encode(&GroupRef { entries: group })?.with_payloads(group.to_vec());
+            level += 1;
+        }
+    }
+
+    pub fn sync(
+        &mut self,
+        unchanged: usize,
+        items: impl IntoIterator<Item = Result<EncodedPayload>>,
+    ) -> Result<()> {
+        self.truncate(unchanged);
+        for item in items {
+            self.push(item?)?;
+        }
+        Ok(())
+    }
+
+    fn unsealed(entries: &[EncodedPayload]) -> &[EncodedPayload] {
+        &entries[entries.len() / GROUP * GROUP..]
+    }
+
+    #[must_use]
+    pub fn sequence(&self) -> Sequence {
+        let Some((items, pages)) = self.levels.split_first() else {
+            return Sequence::default();
+        };
+        let refs = |entries: &[EncodedPayload]| {
+            Self::unsealed(entries)
+                .iter()
+                .map(EncodedPayload::reference)
+                .collect::<Vec<_>>()
+        };
+        Sequence {
+            tail: Some(Tail::Sealed(Sealed {
+                levels: pages.iter().map(|pages| refs(pages)).collect(),
+                items: refs(items),
+            })),
+        }
+    }
+
+    pub fn frontier(&self) -> impl Iterator<Item = &EncodedPayload> {
+        self.levels
+            .iter()
+            .flat_map(|entries| Self::unsealed(entries))
+    }
+
+    pub fn release(&mut self) {
+        for (released, entries) in self.released.iter_mut().zip(&mut self.levels) {
+            for entry in &mut entries[*released..] {
+                *entry = entry.reference();
+            }
+            *released = entries.len();
+        }
     }
 }
 
@@ -124,86 +213,26 @@ impl<'a> PagedWriter<'a> {
         }
     }
 
-    fn record<T: Serialize>(&mut self, value: &T) -> Result<EncodedPayload> {
-        let mut payload = EncodedPayload::encode(value)?;
-        let key = payload.key().to_owned();
-        if self.keys.insert(key.clone()) && !self.known.contains(&key) {
+    fn keep(&mut self, payload: &EncodedPayload) {
+        let key = payload.key();
+        if !self.keys.contains(key) && !self.known.contains(key) {
+            let mut payload = payload.clone();
             payload.stage(&mut self.records);
         }
-
-        Ok(payload.reference())
+        self.keys.insert(key.to_owned());
     }
 
     pub fn sequence<T: Serialize>(&mut self, items: &[T]) -> Result<Sequence> {
-        self.sequence_cached(items, 0, &mut SequenceCache::default())
-    }
-
-    pub fn sequence_cached<T: Serialize>(
-        &mut self,
-        items: &[T],
-        unchanged: usize,
-        cache: &mut SequenceCache,
-    ) -> Result<Sequence> {
-        let reused = unchanged
-            .min(items.len())
-            .min(cache.durable_items)
-            .min(cache.items.len());
-        cache.items.truncate(reused);
-        cache.durable_items = cache.durable_items.min(reused);
-        for item in &items[reused..] {
-            let reference = self.record(item)?;
-            cache.items.push(reference);
+        let mut log = SequenceLog::default();
+        for item in items {
+            let payload = EncodedPayload::encode(item)?;
+            self.keep(&payload);
+            log.push(payload.reference())?;
         }
-        if cache.items.is_empty() {
-            cache.pages.clear();
-            cache.durable_pages.clear();
-            return Ok(Sequence::default());
+        for page in log.levels.iter().skip(1).flatten() {
+            self.keep(page);
         }
-        let mut valid = reused;
-        let mut level = 0;
-        loop {
-            let below = if level == 0 {
-                &cache.items
-            } else {
-                &cache.pages[level - 1]
-            };
-            let full = below.len() / GROUP;
-            if full == 0 {
-                break;
-            }
-            if cache.pages.len() == level {
-                cache.pages.push(Vec::new());
-                cache.durable_pages.push(0);
-            }
-            let kept = (valid / GROUP)
-                .min(full)
-                .min(cache.durable_pages[level])
-                .min(cache.pages[level].len());
-            let fresh = if level == 0 {
-                cache.items[kept * GROUP..full * GROUP].to_vec()
-            } else {
-                cache.pages[level - 1][kept * GROUP..full * GROUP].to_vec()
-            };
-            cache.pages[level].truncate(kept);
-            cache.durable_pages[level] = cache.durable_pages[level].min(kept);
-            for entries in fresh.chunks(GROUP) {
-                let page = self.record(&Group {
-                    entries: entries.to_vec(),
-                })?;
-                cache.pages[level].push(page);
-            }
-            valid = kept;
-            level += 1;
-        }
-        cache.pages.truncate(level);
-        cache.durable_pages.truncate(level);
-        let inline = |entries: &[EncodedPayload]| entries[entries.len() / GROUP * GROUP..].to_vec();
-        Ok(Sequence {
-            tail: Some(Tail::Sealed(Sealed {
-                levels: cache.pages.iter().map(|pages| inline(pages)).collect(),
-                items: inline(&cache.items),
-            })),
-        })
+        Ok(log.sequence())
     }
 
     pub fn finish<T: Serialize>(self, value: &T) -> Result<Prepared> {
@@ -212,42 +241,6 @@ impl<'a> PagedWriter<'a> {
             keys: self.keys,
         })
     }
-}
-
-pub fn seal_sequence(items: &[EncodedPayload]) -> Result<(Sequence, Vec<EncodedPayload>)> {
-    if items.is_empty() {
-        return Ok((Sequence::default(), Vec::new()));
-    }
-    let mut pages = Vec::new();
-    let mut inline = Vec::new();
-    let mut below: Vec<_> = items.iter().map(EncodedPayload::reference).collect();
-    loop {
-        let full = below.len() / GROUP * GROUP;
-        if full == 0 {
-            break;
-        }
-        let mut sealed = Vec::with_capacity(full / GROUP);
-        for entries in below[..full].chunks(GROUP) {
-            let page = EncodedPayload::encode(&Group {
-                entries: entries.to_vec(),
-            })?;
-            sealed.push(page.reference());
-            pages.push(page);
-        }
-        inline.push(below.split_off(full));
-        below = sealed;
-    }
-    inline.push(below);
-    let items = inline.remove(0);
-    Ok((
-        Sequence {
-            tail: Some(Tail::Sealed(Sealed {
-                levels: inline,
-                items,
-            })),
-        },
-        pages,
-    ))
 }
 
 pub async fn load_sequence<T: DeserializeOwned>(

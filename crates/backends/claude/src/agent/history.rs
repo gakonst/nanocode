@@ -4,8 +4,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use std::{
     borrow::Cow,
+    collections::HashMap,
     ops::Deref,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 #[derive(Clone)]
@@ -149,6 +153,10 @@ struct Round {
 }
 
 impl CodeRound {
+    pub(super) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub(super) fn record(&self) -> serde_json::Result<EncodedPayload> {
         if let Some(record) = self.0.record.get() {
             return Ok(record.clone());
@@ -190,6 +198,113 @@ impl Serialize for CodeRound {
 impl<'de> Deserialize<'de> for CodeRound {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         serde_json::Value::deserialize(deserializer).map(Self::from)
+    }
+}
+
+static ADMITTED_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+pub(super) struct AdmittedIds {
+    order: Vec<Arc<str>>,
+    positions: HashMap<Arc<str>, usize>,
+    epoch: u64,
+}
+
+impl Default for AdmittedIds {
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            positions: HashMap::new(),
+            epoch: ADMITTED_EPOCH.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Clone for AdmittedIds {
+    fn clone(&self) -> Self {
+        Self {
+            order: self.order.clone(),
+            positions: self.positions.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+impl PartialEq for AdmittedIds {
+    fn eq(&self, other: &Self) -> bool {
+        self.order.len() == other.order.len()
+            && self.order.iter().all(|id| other.positions.contains_key(id))
+    }
+}
+
+impl AdmittedIds {
+    pub(super) fn contains(&self, id: &str) -> bool {
+        self.positions.contains_key(id)
+    }
+
+    pub(super) fn position(&self, id: &str) -> Option<usize> {
+        self.positions.get(id).copied()
+    }
+
+    pub(super) const fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    pub(super) const fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    pub(super) const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub(super) fn ordered(&self) -> &[Arc<str>] {
+        &self.order
+    }
+
+    pub(super) fn insert(&mut self, id: Arc<str>) {
+        if !self.positions.contains_key(&id) {
+            self.positions.insert(Arc::clone(&id), self.order.len());
+            self.order.push(id);
+        }
+    }
+}
+
+impl Extend<String> for AdmittedIds {
+    fn extend<I: IntoIterator<Item = String>>(&mut self, ids: I) {
+        for id in ids {
+            self.insert(id.into());
+        }
+    }
+}
+
+impl Extend<Arc<str>> for AdmittedIds {
+    fn extend<I: IntoIterator<Item = Arc<str>>>(&mut self, ids: I) {
+        for id in ids {
+            self.insert(id);
+        }
+    }
+}
+
+impl IntoIterator for AdmittedIds {
+    type Item = Arc<str>;
+    type IntoIter = std::vec::IntoIter<Arc<str>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.order.into_iter()
+    }
+}
+
+impl Serialize for AdmittedIds {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(&self.order)
+    }
+}
+
+impl<'de> Deserialize<'de> for AdmittedIds {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut ids = Self::default();
+        ids.extend(Vec::<String>::deserialize(deserializer)?);
+        Ok(ids)
     }
 }
 

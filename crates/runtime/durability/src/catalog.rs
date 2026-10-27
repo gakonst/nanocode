@@ -1365,11 +1365,7 @@ mod store {
         }
 
         async fn first_prompt(&self, id: &str, state: &DurableState) -> Result<Option<String>> {
-            let Some((_, first)) = state
-                .operations()
-                .iter()
-                .min_by_key(|(_, op)| op.accepted_order())
-            else {
+            let Some((_, first)) = state.operations().first_accepted() else {
                 return Ok(None);
             };
             let input: Value = self.load_payload(id, &first.input).await?.decode()?;

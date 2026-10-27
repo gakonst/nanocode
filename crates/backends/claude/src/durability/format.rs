@@ -20,9 +20,16 @@ struct PagedConversation {
     #[serde(default)]
     code_calls: Option<Sequence>,
     #[serde(default)]
+    admitted_base: Option<EncodedPayload>,
+    #[serde(default)]
     admitted_tool_ids: Vec<String>,
     #[serde(default)]
     unadmitted_tool_ids: HashSet<String>,
+}
+
+#[derive(Deserialize)]
+struct AdmittedBase {
+    ids: Vec<String>,
 }
 
 impl PagedConversation {
@@ -38,7 +45,18 @@ impl PagedConversation {
             conversation.insert("code_calls".into(), Value::Array(rounds));
         }
         if self.version >= 3 {
-            let mut admitted = self.admitted_tool_ids;
+            let mut admitted = match self.admitted_base {
+                Some(base) => {
+                    read.insert(base.key().to_owned());
+                    reader
+                        .load_payload(base)
+                        .await?
+                        .decode::<AdmittedBase>()?
+                        .ids
+                }
+                None => Vec::new(),
+            };
+            admitted.extend(self.admitted_tool_ids);
             admitted.extend(
                 messages
                     .iter()
@@ -79,7 +97,7 @@ fn paged(value: &Value) -> bool {
     value
         .get("version")
         .and_then(Value::as_u64)
-        .is_some_and(|version| version == 2 || version == 3)
+        .is_some_and(|version| (2..=4).contains(&version))
 }
 
 fn object<'a>(

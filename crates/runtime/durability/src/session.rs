@@ -1974,11 +1974,7 @@ impl Driver {
     }
 
     async fn preview(&mut self, state: &DurableState) -> Result<Option<String>> {
-        let Some((_, operation)) = state
-            .operations()
-            .iter()
-            .min_by_key(|(_, operation)| operation.accepted_order())
-        else {
+        let Some((_, operation)) = state.operations().first_accepted() else {
             return Ok(None);
         };
         let key = operation.input.key();

@@ -36,7 +36,7 @@ use nanocode_media::image::ImageHistory;
 use nanocode_platform::Instant;
 #[cfg(target_family = "wasm")]
 use nanocode_platform::sleep;
-use nanocode_sync::{Atom, Owned, Sequencer};
+use nanocode_sync::{Atom, Owned, Sequencer, Slot};
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -1690,6 +1690,7 @@ impl ClaudeBuilder {
             developer_notices: Atom::new(restored.developer_notices),
             persistence_update: Sequencer::new(),
             persistence_ready: Notify::new(),
+            paging: Slot::default(),
             conversation: Owned::new(restored.conversation),
             round_boundary: Atom::new(round_boundary),
             side_view: Atom::default(),
@@ -2554,7 +2555,7 @@ struct Conversation {
     #[serde(default)]
     lifecycle_started: bool,
 
-    admitted_tool_ids: HashSet<String>,
+    admitted_tool_ids: history::AdmittedIds,
     #[serde(default)]
     recovery_notices: Vec<String>,
 
@@ -3172,6 +3173,7 @@ struct State {
     developer_notices: Atom<Vec<(String, String)>>,
     persistence_update: Sequencer,
     persistence_ready: Notify,
+    paging: Slot<durable::Paging>,
 
     round_boundary: Atom<Arc<Snapshot>>,
 

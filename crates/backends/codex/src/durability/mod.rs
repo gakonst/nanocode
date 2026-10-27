@@ -194,11 +194,20 @@ impl DurableExecution {
         }
     }
 
-    fn prepare_snapshot(
+    async fn commit_snapshot<T, F: Future<Output = nanocode_durability::Result<T>>>(
         &self,
-        snapshot: SessionSnapshot,
-    ) -> AgentResult<nanocode_durability::Prepared> {
-        context::prepare_snapshot(snapshot, &self.context_records.load()).map_err(agent_error)
+        prepare: impl FnOnce(&mut context::ContinuationCache) -> nanocode_durability::Result<F>,
+    ) -> AgentResult<T> {
+        let mut cache = self.continuation_cache.take().unwrap_or_default();
+        let committed = match prepare(&mut cache) {
+            Ok(commit) => commit.await,
+            Err(error) => Err(error),
+        };
+        if committed.is_ok() {
+            cache.committed();
+        }
+        drop(self.continuation_cache.put(cache));
+        committed.map_err(agent_error)
     }
 
     fn remember(&self, keys: HashSet<String>) -> AgentResult<()> {
@@ -300,12 +309,12 @@ impl ExecutionPolicy for DurableExecution {
         snapshot: SessionSnapshot,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            let prepared = self.prepare_snapshot(snapshot)?;
-            self.owner
-                .commit_checkpoint(prepared.payload)
-                .await
-                .map_err(agent_error)?;
-            self.remember(prepared.keys)
+            self.commit_snapshot(|cache| {
+                let checkpoint = context::prepare_cached_snapshot(snapshot, cache)?;
+                Ok(self.owner.commit_checkpoint(checkpoint))
+            })
+            .await
+            .map(drop)
         })
     }
 
@@ -357,21 +366,13 @@ impl ExecutionPolicy for DurableExecution {
         snapshot: Option<SessionSnapshot>,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            let prepared = snapshot
-                .map(|snapshot| self.prepare_snapshot(snapshot))
-                .transpose()?;
-            let (checkpoint, keys) = match prepared {
-                Some(value) => (Some(value.payload), Some(value.keys)),
-                None => (None, None),
-            };
-            self.owner
-                .cancel(operation_id, checkpoint)
-                .await
-                .map_err(agent_error)?;
-            if let Some(keys) = keys {
-                self.remember(keys)?;
-            }
-            Ok(())
+            self.commit_snapshot(|cache| {
+                let checkpoint = snapshot
+                    .map(|snapshot| context::prepare_cached_snapshot(snapshot, cache))
+                    .transpose()?;
+                Ok(self.owner.cancel(operation_id, checkpoint))
+            })
+            .await
         })
     }
 
@@ -700,14 +701,16 @@ impl ExecutionPolicy for DurableExecution {
         output: ExecutionOutput,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            let (prepared, output) =
-                context::prepare_completion(snapshot, &output, &self.context_records.load())
-                    .map_err(agent_error)?;
-            self.owner
-                .complete(operation_id, prepared.payload, &*output)
-                .await
-                .map_err(agent_error)?;
-            self.remember(prepared.keys)
+            self.commit_snapshot(|cache| {
+                let (checkpoint, output) =
+                    context::prepare_cached_completion(snapshot, &output, cache)?;
+                Ok(async move {
+                    self.owner
+                        .complete(operation_id, checkpoint, &*output)
+                        .await
+                })
+            })
+            .await
         })
     }
 
@@ -731,12 +734,11 @@ impl ExecutionPolicy for DurableExecution {
         error: String,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            let prepared = self.prepare_snapshot(snapshot)?;
-            self.owner
-                .fail(operation_id, prepared.payload, error)
-                .await
-                .map_err(agent_error)?;
-            self.remember(prepared.keys)
+            self.commit_snapshot(|cache| {
+                let checkpoint = context::prepare_cached_snapshot(snapshot, cache)?;
+                Ok(self.owner.fail(operation_id, checkpoint, error))
+            })
+            .await
         })
     }
 }

@@ -107,31 +107,23 @@ struct ReferencedOutput<'a> {
     usage: &'a TurnUsage,
 }
 
-pub(crate) fn prepare_completion(
-    snapshot: SessionSnapshot,
-    output: &ExecutionOutput,
-    known: &HashSet<String>,
-) -> Result<(Prepared, Box<RawValue>)> {
-    let (head, history, prefix) = snapshot.into_context_parts();
+fn completion_output(history: &ResponseHistory, output: &ExecutionOutput) -> Result<Box<RawValue>> {
     let referenced = history
-        .last()
+        .iter_rev()
+        .next()
         .filter(|item| {
             !output.final_message.is_empty()
                 && assistant_text(item).as_deref() == Some(output.final_message.as_str())
         })
         .map(EncodedPayload::encode)
         .transpose()?;
-    let stored = match referenced {
+    match referenced {
         Some(record) => raw(&ReferencedOutput {
             final_record: record.reference(),
             usage: &output.usage,
-        })?,
-        None => raw(output)?,
-    };
-    Ok((
-        prepare_parts(head, &history, prefix.as_deref(), known)?,
-        stored,
-    ))
+        }),
+        None => raw(output),
+    }
 }
 
 pub(crate) async fn restore_output(
@@ -192,6 +184,71 @@ impl ContinuationCache {
         self.history_log.release();
         self.prefix_log.release();
     }
+
+    fn sync_history(&mut self, history: &ResponseHistory) -> Result<()> {
+        let unchanged = self
+            .history
+            .shared_prefix_len(history)
+            .min(self.history_log.len());
+        self.history_log.sync(
+            unchanged,
+            history.iter_from(unchanged).map(EncodedPayload::encode),
+        )?;
+        self.history = history.clone();
+        Ok(())
+    }
+
+    fn sync_prefix(&mut self, prefix: &Arc<[ResponseItem]>) -> Result<()> {
+        if !Arc::ptr_eq(&self.prefix, prefix) || self.prefix_log.len() != prefix.len() {
+            self.prefix_log
+                .sync(0, prefix.iter().map(EncodedPayload::encode))?;
+            self.prefix = Arc::clone(prefix);
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn prepare_cached_snapshot(
+    snapshot: SessionSnapshot,
+    cache: &mut ContinuationCache,
+) -> Result<EncodedPayload> {
+    let (head, history, prefix) = snapshot.into_context_parts();
+    cached_parts(head, &history, prefix.as_ref(), cache)
+}
+
+pub(crate) fn prepare_cached_completion(
+    snapshot: SessionSnapshot,
+    output: &ExecutionOutput,
+    cache: &mut ContinuationCache,
+) -> Result<(EncodedPayload, Box<RawValue>)> {
+    let (head, history, prefix) = snapshot.into_context_parts();
+    let stored = completion_output(&history, output)?;
+    Ok((
+        cached_parts(head, &history, prefix.as_ref(), cache)?,
+        stored,
+    ))
+}
+
+fn cached_parts(
+    head: SessionSnapshotHead,
+    history: &ResponseHistory,
+    prefix: Option<&Arc<[ResponseItem]>>,
+    cache: &mut ContinuationCache,
+) -> Result<EncodedPayload> {
+    cache.sync_history(history)?;
+    if let Some(prefix) = prefix {
+        cache.sync_prefix(prefix)?;
+    }
+    let payload = EncodedPayload::encode(&Snapshot {
+        head,
+        history: cache.history_log.sequence(),
+        prefix: prefix.map(|_| cache.prefix_log.sequence()),
+    })?;
+    let mut children = cache.history_log.frontier().cloned().collect::<Vec<_>>();
+    if prefix.is_some() {
+        children.extend(cache.prefix_log.frontier().cloned());
+    }
+    Ok(payload.with_payloads(children))
 }
 
 pub(crate) fn prepare_cached_continuation(
@@ -200,21 +257,8 @@ pub(crate) fn prepare_cached_continuation(
     prefix: &Arc<[ResponseItem]>,
     cache: &mut ContinuationCache,
 ) -> Result<EncodedPayload> {
-    let unchanged = cache
-        .history
-        .shared_prefix_len(history)
-        .min(cache.history_log.len());
-    cache.history_log.sync(
-        unchanged,
-        history.iter_from(unchanged).map(EncodedPayload::encode),
-    )?;
-    cache.history = history.clone();
-    if !Arc::ptr_eq(&cache.prefix, prefix) || cache.prefix_log.len() != prefix.len() {
-        cache
-            .prefix_log
-            .sync(0, prefix.iter().map(EncodedPayload::encode))?;
-        cache.prefix = Arc::clone(prefix);
-    }
+    cache.sync_history(history)?;
+    cache.sync_prefix(prefix)?;
     let state =
         RawValue::from_string(state_json).map_err(nanocode_durability::Error::InvalidPayload)?;
     let payload = EncodedPayload::encode(&Continuation {
@@ -277,12 +321,12 @@ pub(crate) fn prepare_snapshot(
 
 fn prepare_parts(
     head: SessionSnapshotHead,
-    history: &[ResponseItem],
+    history: &ResponseHistory,
     prefix: Option<&[ResponseItem]>,
     known: &HashSet<String>,
 ) -> Result<Prepared> {
     let mut writer = PagedWriter::new(known);
-    let history = writer.sequence(history)?;
+    let history = writer.sequence_iter(history)?;
     let prefix = prefix.map(|items| writer.sequence(items)).transpose()?;
     writer.finish(&Snapshot {
         head,
@@ -320,7 +364,7 @@ pub(crate) fn preloaded_snapshot(
     let known = HashSet::new();
     let mut writer = PagedWriter::new(&known);
     let saved = Snapshot {
-        history: writer.sequence(&history).ok()?,
+        history: writer.sequence_iter(&history).ok()?,
         prefix: prefix
             .as_ref()
             .map(|items| writer.sequence(items))
@@ -345,5 +389,10 @@ pub(crate) async fn load_snapshot_with_keys(
         Some(value) => Some(load_sequence(reader, value, &mut keys).await?),
         None => None,
     };
-    Ok((saved.head.with_context(history, prefix), keys))
+    Ok((
+        saved
+            .head
+            .with_context(ResponseHistory::new(history), prefix.map(Arc::from)),
+        keys,
+    ))
 }

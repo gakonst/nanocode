@@ -223,6 +223,13 @@ impl<'a> PagedWriter<'a> {
     }
 
     pub fn sequence<T: Serialize>(&mut self, items: &[T]) -> Result<Sequence> {
+        self.sequence_iter(items)
+    }
+
+    pub fn sequence_iter<'i, T: Serialize + 'i>(
+        &mut self,
+        items: impl IntoIterator<Item = &'i T>,
+    ) -> Result<Sequence> {
         let mut log = SequenceLog::default();
         for item in items {
             let payload = EncodedPayload::encode(item)?;

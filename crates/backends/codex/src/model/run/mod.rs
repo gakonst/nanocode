@@ -178,7 +178,7 @@ impl ModelCheckpoint {
         self.conversation.shared_history()
     }
 
-    pub(crate) fn request_prefix(&self) -> &[ResponseItem] {
+    pub(crate) const fn shared_request_prefix(&self) -> &Arc<[ResponseItem]> {
         &self.request_prefix
     }
 

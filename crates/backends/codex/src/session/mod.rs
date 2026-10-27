@@ -11,7 +11,7 @@ pub use contract::{
 use crate::client::Model;
 
 use crate::client::responses::MessageRole;
-use crate::client::responses::{ResponseItem, Usage};
+use crate::client::responses::{ResponseHistory, ResponseItem, Usage};
 
 pub use crate::client::session::SessionId;
 
@@ -20,6 +20,25 @@ use crate::model::run::ModelCheckpoint;
 use crate::{NanocodeError, Result};
 
 const SESSION_SNAPSHOT_VERSION: u32 = 1;
+
+mod shared_history {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::client::responses::{ResponseHistory, ResponseItem};
+
+    pub(super) fn serialize<S: Serializer>(
+        history: &ResponseHistory,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(history.iter())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ResponseHistory, D::Error> {
+        Vec::<ResponseItem>::deserialize(deserializer).map(ResponseHistory::new)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SessionStart {
@@ -139,9 +158,9 @@ impl CommittedSession {
             prompt_cache_key: self.model.prompt_cache_key().to_owned(),
             workspace: self.model.workspace().to_owned(),
             base_instructions: None,
-            request_prefix: Some(self.model.request_prefix().to_vec()),
+            request_prefix: Some(Arc::clone(self.model.shared_request_prefix())),
             canonical_context: self.model.canonical_context().clone(),
-            history: self.model.snapshot_history(),
+            history: self.model.history(),
             client_authored: self.model.client_authored().clone(),
             context_snapshot: Some(self.model.context_baseline().clone()),
             context_usage: Some(self.model.context_usage()),
@@ -172,9 +191,10 @@ pub struct SessionSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_instructions: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    request_prefix: Option<Vec<ResponseItem>>,
+    request_prefix: Option<Arc<[ResponseItem]>>,
     canonical_context: ResponseItem,
-    history: Vec<ResponseItem>,
+    #[serde(with = "shared_history")]
+    history: ResponseHistory,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     client_authored: std::collections::BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -317,8 +337,8 @@ impl SessionSnapshotHead {
     #[must_use]
     pub fn with_context(
         mut self,
-        history: Vec<ResponseItem>,
-        prefix: Option<Vec<ResponseItem>>,
+        history: ResponseHistory,
+        prefix: Option<Arc<[ResponseItem]>>,
     ) -> SessionSnapshot {
         self.0.history = history;
         self.0.request_prefix = prefix;
@@ -343,8 +363,8 @@ impl SessionSnapshot {
         mut self,
     ) -> (
         SessionSnapshotHead,
-        Vec<ResponseItem>,
-        Option<Vec<ResponseItem>>,
+        ResponseHistory,
+        Option<Arc<[ResponseItem]>>,
     ) {
         let history = std::mem::take(&mut self.history);
         let prefix = self.request_prefix.take();
@@ -413,7 +433,7 @@ impl SessionSnapshot {
         }
         if let Some(request_prefix) = self.request_prefix.as_ref()
             && !matches!(
-                request_prefix.as_slice(),
+                &**request_prefix,
                 [
                     ResponseItem::AdditionalTools {
                         role: MessageRole::Developer,
@@ -430,7 +450,8 @@ impl SessionSnapshot {
                 "request prefix does not match the supported model contract".to_owned(),
             ));
         }
-        self.reasoning.validate(&self.history)?;
+        let history = self.history.iter().cloned().collect::<Vec<_>>();
+        self.reasoning.validate(&history)?;
         let lineage_id = Arc::<str>::from(self.lineage_id);
         let prompt_cache_key = Arc::<str>::from(self.prompt_cache_key);
         let checkpoint = self
@@ -439,10 +460,10 @@ impl SessionSnapshot {
                 let mut checkpoint = ModelCheckpoint::resume(
                     self.workspace.clone(),
                     Arc::clone(&lineage_id),
-                    request_prefix,
+                    request_prefix.to_vec(),
                     Arc::clone(&prompt_cache_key),
                     self.canonical_context.clone(),
-                    self.history.clone(),
+                    history.clone(),
                     self.client_authored.clone(),
                     None,
                     self.context_snapshot.clone(),
@@ -460,7 +481,7 @@ impl SessionSnapshot {
             prompt_cache_key,
             workspace: self.workspace,
             canonical_context: self.canonical_context,
-            history: self.history,
+            history,
             client_authored: self.client_authored,
             context_baseline: self.context_snapshot,
             reasoning: self.reasoning,

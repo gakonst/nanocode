@@ -193,6 +193,19 @@ impl EncodedPayload {
                 .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
     }
 
+    pub fn references(json: &str) -> impl Iterator<Item = &str> {
+        json.match_indices(KEY_PREFIX).filter_map(|(at, _)| {
+            json.get(at..at + KEY_PREFIX.len() + HASH_HEX)
+                .filter(|key| Self::is_key(key))
+        })
+    }
+
+    pub fn is_layout_key(key: &str) -> bool {
+        key.strip_prefix(KEY_PREFIX)
+            .or_else(|| key.strip_prefix("c:"))
+            .is_some_and(Self::is_key)
+    }
+
     pub fn verify_record(key: &str, value: &str) -> Result<()> {
         let invalid = |detail: &str| Err(Error::InvalidState(format!("record {key} {detail}")));
         if let Some(hash) = key.strip_prefix(KEY_PREFIX) {

@@ -2,6 +2,7 @@
 
 use std::ops::DerefMut;
 
+pub use nanocode_durability_core::{Collected, Unreachable};
 use nanocode_durability_core::{
     Sql, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites, StoreError, StoreFuture,
 };
@@ -91,6 +92,28 @@ pub async fn stage_records(
 ) -> Result<(), StoreError> {
     writes
         .stage_records(&mut SqlStore::new(SqlxTransaction::new(connection)).migrated())
+        .await
+}
+
+pub async fn unreachable(
+    state_id: &str,
+    connection: &mut PgConnection,
+) -> Result<Unreachable, StoreError> {
+    SqlStore::new(SqlxTransaction::new(connection))
+        .migrated()
+        .unreachable(state_id)
+        .await
+}
+
+pub async fn collect(
+    state_id: &str,
+    revision: u64,
+    keys: &[String],
+    connection: &mut PgConnection,
+) -> Result<Option<Collected>, StoreError> {
+    SqlStore::new(SqlxTransaction::new(connection))
+        .migrated()
+        .collect(state_id, revision, keys)
         .await
 }
 

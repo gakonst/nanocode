@@ -2498,6 +2498,7 @@ impl DurableSession {
                 "session record does not describe its state".into(),
             ));
         }
+        let terminal_receipt_limit = terminal_receipt_limit.or(store.terminal_receipt_limit);
         let described = record.clone();
         let state_id = Arc::<str>::from(state_id);
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);

@@ -6,6 +6,8 @@ mod foreground;
 pub use foreground::{ForegroundOutput, run_bash};
 mod output;
 mod process;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod server;
 use nanocode_home::shell as selection;
 
 pub use process::ProcessGroupGuard;
@@ -105,6 +107,8 @@ pub struct ShellSessions {
     environment: Arc<Vec<(OsString, OsString)>>,
     secrets: Option<SecretEnvironment>,
     per_caller: bool,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    servers: server::Servers,
 }
 
 impl ShellSessions {
@@ -118,6 +122,8 @@ impl ShellSessions {
             environment,
             secrets: None,
             per_caller: false,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            servers: server::Servers::default(),
         }
     }
 
@@ -162,29 +168,57 @@ impl ShellSessions {
             let (mut environment, secrets) =
                 process::sanitized_environment(&self.environment, &host_secrets);
             let login = command.login.unwrap_or(true);
-            let script = process::export_secrets_after_profile(
-                &command.script,
-                &shell,
-                login,
-                &host_secrets,
-                &mut environment,
-            );
-
             let terminations = self.terminations.load(Ordering::SeqCst);
-            let spawned =
-                match process::spawn(&script, &workdir, &shell, login, command.tty, &environment) {
-                    Ok(spawned) => spawned,
-                    Err(error) => {
-                        return ExecCommandResult::failed(
-                            started_at.elapsed(),
-                            format!(
-                                "exec_command failed for `{}`: CreateProcess {{ message: {:?} }}",
-                                command.script,
-                                error.to_string()
-                            ),
-                        );
-                    }
-                };
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            let served = match command.tty || command.shell.is_some() {
+                true => None,
+                false => {
+                    self.servers
+                        .spawn(server::Request {
+                            script: &command.script,
+                            workdir: &workdir,
+                            shell: &shell,
+                            login,
+                            environment: &environment,
+                            secrets: &host_secrets,
+                        })
+                        .await
+                }
+            };
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            let served = None;
+            let spawned = match served {
+                Some(served) => Ok(served),
+                None => {
+                    let script = process::export_secrets_after_profile(
+                        &command.script,
+                        &shell,
+                        login,
+                        &host_secrets,
+                        &mut environment,
+                    )
+                    .into_owned();
+                    let (directory, tty) = (workdir.clone(), command.tty);
+                    tokio::task::spawn_blocking(move || {
+                        process::spawn(&script, &directory, &shell, login, tty, &environment)
+                    })
+                    .await
+                    .unwrap_or_else(|error| Err(std::io::Error::other(error)))
+                }
+            };
+            let spawned = match spawned {
+                Ok(spawned) => spawned,
+                Err(error) => {
+                    return ExecCommandResult::failed(
+                        started_at.elapsed(),
+                        format!(
+                            "exec_command failed for `{}`: CreateProcess {{ message: {:?} }}",
+                            command.script,
+                            error.to_string()
+                        ),
+                    );
+                }
+            };
             let launch = Launch {
                 command: command.script.clone(),
                 workdir,
@@ -358,6 +392,8 @@ impl ShellSessions {
             for session in sessions.into_values() {
                 session.terminate().await;
             }
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            self.servers.stop().await;
         })
     }
 
@@ -403,7 +439,11 @@ impl Drop for Busy<'_> {
 }
 
 fn prune(sessions: &mut HashMap<i64, Arc<Session>>) -> Option<Arc<Session>> {
-    if sessions.len() < MAX_SESSIONS {
+    if sessions.len() < MAX_SESSIONS
+        || sessions
+            .values()
+            .all(|session| session.busy.load(Ordering::SeqCst) > 0)
+    {
         return None;
     }
     let mut recent = sessions
@@ -460,6 +500,8 @@ impl Session {
                 chunks,
                 Arc::clone(&activity),
             )],
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            process::ProcessOutput::Served(served) => served.drains(&chunks, &activity),
         };
         let process_group = spawned.process_group;
         let exited = spawned.child.exited();

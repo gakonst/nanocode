@@ -20,10 +20,10 @@ portable-pty.workspace = true
 tracing.workspace = true
 getrandom.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
-nix.workspace = true
+nix = { workspace = true, features = ["event", "fs"] }
 rustix = { workspace = true, features = ["process"] }
 
 [lints]

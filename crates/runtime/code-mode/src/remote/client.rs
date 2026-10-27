@@ -33,6 +33,8 @@ use crate::{
 pub const PEER_CLOSED: &str = "runner disconnected";
 pub const LOCAL_CLOSED: &str = "remote connection closed";
 
+const ACK_DELAY: Duration = Duration::from_millis(10);
+
 pub type ResumedReply = HostFuture<'static, Result<Option<Value>, CodeModeHostError>>;
 
 pub type CallReply = HostFuture<'static, Result<Value, CodeModeHostError>>;
@@ -53,6 +55,16 @@ pub trait RemoteLink: Send + Sync + 'static {
         frames: Vec<Frame>,
         delivery: RemoteDelivery,
     ) -> HostFuture<'_, Result<(), CodeModeHostError>>;
+    fn send_encoded(
+        &self,
+        frames: Vec<(Frame, Option<String>)>,
+        delivery: RemoteDelivery,
+    ) -> HostFuture<'_, Result<(), CodeModeHostError>> {
+        self.send(
+            frames.into_iter().map(|(frame, _)| frame).collect(),
+            delivery,
+        )
+    }
     fn receive(&self) -> HostFuture<'_, Result<Vec<Frame>, CodeModeHostError>>;
     fn close<'a>(&'a self, reason: &'a str) -> HostFuture<'a, ()>;
     fn changed(&self) {}
@@ -102,6 +114,8 @@ type Receipts = HashMap<(String, String), Vec<Weak<dyn ToolReceipt>>>;
 
 type Sending<'a> = (HostFuture<'a, Result<(), CodeModeHostError>>, Vec<u64>);
 
+type Encoded = (Frame, Option<String>);
+
 #[derive(Clone)]
 struct Waiter {
     replies: mpsc::UnboundedSender<Frame>,
@@ -112,7 +126,7 @@ type Waiters = HashMap<u64, Waiter>;
 
 enum Outgoing {
     Send {
-        frames: Vec<Frame>,
+        frames: Vec<(Frame, Option<String>)>,
         delivery: RemoteDelivery,
         waiters: Vec<(u64, Waiter)>,
     },
@@ -120,9 +134,9 @@ enum Outgoing {
 }
 
 impl Outgoing {
-    const fn frames(frames: Vec<Frame>, delivery: RemoteDelivery) -> Self {
+    fn frames(frames: Vec<Frame>, delivery: RemoteDelivery) -> Self {
         Self::Send {
-            frames,
+            frames: frames.into_iter().map(|frame| (frame, None)).collect(),
             delivery,
             waiters: Vec::new(),
         }
@@ -230,8 +244,11 @@ fn origin(call_id: &str) -> &str {
         .map_or(call_id, |(origin, _)| origin)
 }
 
-fn fits(frame: &Frame, max_frame_bytes: Option<usize>) -> Result<(), CodeModeHostError> {
-    max_frame_bytes.map_or(Ok(()), |limit| frame.encode(limit).map(drop))
+fn fits(
+    frame: &Frame,
+    max_frame_bytes: Option<usize>,
+) -> Result<Option<String>, CodeModeHostError> {
+    max_frame_bytes.map(|limit| frame.encode(limit)).transpose()
 }
 
 fn requested_yield(operation: &RemoteOperation) -> Duration {
@@ -425,13 +442,14 @@ fn prepare_call(
     client: &Arc<Client>,
     id: u64,
     operation: RemoteOperation,
-) -> Result<(Frame, (u64, Waiter), CallReply), CodeModeHostError> {
+) -> Result<(Encoded, (u64, Waiter), CallReply), CodeModeHostError> {
     client.not_dispatched()?;
     let requested = requested_yield(&operation);
     let frame = client.request_frame(id, operation);
-    fits(&frame, client.max_frame_bytes).map_err(|issue| {
+    let text = fits(&frame, client.max_frame_bytes).map_err(|issue| {
         CodeModeHostError::unsent(format!("{issue}; the operation was not dispatched"))
     })?;
+    let frame = (frame, text);
     let (registered, mut replies) = waiter();
     let guard = Pending {
         client: Arc::clone(client),
@@ -472,14 +490,17 @@ fn prepare_call(
 impl Client {
     fn dispatch(
         &self,
-        frame: Frame,
+        frame: (Frame, Option<String>),
         delivery: RemoteDelivery,
         waiter: Option<(u64, Waiter)>,
     ) -> Result<(), CodeModeHostError> {
-        if let Frame::Request {
-            operation: RemoteOperation::Cancel { session_id },
-            ..
-        } = &frame
+        if let (
+            Frame::Request {
+                operation: RemoteOperation::Cancel { session_id },
+                ..
+            },
+            _,
+        ) = &frame
         {
             self.callbacks
                 .update(|callbacks| callbacks.retain(|(session, _), _| session != session_id));
@@ -695,13 +716,23 @@ impl Client {
                     id,
                     result: result.map_err(|issue: CodeModeHostError| issue.to_string()),
                 };
-                if let Err(issue) = fits(&frame, max_frame_bytes) {
-                    frame = Frame::CallbackResult {
-                        id,
-                        result: Err(format!("{issue}; the brain callback's result was not sent")),
-                    };
-                }
-                let _ = outgoing.send(Outgoing::frames(vec![frame], delivery));
+                let text = match fits(&frame, max_frame_bytes) {
+                    Ok(text) => text,
+                    Err(issue) => {
+                        frame = Frame::CallbackResult {
+                            id,
+                            result: Err(format!(
+                                "{issue}; the brain callback's result was not sent"
+                            )),
+                        };
+                        None
+                    }
+                };
+                let _ = outgoing.send(Outgoing::Send {
+                    frames: vec![(frame, text)],
+                    delivery,
+                    waiters: Vec::new(),
+                });
             }
             if let Some(client) = client.upgrade() {
                 client.running.update(|running| {
@@ -815,6 +846,8 @@ async fn drive(
     mut pending: Waiters,
 ) -> String {
     let mut callbacks = FuturesUnordered::new();
+    let mut acks = Vec::new();
+    let mut ack_due = None;
     let result = {
         let mut receiving = link.receive();
         let mut sending: Option<Sending<'_>> = None;
@@ -878,15 +911,31 @@ async fn drive(
                             }
                         }
                     }
+                    if !acks.is_empty() {
+                        let due = ack_due
+                            .get_or_insert_with(|| Box::pin(nanocode_platform::sleep(ACK_DELAY)));
+                        if !batch.is_empty() || due.as_mut().poll(cx).is_ready() {
+                            ack_due = None;
+                            batch.insert(
+                                0,
+                                (
+                                    Frame::Ack {
+                                        ids: std::mem::take(&mut acks),
+                                    },
+                                    None,
+                                ),
+                            );
+                        }
+                    }
                     if !batch.is_empty() {
                         let ids = batch
                             .iter()
-                            .filter_map(|frame| match frame {
+                            .filter_map(|(frame, _)| match frame {
                                 Frame::Request { id, .. } => Some(*id),
                                 _ => None,
                             })
                             .collect();
-                        sending = Some((link.send(batch, delivery), ids));
+                        sending = Some((link.send_encoded(batch, delivery), ids));
                         continue;
                     }
                 }
@@ -895,7 +944,6 @@ async fn drive(
                         let Some(client) = client.upgrade() else {
                             return Poll::Ready(Ok(()));
                         };
-                        let mut acks = Vec::new();
                         for frame in received {
                             if client.resumes.is_some()
                                 && !client.settles
@@ -908,12 +956,6 @@ async fn drive(
                                 Ok(None) => {}
                                 Err(issue) => return Poll::Ready(Err(issue)),
                             }
-                        }
-                        if !acks.is_empty() {
-                            let _ = client.outgoing.send(Outgoing::frames(
-                                vec![Frame::Ack { ids: acks }],
-                                RemoteDelivery::Immediate,
-                            ));
                         }
                         link.changed();
                         receiving = link.receive();
@@ -1020,7 +1062,7 @@ impl RemoteTransport for RemoteClient {
             let requested = requested_yield(&operation);
             let id = client.next.fetch_add(1, Ordering::Relaxed);
             let frame = client.request_frame(id, operation);
-            fits(&frame, client.max_frame_bytes)
+            let text = fits(&frame, client.max_frame_bytes)
                 .map_err(|issue| error(format!("{issue}; the operation was not dispatched")))?;
             if let Some(context) = executed {
                 let generation = client
@@ -1051,7 +1093,11 @@ impl RemoteTransport for RemoteClient {
                 complete: false,
             };
             client
-                .dispatch(frame, RemoteDelivery::Durable, Some((id, registered)))
+                .dispatch(
+                    (frame, text),
+                    RemoteDelivery::Durable,
+                    Some((id, registered)),
+                )
                 .map_err(|_| error("remote connection closed; the operation was not dispatched"))?;
             let reply = async {
                 let mut received = ReceivedCalls::default();
@@ -1155,8 +1201,11 @@ impl RemoteTransport for RemoteClient {
             return Err(error(failure));
         }
         self.client.dispatch(
-            self.client
-                .request_frame(self.client.next.fetch_add(1, Ordering::Relaxed), operation),
+            (
+                self.client
+                    .request_frame(self.client.next.fetch_add(1, Ordering::Relaxed), operation),
+                None,
+            ),
             RemoteDelivery::Durable,
             None,
         )

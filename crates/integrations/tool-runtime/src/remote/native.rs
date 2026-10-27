@@ -59,6 +59,8 @@ pub struct ExecutorOptions {
 const DEFAULT_CALLBACK_HOLD: Duration = Duration::from_secs(60);
 const MAX_BUFFERED_FRAMES: usize = 1024;
 
+const WORK_PUBLISH_DELAY: Duration = Duration::from_millis(10);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BusyKind {
     Cell,
@@ -318,8 +320,11 @@ async fn read_live<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
     }
 }
 
+const READ_BUFFER_BYTES: usize = 16 * 1024;
+
 fn config(policy: SocketPolicy) -> tungstenite::protocol::WebSocketConfig {
     tungstenite::protocol::WebSocketConfig::default()
+        .read_buffer_size(READ_BUFFER_BYTES)
         .max_message_size(Some(policy.max_frame_bytes))
         .max_frame_size(Some(policy.max_frame_bytes))
 }
@@ -506,6 +511,29 @@ async fn write<S: Sink<Message, Error = tungstenite::Error> + Unpin>(
         .map_err(error)
 }
 
+async fn write_all<S: Sink<Message, Error = tungstenite::Error> + Unpin>(
+    socket: &mut S,
+    frames: Vec<String>,
+    policy: SocketPolicy,
+) -> Result<(), CodeModeHostError> {
+    tokio::time::timeout(policy.request_timeout, async {
+        for frame in frames {
+            socket.feed(Message::text(frame)).await?;
+        }
+        socket.flush().await
+    })
+    .await
+    .map_err(|_| error("remote write deadline elapsed"))?
+    .map_err(error)
+}
+
+async fn due(sleep: &mut Option<std::pin::Pin<Box<tokio::time::Sleep>>>) {
+    match sleep {
+        Some(sleep) => sleep.as_mut().await,
+        None => std::future::pending().await,
+    }
+}
+
 struct Writer(tokio::task::JoinHandle<Result<(), CodeModeHostError>>);
 impl Drop for Writer {
     fn drop(&mut self) {
@@ -526,7 +554,13 @@ fn writer<S: Sink<Message, Error = tungstenite::Error> + Unpin + Send + 'static>
         loop {
             tokio::select! {
                 frame = rx.recv() => match frame {
-                    Some(frame) => write(&mut sink, frame, policy).await?,
+                    Some(frame) => {
+                        let mut frames = vec![frame];
+                        while let Ok(frame) = rx.try_recv() {
+                            frames.push(frame);
+                        }
+                        write_all(&mut sink, frames, policy).await?;
+                    }
                     None => {
                         let reason = *reason.get();
                         let close = reason.map(|reason| tungstenite::protocol::CloseFrame {
@@ -720,11 +754,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> RemoteLink for SocketLi
     fn send(
         &self,
         frames: Vec<Frame>,
+        delivery: RemoteDelivery,
+    ) -> HostFuture<'_, Result<(), CodeModeHostError>> {
+        self.send_encoded(
+            frames.into_iter().map(|frame| (frame, None)).collect(),
+            delivery,
+        )
+    }
+
+    fn send_encoded(
+        &self,
+        frames: Vec<(Frame, Option<String>)>,
         _delivery: RemoteDelivery,
     ) -> HostFuture<'_, Result<(), CodeModeHostError>> {
         let sent = frames
-            .iter()
-            .map(|frame| frame.encode(self.max_frame_bytes))
+            .into_iter()
+            .map(|(frame, text)| text.map_or_else(|| frame.encode(self.max_frame_bytes), Ok))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|issue| CodeModeHostError::unsent(issue.message()))
             .and_then(|texts| match &*self.wire.get() {
@@ -1746,6 +1791,8 @@ pub(super) struct Executor {
     resumable: bool,
     activity: HandActivity,
     board: Arc<Board>,
+    work: Option<Arc<Listed>>,
+    work_due: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
     listed: usize,
     unlisted: usize,
     busy: bool,
@@ -1799,6 +1846,8 @@ impl Executor {
             resumable: false,
             activity,
             board,
+            work: None,
+            work_due: None,
             listed: 0,
             unlisted: 0,
             busy: false,
@@ -1808,14 +1857,25 @@ impl Executor {
 
     fn list(&mut self, work: &Arc<Pending>) -> Arc<AtomicBool> {
         let ended = Arc::new(AtomicBool::new(false));
-        let next = Option::clone(&self.board.work.get());
-        self.board.work.set(Some(Arc::new(Listed {
+        self.work = Some(Arc::new(Listed {
             work: Arc::clone(work),
             ended: Arc::clone(&ended),
-            next,
-        })));
+            next: self.work.take(),
+        }));
         self.listed += 1;
+        self.work_changed();
         ended
+    }
+
+    fn work_changed(&mut self) {
+        if self.work_due.is_none() {
+            self.work_due = Some(Box::pin(tokio::time::sleep(WORK_PUBLISH_DELAY)));
+        }
+    }
+
+    fn publish_work(&mut self) {
+        self.work_due = None;
+        self.board.work.set(self.work.clone());
     }
 
     fn unlist(&mut self, ended: &AtomicBool) {
@@ -1825,7 +1885,7 @@ impl Executor {
             return;
         }
         let mut live = Vec::new();
-        let mut next = Option::clone(&self.board.work.get());
+        let mut next = self.work.clone();
         while let Some(node) = next {
             if !node.ended.load(Ordering::Acquire) {
                 live.push((Arc::clone(&node.work), Arc::clone(&node.ended)));
@@ -1842,7 +1902,8 @@ impl Executor {
                 next: head,
             }));
         }
-        self.board.work.set(head);
+        self.work = head;
+        self.work_changed();
     }
 
     fn publish_sessions(&self) {
@@ -1892,6 +1953,7 @@ impl Executor {
         if let Some(previous) = self.hold.replace(timer.abort_handle()) {
             previous.abort();
         }
+        self.publish_work();
     }
 
     pub(super) async fn reset(&mut self) {
@@ -1911,7 +1973,8 @@ impl Executor {
         self.calls.clear();
         self.turn_calls.clear();
         self.retained.clear();
-        self.board.work.set(None);
+        self.work = None;
+        self.publish_work();
         self.listed = 0;
         self.unlisted = 0;
         self.publish_sessions();
@@ -1958,14 +2021,19 @@ impl Executor {
         let refused = matches!(&live, Err(message) if message == NOT_RECEIVED);
         let text = match running {
             Some(running) if running.resumable && !refused => {
-                let retained = match full {
-                    Some(full) => reply_text(&self.outgoing, id, Ok(Some(full)), status)?,
-                    None => reply_text(&self.outgoing, id, live.clone(), status)?,
-                };
-                let text = if reconnected {
-                    retained.clone()
-                } else {
-                    reply_text(&self.outgoing, id, live, status)?
+                let (retained, text) = match full {
+                    Some(full) if !reconnected => (
+                        reply_text(&self.outgoing, id, Ok(Some(full)), status)?,
+                        reply_text(&self.outgoing, id, live, status)?,
+                    ),
+                    Some(full) => {
+                        let retained = reply_text(&self.outgoing, id, Ok(Some(full)), status)?;
+                        (retained.clone(), retained)
+                    }
+                    None => {
+                        let retained = reply_text(&self.outgoing, id, live, status)?;
+                        (retained.clone(), retained)
+                    }
                 };
                 let work = Arc::new(Pending {
                     kind: BusyKind::Reply,
@@ -2106,6 +2174,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         tracing::error!(%issue, "remote reply could not be encoded");
                     }
                 },
+                () = due(&mut executor.work_due) => executor.publish_work(),
                 frame = read_live(&mut socket, liveness, watchdog.as_mut()) => {
                     let Some(frame) = frame? else { return Ok(()); };
                     match frame {

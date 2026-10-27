@@ -33,16 +33,21 @@ impl<M: Send + 'static> MessageWriter<M> {
         let (writes, mut written) =
             mpsc::unbounded_channel::<(Vec<M>, Option<oneshot::Sender<bool>>)>();
         let writer = async move {
-            while let Some((messages, done)) = written.recv().await {
+            let mut waiting = Vec::new();
+            while let Some(write) = written.recv().await {
                 let mut wrote = true;
-                for message in messages {
-                    if sink.feed(message).await.is_err() {
-                        wrote = false;
-                        break;
+                let mut next = Some(write);
+                while let Some((messages, done)) = next.take() {
+                    for message in messages {
+                        if wrote && sink.feed(message).await.is_err() {
+                            wrote = false;
+                        }
                     }
+                    waiting.extend(done);
+                    next = written.try_recv().ok();
                 }
                 wrote = wrote && sink.flush().await.is_ok();
-                if let Some(done) = done {
+                for done in waiting.drain(..) {
                     let _ = done.send(wrote);
                 }
                 if !wrote {
@@ -117,15 +122,29 @@ where
     fn send(
         &self,
         frames: Vec<RemoteFrame>,
+        delivery: RemoteDelivery,
+    ) -> HostFuture<'_, Result<(), CodeModeHostError>> {
+        self.send_encoded(
+            frames.into_iter().map(|frame| (frame, None)).collect(),
+            delivery,
+        )
+    }
+
+    fn send_encoded(
+        &self,
+        frames: Vec<(RemoteFrame, Option<String>)>,
         _: RemoteDelivery,
     ) -> HostFuture<'_, Result<(), CodeModeHostError>> {
         Box::pin(async move {
             let limit = self.max_frame_bytes.unwrap_or(usize::MAX);
             let mut messages = Vec::with_capacity(frames.len());
-            for frame in frames {
-                let text = frame
-                    .encode(limit)
-                    .map_err(|error| CodeModeHostError::unsent(error.to_string()))?;
+            for (frame, text) in frames {
+                let text = match text {
+                    Some(text) => text,
+                    None => frame
+                        .encode(limit)
+                        .map_err(|error| CodeModeHostError::unsent(error.to_string()))?,
+                };
                 messages.push(M::from(text));
             }
             self.writer.write(messages).await

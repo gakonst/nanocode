@@ -262,7 +262,6 @@ pub(crate) fn new_state(
     }))
 }
 
-#[cfg(target_family = "wasm")]
 pub(crate) fn begin_execution(
     state: &Rc<RefCell<ExecutionState>>,
     execution_id: u64,
@@ -288,11 +287,11 @@ pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
 pub(crate) fn start_execution<'js>(
     ctx: &Ctx<'js>,
     state: &Rc<RefCell<ExecutionState>>,
+    run_cell: &Function<'js>,
     source: String,
     tools: Vec<Value>,
     prelude: Option<&str>,
 ) -> Result<Promise<'js>, String> {
-    let run_cell = prepare_execution(ctx, state, prelude.is_some())?;
     let prelude = prelude.map_or_else(
         || Ok(rquickjs::Value::new_undefined(ctx.clone())),
         |prelude| {
@@ -302,7 +301,7 @@ pub(crate) fn start_execution<'js>(
                 .map_err(|error| format!("failed to pass the QuickJS prelude: {error}"))
         },
     )?;
-    run_execution(ctx, state, &run_cell, source, tools, prelude)
+    run_execution(ctx, state, run_cell, source, tools, prelude)
 }
 
 pub(crate) fn prepare_execution<'js>(

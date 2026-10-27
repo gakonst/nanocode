@@ -10,15 +10,59 @@ use std::{
     time::Duration,
 };
 
-use rquickjs::{Context, Ctx, Runtime};
+use rquickjs::{CatchResultExt, Context, Ctx, Function, Persistent, Runtime};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::cell::{
-    Rejections, RuntimeEvent, clear_pending, completed_terminal, drain_jobs, install_bootstrap,
-    invoke_timeout, new_state, next_due_timeout, next_timeout_wait, resolve_tool, send_terminal,
-    start_execution, track_rejections,
+    ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, completed_terminal,
+    drain_jobs, install_bootstrap, invoke_timeout, new_state, next_due_timeout, next_timeout_wait,
+    prepare_execution, resolve_tool, send_terminal, start_execution, track_rejections,
 };
+
+struct Prepared {
+    run_cell: Persistent<Function<'static>>,
+    state: Rc<std::cell::RefCell<ExecutionState>>,
+    context: Context,
+    bytes: bool,
+}
+
+impl Prepared {
+    fn new(
+        runtime: &Runtime,
+        event_tx: &mpsc::UnboundedSender<RuntimeEvent>,
+        rejections: &Rejections,
+        bytes: bool,
+    ) -> Result<Self, String> {
+        let context = Context::full(runtime).map_err(|error| {
+            format!("failed to create a fresh embedded QuickJS context: {error}")
+        })?;
+        let state = new_state(0, event_tx.clone(), HashMap::new(), Rc::clone(rejections));
+        let run_cell = context.with(|ctx| {
+            prepare_execution(&ctx, &state, bytes).map(|run_cell| Persistent::save(&ctx, run_cell))
+        });
+        match run_cell {
+            Ok(run_cell) => Ok(Self {
+                run_cell,
+                state,
+                context,
+                bytes,
+            }),
+            Err(error) => {
+                clear_pending(&state);
+                drop(state);
+                drop(context);
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        clear_pending(&self.state);
+    }
+}
 
 pub struct EmbeddedHost {
     command_tx: std_mpsc::Sender<HostCommand>,
@@ -171,12 +215,21 @@ fn run_worker(
     runtime.set_interrupt_handler(Some(Box::new(move || {
         interrupt_signal.load(Ordering::Acquire)
     })));
+    let mut prepared: Option<Prepared> = None;
     loop {
         match command_rx.recv() {
             Ok(HostCommand::Start(start)) => {
                 interrupted.store(false, Ordering::Release);
-                let context = match Context::full(&runtime) {
-                    Ok(context) => context,
+                let bytes = start.prelude.is_some();
+                let next = match prepared.take() {
+                    Some(next) if next.bytes == bytes => Ok(next),
+                    stale => {
+                        drop(stale);
+                        Prepared::new(&runtime, event_tx, &rejections, bytes)
+                    }
+                };
+                let next = match next {
+                    Ok(next) => next,
                     Err(error) => {
                         tracing::error!(
                             target: "nanocode_code_mode",
@@ -186,13 +239,13 @@ fn run_worker(
                         return;
                     }
                 };
-                let result =
-                    run_execution(&context, start, command_rx, event_tx.clone(), &rejections);
-                drop(context);
+                let result = run_execution(&next, start, command_rx);
+                drop(next);
                 runtime.run_gc();
                 if result.is_err() {
                     return;
                 }
+                prepared = Prepared::new(&runtime, event_tx, &rejections, bytes).ok();
             }
             Ok(HostCommand::ToolResult { .. }) => {}
             Ok(HostCommand::Shutdown) | Err(_) => return,
@@ -201,27 +254,34 @@ fn run_worker(
 }
 
 fn run_execution(
-    context: &Context,
+    prepared: &Prepared,
     start: StartExecution,
     command_rx: &std_mpsc::Receiver<HostCommand>,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
-    rejections: &Rejections,
 ) -> Result<(), String> {
-    context.with(|ctx| run_execution_in_context(&ctx, start, command_rx, event_tx, rejections))
+    prepared
+        .context
+        .with(|ctx| run_execution_in_context(&ctx, prepared, start, command_rx))
 }
 
 fn run_execution_in_context(
     ctx: &Ctx<'_>,
+    prepared: &Prepared,
     start: StartExecution,
     command_rx: &std_mpsc::Receiver<HostCommand>,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
-    rejections: &Rejections,
 ) -> Result<(), String> {
     let execution_id = start.execution_id;
-    let state = new_state(execution_id, event_tx, start.stored, Rc::clone(rejections));
+    let state = &prepared.state;
+    begin_execution(state, execution_id, start.stored);
+    let run_cell = prepared
+        .run_cell
+        .clone()
+        .restore(ctx)
+        .catch(ctx)
+        .map_err(|error| format!("failed to restore the QuickJS bootstrap: {error}"))?;
     let promise = start_execution(
         ctx,
-        &state,
+        state,
+        &run_cell,
         start.source,
         start.tools,
         start.prelude.as_deref(),
@@ -230,22 +290,22 @@ fn run_execution_in_context(
     let result = (|| {
         loop {
             if let Some(terminal) = completed_terminal(ctx, &promise)? {
-                return send_terminal(&state, terminal);
+                return send_terminal(state, terminal);
             }
-            match receive_command(command_rx, next_timeout_wait(&state)) {
+            match receive_command(command_rx, next_timeout_wait(state)) {
                 CommandPoll::Command(HostCommand::ToolResult {
                     execution_id: result_execution_id,
                     id,
                     encoded,
                     success,
                 }) if result_execution_id == execution_id => {
-                    resolve_tool(ctx, &state, id, encoded, success)?;
-                    drain_jobs(ctx, &state);
+                    resolve_tool(ctx, state, id, encoded, success)?;
+                    drain_jobs(ctx, state);
                 }
                 CommandPoll::TimerReady => {
-                    if let Some(id) = next_due_timeout(&state) {
-                        invoke_timeout(ctx, &state, id)?;
-                        drain_jobs(ctx, &state);
+                    if let Some(id) = next_due_timeout(state) {
+                        invoke_timeout(ctx, state, id)?;
+                        drain_jobs(ctx, state);
                     }
                 }
                 CommandPoll::Command(HostCommand::Shutdown) | CommandPoll::Disconnected => {
@@ -255,7 +315,7 @@ fn run_execution_in_context(
             }
         }
     })();
-    clear_pending(&state);
+    clear_pending(state);
     result
 }
 

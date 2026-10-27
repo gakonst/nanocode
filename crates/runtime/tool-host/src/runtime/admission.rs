@@ -35,10 +35,15 @@ struct Waiter {
     admitted: Arc<Signal>,
 }
 
+const CLOSER: u64 = 1 << 32;
+
+const SHARED: u64 = CLOSER - 1;
+
 #[derive(Default)]
 pub(super) struct AdmissionGate {
     state: Atom<GateState>,
     tokens: AtomicU64,
+    fast: AtomicU64,
 }
 
 pub(super) struct Admission<'gate> {
@@ -46,11 +51,20 @@ pub(super) struct Admission<'gate> {
     token: u64,
     origin: OriginKey,
     epoch: Option<u64>,
+    fast: bool,
+    exclusive: bool,
 }
 
 impl Drop for Admission<'_> {
     fn drop(&mut self) {
+        if self.fast {
+            self.gate.release_fast();
+            return;
+        }
         self.gate.release(self.token, &self.origin, self.epoch);
+        if self.exclusive {
+            self.gate.fast.fetch_sub(CLOSER, Ordering::SeqCst);
+        }
     }
 }
 
@@ -60,8 +74,9 @@ enum Entry {
 }
 
 impl GateState {
-    const fn admits(&self, exclusive: bool) -> bool {
-        self.exclusive.is_none() && (!exclusive || self.shared == 0)
+    fn admits(&self, exclusive: bool, fast: &AtomicU64) -> bool {
+        self.exclusive.is_none()
+            && (!exclusive || (self.shared == 0 && fast.load(Ordering::SeqCst) & SHARED == 0))
     }
 
     const fn next_epoch(&mut self) -> u64 {
@@ -107,12 +122,12 @@ impl GateState {
         }
     }
 
-    fn advance(&mut self) -> Vec<Arc<Signal>> {
+    fn advance(&mut self, fast: &AtomicU64) -> Vec<Arc<Signal>> {
         let mut admitted = Vec::new();
         while self
             .waiting
             .front()
-            .is_some_and(|next| self.admits(next.exclusive))
+            .is_some_and(|next| self.admits(next.exclusive, fast))
         {
             let Some(next) = self.waiting.pop_front() else {
                 break;
@@ -128,32 +143,43 @@ impl GateState {
 
 impl AdmissionGate {
     pub(super) async fn admit(&self, exclusive: bool, origin: Option<&str>) -> Admission<'_> {
+        if !exclusive && origin.is_none() && self.admit_fast() {
+            return Admission {
+                gate: self,
+                token: 0,
+                origin: None,
+                epoch: None,
+                fast: true,
+                exclusive: false,
+            };
+        }
+        if exclusive {
+            self.fast.fetch_add(CLOSER, Ordering::SeqCst);
+        }
         let token = self.tokens.fetch_add(1, Ordering::Relaxed);
         let origin: OriginKey = origin.map(Arc::from);
+        let mut admission = Admission {
+            gate: self,
+            token,
+            origin: origin.clone(),
+            epoch: None,
+            fast: false,
+            exclusive,
+        };
         let immediate = self.state.update(|state| {
-            if state.waiting.is_empty() && state.admits(exclusive) {
+            if state.waiting.is_empty() && state.admits(exclusive, &self.fast) {
                 Entry::Admitted(state.admit(token, exclusive, &origin))
             } else {
                 Entry::Wait
             }
         });
         if let Entry::Admitted(epoch) = immediate {
-            return Admission {
-                gate: self,
-                token,
-                origin,
-                epoch,
-            };
+            admission.epoch = epoch;
+            return admission;
         }
         let admitted = Arc::new(Signal::new());
-        let mut admission = Admission {
-            gate: self,
-            token,
-            origin: origin.clone(),
-            epoch: None,
-        };
         let entry = self.state.update(|state| {
-            if state.waiting.is_empty() && state.admits(exclusive) {
+            if state.waiting.is_empty() && state.admits(exclusive, &self.fast) {
                 Entry::Admitted(state.admit(token, exclusive, &origin))
             } else {
                 state.waiting.push_back(Waiter {
@@ -171,10 +197,43 @@ impl AdmissionGate {
                 admission
             }
             Entry::Wait => {
+                if self.fast.load(Ordering::SeqCst) & SHARED == 0 {
+                    self.advance();
+                }
                 admitted.wait().await;
                 admission
             }
         }
+    }
+
+    fn admit_fast(&self) -> bool {
+        let mut current = self.fast.load(Ordering::SeqCst);
+        loop {
+            if current >= CLOSER || current & SHARED == SHARED {
+                return false;
+            }
+            match self.fast.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn release_fast(&self) {
+        let previous = self.fast.fetch_sub(1, Ordering::SeqCst);
+        if previous >= CLOSER && previous & SHARED == 1 {
+            self.advance();
+        }
+    }
+
+    fn advance(&self) {
+        let admitted = self.state.update(|state| state.advance(&self.fast));
+        admitted.iter().for_each(|admitted| admitted.fire());
     }
 
     pub(super) fn observed(&self, origin: &str, observed: bool) {
@@ -198,7 +257,7 @@ impl AdmissionGate {
                 yielded: true,
             };
             state.shared -= released;
-            state.advance()
+            state.advance(&self.fast)
         });
         admitted.iter().for_each(|admitted| admitted.fire());
     }
@@ -212,7 +271,7 @@ impl AdmissionGate {
             if let Some(epoch) = epoch.or_else(|| state.granted.remove(&token)) {
                 state.release_shared(origin, epoch);
             }
-            state.advance()
+            state.advance(&self.fast)
         });
         admitted.iter().for_each(|admitted| admitted.fire());
     }

@@ -2,6 +2,7 @@ mod admission;
 mod client;
 mod compact;
 mod executors;
+mod frame;
 mod message;
 #[cfg(not(target_family = "wasm"))]
 mod queue;
@@ -523,7 +524,7 @@ impl CodeModeHost for RemoteCodeModeHost {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RemoteFrame {
     Catalog {

@@ -71,7 +71,9 @@ impl ClaudeModel {
 
     const fn rates(self, prompt_tokens: u64, fast_mode: bool) -> Option<Rates> {
         Some(match (self, fast_mode) {
-            (Self::Fable51 | Self::Mythos51, false) => rates(10_000, 50_000, 12_500, 20_000, 250),
+            (Self::Fable55 | Self::Fable51 | Self::Mythos51, false) => {
+                rates(10_000, 50_000, 12_500, 20_000, 250)
+            }
             (Self::Opus55, false) => rates(4_000, 20_000, 5_000, 8_000, 200),
             (Self::Opus55, true) => rates(8_000, 40_000, 10_000, 16_000, 400),
             (Self::Sonnet55, false) => rates(2_000, 10_000, 2_500, 4_000, 100),

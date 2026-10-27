@@ -34,11 +34,13 @@ pub(crate) struct ImageResolution {
 impl ImageResolution {
     pub(crate) fn of(model: &str) -> Self {
         match model {
-            "claude-opus-5-5" | "claude-fable-5-1" | "claude-mythos-5-1" | "claude-sonnet-5-5"
-            | "claude-haiku-5-5" | "claude-opus-5" | "claude-sonnet-5" => Self {
-                max_edge: 2576,
-                max_tokens: 4784,
-            },
+            "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-1" | "claude-mythos-5-1"
+            | "claude-sonnet-5-5" | "claude-haiku-5-5" | "claude-opus-5" | "claude-sonnet-5" => {
+                Self {
+                    max_edge: 2576,
+                    max_tokens: 4784,
+                }
+            }
             _ => Self {
                 max_edge: 1568,
                 max_tokens: 1568,

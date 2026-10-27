@@ -71,6 +71,8 @@ pub enum ClaudeModel {
 
     Haiku55,
 
+    Fable55,
+
     Fable51,
 
     Mythos51,
@@ -83,10 +85,11 @@ pub enum ClaudeModel {
 }
 
 impl ClaudeModel {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Opus55,
         Self::Sonnet55,
         Self::Haiku55,
+        Self::Fable55,
         Self::Fable51,
         Self::Mythos51,
         Self::Opus46,
@@ -99,6 +102,7 @@ impl ClaudeModel {
             Self::Opus55 => "claude-opus-5-5",
             Self::Sonnet55 => "claude-sonnet-5-5",
             Self::Haiku55 => "claude-haiku-5-5",
+            Self::Fable55 => "claude-fable-5-5",
             Self::Fable51 => "claude-fable-5-1",
             Self::Mythos51 => "claude-mythos-5-1",
             Self::Opus46 => "claude-opus-4-6",
@@ -134,6 +138,7 @@ impl FromStr for ClaudeModel {
             "claude-opus-5-5" | "opus" => Ok(Self::Opus55),
             "claude-sonnet-5-5" | "sonnet" => Ok(Self::Sonnet55),
             "claude-haiku-5-5" | "haiku" => Ok(Self::Haiku55),
+            "claude-fable-5-5" => Ok(Self::Fable55),
             "claude-fable-5-1" | "fable" => Ok(Self::Fable51),
             "claude-mythos-5-1" | "mythos" => Ok(Self::Mythos51),
             "claude-opus-4-6" => Ok(Self::Opus46),
@@ -549,6 +554,7 @@ fn display_name(model: &ModelSelection) -> &'static str {
         (_, Some(ClaudeModel::Opus55)) => "Claude Opus 5.5",
         (_, Some(ClaudeModel::Sonnet55)) => "Claude Sonnet 5.5",
         (_, Some(ClaudeModel::Haiku55)) => "Claude Haiku 5.5",
+        (_, Some(ClaudeModel::Fable55)) => "Claude Fable 5.5",
         (_, Some(ClaudeModel::Fable51)) => "Claude Fable 5.1",
         (_, Some(ClaudeModel::Mythos51)) => "Claude Mythos 5.1",
         (_, Some(ClaudeModel::Opus46)) => "Claude Opus 4.6",

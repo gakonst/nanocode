@@ -251,6 +251,13 @@ fn fits(
     max_frame_bytes.map(|limit| frame.encode(limit)).transpose()
 }
 
+const fn delivery(operation: &RemoteOperation) -> RemoteDelivery {
+    match operation {
+        RemoteOperation::Execute { .. } | RemoteOperation::Cancel { .. } => RemoteDelivery::Durable,
+        _ => RemoteDelivery::Immediate,
+    }
+}
+
 fn requested_yield(operation: &RemoteOperation) -> Duration {
     let requested = match operation {
         RemoteOperation::Execute { source, .. } => source
@@ -1024,7 +1031,7 @@ impl Drop for Pending {
                             turn_id: None,
                         },
                     )],
-                    RemoteDelivery::Durable,
+                    RemoteDelivery::Immediate,
                 ));
             }
         }
@@ -1060,6 +1067,7 @@ impl RemoteTransport for RemoteClient {
                 _ => None,
             };
             let requested = requested_yield(&operation);
+            let delivery = delivery(&operation);
             let id = client.next.fetch_add(1, Ordering::Relaxed);
             let frame = client.request_frame(id, operation);
             let text = fits(&frame, client.max_frame_bytes)
@@ -1093,11 +1101,7 @@ impl RemoteTransport for RemoteClient {
                 complete: false,
             };
             client
-                .dispatch(
-                    (frame, text),
-                    RemoteDelivery::Durable,
-                    Some((id, registered)),
-                )
+                .dispatch((frame, text), delivery, Some((id, registered)))
                 .map_err(|_| error("remote connection closed; the operation was not dispatched"))?;
             let reply = async {
                 let mut received = ReceivedCalls::default();
@@ -1200,13 +1204,14 @@ impl RemoteTransport for RemoteClient {
         if let Some(failure) = Option::clone(&self.client.failure.get()) {
             return Err(error(failure));
         }
+        let delivery = delivery(&operation);
         self.client.dispatch(
             (
                 self.client
                     .request_frame(self.client.next.fetch_add(1, Ordering::Relaxed), operation),
                 None,
             ),
-            RemoteDelivery::Durable,
+            delivery,
             None,
         )
     }

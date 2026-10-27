@@ -13,6 +13,8 @@ const INLINE_STATE_FORMAT: u8 = 6;
 
 const RECEIPT_PAGE: usize = 16;
 
+const RECEIPT_LEAF: usize = 1;
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Transition {
@@ -561,11 +563,11 @@ impl JournalState {
             .iter()
             .take_while(|(_, operation)| operation.status.is_terminal())
             .count();
-        let sealed = head[..settled / RECEIPT_PAGE * RECEIPT_PAGE]
+        let sealed = head[..settled / RECEIPT_LEAF * RECEIPT_LEAF]
             .iter()
             .map(|(id, _)| (*id).to_owned())
             .collect::<Vec<_>>();
-        for chunk in sealed.chunks(RECEIPT_PAGE) {
+        for chunk in sealed.chunks(RECEIPT_LEAF) {
             for operation_id in chunk {
                 if let Some(operation) = self.operations.get_mut(operation_id) {
                     operation.stage_unless(&mut self.staged, &|_| false);
@@ -581,7 +583,7 @@ impl JournalState {
             if let Some(operation) = chunk.last().and_then(|id| self.operations.get(id)) {
                 self.sealed.through = operation.accepted_order;
             }
-            self.sealed.count += RECEIPT_PAGE as u64;
+            self.sealed.count += chunk.len() as u64;
         }
         if !sealed.is_empty() {
             let archive = Arc::make_mut(&mut self.archive);

@@ -94,14 +94,89 @@ impl ForegroundExecutor for EnvironmentForeground {
     }
 }
 
-type Sessions = Arc<Atom<HashMap<i64, Arc<Session>>>>;
+/// Sessions by ID in shards, as Atom::update copies the whole value and a
+/// call adds its session and removes it again: with one map, copying and
+/// dropping it were 5.4% of a Hand's busy samples at 512 calls at once.
+struct Sessions {
+    shards: [Atom<HashMap<i64, Arc<Session>>>; SHARDS],
+    count: AtomicUsize,
+}
+
+/// One shard for each session a Hand keeps when it is full.
+const SHARDS: usize = MAX_SESSIONS;
+
+impl Sessions {
+    fn new() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| Atom::default()),
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    fn shard(&self, id: i64) -> &Atom<HashMap<i64, Arc<Session>>> {
+        let index = id.unsigned_abs() % SHARDS as u64;
+        &self.shards[usize::try_from(index).unwrap_or_default()]
+    }
+
+    fn get(&self, id: i64) -> Option<Arc<Session>> {
+        self.shard(id).read(|sessions| sessions.get(&id).cloned())
+    }
+
+    /// Adds a session and returns the one it replaces, if the Hand keeps
+    /// MAX_SESSIONS already.
+    fn insert(&self, session: &Arc<Session>) -> Option<Arc<Session>> {
+        let pruned = self.prune();
+        self.shard(session.id).update(|sessions| {
+            sessions.insert(session.id, Arc::clone(session));
+        });
+        self.count.fetch_add(1, Ordering::SeqCst);
+        pruned
+    }
+
+    fn remove(&self, id: i64) -> Option<Arc<Session>> {
+        let removed = self.shard(id).try_update(|sessions| sessions.remove(&id));
+        if removed.is_some() {
+            self.count.fetch_sub(1, Ordering::SeqCst);
+        }
+        removed
+    }
+
+    fn prune(&self) -> Option<Arc<Session>> {
+        while self.count.load(Ordering::SeqCst) >= MAX_SESSIONS {
+            let shards: Vec<_> = self.shards.iter().map(Atom::get).collect();
+            let sessions: Vec<_> = shards.iter().flat_map(|shard| shard.values()).collect();
+            let victim = prune(&sessions)?;
+            // Another call may have removed it first: choose again.
+            if let Some(pruned) = self.remove(victim) {
+                return Some(pruned);
+            }
+        }
+        None
+    }
+
+    fn each(&self, mut visit: impl FnMut(&Arc<Session>)) {
+        for shard in &self.shards {
+            shard.read(|sessions| sessions.values().for_each(&mut visit));
+        }
+    }
+
+    fn take(&self) -> Vec<Arc<Session>> {
+        let mut taken = Vec::new();
+        for shard in &self.shards {
+            let sessions = shard.set(HashMap::new());
+            self.count.fetch_sub(sessions.len(), Ordering::SeqCst);
+            taken.extend(sessions.values().cloned());
+        }
+        taken
+    }
+}
 
 pub type SecretEnvironment = Arc<dyn Fn() -> Vec<(OsString, OsString)> + Send + Sync>;
 
 pub struct ShellSessions {
     terminations: AtomicU64,
     uses: AtomicU64,
-    sessions: Sessions,
+    sessions: Arc<Sessions>,
     next_session_id: AtomicI64,
     default_shell: selection::Shell,
     environment: Arc<Vec<(OsString, OsString)>>,
@@ -116,7 +191,7 @@ impl ShellSessions {
         Self {
             terminations: AtomicU64::new(0),
             uses: AtomicU64::new(0),
-            sessions: Arc::default(),
+            sessions: Arc::new(Sessions::new()),
             next_session_id: AtomicI64::new(1),
             default_shell: selection::default_user_shell(),
             environment,
@@ -252,11 +327,7 @@ impl ShellSessions {
             let initial = session.owner.run(move |state| {
                 Box::pin(state.wait_for_output(yield_time, max_output_tokens, started_at))
             });
-            let pruned = self.sessions.update(|sessions| {
-                let pruned = prune(sessions);
-                sessions.insert(session_id, Arc::clone(&session));
-                pruned
-            });
+            let pruned = self.sessions.insert(&session);
             if let Some(pruned) = pruned {
                 tokio::spawn(async move {
                     pruned.terminate().await;
@@ -287,9 +358,7 @@ impl ShellSessions {
         Box::pin(async move {
             let started_at = Instant::now();
             let session_id = i64::from(request.session_id);
-            let session = self
-                .sessions
-                .read(|sessions| sessions.get(&session_id).cloned());
+            let session = self.sessions.get(session_id);
             let Some(session) = session else {
                 return ExecCommandResult::failed(
                     started_at.elapsed(),
@@ -364,11 +433,10 @@ impl ShellSessions {
     }
 
     pub fn running(&self) -> Vec<RunningProcess> {
-        let mut running = self.sessions.read(|sessions| {
-            sessions
-                .values()
-                .filter(|session| !session.exited.load(Ordering::SeqCst))
-                .map(|session| RunningProcess {
+        let mut running = Vec::new();
+        self.sessions.each(|session| {
+            if !session.exited.load(Ordering::SeqCst) {
+                running.push(RunningProcess {
                     session_id: session.id,
                     caller: session.launch.caller.clone(),
                     command: session.launch.command.clone(),
@@ -376,8 +444,8 @@ impl ShellSessions {
                     started_at: session.launch.started_at,
                     in_call: session.busy.load(Ordering::SeqCst) > 0,
                     silent_for: session.activity.silent_for(),
-                })
-                .collect::<Vec<_>>()
+                });
+            }
         });
         running.sort_unstable_by_key(|process| process.session_id);
         running
@@ -388,8 +456,7 @@ impl ShellSessions {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'call>> {
         Box::pin(async move {
             self.terminations.fetch_add(1, Ordering::SeqCst);
-            let sessions = self.sessions.update(std::mem::take);
-            for session in sessions.into_values() {
+            for session in self.sessions.take() {
                 session.terminate().await;
             }
             #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -398,9 +465,7 @@ impl ShellSessions {
     }
 
     fn forget(&self, session_id: i64) {
-        self.sessions.update(|sessions| {
-            sessions.remove(&session_id);
-        });
+        self.sessions.remove(session_id);
     }
 }
 
@@ -438,14 +503,22 @@ impl Drop for Busy<'_> {
     }
 }
 
-fn prune(sessions: &mut HashMap<i64, Arc<Session>>) -> Option<Arc<Session>> {
+/// The ID of the session a new one replaces: the least recently used session
+/// not in a call and not among the PROTECTED_SESSIONS most recent, one whose
+/// process exited first.
+fn prune(sessions: &[&Arc<Session>]) -> Option<i64> {
     if sessions.len() < MAX_SESSIONS
         || sessions
-            .values()
+            .iter()
             .all(|session| session.busy.load(Ordering::SeqCst) > 0)
     {
         return None;
     }
+    let by_id: HashMap<i64, &Arc<Session>> = sessions
+        .iter()
+        .map(|session| (session.id, *session))
+        .collect();
+    let sessions = &by_id;
     let mut recent = sessions
         .values()
         .map(|session| (session.last_used.load(Ordering::Relaxed), session.id))
@@ -461,11 +534,10 @@ fn prune(sessions: &mut HashMap<i64, Arc<Session>>) -> Option<Arc<Session>> {
             !protected.contains(id) && sessions[id].busy.load(Ordering::SeqCst) == 0
         })
     };
-    let victim = candidates()
+    candidates()
         .find(|(_, id)| sessions[id].exited.load(Ordering::SeqCst))
         .or_else(|| candidates().next())
-        .map(|(_, id)| *id)?;
-    sessions.remove(&victim)
+        .map(|(_, id)| *id)
 }
 
 struct SessionState {
@@ -591,16 +663,9 @@ impl SessionState {
             Err(_) => None,
         };
         let (output, original_token_count) = self.take_output(max_output_tokens);
-        let chunk_id = match generate_chunk_id() {
-            Ok(chunk_id) => Some(chunk_id),
-            Err(error) => {
-                tracing::warn!(%error, "failed to generate shell output chunk ID");
-                None
-            }
-        };
         ExecCommandResult {
             error: None,
-            chunk_id,
+            chunk_id: Some(generate_chunk_id()),
             wall_time_seconds: started_at.elapsed().as_secs_f64(),
             exit_code,
             session_id: exit_code.is_none().then_some(self.id),
@@ -741,31 +806,47 @@ fn duration_ms(requested: Option<u64>, default: u64, minimum: u64, maximum: u64)
     Duration::from_millis(requested.clamp(minimum, maximum))
 }
 
-fn generate_chunk_id() -> Result<String, getrandom::Error> {
+fn generate_chunk_id() -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut bytes = [0_u8; 3];
-    getrandom::fill(&mut bytes)?;
-    Ok(bytes
-        .into_iter()
+    random().to_le_bytes()[..3]
+        .iter()
         .flat_map(|byte| {
             [
                 char::from(HEX[usize::from(byte >> 4)]),
                 char::from(HEX[usize::from(byte & 0x0f)]),
             ]
         })
-        .collect())
+        .collect()
+}
+
+/// Random bits for values that only need to differ, such as chunk IDs and a
+/// command's RANDOM seed: splitmix64 over a counter seeded once by the OS. A
+/// getentropy call for each was 1.5 to 2% of a Hand's busy samples at 512
+/// calls at once.
+fn random() -> u64 {
+    const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+    static STATE: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
+    let state = STATE.get_or_init(|| {
+        let mut seed = [0_u8; 8];
+        let _ = getrandom::fill(&mut seed);
+        AtomicU64::new(u64::from_ne_bytes(seed))
+    });
+    let mut bits = state
+        .fetch_add(GAMMA, Ordering::Relaxed)
+        .wrapping_add(GAMMA);
+    bits = (bits ^ (bits >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    bits = (bits ^ (bits >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    bits ^ (bits >> 31)
 }
 
 struct CancelExecution {
     session: Option<Arc<Session>>,
-    sessions: Sessions,
+    sessions: Arc<Sessions>,
 }
 impl Drop for CancelExecution {
     fn drop(&mut self) {
         if let Some(session) = self.session.take() {
-            self.sessions.update(|sessions| {
-                sessions.remove(&session.id);
-            });
+            self.sessions.remove(session.id);
             tokio::spawn(async move {
                 session.terminate().await;
             });

@@ -147,41 +147,24 @@ impl ProcessChild {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(super) fn served(
-        mut started: oneshot::Receiver<u32>,
-        mut exit: oneshot::Receiver<io::Result<i32>>,
-    ) -> Self {
+    pub(super) fn served(pid: u32, mut exit: oneshot::Receiver<io::Result<i32>>) -> Self {
         let (commands, mut received) = mpsc::unbounded_channel();
         let process_group = SharedProcessGroup(commands);
         let exited = Arc::new(AtomicBool::new(false));
         let reaped = Arc::clone(&exited);
         let wait = tokio::spawn(async move {
-            let mut guard: Option<ProcessGroupGuard> = None;
-            let mut queued: Vec<GroupCommand> = Vec::new();
+            let mut guard = ProcessGroupGuard::new(pid);
             let mut listening = true;
             let result = loop {
                 tokio::select! {
-                    pid = &mut started, if guard.is_none() => match pid {
-                        Ok(pid) => {
-                            let mut group = ProcessGroupGuard::new(pid);
-                            for command in queued.drain(..) {
-                                command.apply(&mut group);
-                            }
-                            guard = Some(group);
-                        }
-                        Err(_) => break Err(io::Error::other("the shell server stopped before the command started")),
+                    command = received.recv(), if listening => match command {
+                        Some(command) => command.apply(&mut guard),
+                        None => listening = false,
                     },
-                    command = received.recv(), if listening => match (command, guard.as_mut()) {
-                        (Some(command), Some(group)) => command.apply(group),
-                        (Some(command), None) => queued.push(command),
-                        (None, _) => listening = false,
-                    },
-                    status = &mut exit, if guard.is_some() => {
+                    status = &mut exit => {
                         let status = status.unwrap_or_else(|_| Err(io::Error::other("the shell server stopped")));
-                        if status.is_ok()
-                            && let Some(group) = guard.as_mut()
-                        {
-                            let _ = group.terminate_and_disarm();
+                        if status.is_ok() {
+                            let _ = guard.terminate_and_disarm();
                         }
                         break status;
                     }
@@ -529,7 +512,9 @@ impl ProcessGroupGuard {
         };
         for signal in [Signal::SIGSTOP, Signal::SIGKILL] {
             match killpg(process_group, signal) {
-                Ok(()) | Err(Errno::ESRCH) => {}
+                Ok(()) => {}
+                // No process is left in the group to kill.
+                Err(Errno::ESRCH) => return Ok(()),
                 Err(error) => return Err(io::Error::from_raw_os_error(error as i32)),
             }
         }
@@ -667,8 +652,12 @@ fn is_shell_identifier(name: &str) -> bool {
 }
 
 fn normalize_environment(environment: &mut Vec<(OsString, OsString)>) {
+    environment.retain(|(candidate, _)| {
+        NORMALIZED_ENVIRONMENT
+            .iter()
+            .all(|(name, _)| candidate != name)
+    });
     for (name, value) in NORMALIZED_ENVIRONMENT {
-        environment.retain(|(candidate, _)| candidate != name);
         environment.push((name.into(), value.into()));
     }
 }
@@ -681,8 +670,11 @@ pub fn ambient_sensitive_environment() -> Vec<(OsString, OsString)> {
 }
 
 fn is_sensitive_name(name: &OsStr) -> bool {
-    name.to_string_lossy()
-        .to_ascii_uppercase()
-        .split('_')
-        .any(|part| SENSITIVE_ENV_PARTS.contains(&part))
+    name.as_encoded_bytes()
+        .split(|byte| *byte == b'_')
+        .any(|part| {
+            SENSITIVE_ENV_PARTS
+                .iter()
+                .any(|sensitive| part.eq_ignore_ascii_case(sensitive.as_bytes()))
+        })
 }

@@ -13,7 +13,6 @@ use std::{
 
 use nanocode_sync::{Signal, Slot};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
     net::unix::pipe,
     process::{Child, Command},
     sync::{mpsc, oneshot},
@@ -63,7 +62,6 @@ impl Servers {
         }
         let pool = &self.pools[usize::from(request.login)];
         let ended = Arc::new(Signal::new());
-        let (pid, started) = oneshot::channel();
         let (exit, exited) = oneshot::channel();
         let (reply, accepted) = oneshot::channel();
         let job = Job {
@@ -75,7 +73,6 @@ impl Servers {
                 .iter()
                 .map(|(name, _)| name.clone())
                 .collect(),
-            pid,
             exit,
             ended: Arc::clone(&ended),
             reply,
@@ -84,7 +81,7 @@ impl Servers {
             .send(Note::Job(job))
             .ok()?;
         let lease = accepted.await.ok()??;
-        let child = process::ProcessChild::served(started, exited);
+        let child = process::ProcessChild::served(lease.pid, exited);
         Some(process::SpawnedProcess {
             process_group: child.process_group(),
             child,
@@ -149,6 +146,7 @@ impl Pool {
                 blocked: None,
                 notes: notes.downgrade(),
                 probe: None,
+                watch: None,
             };
             tokio::spawn(dispatcher.run(inbox));
             notes
@@ -166,7 +164,6 @@ struct Job {
     workdir: PathBuf,
     environment: Vec<(OsString, OsString)>,
     secrets: Vec<OsString>,
-    pid: oneshot::Sender<u32>,
     exit: oneshot::Sender<io::Result<i32>>,
     ended: Arc<Signal>,
     reply: oneshot::Sender<Option<Lease>>,
@@ -198,6 +195,7 @@ struct Dispatcher {
     blocked: Option<Fingerprint>,
     notes: mpsc::WeakUnboundedSender<Note>,
     probe: Option<Probe>,
+    watch: Option<Watch>,
 }
 
 impl Dispatcher {
@@ -225,7 +223,9 @@ impl Dispatcher {
         let Some(probe) = self.probe.as_ref() else {
             return;
         };
-        if fingerprint(&probe.files) == probe.fingerprint {
+        if self.watch.as_mut().is_some_and(|watch| !watch.changed())
+            || fingerprint(&probe.files) == probe.fingerprint
+        {
             return;
         }
         let stale = probe.fingerprint.clone();
@@ -257,6 +257,20 @@ impl Dispatcher {
                 if let Some(server) = self.servers.iter_mut().find(|server| server.id == id) {
                     server.fingerprint = Some(probe.fingerprint.clone());
                     server.credit = DEPTH;
+                    if self
+                        .probe
+                        .as_ref()
+                        .is_none_or(|known| known.files != probe.files)
+                    {
+                        self.watch = Watch::new(&probe.files);
+                    }
+                    // The fingerprint predates the watch: a change between
+                    // the two shows only in a fresh fingerprint.
+                    if let Some(watch) = self.watch.as_mut()
+                        && fingerprint(&probe.files) != probe.fingerprint
+                    {
+                        watch.missed();
+                    }
                     self.probe = Some(probe);
                 }
             }
@@ -352,6 +366,7 @@ impl Dispatcher {
             login: self.login,
             workdir: job.workdir.clone(),
             environment,
+            listed: job.environment.clone(),
             probe: Probe {
                 files,
                 fingerprint: blocked.clone(),
@@ -368,6 +383,10 @@ impl Dispatcher {
         drop(notes);
         tokio::spawn(async move {
             let ready = run(&launch, inbox).await;
+            // A server that died reported it when it did (see Owner::died).
+            if matches!(ready, Err(Stop::Died)) {
+                return;
+            }
             if let Err(error) = &ready {
                 tracing::warn!(%error, "shell server stopped");
             }
@@ -381,8 +400,11 @@ impl Dispatcher {
 
 struct Ready {
     environment: HashMap<OsString, OsString>,
+    listed: Vec<(OsString, OsString)>,
     readonly: HashSet<Vec<u8>>,
     argzero: bool,
+    bgnice: bool,
+    notify: bool,
 }
 
 enum Message {
@@ -419,6 +441,7 @@ impl Served {
 
 struct Lease {
     slot: usize,
+    pid: u32,
     pipes: [Slot<Output>; 2],
     release: mpsc::UnboundedSender<Message>,
 }
@@ -440,11 +463,12 @@ async fn drain(
     let Some(pipe) = lease.pipes[stream].take() else {
         return;
     };
-    let mut buffer = [0_u8; output::READ_BUFFER_LENGTH];
+    // On the heap: in the future itself, every spawn copied it.
+    let mut buffer = vec![0_u8; output::READ_BUFFER_LENGTH];
     let mut polling = false;
     loop {
         let read = if polling {
-            match rustix::io::read(&pipe, &mut buffer) {
+            match rustix::io::read(&pipe, &mut buffer[..]) {
                 Err(rustix::io::Errno::AGAIN) => {
                     tokio::time::sleep(process::REAP_POLL_INTERVAL).await;
                     continue;
@@ -461,7 +485,7 @@ async fn drain(
                 }
             };
             let read = ready.and_then(|()| {
-                pipe.try_io(|| match rustix::io::read(&pipe, &mut buffer) {
+                pipe.try_io(|| match rustix::io::read(&pipe, &mut buffer[..]) {
                     Ok(0) => Err(io::ErrorKind::WouldBlock.into()),
                     read => read.map_err(io::Error::from),
                 })
@@ -526,9 +550,12 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
         is_shell_identifier(name.as_bytes()) && !ready.readonly.contains(name.as_bytes())
     };
     let undiffed = |name: &OsStr| UNDIFFED.iter().any(|undiffed| name == *undiffed);
+    // Commands usually have the server's environment exactly, in the same
+    // order: then only secrets are exported and nothing is unset.
+    let same = job.environment == ready.listed;
     for (name, value) in &job.environment {
         let secret = job.secrets.contains(name);
-        if undiffed(name) || (!secret && ready.environment.get(name) == Some(value)) {
+        if undiffed(name) || (!secret && (same || ready.environment.get(name) == Some(value))) {
             continue;
         }
         if !settable(name) {
@@ -540,8 +567,12 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
         quote(&mut prefix, value.as_bytes());
         prefix.extend_from_slice(b"; ");
     }
-    for name in ready.environment.keys() {
-        if undiffed(name) || job.environment.iter().any(|(present, _)| present == name) {
+    let present: HashSet<&OsString> = match same {
+        true => HashSet::new(),
+        false => job.environment.iter().map(|(name, _)| name).collect(),
+    };
+    for name in ready.environment.keys().filter(|_| !same) {
+        if undiffed(name) || present.contains(name) {
             continue;
         }
         if !settable(name) {
@@ -551,20 +582,17 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
         prefix.extend_from_slice(name.as_bytes());
         prefix.extend_from_slice(b"; ");
     }
-    let mut random = [0_u8; 2];
-    getrandom::fill(&mut random).ok()?;
-    prefix.extend_from_slice(
-        format!(
-            "RANDOM={}; SECONDS=0; {}",
-            u16::from_ne_bytes(random),
-            if ready.argzero {
-                "\\builtin setopt function_argzero; "
-            } else {
-                ""
-            }
-        )
-        .as_bytes(),
-    );
+    prefix.extend_from_slice(format!("RANDOM={}; SECONDS=0; ", super::random() as u16).as_bytes());
+    // The server itself runs with bg_nice off and notify on (see bootstrap).
+    for (restore, option) in [
+        (ready.argzero, "\\builtin setopt function_argzero; "),
+        (ready.bgnice, "\\builtin setopt bg_nice; "),
+        (!ready.notify, "\\builtin unsetopt notify; "),
+    ] {
+        if restore {
+            prefix.extend_from_slice(option.as_bytes());
+        }
+    }
     let split = prefix.len();
     prefix.extend_from_slice(job.script.as_bytes());
     Some((prefix, split))
@@ -624,6 +652,105 @@ fn fingerprint(files: &[PathBuf]) -> Fingerprint {
     )
 }
 
+/// Changes to what fingerprint reads for a probe's files, so that a batch of
+/// commands checks the files again only after one: their stats were 5 to 7%
+/// of a Hand's busy samples at 512 calls at once.
+/// kqueue watches each file and every directory its path and, through links,
+/// its target resolve through, so a change of contents or attributes, a
+/// rename, a removal or a relinked component each wakes one of them, before
+/// the system call that made the change returns. Other systems have no watch
+/// and check every batch.
+#[cfg(target_os = "macos")]
+struct Watch {
+    kqueue: nix::sys::event::Kqueue,
+    _watched: Vec<std::fs::File>,
+    /// Report a change on the next call, whatever the kqueue says.
+    pending: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl Watch {
+    fn new(files: &[PathBuf]) -> Option<Self> {
+        use nix::sys::event::{EvFlags, EventFilter, FilterFlag, Kqueue};
+        use std::os::fd::AsRawFd;
+        let kqueue = Kqueue::new().ok()?;
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for file in files {
+            let resolved = std::fs::canonicalize(file).ok();
+            for ancestor in [Some(file.as_path()), resolved.as_deref()]
+                .into_iter()
+                .flatten()
+                .flat_map(Path::ancestors)
+            {
+                if !paths.iter().any(|path| path == ancestor) {
+                    paths.push(ancestor.to_owned());
+                }
+            }
+        }
+        let flags = FilterFlag::NOTE_DELETE
+            | FilterFlag::NOTE_WRITE
+            | FilterFlag::NOTE_EXTEND
+            | FilterFlag::NOTE_ATTRIB
+            | FilterFlag::NOTE_LINK
+            | FilterFlag::NOTE_RENAME
+            | FilterFlag::NOTE_REVOKE;
+        let mut watched = Vec::new();
+        let mut changes = Vec::new();
+        // A missing file's nearest existing directory sees it appear.
+        for path in &paths {
+            let Ok(file) = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_EVTONLY)
+                .open(path)
+            else {
+                continue;
+            };
+            let ident = u64::try_from(file.as_raw_fd()).ok()?;
+            changes.push(Exits::event(
+                ident,
+                EventFilter::EVFILT_VNODE,
+                EvFlags::EV_ADD | EvFlags::EV_CLEAR,
+                flags,
+            ));
+            watched.push(file);
+        }
+        Exits::poll(&kqueue, &changes, &mut []).ok()?;
+        Some(Self {
+            kqueue,
+            _watched: watched,
+            pending: false,
+        })
+    }
+
+    const fn missed(&mut self) {
+        self.pending = true;
+    }
+
+    fn changed(&mut self) -> bool {
+        let mut events = [Exits::received(); 16];
+        let seen = Exits::poll(&self.kqueue, &[], &mut events).map_or(true, |count| count > 0);
+        std::mem::take(&mut self.pending) || seen
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+enum Watch {}
+
+#[cfg(not(target_os = "macos"))]
+impl Watch {
+    const fn new(_files: &[PathBuf]) -> Option<Self> {
+        None
+    }
+
+    const fn missed(&mut self) {
+        match *self {}
+    }
+
+    const fn changed(&mut self) -> bool {
+        match *self {}
+    }
+}
+
 fn startup_files(
     login: bool,
     environment: &HashMap<OsString, OsString>,
@@ -659,39 +786,57 @@ struct Launch {
     login: bool,
     workdir: PathBuf,
     environment: HashMap<OsString, OsString>,
+    /// The same environment as the first command listed it.
+    listed: Vec<(OsString, OsString)>,
     probe: Probe,
     weak: mpsc::WeakUnboundedSender<Message>,
     notes: mpsc::WeakUnboundedSender<Note>,
 }
 
 enum Stop {
+    /// The shell did not start; a later command tries again.
+    Launch(io::Error),
+    /// Startup files printed output or ended the shell: commands start their
+    /// own shells until those files change.
     Unready(io::Error),
-    Failed(io::Error),
+    /// The server died after it was ready and already said so (Owner::died).
+    Died,
 }
 
 impl std::fmt::Display for Stop {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Launch(error) => write!(formatter, "before it started: {error}"),
             Self::Unready(error) => write!(formatter, "before it was ready: {error}"),
-            Self::Failed(error) => error.fmt(formatter),
+            Self::Died => formatter.write_str("it died"),
         }
     }
 }
 
+/// The server: a close-on-exec copy of its output (zsh/system's sysopen,
+/// unloaded again unless the startup files loaded it) for each command's EXIT
+/// trap to report its status on, so commands outlive a server that dies (zsh
+/// exits when a fork fails); the startup report; then one request per line: a
+/// slot forks that slot's command, w<pid> waits for one that exited without a
+/// report and "c <pid>..." for ones that reported, which zsh keeps until then.
+/// bg_nice is off, so commands are not niced, and notify on, so zsh drops a
+/// job once it reaped it; a command's prelude restores both.
 fn bootstrap(nonce: &str, dir: &Path) -> OsString {
     let mut script = format!(
-        "\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero]\n\\builtin hash -r\n\\builtin setopt monitor\n__nc_d="
+        "\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin hash -r\n\\builtin setopt monitor notify no_bg_nice\n__nc_d="
     )
     .into_bytes();
     quote(&mut script, dir.as_os_str().as_bytes());
     script.extend_from_slice(
-        b"\n\\exec 3>&1 0<\"$__nc_d/q\" 1>/dev/null 2>/dev/null 9</dev/null || \\builtin exit 1\n\
+        b"\n\\exec 3>&1 0<\"$__nc_d/q\" 1>/dev/null 2>>|\"$__nc_d/log\" 9</dev/null || \\builtin exit 1\n\
 while \\builtin read -r __nc_l; do\n\
 if [[ $__nc_l = w* ]]; then\n\
 __nc_s=0; \\builtin wait \"${__nc_l#w}\" || __nc_s=$?\n\
 \\builtin print -ru3 -- \"x ${__nc_l#w} $__nc_s\"\n\
+elif [[ $__nc_l = c* ]]; then\n\
+\\builtin wait ${=__nc_l#c} || \\builtin true\n\
 else\n\
-( \\builtin cd -q -- \"$__nc_d/$__nc_l\" && \\exec 1>|1 2>|2 0<&9 9<&- 3>&- && \\builtin unset __nc_l __nc_d __nc_s && \\builtin unsetopt function_argzero && \\builtin source zsh ) &\n\
+( \\builtin cd -q -- \"$__nc_d/$__nc_l\" && \\exec 1>|1 2>|2 0<&9 9<&- 3>&- && \\builtin trap \"\\\\builtin print -ru$__nc_e -- 'e $__nc_l '\\$(( \\$? & 255 ))\" EXIT && \\builtin unset __nc_l __nc_d __nc_s __nc_e && \\builtin unsetopt function_argzero && \\builtin source zsh ) &\n\
 \\builtin print -ru3 -- \"s $__nc_l $!\"\n\
 fi\n\
 done\n",
@@ -700,22 +845,27 @@ done\n",
 }
 
 async fn run(launch: &Launch, inbox: mpsc::UnboundedReceiver<Message>) -> Result<(), Stop> {
-    private_dir(&launch.dir).map_err(Stop::Unready)?;
+    private_dir(&launch.dir).map_err(Stop::Launch)?;
     let result = serve(launch, inbox).await;
     let _ = std::fs::remove_dir_all(&launch.dir);
     result
 }
 
-async fn serve(launch: &Launch, inbox: mpsc::UnboundedReceiver<Message>) -> Result<(), Stop> {
+async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> Result<(), Stop> {
     let (mut child, _keeper, requests, mut events, nonce) =
-        launch_shell(launch).map_err(Stop::Unready)?;
-    let ready = read_ready(&mut events, &nonce, launch).await;
-    let (ready, probe) = match ready {
+        launch_shell(launch).map_err(Stop::Launch)?;
+    let ready = match read_ready(&mut events, &nonce, launch).await {
+        Ok(ready) => Exits::new()
+            .map(|exits| (ready, exits))
+            .map_err(Stop::Launch),
+        Err(error) => Err(Stop::Unready(error)),
+    };
+    let ((ready, probe), mut exits) = match ready {
         Ok(ready) => ready,
-        Err(error) => {
+        Err(stop) => {
             let _ = child.start_kill();
             let _ = child.wait().await;
-            return Err(Stop::Unready(error));
+            return Err(stop);
         }
     };
     if let Some(notes) = launch.notes.upgrade() {
@@ -730,14 +880,17 @@ async fn serve(launch: &Launch, inbox: mpsc::UnboundedReceiver<Message>) -> Resu
             free: Vec::new(),
         },
         pids: HashMap::new(),
+        gone: Vec::new(),
+        forget: Vec::new(),
         outbound: Vec::new(),
         requests,
         weak: launch.weak.clone(),
         notes: launch.notes.clone(),
         live: 0,
         retiring: false,
+        alive: true,
+        exit: None,
     };
-    let exits = Exits::new().map_err(Stop::Failed)?;
     let (kill, killed) = oneshot::channel::<()>();
     let (status, mut watcher) = oneshot::channel();
     tokio::spawn(async move {
@@ -750,21 +903,32 @@ async fn serve(launch: &Launch, inbox: mpsc::UnboundedReceiver<Message>) -> Resu
         };
         let _ = status.send(stopped);
     });
-    let stopped = owner.serve(&mut watcher, events, inbox, exits).await;
-    owner.fail();
+    let stopped = owner
+        .serve(&mut watcher, &mut events, &mut inbox, &mut exits)
+        .await;
     drop(kill);
-    let _ = watcher.await;
+    if owner.exit.is_none() {
+        let _ = watcher.await;
+    }
+    owner.alive = false;
+    // All the server wrote, such as the start of a command it forked just
+    // before it stopped.
+    let _ = owner.read(&mut events, &exits, true);
     match stopped {
-        Ok(Some(reply)) => {
-            let _ = reply.send(());
+        Ok(reply) => {
+            owner.fail();
+            if let Some(reply) = reply {
+                let _ = reply.send(());
+            }
             Ok(())
         }
-        Ok(None) => Ok(()),
-        Err(error) => Err(Stop::Failed(error)),
+        Err(error) => {
+            owner.died(&error, &launch.dir);
+            owner.orphans(&mut events, &mut inbox, &mut exits).await;
+            Err(Stop::Died)
+        }
     }
 }
-
-type Events = BufReader<pipe::Receiver>;
 
 type Launched = (Child, pipe::Receiver, pipe::Sender, Events, String);
 
@@ -792,17 +956,72 @@ fn launch_shell(launch: &Launch) -> io::Result<Launched> {
         .process_group(0);
     let child = command.spawn()?;
     drop(command);
-    let events = pipe::Receiver::from_owned_fd(reader.into())?;
-    Ok((child, keeper, requests, BufReader::new(events), nonce))
+    let events = Events {
+        pipe: pipe::Receiver::from_owned_fd(reader.into())?,
+        buffer: Vec::new(),
+    };
+    Ok((child, keeper, requests, events, nonce))
 }
 
-async fn line(events: &mut Events) -> io::Result<Vec<u8>> {
-    let mut line = Vec::new();
-    events.read_until(b'\n', &mut line).await?;
-    if line.pop() != Some(b'\n') {
-        return Err(io::Error::other("the shell stopped while it started"));
+/// The server's output: its startup report, then a line per event.
+struct Events {
+    pipe: pipe::Receiver,
+    buffer: Vec<u8>,
+}
+
+impl Events {
+    /// Reads what the pipe holds, false once every writer closed it. With
+    /// force it also reads what tokio has not seen arrive yet, such as the
+    /// status a command wrote before the exit kqueue just reported.
+    fn fill(&mut self, force: bool) -> io::Result<bool> {
+        let mut chunk = [0_u8; output::READ_BUFFER_LENGTH];
+        if force {
+            loop {
+                match rustix::io::read(&self.pipe, &mut chunk) {
+                    Ok(0) => return Ok(false),
+                    Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
+                    Err(rustix::io::Errno::INTR) => {}
+                    Err(rustix::io::Errno::AGAIN) => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        loop {
+            match self.pipe.try_read(&mut chunk) {
+                Ok(0) => return Ok(false),
+                Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
     }
-    Ok(line)
+
+    /// Takes the complete lines read so far.
+    fn take(&mut self) -> Vec<u8> {
+        let end = self
+            .buffer
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |end| end + 1);
+        self.buffer.drain(..end).collect()
+    }
+
+    async fn line(&mut self) -> io::Result<Vec<u8>> {
+        let mut open = true;
+        loop {
+            if let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
+                let mut line: Vec<u8> = self.buffer.drain(..=end).collect();
+                line.pop();
+                return Ok(line);
+            }
+            if !open {
+                return Err(io::Error::other("the shell stopped while it started"));
+            }
+            self.pipe.readable().await?;
+            open = self.fill(false)?;
+        }
+    }
 }
 
 async fn read_ready(
@@ -810,19 +1029,28 @@ async fn read_ready(
     nonce: &str,
     launch: &Launch,
 ) -> io::Result<(Ready, Probe)> {
-    if line(events).await? != nonce.as_bytes() {
+    if events.line().await? != nonce.as_bytes() {
         return Err(io::Error::other(
             "the shell printed output while it started",
         ));
     }
-    let zdotdir = OsString::from_vec(line(events).await?);
-    let readonly = line(events)
+    let zdotdir = OsString::from_vec(events.line().await?);
+    let readonly = events
+        .line()
         .await?
         .split(u8::is_ascii_whitespace)
         .filter(|name| !name.is_empty())
         .map(<[u8]>::to_vec)
         .collect();
-    let argzero = line(events).await? == b"on";
+    let options: Vec<bool> = events
+        .line()
+        .await?
+        .split(u8::is_ascii_whitespace)
+        .map(|value| value == b"on")
+        .collect();
+    let [argzero, bgnice, notify] = options[..] else {
+        return Err(io::Error::other("the shell reported unexpected options"));
+    };
     let files = startup_files(launch.login, &launch.environment, Some(&zdotdir));
     let probe = Probe {
         fingerprint: if files == launch.probe.files {
@@ -834,8 +1062,11 @@ async fn read_ready(
     };
     let ready = Ready {
         environment: launch.environment.clone(),
+        listed: launch.listed.clone(),
         readonly,
         argzero,
+        bgnice,
+        notify,
     };
     Ok((ready, probe))
 }
@@ -864,10 +1095,22 @@ struct Entry {
 
 struct Busy {
     secret: bool,
-    started: Option<oneshot::Sender<u32>>,
+    /// Until the server names the command's process: the caller waiting for
+    /// its lease, and the channel the lease returns its pipes on.
+    pending: Option<(
+        oneshot::Sender<Option<Lease>>,
+        mpsc::UnboundedSender<Message>,
+    )>,
     exit: Option<oneshot::Sender<io::Result<i32>>>,
     ended: Arc<Signal>,
     released: Option<[Option<Output>; 2]>,
+    pid: Option<u32>,
+    /// The status the command's EXIT trap reported.
+    reported: Option<i32>,
+    /// Its process exited without reporting, so the server's wait was asked.
+    exited: bool,
+    /// zsh is done with the process, so the slot may take another command.
+    waited: bool,
 }
 
 impl Entry {
@@ -893,7 +1136,6 @@ impl Entry {
 
 impl Busy {
     fn end(&mut self, status: io::Result<i32>) {
-        self.started = None;
         self.ended.fire();
         if let Some(exit) = self.exit.take() {
             let _ = exit.send(status);
@@ -941,6 +1183,15 @@ impl Slots {
         self.entry(slot).and_then(|entry| entry.busy.as_mut())
     }
 
+    /// Whether a command still waits for its status.
+    fn waiting(&self) -> bool {
+        self.entries
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.busy.as_ref())
+            .any(|busy| busy.exit.is_some())
+    }
+
     fn settle(&mut self, slot: usize) {
         let Some(entry) = self.entry(slot) else {
             return;
@@ -948,7 +1199,7 @@ impl Slots {
         if entry
             .busy
             .as_ref()
-            .is_none_or(|busy| busy.exit.is_some() || busy.released.is_none())
+            .is_none_or(|busy| !busy.waited || busy.released.is_none())
         {
             return;
         }
@@ -968,7 +1219,7 @@ impl Slots {
 
 enum Event {
     Message(Option<Message>),
-    Line(io::Result<usize>),
+    Readable(io::Result<()>),
     Exited(io::Result<()>),
     Child(io::Result<std::process::ExitStatus>),
     Writable(io::Result<()>),
@@ -979,33 +1230,39 @@ struct Owner {
     ready: Ready,
     slots: Slots,
     pids: HashMap<u32, usize>,
+    /// Commands that had exited when the server named them.
+    gone: Vec<u32>,
+    /// Commands that reported their status, for the next "c" request.
+    forget: Vec<u32>,
     outbound: Vec<u8>,
     requests: pipe::Sender,
     weak: mpsc::WeakUnboundedSender<Message>,
     notes: mpsc::WeakUnboundedSender<Note>,
     live: usize,
     retiring: bool,
+    alive: bool,
+    /// How the server process ended, once the watcher said.
+    exit: Option<String>,
 }
 
 impl Owner {
     async fn serve(
         &mut self,
         watcher: &mut oneshot::Receiver<io::Result<std::process::ExitStatus>>,
-        mut events: Events,
-        mut inbox: mpsc::UnboundedReceiver<Message>,
-        mut exits: Exits,
+        events: &mut Events,
+        inbox: &mut mpsc::UnboundedReceiver<Message>,
+        exits: &mut Exits,
     ) -> io::Result<Option<oneshot::Sender<()>>> {
         let mut exited = Vec::new();
-        let mut line = Vec::new();
         loop {
             if self.retiring && self.live == 0 {
                 return Ok(None);
             }
             let event = tokio::select! {
                 message = inbox.recv() => Event::Message(message),
-                read = events.read_until(b'\n', &mut line) => Event::Line(read),
+                ready = events.pipe.readable() => Event::Readable(ready),
                 ready = exits.next(&mut exited) => Event::Exited(ready),
-                status = &mut *watcher => Event::Child(status.unwrap_or_else(|_| Err(io::Error::other("the shell server's watcher stopped")))),
+                status = &mut *watcher, if self.exit.is_none() => Event::Child(status.unwrap_or_else(|_| Err(io::Error::other("the shell server's watcher stopped")))),
                 writable = self.requests.writable(), if !self.outbound.is_empty() => Event::Writable(writable),
             };
             match event {
@@ -1019,27 +1276,24 @@ impl Owner {
                 Event::Message(Some(Message::Retire)) => self.retiring = true,
                 Event::Message(Some(Message::Stop(reply))) => return Ok(Some(reply)),
                 Event::Message(None) => return Ok(None),
-                Event::Line(read) => {
-                    if read? == 0 {
+                Event::Readable(ready) => {
+                    ready?;
+                    if !self.read(events, exits, false)? {
                         return Err(io::Error::other("the shell server closed its output"));
-                    }
-                    if line.last() == Some(&b'\n') {
-                        self.event(&String::from_utf8_lossy(&line), &exits);
-                        line.clear();
                     }
                 }
                 Event::Exited(ready) => {
                     ready?;
-                    for pid in exited.drain(..) {
-                        self.outbound
-                            .extend_from_slice(format!("w{pid}\n").as_bytes());
+                    if !self.exited(&mut exited, events, exits)? {
+                        return Err(io::Error::other("the shell server closed its output"));
                     }
                 }
                 Event::Child(status) => {
-                    return Err(io::Error::other(format!(
-                        "the shell server exited: {}",
-                        status?
-                    )));
+                    let status =
+                        status.map_or_else(|error| error.to_string(), |status| status.to_string());
+                    let error = io::Error::other(format!("the shell server exited: {status}"));
+                    self.exit = Some(status);
+                    return Err(error);
                 }
                 Event::Writable(writable) => writable?,
             }
@@ -1047,7 +1301,93 @@ impl Owner {
         }
     }
 
+    /// Keeps the commands of a server that died until each reported its
+    /// status or exited without one.
+    async fn orphans(
+        &mut self,
+        events: &mut Events,
+        inbox: &mut mpsc::UnboundedReceiver<Message>,
+        exits: &mut Exits,
+    ) {
+        for entry in self.slots.entries.iter_mut().flatten() {
+            let Some(busy) = entry.busy.as_mut() else {
+                continue;
+            };
+            if busy.pid.is_none() {
+                // Never forked: its caller starts a shell of its own.
+                if let Some((reply, _)) = busy.pending.take() {
+                    let _ = reply.send(None);
+                }
+                entry.busy = None;
+            } else if busy.exited {
+                // It exited without reporting, and the server died before
+                // its wait answered.
+                busy.end(Err(io::Error::other("the shell server stopped")));
+            }
+        }
+        let mut exited = Vec::new();
+        let mut listening = true;
+        let mut open = true;
+        while self.slots.waiting() {
+            tokio::select! {
+                message = inbox.recv(), if listening => match message {
+                    Some(Message::Start(job)) => {
+                        let _ = job.reply.send(None);
+                    }
+                    Some(Message::Release(slot, pipes)) => {
+                        if let Some(busy) = self.slots.busy(slot) {
+                            busy.released = Some(pipes);
+                        }
+                    }
+                    Some(Message::Retire) => {}
+                    Some(Message::Stop(reply)) => {
+                        self.fail();
+                        let _ = reply.send(());
+                        return;
+                    }
+                    None => listening = false,
+                },
+                // Closed once no command can report anymore; those that did
+                // still get their exit.
+                ready = events.pipe.readable(), if open => {
+                    open = ready.is_ok() && self.read(events, exits, false).unwrap_or(false);
+                }
+                ready = exits.next(&mut exited) => {
+                    if ready.is_err() {
+                        break;
+                    }
+                    let _ = self.exited(&mut exited, events, exits);
+                }
+            }
+        }
+        // Whatever is left can no longer report a status.
+        self.fail();
+    }
+
+    /// Logs why the server stopped, with the last error zsh wrote, and tells
+    /// the dispatcher at once, so later commands go elsewhere.
+    fn died(&self, error: &io::Error, dir: &Path) {
+        let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
+        let zsh = log
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        tracing::warn!(%error, zsh, "shell server stopped");
+        if let Some(notes) = self.notes.upgrade() {
+            let _ = notes.send(Note::Stopped(self.id, None));
+        }
+    }
+
     fn flush(&mut self) -> io::Result<()> {
+        if !self.outbound.is_empty() && !self.forget.is_empty() {
+            self.outbound.push(b'c');
+            for pid in self.forget.drain(..) {
+                self.outbound
+                    .extend_from_slice(format!(" {pid}").as_bytes());
+            }
+            self.outbound.push(b'\n');
+        }
         while !self.outbound.is_empty() {
             match self.requests.try_write(&self.outbound) {
                 Ok(written) => drop(self.outbound.drain(..written)),
@@ -1074,16 +1414,12 @@ impl Owner {
             (Some(release), Some((text, split))) => self.prepare(job, &text, split, release),
             _ => Err((job.reply, None)),
         };
-        match started {
-            Ok(true) => {}
-            Ok(false) => self.credit(),
-            Err((reply, error)) => {
-                if let Some(error) = error {
-                    tracing::debug!(%error, "the shell server could not prepare a command");
-                }
-                let _ = reply.send(None);
-                self.credit();
+        if let Err((reply, error)) = started {
+            if let Some(error) = error {
+                tracing::debug!(%error, "the shell server could not prepare a command");
             }
+            let _ = reply.send(None);
+            self.credit();
         }
     }
 
@@ -1093,15 +1429,14 @@ impl Owner {
         text: &[u8],
         split: usize,
         release: mpsc::UnboundedSender<Message>,
-    ) -> Result<bool, (oneshot::Sender<Option<Lease>>, Option<io::Error>)> {
+    ) -> Result<(), (oneshot::Sender<Option<Lease>>, Option<io::Error>)> {
         let secret = !job.secrets.is_empty();
         let Job {
-            pid,
-            exit,
-            ended,
-            reply,
-            ..
+            exit, ended, reply, ..
         } = job;
+        if reply.is_closed() {
+            return Err((reply, None));
+        }
         let slot = match self.slots.lease() {
             Ok(slot) => slot,
             Err(error) => return Err((reply, Some(error))),
@@ -1109,85 +1444,189 @@ impl Owner {
         let Some(entry) = self.slots.entry(slot) else {
             return Err((reply, None));
         };
-        let written = entry.write(text, split);
-        if let Err(error) = written {
+        if let Err(error) = entry.write(text, split) {
             self.slots.free.push(slot);
             return Err((reply, Some(error)));
         }
-        let [Some(stdout), Some(stderr)] = std::mem::take(&mut entry.pipes) else {
-            return Err((reply, None));
-        };
         entry.busy = Some(Busy {
             secret,
-            started: Some(pid),
+            pending: Some((reply, release)),
             exit: Some(exit),
             ended,
             released: None,
+            pid: None,
+            reported: None,
+            exited: false,
+            waited: false,
         });
-        let lease = Lease {
-            slot,
-            pipes: [Slot::new(Some(stdout)), Slot::new(Some(stderr))],
-            release,
-        };
-        if reply.send(Some(lease)).is_err() {
-            if let Some(busy) = self.slots.busy(slot) {
-                busy.end(Err(io::Error::other("the command was cancelled")));
-            }
-            return Ok(false);
-        }
         self.live += 1;
         self.outbound
             .extend_from_slice(format!("{slot}\n").as_bytes());
-        Ok(true)
+        Ok(())
     }
 
-    fn event(&mut self, line: &str, exits: &Exits) {
-        let mut fields = line.split_ascii_whitespace();
-        let (Some(kind), Some(Ok(first))) = (fields.next(), fields.next().map(str::parse::<u32>))
-        else {
+    /// Handles every line the server wrote so far, false once its output
+    /// closed.
+    fn read(&mut self, events: &mut Events, exits: &Exits, force: bool) -> io::Result<bool> {
+        let mut open = self.handle(events, exits, force)?;
+        while !self.gone.is_empty() {
+            // Each wrote any status of its own before it exited, so the pipe
+            // holds it now.
+            let gone = std::mem::take(&mut self.gone);
+            open = self.handle(events, exits, true)? && open;
+            for pid in gone {
+                self.reap(pid);
+            }
+        }
+        Ok(open)
+    }
+
+    fn handle(&mut self, events: &mut Events, exits: &Exits, force: bool) -> io::Result<bool> {
+        let open = events.fill(force)?;
+        for line in events.take().split(|byte| *byte == b'\n') {
+            self.event(line, exits);
+        }
+        Ok(open)
+    }
+
+    fn exited(
+        &mut self,
+        exited: &mut Vec<u32>,
+        events: &mut Events,
+        exits: &Exits,
+    ) -> io::Result<bool> {
+        // A command writes its status before it exits.
+        let open = self.read(events, exits, true)?;
+        for pid in exited.drain(..) {
+            self.reap(pid);
+        }
+        Ok(open)
+    }
+
+    /// A command's process exited: its status is the one it reported, else
+    /// the server's wait gives it (after exec, a signal, or a trap of the
+    /// command's own that replaced the report).
+    fn reap(&mut self, pid: u32) {
+        let Some(&slot) = self.pids.get(&pid) else {
             return;
         };
-        let second = fields.next().map(str::parse::<i32>);
+        let Some(entry) = self.slots.entry(slot) else {
+            return;
+        };
+        let Some(busy) = entry.busy.as_mut() else {
+            return;
+        };
+        match busy.reported {
+            Some(status) => {
+                busy.end(Ok(status));
+                busy.waited = true;
+                if busy.secret {
+                    let _ = entry.erase();
+                }
+                self.pids.remove(&pid);
+                self.forget.push(pid);
+                self.live = self.live.saturating_sub(1);
+                self.slots.settle(slot);
+            }
+            None if self.alive => {
+                busy.exited = true;
+                self.outbound
+                    .extend_from_slice(format!("w{pid}\n").as_bytes());
+            }
+            None => {
+                busy.end(Err(io::Error::other("the shell server stopped")));
+                self.pids.remove(&pid);
+            }
+        }
+    }
+
+    fn event(&mut self, line: &[u8], exits: &Exits) {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return;
+        };
+        let mut fields = line.split_ascii_whitespace();
+        let (Some(kind), Some(Ok(first)), Some(Ok(second))) = (
+            fields.next(),
+            fields.next().map(str::parse::<u32>),
+            fields.next().map(str::parse::<i32>),
+        ) else {
+            return;
+        };
         let Ok(slot) = usize::try_from(first) else {
             return;
         };
-        match (kind, second) {
-            ("s", Some(Ok(pid))) => {
-                self.credit();
-                let (Ok(pid), Some(busy)) = (u32::try_from(pid), self.slots.busy(slot)) else {
-                    return;
-                };
-                if let Some(started) = busy.started.take() {
-                    let _ = started.send(pid);
-                }
-                self.pids.insert(pid, slot);
-                if exits.watch(pid) {
-                    self.outbound
-                        .extend_from_slice(format!("w{pid}\n").as_bytes());
+        match kind {
+            "s" => self.started(slot, second, exits),
+            "e" => {
+                if let Some(busy) = self.slots.busy(slot) {
+                    busy.reported = Some(second);
                 }
             }
-            ("x", Some(Ok(status))) => {
-                let Some(slot) = self.pids.remove(&first) else {
-                    return;
-                };
-                if let Some(entry) = self.slots.entry(slot)
-                    && let Some(busy) = entry.busy.as_mut()
-                {
-                    busy.end(Ok(status));
-                    if busy.secret {
-                        let _ = entry.erase();
-                    }
-                    self.live = self.live.saturating_sub(1);
-                }
-                self.slots.settle(slot);
-            }
+            "x" => self.waited(first, second),
             _ => {}
         }
+    }
+
+    fn started(&mut self, slot: usize, pid: i32, exits: &Exits) {
+        self.credit();
+        let Ok(pid) = u32::try_from(pid) else {
+            return;
+        };
+        let Some(entry) = self.slots.entry(slot) else {
+            return;
+        };
+        let Some(busy) = entry.busy.as_mut() else {
+            return;
+        };
+        busy.pid = Some(pid);
+        let owned = match (busy.pending.take(), std::mem::take(&mut entry.pipes)) {
+            (Some((reply, release)), [Some(stdout), Some(stderr)]) => reply
+                .send(Some(Lease {
+                    slot,
+                    pid,
+                    pipes: [Slot::new(Some(stdout)), Slot::new(Some(stderr))],
+                    release,
+                }))
+                .is_ok(),
+            (_, pipes) => {
+                entry.pipes = pipes;
+                false
+            }
+        };
+        if !owned {
+            // Its caller stopped waiting; the dropped lease returned the pipes.
+            busy.end(Err(io::Error::other("the command was cancelled")));
+            drop(process::ProcessGroupGuard::new(pid));
+        }
+        self.pids.insert(pid, slot);
+        if exits.watch(pid) {
+            self.gone.push(pid);
+        }
+    }
+
+    fn waited(&mut self, pid: u32, status: i32) {
+        let Some(slot) = self.pids.remove(&pid) else {
+            return;
+        };
+        if let Some(entry) = self.slots.entry(slot)
+            && let Some(busy) = entry.busy.as_mut()
+        {
+            busy.end(Ok(status));
+            busy.waited = true;
+            if busy.secret {
+                let _ = entry.erase();
+            }
+            self.live = self.live.saturating_sub(1);
+        }
+        self.slots.settle(slot);
     }
 
     fn fail(&mut self) {
         for entry in self.slots.entries.iter_mut().flatten() {
             if let Some(busy) = entry.busy.as_mut() {
+                if let Some((reply, _)) = busy.pending.take() {
+                    let _ = reply.send(None);
+                }
                 busy.end(Err(io::Error::other("the shell server stopped")));
             }
         }
@@ -1202,11 +1641,6 @@ struct Exits {
 
 #[cfg(target_os = "macos")]
 impl Exits {
-    const NOW: nix::libc::timespec = nix::libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-
     fn new() -> io::Result<Self> {
         use std::os::fd::AsFd;
         let kqueue = nix::sys::event::Kqueue::new()?;
@@ -1214,48 +1648,73 @@ impl Exits {
         Ok(Self { kqueue, ready })
     }
 
-    fn event(pid: usize, flags: nix::sys::event::EvFlags) -> nix::sys::event::KEvent {
-        use nix::sys::event::{EventFilter, FilterFlag, KEvent};
-        KEvent::new(
-            pid,
+    fn event(
+        ident: u64,
+        filter: nix::sys::event::EventFilter,
+        flags: nix::sys::event::EvFlags,
+        fflags: nix::sys::event::FilterFlag,
+    ) -> nix::sys::event::KEvent64 {
+        nix::sys::event::KEvent64::new(ident, filter, flags, fflags, 0, 0, [0; 2])
+    }
+
+    fn received() -> nix::sys::event::KEvent64 {
+        use nix::sys::event::{EvFlags, EventFilter, FilterFlag};
+        Self::event(
+            0,
             EventFilter::EVFILT_PROC,
-            flags,
-            FilterFlag::NOTE_EXIT,
-            0,
-            0,
+            EvFlags::empty(),
+            FilterFlag::empty(),
         )
     }
 
+    /// Registers `changes` and returns the events the queue holds now.
+    /// kevent64 with KEVENT_FLAG_IMMEDIATE returns at once when it holds none,
+    /// in 0.23 µs where a zero timeout took 11.5 µs (either call, under no
+    /// load). A kqueue takes only kevent64 once it had one.
+    fn poll(
+        kqueue: &nix::sys::event::Kqueue,
+        changes: &[nix::sys::event::KEvent64],
+        events: &mut [nix::sys::event::KEvent64],
+    ) -> nix::Result<usize> {
+        use nix::sys::event::Kevent64Flags;
+        kqueue.kevent64(changes, events, Kevent64Flags::KEVENT_FLAG_IMMEDIATE, None)
+    }
+
     fn watch(&self, pid: u32) -> bool {
-        use nix::sys::event::EvFlags;
-        let event = Self::event(pid as usize, EvFlags::EV_ADD | EvFlags::EV_ONESHOT);
-        self.kqueue
-            .kevent(&[event], &mut [], Some(Self::NOW))
-            .is_err()
+        use nix::sys::event::{EvFlags, EventFilter, FilterFlag};
+        let event = Self::event(
+            u64::from(pid),
+            EventFilter::EVFILT_PROC,
+            EvFlags::EV_ADD | EvFlags::EV_ONESHOT,
+            FilterFlag::NOTE_EXIT,
+        );
+        Self::poll(&self.kqueue, &[event], &mut []).is_err()
     }
 
     async fn next(&mut self, exited: &mut Vec<u32>) -> io::Result<()> {
-        use nix::sys::event::{EvFlags, FilterFlag};
+        use nix::sys::event::FilterFlag;
         self.ready.readable().await?;
-        let mut events = [Self::event(0, EvFlags::empty()); 64];
-        let count =
-            self.ready.try_io(
-                || match self.kqueue.kevent(&[], &mut events, Some(Self::NOW))? {
-                    0 => Err(io::ErrorKind::WouldBlock.into()),
-                    count => Ok(count),
-                },
+        let mut events = [Self::received(); 64];
+        let drained = self.ready.try_io(|| {
+            let count = Self::poll(&self.kqueue, &[], &mut events)?;
+            exited.extend(
+                events[..count]
+                    .iter()
+                    .filter(|event| event.fflags().contains(FilterFlag::NOTE_EXIT))
+                    .filter_map(|event| u32::try_from(event.ident()).ok()),
             );
-        let count = match count {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => 0,
-            count => count?,
-        };
-        exited.extend(
-            events[..count]
-                .iter()
-                .filter(|event| event.fflags().contains(FilterFlag::NOTE_EXIT))
-                .filter_map(|event| u32::try_from(event.ident()).ok()),
-        );
-        Ok(())
+            // A queue that had room left is empty: wait until tokio sees it
+            // readable again.
+            if count < events.len() {
+                Err(io::ErrorKind::WouldBlock.into())
+            } else {
+                Ok(())
+            }
+        });
+        match drained {
+            Err(error) if error.kind() != io::ErrorKind::WouldBlock => Err(error),
+            _ => Ok(()),
+        }
     }
 }
 

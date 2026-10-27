@@ -146,6 +146,63 @@ impl ProcessChild {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn served(
+        mut started: oneshot::Receiver<u32>,
+        mut exit: oneshot::Receiver<io::Result<i32>>,
+    ) -> Self {
+        let (commands, mut received) = mpsc::unbounded_channel();
+        let process_group = SharedProcessGroup(commands);
+        let exited = Arc::new(AtomicBool::new(false));
+        let reaped = Arc::clone(&exited);
+        let wait = tokio::spawn(async move {
+            let mut guard: Option<ProcessGroupGuard> = None;
+            let mut queued: Vec<GroupCommand> = Vec::new();
+            let mut listening = true;
+            let result = loop {
+                tokio::select! {
+                    pid = &mut started, if guard.is_none() => match pid {
+                        Ok(pid) => {
+                            let mut group = ProcessGroupGuard::new(pid);
+                            for command in queued.drain(..) {
+                                command.apply(&mut group);
+                            }
+                            guard = Some(group);
+                        }
+                        Err(_) => break Err(io::Error::other("the shell server stopped before the command started")),
+                    },
+                    command = received.recv(), if listening => match (command, guard.as_mut()) {
+                        (Some(command), Some(group)) => command.apply(group),
+                        (Some(command), None) => queued.push(command),
+                        (None, _) => listening = false,
+                    },
+                    status = &mut exit, if guard.is_some() => {
+                        let status = status.unwrap_or_else(|_| Err(io::Error::other("the shell server stopped")));
+                        if status.is_ok()
+                            && let Some(group) = guard.as_mut()
+                        {
+                            let _ = group.terminate_and_disarm();
+                        }
+                        break status;
+                    }
+                }
+            };
+            reaped.store(true, Ordering::SeqCst);
+            result
+        });
+        Self {
+            wait: Some(wait),
+            completed: None,
+            process_group,
+            exited,
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn process_group(&self) -> SharedProcessGroup {
+        self.process_group.clone()
+    }
+
     pub(super) fn exited(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.exited)
     }
@@ -175,7 +232,7 @@ impl Drop for ProcessChild {
     }
 }
 
-const REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+pub(super) const REAP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 type Reply = oneshot::Sender<io::Result<()>>;
 
@@ -261,6 +318,8 @@ pub(super) enum ProcessOutput {
         stderr: Option<ChildStderr>,
     },
     Pty(Box<dyn Read + Send>),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Served(super::server::Served),
 }
 
 pub(super) fn spawn(

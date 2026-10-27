@@ -7,7 +7,7 @@ use tokio::{
     sync::mpsc::UnboundedSender,
 };
 
-const READ_BUFFER_LENGTH: usize = 8 * 1024;
+pub(super) const READ_BUFFER_LENGTH: usize = 8 * 1024;
 pub(super) use nanocode_process_contracts::{effective_token_limit, redact_and_limit};
 
 pub(super) async fn drain(

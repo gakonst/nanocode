@@ -7,7 +7,7 @@ use super::wire::SearchCommands;
 
 static COMMANDS_SCHEMA: LazyLock<Value> = LazyLock::new(generate_commands_schema);
 
-pub(super) fn commands_schema() -> Value {
+pub(crate) fn commands_schema() -> Value {
     COMMANDS_SCHEMA.clone()
 }
 

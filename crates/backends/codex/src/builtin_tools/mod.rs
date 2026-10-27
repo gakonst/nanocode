@@ -32,10 +32,8 @@ pub mod image_generation;
 pub use image_generation::{image_generation_tool, image_generation_tool_with_images};
 #[cfg(not(target_family = "wasm"))]
 pub mod web_search;
-#[cfg(target_family = "wasm")]
 #[path = "web_search/host.rs"]
 mod web_search_host;
-#[cfg(target_family = "wasm")]
 pub use web_search_host::{web_search_tool, web_search_tool_with_model};
 
 pub use nanocode_tools::tool;

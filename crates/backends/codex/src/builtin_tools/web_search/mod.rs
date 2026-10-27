@@ -1,6 +1,6 @@
 mod history;
-mod schema;
-mod wire;
+pub(crate) mod schema;
+pub(crate) mod wire;
 
 use std::time::Duration;
 

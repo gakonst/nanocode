@@ -8,16 +8,20 @@ use crate::client::{
     transport::host::{HostConnectRequest, HostError, HostTransport},
 };
 
+#[cfg(target_family = "wasm")]
 #[path = "schema.rs"]
 mod schema;
 #[path = "search_model.rs"]
 mod search_model;
+#[cfg(target_family = "wasm")]
 #[path = "wire.rs"]
 #[allow(
     dead_code,
     reason = "the native handler alone sends the standalone search request"
 )]
 mod wire;
+#[cfg(not(target_family = "wasm"))]
+use super::web_search::{schema, wire};
 
 use self::{schema::commands_schema, search_model::search_model, wire::SearchCommands};
 

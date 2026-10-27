@@ -1,28 +1,26 @@
 use super::*;
 use crate::{
-    ToolInput, ToolOutput,
-    contract::{RunningTask, ToolError, ToolResult},
-    embedded::{CodeModeUpdate, HandCalls},
+    ToolOutput,
+    contract::RunningTask,
+    embedded::{HandCalls, OwnedToolContext},
     runtime::ToolRuntime,
 };
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
+        Arc,
+        atomic::{AtomicU16, AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use nanocode_process::LastActivity;
-use nanocode_sync::{Atom, Owned, Signal, Slot};
+use nanocode_sync::{Atom, Owned, Signal};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot, watch},
+    sync::{mpsc, watch},
 };
 use tokio_tungstenite::{
     WebSocketStream,
@@ -44,152 +42,6 @@ impl SocketPolicy {
                 .max_message_size
                 .unwrap_or(usize::MAX),
             request_timeout: crate::attachment::HEARTBEAT_INTERVAL * 2,
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct ExecutorOptions {
-    pub name: Option<String>,
-    pub runtime_id: Option<String>,
-    pub callback_timeout: Option<Duration>,
-    pub callback_hold: Option<Duration>,
-}
-
-const DEFAULT_CALLBACK_HOLD: Duration = Duration::from_secs(60);
-const MAX_BUFFERED_FRAMES: usize = 1024;
-
-const WORK_PUBLISH_DELAY: Duration = Duration::from_millis(10);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BusyKind {
-    Cell,
-    Call,
-    Task,
-    Request,
-    Reply,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BusyItem {
-    pub kind: BusyKind,
-    pub id: String,
-    pub label: String,
-    pub session_id: Option<String>,
-    pub silent_for: Duration,
-}
-
-impl BusyItem {
-    fn task(task: RunningTask, session_id: Option<&str>) -> Self {
-        Self {
-            kind: BusyKind::Task,
-            id: task.id,
-            label: task.label,
-            session_id: session_id.map(str::to_owned),
-            silent_for: task.silent_for,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct HandActivity {
-    shared: Arc<ActivityShared>,
-}
-
-struct ActivityShared {
-    draining: AtomicBool,
-    busy: watch::Sender<usize>,
-    tools: Vec<Weak<dyn Tool>>,
-    boards: Atom<Vec<Arc<Board>>>,
-}
-
-impl Default for HandActivity {
-    fn default() -> Self {
-        Self::new(Vec::new())
-    }
-}
-
-impl HandActivity {
-    pub(super) fn serving(tools: &crate::Tools) -> Self {
-        Self::new(tools.registered_tools().map(Arc::downgrade).collect())
-    }
-
-    fn new(tools: Vec<Weak<dyn Tool>>) -> Self {
-        Self {
-            shared: Arc::new(ActivityShared {
-                draining: AtomicBool::new(false),
-                busy: watch::channel(0).0,
-                tools,
-                boards: Atom::default(),
-            }),
-        }
-    }
-
-    #[must_use]
-    pub fn busy(&self) -> bool {
-        *self.shared.busy.borrow() > 0
-    }
-
-    #[must_use]
-    pub fn items(&self) -> Vec<BusyItem> {
-        let mut items = Vec::new();
-        for board in self.shared.boards.get().iter() {
-            board.items(&mut items);
-        }
-        for tool in self.shared.tools.iter().filter_map(Weak::upgrade) {
-            items.extend(
-                tool.running_tasks()
-                    .into_iter()
-                    .map(|task| BusyItem::task(task, None)),
-            );
-        }
-        items
-    }
-
-    pub async fn idle(&self) {
-        let _ = self
-            .shared
-            .busy
-            .subscribe()
-            .wait_for(|busy| *busy == 0)
-            .await;
-    }
-
-    pub fn drain(&self) {
-        self.shared.draining.store(true, Ordering::Release);
-    }
-
-    pub fn undrain(&self) {
-        self.shared.draining.store(false, Ordering::Release);
-    }
-
-    fn draining(&self) -> bool {
-        self.shared.draining.load(Ordering::Acquire)
-    }
-
-    fn attach(&self) -> Arc<Board> {
-        let board = Arc::<Board>::default();
-        self.shared
-            .boards
-            .update(|boards| boards.push(Arc::clone(&board)));
-        board
-    }
-
-    fn detach(&self, board: &Arc<Board>) {
-        self.shared
-            .boards
-            .update(|boards| boards.retain(|other| !Arc::ptr_eq(other, board)));
-    }
-
-    fn report(&self, was: bool, now: bool) {
-        if was != now {
-            self.shared.busy.send_modify(|busy| {
-                if now {
-                    *busy += 1;
-                } else {
-                    *busy -= 1;
-                }
-            });
         }
     }
 }
@@ -456,24 +308,40 @@ async fn handshake(
         return Err(error("runner bearer must not be empty"));
     }
     stream.set_nodelay(true).map_err(error)?;
-    let authenticate = |request: &tungstenite::handshake::server::Request,
-                        response: tungstenite::handshake::server::Response| {
-        if request
-            .headers()
-            .get(http::header::AUTHORIZATION)
-            .and_then(|h| h.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer "))
-            == Some(bearer)
-        {
-            Ok(response)
-        } else {
-            let mut rejection = tungstenite::handshake::server::ErrorResponse::new(Some(
-                "invalid runner credential".into(),
-            ));
-            *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
-            Err(rejection)
-        }
-    };
+    let authenticate =
+        |request: &tungstenite::handshake::server::Request,
+         mut response: tungstenite::handshake::server::Response| {
+            let header = request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer "));
+            let protocol = request
+                .headers()
+                .get(http::header::SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    let mut values = value.split(',').map(str::trim);
+                    (values.next() == Some("bearer"))
+                        .then(|| values.next())
+                        .flatten()
+                });
+            if header.or(protocol) == Some(bearer) {
+                if protocol.is_some() {
+                    response.headers_mut().insert(
+                        http::header::SEC_WEBSOCKET_PROTOCOL,
+                        http::HeaderValue::from_static("bearer"),
+                    );
+                }
+                Ok(response)
+            } else {
+                let mut rejection = tungstenite::handshake::server::ErrorResponse::new(Some(
+                    "invalid runner credential".into(),
+                ));
+                *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
+                Err(rejection)
+            }
+        };
     tokio::time::timeout(
         policy.request_timeout,
         tokio_tungstenite::accept_hdr_async_with_config(stream, authenticate, Some(config(policy))),
@@ -539,13 +407,6 @@ async fn write_all<S: Sink<Message, Error = tungstenite::Error> + Unpin>(
     .await
     .map_err(|_| error("remote write deadline elapsed"))?
     .map_err(error)
-}
-
-async fn due(sleep: &mut Option<std::pin::Pin<Box<tokio::time::Sleep>>>) {
-    match sleep {
-        Some(sleep) => sleep.as_mut().await,
-        None => std::future::pending().await,
-    }
 }
 
 struct Writer(tokio::task::JoinHandle<Result<(), CodeModeHostError>>);
@@ -887,602 +748,156 @@ impl RemoteTransport for SocketTransport {
     }
 }
 
-const BRAIN_DISCONNECTED: &str = "the hand is not connected to its brain";
-
-const CALL_CANCELLED: &str = "the call or its session was cancelled while it ran; its outcome is unknown and it was not retried";
-
-const CALLBACK_DROPPED: &str = "the hand's connection to its brain dropped while the callback ran; its outcome is unknown and it was not retried";
-
-#[derive(Clone)]
-struct Outgoing {
-    wire: Arc<Atom<Option<mpsc::UnboundedSender<String>>>>,
-    limit: Arc<AtomicUsize>,
-    backlog: Arc<Atom<VecDeque<Arc<str>>>>,
-    flushing: Arc<AtomicBool>,
-    resumed: Arc<AtomicBool>,
+struct NativeHost {
+    workspace: PathBuf,
+    tools: crate::Tools,
 }
 
-impl Outgoing {
-    fn connect(&self, wire: mpsc::UnboundedSender<String>) {
-        self.resumed.store(false, Ordering::SeqCst);
-        self.wire.set(Some(wire));
+impl HandHost for NativeHost {
+    fn definitions(&self) -> HostFuture<'_, Vec<ToolDefinition>> {
+        Box::pin(async move {
+            let runtime =
+                ToolRuntime::new_with_tools(self.workspace.clone(), Vec::new(), &self.tools);
+            let definitions = runtime.registered_code_mode_definitions();
+            runtime.control().cancel().await;
+            definitions
+        })
     }
-    fn clear_backlog(&self) {
-        self.backlog.set(VecDeque::new());
+
+    fn workspace(&self) -> Option<String> {
+        Some(self.workspace.display().to_string())
     }
-    fn queue(&self, text: String) {
-        let text = if self.backlog.read(VecDeque::is_empty) && !self.flushing.load(Ordering::SeqCst)
-        {
-            match self.offer(text) {
-                Ok(()) => return,
-                Err((text, _)) => text,
-            }
-        } else {
-            text
-        };
-        let text = Arc::<str>::from(text);
-        self.backlog.update(|backlog| {
-            if backlog.len() >= MAX_BUFFERED_FRAMES {
-                backlog.pop_front();
-            }
-            backlog.push_back(Arc::clone(&text));
-        });
-        if self.resumed.load(Ordering::SeqCst) && self.claim() {
-            let _ = self.drain();
-        }
+
+    fn selects_tools(&self) -> bool {
+        !self.tools.has_dynamic_providers()
     }
-    fn claim(&self) -> bool {
-        self.flushing
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+
+    fn open(
+        &self,
+        _session_id: &str,
+        excluded: Vec<String>,
+        brain: HandBrain,
+    ) -> Result<Arc<dyn HandSession>, CodeModeHostError> {
+        let hands = brain.hand_calls();
+        let tools = self
+            .tools
+            .clone()
+            .excluding_code_tools(excluded)
+            .into_builder()
+            .provider(BrainProvider(brain))
+            .hand_calls(hands)
+            .build()
+            .map_err(error)?;
+        Ok(Arc::new(NativeSession(Arc::new(
+            ToolRuntime::new_with_tools(self.workspace.clone(), Vec::new(), &tools),
+        ))))
     }
-    fn flush(&self) -> Result<(), CodeModeHostError> {
-        self.resumed.store(true, Ordering::SeqCst);
-        if self.claim() { self.drain() } else { Ok(()) }
-    }
-    fn drain(&self) -> Result<(), CodeModeHostError> {
-        loop {
-            let mut frames = self.backlog.update(std::mem::take).into_iter();
-            while let Some(text) = frames.next() {
-                if let Err((_, issue)) = self.offer(text.to_string()) {
-                    let unsent = std::iter::once(text).chain(frames).collect::<VecDeque<_>>();
-                    self.backlog.update(|backlog| {
-                        let mut held = unsent.clone();
-                        held.extend(backlog.iter().cloned());
-                        while held.len() > MAX_BUFFERED_FRAMES {
-                            held.pop_front();
-                        }
-                        *backlog = held;
-                    });
-                    self.flushing.store(false, Ordering::SeqCst);
-                    return Err(issue);
+
+    fn end_turn<'a>(
+        &'a self,
+        session_id: &'a str,
+        turn_id: &'a str,
+        hook_event_name: &'a str,
+    ) -> HostFuture<'a, ()> {
+        let tools: Vec<Arc<dyn crate::Tool>> = self.tools.registered_tools().cloned().collect();
+        Box::pin(async move {
+            for tool in tools {
+                if let Err(issue) = tool.end_turn(session_id, turn_id, hook_event_name).await {
+                    tracing::warn!(%issue, tool = tool.definition().name(), "hand tool turn cleanup failed; not retried");
                 }
             }
-            self.flushing.store(false, Ordering::SeqCst);
-            if self.backlog.read(VecDeque::is_empty) || !self.claim() {
-                return Ok(());
-            }
-        }
-    }
-    fn encode(&self, frame: &Frame) -> Result<String, CodeModeHostError> {
-        frame.encode(self.limit.load(Ordering::Relaxed))
-    }
-    fn connected(&self) -> bool {
-        self.wire.get().is_some()
-    }
-    fn push(&self, text: String) -> Result<(), CodeModeHostError> {
-        self.offer(text).map_err(|(_, issue)| issue)
-    }
-    fn offer(&self, text: String) -> Result<(), (String, CodeModeHostError)> {
-        match Option::clone(&self.wire.get()) {
-            Some(wire) => wire.send(text).map_err(|issue| {
-                let reason = error(&issue);
-                (issue.0, reason)
-            }),
-            None => Err((text, error(BRAIN_DISCONNECTED))),
-        }
-    }
-    fn send(&self, frame: &Frame) -> Result<(), CodeModeHostError> {
-        self.push(self.encode(frame)?)
-    }
-    fn send_or(
-        &self,
-        frame: &Frame,
-        fallback: impl FnOnce(&CodeModeHostError) -> Frame,
-    ) -> Result<bool, CodeModeHostError> {
-        match self.encode(frame) {
-            Ok(text) => self.push(text).map(|()| true),
-            Err(issue) => self.send(&fallback(&issue)).map(|()| false),
-        }
-    }
-}
-
-fn unsent_update(update: &CodeModeUpdate<'_>, issue: &CodeModeHostError) -> Value {
-    match update {
-        CodeModeUpdate::NestedCallStarted { call_id, name, .. } => {
-            json!({"call_id":call_id,"name":name,"input":Value::Null})
-        }
-        CodeModeUpdate::NestedCallCompleted(call) => json!({"completed":{
-            "call_id":call.call_id,
-            "name":call.name,
-            "input":Value::Null,
-            "output":format!("{issue}; the call's input and output were not sent"),
-            "structured_result":Value::Null,
-            "success":call.success,
-            "started_after_ns":call.started_after_ns,
-            "duration_ns":call.duration_ns,
-            "metadata":Value::Null,
-        }}),
-        CodeModeUpdate::Notification(notification) => {
-            json!({"notification":{"call_id":notification.call_id,"text":format!("{issue}; the notification was not sent")}})
-        }
-    }
-}
-
-fn status_line(execution: &CodeModeExecution) -> String {
-    let header = match &execution.output {
-        crate::contract::ToolOutputBody::Text(text) => Some(text.as_str()),
-        crate::contract::ToolOutputBody::Content(content) => {
-            content.first().and_then(|item| match item {
-                crate::contract::ToolOutputContent::InputText { text } => Some(text.as_str()),
-                _ => None,
-            })
-        }
-    };
-    header
-        .and_then(|header| header.lines().next())
-        .unwrap_or("Script failed")
-        .to_owned()
-}
-
-fn reply_text(
-    outgoing: &Outgoing,
-    id: u64,
-    result: Result<Option<Value>, String>,
-    status: Option<&str>,
-) -> Result<String, CodeModeHostError> {
-    let mut frame = Frame::Reply { id, result };
-    let mut issue = match outgoing.encode(&frame) {
-        Ok(text) => return Ok(text),
-        Err(issue) => issue,
-    };
-    let execution = match &mut frame {
-        Frame::Reply {
-            result: Ok(Some(Value::Object(execution))),
-            ..
-        } if status.is_some() => Some(execution),
-        _ => None,
-    };
-    let Some(execution) = execution else {
-        return outgoing.encode(&Frame::Reply {
-            id,
-            result: Err(format!("{issue}; the result was not sent")),
-        });
-    };
-    if let Some(Value::Array(calls)) = execution.get_mut("nested_calls") {
-        for call in calls
-            .iter_mut()
-            .filter_map(Value::as_object_mut)
-            .filter(|call| !call.contains_key("delivered"))
-        {
-            call.insert("input".into(), Value::Null);
-            call.insert(
-                "output".into(),
-                Value::String(format!(
-                    "{issue}; the call's input and output were not sent"
-                )),
-            );
-            call.insert("structured_result".into(), Value::Null);
-            call.insert("metadata".into(), Value::Null);
-        }
-    }
-    match outgoing.encode(&frame) {
-        Ok(text) => return Ok(text),
-        Err(next) => issue = next,
-    }
-    if let Frame::Reply {
-        result: Ok(Some(Value::Object(execution))),
-        ..
-    } = &mut frame
-    {
-        let status = status.unwrap_or_default();
-        execution.insert(
-            "output".into(),
-            Value::String(format!(
-                "{status}\nOutput:\n{issue}; the script's output was not sent"
-            )),
-        );
-        execution.insert("success".into(), Value::Bool(false));
-        execution.insert("notifications".into(), json!([]));
-    }
-    outgoing.encode(&frame)
-}
-
-fn origin(call_id: &str) -> &str {
-    call_id
-        .rsplit_once("/code-")
-        .map_or(call_id, |(origin, _)| origin)
-}
-
-fn update_call_id<'a>(update: &CodeModeUpdate<'a>) -> &'a str {
-    match update {
-        CodeModeUpdate::NestedCallStarted { call_id, .. } => call_id,
-        CodeModeUpdate::NestedCallCompleted(call) => &call.call_id,
-        CodeModeUpdate::Notification(notification) => &notification.call_id,
-    }
-}
-
-struct Observer {
-    id: u64,
-    outgoing: Outgoing,
-    catalog: CallbackCatalog,
-    calls: SentCalls,
-}
-impl CodeModeObserver for Observer {
-    fn update(&mut self, update: CodeModeUpdate<'_>) {
-        self.catalog.touch(update_call_id(&update));
-        let id = self.id;
-        let sent = self.outgoing.send_or(
-            &Frame::Update {
-                id,
-                update: self.calls.update(&update),
-            },
-            |issue| Frame::Update {
-                id,
-                update: unsent_update(&update, issue),
-            },
-        );
-        if matches!(sent, Ok(true)) {
-            self.calls.sent(&update);
-        }
-    }
-}
-
-struct DetachedObserver {
-    session_id: String,
-    origin_call_id: String,
-    outgoing: Outgoing,
-    catalog: CallbackCatalog,
-    calls: SentCalls,
-}
-impl CodeModeObserver for DetachedObserver {
-    fn update(&mut self, update: CodeModeUpdate<'_>) {
-        self.catalog.touch(&self.origin_call_id);
-        let frame = |update| Frame::DetachedUpdate {
-            session_id: self.session_id.clone(),
-            origin_call_id: self.origin_call_id.clone(),
-            update,
-        };
-        let text = self
-            .outgoing
-            .encode(&frame(self.calls.update(&update)))
-            .or_else(|issue| self.outgoing.encode(&frame(unsent_update(&update, &issue))));
-        if let Ok(text) = text {
-            self.outgoing.queue(text);
-        }
-    }
-    fn completed(&mut self) {
-        self.catalog.finish(&self.origin_call_id);
-    }
-}
-
-type CallbackReply = Arc<Slot<oneshot::Sender<Result<Value, String>>>>;
-
-#[derive(Clone)]
-struct PendingCallback {
-    reply: CallbackReply,
-    frame: String,
-    held: bool,
-}
-
-struct CallbackBus {
-    outgoing: Outgoing,
-    pending: Atom<HashMap<u64, PendingCallback>>,
-    next: AtomicU64,
-    timeout: Option<Duration>,
-    holding: AtomicBool,
-}
-
-impl CallbackBus {
-    fn hold(&self) {
-        self.pending.update(|pending| {
-            for entry in pending.values_mut() {
-                entry.held = true;
-            }
-        });
-        self.holding.store(true, Ordering::SeqCst);
-    }
-    fn take_held(&self) -> Vec<String> {
-        self.holding.store(false, Ordering::SeqCst);
-        self.pending.update(|pending| {
-            let mut held = pending
-                .iter_mut()
-                .filter(|(_, entry)| entry.held)
-                .map(|(id, entry)| {
-                    entry.held = false;
-                    (*id, entry.frame.clone())
-                })
-                .collect::<Vec<_>>();
-            held.sort_unstable_by_key(|(id, _)| *id);
-            held.into_iter().map(|(_, frame)| frame).collect()
         })
     }
-    fn fail_pending(&self) {
-        self.holding.store(false, Ordering::SeqCst);
-        for (_, entry) in self.pending.update(std::mem::take) {
-            if let Some(reply) = entry.reply.take() {
-                let _ = reply.send(Err(CALLBACK_DROPPED.into()));
-            }
-        }
-    }
-}
-struct CallbackPending {
-    bus: Arc<CallbackBus>,
-    id: u64,
-}
-impl Drop for CallbackPending {
-    fn drop(&mut self) {
-        if self
-            .bus
-            .pending
-            .update(|pending| pending.remove(&self.id))
-            .is_some()
-        {
-            let _ = self
-                .bus
-                .outgoing
-                .send(&Frame::CallbackCancel { id: self.id });
-        }
+
+    fn spawn(&self, task: HostFuture<'static, ()>) {
+        tokio::spawn(task);
     }
 }
 
-async fn callback(bus: &Arc<CallbackBus>, frame: impl FnOnce(u64) -> Frame) -> ToolResult {
-    let id = bus.next.fetch_add(1, Ordering::Relaxed);
-    let text = bus
-        .outgoing
-        .encode(&frame(id))
-        .map_err(|issue| -> ToolError { format!("{issue}; the call was not dispatched").into() })?;
-    let (tx, rx) = oneshot::channel();
-    let tx = Arc::new(Slot::new(Some(tx)));
-    let held = !bus.outgoing.connected();
-    bus.pending.update(|pending| {
-        pending.insert(
-            id,
-            PendingCallback {
-                reply: Arc::clone(&tx),
-                frame: text.clone(),
-                held,
-            },
-        );
-    });
-    let _pending = CallbackPending {
-        bus: Arc::clone(bus),
-        id,
-    };
-    if held {
-        if !bus.holding.load(Ordering::SeqCst) {
-            return Err(BRAIN_DISCONNECTED.into());
-        }
-    } else {
-        bus.outgoing
-            .push(text)
-            .map_err(|e| -> ToolError { e.to_string().into() })?;
-    }
-    let result = match bus.timeout {
-        Some(deadline) => tokio::time::timeout(deadline, rx)
-            .await
-            .map_err(|_| -> ToolError {
-                "brain callback deadline elapsed; outcome unknown".into()
-            })?,
-        None => rx.await,
-    };
-    let value = result.map_err(|e| -> ToolError { e.to_string().into() })??;
-    output_from_wire(value).map_err(Into::into)
-}
+struct NativeSession(Arc<ToolRuntime>);
 
-struct CallbackTool {
-    definition: ToolDefinition,
-    bus: Arc<CallbackBus>,
-}
-#[async_trait::async_trait]
-impl Tool for CallbackTool {
-    fn definition(&self) -> ToolDefinition {
-        self.definition.clone()
+impl HandSession for NativeSession {
+    fn execute<'a>(
+        &'a self,
+        source: &'a str,
+        context: OwnedToolContext,
+        observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(
+            self.0
+                .execute_code_owned_with_updates(source, context, observer),
+        )
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let (input, freeform) = match input {
-            ToolInput::Function(input) => (serde_json::from_str(input.get())?, false),
-            ToolInput::Freeform(input) => (Value::String(input), true),
-        };
-        let context = RemoteContext::from_context(context);
-        callback(&self.bus, |id| Frame::Callback {
-            id,
-            name: self.definition.name().into(),
-            input,
-            freeform,
-            context,
-            hand: None,
-            compact: true,
-            output_prefix: true,
+
+    fn wait<'a>(
+        &'a self,
+        input: &'a str,
+        context: OwnedToolContext,
+        observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async move {
+            self.0
+                .wait_for_code_with_updates(input, context.as_context(), observer)
+                .await
         })
-        .await
-    }
-}
-
-struct HandCallbacks {
-    bus: Arc<CallbackBus>,
-    name: Atom<Option<String>>,
-}
-
-impl HandCalls for HandCallbacks {
-    fn here(&self, hand: &str) -> bool {
-        self.name.read(|name| name.as_deref() == Some(hand))
     }
 
     fn call<'a>(
         &'a self,
-        hand: &'a str,
         name: &'a str,
         input: Value,
-        context: ToolContext<'a>,
+        context: OwnedToolContext,
     ) -> HostFuture<'a, ToolOutput> {
-        let context = RemoteContext::from_context(context);
         Box::pin(async move {
-            callback(&self.bus, |id| Frame::Callback {
-                id,
-                name: name.into(),
-                input,
-                freeform: false,
-                context,
-                hand: Some(hand.into()),
-                compact: true,
-                output_prefix: true,
-            })
-            .await
-            .unwrap_or_else(|error| ToolOutput::error(error.to_string()))
-        })
-    }
-}
-
-#[derive(Clone)]
-struct CallbackOrigin {
-    id: String,
-    label: String,
-    activity: Arc<LastActivity>,
-    turn: u64,
-    definitions: Vec<ToolDefinition>,
-}
-
-#[derive(Clone, Default)]
-struct CallbackCatalogState {
-    turn: u64,
-    origins: Vec<CallbackOrigin>,
-    selected_tools: Option<Vec<String>>,
-}
-
-#[derive(Clone)]
-struct CallbackCatalog {
-    session_id: Arc<str>,
-    state: Arc<Atom<CallbackCatalogState>>,
-    bus: Arc<CallbackBus>,
-}
-
-impl CallbackCatalog {
-    fn register(
-        &self,
-        origin: &str,
-        label: &str,
-        definitions: Vec<ToolDefinition>,
-    ) -> Result<(), CodeModeHostError> {
-        let activity = Arc::new(LastActivity::new());
-        self.state.modify(|state| {
-            if state.origins.iter().any(|entry| entry.id == origin) {
-                return Err(error("callback origin is already active"));
-            }
-            let turn = state.turn;
-            state.origins.push(CallbackOrigin {
-                id: origin.into(),
-                label: label.into(),
-                activity: Arc::clone(&activity),
-                turn,
-                definitions: definitions.clone(),
-            });
-            Ok(())
+            self.0
+                .execute_nested_tool(name, input, context.as_context())
+                .await
         })
     }
 
-    fn touch(&self, call_id: &str) {
-        let origin = origin(call_id);
-        self.state.read(|state| {
-            if let Some(entry) = state.origins.iter().find(|entry| entry.id == origin) {
-                entry.activity.touch();
-            }
-        });
+    fn cancel<'a>(&'a self, observer: &'a mut dyn CodeModeObserver) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.0.control().cancel_with_updates(observer).await })
     }
 
-    fn turn(&self) -> u64 {
-        self.state.read(|state| state.turn)
+    fn cancel_turn<'a>(&'a self, observer: &'a mut dyn CodeModeObserver) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.0.control().cancel_turn_with_updates(observer).await })
+    }
+
+    fn detach_turn<'a>(&'a self, observers: DetachedObservers<'a>) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.0.control().detach_turn_with_updates(observers).await })
     }
 
     fn begin_turn(&self) {
-        self.state.update(|state| state.turn += 1);
+        self.0.control().begin_turn();
     }
 
-    fn adopt(&self, origin: &str, turn: u64) {
-        self.state.update(|state| {
-            if let Some(entry) = state.origins.iter_mut().find(|entry| entry.id == origin) {
-                entry.turn = turn;
-            }
-        });
+    fn preempt(&self) -> HostFuture<'_, ()> {
+        Box::pin(async move { self.0.control().preempt_turn().await })
     }
 
-    fn forget(&self, origin: &str) -> bool {
-        self.state
-            .try_update(|state| {
-                let index = state.origins.iter().position(|entry| entry.id == origin)?;
-                state.origins.remove(index);
-                Some(())
-            })
-            .is_some()
+    fn settle_preempt(&self) {
+        self.0.control().settle_preempt();
     }
 
-    fn finish(&self, origin: &str) {
-        if self.forget(origin)
-            && let Ok(text) = self.bus.outgoing.encode(&Frame::DetachedComplete {
-                session_id: self.session_id.to_string(),
-                origin_call_id: origin.into(),
-            })
-        {
-            self.bus.outgoing.queue(text);
-        }
+    fn running_tasks(&self) -> Vec<RunningTask> {
+        self.0.running_tasks()
     }
 
-    fn finish_turn(&self, turn: Option<u64>) {
-        let origins = self.state.read(|state| {
-            state
-                .origins
-                .iter()
-                .filter(|entry| turn.is_none_or(|turn| entry.turn == turn))
-                .map(|entry| entry.id.clone())
-                .collect::<Vec<_>>()
-        });
-        for origin in origins {
-            self.finish(&origin);
-        }
+    fn close(&self) -> HostFuture<'_, ()> {
+        Box::pin(async move { self.0.control().cancel().await })
     }
 }
 
-struct CallbackOriginGuard {
-    catalog: CallbackCatalog,
-    origin: String,
-    replied: bool,
-}
-
-impl Drop for CallbackOriginGuard {
-    fn drop(&mut self) {
-        if !self.replied {
-            self.catalog.finish(&self.origin);
-        }
-    }
-}
+struct BrainProvider(HandBrain);
 
 #[async_trait::async_trait]
-impl crate::runtime::DynamicToolProvider for CallbackCatalog {
+impl crate::runtime::DynamicToolProvider for BrainProvider {
     fn start(&self) {}
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
         Vec::new()
     }
     fn available_definitions(&self) -> Vec<ToolDefinition> {
-        let state = self.state.get();
-        let mut names = HashSet::new();
-        state
-            .origins
-            .iter()
-            .rev()
-            .flat_map(|entry| entry.definitions.iter())
-            .filter(|definition| names.insert(definition.name().to_owned()))
-            .cloned()
-            .collect()
+        self.0.definitions()
     }
     async fn execute(
         &self,
@@ -1490,36 +905,24 @@ impl crate::runtime::DynamicToolProvider for CallbackCatalog {
         input: Value,
         context: ToolContext<'_>,
     ) -> Option<ToolOutput> {
-        let origin = origin(context.call_id());
-        let definition = self.state.read(|state| {
-            state
-                .origins
-                .iter()
-                .find(|entry| entry.id == origin)?
-                .definitions
-                .iter()
-                .find(|definition| definition.name() == name)
-                .cloned()
-        })?;
-        let input = match &definition {
-            ToolDefinition::Custom { .. } => match input.as_str() {
-                Some(source) => ToolInput::Freeform(source.into()),
-                None => return Some(ToolOutput::error("custom callback input must be a string")),
-            },
-            _ => match serde_json::value::to_raw_value(&input) {
-                Ok(raw) => ToolInput::Function(raw),
-                Err(error) => return Some(ToolOutput::error(error.to_string())),
-            },
-        };
-        let proxy = CallbackTool {
-            definition,
-            bus: Arc::clone(&self.bus),
-        };
-        Some(match proxy.execute(input, context).await {
-            Ok(output) => output,
-            Err(error) => ToolOutput::error(error.to_string()),
-        })
+        self.0.execute(name, input, context).await
     }
+}
+
+pub(super) fn hand_core(
+    workspace: PathBuf,
+    tools: crate::Tools,
+    options: ExecutorOptions,
+    activity: HandActivity,
+) -> HandCore {
+    let (core, driver) =
+        HandCore::new(Arc::new(NativeHost { workspace, tools }), options, activity);
+    tokio::spawn(driver);
+    core
+}
+
+pub(super) fn serving(tools: &crate::Tools) -> HandActivity {
+    HandActivity::new(tools.registered_tools().map(Arc::downgrade).collect())
 }
 
 const fn policy_options(policy: SocketPolicy) -> ExecutorOptions {
@@ -1614,522 +1017,10 @@ async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     options: ExecutorOptions,
     activity: HandActivity,
 ) -> Result<(), CodeModeHostError> {
-    let mut executor = Executor::new(workspace.to_owned(), tools, options, activity);
-    let served = serve(socket, &mut executor, policy, || {}).await;
-    executor.reset().await;
+    let core = hand_core(workspace.to_owned(), tools, options, activity);
+    let served = serve(socket, &core, policy, || {}).await;
+    core.reset().await;
     served.result
-}
-
-struct Sessions(HashMap<String, (Arc<ToolRuntime>, CallbackCatalog)>);
-impl std::ops::Deref for Sessions {
-    type Target = HashMap<String, (Arc<ToolRuntime>, CallbackCatalog)>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl std::ops::DerefMut for Sessions {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-impl Drop for Sessions {
-    fn drop(&mut self) {
-        for (_, (runtime, _)) in self.0.drain() {
-            tokio::spawn(async move {
-                runtime.control().cancel().await;
-            });
-        }
-    }
-}
-
-type ReplyResult = Result<Option<Value>, String>;
-
-struct Done {
-    id: u64,
-    live: ReplyResult,
-    full: Option<Value>,
-    status: Option<String>,
-}
-
-struct Running {
-    resumable: bool,
-    connection: u64,
-    work: Arc<Pending>,
-    ended: Arc<AtomicBool>,
-    cancel: Option<CancellationToken>,
-}
-
-struct Retained {
-    text: String,
-    work: Arc<Pending>,
-    ended: Arc<AtomicBool>,
-}
-
-#[derive(Clone)]
-struct Pending {
-    kind: BusyKind,
-    id: String,
-    label: String,
-    session_id: String,
-    since: Instant,
-}
-
-impl Pending {
-    fn new(id: u64, operation: &RemoteOperation) -> Self {
-        let request = |label: &str, session_id: &str| {
-            (
-                BusyKind::Request,
-                id.to_string(),
-                label.to_owned(),
-                session_id.to_owned(),
-            )
-        };
-        let (kind, id, label, session_id) = match operation {
-            RemoteOperation::Execute {
-                source, context, ..
-            } => (
-                BusyKind::Cell,
-                context.call_id.clone(),
-                source
-                    .lines()
-                    .map(str::trim)
-                    .find(|line| !line.is_empty() && !line.starts_with("// @exec:"))
-                    .unwrap_or_default()
-                    .to_owned(),
-                context.session_id.clone(),
-            ),
-            RemoteOperation::Call { name, context, .. } => (
-                BusyKind::Call,
-                context.call_id.clone(),
-                name.clone(),
-                context.session_id.clone(),
-            ),
-            RemoteOperation::Wait { context, .. } => request("wait", &context.session_id),
-            RemoteOperation::DetachTurn { session_id } => request("detach turn", session_id),
-            RemoteOperation::CancelTurn { session_id, .. } => request("cancel turn", session_id),
-            RemoteOperation::Cancel { session_id } => request("cancel", session_id),
-            RemoteOperation::CancelCall { session_id, .. } => request("cancel call", session_id),
-            RemoteOperation::BeginTurn { session_id } => request("begin turn", session_id),
-            RemoteOperation::Preempt { session_id } => request("preempt", session_id),
-            RemoteOperation::SettlePreempt { session_id } => request("settle preempt", session_id),
-            RemoteOperation::EndTurn { session_id, .. } => request("end turn", session_id),
-        };
-        Self {
-            kind,
-            id,
-            label,
-            session_id,
-            since: Instant::now(),
-        }
-    }
-
-    fn item(&self) -> BusyItem {
-        BusyItem {
-            kind: self.kind,
-            id: self.id.clone(),
-            label: self.label.clone(),
-            session_id: Some(self.session_id.clone()),
-            silent_for: self.since.elapsed(),
-        }
-    }
-}
-
-struct Listed {
-    work: Arc<Pending>,
-    ended: Arc<AtomicBool>,
-    next: Option<Arc<Self>>,
-}
-
-impl Drop for Listed {
-    fn drop(&mut self) {
-        let mut next = self.next.take();
-        while let Some(node) = next {
-            next = Arc::try_unwrap(node)
-                .ok()
-                .and_then(|mut node| node.next.take());
-        }
-    }
-}
-
-#[derive(Default)]
-struct Board {
-    sessions: Atom<Vec<(String, Arc<ToolRuntime>, CallbackCatalog)>>,
-    work: Atom<Option<Arc<Listed>>>,
-}
-
-impl Board {
-    fn items(&self, items: &mut Vec<BusyItem>) {
-        for (session_id, runtime, catalog) in self.sessions.get().iter() {
-            catalog.state.read(|state| {
-                items.extend(state.origins.iter().map(|origin| BusyItem {
-                    kind: BusyKind::Cell,
-                    id: origin.id.clone(),
-                    label: origin.label.clone(),
-                    session_id: Some(session_id.clone()),
-                    silent_for: origin.activity.silent_for(),
-                }));
-            });
-            items.extend(
-                runtime
-                    .running_tasks()
-                    .into_iter()
-                    .map(|task| BusyItem::task(task, Some(session_id))),
-            );
-        }
-        let mut next = Option::clone(&self.work.get());
-        while let Some(node) = next {
-            next = node.next.clone();
-            if node.ended.load(Ordering::Acquire) {
-                continue;
-            }
-            let work = &node.work;
-            let listed = work.kind == BusyKind::Cell
-                && items.iter().any(|item| {
-                    item.kind == BusyKind::Cell
-                        && item.id == work.id
-                        && item.session_id.as_deref() == Some(work.session_id.as_str())
-                });
-            if !listed {
-                items.push(work.item());
-            }
-        }
-    }
-}
-
-pub(super) struct Executor {
-    workspace: PathBuf,
-    tools: crate::Tools,
-    options: ExecutorOptions,
-    definitions: Option<Vec<ToolDefinition>>,
-    outgoing: Outgoing,
-    bus: Arc<CallbackBus>,
-    callbacks: Arc<HandCallbacks>,
-    runtimes: Sessions,
-    tasks: tokio::task::JoinSet<()>,
-    finished: mpsc::UnboundedSender<Done>,
-    results: mpsc::UnboundedReceiver<Done>,
-    running: HashMap<u64, Running>,
-    calls: HashMap<String, CancellationToken>,
-    turn_calls: HashMap<(String, String), CancellationToken>,
-    retained: HashMap<u64, Retained>,
-    brain_tools: HashMap<String, Vec<ToolDefinition>>,
-    earlier_brain_tools: HashMap<String, Vec<ToolDefinition>>,
-    connection: u64,
-    resumable: bool,
-    activity: HandActivity,
-    board: Arc<Board>,
-    work: Option<Arc<Listed>>,
-    work_due: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
-    listed: usize,
-    unlisted: usize,
-    busy: bool,
-    hold: Option<tokio::task::AbortHandle>,
-}
-
-impl Executor {
-    pub(super) fn new(
-        workspace: PathBuf,
-        tools: crate::Tools,
-        options: ExecutorOptions,
-        activity: HandActivity,
-    ) -> Self {
-        let outgoing = Outgoing {
-            wire: Arc::default(),
-            limit: Arc::new(AtomicUsize::new(usize::MAX)),
-            backlog: Arc::default(),
-            flushing: Arc::default(),
-            resumed: Arc::default(),
-        };
-        let bus = Arc::new(CallbackBus {
-            outgoing: outgoing.clone(),
-            pending: Atom::default(),
-            next: AtomicU64::new(0),
-            timeout: options.callback_timeout,
-            holding: AtomicBool::new(false),
-        });
-        let callbacks = Arc::new(HandCallbacks {
-            bus: Arc::clone(&bus),
-            name: Atom::new(options.name.clone()),
-        });
-        let (finished, results) = mpsc::unbounded_channel();
-        let board = activity.attach();
-        Self {
-            workspace,
-            tools,
-            options,
-            definitions: None,
-            outgoing,
-            bus,
-            callbacks,
-            runtimes: Sessions(HashMap::new()),
-            tasks: tokio::task::JoinSet::new(),
-            finished,
-            results,
-            running: HashMap::new(),
-            calls: HashMap::new(),
-            turn_calls: HashMap::new(),
-            retained: HashMap::new(),
-            brain_tools: HashMap::new(),
-            earlier_brain_tools: HashMap::new(),
-            connection: 0,
-            resumable: false,
-            activity,
-            board,
-            work: None,
-            work_due: None,
-            listed: 0,
-            unlisted: 0,
-            busy: false,
-            hold: None,
-        }
-    }
-
-    fn list(&mut self, work: &Arc<Pending>) -> Arc<AtomicBool> {
-        let ended = Arc::new(AtomicBool::new(false));
-        self.work = Some(Arc::new(Listed {
-            work: Arc::clone(work),
-            ended: Arc::clone(&ended),
-            next: self.work.take(),
-        }));
-        self.listed += 1;
-        self.work_changed();
-        ended
-    }
-
-    fn work_changed(&mut self) {
-        if self.work_due.is_none() {
-            self.work_due = Some(Box::pin(tokio::time::sleep(WORK_PUBLISH_DELAY)));
-        }
-    }
-
-    fn publish_work(&mut self) {
-        self.work_due = None;
-        self.board.work.set(self.work.clone());
-    }
-
-    fn unlist(&mut self, ended: &AtomicBool) {
-        ended.store(true, Ordering::Release);
-        self.unlisted += 1;
-        if self.unlisted * 2 <= self.listed {
-            return;
-        }
-        let mut live = Vec::new();
-        let mut next = self.work.clone();
-        while let Some(node) = next {
-            if !node.ended.load(Ordering::Acquire) {
-                live.push((Arc::clone(&node.work), Arc::clone(&node.ended)));
-            }
-            next = node.next.clone();
-        }
-        self.listed = live.len();
-        self.unlisted = 0;
-        let mut head = None;
-        for (work, ended) in live.into_iter().rev() {
-            head = Some(Arc::new(Listed {
-                work,
-                ended,
-                next: head,
-            }));
-        }
-        self.work = head;
-        self.work_changed();
-    }
-
-    fn publish_sessions(&self) {
-        self.board.sessions.set(
-            self.runtimes
-                .iter()
-                .map(|(session_id, (runtime, catalog))| {
-                    (session_id.clone(), Arc::clone(runtime), catalog.clone())
-                })
-                .collect(),
-        );
-    }
-
-    fn publish(&mut self) {
-        let busy = !self.running.is_empty()
-            || !self.retained.is_empty()
-            || !self.bus.pending.read(|pending| pending.is_empty())
-            || self
-                .runtimes
-                .0
-                .values()
-                .any(|(_, catalog)| catalog.state.read(|state| !state.origins.is_empty()));
-        self.activity.report(self.busy, busy);
-        self.busy = busy;
-    }
-
-    async fn definitions(&mut self) -> Vec<ToolDefinition> {
-        if let Some(definitions) = &self.definitions {
-            return definitions.clone();
-        }
-        let runtime = ToolRuntime::new_with_tools(self.workspace.clone(), Vec::new(), &self.tools);
-        let definitions = runtime.registered_code_mode_definitions();
-        runtime.control().cancel().await;
-        self.definitions = Some(definitions.clone());
-        definitions
-    }
-
-    fn disconnected(&mut self) {
-        self.outgoing.wire.set(None);
-        self.bus.hold();
-        let bus = Arc::clone(&self.bus);
-        let hold = self.options.callback_hold.unwrap_or(DEFAULT_CALLBACK_HOLD);
-        let timer = tokio::spawn(async move {
-            tokio::time::sleep(hold).await;
-            bus.fail_pending();
-        });
-        if let Some(previous) = self.hold.replace(timer.abort_handle()) {
-            previous.abort();
-        }
-        self.publish_work();
-    }
-
-    pub(super) async fn reset(&mut self) {
-        self.outgoing.wire.set(None);
-        if let Some(timer) = self.hold.take() {
-            timer.abort();
-        }
-        self.bus.fail_pending();
-        self.outgoing.clear_backlog();
-        self.tasks.abort_all();
-        while self.tasks.join_next().await.is_some() {}
-        for (_, (runtime, _)) in self.runtimes.0.drain() {
-            runtime.control().cancel().await;
-        }
-        while self.results.try_recv().is_ok() {}
-        self.running.clear();
-        self.calls.clear();
-        self.turn_calls.clear();
-        self.retained.clear();
-        self.work = None;
-        self.publish_work();
-        self.listed = 0;
-        self.unlisted = 0;
-        self.publish_sessions();
-        self.resumable = false;
-        self.publish();
-    }
-
-    fn end_turn(&mut self, id: u64, session_id: String, turn_id: String, hook_event_name: String) {
-        self.turn_calls
-            .remove(&(session_id.clone(), turn_id.clone()));
-        let tools: Vec<Arc<dyn crate::Tool>> = self.tools.registered_tools().cloned().collect();
-        let finished = self.finished.clone();
-        self.tasks.spawn(async move {
-            for tool in tools {
-                if let Err(issue) = tool.end_turn(&session_id, &turn_id, &hook_event_name).await {
-                    tracing::warn!(%issue, tool = tool.definition().name(), "hand tool turn cleanup failed; not retried");
-                }
-            }
-            let _ = finished.send(Done { id, live: Ok(None), full: None, status: None });
-        });
-    }
-
-    fn finish(&self, id: u64, live: ReplyResult) {
-        let _ = self.finished.send(Done {
-            id,
-            live,
-            full: None,
-            status: None,
-        });
-    }
-
-    fn deliver(&mut self, done: Done) -> Result<(), CodeModeHostError> {
-        let Done {
-            id,
-            live,
-            full,
-            status,
-        } = done;
-        let running = self.running.remove(&id);
-        let reconnected = running
-            .as_ref()
-            .is_some_and(|running| running.connection != self.connection);
-        let status = status.as_deref();
-        let refused = matches!(&live, Err(message) if message == NOT_RECEIVED);
-        let text = match running {
-            Some(running) if running.resumable && !refused => {
-                let (retained, text) = match full {
-                    Some(full) if !reconnected => (
-                        reply_text(&self.outgoing, id, Ok(Some(full)), status)?,
-                        reply_text(&self.outgoing, id, live, status)?,
-                    ),
-                    Some(full) => {
-                        let retained = reply_text(&self.outgoing, id, Ok(Some(full)), status)?;
-                        (retained.clone(), retained)
-                    }
-                    None => {
-                        let retained = reply_text(&self.outgoing, id, live, status)?;
-                        (retained.clone(), retained)
-                    }
-                };
-                let work = Arc::new(Pending {
-                    kind: BusyKind::Reply,
-                    since: Instant::now(),
-                    ..Pending::clone(&running.work)
-                });
-                self.unlist(&running.ended);
-                let ended = self.list(&work);
-                self.retained.insert(
-                    id,
-                    Retained {
-                        text: retained,
-                        work,
-                        ended,
-                    },
-                );
-                text
-            }
-            Some(running) => {
-                self.unlist(&running.ended);
-                reply_text(&self.outgoing, id, live, status)?
-            }
-            None => reply_text(&self.outgoing, id, live, status)?,
-        };
-        let _ = self.outgoing.push(text);
-        Ok(())
-    }
-
-    fn resume(&mut self, pending: &[u64]) -> Result<(), CodeModeHostError> {
-        if let Some(timer) = self.hold.take() {
-            timer.abort();
-        }
-        for text in self.bus.take_held() {
-            self.outgoing.push(text)?;
-        }
-        self.outgoing.flush()?;
-        let wanted = pending.iter().copied().collect::<HashSet<_>>();
-        let forgotten = self
-            .retained
-            .keys()
-            .filter(|id| !wanted.contains(id))
-            .copied()
-            .collect::<Vec<_>>();
-        for id in forgotten {
-            if let Some(retained) = self.retained.remove(&id) {
-                self.unlist(&retained.ended);
-            }
-        }
-        for id in pending {
-            if let Some(retained) = self.retained.get(id) {
-                self.outgoing.push(retained.text.clone())?;
-            } else if !self.running.contains_key(id) {
-                self.outgoing.send(&Frame::Reply {
-                    id: *id,
-                    result: Err(NOT_RECEIVED.into()),
-                })?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Drop for Executor {
-    fn drop(&mut self) {
-        self.activity.report(self.busy, false);
-        self.activity.detach(&self.board);
-    }
 }
 
 /// How a served connection ended: its result and the code of the peer's
@@ -2143,12 +1034,12 @@ pub(super) struct Served {
 /// a ping, which a brain does only after it took the connection.
 pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     socket: WebSocketStream<S>,
-    executor: &mut Executor,
+    core: &HandCore,
     policy: SocketPolicy,
     heard: impl FnOnce() + Send,
 ) -> Served {
     let liveness = Liveness::new();
-    let result = serve_link(socket, executor, policy, &liveness, heard).await;
+    let result = serve_link(socket, core, policy, &liveness, heard).await;
     Served {
         result,
         close_code: liveness.close_code(),
@@ -2157,42 +1048,26 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
 async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut socket: WebSocketStream<S>,
-    executor: &mut Executor,
+    core: &HandCore,
     policy: SocketPolicy,
     liveness: &Arc<Liveness>,
     heard: impl FnOnce() + Send,
 ) -> Result<(), CodeModeHostError> {
     let mut heard = Some(heard);
-    executor.connection += 1;
-    let connection = executor.connection;
-    let catalog = Frame::Catalog {
-        definitions: executor.definitions().await,
-        name: executor.options.name.clone(),
-        workspace: Some(executor.workspace.display().to_string()),
-        runtime_id: executor.options.runtime_id.clone(),
-        max_frame_bytes: Some(policy.max_frame_bytes),
-        resumable: executor.options.runtime_id.is_some(),
-        tool_selection: !executor.tools.has_dynamic_providers(),
-        cancels_calls: true,
-        caches_local_tools: true,
-    };
-    write(&mut socket, catalog.encode(policy.max_frame_bytes)?, policy).await?;
+    write(
+        &mut socket,
+        core.catalog(policy.max_frame_bytes).await?,
+        policy,
+    )
+    .await?;
     let (sink, mut socket) = socket.split();
     let watchdog = liveness.watch(policy.request_timeout / 2);
     tokio::pin!(watchdog);
     let (wire, mut writer) = writer(sink, policy, Arc::clone(liveness), Arc::default());
-    executor
-        .outgoing
-        .limit
-        .store(policy.max_frame_bytes, Ordering::Relaxed);
-    executor.outgoing.connect(wire);
-    let outgoing = executor.outgoing.clone();
-    let bus = Arc::clone(&executor.bus);
-    let hands: Arc<dyn HandCalls> = executor.callbacks.clone();
-    executor.earlier_brain_tools = std::mem::take(&mut executor.brain_tools);
+    let mut connection = core.connect(wire, policy.max_frame_bytes);
+    let mut open = true;
     let result = async {
         loop {
-            executor.publish();
             tokio::select! {
                 result = &mut writer.0 => return result.map_err(error)?,
                 () = liveness.heard.wait(), if heard.is_some() => {
@@ -2200,207 +1075,18 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         heard();
                     }
                 },
-                Some(done) = executor.results.recv() => {
-                    if let Err(issue) = executor.deliver(done) {
-                        tracing::error!(%issue, "remote reply could not be encoded");
-                    }
+                failed = &mut connection.failed, if open => match failed {
+                    Ok(issue) => return Err(issue),
+                    Err(_) => open = false,
                 },
-                () = due(&mut executor.work_due) => executor.publish_work(),
                 frame = read_live(&mut socket, liveness, watchdog.as_mut()) => {
                     let Some(frame) = frame? else { return Ok(()); };
-                    match frame {
-                        Frame::CallbackResult { id, result } => { if let Some(tx) = bus.pending.update(|pending| pending.remove(&id)).and_then(|entry| entry.reply.take()) { let _ = tx.send(result); } },
-                        Frame::Ack { ids } => { for id in ids { if let Some(retained) = executor.retained.remove(&id) { executor.unlist(&retained.ended); } } },
-                        Frame::Resume { pending } => executor.resume(&pending)?,
-                        Frame::Request { id, mut operation, max_frame_bytes, compact, output_prefix, resumable } => {
-                            if let Some(bytes) = max_frame_bytes { outgoing.limit.fetch_min(bytes, Ordering::Relaxed); }
-                            executor.resumable |= resumable;
-                            let work = Arc::new(Pending::new(id, &operation));
-                            let known = executor.running.get(&id).map(|running| Arc::clone(&running.work)).or_else(|| executor.retained.get(&id).map(|retained| Arc::clone(&retained.work)));
-                            if let Some(known) = known {
-                                if known.id != work.id {
-                                    outgoing.send(&Frame::Reply { id, result: Err(REQUEST_IN_USE.into()) })?;
-                                } else if let Some(retained) = executor.retained.get(&id) {
-                                    outgoing.push(retained.text.clone())?;
-                                }
-                                continue;
-                            }
-                            let session_id = work.session_id.clone();
-                            let ended = executor.list(&work);
-                            executor.running.insert(id, Running { resumable, connection, work: Arc::clone(&work), ended, cancel: None });
-                            executor.publish();
-                            if executor.activity.draining() && matches!(&operation, RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }) {
-                                executor.finish(id, Err(NOT_RECEIVED.into()));
-                                continue;
-                            }
-                            if let RemoteOperation::Execute { local_tools, local_tools_key: Some(key), .. } = &mut operation {
-                                if !local_tools.is_empty() {
-                                    executor.brain_tools.insert(key.clone(), local_tools.clone());
-                                } else if let Some(known) = executor.brain_tools.get(key) {
-                                    local_tools.clone_from(known);
-                                } else if let Some(known) = executor.earlier_brain_tools.remove(key) {
-                                    local_tools.clone_from(&known);
-                                    executor.brain_tools.insert(key.clone(), known);
-                                } else {
-                                    executor.finish(id, Err(LOCAL_TOOLS_UNKNOWN.into()));
-                                    continue;
-                                }
-                            }
-                            if let RemoteOperation::EndTurn { session_id, turn_id, hook_event_name } = operation {
-                                executor.end_turn(id, session_id, turn_id, hook_event_name);
-                                continue;
-                            }
-                            if matches!(&operation, RemoteOperation::Execute { selected_tools: Some(_), .. } | RemoteOperation::Call { selected_tools: Some(_), .. }) && executor.tools.has_dynamic_providers() {
-                                executor.finish(id, Err("hand tool selection is unavailable with dynamic hand providers; nothing was dispatched".into()));
-                                continue;
-                            }
-                            if matches!(&operation, RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }) && !executor.runtimes.contains_key(&session_id) {
-                                let catalog = CallbackCatalog {
-                                    session_id: Arc::from(session_id.as_str()),
-                                    state: Arc::new(Atom::new(CallbackCatalogState { selected_tools: match &operation { RemoteOperation::Execute { selected_tools, .. } | RemoteOperation::Call { selected_tools, .. } => selected_tools.clone(), _ => None }, ..Default::default() })),
-                                    bus: Arc::clone(&bus),
-                                };
-                                let selected = catalog.state.read(|state| state.selected_tools.clone());
-                                let excluded = executor.definitions().await.into_iter().filter(|definition| selected.as_ref().is_some_and(|names| !names.iter().any(|name| name == definition.name()))).map(|definition| definition.name().to_owned()).collect::<Vec<_>>();
-                                match executor.tools.clone().excluding_code_tools(excluded).into_builder().provider(catalog.clone()).hand_calls(Arc::clone(&hands)).build() {
-                                    Ok(selected) => { executor.runtimes.insert(session_id.clone(), (Arc::new(ToolRuntime::new_with_tools(executor.workspace.clone(), Vec::new(), &selected)), catalog)); executor.publish_sessions(); },
-                                    Err(issue) => {
-                                        executor.finish(id, Err(issue.to_string()));
-                                        continue;
-                                    }
-                                }
-                            }
-                            if let RemoteOperation::Execute { selected_tools, .. } | RemoteOperation::Call { selected_tools, .. } = &operation
-                                && let Some((_, catalog)) = executor.runtimes.get(&session_id)
-                                && catalog.state.read(|state| &state.selected_tools != selected_tools)
-                            {
-                                executor.finish(id, Err("hand tool selection cannot change within a session".into()));
-                                continue;
-                            }
-                            if matches!(&operation, RemoteOperation::Cancel { .. } | RemoteOperation::CancelTurn { turn_id: None, .. }) {
-                                if let Some(calls) = executor.calls.remove(&session_id) {
-                                    calls.cancel();
-                                }
-                                executor.turn_calls.retain(|(session, _), _| session != &session_id);
-                            }
-                            if let RemoteOperation::CancelTurn { turn_id: Some(turn_id), .. } = &operation {
-                                if let Some(calls) = executor.turn_calls.remove(&(session_id.clone(), turn_id.clone())) {
-                                    calls.cancel();
-                                }
-                                executor.finish(id, Ok(None));
-                                continue;
-                            }
-                            if let RemoteOperation::CancelCall { call_id, .. } = &operation {
-                                for running in executor.running.values().filter(|running| running.work.session_id == session_id && running.work.id == *call_id) {
-                                    if let Some(cancel) = &running.cancel { cancel.cancel(); }
-                                }
-                                executor.finish(id, Ok(None));
-                                continue;
-                            }
-                            let session_calls = executor.calls.entry(session_id.clone()).or_default().clone();
-                            let cancelled = match &operation {
-                                RemoteOperation::Call { context: RemoteContext { turn_id: Some(turn_id), .. }, .. } => executor.turn_calls.entry((session_id.clone(), turn_id.clone())).or_insert_with(|| session_calls.child_token()).clone(),
-                                _ => session_calls,
-                            };
-                            let cancelled = match &operation {
-                                RemoteOperation::Call { .. } => {
-                                    let call = cancelled.child_token();
-                                    if let Some(running) = executor.running.get_mut(&id) { running.cancel = Some(call.clone()); }
-                                    call
-                                }
-                                _ => cancelled,
-                            };
-                            if let RemoteOperation::Execute { hand: Some(hand), .. } = &operation {
-                                executor.callbacks.name.set(Some(hand.clone()));
-                            }
-                            if let RemoteOperation::Execute { local_tools, context, .. } = &operation
-                                && let Some((_, catalog)) = executor.runtimes.get(&session_id)
-                                && let Err(issue) = catalog.register(&context.call_id, &work.label, local_tools.clone())
-                            {
-                                executor.finish(id, Err(issue.to_string()));
-                                continue;
-                            }
-                            let runtime = if matches!(&operation, RemoteOperation::Cancel { .. }) { let removed = executor.runtimes.0.remove(&session_id); executor.publish_sessions(); removed } else { executor.runtimes.get(&session_id).map(|(runtime, catalog)| (Arc::clone(runtime), catalog.clone())) };
-                            let runtime = runtime.map(|(runtime, catalog)| {
-                                let turn = catalog.turn();
-                                (runtime, catalog, turn)
-                            });
-                            if let Some((runtime, catalog, turn)) = &runtime {
-                                match &operation {
-                                    RemoteOperation::CancelTurn { .. } => { runtime.control().cancel_turn_with_updates(&mut Observer { id, outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact) }).await; catalog.finish_turn(Some(*turn)); executor.finish(id, Ok(None)); continue; },
-                                    RemoteOperation::BeginTurn { .. } => { runtime.control().begin_turn(); catalog.begin_turn(); executor.finish(id, Ok(None)); continue; },
-                                    RemoteOperation::SettlePreempt { .. } => { runtime.control().settle_preempt(); executor.finish(id, Ok(None)); continue; },
-                                    RemoteOperation::DetachTurn { session_id } => { runtime.control().detach_turn_with_updates(&mut |origin| Box::new(DetachedObserver { session_id:session_id.clone(), origin_call_id:origin.into(), outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact) })).await; executor.finish(id, Ok(None)); continue; },
-                                    _ => {},
-                                }
-                            }
-                            let outgoing = outgoing.clone();
-                            let finished = executor.finished.clone();
-                            executor.tasks.spawn(async move {
-                                let mut status = None;
-                                let mut full = None;
-                                let result = async {
-                                    let Some((runtime, catalog, turn)) = runtime else {
-                                        return match operation { RemoteOperation::Execute { .. } | RemoteOperation::Wait { .. } | RemoteOperation::Call { .. } => Err(error("this hand has no cells for the session: it restarted or reconnected since the cell started, so the cell's outcome is unknown")), _ => Ok(None) };
-                                    };
-                                    let mut observer = Observer { id, outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact).output_prefix(output_prefix) };
-                                    match operation {
-                                        RemoteOperation::Execute { source, context, .. } => {
-                                            let mut origin = CallbackOriginGuard { catalog:catalog.clone(), origin:context.call_id.clone(), replied:false };
-                                            let result = runtime.execute_code_owned_with_updates(&source, context.owned(), &mut observer).await;
-                                            if !result.as_ref().is_ok_and(|execution| execution.cell.as_ref().is_some_and(|cell| cell.running)) { catalog.forget(&origin.origin); }
-                                            origin.replied = true;
-                                            result.map(|value| {
-                                                status = Some(status_line(&value));
-                                                full = resumable.then(|| SentCalls::new(compact).encode(&value));
-                                                Some(observer.calls.execution(value))
-                                            })
-                                        },
-                                        RemoteOperation::Wait { input, context } => {
-                                            let execution = runtime.wait_for_code_with_updates(&input, context.owned().as_context(), &mut observer).await?;
-                                            if let Some(cell) = &execution.cell {
-                                                if cell.running { catalog.adopt(&cell.origin_call_id, turn); }
-                                                else { catalog.forget(&cell.origin_call_id); }
-                                            }
-                                            status = Some(status_line(&execution));
-                                            full = resumable.then(|| SentCalls::new(compact).encode(&execution));
-                                            Ok(Some(observer.calls.execution(execution)))
-                                        },
-                                        RemoteOperation::Call { name, input, context, .. } => {
-                                            let owned = context.owned();
-                                            tokio::select! {
-                                                output = runtime.execute_nested_tool(&name, input, owned.as_context()) => encode_output(output, compact, output_prefix).and_then(|value| {
-                                                    if resumable && value.get("output_prefix").is_some() {
-                                                        full = Some(output_to_wire(output_from_wire(value.clone())?, compact)?);
-                                                    }
-                                                    Ok(Some(value))
-                                                }),
-                                                () = cancelled.cancelled() => Err(error(CALL_CANCELLED)),
-                                            }
-                                        },
-                                        RemoteOperation::Cancel { .. } => { runtime.control().cancel_with_updates(&mut observer).await; catalog.finish_turn(None); Ok(None) },
-                                        RemoteOperation::CancelTurn { .. } => { runtime.control().cancel_turn_with_updates(&mut observer).await; catalog.finish_turn(Some(turn)); Ok(None) },
-                                        RemoteOperation::DetachTurn { session_id } => { runtime.control().detach_turn_with_updates(&mut |origin| Box::new(DetachedObserver { session_id:session_id.clone(), origin_call_id:origin.into(), outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact) })).await; Ok(None) },
-                                        RemoteOperation::BeginTurn { .. } => { runtime.control().begin_turn(); catalog.begin_turn(); Ok(None) },
-                                        RemoteOperation::Preempt { .. } => { runtime.control().preempt_turn().await; Ok(None) },
-                                        RemoteOperation::SettlePreempt { .. } => { runtime.control().settle_preempt(); Ok(None) },
-                                        RemoteOperation::EndTurn { .. } | RemoteOperation::CancelCall { .. } => Ok(None),
-                                    }
-                                }.await.map_err(|e| e.to_string());
-                                let _ = finished.send(Done { id, live: result, full, status });
-                            });
-                        },
-                        _ => return Err(error("unexpected brain frame")),
-                    }
+                    core.receive(connection.id, frame);
                 },
-                Some(result) = executor.tasks.join_next(), if !executor.tasks.is_empty() => { result.map_err(error)?; },
             }
         }
-    }.await;
-    executor.disconnected();
-    if !executor.resumable {
-        executor.reset().await;
     }
-    executor.publish();
+    .await;
+    core.closed(connection.id).await;
     result
 }

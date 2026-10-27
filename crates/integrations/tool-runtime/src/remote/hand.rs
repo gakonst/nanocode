@@ -7,9 +7,10 @@ use std::{
 use tokio::net::TcpListener;
 
 use super::native::{
-    Dial, Executor, ExecutorOptions, HandActivity, SocketPolicy, dial, error, request_headers,
-    serve, serve_tracked_stream, validate_policy,
+    Dial, SocketPolicy, dial, error, hand_core, request_headers, serve, serve_tracked_stream,
+    serving, validate_policy,
 };
+use super::{ExecutorOptions, HandActivity};
 use crate::embedded::CodeModeHostError;
 
 #[derive(Clone, Debug)]
@@ -77,7 +78,7 @@ impl Hand {
             name: None,
             headers: Vec::new(),
             directory: None,
-            activity: HandActivity::serving(&tools),
+            activity: serving(&tools),
             tools,
             policy: SocketPolicy::runner(),
             callback_hold: None,
@@ -180,7 +181,7 @@ impl Hand {
                         .map_err(error)?;
                     let headers = request_headers(&self.headers)?;
                     let mut backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
-                    let mut executor = Executor::new(
+                    let mut core = hand_core(
                         directory.clone(),
                         self.tools.clone(),
                         options.clone(),
@@ -196,7 +197,7 @@ impl Hand {
                                 let started = Instant::now();
                                 // Connected only once the brain serves the socket: it may
                                 // still refuse this runtime after the upgrade.
-                                let served = serve(socket, &mut executor, policy, || {
+                                let served = serve(socket, &core, policy, || {
                                     events(HandEvent::Connected { endpoint });
                                 })
                                 .await;
@@ -206,19 +207,19 @@ impl Hand {
                                         if issue.message()
                                             == nanocode_tool_host::attachment::ATTACHMENT_REVOKED_REASON =>
                                     {
-                                        executor.reset().await;
+                                        core.reset().await;
                                         events(HandEvent::Revoked);
                                         return Ok(());
                                     }
                                     Err(issue) if issue.message() == super::HAND_REPLACED => {
-                                        executor.reset().await;
+                                        core.reset().await;
                                         events(HandEvent::Replaced);
                                         return Ok(());
                                     }
                                     result if served.close_code == Some(POLICY_CLOSE) => {
-                                        executor.reset().await;
+                                        core.reset().await;
                                         options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
-                                        executor = Executor::new(
+                                        core = hand_core(
                                             directory.clone(),
                                             self.tools.clone(),
                                             options.clone(),
@@ -250,7 +251,7 @@ impl Hand {
                                 }
                             }
                             Err(Dial::Rejected(issue, status)) => {
-                                executor.reset().await;
+                                core.reset().await;
                                 if let Some(status) = status {
                                     events(HandEvent::Rejected { status });
                                 }

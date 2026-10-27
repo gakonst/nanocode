@@ -3,6 +3,7 @@ mod client;
 mod compact;
 mod executors;
 mod frame;
+mod hand;
 mod message;
 #[cfg(not(target_family = "wasm"))]
 mod queue;
@@ -19,6 +20,10 @@ pub use client::{
 pub use compact::{ReceivedCalls, SentCalls, encode_output, output_from_wire, output_to_wire};
 pub use executors::{
     CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
+};
+pub use hand::{
+    BRAIN_DISCONNECTED, BusyItem, BusyKind, CALL_CANCELLED, DetachedObservers, ExecutorOptions,
+    HandActivity, HandBrain, HandConnection, HandCore, HandHost, HandSession,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use message::websocket;

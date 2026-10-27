@@ -22,8 +22,9 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    HAND_RESTARTED, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls, RemoteCodeModeHost, RemoteContext,
-    RemoteFrame as Frame, RemoteOperation, RemoteTransport, encode_output,
+    HAND_RESTARTED, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls,
+    RemoteCodeModeHost, RemoteContext, RemoteFrame as Frame, RemoteOperation, RemoteTransport,
+    encode_output, local_tools_key,
 };
 use crate::{
     Tool, ToolDefinition, ToolInput,
@@ -47,6 +48,10 @@ pub enum RemoteDelivery {
 
 pub trait RemoteLink: Send + Sync + 'static {
     fn supports_tool_selection(&self) -> bool {
+        false
+    }
+
+    fn caches_local_tools(&self) -> bool {
         false
     }
 
@@ -176,6 +181,7 @@ struct Client {
     resumes: Option<String>,
     settles: bool,
     tool_selection: bool,
+    caches_local_tools: bool,
     _stop: oneshot::Sender<()>,
 }
 
@@ -321,6 +327,7 @@ impl RemoteClient {
         let max_frame_bytes = link.max_frame_bytes();
         let resumes = link.resumes();
         let tool_selection = link.supports_tool_selection();
+        let caches_local_tools = link.caches_local_tools();
         let mut waiters = HashMap::new();
         let mut receivers = Vec::new();
         if resumes.is_some() {
@@ -363,6 +370,7 @@ impl RemoteClient {
             resumes,
             settles,
             tool_selection,
+            caches_local_tools,
             _stop: stop,
         });
         let resumed = receivers
@@ -804,6 +812,59 @@ impl Client {
         });
     }
 
+    fn elide_local_tools(
+        &self,
+        operation: RemoteOperation,
+    ) -> (RemoteOperation, Option<RemoteOperation>) {
+        let RemoteOperation::Execute {
+            source,
+            context,
+            local_tools,
+            local_tools_key: None,
+            hand,
+            selected_tools,
+        } = operation
+        else {
+            return (operation, None);
+        };
+        let key = if self.caches_local_tools && !local_tools.is_empty() {
+            local_tools_key(&local_tools)
+        } else {
+            None
+        };
+        let Some(key) = key else {
+            return (
+                RemoteOperation::Execute {
+                    source,
+                    context,
+                    local_tools,
+                    local_tools_key: None,
+                    hand,
+                    selected_tools,
+                },
+                None,
+            );
+        };
+        (
+            RemoteOperation::Execute {
+                source: source.clone(),
+                context: context.clone(),
+                local_tools: Vec::new(),
+                local_tools_key: Some(key.clone()),
+                hand: hand.clone(),
+                selected_tools: selected_tools.clone(),
+            },
+            Some(RemoteOperation::Execute {
+                source,
+                context,
+                local_tools,
+                local_tools_key: Some(key),
+                hand,
+                selected_tools,
+            }),
+        )
+    }
+
     const fn request_frame(&self, id: u64, operation: RemoteOperation) -> Frame {
         Frame::Request {
             id,
@@ -1068,6 +1129,7 @@ impl RemoteTransport for RemoteClient {
             };
             let requested = requested_yield(&operation);
             let delivery = delivery(&operation);
+            let (operation, mut full) = client.elide_local_tools(operation);
             let id = client.next.fetch_add(1, Ordering::Relaxed);
             let frame = client.request_frame(id, operation);
             let text = fits(&frame, client.max_frame_bytes)
@@ -1107,6 +1169,27 @@ impl RemoteTransport for RemoteClient {
                 let mut received = ReceivedCalls::default();
                 while let Some(frame) = replies.recv().await {
                     match frame {
+                        Frame::Reply {
+                            result: Err(message),
+                            ..
+                        } if message == LOCAL_TOOLS_UNKNOWN && full.is_some() => {
+                            let Some(operation) = full.take() else {
+                                continue;
+                            };
+                            let id = client.next.fetch_add(1, Ordering::Relaxed);
+                            let frame = client.request_frame(id, operation);
+                            let text = fits(&frame, client.max_frame_bytes).map_err(|issue| {
+                                error(format!("{issue}; the operation was not dispatched"))
+                            })?;
+                            let registered;
+                            (registered, replies) = waiter();
+                            guard.id = id;
+                            client
+                                .dispatch((frame, text), delivery, Some((id, registered)))
+                                .map_err(|_| {
+                                    error("remote connection closed; the operation was not dispatched")
+                                })?;
+                        }
                         Frame::Reply { result, .. } => {
                             return result
                                 .map_err(replied)?

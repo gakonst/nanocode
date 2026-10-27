@@ -3334,6 +3334,7 @@ dependencies = [
 name = "nanocode-code-mode"
 version = "0.6.7"
 dependencies = [
+ "blake3",
  "futures-util",
  "nanocode-code-mode-engine",
  "nanocode-media",

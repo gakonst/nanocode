@@ -26,6 +26,8 @@ struct Catalog {
     tool_selection: bool,
     #[serde(default)]
     cancels_calls: bool,
+    #[serde(default)]
+    caches_local_tools: bool,
 }
 
 #[derive(Deserialize)]
@@ -124,6 +126,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 resumable,
                 tool_selection,
                 cancels_calls,
+                caches_local_tools,
             } = Catalog::deserialize(body)?;
             RemoteFrame::Catalog {
                 definitions,
@@ -134,6 +137,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 resumable,
                 tool_selection,
                 cancels_calls,
+                caches_local_tools,
             }
         }
         "request" => {

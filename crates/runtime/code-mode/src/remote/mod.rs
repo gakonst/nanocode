@@ -130,6 +130,8 @@ pub enum RemoteOperation {
         context: RemoteContext,
         local_tools: Vec<ToolDefinition>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        local_tools_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         hand: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selected_tools: Option<Vec<String>>,
@@ -346,6 +348,7 @@ impl CodeModeHost for RemoteCodeModeHost {
                 source: source.into(),
                 context: RemoteContext::from_context(context),
                 local_tools: tools.iter().map(|tool| tool.definition()).collect(),
+                local_tools_key: None,
                 hand: Option::clone(&self.hand.get()),
                 selected_tools,
             };
@@ -543,6 +546,8 @@ pub enum RemoteFrame {
         tool_selection: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         cancels_calls: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        caches_local_tools: bool,
     },
     Request {
         id: u64,
@@ -651,6 +656,15 @@ pub const NOT_RECEIVED: &str =
 pub const REQUEST_IN_USE: &str =
     "the hand is already running or retaining another operation under this request id; it was not dispatched";
 
+pub const LOCAL_TOOLS_UNKNOWN: &str =
+    "the hand holds no brain tool definitions under this key on this connection; it was not dispatched";
+
+#[must_use]
+pub fn local_tools_key(definitions: &[ToolDefinition]) -> Option<String> {
+    let encoded = serde_json::to_vec(definitions).ok()?;
+    Some(blake3::hash(&encoded).to_hex().to_string())
+}
+
 pub struct RemoteCatalog {
     pub definitions: Vec<ToolDefinition>,
     pub name: Option<String>,
@@ -660,6 +674,7 @@ pub struct RemoteCatalog {
     pub resumable: bool,
     pub tool_selection: bool,
     pub cancels_calls: bool,
+    pub caches_local_tools: bool,
 }
 
 impl RemoteCatalog {
@@ -699,6 +714,7 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 resumable,
                 tool_selection,
                 cancels_calls,
+                caches_local_tools,
             } => Ok(Self {
                 definitions,
                 name,
@@ -708,6 +724,7 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 resumable,
                 tool_selection,
                 cancels_calls,
+                caches_local_tools,
             }),
             _ => Err(CodeModeHostError::new(NO_CATALOG)),
         }

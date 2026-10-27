@@ -662,6 +662,7 @@ impl SocketTransport {
             resumable: _,
             tool_selection,
             cancels_calls: _,
+            caches_local_tools,
         } = match catalog {
             Some(text) => RemoteCatalog::decode(&text, policy.max_frame_bytes)?,
             None => tokio::time::timeout(policy.request_timeout, read(&mut socket, &liveness))
@@ -700,6 +701,7 @@ impl SocketTransport {
                 window: policy.request_timeout / 2,
                 stopped: shutdown.token.clone(),
                 tool_selection,
+                caches_local_tools,
                 max_frame_bytes: max_frame_bytes.map_or(policy.max_frame_bytes, |peer| {
                     peer.min(policy.max_frame_bytes)
                 }),
@@ -738,6 +740,7 @@ struct SocketLink<S> {
     stopped: CancellationToken,
     max_frame_bytes: usize,
     tool_selection: bool,
+    caches_local_tools: bool,
 }
 
 enum Received {
@@ -750,6 +753,9 @@ enum Received {
 impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> RemoteLink for SocketLink<S> {
     fn supports_tool_selection(&self) -> bool {
         self.tool_selection
+    }
+    fn caches_local_tools(&self) -> bool {
+        self.caches_local_tools
     }
     fn send(
         &self,
@@ -1396,13 +1402,18 @@ impl CallbackCatalog {
         });
     }
 
+    fn forget(&self, origin: &str) -> bool {
+        self.state
+            .try_update(|state| {
+                let index = state.origins.iter().position(|entry| entry.id == origin)?;
+                state.origins.remove(index);
+                Some(())
+            })
+            .is_some()
+    }
+
     fn finish(&self, origin: &str) {
-        let removed = self.state.try_update(|state| {
-            let index = state.origins.iter().position(|entry| entry.id == origin)?;
-            state.origins.remove(index);
-            Some(())
-        });
-        if removed.is_some()
+        if self.forget(origin)
             && let Ok(text) = self.bus.outgoing.encode(&Frame::DetachedComplete {
                 session_id: self.session_id.to_string(),
                 origin_call_id: origin.into(),
@@ -1430,12 +1441,12 @@ impl CallbackCatalog {
 struct CallbackOriginGuard {
     catalog: CallbackCatalog,
     origin: String,
-    retained: bool,
+    replied: bool,
 }
 
 impl Drop for CallbackOriginGuard {
     fn drop(&mut self) {
-        if !self.retained {
+        if !self.replied {
             self.catalog.finish(&self.origin);
         }
     }
@@ -2145,6 +2156,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         resumable: executor.options.runtime_id.is_some(),
         tool_selection: !executor.tools.has_dynamic_providers(),
         cancels_calls: true,
+        caches_local_tools: true,
     };
     write(&mut socket, catalog.encode(policy.max_frame_bytes)?, policy).await?;
     let (sink, mut socket) = socket.split();
@@ -2159,6 +2171,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let outgoing = executor.outgoing.clone();
     let bus = Arc::clone(&executor.bus);
     let hands: Arc<dyn HandCalls> = executor.callbacks.clone();
+    let mut brain_tools: HashMap<String, Vec<ToolDefinition>> = HashMap::new();
     let result = async {
         loop {
             executor.publish();
@@ -2181,7 +2194,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         Frame::CallbackResult { id, result } => { if let Some(tx) = bus.pending.update(|pending| pending.remove(&id)).and_then(|entry| entry.reply.take()) { let _ = tx.send(result); } },
                         Frame::Ack { ids } => { for id in ids { if let Some(retained) = executor.retained.remove(&id) { executor.unlist(&retained.ended); } } },
                         Frame::Resume { pending } => executor.resume(&pending)?,
-                        Frame::Request { id, operation, max_frame_bytes, compact, output_prefix, resumable } => {
+                        Frame::Request { id, mut operation, max_frame_bytes, compact, output_prefix, resumable } => {
                             if let Some(bytes) = max_frame_bytes { outgoing.limit.fetch_min(bytes, Ordering::Relaxed); }
                             executor.resumable |= resumable;
                             let work = Arc::new(Pending::new(id, &operation));
@@ -2201,6 +2214,16 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             if executor.activity.draining() && matches!(&operation, RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }) {
                                 executor.finish(id, Err(NOT_RECEIVED.into()));
                                 continue;
+                            }
+                            if let RemoteOperation::Execute { local_tools, local_tools_key: Some(key), .. } = &mut operation {
+                                if !local_tools.is_empty() {
+                                    brain_tools.insert(key.clone(), local_tools.clone());
+                                } else if let Some(known) = brain_tools.get(key) {
+                                    local_tools.clone_from(known);
+                                } else {
+                                    executor.finish(id, Err(LOCAL_TOOLS_UNKNOWN.into()));
+                                    continue;
+                                }
                             }
                             if let RemoteOperation::EndTurn { session_id, turn_id, hook_event_name } = operation {
                                 executor.end_turn(id, session_id, turn_id, hook_event_name);
@@ -2302,9 +2325,10 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                     let mut observer = Observer { id, outgoing:outgoing.clone(), catalog:catalog.clone(), calls:SentCalls::new(compact).output_prefix(output_prefix) };
                                     match operation {
                                         RemoteOperation::Execute { source, context, .. } => {
-                                            let mut origin = CallbackOriginGuard { catalog:catalog.clone(), origin:context.call_id.clone(), retained:false };
+                                            let mut origin = CallbackOriginGuard { catalog:catalog.clone(), origin:context.call_id.clone(), replied:false };
                                             let result = runtime.execute_code_owned_with_updates(&source, context.owned(), &mut observer).await;
-                                            origin.retained = result.as_ref().is_ok_and(|execution| execution.cell.as_ref().is_some_and(|cell| cell.running));
+                                            if !result.as_ref().is_ok_and(|execution| execution.cell.as_ref().is_some_and(|cell| cell.running)) { catalog.forget(&origin.origin); }
+                                            origin.replied = true;
                                             result.map(|value| {
                                                 status = Some(status_line(&value));
                                                 full = resumable.then(|| SentCalls::new(compact).encode(&value));
@@ -2315,7 +2339,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                             let execution = runtime.wait_for_code_with_updates(&input, context.owned().as_context(), &mut observer).await?;
                                             if let Some(cell) = &execution.cell {
                                                 if cell.running { catalog.adopt(&cell.origin_call_id, turn); }
-                                                else { catalog.finish(&cell.origin_call_id); }
+                                                else { catalog.forget(&cell.origin_call_id); }
                                             }
                                             status = Some(status_line(&execution));
                                             full = resumable.then(|| SentCalls::new(compact).encode(&execution));

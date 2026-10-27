@@ -18,6 +18,7 @@ description = "Backend-generic Code Mode execution and host contracts"
 rustdoc-args = ["-D", "warnings"]
 
 [dependencies]
+blake3.workspace = true
 nanocode-types-core.workspace = true
 nanocode-media = { path = "../../core/media", version = "0.6.7" }
 nanocode-platform.workspace = true

@@ -97,6 +97,7 @@ pub struct SharedStore {
     batches_companion_acquisition: bool,
     supports_events: bool,
     supports_summaries: bool,
+    pub(crate) terminal_receipt_limit: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +141,7 @@ impl SharedStore {
             batches_companion_acquisition,
             supports_events,
             supports_summaries,
+            terminal_receipt_limit: None,
         })
     }
 }

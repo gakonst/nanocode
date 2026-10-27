@@ -564,6 +564,17 @@ mod store {
         }
 
         #[must_use]
+        pub const fn with_terminal_receipt_limit(mut self, limit: usize) -> Self {
+            self.store.terminal_receipt_limit = Some(limit);
+            self
+        }
+
+        #[must_use]
+        pub const fn terminal_receipt_limit(&self) -> Option<usize> {
+            self.store.terminal_receipt_limit
+        }
+
+        #[must_use]
         pub fn reader(&self) -> Option<SessionReader> {
             self.reader.clone()
         }

@@ -138,7 +138,8 @@ impl HostSearch {
     }
 
     async fn send(&self, session: &str, body: &str) -> Result<Vec<u8>, HostError> {
-        let request = HostConnectRequest::new(&self.endpoint, "", None, false, session, None);
+        let request = HostConnectRequest::new(&self.endpoint, "", None, false, session, None)
+            .without_responses_lite();
         let mut response = self.transport.http(request, body).await?;
         let mut bytes = Vec::new();
         while let Some(chunk) = response.body.next().await? {

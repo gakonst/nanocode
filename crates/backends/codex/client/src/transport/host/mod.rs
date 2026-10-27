@@ -101,6 +101,7 @@ pub struct HostConnectRequest<'a> {
     thread_id: &'a str,
     turn_state: Option<&'a str>,
     headers: &'a [super::GatewayHeader],
+    responses_lite: bool,
 }
 
 impl<'a> HostConnectRequest<'a> {
@@ -142,7 +143,14 @@ impl<'a> HostConnectRequest<'a> {
             thread_id,
             turn_state,
             headers: &[],
+            responses_lite: true,
         }
+    }
+
+    #[must_use]
+    pub const fn without_responses_lite(mut self) -> Self {
+        self.responses_lite = false;
+        self
     }
 
     pub(crate) const fn with_headers(mut self, headers: &'a [super::GatewayHeader]) -> Self {
@@ -212,7 +220,9 @@ impl<'a> HostConnectRequest<'a> {
         if self.fedramp {
             headers.insert("x-openai-fedramp", HeaderValue::from_static("true"));
         }
-        headers.insert(RESPONSES_LITE_HEADER, HeaderValue::from_static("true"));
+        if self.responses_lite {
+            headers.insert(RESPONSES_LITE_HEADER, HeaderValue::from_static("true"));
+        }
         headers.insert("session-id", header_value("session-id", self.session_id)?);
         let thread = header_value("thread-id", self.thread_id)?;
         headers.insert("thread-id", thread.clone());

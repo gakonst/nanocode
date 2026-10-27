@@ -394,9 +394,23 @@ pub(super) async fn dial(
     request
         .headers_mut()
         .insert(http::header::AUTHORIZATION, bearer);
+    let connector = if request.uri().scheme_str() == Some("wss") {
+        Some(tokio_tungstenite::Connector::Rustls(
+            nanocode_tls::native_client_config()
+                .await
+                .map_err(|issue| Dial::Failed(error(issue)))?,
+        ))
+    } else {
+        None
+    };
     tokio::time::timeout(
         policy.request_timeout,
-        tokio_tungstenite::connect_async_with_config(request, Some(config(policy)), true),
+        tokio_tungstenite::connect_async_tls_with_config(
+            request,
+            Some(config(policy)),
+            true,
+            connector,
+        ),
     )
     .await
     .map_err(|issue| Dial::Failed(error(issue)))?

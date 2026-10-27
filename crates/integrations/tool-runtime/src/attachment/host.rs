@@ -1317,10 +1317,16 @@ impl RemoteRunner {
             loop {
                 let connected = match initial.take() {
                     Some((socket, first)) => Ok((socket, Some(first))),
-                    None => tokio::time::timeout(
-                        super::driver::HANDSHAKE_TIMEOUT,
-                        tokio_tungstenite::connect_async(request.clone()),
-                    )
+                    None => tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, async {
+                        let connector = super::driver::tls_connector(&request).await?;
+                        tokio_tungstenite::connect_async_tls_with_config(
+                            request.clone(),
+                            None,
+                            false,
+                            connector,
+                        )
+                        .await
+                    })
                     .await
                     .map_err(|error| {
                         tungstenite::Error::Io(std::io::Error::new(

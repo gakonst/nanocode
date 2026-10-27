@@ -12,6 +12,10 @@ use nanocode_durability_core::{
     OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoredState,
 };
 
+mod sql;
+
+pub use sql::SqliteSql;
+
 const MAX_SQL_REVISION: u64 = i64::MAX as u64;
 const JOB_CAPACITY: usize = 1;
 

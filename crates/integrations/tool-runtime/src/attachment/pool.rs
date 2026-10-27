@@ -1176,9 +1176,12 @@ async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), Attac
     request
         .headers_mut()
         .insert(http::header::AUTHORIZATION, authorization);
+    let connector = super::driver::tls_connector(&request)
+        .await
+        .map_err(error)?;
     let (mut socket, _) = tokio::time::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
-        tokio_tungstenite::connect_async_with_config(request, None, true),
+        tokio_tungstenite::connect_async_tls_with_config(request, None, true, connector),
     )
     .await
     .map_err(error)?

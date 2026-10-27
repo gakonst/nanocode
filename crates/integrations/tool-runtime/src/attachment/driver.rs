@@ -33,6 +33,17 @@ pub(crate) const INITIAL_TRANSPORT_BACKOFF: Duration = Duration::from_millis(100
 
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+pub(crate) async fn tls_connector<T>(
+    request: &http::Request<T>,
+) -> std::io::Result<Option<tokio_tungstenite::Connector>> {
+    if request.uri().scheme_str() != Some("wss") {
+        return Ok(None);
+    }
+    Ok(Some(tokio_tungstenite::Connector::Rustls(
+        nanocode_tls::native_client_config().await?,
+    )))
+}
+
 const PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) const STABLE_CONNECTION: Duration = Duration::from_secs(30);
@@ -100,9 +111,7 @@ pub(crate) async fn run(
             tokio::select! {
                 command = commands.recv() => match command { Some(Command::Detach) | None => break Ok(()) },
                 connected = tokio::time::timeout(Duration::from_secs(5), async {
-                    let connector = if request.uri().scheme_str() == Some("wss") {
-                        Some(tokio_tungstenite::Connector::Rustls(nanocode_tls::native_client_config().await?))
-                    } else { None };
+                    let connector = tls_connector(&request).await?;
                     tracing::info!(target: "nanocode_code_mode::attachment",
                         stage = "attachment.socket.trust",
                         elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,

@@ -24,6 +24,9 @@ tracing.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt", "sync"] }
 
+[target.'cfg(target_os = "ios")'.dependencies]
+rquickjs = { workspace = true, features = ["bindgen", "loader"] }
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 rquickjs = { workspace = true, features = ["bindgen", "loader"] }
 tokio = { workspace = true, features = ["macros", "sync"] }

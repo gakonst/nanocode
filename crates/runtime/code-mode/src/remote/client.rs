@@ -117,7 +117,11 @@ type Callbacks = HashMap<(String, String), CallbackState>;
 
 type Receipts = HashMap<(String, String), Vec<Weak<dyn ToolReceipt>>>;
 
-type Sending<'a> = (HostFuture<'a, Result<(), CodeModeHostError>>, Vec<u64>);
+type Sending<'a> = (
+    HostFuture<'a, Result<(), CodeModeHostError>>,
+    Vec<u64>,
+    Vec<u64>,
+);
 
 type Encoded = (Frame, Option<String>);
 
@@ -134,6 +138,7 @@ enum Outgoing {
         frames: Vec<(Frame, Option<String>)>,
         delivery: RemoteDelivery,
         waiters: Vec<(u64, Waiter)>,
+        idle: bool,
     },
     Forget(u64),
 }
@@ -143,6 +148,7 @@ impl Outgoing {
         Self::Send {
             frames: frames.into_iter().map(|frame| (frame, None)).collect(),
             delivery,
+            idle: false,
             waiters: Vec::new(),
         }
     }
@@ -157,6 +163,37 @@ fn waiter() -> (Waiter, mpsc::UnboundedReceiver<Frame>) {
         },
         receiver,
     )
+}
+
+fn works(operation: &RemoteOperation) -> Option<&str> {
+    match operation {
+        RemoteOperation::Execute { context, .. }
+        | RemoteOperation::Wait { context, .. }
+        | RemoteOperation::Call { context, .. } => Some(&context.session_id),
+        _ => None,
+    }
+}
+
+fn stops(operation: &RemoteOperation) -> Option<&str> {
+    match operation {
+        RemoteOperation::Cancel { session_id }
+        | RemoteOperation::CancelTurn {
+            session_id,
+            turn_id: None,
+        } => Some(session_id),
+        _ => None,
+    }
+}
+
+fn answer(ids: &[u64], pending: &mut Waiters) {
+    for id in ids {
+        if let Some(waiter) = pending.remove(id) {
+            let _ = waiter.replies.send(Frame::Reply {
+                id: *id,
+                result: Ok(None),
+            });
+        }
+    }
 }
 
 fn mark_written(pending: &Waiters, ids: &[u64]) {
@@ -434,6 +471,7 @@ impl RemoteClient {
                     frames,
                     delivery: RemoteDelivery::Immediate,
                     waiters,
+                    idle: false,
                 })
                 .is_err()
         {
@@ -509,6 +547,16 @@ impl Client {
         delivery: RemoteDelivery,
         waiter: Option<(u64, Waiter)>,
     ) -> Result<(), CodeModeHostError> {
+        let idle = match &frame.0 {
+            Frame::Request { operation, .. } => stops(operation).is_some_and(|session_id| {
+                self.callbacks
+                    .read(|callbacks| !callbacks.keys().any(|(session, _)| session == session_id))
+                    && self
+                        .running
+                        .read(|running| !running.values().any(|(session, _)| session == session_id))
+            }),
+            _ => false,
+        };
         if let (
             Frame::Request {
                 operation: RemoteOperation::Cancel { session_id },
@@ -544,6 +592,7 @@ impl Client {
                 frames: vec![frame],
                 delivery,
                 waiters: waiter.into_iter().collect(),
+                idle,
             })
             .map_err(error)
     }
@@ -747,6 +796,7 @@ impl Client {
                     frames: vec![(frame, text)],
                     delivery,
                     waiters: Vec::new(),
+                    idle: false,
                 });
             }
             if let Some(client) = client.upgrade() {
@@ -916,6 +966,7 @@ async fn drive(
     let mut callbacks = FuturesUnordered::new();
     let mut acks = Vec::new();
     let mut ack_due = None;
+    let mut dispatched: HashMap<u64, String> = HashMap::new();
     let result = {
         let mut receiving = link.receive();
         let mut sending: Option<Sending<'_>> = None;
@@ -925,10 +976,11 @@ async fn drive(
                     return Poll::Ready(Ok(()));
                 }
                 let mut progressed = false;
-                if let Some((send, ids)) = sending.as_mut() {
+                if let Some((send, ids, settled)) = sending.as_mut() {
                     match send.as_mut().poll(cx) {
                         Poll::Ready(Ok(())) => {
                             mark_written(&pending, ids);
+                            answer(settled, &mut pending);
                             sending = None;
                             progressed = true;
                         }
@@ -944,6 +996,11 @@ async fn drive(
                                 .collect();
                             mark_written(&pending, &sent);
                             Client::refuse(refused, issue.message(), &mut pending);
+                            for id in refused {
+                                dispatched.remove(id);
+                            }
+                            settled.retain(|id| !refused.contains(id));
+                            answer(settled, &mut pending);
                             sending = None;
                             progressed = true;
                         }
@@ -959,15 +1016,32 @@ async fn drive(
                 }
                 if sending.is_none() {
                     let mut batch = Vec::new();
+                    let mut settled = Vec::new();
                     let mut delivery = RemoteDelivery::Immediate;
                     while let Poll::Ready(next) = frames.poll_recv(cx) {
                         match next {
                             None => return Poll::Ready(Ok(())),
                             Some(Outgoing::Send {
                                 frames,
-                                delivery: needs,
+                                delivery: mut needs,
                                 waiters,
+                                idle,
                             }) => {
+                                for (frame, _) in &frames {
+                                    let Frame::Request { id, operation, .. } = frame else {
+                                        continue;
+                                    };
+                                    if let Some(session) = works(operation) {
+                                        dispatched.insert(*id, session.to_owned());
+                                    } else if let Some(session) = stops(operation)
+                                        && idle
+                                        && waiters.iter().any(|(waiting, _)| waiting == id)
+                                        && !dispatched.values().any(|working| working == session)
+                                    {
+                                        needs = RemoteDelivery::Immediate;
+                                        settled.push(*id);
+                                    }
+                                }
                                 pending.extend(waiters);
                                 if needs == RemoteDelivery::Durable {
                                     delivery = needs;
@@ -1003,7 +1077,7 @@ async fn drive(
                                 _ => None,
                             })
                             .collect();
-                        sending = Some((link.send_encoded(batch, delivery), ids));
+                        sending = Some((link.send_encoded(batch, delivery), ids, settled));
                         continue;
                     }
                 }
@@ -1013,11 +1087,11 @@ async fn drive(
                             return Poll::Ready(Ok(()));
                         };
                         for frame in received {
-                            if client.resumes.is_some()
-                                && !client.settles
-                                && let Frame::Reply { id, .. } = &frame
-                            {
-                                acks.push(*id);
+                            if let Frame::Reply { id, .. } = &frame {
+                                dispatched.remove(id);
+                                if client.resumes.is_some() && !client.settles {
+                                    acks.push(*id);
+                                }
                             }
                             match client.receive(frame, &mut pending) {
                                 Ok(Some(callback)) => callbacks.push(callback),
@@ -1042,7 +1116,7 @@ async fn drive(
             }
         })
         .await;
-        if let Some((_, ids)) = sending.take() {
+        if let Some((_, ids, _)) = sending.take() {
             mark_written(&pending, &ids);
         }
         result

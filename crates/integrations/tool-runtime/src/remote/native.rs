@@ -1798,6 +1798,8 @@ pub(super) struct Executor {
     calls: HashMap<String, CancellationToken>,
     turn_calls: HashMap<(String, String), CancellationToken>,
     retained: HashMap<u64, Retained>,
+    brain_tools: HashMap<String, Vec<ToolDefinition>>,
+    earlier_brain_tools: HashMap<String, Vec<ToolDefinition>>,
     connection: u64,
     resumable: bool,
     activity: HandActivity,
@@ -1853,6 +1855,8 @@ impl Executor {
             calls: HashMap::new(),
             turn_calls: HashMap::new(),
             retained: HashMap::new(),
+            brain_tools: HashMap::new(),
+            earlier_brain_tools: HashMap::new(),
             connection: 0,
             resumable: false,
             activity,
@@ -2171,7 +2175,7 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     let outgoing = executor.outgoing.clone();
     let bus = Arc::clone(&executor.bus);
     let hands: Arc<dyn HandCalls> = executor.callbacks.clone();
-    let mut brain_tools: HashMap<String, Vec<ToolDefinition>> = HashMap::new();
+    executor.earlier_brain_tools = std::mem::take(&mut executor.brain_tools);
     let result = async {
         loop {
             executor.publish();
@@ -2217,9 +2221,12 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             }
                             if let RemoteOperation::Execute { local_tools, local_tools_key: Some(key), .. } = &mut operation {
                                 if !local_tools.is_empty() {
-                                    brain_tools.insert(key.clone(), local_tools.clone());
-                                } else if let Some(known) = brain_tools.get(key) {
+                                    executor.brain_tools.insert(key.clone(), local_tools.clone());
+                                } else if let Some(known) = executor.brain_tools.get(key) {
                                     local_tools.clone_from(known);
+                                } else if let Some(known) = executor.earlier_brain_tools.remove(key) {
+                                    local_tools.clone_from(&known);
+                                    executor.brain_tools.insert(key.clone(), known);
                                 } else {
                                     executor.finish(id, Err(LOCAL_TOOLS_UNKNOWN.into()));
                                     continue;

@@ -987,7 +987,8 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
         }
         let turn = self.agent.prompt(request).await?;
         if cancelled() {
-            ignore_inactive(turn.cancel().await)?;
+            let control = turn.control();
+            ignore_inactive(control.cancel().await)?;
         }
         let message = turn.result().await?.into_final_message();
         self.agent.flush().await?;

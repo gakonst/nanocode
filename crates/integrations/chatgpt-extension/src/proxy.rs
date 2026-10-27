@@ -19,6 +19,7 @@ use std::{
 };
 
 const RESPONSES: usize = 256;
+const RPC_TIMEOUT: Duration = Duration::from_secs(15);
 /// Frames waiting for the stdout writer before senders block, so a browser
 /// that stops reading pushes back on OpenAI's host instead of growing memory;
 /// the stdout writes the proxy replaces were synchronous.
@@ -30,15 +31,17 @@ pub(crate) struct Extension {
     connected: Arc<AtomicBool>,
     upstream: Option<Child>,
     prefix: String,
+    owner: String,
+    alternative: Option<String>,
     next: u64,
 }
 
 impl Extension {
-    fn start(original: Option<&Path>, args: &[String], namespace: &str) -> Result<Self, Error> {
+    fn start(original: Option<&Path>, args: &[String], bridge: &Bridge) -> Result<Self, Error> {
         let (sender, responses) = mpsc::sync_channel(RESPONSES);
         let (output, outgoing) = mpsc::sync_channel::<Vec<u8>>(OUTGOING);
         let connected = Arc::new(AtomicBool::new(true));
-        let prefix = random_prefix(namespace)?;
+        let prefix = random_prefix(bridge.namespace_name())?;
         let own_prefix = prefix.clone();
         let writer_connected = Arc::clone(&connected);
         thread::spawn(move || {
@@ -121,6 +124,8 @@ impl Extension {
             connected,
             upstream,
             prefix,
+            owner: bridge.owner_name().to_owned(),
+            alternative: bridge.alternative_text().map(str::to_owned),
             next: 0,
         })
     }
@@ -133,7 +138,7 @@ impl Extension {
         self.next += 1;
         let id = format!("{}{}", self.prefix, self.next);
         let body = frame(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + RPC_TIMEOUT;
         // The output channel is bounded: wait for room only until the deadline.
         let mut body = body;
         loop {
@@ -156,9 +161,31 @@ impl Extension {
             }
         }
         loop {
-            let reply = self
+            let reply = match self
                 .responses
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))?;
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(reply) => reply,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let alternative = self
+                        .alternative
+                        .as_ref()
+                        .map_or_else(String::new, |alternative| format!("; or to {alternative}"));
+                    return Err(format!(
+                        "The ChatGPT extension did not answer {}'s {method} request within {} seconds; whether it took effect is unknown. Ask the user to open the ChatGPT extension in that browser, check they are signed in to ChatGPT there and that it may use the browser, then try again{alternative}.",
+                        self.owner,
+                        RPC_TIMEOUT.as_secs()
+                    )
+                    .into());
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format!(
+                        "The ChatGPT extension disconnected before answering {}'s {method} request; whether it took effect is unknown. Ask the user to check the extension is on, then try again.",
+                        self.owner
+                    )
+                    .into());
+                }
+            };
             if reply["id"] != id {
                 continue;
             }
@@ -285,8 +312,7 @@ impl Bridge {
         {
             return Err("original OpenAI host does not allow this extension".into());
         }
-        let mut extension =
-            Extension::start(upstream.executable.as_deref(), args, self.namespace_name())?;
+        let mut extension = Extension::start(upstream.executable.as_deref(), args, self)?;
         let chatgpt = origin == ORIGIN || origin == EDGE_ORIGIN;
         let controls = chatgpt && {
             let expected = if origin == EDGE_ORIGIN {

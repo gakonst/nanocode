@@ -119,6 +119,7 @@ pub struct Bridge {
     description: String,
     owner: String,
     namespace: String,
+    alternative: Option<String>,
 }
 
 pub struct Guard<'a> {
@@ -229,6 +230,7 @@ impl Bridge {
             description: "nanocode proxy for the original ChatGPT host".into(),
             owner: "nanocode".into(),
             namespace: "nanocode".into(),
+            alternative: None,
         }
     }
 
@@ -256,6 +258,12 @@ impl Bridge {
         self
     }
 
+    #[must_use]
+    pub fn alternative(mut self, alternative: impl Into<String>) -> Self {
+        self.alternative = Some(alternative.into());
+        self
+    }
+
     pub fn base(&self) -> &Path {
         &self.base
     }
@@ -274,6 +282,10 @@ impl Bridge {
 
     pub(crate) fn namespace_name(&self) -> &str {
         &self.namespace
+    }
+
+    pub(crate) fn alternative_text(&self) -> Option<&str> {
+        self.alternative.as_deref()
     }
 
     pub fn browsers(&self) -> Vec<(&'static str, PathBuf)> {

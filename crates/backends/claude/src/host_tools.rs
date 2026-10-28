@@ -11,14 +11,18 @@ use std::{
 use crate::tools::{
     BashExecution, BashExecutor, BashRequest, BashResult, ClaudeBash, host::HostTool, text_files,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::future::{AbortHandle, abortable};
+use nanocode_agent_core::input::ImageDetail;
 use nanocode_process_contracts::{FileHost, ForegroundCommand, ForegroundExecutor};
 use nanocode_sync::{Atom, Signal};
 use nanocode_tool_host::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, Tools, ToolsBuildError,
-    embedded::HostFuture,
+    contract::ToolOutputContent, embedded::HostFuture,
 };
 use serde_json::{Value, json};
+
+const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 const BACKGROUND_NOTE: &str = "Nothing notifies you when it finishes, and it stops if this session's host shuts down, which can happen once your turn ends: check on it with TaskOutput (with block: true it waits up to timeout milliseconds) and stop it with TaskStop, and wait for it before your final response if you need its result.";
 
@@ -130,6 +134,51 @@ impl HostFileTool {
         }
     }
 
+    async fn image(&self, input: &Value) -> Option<Result<ToolOutput, String>> {
+        let file_path = input.get("file_path").and_then(Value::as_str)?;
+        let path = self.workspace.join(file_path);
+        let extension = path.extension().and_then(|extension| extension.to_str())?;
+        if self.name != "Read"
+            || !IMAGE_EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        {
+            return None;
+        }
+        Some(self.read_image(input, &path).await)
+    }
+
+    async fn read_image(&self, input: &Value, path: &Path) -> Result<ToolOutput, String> {
+        text_files::check(&self.name, input)?;
+        if input.get("pages").is_some() {
+            return Err("pages is only applicable to PDF files".into());
+        }
+        if input.get("offset").is_some() || input.get("limit").is_some() {
+            return Err(
+                "offset and limit apply to text lines or notebook cells; use pages for PDF files"
+                    .into(),
+            );
+        }
+        let bytes = self
+            .files
+            .read_bytes(path)
+            .await?
+            .ok_or_else(|| format!("path: {} does not exist", path.display()))?;
+        let media_type = match image::guess_format(&bytes) {
+            Ok(image::ImageFormat::Png) => "image/png",
+            Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+            Ok(image::ImageFormat::Gif) => "image/gif",
+            Ok(image::ImageFormat::WebP) => "image/webp",
+            Ok(_) => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
+            Err(error) => return Err(format!("invalid image: {error}")),
+        };
+        Ok(ToolOutput::content(vec![ToolOutputContent::InputImage {
+            image_url: format!("data:{media_type};base64,{}", STANDARD.encode(&bytes)),
+            detail: ImageDetail::Auto,
+        }])
+        .with_metadata(json!({"kind": "image", "bytes": bytes.len()})))
+    }
+
     async fn existing(&self, path: &Path) -> Result<String, String> {
         self.files
             .read(path)
@@ -155,6 +204,9 @@ impl Tool for HostFileTool {
     {
         Box::pin(async move {
             let input: Value = input.decode_json()?;
+            if let Some(image) = self.image(&input).await {
+                return Ok(image.unwrap_or_else(ToolOutput::error));
+            }
             Ok(
                 match self.run(&input, context.output_token_budget()).await {
                     Ok(text) => ToolOutput::text(text),

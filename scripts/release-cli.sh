@@ -21,5 +21,6 @@ for binary in nanocode-*; do gzip -9 -c "$binary" > "$binary.gz"; done
 shasum -a 256 ./*.gz | sed 's# \./# #' > SHA256SUMS
 if [ "${1:-}" = "--publish" ]; then
   git -C "$root" push -f origin "$(git -C "$root" rev-parse HEAD):refs/tags/nanocode-cli"
-  gh release upload nanocode-cli --repo gakonst/nanocode --clobber ./*.gz SHA256SUMS "$root/scripts/install.sh"
+  cp "$root/install" install.sh
+  gh release upload nanocode-cli --repo gakonst/nanocode --clobber ./*.gz SHA256SUMS install.sh
 fi

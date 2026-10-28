@@ -395,7 +395,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         app.restore_reload(state);
     }
     for server in app.host.runtime.runner_servers() {
-        app.notice(NoticeLevel::Info, listener_notice(&server));
+        app.notice(NoticeLevel::Info, crate::host::listener_notice(&server));
     }
     forward_runners(&app.host.runtime, app.tx.clone());
     if let Some(notices) = app.host.config.clients.notifying() {
@@ -639,16 +639,6 @@ fn runner_info(info: &RunnerInfo) -> String {
         info.endpoint,
         info.mode,
         info.tool_count
-    )
-}
-
-fn listener_notice(server: &RunnerServer) -> String {
-    format!(
-        "listening {} · token {}\nStart a hand: nc hand {} --token {}",
-        server.endpoint(),
-        server.token(),
-        server.endpoint(),
-        server.token()
     )
 }
 
@@ -1158,7 +1148,7 @@ impl App {
             AppEvent::RunnerListening(result) => {
                 match result {
                     Ok(server) => {
-                        self.notice(NoticeLevel::Info, listener_notice(&server));
+                        self.notice(NoticeLevel::Info, crate::host::listener_notice(&server));
                     }
                     Err(error) => self.notice(NoticeLevel::Error, error),
                 }

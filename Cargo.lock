@@ -3319,6 +3319,7 @@ dependencies = [
  "nanocode-home",
  "nanocode-observability",
  "nanocode-store-jsonl",
+ "nanocode-sync",
  "nanocode-tui",
  "nix 0.31.3",
  "opentelemetry",

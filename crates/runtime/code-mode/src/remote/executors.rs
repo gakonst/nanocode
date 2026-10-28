@@ -36,6 +36,7 @@ pub enum Placement {
 #[derive(Clone, Default)]
 pub struct CodeModeExecutors {
     state: Arc<Atom<State>>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone, Default)]
@@ -45,6 +46,7 @@ struct State {
     roots: HashMap<Box<str>, Box<str>>,
     backends: HashMap<Box<str>, Box<str>>,
     default: Option<Arc<str>>,
+    awaiting: bool,
     sessions: HashMap<Box<str>, SessionPlaces>,
 }
 
@@ -66,6 +68,19 @@ impl State {
             .cloned()
             .or_else(|| self.default.clone().map(ExecutorSelection::Executor))
             .unwrap_or(ExecutorSelection::Local)
+    }
+
+    fn awaits_replacement(&self, session_id: &str) -> bool {
+        self.awaiting
+            && !self.selections.contains_key(session_id)
+            && !self
+                .roots
+                .get(session_id)
+                .is_some_and(|root| self.selections.contains_key(root.as_ref()))
+            && self
+                .default
+                .as_ref()
+                .is_none_or(|name| !self.executors.contains_key(name))
     }
 
     fn placement(&self, session_id: &str) -> Placement {
@@ -109,7 +124,7 @@ fn disconnected(name: &str) -> CodeModeHostError {
 
 pub const PLACEMENT_INSTRUCTIONS: &str = "Code Mode scripts run on one machine: the hand that sent the prompt, the only attached hand, or the session's configured executor. Inside a script any tool call runs on another attached hand when its arguments include hand: \"<name>\", so one script can work on several machines at once, for example with Promise.all; tools.hands() lists them. Relative paths resolve from each hand's working directory; query pwd through the shell when an absolute path is needed.";
 
-const HANDS_DESCRIPTION: &str = "List the hands attached to this session: whole machines, each with its own files, processes and tools. `here` names the hand this script runs on, or is null on the brain's own machine. Inside exec, any tool call runs on another hand when its arguments include `hand: \"<name>\"`, for example `await Promise.all(names.map(hand => tools.exec_command({ cmd: \"uptime\", hand })))`; a freeform tool takes `{ input, hand }`. Calls without `hand` run where the script runs. Naming a hand that is not attached fails without running anything, and a hand lost mid-call leaves that call's outcome unknown.";
+const HANDS_DESCRIPTION: &str = "List the hands attached to this session: whole machines, each with its own files, processes and tools. `hands` names them, `here` names the hand this script runs on, or is null on the brain's own machine, and `about` describes each: its platform, shell and OS version, working directory, tools, and capabilities such as a phone's photos or a browser's location, each with a `permission` of granted, prompt or denied. Inside exec, any tool call runs on another hand when its arguments include `hand: \"<name>\"`, for example `await Promise.all(names.map(hand => tools.exec_command({ cmd: \"uptime\", hand })))`; a freeform tool takes `{ input, hand }`. Calls without `hand` run where the script runs. Naming a hand that is not attached fails without running anything, and a hand lost mid-call leaves that call's outcome unknown. A capability whose permission is prompt needs the hand's user to allow it: `tools.hands({ request: { hand, capability, reason } })` asks them, with `reason` shown to them, and answers the new permission; a capability's tools may also ask on their first call. A hand whose `about` says `tools_only`, such as a browser tab or a phone, runs no scripts: call its tools with `hand` from a script that runs elsewhere.";
 
 struct ExecutorCalls(Weak<Atom<State>>);
 
@@ -128,9 +143,12 @@ impl HandCalls for ExecutorCalls {
         Box::pin(async move {
             match self.0.upgrade() {
                 Some(state) => {
-                    CodeModeExecutors { state }
-                        .call_on(hand, name, input, context)
-                        .await
+                    CodeModeExecutors {
+                        state,
+                        changed: Arc::default(),
+                    }
+                    .call_on(hand, name, input, context)
+                    .await
                 }
                 None => ToolOutput::error("this session's hands are gone; nothing was dispatched"),
             }
@@ -145,7 +163,23 @@ impl Tool for HandsTool {
         ToolDefinition::function(
             "hands",
             HANDS_DESCRIPTION,
-            json!({"type":"object","properties":{},"additionalProperties":false}),
+            json!({
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "object",
+                        "description": "Ask a hand's user to allow one of its capabilities",
+                        "properties": {
+                            "hand": {"type": "string"},
+                            "capability": {"type": "string"},
+                            "reason": {"type": "string", "description": "Why the task needs it, shown to the user"}
+                        },
+                        "required": ["hand", "capability", "reason"],
+                        "additionalProperties": false
+                    }
+                },
+                "additionalProperties": false
+            }),
         )
     }
 
@@ -155,7 +189,7 @@ impl Tool for HandsTool {
 
     fn execute<'life0, 'life1, 'async_trait>(
         &'life0 self,
-        _input: ToolInput,
+        input: ToolInput,
         context: ToolContext<'life1>,
     ) -> HostFuture<'async_trait, ToolResult>
     where
@@ -167,14 +201,58 @@ impl Tool for HandsTool {
             ExecutorSelection::Executor(name) => Value::String(name.to_string()),
             ExecutorSelection::Local => Value::Null,
         };
-        let names = self
-            .0
-            .names()
-            .iter()
-            .map(|name| Value::String(name.to_string()))
-            .collect::<Vec<_>>();
-        let result = json!({"hands":names,"here":here});
-        Box::pin(async move { Ok(ToolOutput::json(&result).with_structured_result(result)) })
+        let executors = self.0.state.read(|state| state.executors.clone());
+        let input = match &input {
+            ToolInput::Function(raw) => serde_json::from_str::<Value>(raw.get()).ok(),
+            ToolInput::Freeform(text) => serde_json::from_str::<Value>(text).ok(),
+        }
+        .unwrap_or(Value::Null);
+        Box::pin(async move {
+            if let Some(request) = input.get("request") {
+                let field =
+                    |key: &str| request.get(key).and_then(Value::as_str).unwrap_or_default();
+                let (hand, capability, reason) =
+                    (field("hand"), field("capability"), field("reason"));
+                let host = executors.get(hand).ok_or_else(|| {
+                    format!("hand `{hand}` is not attached; nothing was requested")
+                })?;
+                let permission = host
+                    .request_capability(capability, reason)
+                    .await
+                    .map_err(|issue| issue.to_string())?;
+                let result =
+                    json!({"hand": hand, "capability": capability, "permission": permission});
+                return Ok(ToolOutput::json(&result).with_structured_result(result));
+            }
+            let described =
+                futures_util::future::join_all(executors.iter().map(|(name, host)| async move {
+                    let mut description = host.describe();
+                    if let Some(description) = &mut description
+                        && !description.capabilities.is_empty()
+                        && let Ok(capabilities) = host.capabilities().await
+                    {
+                        description.capabilities = capabilities;
+                    }
+                    (name.to_string(), description)
+                }))
+                .await;
+            let names = described
+                .iter()
+                .map(|(name, _)| Value::String(name.clone()))
+                .collect::<Vec<_>>();
+            let about = described
+                .into_iter()
+                .filter_map(|(name, description)| {
+                    Some((name, serde_json::to_value(description?).ok()?))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            let result = if about.is_empty() {
+                json!({"hands": names, "here": here})
+            } else {
+                json!({"hands": names, "here": here, "about": about})
+            };
+            Ok(ToolOutput::json(&result).with_structured_result(result))
+        })
     }
 }
 
@@ -191,13 +269,58 @@ impl CodeModeExecutors {
     ) -> Option<Arc<dyn CodeModeHost>> {
         let name = name.into();
         host.route_hands(&name, self.calls());
-        self.state.update(|state| {
+        let previous = self.state.update(|state| {
             let previous = state.executors.insert(Arc::clone(&name), Arc::clone(&host));
             if previous.is_some() {
                 state.forget_executor(&name);
             }
             previous
-        })
+        });
+        self.changed.notify_waiters();
+        previous
+    }
+
+    pub fn await_replacement(&self, awaiting: bool) {
+        self.state.update(|state| state.awaiting = awaiting);
+        self.changed.notify_waiters();
+    }
+
+    pub async fn replacement(&self) -> Option<(Arc<str>, Arc<dyn CodeModeHost>)> {
+        loop {
+            let notified = self.changed.notified();
+            let mut notified = std::pin::pin!(notified);
+            notified.as_mut().enable();
+            let (awaiting, connected) = self.state.read(|state| {
+                (
+                    state.awaiting,
+                    state.default.as_ref().and_then(|name| {
+                        state
+                            .executors
+                            .get(name)
+                            .map(|host| (Arc::clone(name), Arc::clone(host)))
+                    }),
+                )
+            });
+            if connected.is_some() || !awaiting {
+                return connected;
+            }
+            notified.await;
+        }
+    }
+
+    pub async fn ready_placement(&self, session_id: &str) -> Placement {
+        loop {
+            let notified = self.changed.notified();
+            let mut notified = std::pin::pin!(notified);
+            notified.as_mut().enable();
+            if !self
+                .state
+                .read(|state| state.awaits_replacement(session_id))
+            {
+                return self.placement(session_id);
+            }
+            notified.await;
+        }
     }
 
     pub fn remove(&self, name: &str) -> Option<Arc<dyn CodeModeHost>> {
@@ -307,13 +430,22 @@ impl CodeModeExecutors {
 
     pub fn select_prompt_hand(&self, session_id: &str, sender: Option<&str>) {
         self.state.update(|state| {
-            let hand = sender.map(Arc::from).or_else(|| {
-                if state.default.is_none() && state.executors.len() == 1 {
-                    state.executors.keys().next().cloned()
-                } else {
-                    None
-                }
-            });
+            let runs = |name: &str| {
+                state
+                    .executors
+                    .get(name)
+                    .is_none_or(|host| host.runs_cells())
+            };
+            let hand = sender
+                .filter(|sender| runs(sender))
+                .map(Arc::from)
+                .or_else(|| {
+                    let mut cells = state.executors.keys().filter(|name| runs(name));
+                    match (state.default.is_none(), cells.next(), cells.next()) {
+                        (true, Some(only), None) => Some(Arc::clone(only)),
+                        _ => None,
+                    }
+                });
             match hand {
                 Some(hand) => {
                     state
@@ -352,6 +484,7 @@ impl CodeModeExecutors {
 
     pub fn set_default(&self, name: Option<Arc<str>>) {
         self.state.update(|state| state.default.clone_from(&name));
+        self.changed.notify_waiters();
     }
 
     #[must_use]
@@ -527,7 +660,7 @@ impl CodeModeExecutors {
         tools: Vec<Arc<dyn Tool>>,
         observer: Option<&mut dyn CodeModeObserver>,
     ) -> Result<CodeModeExecution, CodeModeHostError> {
-        Ok(match self.placement(context.session_id()) {
+        Ok(match self.ready_placement(context.session_id()).await {
             Placement::Local => Self::failed(&self.unselected()),
             Placement::Hand(hand) => {
                 self.execute_on(hand, tools, source, context, observer)

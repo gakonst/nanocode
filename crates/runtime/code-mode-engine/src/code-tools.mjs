@@ -40,7 +40,10 @@ export function createCodeTools(names, invoke) {
         return (input) => target[caller]({ name: deferred[2], arguments: input ?? {} });
       }
       return {
-        missing() {
+        missing(input) {
+          if (input && typeof input === "object" && typeof input.hand === "string") {
+            return helpers.observe(helpers.dispatch(name, input));
+          }
           return helpers.observe(helpers.unavailable(name));
         },
       }.missing;

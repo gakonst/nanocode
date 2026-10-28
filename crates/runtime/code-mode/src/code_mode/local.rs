@@ -13,7 +13,9 @@ use serde_json::{Value, json, value::to_raw_value};
 use super::{CodeModeExecution, CodeModeObserver, CodeModeRuntime, IgnoreCodeModeUpdates};
 use crate::{
     CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
-    embedded::{CodeModeHost, CodeModeHostError, EmbeddedToolMode, HostFuture, OwnedToolContext},
+    embedded::{
+        CodeModeHost, CodeModeHostError, EmbeddedToolMode, HandCalls, HostFuture, OwnedToolContext,
+    },
 };
 
 #[derive(Default)]
@@ -21,7 +23,10 @@ pub struct LocalCells {
     sessions: Atom<HashMap<Arc<str>, Arc<LocalSession>>>,
     prelude: Option<Arc<str>>,
     host_tools: Vec<Arc<dyn Tool>>,
+    hands: Atom<Option<Hands>>,
 }
+
+type Hands = (Arc<str>, Arc<dyn HandCalls>);
 
 struct LocalSession {
     runtime: CodeModeRuntime,
@@ -72,10 +77,11 @@ impl LocalCells {
 struct LocalTools {
     tools: Vec<(Arc<dyn Tool>, ToolDefinition)>,
     host: Vec<(Arc<dyn Tool>, ToolDefinition)>,
+    hands: Option<Hands>,
 }
 
 impl LocalTools {
-    fn new(tools: Vec<Arc<dyn Tool>>, host_tools: &[Arc<dyn Tool>]) -> Self {
+    fn new(tools: Vec<Arc<dyn Tool>>, host_tools: &[Arc<dyn Tool>], hands: Option<Hands>) -> Self {
         let defined = |tool: Arc<dyn Tool>| {
             let definition = tool.definition();
             (tool, definition)
@@ -83,6 +89,7 @@ impl LocalTools {
         Self {
             tools: tools.into_iter().map(defined).collect(),
             host: host_tools.iter().cloned().map(defined).collect(),
+            hands,
         }
     }
 }
@@ -132,7 +139,16 @@ impl CodeModeToolset for LocalTools {
         input: Value,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, ToolOutput> {
-        execute(find(&self.tools, name), name, input, context)
+        let Some((here, hands)) = &self.hands else {
+            return execute(find(&self.tools, name), name, input, context);
+        };
+        match take_hand(input) {
+            Err(output) => Box::pin(async move { output }),
+            Ok((input, Some(hand))) if hand != here.as_ref() && !hands.here(&hand) => {
+                Box::pin(async move { hands.call(&hand, name, input, context).await })
+            }
+            Ok((input, _)) => execute(find(&self.tools, name), name, input, context),
+        }
     }
 
     fn execute_host_nested<'a>(
@@ -143,6 +159,19 @@ impl CodeModeToolset for LocalTools {
     ) -> HostFuture<'a, ToolOutput> {
         let found = find(&self.host, name).or_else(|| find(&self.tools, name));
         execute(found, name, input, context)
+    }
+}
+
+fn take_hand(input: Value) -> Result<(Value, Option<String>), ToolOutput> {
+    let Value::Object(mut fields) = input else {
+        return Ok((input, None));
+    };
+    match fields.remove("hand") {
+        None => Ok((Value::Object(fields), None)),
+        Some(Value::String(hand)) => Ok((Value::Object(fields), Some(hand))),
+        Some(_) => Err(ToolOutput::error(
+            "`hand` must be the name of an attached hand; nothing was dispatched",
+        )),
     }
 }
 
@@ -243,7 +272,11 @@ impl CodeModeHost for LocalCells {
         observer: Option<&'a mut dyn CodeModeObserver>,
     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
         let session = self.session(context.session_id());
-        let tools: Arc<dyn CodeModeToolset> = Arc::new(LocalTools::new(tools, &self.host_tools));
+        let tools: Arc<dyn CodeModeToolset> = Arc::new(LocalTools::new(
+            tools,
+            &self.host_tools,
+            Option::clone(&self.hands.get()),
+        ));
         let context = OwnedToolContext::from_context(context);
         Box::pin(async move {
             let mut ignore = IgnoreCodeModeUpdates;
@@ -271,6 +304,10 @@ impl CodeModeHost for LocalCells {
                 .wait_with_updates(input, context, observer)
                 .await)
         })
+    }
+
+    fn route_hands(&self, name: &str, hands: Arc<dyn HandCalls>) {
+        self.hands.set(Some((Arc::from(name), hands)));
     }
 
     fn begin_turn(&self, session_id: &str) {

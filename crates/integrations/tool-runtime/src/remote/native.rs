@@ -76,8 +76,33 @@ pub struct SocketTransport {
     name: Option<String>,
     workspace: Option<String>,
     runtime_id: Option<String>,
+    environment: Option<HandEnvironment>,
+    capabilities: Vec<HandCapability>,
+    tools_only: bool,
     shutdown: SocketShutdown,
     _shutdown: DropGuard,
+}
+
+#[must_use]
+pub fn local_environment() -> HandEnvironment {
+    let platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    };
+    HandEnvironment {
+        platform: Some(platform.to_owned()),
+        os_version: nanocode_home::shell::os_version()
+            .filter(|version| !version.is_empty())
+            .map(str::to_owned),
+        shell: std::env::var_os("SHELL")
+            .map(PathBuf::from)
+            .and_then(|shell| {
+                shell
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            }),
+    }
 }
 
 pub(super) fn error(value: impl std::fmt::Display) -> CodeModeHostError {
@@ -532,8 +557,21 @@ impl SocketTransport {
         self.shutdown.clone()
     }
     pub fn into_host(self) -> RemoteCodeModeHost {
-        let definitions = self.definitions();
-        RemoteCodeModeHost::new(self, definitions)
+        let catalog = RemoteCatalog {
+            definitions: self.definitions(),
+            name: self.name.clone(),
+            workspace: self.workspace.clone(),
+            runtime_id: self.runtime_id.clone(),
+            max_frame_bytes: None,
+            resumable: false,
+            tool_selection: false,
+            cancels_calls: false,
+            caches_local_tools: false,
+            environment: self.environment.clone(),
+            capabilities: self.capabilities.clone(),
+            tools_only: self.tools_only,
+        };
+        RemoteCodeModeHost::new(self, catalog.definitions.clone()).described(&catalog)
     }
 
     async fn start<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -553,6 +591,9 @@ impl SocketTransport {
             tool_selection,
             cancels_calls: _,
             caches_local_tools,
+            environment,
+            capabilities,
+            tools_only,
         } = match catalog {
             Some(text) => RemoteCatalog::decode(&text, policy.max_frame_bytes)?,
             None => tokio::time::timeout(policy.request_timeout, read(&mut socket, &liveness))
@@ -611,6 +652,9 @@ impl SocketTransport {
             name,
             workspace,
             runtime_id,
+            environment,
+            capabilities,
+            tools_only,
             _shutdown: shutdown.token.clone().drop_guard(),
             shutdown,
         })
@@ -783,6 +827,10 @@ impl HandHost for NativeHost {
         Some(self.workspace.display().to_string())
     }
 
+    fn environment(&self) -> Option<HandEnvironment> {
+        Some(local_environment())
+    }
+
     fn selects_tools(&self) -> bool {
         !self.tools.has_dynamic_providers()
     }
@@ -946,6 +994,8 @@ const fn policy_options(policy: SocketPolicy) -> ExecutorOptions {
         runtime_id: None,
         callback_timeout: Some(policy.request_timeout),
         callback_hold: None,
+        device: None,
+        tools_only: false,
     }
 }
 pub async fn serve_connect(

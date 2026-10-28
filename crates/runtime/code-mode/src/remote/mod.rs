@@ -26,7 +26,7 @@ pub use executors::{
 };
 pub use hand::{
     BRAIN_DISCONNECTED, BusyItem, BusyKind, CALL_CANCELLED, DetachedObservers, ExecutorOptions,
-    HandActivity, HandBrain, HandConnection, HandCore, HandHost, HandSession,
+    HandActivity, HandBrain, HandCapabilities, HandConnection, HandCore, HandHost, HandSession,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use message::websocket;
@@ -131,6 +131,46 @@ impl RemoteContext {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandEnvironment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandPermission {
+    Granted,
+    Prompt,
+    Denied,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandCapability {
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    pub permission: HandPermission,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct HandDescription {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HandEnvironment>,
+    pub tools: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<HandCapability>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tools_only: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum RemoteOperation {
     Execute {
@@ -184,6 +224,11 @@ pub enum RemoteOperation {
         turn_id: String,
         hook_event_name: String,
     },
+    Capabilities,
+    RequestCapability {
+        name: String,
+        reason: String,
+    },
 }
 
 pub trait RemoteTransport: Send + Sync + 'static {
@@ -223,6 +268,7 @@ pub struct RemoteCodeModeHost {
     hand: Atom<Option<String>>,
     selection: Option<Arc<dyn HandToolSelection>>,
     backends: Atom<HashMap<String, String>>,
+    description: Option<HandDescription>,
 }
 
 impl RemoteCodeModeHost {
@@ -233,7 +279,24 @@ impl RemoteCodeModeHost {
             hand: Atom::default(),
             selection: None,
             backends: Atom::default(),
+            description: None,
         }
+    }
+
+    #[must_use]
+    pub fn described(mut self, catalog: &RemoteCatalog) -> Self {
+        self.description = Some(HandDescription {
+            workspace: catalog.workspace.clone(),
+            environment: catalog.environment.clone(),
+            tools: catalog
+                .definitions
+                .iter()
+                .map(|definition| definition.name().to_owned())
+                .collect(),
+            capabilities: catalog.capabilities.clone(),
+            tools_only: catalog.tools_only,
+        });
+        self
     }
 
     pub fn with_tool_selection(mut self, selection: Arc<dyn HandToolSelection>) -> Self {
@@ -306,6 +369,55 @@ impl RemoteCodeModeHost {
 impl CodeModeHost for RemoteCodeModeHost {
     fn tool_mode(&self) -> EmbeddedToolMode {
         EmbeddedToolMode::CodeOnly
+    }
+    fn describe(&self) -> Option<HandDescription> {
+        self.description.clone()
+    }
+    fn runs_cells(&self) -> bool {
+        !self
+            .description
+            .as_ref()
+            .is_some_and(|description| description.tools_only)
+    }
+    fn capabilities(&self) -> HostFuture<'_, Result<Vec<HandCapability>, CodeModeHostError>> {
+        Box::pin(async move {
+            let Some(description) = &self.description else {
+                return Ok(Vec::new());
+            };
+            if description.capabilities.is_empty() {
+                return Ok(Vec::new());
+            }
+            let reply = self.transport.call(RemoteOperation::Capabilities).await?;
+            serde_json::from_value(reply["capabilities"].clone())
+                .map_err(|issue| CodeModeHostError::new(format!("hand capabilities: {issue}")))
+        })
+    }
+    fn request_capability<'a>(
+        &'a self,
+        name: &'a str,
+        reason: &'a str,
+    ) -> HostFuture<'a, Result<HandPermission, CodeModeHostError>> {
+        Box::pin(async move {
+            if !self.description.as_ref().is_some_and(|description| {
+                description
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability.name == name)
+            }) {
+                return Err(CodeModeHostError::new(format!(
+                    "this hand offers no capability named `{name}`; nothing was requested"
+                )));
+            }
+            let reply = self
+                .transport
+                .call(RemoteOperation::RequestCapability {
+                    name: name.to_owned(),
+                    reason: reason.to_owned(),
+                })
+                .await?;
+            serde_json::from_value(reply["permission"].clone())
+                .map_err(|issue| CodeModeHostError::new(format!("hand permission: {issue}")))
+        })
     }
     fn supports_cells(&self) -> bool {
         true
@@ -556,6 +668,12 @@ pub enum RemoteFrame {
         cancels_calls: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         caches_local_tools: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        environment: Option<HandEnvironment>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        capabilities: Vec<HandCapability>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        tools_only: bool,
     },
     Request {
         id: u64,
@@ -689,6 +807,9 @@ pub struct RemoteCatalog {
     pub tool_selection: bool,
     pub cancels_calls: bool,
     pub caches_local_tools: bool,
+    pub environment: Option<HandEnvironment>,
+    pub capabilities: Vec<HandCapability>,
+    pub tools_only: bool,
 }
 
 impl RemoteCatalog {
@@ -729,6 +850,9 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 tool_selection,
                 cancels_calls,
                 caches_local_tools,
+                environment,
+                capabilities,
+                tools_only,
             } => Ok(Self {
                 definitions,
                 name,
@@ -739,6 +863,9 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 tool_selection,
                 cancels_calls,
                 caches_local_tools,
+                environment,
+                capabilities,
+                tools_only,
             }),
             _ => Err(CodeModeHostError::new(NO_CATALOG)),
         }

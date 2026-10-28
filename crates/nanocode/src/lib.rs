@@ -42,9 +42,10 @@ pub use nanocode_code_mode::embedded::{
     HostFuture,
 };
 pub use nanocode_code_mode::remote::{
-    CodeModeExecutors, ExecutorSelection, HandToolSelection, RemoteCatalog, RemoteClient,
-    RemoteCodeModeHost, RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink, RemoteOperation,
-    RemoteTransport, ResumedReply,
+    CodeModeExecutors, ExecutorSelection, HandCapability, HandDescription, HandEnvironment,
+    HandPermission, HandToolSelection, RemoteCatalog, RemoteClient, RemoteCodeModeHost,
+    RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink, RemoteOperation, RemoteTransport,
+    ResumedReply,
 };
 pub use nanocode_code_mode::tool;
 pub use nanocode_tool_runtime::{
@@ -57,7 +58,9 @@ pub use nanocode_durability::DurableAgentExt;
 pub mod hand {
     use std::{net::SocketAddr, path::PathBuf};
 
-    pub use nanocode_tool_runtime::remote::{Hand, HandEndpoint, HandEvent, SocketPolicy};
+    pub use nanocode_tool_runtime::remote::{
+        Hand, HandCapabilities, HandEndpoint, HandEvent, SocketPolicy,
+    };
 
     pub fn tools(directory: impl Into<PathBuf>) -> Result<crate::Tools, crate::NanocodeError> {
         let directory = directory.into();

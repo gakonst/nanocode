@@ -76,9 +76,9 @@ fn install_telemetry(
                 nanocode_observability::Telemetry::Agent
             },
         )
-            .otlp_directory(home.join("log").join("otel"))
-            .shutdown_timeout(TELEMETRY_SHUTDOWN)
-            .install()?,
+        .otlp_directory(home.join("log").join("otel"))
+        .shutdown_timeout(TELEMETRY_SHUTDOWN)
+        .install()?,
     ))
 }
 
@@ -269,11 +269,7 @@ async fn prepare(
     )
     .await?;
     for server in host.runtime.runner_servers() {
-        notify(&format!(
-            "listening {} · token {}",
-            server.endpoint(),
-            server.token()
-        ));
+        notify(&host::listener_notice(&server));
     }
     Ok(Prepared {
         host,

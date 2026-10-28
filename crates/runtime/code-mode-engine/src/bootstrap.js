@@ -372,7 +372,7 @@
     }
     const tools = createCodeTools(
       Object.keys(declaredTools),
-      (name, input) => declaredTools[name](input),
+      (name, input) => declaredTools[name] ? declaredTools[name](input) : invokeTool(name, input),
     );
 
     function text(value) {

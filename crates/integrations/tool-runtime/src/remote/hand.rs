@@ -60,6 +60,8 @@ pub struct Hand {
     policy: SocketPolicy,
     activity: HandActivity,
     callback_hold: Option<Duration>,
+    device: Option<std::sync::Arc<dyn super::HandCapabilities>>,
+    tools_only: bool,
 }
 
 impl Hand {
@@ -82,7 +84,21 @@ impl Hand {
             tools,
             policy: SocketPolicy::runner(),
             callback_hold: None,
+            device: None,
+            tools_only: false,
         }
+    }
+
+    #[must_use]
+    pub fn capabilities(mut self, device: std::sync::Arc<dyn super::HandCapabilities>) -> Self {
+        self.device = Some(device);
+        self
+    }
+
+    #[must_use]
+    pub const fn tools_only(mut self) -> Self {
+        self.tools_only = true;
+        self
     }
 
     #[must_use]
@@ -173,6 +189,8 @@ impl Hand {
                 runtime_id: Some(uuid::Uuid::new_v4().to_string()),
                 callback_timeout: None,
                 callback_hold: self.callback_hold,
+                device: self.device.clone(),
+                tools_only: self.tools_only,
             };
             let policy = self.policy;
             match self.endpoint {

@@ -553,6 +553,14 @@ impl NativeToolRuntime {
         executors.placement(session_id)
     }
 
+    async fn ready_placement(&self, session_id: &str) -> Placement {
+        let Some(executors) = &self.executors else {
+            return Placement::Local;
+        };
+        self.track(session_id);
+        executors.ready_placement(session_id).await
+    }
+
     fn record(&self, session_id: &str, executor: Option<&Arc<str>>, execution: &CodeModeExecution) {
         if let Some(executors) = &self.executors {
             executors.record(session_id, executor, execution);
@@ -582,9 +590,10 @@ impl NativeToolRuntime {
         context: OwnedToolContext,
         observer: Option<&mut dyn CodeModeObserver>,
     ) -> Result<CodeModeExecution, CodeModeHostError> {
-        if let (Some(executors), Placement::Hand(hand)) =
-            (&self.executors, self.placement(&context.session_id))
-        {
+        if let (Some(executors), Placement::Hand(hand)) = (
+            &self.executors,
+            self.ready_placement(&context.session_id).await,
+        ) {
             let tools = self.callbacks(hand.host.as_ref(), &context.session_id);
             return Ok(executors
                 .execute_on(hand, tools, source, context.as_context(), observer)

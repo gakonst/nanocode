@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
-    Answers, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, RemoteContext,
-    RemoteFrame as Frame, RemoteOperation, SentCalls, asked_key, encode_output, output_from_wire,
-    output_to_wire,
+    Answers, HandCapability, HandEnvironment, HandPermission, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED,
+    REQUEST_IN_USE, RemoteContext, RemoteFrame as Frame, RemoteOperation, SentCalls, asked_key,
+    encode_output, output_from_wire, output_to_wire,
 };
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
@@ -44,12 +44,24 @@ fn error(value: impl std::fmt::Display) -> CodeModeHostError {
     CodeModeHostError::new(value.to_string())
 }
 
+pub trait HandCapabilities: Send + Sync + 'static {
+    fn capabilities(&self) -> HostFuture<'_, Vec<HandCapability>>;
+
+    fn request<'a>(
+        &'a self,
+        name: &'a str,
+        reason: &'a str,
+    ) -> HostFuture<'a, Result<HandPermission, String>>;
+}
+
 #[derive(Clone, Default)]
 pub struct ExecutorOptions {
     pub name: Option<String>,
     pub runtime_id: Option<String>,
     pub callback_timeout: Option<Duration>,
     pub callback_hold: Option<Duration>,
+    pub device: Option<Arc<dyn HandCapabilities>>,
+    pub tools_only: bool,
 }
 
 pub trait HandHost: Send + Sync + 'static {
@@ -74,6 +86,37 @@ pub trait HandHost: Send + Sync + 'static {
     ) -> HostFuture<'a, ()>;
 
     fn spawn(&self, task: HostFuture<'static, ()>);
+
+    fn environment(&self) -> Option<HandEnvironment> {
+        None
+    }
+
+    fn runs_cells(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> HostFuture<'_, Vec<HandCapability>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    fn request_capability<'a>(
+        &'a self,
+        name: &'a str,
+        _reason: &'a str,
+    ) -> HostFuture<'a, Result<HandPermission, String>> {
+        Box::pin(async move { Err(format!("this hand offers no capability named `{name}`")) })
+    }
+}
+
+async fn listed(
+    host: &Arc<dyn HandHost>,
+    device: Option<&Arc<dyn HandCapabilities>>,
+) -> Vec<HandCapability> {
+    let mut capabilities = host.capabilities().await;
+    if let Some(device) = device {
+        capabilities.extend(device.capabilities().await);
+    }
+    capabilities
 }
 
 pub type DetachedObservers<'a> = &'a mut (dyn FnMut(&str) -> Box<dyn CodeModeObserver> + Send);
@@ -1116,6 +1159,8 @@ impl Pending {
             RemoteOperation::Preempt { session_id } => request("preempt", session_id),
             RemoteOperation::SettlePreempt { session_id } => request("settle preempt", session_id),
             RemoteOperation::EndTurn { session_id, .. } => request("end turn", session_id),
+            RemoteOperation::Capabilities => request("capabilities", ""),
+            RemoteOperation::RequestCapability { name, .. } => request(name, ""),
         };
         Self {
             kind,
@@ -1477,6 +1522,9 @@ impl State {
             tool_selection: self.host.selects_tools(),
             cancels_calls: true,
             caches_local_tools: true,
+            environment: self.host.environment(),
+            capabilities: self.capability_list().await,
+            tools_only: self.tools_only(),
         }
         .encode(max_frame_bytes)
     }
@@ -1737,6 +1785,53 @@ impl State {
         );
     }
 
+    fn tools_only(&self) -> bool {
+        self.options.tools_only || !self.host.runs_cells()
+    }
+
+    fn capability_list(&self) -> HostFuture<'static, Vec<HandCapability>> {
+        let host = Arc::clone(&self.host);
+        let device = self.options.device.clone();
+        Box::pin(async move { listed(&host, device.as_ref()).await })
+    }
+
+    fn capability(&mut self, id: u64, operation: RemoteOperation) {
+        let host = Arc::clone(&self.host);
+        let device = self.options.device.clone();
+        let finished = self.finished.clone();
+        self.spawn(
+            id,
+            Box::pin(async move {
+                let live = match operation {
+                    RemoteOperation::RequestCapability { name, reason } => {
+                        let offered = match &device {
+                            Some(device) => device
+                                .capabilities()
+                                .await
+                                .iter()
+                                .any(|capability| capability.name == name),
+                            None => false,
+                        };
+                        match (&device, offered) {
+                            (Some(device), true) => device.request(&name, &reason).await,
+                            _ => host.request_capability(&name, &reason).await,
+                        }
+                        .map(|permission| Some(json!({ "permission": permission })))
+                    }
+                    _ => Ok(Some(
+                        json!({ "capabilities": listed(&host, device.as_ref()).await }),
+                    )),
+                };
+                let _ = finished.send(Done {
+                    id,
+                    live,
+                    full: None,
+                    status: None,
+                });
+            }),
+        );
+    }
+
     async fn frame(&mut self, frame: Frame) -> Result<(), CodeModeHostError> {
         match frame {
             Frame::CallbackResult { id, result } => self.bus.answer(id, result),
@@ -1860,6 +1955,20 @@ impl State {
         } = operation
         {
             self.end_turn(id, session_id, turn_id, hook_event_name);
+            return Ok(());
+        }
+        if matches!(
+            operation,
+            RemoteOperation::Capabilities | RemoteOperation::RequestCapability { .. }
+        ) {
+            self.capability(id, operation);
+            return Ok(());
+        }
+        if matches!(operation, RemoteOperation::Execute { .. }) && self.tools_only() {
+            self.finish(
+                id,
+                Err("this hand runs no scripts; call its tools with hand from a script that runs elsewhere. Nothing ran.".into()),
+            );
             return Ok(());
         }
         let selected = match &operation {
@@ -2222,7 +2331,10 @@ async fn run(
             session.settle_preempt();
             Ok(None)
         }
-        RemoteOperation::EndTurn { .. } | RemoteOperation::CancelCall { .. } => Ok(None),
+        RemoteOperation::EndTurn { .. }
+        | RemoteOperation::CancelCall { .. }
+        | RemoteOperation::Capabilities
+        | RemoteOperation::RequestCapability { .. } => Ok(None),
     }
 }
 

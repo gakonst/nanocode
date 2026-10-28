@@ -32,6 +32,7 @@ nanocode = { path = "../../crates/nanocode", version = "0.6.7" }
 nanocode-home = { path = "../../crates/core/home", version = "0.6.7" }
 nanocode-observability = { path = "../../crates/integrations/observability", version = "0.6.7" }
 nanocode-store-jsonl = { path = "../../crates/integrations/store-jsonl", version = "0.6.7" }
+nanocode-sync.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.6.7" }
 opentelemetry.workspace = true
 serde_json.workspace = true

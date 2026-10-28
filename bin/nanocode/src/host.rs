@@ -395,6 +395,51 @@ const fn kind_name(kind: GatewayArg) -> &'static str {
 pub struct Host {
     pub config: HostConfig,
     pub runtime: Nanocode,
+    hand: std::sync::Arc<nanocode_sync::Atom<Option<nanocode::HandDescription>>>,
+}
+
+pub fn listener_notice(server: &nanocode::RunnerServer) -> String {
+    format!(
+        "listening {} · token {}\nStart a hand: nc hand {} --token {}",
+        server.endpoint(),
+        server.token(),
+        server.endpoint(),
+        server.token()
+    )
+}
+
+fn claude_environment(hand: &nanocode::HandDescription) -> nanocode::claude::ClaudeEnvironment {
+    let mut environment = nanocode::claude::ClaudeEnvironment::new();
+    if let Some(directory) = &hand.workspace {
+        environment = environment.working_directory(directory.as_str());
+    }
+    if let Some(described) = &hand.environment {
+        if let Some(platform) = &described.platform {
+            environment = environment.platform(platform.as_str());
+        }
+        if let Some(shell) = &described.shell {
+            environment = environment.shell(shell.as_str());
+        }
+        if let Some(version) = &described.os_version {
+            environment = environment.os_version(version.as_str());
+        }
+    }
+    environment
+}
+
+fn codex_environment(hand: &nanocode::HandDescription) -> nanocode::agent::ExecutionEnvironment {
+    let mut environment = nanocode::agent::ExecutionEnvironment::local();
+    if let Some(directory) = &hand.workspace {
+        environment = environment.working_directory(directory.as_str());
+    }
+    if let Some(shell) = hand
+        .environment
+        .as_ref()
+        .and_then(|described| described.shell.as_deref())
+    {
+        environment = environment.shell(shell);
+    }
+    environment
 }
 
 impl Host {
@@ -413,7 +458,15 @@ impl Host {
         }
         .raw_api_events(false)
         .build()?;
-        let codex = CodexHarness::new(openai);
+        let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
+        let described = std::sync::Arc::clone(&hand);
+        let codex = CodexHarness::new(openai).configure(move |builder| {
+            Ok(match &*described.get() {
+                Some(hand) => builder.execution_environment(codex_environment(hand)),
+                None => builder,
+            })
+        });
+        let described = std::sync::Arc::clone(&hand);
         let claude = ClaudeHarness::new(
             config
                 .clients
@@ -421,7 +474,13 @@ impl Host {
                 .as_ref()
                 .map_or_else(ClaudeClient::default, |claude| claude()),
         )
-        .headless(config.headless);
+        .headless(config.headless)
+        .configure(move |builder| {
+            Ok(match &*described.get() {
+                Some(hand) => builder.environment(claude_environment(hand)),
+                None => builder,
+            })
+        });
         let mut builder = Nanocode::builder()
             .openai(codex)
             .claude(claude)
@@ -474,7 +533,14 @@ impl Host {
         Ok(Self {
             config,
             runtime: builder?,
+            hand,
         })
+    }
+
+    pub async fn replacement_hand(&self) {
+        if let Some((_, description)) = self.runtime.runner_pool().replacement_hand().await {
+            self.hand.set(description);
+        }
     }
 
     pub async fn start(
@@ -482,6 +548,7 @@ impl Host {
         model: &ModelSelection,
         thinking: Thinking,
     ) -> Result<(Agent, AgentEvents)> {
+        self.replacement_hand().await;
         let started = match (model.as_codex(), model.as_claude()) {
             (Some(model), _) => {
                 self.runtime
@@ -511,6 +578,7 @@ impl Host {
         store: &SessionStore,
         stored: &nanocode::durability::StoredSession,
     ) -> Result<(Agent, AgentEvents)> {
+        self.replacement_hand().await;
         Ok(self.runtime.open_loaded(store, stored).await?)
     }
 }

@@ -519,8 +519,20 @@ impl RunnerPool {
         })?;
         Ok(handle)
     }
+    pub async fn replacement_hand(
+        &self,
+    ) -> Option<(String, Option<nanocode_code_mode::remote::HandDescription>)> {
+        self.inner
+            .code_mode
+            .replacement()
+            .await
+            .map(|(name, host)| (name.to_string(), host.describe()))
+    }
     pub fn keep_connected(&self, config: Runner) -> Result<(), AttachmentError> {
         config.validate()?;
+        if config.mode == RemoteMode::Replace {
+            self.inner.code_mode.await_replacement(true);
+        }
         tokio::runtime::Handle::try_current().map_err(error)?;
         tokio::spawn(supervise(Arc::downgrade(&self.inner), config));
         Ok(())
@@ -1028,6 +1040,9 @@ impl RunnerPool {
                 state.servers.push(Arc::clone(&inner));
                 Ok::<_, AttachmentError>(((), Vec::new()))
             })?;
+            if config.mode == RemoteMode::Replace {
+                self.inner.code_mode.await_replacement(true);
+            }
             Ok(RunnerServer { inner })
         })
     }
@@ -1381,6 +1396,9 @@ impl RunnerServer {
                 task.await.map_err(error)?;
             }
             if let Some(inner) = self.inner.pool.upgrade() {
+                if self.inner.mode == RemoteMode::Replace {
+                    inner.code_mode.await_replacement(false);
+                }
                 let pool = RunnerPool {
                     inner,
                     model_management: true,

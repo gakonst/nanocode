@@ -206,6 +206,32 @@ pub trait CodeModeHost: Send + Sync + 'static {
 
     fn route_hands(&self, _name: &str, _hands: std::sync::Arc<dyn HandCalls>) {}
 
+    fn describe(&self) -> Option<crate::remote::HandDescription> {
+        None
+    }
+
+    fn runs_cells(&self) -> bool {
+        true
+    }
+
+    fn capabilities(
+        &self,
+    ) -> HostFuture<'_, Result<Vec<crate::remote::HandCapability>, CodeModeHostError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn request_capability<'a>(
+        &'a self,
+        name: &'a str,
+        _reason: &'a str,
+    ) -> HostFuture<'a, Result<crate::remote::HandPermission, CodeModeHostError>> {
+        Box::pin(async move {
+            Err(CodeModeHostError::new(format!(
+                "this hand offers no capability named `{name}`; nothing was requested"
+            )))
+        })
+    }
+
     fn bind_session(&self, _session_id: &str, _backend: &str) {}
 
     fn link_session(&self, _session_id: &str, _root_session_id: &str) {}
@@ -322,6 +348,24 @@ impl<T: CodeModeHost + ?Sized> CodeModeHost for std::sync::Arc<T> {
     }
     fn route_hands(&self, name: &str, hands: std::sync::Arc<dyn HandCalls>) {
         (**self).route_hands(name, hands);
+    }
+    fn describe(&self) -> Option<crate::remote::HandDescription> {
+        (**self).describe()
+    }
+    fn runs_cells(&self) -> bool {
+        (**self).runs_cells()
+    }
+    fn capabilities(
+        &self,
+    ) -> HostFuture<'_, Result<Vec<crate::remote::HandCapability>, CodeModeHostError>> {
+        (**self).capabilities()
+    }
+    fn request_capability<'a>(
+        &'a self,
+        name: &'a str,
+        reason: &'a str,
+    ) -> HostFuture<'a, Result<crate::remote::HandPermission, CodeModeHostError>> {
+        (**self).request_capability(name, reason)
     }
     fn bind_session(&self, session_id: &str, backend: &str) {
         (**self).bind_session(session_id, backend);

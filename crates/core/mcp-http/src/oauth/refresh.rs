@@ -340,7 +340,9 @@ impl OAuthRuntime {
         base_url: &reqwest::Url,
         latest: &McpOAuthCredentials,
     ) -> Result<nanocode_mcp::oauth::AuthorizationMetadata, String> {
-        let metadata = timeout(REFRESH_REQUEST_TIMEOUT, super::discover(&self.http, base_url))
+        let policy = super::DiscoveryPolicy::default();
+        let discovery = super::discover(&self.http, base_url, &policy);
+        let metadata = timeout(REFRESH_REQUEST_TIMEOUT, discovery)
             .await
             .map_err(|_| {
                 format!(
@@ -355,7 +357,7 @@ impl OAuthRuntime {
                 )
             })?
             .metadata;
-        super::validate_authorization_server_endpoints(&metadata).map_err(|error| {
+        super::validate_authorization_server_endpoints(&metadata, false).map_err(|error| {
             format!(
                 "current OAuth metadata for `{}` is invalid: {error}",
                 self.server_name

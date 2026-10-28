@@ -32,6 +32,38 @@ pub use nanocode_process_contracts::{
     DEFAULT_EXEC_YIELD_MS, DEFAULT_POLL_YIELD_MS, DEFAULT_WRITE_YIELD_MS, MAX_EXEC_YIELD_MS,
     MAX_POLL_YIELD_MS,
 };
+
+static COMMAND_ENVIRONMENT: std::sync::LazyLock<Atom<Vec<(OsString, OsString)>>> =
+    std::sync::LazyLock::new(|| Atom::new(Vec::new()));
+
+pub fn set_command_environment(environment: Vec<(OsString, OsString)>) {
+    COMMAND_ENVIRONMENT.set(environment);
+}
+
+pub(crate) fn command_environment() -> Arc<Vec<(OsString, OsString)>> {
+    COMMAND_ENVIRONMENT.get()
+}
+
+pub(crate) fn redact(bytes: &[u8], redactor: &nanocode_process_contracts::Redactor) -> Vec<u8> {
+    let mut output = bytes.to_vec();
+    for (secret, placeholder) in redactor.forms() {
+        let secret = secret.as_bytes();
+        let mut redacted = Vec::with_capacity(output.len());
+        let mut rest = output.as_slice();
+        while !rest.is_empty() {
+            if rest.starts_with(secret) {
+                redacted.extend_from_slice(placeholder.as_bytes());
+                rest = &rest[secret.len()..];
+            } else {
+                redacted.push(rest[0]);
+                rest = &rest[1..];
+            }
+        }
+        output = redacted;
+    }
+    output
+}
+
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 const MAX_SESSIONS: usize = 64;
 const PROTECTED_SESSIONS: usize = 8;

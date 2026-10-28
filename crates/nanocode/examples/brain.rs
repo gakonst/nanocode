@@ -7,8 +7,10 @@ mod native {
     use std::{error::Error, path::PathBuf, time::Duration};
 
     use nanocode::{
-        Claude, ClaudeClient, ClaudeModel, Codex, HarnessFamily, JsonlStore, Model, ModelSelection,
-        Nanocode, PromptRequest, Thinking, Tools,
+        Claude, ClaudeClient, ClaudeHarness, ClaudeModel, Codex, CodexHarness, HarnessFamily,
+        JsonlStore, Model, ModelSelection, Nanocode, PromptRequest, Thinking, Tools,
+        agent::ExecutionEnvironment,
+        claude::ClaudeEnvironment,
         durability::{SessionStore, TurnStatus},
     };
 
@@ -207,7 +209,7 @@ Examples:
         Ok(token.to_owned())
     }
 
-    async fn remote(args: &Args) -> Result<Option<nanocode::RemoteCodeModeHost>> {
+    async fn remote(args: &Args) -> Result<Option<(nanocode::RemoteCodeModeHost, Option<String>)>> {
         use nanocode::code_mode::{
             attachment::AttachmentTarget,
             remote::{SocketPolicy, SocketTransport},
@@ -250,7 +252,8 @@ Examples:
             SocketTransport::accept(&listener, &token, policy).await?
         };
         eprintln!("remote Code Mode executor connected");
-        Ok(Some(transport.into_host()))
+        let workspace = transport.workspace().map(str::to_owned);
+        Ok(Some((transport.into_host(), workspace)))
     }
 
     async fn run(args: Args) -> Result<()> {
@@ -260,7 +263,7 @@ Examples:
             .as_deref()
             .unwrap_or("low")
             .parse::<Thinking>()?;
-        let host = remote(&args).await?;
+        let remote = remote(&args).await?;
         let store = store(&args).await?;
         let tools = Tools::builder().without_defaults().build()?;
         if tools.workspace_enabled()
@@ -269,15 +272,29 @@ Examples:
         {
             return Err("brain unexpectedly enabled default tools".into());
         }
+        let mut codex = CodexHarness::from(nanocode::OpenAi::default());
+        let mut claude = ClaudeHarness::from(ClaudeClient::default());
+        if let Some(directory) = remote.as_ref().and_then(|(_, workspace)| workspace.clone()) {
+            let working_directory = directory.clone();
+            codex = codex.configure(move |builder| {
+                Ok(builder.execution_environment(
+                    ExecutionEnvironment::local().working_directory(working_directory.as_str()),
+                ))
+            });
+            claude = claude.configure(move |builder| {
+                Ok(builder
+                    .environment(ClaudeEnvironment::new().working_directory(directory.as_str())))
+            });
+        }
         let mut builder = Nanocode::builder()
-            .openai(nanocode::OpenAi::default())
-            .claude(ClaudeClient::default())
+            .openai(codex)
+            .claude(claude)
             .tools(tools)
             .without_cua()
             .runner_management(false)
             .durability(store.clone())
             .thinking(thinking);
-        if let Some(host) = host {
+        if let Some((host, _)) = remote {
             builder = builder.code_mode_host(host)?;
         }
         let runtime = if let Some(model) = model.as_codex() {

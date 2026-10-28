@@ -519,7 +519,7 @@ impl SocketTransport {
     pub(crate) fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
-    pub(crate) fn workspace(&self) -> Option<&str> {
+    pub fn workspace(&self) -> Option<&str> {
         self.workspace.as_deref()
     }
     pub(crate) fn closed(&self) -> watch::Receiver<Option<String>> {

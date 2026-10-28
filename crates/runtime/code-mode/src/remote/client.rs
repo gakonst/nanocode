@@ -392,6 +392,10 @@ impl RemoteClient {
                 });
                 receivers.push((id, receiver));
             }
+            let _ = outgoing.send(Outgoing::frames(
+                vec![Frame::Ack { ids: Vec::new() }],
+                RemoteDelivery::Immediate,
+            ));
         }
         let client = Arc::new(Client {
             outgoing,

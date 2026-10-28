@@ -418,14 +418,19 @@ fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
 
 #[cfg(not(target_family = "wasm"))]
 fn detected_execution_environment() -> ExecutionEnvironment {
-    match system_timezone() {
-        Ok(timezone) => {
-            ExecutionEnvironment::new(Local::now().format("%Y-%m-%d").to_string(), timezone)
+    ExecutionEnvironment::local()
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ExecutionEnvironment {
+    #[must_use]
+    pub fn local() -> Self {
+        match system_timezone() {
+            Ok(timezone) => Self::dated(timezone, || Local::now().format("%Y-%m-%d").to_string()),
+            Err(_) => Self::dated(Arc::<str>::from("Etc/UTC"), || {
+                Utc::now().format("%Y-%m-%d").to_string()
+            }),
         }
-        Err(_) => ExecutionEnvironment::new(
-            Utc::now().format("%Y-%m-%d").to_string(),
-            Arc::from("Etc/UTC"),
-        ),
     }
 }
 

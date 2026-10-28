@@ -360,6 +360,18 @@ fn claim<'a>(entry: &'a Indexed<'_>) -> Result<Claim<'a>, StoreError> {
     }
 }
 
+#[cfg(target_vendor = "apple")]
+fn sync_journal(file: &File) -> std::io::Result<()> {
+    nix::fcntl::fcntl(file, nix::fcntl::FcntlArg::F_BARRIERFSYNC)
+        .map(drop)
+        .or_else(|_| file.sync_all())
+}
+
+#[cfg(not(target_vendor = "apple"))]
+fn sync_journal(file: &File) -> std::io::Result<()> {
+    file.sync_all()
+}
+
 #[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
     use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
@@ -1252,7 +1264,7 @@ impl Journal {
         }
         let end = self.file.stream_position().map_err(backend)?;
         let started = Instant::now();
-        self.file.sync_all().map_err(backend)?;
+        sync_journal(&self.file).map_err(backend)?;
         tracing::Span::current().record(
             "fsync.duration_ms",
             started.elapsed().as_secs_f64() * 1_000.0,

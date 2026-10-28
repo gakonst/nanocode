@@ -20,6 +20,9 @@ tokio = { workspace = true, features = ["sync"] }
 [target.'cfg(unix)'.dependencies]
 nix.workspace = true
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+nix = { workspace = true, features = ["fs"] }
+
 [lints]
 workspace = true
 

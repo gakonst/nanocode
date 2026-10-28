@@ -64,6 +64,8 @@ pub(super) struct ChildSession {
     pub(super) steering: bool,
     pub(super) submitted_output: Option<Value>,
     pub(super) last_output: Option<Value>,
+    pub(super) follow_up_output: Option<Value>,
+    pub(super) delegated_turn: bool,
     pub(super) last_used: u64,
     pub(super) evicted: bool,
 
@@ -1254,6 +1256,7 @@ impl RegistryState {
             return None;
         }
         let target = scope.sessions.get_mut(&message.to)?;
+        target.delegated_turn = true;
         let previous_task = std::mem::replace(&mut target.descriptor.task, message.body);
         Some((
             DelegationChange {
@@ -1274,6 +1277,7 @@ impl RegistryState {
             .get_mut(root_session_id)?
             .sessions
             .get_mut(&change.target)?;
+        target.delegated_turn = false;
         target.descriptor.task = change.previous_task;
         Some(target.descriptor.clone())
     }
@@ -3377,6 +3381,8 @@ impl Registry {
                 steering: false,
                 submitted_output: None,
                 last_output: None,
+                follow_up_output: None,
+                delegated_turn: false,
                 last_used: 0,
                 evicted: false,
                 resume_attempts: 0,
@@ -3476,6 +3482,13 @@ impl Registry {
                     session.next_instruction_revision.checked_add(1)?
                 };
 
+                let delegated = std::mem::take(&mut session.delegated_turn);
+                if !recovering {
+                    session.follow_up_output = (!delegated
+                        && matches!(session.status, AgentStatus::Completed { .. }))
+                    .then(|| session.last_output.clone())
+                    .flatten();
+                }
                 if !matches!(session.status, AgentStatus::Interrupted) {
                     session.in_flight_calls.clear();
                     session.in_flight_omitted = 0;
@@ -3595,6 +3608,7 @@ impl Registry {
             {
                 session.usage.record(usage);
             }
+            let follow_up_output = session.follow_up_output.take();
             let submitted_output = session.submitted_output.take();
 
             if let Some(output) = &submitted_output {
@@ -3604,7 +3618,7 @@ impl Registry {
                 session.status.clone()
             } else {
                 match result {
-                    Ok(_) => complete_session(session, submitted_output),
+                    Ok(_) => complete_session(session, submitted_output.or(follow_up_output)),
                     Err(NanocodeError::TurnCancelled | NanocodeError::TurnStopped) => {
                         AgentStatus::Interrupted
                     }
@@ -5434,6 +5448,8 @@ impl ChildSession {
             steering: false,
             submitted_output: None,
             last_output,
+            follow_up_output: None,
+            delegated_turn: false,
             last_used: 0,
             evicted: true,
             resume_attempts: 0,

@@ -6103,7 +6103,7 @@ impl State {
         let result = self
             .run_rounds(conversation, request, speed, cancel, &mut journal)
             .await;
-        let flushed = self.flush_journal(&mut journal).await;
+        let flushed = self.defer_journal(&mut journal).await;
         let result = result?;
         flushed.map(|()| result)
     }
@@ -6645,9 +6645,6 @@ impl State {
                     return Err(error);
                 }
             };
-            if tool_calls.is_empty() {
-                self.flush_journal(journal).await?;
-            }
             if !text.is_empty() {
                 self.emit(&request.events,AgentEventKind::AssistantMessage,json!({"model_call_index":index.saturating_add(1),"item_id":response.id,"phase":null,"text":text,"citations":citations}));
             }

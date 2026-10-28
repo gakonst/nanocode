@@ -216,6 +216,10 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
                 .map(Some)
         })
     }
+    #[doc(hidden)]
+    fn defer_writes(&self, id: String, writes: Vec<JournalWrite>) -> PolicyFuture<'_, ()> {
+        Box::pin(async move { self.commit_writes(id, writes, None).await.map(|_| ()) })
+    }
     fn complete_step(&self, id: String, step_id: String, output: Value) -> PolicyFuture<'_, ()>;
     fn complete(&self, id: String, checkpoint: Value, output: Value) -> PolicyFuture<'_, ()>;
     fn fail(&self, id: String, checkpoint: Value, error: String) -> PolicyFuture<'_, ()>;

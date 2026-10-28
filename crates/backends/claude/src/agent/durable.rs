@@ -599,6 +599,23 @@ impl State {
         }
         Ok(())
     }
+    pub(super) async fn defer_journal(&self, journal: &mut Journal) -> Result<()> {
+        let (Some(policy), Some(operation)) = (&self.policy, journal.operation.clone()) else {
+            return Ok(());
+        };
+        let writes = journal.take();
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let advanced = writes
+            .iter()
+            .any(|write| matches!(write, JournalWrite::Advance(_)));
+        policy.defer_writes(operation, writes).await?;
+        if advanced {
+            self.persistence_ready.notify_waiters();
+        }
+        Ok(())
+    }
     pub(super) async fn flush_journal(&self, journal: &mut Journal) -> Result<()> {
         let (Some(policy), Some(operation)) = (&self.policy, journal.operation.clone()) else {
             return Ok(());

@@ -454,6 +454,10 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         Box::pin(async move { self.get().await?.commit_writes(id, writes, begin).await })
     }
 
+    fn defer_writes(&self, id: String, writes: Vec<JournalWrite>) -> PolicyFuture<'_, ()> {
+        Box::pin(async move { self.get().await?.defer_writes(id, writes).await })
+    }
+
     fn complete_step(&self, id: String, step_id: String, output: Value) -> PolicyFuture<'_, ()> {
         Box::pin(async move { self.get().await?.complete_step(id, step_id, output).await })
     }
@@ -864,6 +868,28 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                 Err(error) => Err(error),
             };
             self.admitted(begun, &begin.kind).await.map(Some)
+        })
+    }
+
+    fn defer_writes(&self, id: String, writes: Vec<JournalWrite>) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            for write in &writes {
+                match owner_write(write) {
+                    OwnerWrite::Advance { continuation } => {
+                        self.owner.advance_deferred(id.clone(), continuation).await
+                    }
+                    OwnerWrite::CompleteStep { step_id, output } => {
+                        self.owner
+                            .complete_step_deferred_encoded(id.clone(), step_id, output)
+                            .await
+                    }
+                    OwnerWrite::BeginStep { .. } => Err(nanocode_durability::Error::InvalidState(
+                        "a deferred journal write cannot begin a step".to_owned(),
+                    )),
+                }
+                .map_err(agent_error)?;
+            }
+            Ok(())
         })
     }
 

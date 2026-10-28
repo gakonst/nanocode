@@ -46,6 +46,7 @@ struct State {
     roots: HashMap<Box<str>, Box<str>>,
     backends: HashMap<Box<str>, Box<str>>,
     default: Option<Arc<str>>,
+    fallback: Option<Arc<str>>,
     awaiting: bool,
     sessions: HashMap<Box<str>, SessionPlaces>,
 }
@@ -67,6 +68,7 @@ impl State {
             })
             .cloned()
             .or_else(|| self.default.clone().map(ExecutorSelection::Executor))
+            .or_else(|| self.fallback.clone().map(ExecutorSelection::Executor))
             .unwrap_or(ExecutorSelection::Local)
     }
 
@@ -440,7 +442,10 @@ impl CodeModeExecutors {
                 .filter(|sender| runs(sender))
                 .map(Arc::from)
                 .or_else(|| {
-                    let mut cells = state.executors.keys().filter(|name| runs(name));
+                    let mut cells = state
+                        .executors
+                        .keys()
+                        .filter(|name| runs(name) && state.fallback.as_deref() != Some(&***name));
                     match (state.default.is_none(), cells.next(), cells.next()) {
                         (true, Some(only), None) => Some(Arc::clone(only)),
                         _ => None,
@@ -487,6 +492,11 @@ impl CodeModeExecutors {
         self.changed.notify_waiters();
     }
 
+    pub fn set_fallback(&self, name: Option<Arc<str>>) {
+        self.state.update(|state| state.fallback.clone_from(&name));
+        self.changed.notify_waiters();
+    }
+
     #[must_use]
     pub fn default_executor(&self) -> Option<Arc<str>> {
         self.state.read(|state| state.default.clone())
@@ -500,6 +510,9 @@ impl CodeModeExecutors {
             });
             if state.default.as_deref() == Some(name) {
                 state.default = None;
+            }
+            if state.fallback.as_deref() == Some(name) {
+                state.fallback = None;
             }
         });
     }

@@ -1446,6 +1446,7 @@ async fn incoming(
     mode: RemoteMode,
     workspace: Option<PathBuf>,
 ) -> Result<(), AttachmentError> {
+    let refused = std::sync::atomic::AtomicBool::new(false);
     let authenticate = |request: &Request, mut response: Response| {
         let bearer = request
             .headers()
@@ -1464,13 +1465,16 @@ async fn incoming(
                     None
                 }
             });
+        if protocol.is_some() {
+            response.headers_mut().insert(
+                http::header::SEC_WEBSOCKET_PROTOCOL,
+                http::HeaderValue::from_static("bearer"),
+            );
+        }
         if bearer.or(protocol) == Some(token.as_str()) {
-            if protocol.is_some() {
-                response.headers_mut().insert(
-                    http::header::SEC_WEBSOCKET_PROTOCOL,
-                    http::HeaderValue::from_static("bearer"),
-                );
-            }
+            Ok(response)
+        } else if bearer.is_none() && protocol.is_some() {
+            refused.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(response)
         } else {
             let mut response = ErrorResponse::new(Some("invalid runner credential".into()));
@@ -1485,6 +1489,17 @@ async fn incoming(
     .await
     .map_err(error)?
     .map_err(error)?;
+    if refused.load(std::sync::atomic::Ordering::Relaxed) {
+        let close = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+            reason: "invalid runner credential".into(),
+        };
+        let _ =
+            tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, socket.close(Some(close))).await;
+        return Err(AttachmentError::Authentication(
+            "invalid runner credential".into(),
+        ));
+    }
     let first = tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, first_text(&mut socket))
         .await
         .map_err(error)??;

@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU16, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -308,6 +308,7 @@ async fn handshake(
         return Err(error("runner bearer must not be empty"));
     }
     stream.set_nodelay(true).map_err(error)?;
+    let refused = AtomicBool::new(false);
     let authenticate =
         |request: &tungstenite::handshake::server::Request,
          mut response: tungstenite::handshake::server::Response| {
@@ -326,13 +327,16 @@ async fn handshake(
                         .then(|| values.next())
                         .flatten()
                 });
+            if protocol.is_some() {
+                response.headers_mut().insert(
+                    http::header::SEC_WEBSOCKET_PROTOCOL,
+                    http::HeaderValue::from_static("bearer"),
+                );
+            }
             if header.or(protocol) == Some(bearer) {
-                if protocol.is_some() {
-                    response.headers_mut().insert(
-                        http::header::SEC_WEBSOCKET_PROTOCOL,
-                        http::HeaderValue::from_static("bearer"),
-                    );
-                }
+                Ok(response)
+            } else if header.is_none() && protocol.is_some() {
+                refused.store(true, Ordering::Relaxed);
                 Ok(response)
             } else {
                 let mut rejection = tungstenite::handshake::server::ErrorResponse::new(Some(
@@ -342,14 +346,25 @@ async fn handshake(
                 Err(rejection)
             }
         };
-    tokio::time::timeout(
+    let mut socket = tokio::time::timeout(
         policy.request_timeout,
         tokio_tungstenite::accept_hdr_async_with_config(stream, authenticate, Some(config(policy))),
     )
     .await
     .map_err(error)?
-    .map_err(error)
+    .map_err(error)?;
+    if refused.load(Ordering::Relaxed) {
+        let close = tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+            reason: REFUSED_CREDENTIAL.into(),
+        };
+        let _ = tokio::time::timeout(policy.request_timeout, socket.close(Some(close))).await;
+        return Err(error(REFUSED_CREDENTIAL));
+    }
+    Ok(socket)
 }
+
+const REFUSED_CREDENTIAL: &str = "invalid runner credential";
 
 async fn read<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
     socket: &mut S,

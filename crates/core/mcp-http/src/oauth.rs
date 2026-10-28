@@ -9,8 +9,8 @@ use http::{HeaderName, HeaderValue};
 use nanocode_mcp::oauth::{
     AuthorizationCallback, AuthorizationMetadata, AuthorizationUrl, ClientAuthentication,
     ClientRegistrationRequest, ClientRegistrationResponse, DISCOVERY_PROTOCOL_VERSION,
-    PKCE_VERIFIER_BYTES, Pkce, ProtectedResourceMetadata, STATE_BYTES, TokenError, TokenRequest,
-    TokenResponse, WwwAuthenticate,
+    OFFLINE_ACCESS, PKCE_VERIFIER_BYTES, Pkce, ProtectedResourceMetadata, STATE_BYTES, TokenError,
+    TokenRequest, TokenResponse, WwwAuthenticate,
 };
 use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,47 @@ const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
 const OAUTH_CLIENT_NAME: &str = "Nanocode";
 
 type MetadataEntries = HashMap<(String, String), AuthorizationMetadata>;
+
+pub type UrlCheck = Arc<dyn Fn(&Url) -> Result<(), String> + Send + Sync>;
+
+#[derive(Clone)]
+pub struct DiscoveryPolicy {
+    pub client_name: String,
+    pub check_url: Option<UrlCheck>,
+    pub any_authorization_origin: bool,
+    pub scopes_without_resource_metadata: bool,
+    pub offline_access_alone: bool,
+    pub legacy_fallback: bool,
+}
+
+impl Default for DiscoveryPolicy {
+    fn default() -> Self {
+        Self {
+            client_name: OAUTH_CLIENT_NAME.to_owned(),
+            check_url: None,
+            any_authorization_origin: false,
+            scopes_without_resource_metadata: false,
+            offline_access_alone: false,
+            legacy_fallback: true,
+        }
+    }
+}
+
+impl DiscoveryPolicy {
+    fn check(&self, url: &Url) -> Result<(), String> {
+        self.check_url.as_ref().map_or(Ok(()), |check| check(url))
+    }
+
+    fn checked(&self, server: OAuthServer) -> Result<OAuthServer, String> {
+        for endpoint in server.endpoints() {
+            let url = Url::parse(endpoint)
+                .map_err(|error| format!("OAuth endpoint `{endpoint}` is invalid: {error}"))?;
+            self.check(&url)
+                .map_err(|error| format!("OAuth endpoint `{endpoint}` is not allowed: {error}"))?;
+        }
+        Ok(server)
+    }
+}
 
 #[derive(Default)]
 pub struct OAuthMetadataCache {
@@ -347,7 +388,10 @@ fn authorization_issuer(metadata: &AuthorizationMetadata) -> Result<Option<Strin
         .transpose()
 }
 
-fn validate_authorization_server_endpoints(metadata: &AuthorizationMetadata) -> Result<(), String> {
+fn validate_authorization_server_endpoints(
+    metadata: &AuthorizationMetadata,
+    any_origin: bool,
+) -> Result<(), String> {
     let authorization_endpoint = url::Url::parse(&metadata.authorization_endpoint)
         .map_err(|error| format!("OAuth authorization endpoint is invalid: {error}"))?;
     let token_endpoint = url::Url::parse(&metadata.token_endpoint)
@@ -394,7 +438,8 @@ fn validate_authorization_server_endpoints(metadata: &AuthorizationMetadata) -> 
                 "https://api.robinhood.com",
             )
         );
-        if authorization_endpoint.origin() == issuer.origin()
+        if any_origin
+            || authorization_endpoint.origin() == issuer.origin()
             || authorization_endpoint.origin() == token_endpoint.origin()
             || compatible_provider
         {
@@ -405,7 +450,7 @@ fn validate_authorization_server_endpoints(metadata: &AuthorizationMetadata) -> 
         );
     }
 
-    if token_endpoint.origin() != authorization_endpoint.origin() {
+    if !any_origin && token_endpoint.origin() != authorization_endpoint.origin() {
         return Err(
             "OAuth token endpoint origin does not match the authorization server origin without issuer-bound callbacks".to_owned(),
         );
@@ -437,7 +482,7 @@ pub fn transport_from_credentials<'call>(
             if let Some(metadata) = metadata_cache.get(server_name, server_url).await {
                 (metadata, true)
             } else {
-                let metadata = discover(&http_client, &base_url)
+                let metadata = discover(&http_client, &base_url, &DiscoveryPolicy::default())
                     .await
                     .map_err(|error| format!("failed to discover MCP OAuth metadata: {error}"))?
                     .metadata;
@@ -446,7 +491,7 @@ pub fn transport_from_credentials<'call>(
                     .await;
                 (metadata, false)
             };
-        validate_authorization_server_endpoints(&metadata)?;
+        validate_authorization_server_endpoints(&metadata, false)?;
         let authorization_issuer = authorization_issuer(&metadata)?;
         let staged_credentials =
             credentials_for_manager(&credentials, authorization_issuer.as_deref());
@@ -526,7 +571,14 @@ async fn discovery_get(http: &reqwest::Client, url: &Url) -> Result<DiscoveryRes
     })
 }
 
-pub(crate) async fn discover(http: &reqwest::Client, base_url: &Url) -> Result<Discovery, String> {
+pub(crate) async fn discover(
+    http: &reqwest::Client,
+    base_url: &Url,
+    policy: &DiscoveryPolicy,
+) -> Result<Discovery, String> {
+    policy
+        .check(base_url)
+        .map_err(|error| format!("Metadata error: {base_url} is not allowed: {error}"))?;
     let mut discovery = Discovery {
         metadata: AuthorizationMetadata::default(),
         resource: None,
@@ -534,10 +586,16 @@ pub(crate) async fn discover(http: &reqwest::Client, base_url: &Url) -> Result<D
         resource_scopes: Vec::new(),
     };
     if let Some(resource_metadata_url) =
-        discover_resource_metadata_url(http, base_url, &mut discovery.challenge_scopes).await?
-        && let Some(metadata) =
-            discover_from_resource_metadata(http, base_url, &resource_metadata_url, &mut discovery)
-                .await?
+        discover_resource_metadata_url(http, base_url, policy, &mut discovery.challenge_scopes)
+            .await?
+        && let Some(metadata) = discover_from_resource_metadata(
+            http,
+            base_url,
+            &resource_metadata_url,
+            policy,
+            &mut discovery,
+        )
+        .await?
     {
         discovery.metadata = metadata;
         return Ok(discovery);
@@ -545,6 +603,11 @@ pub(crate) async fn discover(http: &reqwest::Client, base_url: &Url) -> Result<D
     if let Some(metadata) = discover_authorization_server(http, base_url).await? {
         discovery.metadata = metadata;
         return Ok(discovery);
+    }
+    if !policy.legacy_fallback {
+        return Err(format!(
+            "Metadata error: no authorization server metadata for {base_url}"
+        ));
     }
     tracing::debug!("falling back to legacy OAuth endpoints derived from the base URL");
     discovery.metadata = AuthorizationMetadata::legacy(base_url);
@@ -554,6 +617,7 @@ pub(crate) async fn discover(http: &reqwest::Client, base_url: &Url) -> Result<D
 fn challenged_resource_metadata_url(
     headers: &reqwest::header::HeaderMap,
     base_url: &Url,
+    scopes_without_resource_metadata: bool,
     challenge_scopes: &mut Vec<String>,
 ) -> Option<Url> {
     for value in headers.get_all(reqwest::header::WWW_AUTHENTICATE) {
@@ -561,12 +625,15 @@ fn challenged_resource_metadata_url(
             continue;
         };
         let challenge = WwwAuthenticate::parse(value, base_url);
-        if let Some(url) = challenge.resource_metadata_url.clone() {
-            let scopes = challenge.scopes();
+        let scopes = challenge.scopes();
+        if let Some(url) = challenge.resource_metadata_url {
             if !scopes.is_empty() {
                 *challenge_scopes = scopes;
             }
             return Some(url);
+        }
+        if scopes_without_resource_metadata && challenge_scopes.is_empty() {
+            *challenge_scopes = scopes;
         }
     }
     None
@@ -575,6 +642,7 @@ fn challenged_resource_metadata_url(
 async fn initialize_challenge(
     http: &reqwest::Client,
     base_url: &Url,
+    policy: &DiscoveryPolicy,
     challenge_scopes: &mut Vec<String>,
 ) -> Option<Url> {
     let body = serde_json::json!({
@@ -584,7 +652,7 @@ async fn initialize_challenge(
         "params": {
             "protocolVersion": DISCOVERY_PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": {"name": OAUTH_CLIENT_NAME, "version": env!("CARGO_PKG_VERSION")},
+            "clientInfo": {"name": policy.client_name, "version": env!("CARGO_PKG_VERSION")},
         },
     });
     let response = http
@@ -608,15 +676,21 @@ async fn initialize_challenge(
     if response.status() != StatusCode::UNAUTHORIZED {
         return None;
     }
-    challenged_resource_metadata_url(response.headers(), base_url, challenge_scopes)
+    challenged_resource_metadata_url(
+        response.headers(),
+        base_url,
+        policy.scopes_without_resource_metadata,
+        challenge_scopes,
+    )
 }
 
 async fn discover_resource_metadata_url(
     http: &reqwest::Client,
     base_url: &Url,
+    policy: &DiscoveryPolicy,
     challenge_scopes: &mut Vec<String>,
 ) -> Result<Option<Url>, String> {
-    if let Some(url) = initialize_challenge(http, base_url, challenge_scopes).await {
+    if let Some(url) = initialize_challenge(http, base_url, policy, challenge_scopes).await {
         return Ok(Some(url));
     }
     let candidates = std::iter::once(base_url.clone()).chain(
@@ -627,9 +701,12 @@ async fn discover_resource_metadata_url(
         match response.status {
             StatusCode::OK => return Ok(Some(candidate)),
             StatusCode::UNAUTHORIZED => {
-                if let Some(url) =
-                    challenged_resource_metadata_url(&response.headers, base_url, challenge_scopes)
-                {
+                if let Some(url) = challenged_resource_metadata_url(
+                    &response.headers,
+                    base_url,
+                    policy.scopes_without_resource_metadata,
+                    challenge_scopes,
+                ) {
                     return Ok(Some(url));
                 }
             }
@@ -645,6 +722,7 @@ async fn discover_from_resource_metadata(
     http: &reqwest::Client,
     base_url: &Url,
     resource_metadata_url: &Url,
+    policy: &DiscoveryPolicy,
     discovery: &mut Discovery,
 ) -> Result<Option<AuthorizationMetadata>, String> {
     let response = discovery_get(http, resource_metadata_url).await?;
@@ -684,6 +762,10 @@ async fn discover_from_resource_metadata(
         };
         if !nanocode_mcp::oauth::is_allowed_authorization_server_url(base_url, &url) {
             tracing::warn!("rejecting authorization server metadata URL `{url}`");
+            continue;
+        }
+        if let Err(error) = policy.check(&url) {
+            tracing::warn!("rejecting authorization server metadata URL `{url}`: {error}");
             continue;
         }
         let metadata = if url.path().contains("/.well-known/") {
@@ -767,15 +849,27 @@ pub async fn discover_server(
     http: &reqwest::Client,
     server_url: &Url,
 ) -> Result<OAuthServer, String> {
+    discover_server_with(http, server_url, &DiscoveryPolicy::default()).await
+}
+
+pub async fn discover_server_with(
+    http: &reqwest::Client,
+    server_url: &Url,
+    policy: &DiscoveryPolicy,
+) -> Result<OAuthServer, String> {
     let Discovery {
         metadata,
         resource,
         challenge_scopes,
         resource_scopes,
-    } = discover(http, server_url).await?;
-    validate_authorization_server_endpoints(&metadata)?;
-    let scopes = nanocode_mcp::oauth::select_scopes(&challenge_scopes, &resource_scopes, &metadata);
-    Ok(OAuthServer {
+    } = discover(http, server_url, policy).await?;
+    validate_authorization_server_endpoints(&metadata, policy.any_authorization_origin)?;
+    let mut scopes =
+        nanocode_mcp::oauth::select_scopes(&challenge_scopes, &resource_scopes, &metadata);
+    if policy.offline_access_alone && scopes.is_empty() && metadata.supports_offline_access() {
+        scopes.push(OFFLINE_ACCESS.to_owned());
+    }
+    policy.checked(OAuthServer {
         metadata,
         resource: Some(resource.unwrap_or_else(|| server_url.to_string())),
         scopes,
@@ -783,11 +877,22 @@ pub async fn discover_server(
 }
 
 pub async fn discover_issuer(http: &reqwest::Client, issuer: &Url) -> Result<OAuthServer, String> {
+    discover_issuer_with(http, issuer, &DiscoveryPolicy::default()).await
+}
+
+pub async fn discover_issuer_with(
+    http: &reqwest::Client,
+    issuer: &Url,
+    policy: &DiscoveryPolicy,
+) -> Result<OAuthServer, String> {
+    policy
+        .check(issuer)
+        .map_err(|error| format!("Metadata error: {issuer} is not allowed: {error}"))?;
     let metadata = discover_authorization_server(http, issuer)
         .await?
         .ok_or_else(|| format!("Metadata error: no authorization server metadata for {issuer}"))?;
-    validate_authorization_server_endpoints(&metadata)?;
-    Ok(OAuthServer {
+    validate_authorization_server_endpoints(&metadata, policy.any_authorization_origin)?;
+    policy.checked(OAuthServer {
         metadata,
         resource: None,
         scopes: Vec::new(),
@@ -1134,10 +1239,10 @@ pub fn begin_login(
             let base_url = Url::parse(&server_url).map_err(|error| {
                 format!("failed to discover MCP OAuth metadata: URL parse error: {error}")
             })?;
-            let discovery = discover(&client, &base_url)
+            let discovery = discover(&client, &base_url, &DiscoveryPolicy::default())
                 .await
                 .map_err(|error| format!("failed to discover MCP OAuth metadata: {error}"))?;
-            validate_authorization_server_endpoints(&discovery.metadata)?;
+            validate_authorization_server_endpoints(&discovery.metadata, false)?;
             let authorization_issuer = authorization_issuer(&discovery.metadata)?;
             let session = LoginSession::start(&client, &base_url, discovery, &redirect_uri)
                 .await

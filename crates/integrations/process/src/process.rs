@@ -68,7 +68,7 @@ pub(super) struct ProcessChild {
 }
 
 impl ProcessChild {
-    fn new(
+    pub(super) fn new(
         mut try_wait: impl FnMut() -> io::Result<Option<i32>> + Send + 'static,
         pid: u32,
         io_driver_available: bool,
@@ -416,7 +416,7 @@ fn pty_error(error: impl std::fmt::Display) -> io::Error {
 }
 
 #[cfg(unix)]
-fn exit_code(status: std::process::ExitStatus) -> i32 {
+pub(super) fn exit_code(status: std::process::ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
 
     status

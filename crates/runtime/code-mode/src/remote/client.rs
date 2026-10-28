@@ -22,9 +22,9 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{
-    HAND_RESTARTED, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls,
+    Answers, HAND_RESTARTED, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls,
     RemoteCodeModeHost, RemoteContext, RemoteFrame as Frame, RemoteOperation, RemoteTransport,
-    encode_output, local_tools_key,
+    answer_key, encode_output, local_tools_key,
 };
 use crate::{
     Tool, ToolDefinition, ToolInput,
@@ -93,11 +93,18 @@ impl Observer {
         self.attached.store(true, Ordering::SeqCst);
     }
 
-    fn deliver(&self, update: Value) -> Result<(), CodeModeHostError> {
+    fn deliver(
+        &self,
+        update: Value,
+        answers: &Arc<Answers>,
+        session_id: &str,
+    ) -> Result<(), CodeModeHostError> {
         let Some(mut observer) = self.current.take() else {
             return Ok(());
         };
-        let delivered = ReceivedCalls::default().deliver(Some(observer.as_mut()), update);
+        let delivered = ReceivedCalls::default()
+            .answered(Arc::clone(answers), session_id)
+            .deliver(Some(observer.as_mut()), update);
         if let Some(newer) = self.current.put(observer) {
             self.current.put(newer);
         }
@@ -208,6 +215,7 @@ struct Client {
     outgoing: mpsc::UnboundedSender<Outgoing>,
     callbacks: Atom<Callbacks>,
     receipts: Atom<Receipts>,
+    answers: Arc<Answers>,
     running: Atom<HashMap<u64, (String, AbortHandle)>>,
     next: AtomicU64,
     turns: Atom<HashMap<String, u64>>,
@@ -401,6 +409,7 @@ impl RemoteClient {
             outgoing,
             callbacks: Atom::default(),
             receipts: Atom::default(),
+            answers: Arc::default(),
             running: Atom::default(),
             next: AtomicU64::new(nanocode_platform::uuid_v4().as_u64_pair().0 >> 12),
             turns: Atom::default(),
@@ -573,6 +582,7 @@ impl Client {
                 .update(|callbacks| callbacks.retain(|(session, _), _| session != session_id));
             self.receipts
                 .update(|receipts| receipts.retain(|(session, _), _| session != session_id));
+            self.answers.forget(&answer_key(session_id, ""));
             self.turns.update(|turns| {
                 turns.remove(session_id);
             });
@@ -652,7 +662,7 @@ impl Client {
                     .callbacks
                     .read(|callbacks| callbacks.get(&key).map(|state| Arc::clone(&state.observer)))
                 {
-                    observer.deliver(update)?;
+                    observer.deliver(update, &self.answers, &key.0)?;
                 }
             }
             Frame::DetachedComplete {
@@ -663,6 +673,8 @@ impl Client {
                 self.callbacks.update(|callbacks| {
                     callbacks.remove(&key);
                 });
+                self.answers
+                    .forget(&answer_key(&key.0, &format!("{}/", key.1)));
             }
             Frame::Callback {
                 id,
@@ -673,6 +685,7 @@ impl Client {
                 hand,
                 compact,
                 output_prefix,
+                answers,
             } => {
                 return Ok(Some(self.callback(
                     id,
@@ -683,6 +696,7 @@ impl Client {
                     hand,
                     compact,
                     output_prefix,
+                    answers,
                 )));
             }
             _ => return Err(error("unexpected runner frame")),
@@ -701,7 +715,10 @@ impl Client {
         hand: Option<String>,
         compact: bool,
         output_prefix: bool,
+        answers: bool,
     ) -> HostFuture<'static, ()> {
+        let recorded = answers.then(|| answer_key(&context.session_id, &context.call_id));
+        let answers = Arc::clone(&self.answers);
         let key = (
             context.session_id.clone(),
             origin(&context.call_id).to_owned(),
@@ -736,6 +753,9 @@ impl Client {
             let hold = |output: &mut ToolOutput| {
                 if let Some(client) = holder.upgrade() {
                     client.hold_receipts(&key, output);
+                }
+                if let Some(recorded) = &recorded {
+                    answers.record(recorded.clone(), output);
                 }
             };
             let execution = Abortable::new(
@@ -817,6 +837,7 @@ impl Client {
         }
         self.callbacks.set(HashMap::new());
         self.receipts.set(HashMap::new());
+        self.answers.forget("");
         let uncertain = format!(
             "{message}; the dispatched operation has an unknown outcome and was not retried"
         );
@@ -927,6 +948,7 @@ impl Client {
             compact: true,
             output_prefix: true,
             resumable: self.resumes.is_some(),
+            answers: true,
         }
     }
 
@@ -1244,7 +1266,12 @@ impl RemoteTransport for RemoteClient {
                 .dispatch((frame, text), delivery, Some((id, registered)))
                 .map_err(|_| error("remote connection closed; the operation was not dispatched"))?;
             let reply = async {
-                let mut received = ReceivedCalls::default();
+                let mut received = match &session_id {
+                    Some(session_id) => {
+                        ReceivedCalls::default().answered(Arc::clone(&client.answers), session_id)
+                    }
+                    None => ReceivedCalls::default(),
+                };
                 while let Some(frame) = replies.recv().await {
                     match frame {
                         Frame::Reply {
@@ -1320,6 +1347,9 @@ impl RemoteTransport for RemoteClient {
                     Ok(None) => None,
                 };
                 if let Some(origin) = completed {
+                    client
+                        .answers
+                        .forget(&answer_key(&session_id, &format!("{origin}/")));
                     let key = (session_id, origin);
                     client.callbacks.update(|callbacks| {
                         callbacks.remove(&key);

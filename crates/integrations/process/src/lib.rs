@@ -8,6 +8,8 @@ mod output;
 mod process;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod server;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod warm;
 use nanocode_home::shell as selection;
 
 pub use process::ProcessGroupGuard;
@@ -305,12 +307,31 @@ impl ShellSessions {
                         &mut environment,
                     )
                     .into_owned();
-                    let (directory, tty) = (workdir.clone(), command.tty);
-                    tokio::task::spawn_blocking(move || {
-                        process::spawn(&script, &directory, &shell, login, tty, &environment)
-                    })
-                    .await
-                    .unwrap_or_else(|error| Err(std::io::Error::other(error)))
+                    #[cfg(any(target_os = "macos", target_os = "linux"))]
+                    let warm = match command.tty {
+                        true => None,
+                        false => warm::spawn(&script, &workdir, &shell, login, &environment).await,
+                    };
+                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                    let warm = None;
+                    match warm {
+                        Some(spawned) => Ok(spawned),
+                        None => {
+                            let (directory, tty) = (workdir.clone(), command.tty);
+                            tokio::task::spawn_blocking(move || {
+                                process::spawn(
+                                    &script,
+                                    &directory,
+                                    &shell,
+                                    login,
+                                    tty,
+                                    &environment,
+                                )
+                            })
+                            .await
+                            .unwrap_or_else(|error| Err(std::io::Error::other(error)))
+                        }
+                    }
                 }
             };
             let spawned = match spawned {

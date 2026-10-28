@@ -1,5 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
+use nanocode_sync::Atom;
 use serde_json::{Map, Value, json};
 
 use super::nested;
@@ -34,7 +38,10 @@ fn encodes(text: &str, value: &Value) -> bool {
 }
 
 fn prefix<'a>(text: &'a str, structured: &Value) -> Option<&'a str> {
-    let output = structured.get("output")?.as_str().filter(|output| !output.is_empty())?;
+    let output = structured
+        .get("output")?
+        .as_str()
+        .filter(|output| !output.is_empty())?;
     text.strip_suffix(output)
 }
 
@@ -111,10 +118,44 @@ pub fn output_from_wire(mut value: Value) -> Result<ToolOutput, CodeModeHostErro
         .map_err(error)
 }
 
+#[must_use]
+pub fn answer_key(session_id: &str, call_id: &str) -> String {
+    format!("{session_id}\u{0}{call_id}")
+}
+
+#[derive(Default)]
+pub struct Answers(Atom<HashMap<String, Arc<Value>>>);
+
+impl Answers {
+    pub fn record(&self, key: String, output: &ToolOutput) {
+        let answer = Arc::new(json!({
+            "output": output.output,
+            "structured_result": output.structured_result(),
+            "metadata": output.metadata,
+        }));
+        self.0.update(|answers| {
+            answers.insert(key.clone(), Arc::clone(&answer));
+        });
+    }
+
+    fn take(&self, key: &str) -> Option<Arc<Value>> {
+        self.0.try_update(|answers| answers.remove(key))
+    }
+
+    pub fn forget(&self, prefix: &str) {
+        self.0.try_update(|answers| {
+            let before = answers.len();
+            answers.retain(|key, _| !key.starts_with(prefix));
+            (answers.len() != before).then_some(())
+        });
+    }
+}
+
 #[derive(Default)]
 pub struct SentCalls {
     compact: bool,
     output_prefix: bool,
+    answers: Option<Arc<Answers>>,
     started: HashSet<String>,
     completed: HashSet<String>,
 }
@@ -131,6 +172,12 @@ impl SentCalls {
     #[must_use]
     pub const fn output_prefix(mut self, output_prefix: bool) -> Self {
         self.output_prefix = output_prefix;
+        self
+    }
+
+    #[must_use]
+    pub fn answers(mut self, answers: Option<Arc<Answers>>) -> Self {
+        self.answers = answers;
         self
     }
 
@@ -196,6 +243,21 @@ impl SentCalls {
             fields.insert("input".into(), call.input.clone());
         }
         let output = serde_json::to_value(&call.output).unwrap_or(Value::Null);
+        let metadata = serde_json::to_value(&call.metadata).unwrap_or(Value::Null);
+        if let Some(answer) = self
+            .answers
+            .as_ref()
+            .and_then(|answers| answers.take(&call.call_id))
+            && answer.get("output") == Some(&output)
+            && answer.get("structured_result") == Some(&call.structured_result)
+            && answer.get("metadata") == Some(&metadata)
+        {
+            fields.insert("answered".into(), Value::Bool(true));
+            fields.insert("success".into(), Value::Bool(call.success));
+            fields.insert("started_after_ns".into(), json!(call.started_after_ns));
+            fields.insert("duration_ns".into(), json!(call.duration_ns));
+            return Value::Object(fields);
+        }
         if output != call.structured_result {
             let head = match &call.output {
                 ToolOutputBody::Text(text) if self.output_prefix => {
@@ -219,10 +281,7 @@ impl SentCalls {
         fields.insert("success".into(), Value::Bool(call.success));
         fields.insert("started_after_ns".into(), json!(call.started_after_ns));
         fields.insert("duration_ns".into(), json!(call.duration_ns));
-        fields.insert(
-            "metadata".into(),
-            serde_json::to_value(&call.metadata).unwrap_or(Value::Null),
-        );
+        fields.insert("metadata".into(), metadata);
         Value::Object(fields)
     }
 }
@@ -231,6 +290,7 @@ impl SentCalls {
 pub struct ReceivedCalls {
     started: HashMap<String, Value>,
     completed: HashMap<String, Value>,
+    answers: Option<(Arc<Answers>, String)>,
 }
 
 fn call_id(fields: &Map<String, Value>) -> String {
@@ -267,10 +327,31 @@ fn expand_result(fields: &mut Map<String, Value>) -> Result<(), CodeModeHostErro
 }
 
 impl ReceivedCalls {
+    #[must_use]
+    pub fn answered(mut self, answers: Arc<Answers>, session_id: impl Into<String>) -> Self {
+        self.answers = Some((answers, session_id.into()));
+        self
+    }
+
     fn expand(&mut self, call: &mut Value) -> Result<(), CodeModeHostError> {
         let Some(fields) = call.as_object_mut() else {
             return Ok(());
         };
+        if fields.remove("answered").is_some() {
+            let id = call_id(fields);
+            let answer = self
+                .answers
+                .as_ref()
+                .and_then(|(answers, session_id)| answers.take(&answer_key(session_id, &id)))
+                .ok_or_else(|| {
+                    error(format!(
+                        "nested call {id} omits a callback result that this brain did not record"
+                    ))
+                })?;
+            if let Value::Object(answer) = Arc::unwrap_or_clone(answer) {
+                fields.extend(answer);
+            }
+        }
         if !fields.contains_key("input") {
             let id = call_id(fields);
             let input = self.started.remove(&id).ok_or_else(|| {

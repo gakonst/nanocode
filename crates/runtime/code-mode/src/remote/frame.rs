@@ -42,6 +42,8 @@ struct Request {
     output_prefix: bool,
     #[serde(default)]
     resumable: bool,
+    #[serde(default)]
+    answers: bool,
 }
 
 #[derive(Deserialize)]
@@ -69,6 +71,8 @@ struct Callback {
     compact: bool,
     #[serde(default)]
     output_prefix: bool,
+    #[serde(default)]
+    answers: bool,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +152,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 compact,
                 output_prefix,
                 resumable,
+                answers,
             } = Request::deserialize(body)?;
             RemoteFrame::Request {
                 id,
@@ -156,6 +161,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 compact,
                 output_prefix,
                 resumable,
+                answers,
             }
         }
         "reply" => {
@@ -176,6 +182,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 hand,
                 compact,
                 output_prefix,
+                answers,
             } = Callback::deserialize(body)?;
             RemoteFrame::Callback {
                 id,
@@ -186,6 +193,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 hand,
                 compact,
                 output_prefix,
+                answers,
             }
         }
         "callback_cancel" => RemoteFrame::CallbackCancel {

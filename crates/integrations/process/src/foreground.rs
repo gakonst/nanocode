@@ -52,8 +52,15 @@ pub(crate) fn run_bash_with_environment<'call>(
             .collect();
         let (environment, secrets) = process::sanitized_environment(&overrides, &[]);
         let shell = selection::bash_shell().ok_or("Bash executable not found")?;
-        let mut spawned = process::spawn(command, workspace, &shell, false, false, &environment)
-            .map_err(|error| error.to_string())?;
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let warm = super::warm::spawn(command, workspace, &shell, false, &environment).await;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let warm = None;
+        let mut spawned = match warm {
+            Some(spawned) => spawned,
+            None => process::spawn(command, workspace, &shell, false, false, &environment)
+                .map_err(|error| error.to_string())?,
+        };
         struct Cleanup(process::SharedProcessGroup);
         impl Drop for Cleanup {
             fn drop(&mut self) {

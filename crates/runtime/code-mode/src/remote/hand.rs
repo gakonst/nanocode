@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
-    LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, RemoteContext, RemoteFrame as Frame,
-    RemoteOperation, SentCalls, encode_output, output_from_wire, output_to_wire,
+    Answers, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, RemoteContext,
+    RemoteFrame as Frame, RemoteOperation, SentCalls, encode_output, output_from_wire,
+    output_to_wire,
 };
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
@@ -607,6 +608,8 @@ struct CallbackBus {
     next: AtomicU64,
     timeout: Option<Duration>,
     holding: AtomicBool,
+    answers: Arc<Answers>,
+    answering: AtomicBool,
 }
 
 impl CallbackBus {
@@ -682,6 +685,7 @@ impl Drop for CallbackPending {
 
 async fn callback(
     bus: &Arc<CallbackBus>,
+    recorded: Option<String>,
     frame: impl FnOnce(u64) -> Frame,
 ) -> Result<ToolOutput, CodeModeHostError> {
     let id = bus.next.fetch_add(1, Ordering::Relaxed);
@@ -720,7 +724,11 @@ async fn callback(
         None => rx.await,
     };
     let value = result.map_err(error)?.map_err(error)?;
-    output_from_wire(value)
+    let output = output_from_wire(value)?;
+    if let Some(recorded) = recorded {
+        bus.answers.record(recorded, &output);
+    }
+    Ok(output)
 }
 
 struct CallbackTool {
@@ -749,7 +757,9 @@ impl Tool for CallbackTool {
                 ToolInput::Function(input) => (serde_json::from_str(input.get())?, false),
                 ToolInput::Freeform(input) => (Value::String(input), true),
             };
-            callback(&self.bus, |id| Frame::Callback {
+            let answers = self.bus.answering.load(Ordering::SeqCst);
+            let recorded = answers.then(|| context.call_id.clone());
+            callback(&self.bus, recorded, |id| Frame::Callback {
                 id,
                 name: self.definition.name().into(),
                 input,
@@ -758,6 +768,7 @@ impl Tool for CallbackTool {
                 hand: None,
                 compact: true,
                 output_prefix: true,
+                answers,
             })
             .await
             .map_err(|issue| issue.to_string().into())
@@ -784,7 +795,9 @@ impl HandCalls for HandCallbacks {
     ) -> HostFuture<'a, ToolOutput> {
         let context = RemoteContext::from_context(context);
         Box::pin(async move {
-            callback(&self.bus, |id| Frame::Callback {
+            let answers = self.bus.answering.load(Ordering::SeqCst);
+            let recorded = answers.then(|| context.call_id.clone());
+            callback(&self.bus, recorded, |id| Frame::Callback {
                 id,
                 name: name.into(),
                 input,
@@ -793,6 +806,7 @@ impl HandCalls for HandCallbacks {
                 hand: Some(hand.into()),
                 compact: true,
                 output_prefix: true,
+                answers,
             })
             .await
             .unwrap_or_else(|error| ToolOutput::error(error.to_string()))
@@ -873,6 +887,7 @@ impl CallbackCatalog {
     }
 
     fn forget(&self, origin: &str) -> bool {
+        self.bus.answers.forget(&format!("{origin}/"));
         self.state
             .try_update(|state| {
                 let index = state.origins.iter().position(|entry| entry.id == origin)?;
@@ -1342,6 +1357,8 @@ impl State {
             next: AtomicU64::new(0),
             timeout: options.callback_timeout,
             holding: AtomicBool::new(false),
+            answers: Arc::default(),
+            answering: AtomicBool::new(false),
         });
         let callbacks = Arc::new(HandCallbacks {
             bus: Arc::clone(&bus),
@@ -1720,7 +1737,9 @@ impl State {
                 compact,
                 output_prefix,
                 resumable,
+                answers,
             } => {
+                self.bus.answering.store(answers, Ordering::SeqCst);
                 self.request(
                     id,
                     operation,
@@ -1728,6 +1747,7 @@ impl State {
                     compact,
                     output_prefix,
                     resumable,
+                    answers,
                 )
                 .await?;
             }
@@ -1736,7 +1756,7 @@ impl State {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn request(
         &mut self,
         id: u64,
@@ -1745,6 +1765,7 @@ impl State {
         compact: bool,
         output_prefix: bool,
         resumable: bool,
+        answers: bool,
     ) -> Result<(), CodeModeHostError> {
         let outgoing = self.outgoing.clone();
         if let Some(bytes) = max_frame_bytes {
@@ -2033,6 +2054,7 @@ impl State {
                     compact,
                     output_prefix,
                     resumable,
+                    answers,
                     &cancelled,
                     &mut status,
                     &mut full,
@@ -2060,6 +2082,7 @@ async fn run(
     compact: bool,
     output_prefix: bool,
     resumable: bool,
+    answers: bool,
     cancelled: &Cancel,
     status: &mut Option<String>,
     full: &mut Option<Value>,
@@ -2072,11 +2095,14 @@ async fn run(
             _ => Ok(None),
         };
     };
+    let answered = answers.then(|| Arc::clone(&catalog.bus.answers));
     let mut observer = Observer {
         id,
         outgoing: outgoing.clone(),
         catalog: catalog.clone(),
-        calls: SentCalls::new(compact).output_prefix(output_prefix),
+        calls: SentCalls::new(compact)
+            .output_prefix(output_prefix)
+            .answers(answered.clone()),
     };
     match operation {
         RemoteOperation::Execute {

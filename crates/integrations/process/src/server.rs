@@ -823,7 +823,7 @@ impl std::fmt::Display for Stop {
 /// job once it reaped it; a command's prelude restores both.
 fn bootstrap(nonce: &str, dir: &Path) -> OsString {
     let mut script = format!(
-        "\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin hash -r\n\\builtin setopt monitor notify no_bg_nice\n__nc_d="
+        "for __nc_f in /dev/fd/<3->(N:t); do [[ -p /dev/fd/$__nc_f || -S /dev/fd/$__nc_f ]] && \\builtin exec {{__nc_f}}>&-; done\n\\builtin unset __nc_f\n\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin hash -r\n\\builtin setopt monitor notify no_bg_nice\n__nc_d="
     )
     .into_bytes();
     quote(&mut script, dir.as_os_str().as_bytes());

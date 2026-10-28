@@ -14,10 +14,12 @@ use nanocode_sync::Atom;
 
 pub use admission::{Admission, CatalogError, admit_runtime, read_catalog};
 pub use client::{
-    CallReply, LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery,
-    RemoteLink, ResumedReply,
+    CallReply, LOCAL_CLOSED, PEER_CLOSED, RemoteActivity, RemoteClient, RemoteDelivery, RemoteLink,
+    ResumedReply,
 };
-pub use compact::{ReceivedCalls, SentCalls, encode_output, output_from_wire, output_to_wire};
+pub use compact::{
+    Answers, ReceivedCalls, SentCalls, answer_key, encode_output, output_from_wire, output_to_wire,
+};
 pub use executors::{
     CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
 };
@@ -565,6 +567,8 @@ pub enum RemoteFrame {
         output_prefix: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         resumable: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answers: bool,
     },
     Reply {
         id: u64,
@@ -586,6 +590,8 @@ pub enum RemoteFrame {
         compact: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         output_prefix: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        answers: bool,
     },
     CallbackCancel {
         id: u64,
@@ -658,11 +664,9 @@ pub const HAND_RESTARTED: &str = "the hand reconnected as a new runtime, so it n
 pub const NOT_RECEIVED: &str =
     "the hand never received this operation before its connection dropped; it was not dispatched";
 
-pub const REQUEST_IN_USE: &str =
-    "the hand is already running or retaining another operation under this request id; it was not dispatched";
+pub const REQUEST_IN_USE: &str = "the hand is already running or retaining another operation under this request id; it was not dispatched";
 
-pub const LOCAL_TOOLS_UNKNOWN: &str =
-    "the hand holds no brain tool definitions under this key on this connection; it was not dispatched";
+pub const LOCAL_TOOLS_UNKNOWN: &str = "the hand holds no brain tool definitions under this key on this connection; it was not dispatched";
 
 #[must_use]
 pub fn local_tools_key(definitions: &[ToolDefinition]) -> Option<String> {

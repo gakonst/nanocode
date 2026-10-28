@@ -36,11 +36,10 @@ pub struct ObservabilityOutputArgs {
         long,
         env = "NANOCODE_TELEMETRY",
         global = true,
-        default_value_t,
         value_enum,
-        help = "OpenTelemetry traces and metrics to record locally and export"
+        help = "OpenTelemetry traces and metrics to record locally and export [default: agent, and off for nanocode hand]"
     )]
-    telemetry: TelemetryArg,
+    telemetry: Option<TelemetryArg>,
 
     #[arg(
         long,
@@ -83,6 +82,7 @@ impl ObservabilityOutputArgs {
         service_name: impl Into<String>,
         service_version: impl Into<String>,
         default_output: LogOutput,
+        default_telemetry: Telemetry,
     ) -> ObservabilityBuilder {
         let output = self
             .log_file
@@ -92,7 +92,7 @@ impl ObservabilityOutputArgs {
             .format(self.log_format.into())
             .output(output)
             .environment(self.otel_environment.clone())
-            .telemetry(self.telemetry.into());
+            .telemetry(self.telemetry.map_or(default_telemetry, Into::into));
         if let Some(filter) = &self.log_filter {
             builder = builder
                 .filter(format!("{filter},{METRICS_TARGET}=off"))
@@ -105,11 +105,10 @@ impl ObservabilityOutputArgs {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum TelemetryArg {
     #[value(help = "Record no traces or metrics")]
     Off,
-    #[default]
     #[value(
         help = "Agent turns, model calls, tools and durable writes, plus terminal frame metrics"
     )]

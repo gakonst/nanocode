@@ -66,7 +66,16 @@ fn install_telemetry(
         }
     };
     Ok(Some(
-        args.builder("nanocode", env!("CARGO_PKG_VERSION"), output)
+        args.builder(
+            "nanocode",
+            env!("CARGO_PKG_VERSION"),
+            output,
+            if matches!(cli.command, Some(Command::Hand(_))) {
+                nanocode_observability::Telemetry::Off
+            } else {
+                nanocode_observability::Telemetry::Agent
+            },
+        )
             .otlp_directory(home.join("log").join("otel"))
             .shutdown_timeout(TELEMETRY_SHUTDOWN)
             .install()?,

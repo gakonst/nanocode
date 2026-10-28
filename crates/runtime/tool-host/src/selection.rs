@@ -353,7 +353,6 @@ impl Tools {
     }
 
     #[doc(hidden)]
-    #[cfg(not(target_family = "wasm"))]
     pub fn registered_tools(&self) -> impl Iterator<Item = &Arc<dyn Tool>> {
         self.registered.iter().map(|registered| &registered.handler)
     }

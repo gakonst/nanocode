@@ -996,6 +996,7 @@ const fn policy_options(policy: SocketPolicy) -> ExecutorOptions {
         callback_hold: None,
         device: None,
         tools_only: false,
+        environment: None,
     }
 }
 pub async fn serve_connect(

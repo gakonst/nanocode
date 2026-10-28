@@ -62,6 +62,7 @@ pub struct ExecutorOptions {
     pub callback_hold: Option<Duration>,
     pub device: Option<Arc<dyn HandCapabilities>>,
     pub tools_only: bool,
+    pub environment: Option<HandEnvironment>,
 }
 
 pub trait HandHost: Send + Sync + 'static {
@@ -1522,7 +1523,11 @@ impl State {
             tool_selection: self.host.selects_tools(),
             cancels_calls: true,
             caches_local_tools: true,
-            environment: self.host.environment(),
+            environment: self
+                .options
+                .environment
+                .clone()
+                .or_else(|| self.host.environment()),
             capabilities: self.capability_list().await,
             tools_only: self.tools_only(),
         }

@@ -62,6 +62,7 @@ pub struct Hand {
     callback_hold: Option<Duration>,
     device: Option<std::sync::Arc<dyn super::HandCapabilities>>,
     tools_only: bool,
+    environment: Option<nanocode_code_mode::remote::HandEnvironment>,
 }
 
 impl Hand {
@@ -86,6 +87,7 @@ impl Hand {
             callback_hold: None,
             device: None,
             tools_only: false,
+            environment: None,
         }
     }
 
@@ -98,6 +100,12 @@ impl Hand {
     #[must_use]
     pub const fn tools_only(mut self) -> Self {
         self.tools_only = true;
+        self
+    }
+
+    #[must_use]
+    pub fn environment(mut self, environment: nanocode_code_mode::remote::HandEnvironment) -> Self {
+        self.environment = Some(environment);
         self
     }
 
@@ -191,6 +199,7 @@ impl Hand {
                 callback_hold: self.callback_hold,
                 device: self.device.clone(),
                 tools_only: self.tools_only,
+                environment: self.environment.clone(),
             };
             let policy = self.policy;
             match self.endpoint {

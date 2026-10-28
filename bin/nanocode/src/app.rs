@@ -417,6 +417,15 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         if let Some(path) = launch.reload_path {
             tokio::fs::remove_file(path).await?;
         }
+    } else if app.host.runtime.runner_pool().awaiting_replacement() {
+        if let Some(path) = launch.reload_path {
+            tokio::fs::remove_file(path).await?;
+        }
+        app.notice(
+            NoticeLevel::Info,
+            "waiting for a hand to connect; the session starts on it",
+        );
+        app.connect(launch.resume.clone());
     } else {
         let connection = app.connection(launch.resume.clone());
         match connection.await {

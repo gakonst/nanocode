@@ -296,6 +296,17 @@ impl CodeModeExecutors {
         self.changed.notify_waiters();
     }
 
+    #[must_use]
+    pub fn awaiting_replacement(&self) -> bool {
+        self.state.read(|state| {
+            state.awaiting
+                && state
+                    .default
+                    .as_ref()
+                    .is_none_or(|name| !state.executors.contains_key(name))
+        })
+    }
+
     pub async fn replacement(&self) -> Option<(Arc<str>, Arc<dyn CodeModeHost>)> {
         loop {
             let notified = self.changed.notified();

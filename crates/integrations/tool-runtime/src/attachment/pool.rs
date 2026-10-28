@@ -519,6 +519,10 @@ impl RunnerPool {
         })?;
         Ok(handle)
     }
+    #[must_use]
+    pub fn awaiting_replacement(&self) -> bool {
+        self.inner.code_mode.awaiting_replacement()
+    }
     pub async fn replacement_hand(
         &self,
     ) -> Option<(String, Option<nanocode_code_mode::remote::HandDescription>)> {

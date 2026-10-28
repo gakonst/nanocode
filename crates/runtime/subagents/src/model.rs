@@ -213,8 +213,9 @@ impl AgentMessage {
         let (sender, response_guidance) = match self.from {
             MessageSender::Root => (
                 "the root agent".to_owned(),
-                "Return any response through your required structured result; the root does not \
-                 accept inbound agent messages in this experiment."
+                "Return any response through your required structured result: call submit_result \
+                 again with your updated result before finishing, even if you submitted one \
+                 earlier. The root does not accept inbound agent messages in this experiment."
                     .to_owned(),
             ),
             MessageSender::Agent { agent_id } => (

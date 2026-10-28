@@ -539,7 +539,8 @@ impl Host {
 
     pub async fn replacement_hand(&self) {
         if let Some((_, description)) = self.runtime.runner_pool().replacement_hand().await {
-            self.hand.set(description);
+            self.hand
+                .set(description.filter(|description| !description.tools_only));
         }
     }
 

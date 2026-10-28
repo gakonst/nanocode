@@ -67,7 +67,16 @@ impl State {
                     .and_then(|root| self.selections.get(root.as_ref()))
             })
             .cloned()
-            .or_else(|| self.default.clone().map(ExecutorSelection::Executor))
+            .or_else(|| {
+                self.default
+                    .clone()
+                    .filter(|name| {
+                        self.executors
+                            .get(name)
+                            .is_none_or(|host| host.runs_cells())
+                    })
+                    .map(ExecutorSelection::Executor)
+            })
             .or_else(|| self.fallback.clone().map(ExecutorSelection::Executor))
             .unwrap_or(ExecutorSelection::Local)
     }

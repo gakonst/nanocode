@@ -50,7 +50,7 @@ pub(crate) fn run_bash_with_environment<'call>(
                     .unwrap_or_default(),
             )
             .collect();
-        let (environment, _) = process::sanitized_environment(&overrides, &[]);
+        let (environment, secrets) = process::sanitized_environment(&overrides, &[]);
         let shell = selection::bash_shell().ok_or("Bash executable not found")?;
         let mut spawned = process::spawn(command, workspace, &shell, false, false, &environment)
             .map_err(|error| error.to_string())?;
@@ -67,8 +67,8 @@ pub(crate) fn run_bash_with_environment<'call>(
         let outcome = tokio::time::timeout(timeout, async {
             let (status, stdout, stderr) = tokio::join!(
                 spawned.child.wait(),
-                capture(stdout, max_stdout, output),
-                capture(stderr, max_stderr, output)
+                capture(stdout, max_stdout, output, &secrets),
+                capture(stderr, max_stderr, output, &secrets)
             );
             let (stdout, stdout_cut) = stdout?;
             let (stderr, stderr_cut) = stderr?;
@@ -95,6 +95,7 @@ async fn capture<R: AsyncRead + Unpin>(
     pipe: Option<R>,
     limit: usize,
     output: Option<&dyn OutputSink>,
+    secrets: &nanocode_process_contracts::Redactor,
 ) -> std::io::Result<(String, bool)> {
     let Some(mut pipe) = pipe else {
         return Ok((String::new(), false));
@@ -108,11 +109,14 @@ async fn capture<R: AsyncRead + Unpin>(
             break;
         }
         if let Some(output) = output {
-            output.write(&buffer[..read]);
+            output.write(&crate::redact(&buffer[..read], secrets));
         }
         let keep = read.min(limit.saturating_sub(bytes.len()));
         bytes.extend_from_slice(&buffer[..keep]);
         truncated |= keep < read;
     }
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
+    Ok((
+        String::from_utf8_lossy(&crate::redact(&bytes, secrets)).into_owned(),
+        truncated,
+    ))
 }

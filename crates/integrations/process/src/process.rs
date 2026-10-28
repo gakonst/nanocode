@@ -585,7 +585,7 @@ pub(super) fn sanitized_environment(
         }
     }
     normalize_environment(&mut environment);
-    for (name, value) in overrides {
+    for (name, value) in crate::command_environment().iter().chain(overrides) {
         environment.retain(|(candidate, _)| candidate != name);
         environment.push((name.clone(), value.clone()));
         if is_sensitive_name(name)

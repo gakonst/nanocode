@@ -15,7 +15,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
     Answers, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, RemoteContext,
-    RemoteFrame as Frame, RemoteOperation, SentCalls, encode_output, output_from_wire,
+    RemoteFrame as Frame, RemoteOperation, SentCalls, asked_key, encode_output, output_from_wire,
     output_to_wire,
 };
 use crate::{
@@ -610,6 +610,7 @@ struct CallbackBus {
     holding: AtomicBool,
     answers: Arc<Answers>,
     answering: AtomicBool,
+    asking: AtomicBool,
 }
 
 impl CallbackBus {
@@ -686,6 +687,7 @@ impl Drop for CallbackPending {
 async fn callback(
     bus: &Arc<CallbackBus>,
     recorded: Option<String>,
+    asked: Option<(String, Value)>,
     frame: impl FnOnce(u64) -> Frame,
 ) -> Result<ToolOutput, CodeModeHostError> {
     let id = bus.next.fetch_add(1, Ordering::Relaxed);
@@ -716,6 +718,9 @@ async fn callback(
         }
     } else {
         bus.outgoing.push(text)?;
+        if let Some((key, input)) = asked {
+            bus.answers.keep(key, input);
+        }
     }
     let result = match bus.timeout {
         Some(deadline) => nanocode_platform::timeout(deadline, rx)
@@ -759,7 +764,9 @@ impl Tool for CallbackTool {
             };
             let answers = self.bus.answering.load(Ordering::SeqCst);
             let recorded = answers.then(|| context.call_id.clone());
-            callback(&self.bus, recorded, |id| Frame::Callback {
+            let asking = self.bus.asking.load(Ordering::SeqCst);
+            let asked = asking.then(|| (asked_key(&context.call_id), input.clone()));
+            callback(&self.bus, recorded, asked, |id| Frame::Callback {
                 id,
                 name: self.definition.name().into(),
                 input,
@@ -769,6 +776,7 @@ impl Tool for CallbackTool {
                 compact: true,
                 output_prefix: true,
                 answers,
+                asked: asking,
             })
             .await
             .map_err(|issue| issue.to_string().into())
@@ -797,7 +805,15 @@ impl HandCalls for HandCallbacks {
         Box::pin(async move {
             let answers = self.bus.answering.load(Ordering::SeqCst);
             let recorded = answers.then(|| context.call_id.clone());
-            callback(&self.bus, recorded, |id| Frame::Callback {
+            let asking = self.bus.asking.load(Ordering::SeqCst);
+            let asked = asking.then(|| {
+                let mut kept = input.clone();
+                if let Value::Object(fields) = &mut kept {
+                    fields.insert("hand".into(), Value::String(hand.into()));
+                }
+                (asked_key(&context.call_id), kept)
+            });
+            callback(&self.bus, recorded, asked, |id| Frame::Callback {
                 id,
                 name: name.into(),
                 input,
@@ -807,6 +823,7 @@ impl HandCalls for HandCallbacks {
                 compact: true,
                 output_prefix: true,
                 answers,
+                asked: asking,
             })
             .await
             .unwrap_or_else(|error| ToolOutput::error(error.to_string()))
@@ -1359,6 +1376,7 @@ impl State {
             holding: AtomicBool::new(false),
             answers: Arc::default(),
             answering: AtomicBool::new(false),
+            asking: AtomicBool::new(false),
         });
         let callbacks = Arc::new(HandCallbacks {
             bus: Arc::clone(&bus),
@@ -1738,8 +1756,10 @@ impl State {
                 output_prefix,
                 resumable,
                 answers,
+                asks,
             } => {
                 self.bus.answering.store(answers, Ordering::SeqCst);
+                self.bus.asking.store(asks, Ordering::SeqCst);
                 self.request(
                     id,
                     operation,
@@ -2096,13 +2116,19 @@ async fn run(
         };
     };
     let answered = answers.then(|| Arc::clone(&catalog.bus.answers));
+    let asks = catalog
+        .bus
+        .asking
+        .load(Ordering::SeqCst)
+        .then(|| Arc::clone(&catalog.bus.answers));
     let mut observer = Observer {
         id,
         outgoing: outgoing.clone(),
         catalog: catalog.clone(),
         calls: SentCalls::new(compact)
             .output_prefix(output_prefix)
-            .answers(answered.clone()),
+            .answers(answered.clone())
+            .asks(asks),
     };
     match operation {
         RemoteOperation::Execute {

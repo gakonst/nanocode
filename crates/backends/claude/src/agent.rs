@@ -94,12 +94,21 @@ fn truncate_middle(text: &str, max_tokens: u64) -> String {
     )
 }
 
-fn bound_tool_result(content: ToolResultContent) -> ToolResultContent {
+fn bound_tool_result(content: ToolResultContent) -> (ToolResultContent, Option<usize>) {
     match content {
         ToolResultContent::Text(text) => {
-            ToolResultContent::Text(truncate_middle(&text, TOOL_RESULT_TOKEN_LIMIT))
+            if estimate_text_tokens(&text) <= TOOL_RESULT_TOKEN_LIMIT {
+                return (ToolResultContent::Text(text), None);
+            }
+            let original = text.len();
+            (
+                ToolResultContent::Text(truncate_middle(&text, TOOL_RESULT_TOKEN_LIMIT)),
+                Some(original),
+            )
         }
         ToolResultContent::Blocks(blocks) => {
+            let mut original = 0_usize;
+            let mut truncated = false;
             let mut remaining = TOOL_RESULT_TOKEN_LIMIT;
             let mut omitted = 0_usize;
             let mut bounded_blocks = Vec::with_capacity(blocks.len().min(64));
@@ -112,13 +121,17 @@ fn bound_tool_result(content: ToolResultContent) -> ToolResultContent {
                     bounded_blocks.push(block);
                     continue;
                 };
+                original += text.len();
                 if remaining == 0 {
                     omitted += 1;
                     continue;
                 }
-                let bounded = truncate_middle(text, remaining);
-                remaining = remaining.saturating_sub(estimate_text_tokens(text));
-                block["text"] = bounded.into();
+                let tokens = estimate_text_tokens(text);
+                if tokens > remaining {
+                    truncated = true;
+                    block["text"] = truncate_middle(text, remaining).into();
+                }
+                remaining = remaining.saturating_sub(tokens);
                 bounded_blocks.push(block);
             }
             if omitted > 0 {
@@ -127,7 +140,10 @@ fn bound_tool_result(content: ToolResultContent) -> ToolResultContent {
                     "text": format!("[{omitted} more text blocks omitted]"),
                 }));
             }
-            ToolResultContent::Blocks(bounded_blocks)
+            (
+                ToolResultContent::Blocks(bounded_blocks),
+                (truncated || omitted > 0).then_some(original),
+            )
         }
     }
 }
@@ -1745,7 +1761,6 @@ impl ClaudeBuilder {
 
 const EVENT_RESULT_BYTES: usize = 32 * 1024;
 const EVENT_PREVIEW_BYTES: usize = 16 * 1024;
-const EVENT_TOP_LEVEL_TEXT_BYTES: usize = 256 * 1024;
 
 struct CountingWriter(usize);
 impl std::io::Write for CountingWriter {
@@ -1967,48 +1982,18 @@ fn nested_event_result(call: &Value) -> serde_json::Map<String, Value> {
 
 fn top_level_event_fields(
     content: &ToolResultContent,
+    original_bytes: Option<usize>,
     structured_result: Option<&Value>,
     metadata: Option<&Value>,
 ) -> serde_json::Map<String, Value> {
     let mut fields = serde_json::Map::new();
+    if let Some(original) = original_bytes {
+        fields.insert("truncated".into(), Value::Bool(true));
+        fields.insert("original_bytes".into(), json!(original));
+    }
     let result = match content {
-        ToolResultContent::Text(text) if text.len() > EVENT_TOP_LEVEL_TEXT_BYTES => {
-            fields.insert("truncated".into(), Value::Bool(true));
-            fields.insert("original_bytes".into(), json!(text.len()));
-            json!({ "text": utf8_prefix(text, EVENT_TOP_LEVEL_TEXT_BYTES) })
-        }
         ToolResultContent::Text(text) => json!({ "text": text }),
-        ToolResultContent::Blocks(blocks) => {
-            fn block_text(block: &Value) -> Option<&str> {
-                (block.get("type").and_then(Value::as_str) == Some("text"))
-                    .then(|| block.get("text").and_then(Value::as_str))
-                    .flatten()
-            }
-            let original = blocks
-                .iter()
-                .filter_map(block_text)
-                .map(str::len)
-                .sum::<usize>();
-            if original > EVENT_TOP_LEVEL_TEXT_BYTES {
-                let mut left = EVENT_TOP_LEVEL_TEXT_BYTES;
-                let blocks = blocks
-                    .iter()
-                    .map(|block| match block_text(block) {
-                        Some(text) => {
-                            let kept = utf8_prefix(text, left);
-                            left -= kept.len();
-                            json!({ "type": "text", "text": kept })
-                        }
-                        None => block.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                fields.insert("truncated".into(), Value::Bool(true));
-                fields.insert("original_bytes".into(), json!(original));
-                json!({ "content_blocks": blocks })
-            } else {
-                json!({ "content_blocks": blocks })
-            }
-        }
+        ToolResultContent::Blocks(blocks) => json!({ "content_blocks": blocks }),
     };
     fields.insert("result".into(), result);
     let structured_len = encoded_len(structured_result);
@@ -6031,8 +6016,13 @@ impl State {
             &self.images,
         )
         .await?;
-        let mut payload =
-            top_level_event_fields(&content, structured_result.as_ref(), metadata.as_ref());
+        let (content, original_bytes) = bound_tool_result(content);
+        let mut payload = top_level_event_fields(
+            &content,
+            original_bytes,
+            structured_result.as_ref(),
+            metadata.as_ref(),
+        );
         payload.extend([
             ("call_id".to_owned(), json!(id)),
             ("tool".to_owned(), json!(name)),
@@ -6053,11 +6043,7 @@ impl State {
             ("started_after_ns".to_owned(), Value::Null),
         ]);
         self.emit(events, AgentEventKind::ToolResult, Value::Object(payload));
-        Ok(ContentBlock::tool_result_content(
-            id,
-            bound_tool_result(content),
-            is_error,
-        ))
+        Ok(ContentBlock::tool_result_content(id, content, is_error))
     }
     async fn lifecycle(
         &self,

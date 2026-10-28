@@ -321,7 +321,6 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
 const LOGGED_RESULT_BYTES: usize = 32 * 1024;
 const LOGGED_PREVIEW_BYTES: usize = 16 * 1024;
 const LOGGED_METADATA_BYTES: usize = 4096;
-const LOGGED_TOP_LEVEL_TEXT_BYTES: usize = 256 * 1024;
 
 struct LoggedResult {
     result: ToolOutputBody,
@@ -421,7 +420,58 @@ fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
     })
 }
 
+fn visible_output(output: &ToolOutputBody) -> Option<ToolOutputBody> {
+    use crate::client::session::{TOOL_OUTPUT_TOKEN_LIMIT, truncate_middle_with_token_budget};
+    match output {
+        ToolOutputBody::Text(text) => (text.len().div_ceil(4) > TOOL_OUTPUT_TOKEN_LIMIT).then(|| {
+            ToolOutputBody::Text(truncate_middle_with_token_budget(
+                text,
+                TOOL_OUTPUT_TOKEN_LIMIT,
+            ))
+        }),
+        ToolOutputBody::Content(content) => {
+            let mut remaining = TOOL_OUTPUT_TOKEN_LIMIT;
+            let mut omitted = 0_usize;
+            let mut changed = false;
+            let mut visible = Vec::with_capacity(content.len());
+            for item in content {
+                match item {
+                    ToolOutputContent::InputText { text } => {
+                        if remaining == 0 {
+                            omitted += 1;
+                            continue;
+                        }
+                        let tokens = text.len().div_ceil(4);
+                        if tokens <= remaining {
+                            remaining -= tokens;
+                            visible.push(item.clone());
+                            continue;
+                        }
+                        changed = true;
+                        let kept = truncate_middle_with_token_budget(text, remaining);
+                        if kept.is_empty() {
+                            omitted += 1;
+                        } else {
+                            visible.push(ToolOutputContent::InputText { text: kept });
+                        }
+                        remaining = 0;
+                    }
+                    ToolOutputContent::InputAudio { .. } => changed = true,
+                    item => visible.push(item.clone()),
+                }
+            }
+            if omitted > 0 {
+                visible.push(ToolOutputContent::InputText {
+                    text: format!("[omitted {omitted} text items ...]"),
+                });
+            }
+            (changed || omitted > 0).then_some(ToolOutputBody::Content(visible))
+        }
+    }
+}
+
 fn logged_top_level_result(completed: &CompletedToolCall) -> Option<LoggedResult> {
+    let visible = visible_output(&completed.output);
     let text_bytes = match &completed.output {
         ToolOutputBody::Text(text) => text.len(),
         ToolOutputBody::Content(content) => content
@@ -437,18 +487,14 @@ fn logged_top_level_result(completed: &CompletedToolCall) -> Option<LoggedResult
         .metadata
         .as_deref()
         .map_or(0, |raw| raw.get().len());
-    if text_bytes <= LOGGED_TOP_LEVEL_TEXT_BYTES
+    if visible.is_none()
         && structured_bytes <= LOGGED_RESULT_BYTES
         && metadata_bytes <= LOGGED_RESULT_BYTES
     {
         return None;
     }
     Some(LoggedResult {
-        result: if text_bytes > LOGGED_TOP_LEVEL_TEXT_BYTES {
-            output_prefix(&completed.output, LOGGED_TOP_LEVEL_TEXT_BYTES)
-        } else {
-            completed.output.clone()
-        },
+        result: visible.unwrap_or_else(|| completed.output.clone()),
         structured_result: if structured_bytes > LOGGED_RESULT_BYTES {
             structured_reference(&completed.structured_result)
         } else {

@@ -7,7 +7,7 @@ use crate::client::{
 
 use super::compaction;
 
-const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
+pub const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
 const REQUEST_PREFIX_ID_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x3e203f80_1cd8_4938_9588_0990bb023db5);
 

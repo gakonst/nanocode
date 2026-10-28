@@ -123,6 +123,11 @@ pub fn answer_key(session_id: &str, call_id: &str) -> String {
     format!("{session_id}\u{0}{call_id}")
 }
 
+#[must_use]
+pub fn asked_key(call_id: &str) -> String {
+    format!("{call_id}\u{0}input")
+}
+
 #[derive(Default)]
 pub struct Answers(Atom<HashMap<String, Arc<Value>>>);
 
@@ -135,6 +140,13 @@ impl Answers {
         }));
         self.0.update(|answers| {
             answers.insert(key.clone(), Arc::clone(&answer));
+        });
+    }
+
+    pub fn keep(&self, key: String, value: Value) {
+        let value = Arc::new(value);
+        self.0.update(|answers| {
+            answers.insert(key.clone(), Arc::clone(&value));
         });
     }
 
@@ -156,6 +168,7 @@ pub struct SentCalls {
     compact: bool,
     output_prefix: bool,
     answers: Option<Arc<Answers>>,
+    asks: Option<Arc<Answers>>,
     started: HashSet<String>,
     completed: HashSet<String>,
 }
@@ -182,13 +195,30 @@ impl SentCalls {
     }
 
     #[must_use]
+    pub fn asks(mut self, asks: Option<Arc<Answers>>) -> Self {
+        self.asks = asks;
+        self
+    }
+
+    #[must_use]
     pub fn update(&self, update: &CodeModeUpdate<'_>) -> Value {
         match update {
             CodeModeUpdate::NestedCallStarted {
                 call_id,
                 name,
                 input,
-            } => json!({"call_id":call_id,"name":name,"input":input}),
+            } => {
+                if self
+                    .asks
+                    .as_ref()
+                    .and_then(|asks| asks.take(&asked_key(call_id)))
+                    .is_some_and(|asked| *asked == **input)
+                {
+                    json!({"call_id":call_id,"name":name,"asked":true})
+                } else {
+                    json!({"call_id":call_id,"name":name,"input":input})
+                }
+            }
             CodeModeUpdate::NestedCallCompleted(call) => json!({"completed":self.call(call)}),
             CodeModeUpdate::Notification(notification) => {
                 json!({"notification":{"call_id":notification.call_id,"text":notification.text}})
@@ -235,6 +265,9 @@ impl SentCalls {
     fn call(&self, call: &NestedToolCall) -> Value {
         if !self.compact {
             return nested(call);
+        }
+        if let Some(asks) = &self.asks {
+            asks.take(&asked_key(&call.call_id));
         }
         let mut fields = Map::new();
         fields.insert("call_id".into(), Value::String(call.call_id.clone()));
@@ -333,10 +366,17 @@ impl ReceivedCalls {
         self
     }
 
+    fn asked(&self, call_id: &str) -> Option<Arc<Value>> {
+        self.answers
+            .as_ref()
+            .and_then(|(answers, session_id)| answers.take(&answer_key(session_id, &asked_key(call_id))))
+    }
+
     fn expand(&mut self, call: &mut Value) -> Result<(), CodeModeHostError> {
         let Some(fields) = call.as_object_mut() else {
             return Ok(());
         };
+        self.asked(&call_id(fields));
         if fields.remove("answered").is_some() {
             let id = call_id(fields);
             let answer = self
@@ -398,6 +438,17 @@ impl ReceivedCalls {
             .as_str()
             .ok_or_else(|| error("missing update call_id"))?
             .to_owned();
+        let asked = self.asked(&call_id);
+        if let Some(fields) = update.as_object_mut()
+            && fields.remove("asked").is_some()
+        {
+            let input = asked.ok_or_else(|| {
+                error(format!(
+                    "nested call {call_id} omits an input that no callback carried"
+                ))
+            })?;
+            fields.insert("input".into(), Arc::unwrap_or_clone(input));
+        }
         let name = update["name"]
             .as_str()
             .ok_or_else(|| error("missing update name"))?;

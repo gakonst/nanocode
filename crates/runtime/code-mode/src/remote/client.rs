@@ -24,7 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::{
     Answers, HAND_RESTARTED, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED, REQUEST_IN_USE, ReceivedCalls,
     RemoteCodeModeHost, RemoteContext, RemoteFrame as Frame, RemoteOperation, RemoteTransport,
-    answer_key, encode_output, local_tools_key,
+    answer_key, asked_key, encode_output, local_tools_key,
 };
 use crate::{
     Tool, ToolDefinition, ToolInput,
@@ -686,7 +686,18 @@ impl Client {
                 compact,
                 output_prefix,
                 answers,
+                asked,
             } => {
+                if asked {
+                    let mut kept = input.clone();
+                    if let (Some(hand), Value::Object(fields)) = (&hand, &mut kept) {
+                        fields.insert("hand".into(), Value::String(hand.clone()));
+                    }
+                    self.answers.keep(
+                        answer_key(&context.session_id, &asked_key(&context.call_id)),
+                        kept,
+                    );
+                }
                 return Ok(Some(self.callback(
                     id,
                     name,
@@ -949,6 +960,7 @@ impl Client {
             output_prefix: true,
             resumable: self.resumes.is_some(),
             answers: true,
+            asks: true,
         }
     }
 

@@ -18,7 +18,8 @@ pub use client::{
     ResumedReply,
 };
 pub use compact::{
-    Answers, ReceivedCalls, SentCalls, answer_key, encode_output, output_from_wire, output_to_wire,
+    Answers, ReceivedCalls, SentCalls, answer_key, asked_key, encode_output, output_from_wire,
+    output_to_wire,
 };
 pub use executors::{
     CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
@@ -569,6 +570,8 @@ pub enum RemoteFrame {
         resumable: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         answers: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        asks: bool,
     },
     Reply {
         id: u64,
@@ -592,6 +595,8 @@ pub enum RemoteFrame {
         output_prefix: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         answers: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        asked: bool,
     },
     CallbackCancel {
         id: u64,

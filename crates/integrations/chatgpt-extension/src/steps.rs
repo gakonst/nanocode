@@ -1,4 +1,7 @@
-use crate::{Error, proxy::Extension};
+use crate::{
+    Error,
+    proxy::{Extension, Unanswered},
+};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -36,6 +39,7 @@ pub struct Tabs {
     /// off for this browser, or the extension didn't answer), so groups
     /// aren't collapsed on it.
     unmanaged: bool,
+    fresh: HashMap<String, u32>,
 }
 
 pub const GROUP_TITLE_MAX: usize = 32;
@@ -423,6 +427,20 @@ impl Tabs {
         }
     }
 
+    fn leased(ext: &mut Extension, common: &Value, tab: u64) -> bool {
+        ext.rpc("getTabs", common.clone()).is_ok_and(|tabs| {
+            tabs.as_array()
+                .is_some_and(|tabs| tabs.iter().any(|info| info["id"].as_u64() == Some(tab)))
+        })
+    }
+
+    fn session_id(&self, namespace: &str, session: &str) -> String {
+        match self.fresh.get(session) {
+            Some(generation) => format!("{namespace}:{session}:{generation}"),
+            None => format!("{namespace}:{session}"),
+        }
+    }
+
     pub(crate) fn step(
         &mut self,
         ext: &mut Extension,
@@ -432,7 +450,30 @@ impl Tabs {
         turn: Option<&str>,
         input: &Value,
     ) -> Result<(String, Value), Error> {
-        let session_id = format!("{namespace}:{session}");
+        let result = self.step_in(ext, namespace, owner, session, turn, input);
+        match result {
+            Err(error) if error.downcast_ref::<Unanswered>().is_some() => {
+                *self.fresh.entry(session.to_owned()).or_default() += 1;
+                self.tabs.retain(|_, tab| tab.session != session);
+                Err(format!(
+                    "{error} {owner} moved this thread to a new browser session, so its earlier tabs are no longer reachable: open a new tab."
+                )
+                .into())
+            }
+            result => result,
+        }
+    }
+
+    fn step_in(
+        &mut self,
+        ext: &mut Extension,
+        namespace: &str,
+        owner: &str,
+        session: &str,
+        turn: Option<&str>,
+        input: &Value,
+    ) -> Result<(String, Value), Error> {
+        let session_id = self.session_id(namespace, session);
         let fallback = format!("{namespace}-no-turn");
         let turn = turn.unwrap_or(&fallback);
         self.active
@@ -464,6 +505,16 @@ impl Tabs {
             let tab = input["tab"].as_u64().ok_or("missing browser tab")?;
             match self.tabs.get_mut(&tab) {
                 Some(known) if known.session == session => known.turn = turn.into(),
+                None if Self::leased(ext, &common, tab) => {
+                    self.tabs.insert(
+                        tab,
+                        Tab {
+                            session: session.into(),
+                            turn: turn.into(),
+                            ..Tab::default()
+                        },
+                    );
+                }
                 _ => {
                     return Err(format!(
                         "tab is not one of this session's {owner} tabs; open one first"
@@ -705,15 +756,16 @@ impl Tabs {
         let Some(title) = group_title(title) else {
             return Ok(());
         };
-        if self.titles.get(session) == Some(&title) {
+        let session_id = self.session_id(namespace, session);
+        if self.titles.get(&session_id) == Some(&title) {
             return Ok(());
         }
         let fallback = format!("{namespace}-no-turn");
         ext.rpc(
             "nameSession",
-            json!({"session_id":format!("{namespace}:{session}"),"turn_id":turn.unwrap_or(&fallback),"name":title}),
+            json!({"session_id":session_id,"turn_id":turn.unwrap_or(&fallback),"name":title}),
         )?;
-        self.titles.insert(session.into(), title);
+        self.titles.insert(session_id, title);
         Ok(())
     }
 
@@ -729,7 +781,7 @@ impl Tabs {
             .retain(|_, tab| tab.session != session || tab.turn != turn);
         ext.rpc(
             "turnEnded",
-            json!({"session_id":format!("{namespace}:{session}"),"turn_id":turn}),
+            json!({"session_id":self.session_id(namespace, session),"turn_id":turn}),
         )
         .map(drop)
     }
@@ -822,5 +874,118 @@ impl Tabs {
         ext.cdp(session,turn,tab,"Input.dispatchKeyEvent",json!({"type":if text.is_empty(){"rawKeyDown"}else{"keyDown"},"key":params["key"],"code":code,"windowsVirtualKeyCode":number,"modifiers":modifiers,"text":text}))?;
         ext.cdp(session,turn,tab,"Input.dispatchKeyEvent",json!({"type":"keyUp","key":params["key"],"code":code,"windowsVirtualKeyCode":number,"modifiers":modifiers}))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn cdp(params: &Value) -> Value {
+        match params["method"].as_str() {
+            Some("Runtime.evaluate") => json!({"result": {"value": "https://example.com/"}}),
+            Some("Accessibility.getFullAXTree") => json!({"nodes": []}),
+            _ => json!({}),
+        }
+    }
+
+    #[test]
+    fn a_tab_the_extension_still_holds_for_the_session_survives_a_new_host() {
+        let mut ext = Extension::fake(|method, _| match method {
+            "getTabs" => Some(json!([{"id": 7}])),
+            _ => Some(json!({})),
+        });
+        let mut tabs = Tabs::default();
+        let close = |tab: u64| json!({"action": "close", "tab": tab});
+        let (_, result) = tabs
+            .step(
+                &mut ext,
+                "pyramid",
+                "Pyramid",
+                "thread",
+                Some("turn"),
+                &close(7),
+            )
+            .unwrap();
+        assert_eq!(result, json!({"tab": 7, "closed": true}));
+        let refused = tabs
+            .step(
+                &mut ext,
+                "pyramid",
+                "Pyramid",
+                "thread",
+                Some("turn"),
+                &close(8),
+            )
+            .unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "tab is not one of this session's Pyramid tabs; open one first"
+        );
+    }
+
+    #[test]
+    fn an_unanswered_request_moves_the_thread_to_a_new_session() {
+        let sessions = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&sessions);
+        let mut ext = Extension::fake(move |method, params| {
+            let session = params["session_id"].as_str().unwrap_or_default().to_owned();
+            seen.lock().unwrap().push(format!("{method} {session}"));
+            match method {
+                _ if session == "pyramid:thread" && method != "getInfo" => None,
+                "createTab" => Some(json!({"id": 11})),
+                "executeCdp" => Some(cdp(params)),
+                _ => Some(json!({})),
+            }
+        });
+        let mut tabs = Tabs::default();
+        let open = json!({"action": "open", "url": "https://example.com"});
+        let stuck = tabs
+            .step(
+                &mut ext,
+                "pyramid",
+                "Pyramid",
+                "thread",
+                Some("turn"),
+                &open,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            stuck.starts_with("The ChatGPT extension did not answer Pyramid's createTab request")
+        );
+        assert!(stuck.ends_with("open a new tab."));
+        let (summary, result) = tabs
+            .step(
+                &mut ext,
+                "pyramid",
+                "Pyramid",
+                "thread",
+                Some("turn"),
+                &open,
+            )
+            .unwrap();
+        assert_eq!(summary, "Opened example.com");
+        assert_eq!(result["tab"], 11);
+        let snapshot = json!({"action": "snapshot", "tab": 11});
+        tabs.step(
+            &mut ext,
+            "pyramid",
+            "Pyramid",
+            "thread",
+            Some("turn"),
+            &snapshot,
+        )
+        .unwrap();
+        let sessions = sessions.lock().unwrap();
+        assert_eq!(sessions[0], "createTab pyramid:thread");
+        assert!(
+            sessions[1..]
+                .iter()
+                .all(|call| call.ends_with("pyramid:thread:1")
+                    || call.starts_with("executeUnhandledCommand")),
+            "{sessions:?}"
+        );
     }
 }

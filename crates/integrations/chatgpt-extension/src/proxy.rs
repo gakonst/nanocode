@@ -6,7 +6,8 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -20,6 +21,106 @@ use std::{
 
 const RESPONSES: usize = 256;
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_FROM_BROWSER: usize = 64 * 1024 * 1024;
+const ID_PEEK: usize = 256;
+
+#[derive(Debug)]
+pub(crate) struct Unanswered(String);
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unanswered {}
+
+enum Incoming {
+    Message(Vec<u8>),
+    Oversized { head: Vec<u8>, size: usize },
+}
+
+fn read_incoming(reader: &mut impl Read, max: usize) -> io::Result<Incoming> {
+    let mut length = [0; 4];
+    reader.read_exact(&mut length)?;
+    let size = u32::from_ne_bytes(length) as usize;
+    let mut body = Vec::new();
+    if size <= max {
+        if reader.take(size as u64).read_to_end(&mut body)? != size {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        return Ok(Incoming::Message(body));
+    }
+    reader.take(ID_PEEK as u64).read_to_end(&mut body)?;
+    let rest = (size - body.len()) as u64;
+    if io::copy(&mut reader.take(rest), &mut io::sink())? != rest {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(Incoming::Oversized { head: body, size })
+}
+
+fn reply_id(head: &[u8], prefix: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(head);
+    let start = text.find("\"id\":\"")? + 6;
+    let id = &text[start..start + text[start..].find('"')?];
+    id.starts_with(prefix).then(|| id.to_owned())
+}
+
+fn pump(
+    input: &mut impl Read,
+    max: usize,
+    prefix: &str,
+    sender: &mpsc::SyncSender<Value>,
+    mut to_original: Option<&mut dyn Write>,
+    answer: &mpsc::SyncSender<Vec<u8>>,
+) {
+    while let Ok(incoming) = read_incoming(input, max) {
+        let body = match incoming {
+            Incoming::Message(body) => body,
+            Incoming::Oversized { head, size } => {
+                if let Some(id) = reply_id(&head, prefix) {
+                    let message = format!(
+                        "the extension's answer was {} MiB, more than the {} MiB the connector reads",
+                        size.div_ceil(1024 * 1024),
+                        max / (1024 * 1024)
+                    );
+                    if sender
+                        .send(json!({"id": id, "error": {"message": message}}))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                continue;
+            }
+        };
+        let message = serde_json::from_slice::<Value>(&body);
+        let ours = message.as_ref().is_ok_and(|message| {
+            message["method"].is_null()
+                && message["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with(prefix))
+        });
+        if ours {
+            if let Ok(message) = message
+                && sender.send(message).is_err()
+            {
+                break;
+            }
+        } else if let Some(ref mut to_original) = to_original {
+            if write_body(to_original, &body).is_err() {
+                break;
+            }
+        } else if let Some(reply) = message.ok().as_ref().and_then(standalone_reply)
+            && frame(&reply)
+                .map_err(drop)
+                .and_then(|body| answer.send(body).map_err(drop))
+                .is_err()
+        {
+            break;
+        }
+    }
+}
 /// Frames waiting for the stdout writer before senders block, so a browser
 /// that stops reading pushes back on OpenAI's host instead of growing memory;
 /// the stdout writes the proxy replaces were synchronous.
@@ -34,6 +135,7 @@ pub(crate) struct Extension {
     owner: String,
     alternative: Option<String>,
     next: u64,
+    timeout: Duration,
 }
 
 impl Extension {
@@ -89,33 +191,14 @@ impl Extension {
         let reader_connected = Arc::clone(&connected);
         thread::spawn(move || {
             let mut input = io::stdin().lock();
-            while let Ok(body) = read_body(&mut input) {
-                let message = serde_json::from_slice::<Value>(&body);
-                let ours = message.as_ref().is_ok_and(|message| {
-                    message["method"].is_null()
-                        && message["id"]
-                            .as_str()
-                            .is_some_and(|id| id.starts_with(&own_prefix))
-                });
-                if ours {
-                    if let Ok(message) = message
-                        && sender.send(message).is_err()
-                    {
-                        break;
-                    }
-                } else if let Some(ref mut to_original) = to_original {
-                    if write_body(to_original, &body).is_err() {
-                        break;
-                    }
-                } else if let Some(reply) = message.ok().as_ref().and_then(standalone_reply)
-                    && frame(&reply)
-                        .map_err(drop)
-                        .and_then(|body| answer.send(body).map_err(drop))
-                        .is_err()
-                {
-                    break;
-                }
-            }
+            pump(
+                &mut input,
+                MAX_FROM_BROWSER,
+                &own_prefix,
+                &sender,
+                to_original.as_mut().map(|pipe| pipe as &mut dyn Write),
+                &answer,
+            );
             reader_connected.store(false, Ordering::Release);
         });
         Ok(Self {
@@ -127,6 +210,7 @@ impl Extension {
             owner: bridge.owner_name().to_owned(),
             alternative: bridge.alternative_text().map(str::to_owned),
             next: 0,
+            timeout: RPC_TIMEOUT,
         })
     }
 
@@ -138,7 +222,7 @@ impl Extension {
         self.next += 1;
         let id = format!("{}{}", self.prefix, self.next);
         let body = frame(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
-        let deadline = Instant::now() + RPC_TIMEOUT;
+        let deadline = Instant::now() + self.timeout;
         // The output channel is bounded: wait for room only until the deadline.
         let mut body = body;
         loop {
@@ -171,11 +255,11 @@ impl Extension {
                         .alternative
                         .as_ref()
                         .map_or_else(String::new, |alternative| format!("; or to {alternative}"));
-                    return Err(format!(
+                    return Err(Unanswered(format!(
                         "The ChatGPT extension did not answer {}'s {method} request within {} seconds; whether it took effect is unknown. Ask the user to open the ChatGPT extension in that browser, check they are signed in to ChatGPT there and that it may use the browser, then try again{alternative}.",
                         self.owner,
-                        RPC_TIMEOUT.as_secs()
-                    )
+                        self.timeout.as_secs()
+                    ))
                     .into());
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -239,6 +323,43 @@ impl Extension {
             .into());
         }
         Ok(result["result"]["value"].clone())
+    }
+}
+
+#[cfg(test)]
+impl Extension {
+    pub(crate) fn fake(answer: impl Fn(&str, &Value) -> Option<Value> + Send + 'static) -> Self {
+        let (sender, responses) = mpsc::sync_channel(RESPONSES);
+        let (output, outgoing) = mpsc::sync_channel::<Vec<u8>>(OUTGOING);
+        thread::spawn(move || {
+            for body in outgoing {
+                let Ok(call) = serde_json::from_slice::<Value>(&body) else {
+                    continue;
+                };
+                let Some(result) =
+                    answer(call["method"].as_str().unwrap_or_default(), &call["params"])
+                else {
+                    continue;
+                };
+                if sender
+                    .send(json!({"id": call["id"], "result": result}))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self {
+            responses,
+            output,
+            connected: Arc::new(AtomicBool::new(true)),
+            upstream: None,
+            prefix: "test-".into(),
+            owner: "Pyramid".into(),
+            alternative: None,
+            next: 0,
+            timeout: Duration::from_millis(200),
+        }
     }
 }
 
@@ -405,5 +526,58 @@ impl Connection {
         while self.extension.connected() {
             thread::sleep(Duration::from_millis(250));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn framed(value: &Value) -> Vec<u8> {
+        let body = serde_json::to_vec(value).unwrap();
+        let mut bytes = (body.len() as u32).to_ne_bytes().to_vec();
+        bytes.extend(body);
+        bytes
+    }
+
+    #[test]
+    fn a_large_answer_keeps_the_connection() {
+        let tree = "x".repeat(9 * 1024 * 1024);
+        let mut input = framed(&json!({"jsonrpc":"2.0","id":"p-1","result":{"nodes":tree}}));
+        input.extend(framed(&json!({"jsonrpc":"2.0","id":"p-2","result":{}})));
+        let (sender, replies) = mpsc::sync_channel(8);
+        let (answer, _answers) = mpsc::sync_channel(8);
+        pump(
+            &mut input.as_slice(),
+            MAX_FROM_BROWSER,
+            "p-",
+            &sender,
+            None,
+            &answer,
+        );
+        let first = replies.try_recv().unwrap();
+        assert_eq!(first["result"]["nodes"].as_str().unwrap().len(), tree.len());
+        assert_eq!(replies.try_recv().unwrap()["id"], "p-2");
+
+        let mut input =
+            framed(&json!({"jsonrpc":"2.0","id":"p-3","result":"y".repeat(2 * 1024 * 1024)}));
+        input.extend(framed(
+            &json!({"jsonrpc":"2.0","method":"onCDPEvent","params":"z".repeat(2 * 1024 * 1024)}),
+        ));
+        input.extend(framed(&json!({"jsonrpc":"2.0","id":"p-4","result":{}})));
+        pump(
+            &mut input.as_slice(),
+            1024 * 1024,
+            "p-",
+            &sender,
+            None,
+            &answer,
+        );
+        assert_eq!(
+            replies.try_recv().unwrap(),
+            json!({"id":"p-3","error":{"message":"the extension's answer was 3 MiB, more than the 1 MiB the connector reads"}})
+        );
+        assert_eq!(replies.try_recv().unwrap()["id"], "p-4");
+        assert!(replies.try_recv().is_err());
     }
 }

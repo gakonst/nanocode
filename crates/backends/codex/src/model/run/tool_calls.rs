@@ -238,13 +238,16 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
             } => {
                 let started_at = Instant::now();
                 let (call_id, call_index) = self.event_context(call_id);
+                let logged = logged_arguments(input);
                 let result = self.events.emit(
                     AgentEventKind::ToolCall,
                     ToolCallEvent {
                         call_id: &call_id,
                         tool: name,
-                        arguments: input,
+                        arguments: logged.as_ref().map_or(input, |(arguments, _)| arguments),
                         model_call_index: call_index,
+                        truncated: logged.is_some(),
+                        original_bytes: logged.as_ref().map(|(_, bytes)| *bytes),
                     },
                 );
                 if result.is_ok() {
@@ -318,6 +321,7 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
 const LOGGED_RESULT_BYTES: usize = 32 * 1024;
 const LOGGED_PREVIEW_BYTES: usize = 16 * 1024;
 const LOGGED_METADATA_BYTES: usize = 4096;
+const LOGGED_TOP_LEVEL_TEXT_BYTES: usize = 256 * 1024;
 
 struct LoggedResult {
     result: ToolOutputBody,
@@ -336,6 +340,52 @@ fn encoded_len(value: &Value) -> usize {
 
 fn utf8_prefix(text: &str, bytes: usize) -> &str {
     &text[..text.floor_char_boundary(bytes)]
+}
+
+fn output_prefix(output: &ToolOutputBody, bytes: usize) -> ToolOutputBody {
+    match output {
+        ToolOutputBody::Text(text) => ToolOutputBody::Text(utf8_prefix(text, bytes).to_owned()),
+        ToolOutputBody::Content(content) => {
+            let mut budget = bytes;
+            ToolOutputBody::Content(
+                content
+                    .iter()
+                    .map(|item| match item {
+                        ToolOutputContent::InputText { text } => {
+                            let kept = utf8_prefix(text, budget);
+                            budget -= kept.len();
+                            ToolOutputContent::InputText {
+                                text: kept.to_owned(),
+                            }
+                        }
+                        item => item.clone(),
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
+fn structured_reference(structured: &Value) -> Value {
+    match structured {
+        Value::Object(object) => {
+            let reference = ["image_url", "file_id"]
+                .into_iter()
+                .filter_map(|key| {
+                    object
+                        .get(key)
+                        .filter(|field| field.is_string())
+                        .map(|field| (key.to_owned(), field.clone()))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            if reference.is_empty() {
+                Value::Null
+            } else {
+                Value::Object(reference)
+            }
+        }
+        _ => Value::Null,
+    }
 }
 
 fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
@@ -363,54 +413,95 @@ fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
     if original_bytes <= LOGGED_RESULT_BYTES {
         return None;
     }
-    let result = match &call.output {
-        ToolOutputBody::Text(text) => {
-            ToolOutputBody::Text(utf8_prefix(text, LOGGED_PREVIEW_BYTES).to_owned())
-        }
-        ToolOutputBody::Content(content) => {
-            let mut budget = LOGGED_PREVIEW_BYTES;
-            ToolOutputBody::Content(
-                content
-                    .iter()
-                    .map(|item| match item {
-                        ToolOutputContent::InputText { text } => {
-                            let kept = utf8_prefix(text, budget);
-                            budget -= kept.len();
-                            ToolOutputContent::InputText {
-                                text: kept.to_owned(),
-                            }
-                        }
-                        item => item.clone(),
-                    })
-                    .collect(),
-            )
-        }
-    };
-    let structured_result = match structured {
-        Value::Object(object) => {
-            let reference = ["image_url", "file_id"]
-                .into_iter()
-                .filter_map(|key| {
-                    object
-                        .get(key)
-                        .filter(|field| field.is_string())
-                        .map(|field| (key.to_owned(), field.clone()))
-                })
-                .collect::<serde_json::Map<_, _>>();
-            if reference.is_empty() {
-                Value::Null
-            } else {
-                Value::Object(reference)
-            }
-        }
-        _ => Value::Null,
-    };
     Some(LoggedResult {
-        result,
-        structured_result,
+        result: output_prefix(&call.output, LOGGED_PREVIEW_BYTES),
+        structured_result: structured_reference(structured),
         metadata: metadata_bytes <= LOGGED_METADATA_BYTES,
         original_bytes,
     })
+}
+
+fn logged_top_level_result(completed: &CompletedToolCall) -> Option<LoggedResult> {
+    let text_bytes = match &completed.output {
+        ToolOutputBody::Text(text) => text.len(),
+        ToolOutputBody::Content(content) => content
+            .iter()
+            .map(|item| match item {
+                ToolOutputContent::InputText { text } => text.len(),
+                _ => 0,
+            })
+            .sum(),
+    };
+    let structured_bytes = encoded_len(&completed.structured_result);
+    let metadata_bytes = completed
+        .metadata
+        .as_deref()
+        .map_or(0, |raw| raw.get().len());
+    if text_bytes <= LOGGED_TOP_LEVEL_TEXT_BYTES
+        && structured_bytes <= LOGGED_RESULT_BYTES
+        && metadata_bytes <= LOGGED_RESULT_BYTES
+    {
+        return None;
+    }
+    Some(LoggedResult {
+        result: if text_bytes > LOGGED_TOP_LEVEL_TEXT_BYTES {
+            output_prefix(&completed.output, LOGGED_TOP_LEVEL_TEXT_BYTES)
+        } else {
+            completed.output.clone()
+        },
+        structured_result: if structured_bytes > LOGGED_RESULT_BYTES {
+            structured_reference(&completed.structured_result)
+        } else {
+            completed.structured_result.clone()
+        },
+        metadata: metadata_bytes <= LOGGED_RESULT_BYTES,
+        original_bytes: text_bytes + structured_bytes + metadata_bytes,
+    })
+}
+
+fn logged_arguments(input: &Value) -> Option<(Value, usize)> {
+    fn lengths(value: &Value, found: &mut Vec<usize>) {
+        match value {
+            Value::String(text) => found.push(text.len()),
+            Value::Array(items) => items.iter().for_each(|item| lengths(item, found)),
+            Value::Object(fields) => fields.values().for_each(|item| lengths(item, found)),
+            _ => {}
+        }
+    }
+    fn cut(value: &Value, cap: usize) -> Value {
+        match value {
+            Value::String(text) => Value::String(utf8_prefix(text, cap).to_owned()),
+            Value::Array(items) => Value::Array(items.iter().map(|item| cut(item, cap)).collect()),
+            Value::Object(fields) => Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, item)| (key.clone(), cut(item, cap)))
+                    .collect(),
+            ),
+            value => value.clone(),
+        }
+    }
+    let size = encoded_len(input);
+    if size <= LOGGED_RESULT_BYTES {
+        return None;
+    }
+    let mut found = Vec::new();
+    lengths(input, &mut found);
+    let Some(mut left) = LOGGED_PREVIEW_BYTES.checked_sub(size - found.iter().sum::<usize>())
+    else {
+        return Some((Value::Null, size));
+    };
+    found.sort_unstable();
+    let mut cap = usize::MAX;
+    for (index, length) in found.iter().enumerate() {
+        let remaining = found.len() - index;
+        if length * remaining > left {
+            cap = left / remaining;
+            break;
+        }
+        left -= length;
+    }
+    Some((cut(input, cap), size))
 }
 
 pub(super) struct DetachedNestedToolEvents {
@@ -757,6 +848,8 @@ impl ModelRun {
                 tool: &qualified_name,
                 arguments,
                 model_call_index: call_index,
+                truncated: false,
+                original_bytes: None,
             },
         )?;
         self.stats.tool_calls += 1;
@@ -834,6 +927,7 @@ impl ModelRun {
         events: &EventSink,
         completed: &CompletedToolCall,
     ) -> Result<()> {
+        let logged = logged_top_level_result(completed);
         events.emit(
             AgentEventKind::ToolResult,
             ToolResultEvent {
@@ -842,12 +936,21 @@ impl ModelRun {
                 status: status(completed.success),
                 duration_ns: completed.duration_ns,
                 started_after_ns: None,
-                result: &completed.output,
-                structured_result: &completed.structured_result,
-                metadata: completed.metadata.as_deref(),
+                result: logged
+                    .as_ref()
+                    .map_or(&completed.output, |logged| &logged.result),
+                structured_result: logged
+                    .as_ref()
+                    .map_or(&completed.structured_result, |logged| {
+                        &logged.structured_result
+                    }),
+                metadata: match &logged {
+                    Some(logged) if !logged.metadata => None,
+                    _ => completed.metadata.as_deref(),
+                },
                 cell: completed.cell.as_ref(),
-                truncated: false,
-                original_bytes: None,
+                truncated: logged.is_some(),
+                original_bytes: logged.as_ref().map(|logged| logged.original_bytes),
             },
         )?;
         Ok(())

@@ -1851,6 +1851,53 @@ const fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+fn nested_event_arguments(input: Option<&Value>) -> (Value, Option<usize>) {
+    let Some(input) = input else {
+        return (Value::Null, None);
+    };
+    let size = encoded_len(Some(input));
+    if size <= EVENT_RESULT_BYTES {
+        return (input.clone(), None);
+    }
+    fn lengths(value: &Value, found: &mut Vec<usize>) {
+        match value {
+            Value::String(text) => found.push(text.len()),
+            Value::Array(items) => items.iter().for_each(|item| lengths(item, found)),
+            Value::Object(fields) => fields.values().for_each(|item| lengths(item, found)),
+            _ => {}
+        }
+    }
+    fn cut(value: &Value, cap: usize) -> Value {
+        match value {
+            Value::String(text) => Value::String(utf8_prefix(text, cap).to_owned()),
+            Value::Array(items) => Value::Array(items.iter().map(|item| cut(item, cap)).collect()),
+            Value::Object(fields) => Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, item)| (key.clone(), cut(item, cap)))
+                    .collect(),
+            ),
+            value => value.clone(),
+        }
+    }
+    let mut found = Vec::new();
+    lengths(input, &mut found);
+    let Some(mut left) = EVENT_PREVIEW_BYTES.checked_sub(size - found.iter().sum::<usize>()) else {
+        return (Value::Null, Some(size));
+    };
+    found.sort_unstable();
+    let mut cap = usize::MAX;
+    for (index, length) in found.iter().enumerate() {
+        let remaining = found.len() - index;
+        if length * remaining > left {
+            cap = left / remaining;
+            break;
+        }
+        left -= length;
+    }
+    (cut(input, cap), Some(size))
+}
+
 fn nested_event_result(call: &Value) -> serde_json::Map<String, Value> {
     let output = call.get("output");
     let structured = call.get("structured_result");
@@ -1931,7 +1978,37 @@ fn top_level_event_fields(
             json!({ "text": utf8_prefix(text, EVENT_TOP_LEVEL_TEXT_BYTES) })
         }
         ToolResultContent::Text(text) => json!({ "text": text }),
-        ToolResultContent::Blocks(blocks) => json!({ "content_blocks": blocks }),
+        ToolResultContent::Blocks(blocks) => {
+            fn block_text(block: &Value) -> Option<&str> {
+                (block.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| block.get("text").and_then(Value::as_str))
+                    .flatten()
+            }
+            let original = blocks
+                .iter()
+                .filter_map(block_text)
+                .map(str::len)
+                .sum::<usize>();
+            if original > EVENT_TOP_LEVEL_TEXT_BYTES {
+                let mut left = EVENT_TOP_LEVEL_TEXT_BYTES;
+                let blocks = blocks
+                    .iter()
+                    .map(|block| match block_text(block) {
+                        Some(text) => {
+                            let kept = utf8_prefix(text, left);
+                            left -= kept.len();
+                            json!({ "type": "text", "text": kept })
+                        }
+                        None => block.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                fields.insert("truncated".into(), Value::Bool(true));
+                fields.insert("original_bytes".into(), json!(original));
+                json!({ "content_blocks": blocks })
+            } else {
+                json!({ "content_blocks": blocks })
+            }
+        }
     };
     fields.insert("result".into(), result);
     let structured_len = encoded_len(structured_result);
@@ -3274,14 +3351,17 @@ impl LiveNestedCalls<'_> {
                     return;
                 }
                 let parent = self.parent(&call_id);
-                self.state.emit(
-                    self.events,
-                    AgentEventKind::ToolCall,
-                    json!({
-                        "call_id": call_id, "tool": name, "arguments": input,
-                        "model_call_index": self.model_call_index, "parent_call_id": parent,
-                    }),
-                );
+                let (arguments, original_bytes) = nested_event_arguments(Some(&input));
+                let mut payload = json!({
+                    "call_id": call_id, "tool": name, "arguments": arguments,
+                    "model_call_index": self.model_call_index, "parent_call_id": parent,
+                });
+                if let Some(bytes) = original_bytes {
+                    payload["truncated"] = Value::Bool(true);
+                    payload["original_bytes"] = json!(bytes);
+                }
+                self.state
+                    .emit(self.events, AgentEventKind::ToolCall, payload);
                 self.open.push((call_id, name, Instant::now()));
             }
             ClaudeNestedToolUpdate::Completed(call) => {
@@ -4236,14 +4316,16 @@ impl State {
             .live_nested_starts
             .update(|starts| starts.remove(call_id));
         if !started {
-            self.emit(
-                events,
-                AgentEventKind::ToolCall,
-                json!({
-                    "call_id": call_id, "tool": tool, "arguments": call.get("input"),
-                    "model_call_index": model_call_index, "parent_call_id": parent,
-                }),
-            );
+            let (arguments, original_bytes) = nested_event_arguments(call.get("input"));
+            let mut payload = json!({
+                "call_id": call_id, "tool": tool, "arguments": arguments,
+                "model_call_index": model_call_index, "parent_call_id": parent,
+            });
+            if let Some(bytes) = original_bytes {
+                payload["truncated"] = Value::Bool(true);
+                payload["original_bytes"] = json!(bytes);
+            }
+            self.emit(events, AgentEventKind::ToolCall, payload);
         }
         let mut payload = nested_event_result(call);
         payload.extend([

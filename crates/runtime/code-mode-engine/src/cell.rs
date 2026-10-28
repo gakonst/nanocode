@@ -1,12 +1,13 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     rc::Rc,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use nanocode_platform::Instant;
+use nanocode_sync::Atom;
 use rquickjs::{
     CatchResultExt, Coerced, Context, Ctx, Exception, FromJs, Function, Module, Object, Persistent,
     Promise, Runtime, WriteOptions,
@@ -70,6 +71,7 @@ pub(crate) const CODE_TOOLS: &str = include_str!("code-tools.mjs");
 pub(crate) const CODE_VALUES: &str = include_str!("code-values.mjs");
 
 const BOOTSTRAP_MODULE: &str = "nanocode:bootstrap";
+const PRELUDE_MODULE: &str = "nanocode:prelude";
 
 type BootstrapBundle = &'static [(&'static str, &'static [u8])];
 
@@ -87,7 +89,7 @@ impl Resolver for BootstrapResolver {
         name: &str,
         _attributes: Option<ImportAttributes<'js>>,
     ) -> rquickjs::Result<String> {
-        if name == BOOTSTRAP_MODULE && LOADING_BOOTSTRAP.get() {
+        if (name == BOOTSTRAP_MODULE || name == PRELUDE_MODULE) && LOADING_BOOTSTRAP.get() {
             Ok(name.to_owned())
         } else {
             Err(rquickjs::Error::new_resolving(base, name))
@@ -95,11 +97,73 @@ impl Resolver for BootstrapResolver {
     }
 }
 
-pub(crate) fn install_bootstrap(runtime: &Runtime) -> Result<(), String> {
+fn bootstrap_bundle(runtime: &Runtime) -> Result<BootstrapBundle, String> {
     static BUNDLE: OnceLock<Result<BootstrapBundle, String>> = OnceLock::new();
-    let bundle = BUNDLE.get_or_init(|| compile_bootstrap(runtime)).clone()?;
+    BUNDLE.get_or_init(|| compile_bootstrap(runtime)).clone()
+}
+
+pub(crate) fn install_bootstrap(runtime: &Runtime) -> Result<(), String> {
+    install_prelude(runtime, None)
+}
+
+pub(crate) fn install_prelude(runtime: &Runtime, prelude: Option<&str>) -> Result<(), String> {
+    let bootstrap = bootstrap_bundle(runtime)?;
+    let bundle = match prelude {
+        Some(source) => prelude_bundle(runtime, bootstrap, source)?,
+        None => bootstrap,
+    };
     runtime.set_loader(BootstrapResolver, Bundle(bundle));
     Ok(())
+}
+
+fn prelude_bundle(
+    runtime: &Runtime,
+    bootstrap: BootstrapBundle,
+    source: &str,
+) -> Result<BootstrapBundle, String> {
+    type Preludes = Vec<(Arc<str>, BootstrapBundle)>;
+    static PRELUDES: OnceLock<Atom<Preludes>> = OnceLock::new();
+    let preludes = PRELUDES.get_or_init(Atom::default);
+    let find = |list: &Preludes| {
+        list.iter()
+            .find(|(text, _)| **text == *source)
+            .map(|(_, bundle)| *bundle)
+    };
+    if let Some(bundle) = preludes.read(find) {
+        return Ok(bundle);
+    }
+    let bytecode = compile_module(
+        runtime,
+        PRELUDE_MODULE,
+        format!("export default function (tools, call) {{\n{source}\n}}\n"),
+    )
+    .map_err(|error| format!("failed to compile the QuickJS prelude: {error}"))?;
+    let bundle: BootstrapBundle = Box::leak(Box::new([
+        bootstrap[0],
+        (PRELUDE_MODULE, &*Box::leak(bytecode.into_boxed_slice())),
+    ]));
+    let source: Arc<str> = Arc::from(source);
+    Ok(preludes.update(|list| {
+        find(list).unwrap_or_else(|| {
+            list.push((Arc::clone(&source), bundle));
+            bundle
+        })
+    }))
+}
+
+fn compile_module(runtime: &Runtime, name: &str, source: String) -> Result<Vec<u8>, String> {
+    let context = Context::full(runtime).map_err(|error| error.to_string())?;
+    context.with(|ctx| {
+        Module::declare(ctx.clone(), name, source)
+            .and_then(|module| {
+                module.write(WriteOptions {
+                    strip_source: true,
+                    ..WriteOptions::default()
+                })
+            })
+            .catch(&ctx)
+            .map_err(|error| error.to_string())
+    })
 }
 
 fn compile_bootstrap(runtime: &Runtime) -> Result<BootstrapBundle, String> {
@@ -111,19 +175,8 @@ fn compile_bootstrap(runtime: &Runtime) -> Result<BootstrapBundle, String> {
         "export const bootstrap = {};\n{CODE_TOOLS}\n{values}\nexport {{ createValueHelpers }};\n",
         BOOTSTRAP.trim_end()
     );
-    let context = Context::full(runtime)
-        .map_err(|error| format!("failed to create the QuickJS bootstrap compiler: {error}"))?;
-    let bytecode = context.with(|ctx| {
-        Module::declare(ctx.clone(), BOOTSTRAP_MODULE, source)
-            .and_then(|module| {
-                module.write(WriteOptions {
-                    strip_source: true,
-                    ..WriteOptions::default()
-                })
-            })
-            .catch(&ctx)
-            .map_err(|error| format!("failed to compile the embedded QuickJS bootstrap: {error}"))
-    })?;
+    let bytecode = compile_module(runtime, BOOTSTRAP_MODULE, source)
+        .map_err(|error| format!("failed to compile the embedded QuickJS bootstrap: {error}"))?;
     let bytecode: &'static [u8] = Box::leak(bytecode.into_boxed_slice());
     Ok(Box::leak(Box::new([(BOOTSTRAP_MODULE, bytecode)])))
 }
@@ -170,6 +223,7 @@ pub(crate) struct ExecutionState {
     stored: HashMap<String, Arc<RawValue>>,
     pending_tools: HashMap<u64, (SavedFunction, SavedFunction)>,
     pending_timeouts: HashMap<u64, PendingTimeout>,
+    timeout_order: BTreeSet<(Instant, u64)>,
     next_tool_id: u64,
     next_timeout_id: u64,
     rejections: Rejections,
@@ -253,6 +307,7 @@ pub(crate) fn new_state(
         stored,
         pending_tools: HashMap::new(),
         pending_timeouts: HashMap::new(),
+        timeout_order: BTreeSet::new(),
         next_tool_id: 1,
         next_timeout_id: 1,
         rejections,
@@ -277,6 +332,7 @@ pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
     let mut state = state.borrow_mut();
     state.pending_tools.clear();
     state.pending_timeouts.clear();
+    state.timeout_order.clear();
     state.uncaught = None;
     let rejections = std::mem::take(&mut *state.rejections.borrow_mut());
     drop(state);
@@ -290,17 +346,13 @@ pub(crate) fn start_execution<'js>(
     run_cell: &Function<'js>,
     source: String,
     tools: Vec<Value>,
-    prelude: Option<&str>,
+    prelude: bool,
 ) -> Result<Promise<'js>, String> {
-    let prelude = prelude.map_or_else(
-        || Ok(rquickjs::Value::new_undefined(ctx.clone())),
-        |prelude| {
-            rquickjs::String::from_str(ctx.clone(), prelude)
-                .map(rquickjs::String::into_value)
-                .catch(ctx)
-                .map_err(|error| format!("failed to pass the QuickJS prelude: {error}"))
-        },
-    )?;
+    let prelude = if prelude {
+        import_prelude(ctx)?.into_value()
+    } else {
+        rquickjs::Value::new_undefined(ctx.clone())
+    };
     run_execution(ctx, state, run_cell, source, tools, prelude)
 }
 
@@ -347,17 +399,15 @@ pub(crate) fn prepare_execution<'js>(
     Ok(run_cell)
 }
 
-#[cfg(target_family = "wasm")]
-pub(crate) fn compile_prelude<'js>(
-    ctx: &Ctx<'js>,
-    run_cell: &Function<'js>,
-    prelude: &str,
-) -> Result<Function<'js>, String> {
-    run_cell
-        .get::<_, Function<'js>>("compile")
-        .and_then(|compile| compile.call((prelude,)))
+pub(crate) fn import_prelude<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>, String> {
+    LOADING_BOOTSTRAP.set(true);
+    let prelude = Module::import(ctx, PRELUDE_MODULE)
+        .and_then(|imported| imported.finish::<Object<'js>>())
+        .and_then(|module| module.get::<_, Function<'js>>("default"))
         .catch(ctx)
-        .map_err(|error| format!("failed to compile the QuickJS prelude: {error}"))
+        .map_err(|error| format!("failed to load the QuickJS prelude: {error}"));
+    LOADING_BOOTSTRAP.set(false);
+    prelude
 }
 
 pub(crate) fn run_execution<'js>(
@@ -478,6 +528,15 @@ pub(crate) fn install_native_functions<'js>(
         .catch(ctx)
         .map_err(|error| format!("failed to install QuickJS content callback: {error}"))?;
 
+    let text_state = Rc::clone(state);
+    globals
+        .set(
+            "__nanocodeText",
+            Func::from(move |text: String| text_state.borrow().push_text(text)),
+        )
+        .catch(ctx)
+        .map_err(|error| format!("failed to install QuickJS text callback: {error}"))?;
+
     let load_state = Rc::clone(state);
     globals
         .set(
@@ -567,11 +626,15 @@ pub(crate) fn install_native_functions<'js>(
                     let mut state = timeout_state.borrow_mut();
                     let id = state.next_timeout_id;
                     state.next_timeout_id = state.next_timeout_id.saturating_add(1);
+                    let deadline = Instant::now().checked_add(Duration::from_millis(delay_ms));
+                    if let Some(deadline) = deadline {
+                        state.timeout_order.insert((deadline, id));
+                    }
                     state.pending_timeouts.insert(
                         id,
                         PendingTimeout {
                             callback: Persistent::save(&ctx, callback),
-                            deadline: Instant::now().checked_add(Duration::from_millis(delay_ms)),
+                            deadline,
                         },
                     );
                     Ok(id)
@@ -604,10 +667,15 @@ pub(crate) fn install_native_functions<'js>(
                         }
                     };
                     if id.is_finite() && id > 0.0 {
-                        clear_timeout_state
-                            .borrow_mut()
+                        let id = normalize_delay_ms(id);
+                        let mut state = clear_timeout_state.borrow_mut();
+                        if let Some(deadline) = state
                             .pending_timeouts
-                            .remove(&normalize_delay_ms(id));
+                            .remove(&id)
+                            .and_then(|timeout| timeout.deadline)
+                        {
+                            state.timeout_order.remove(&(deadline, id));
+                        }
                     }
                     Ok(())
                 },
@@ -623,6 +691,7 @@ pub(crate) fn remove_native_globals(ctx: &Ctx<'_>) -> Result<(), String> {
     for name in [
         "__nanocodeTool",
         "__nanocodeContent",
+        "__nanocodeText",
         "__nanocodeLoad",
         "__nanocodeNotify",
         "__nanocodeScript",
@@ -739,7 +808,14 @@ pub(crate) fn invoke_timeout(
     state: &Rc<RefCell<ExecutionState>>,
     id: u64,
 ) -> Result<(), String> {
-    let timeout = state.borrow_mut().pending_timeouts.remove(&id);
+    let timeout = {
+        let mut state = state.borrow_mut();
+        let timeout = state.pending_timeouts.remove(&id);
+        if let Some(deadline) = timeout.as_ref().and_then(|timeout| timeout.deadline) {
+            state.timeout_order.remove(&(deadline, id));
+        }
+        timeout
+    };
     let Some(timeout) = timeout else {
         return Ok(());
     };
@@ -757,27 +833,18 @@ pub(crate) fn next_timeout_wait(state: &Rc<RefCell<ExecutionState>>) -> Option<D
     let now = Instant::now();
     state
         .borrow()
-        .pending_timeouts
-        .values()
-        .filter_map(|timeout| timeout.deadline)
-        .min()
-        .map(|deadline| deadline.saturating_duration_since(now))
+        .timeout_order
+        .first()
+        .map(|(deadline, _)| deadline.saturating_duration_since(now))
 }
 
-pub(crate) fn next_due_timeout(state: &Rc<RefCell<ExecutionState>>) -> Option<u64> {
-    let now = Instant::now();
+pub(crate) fn next_due_timeout(state: &Rc<RefCell<ExecutionState>>, at: Instant) -> Option<u64> {
     state
         .borrow()
-        .pending_timeouts
-        .iter()
-        .filter_map(|(id, timeout)| {
-            timeout
-                .deadline
-                .filter(|deadline| *deadline <= now)
-                .map(|deadline| (*id, deadline))
-        })
-        .min_by_key(|(id, deadline)| (*deadline, *id))
-        .map(|(id, _)| id)
+        .timeout_order
+        .first()
+        .filter(|(deadline, _)| *deadline <= at)
+        .map(|(_, id)| *id)
 }
 
 pub(crate) fn drain_jobs(ctx: &Ctx<'_>, state: &Rc<RefCell<ExecutionState>>) {

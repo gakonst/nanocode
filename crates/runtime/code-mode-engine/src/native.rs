@@ -10,14 +10,16 @@ use std::{
     time::Duration,
 };
 
+use nanocode_platform::Instant;
 use rquickjs::{CatchResultExt, Context, Ctx, Function, Persistent, Runtime};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::cell::{
     ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, completed_terminal,
-    drain_jobs, install_bootstrap, invoke_timeout, new_state, next_due_timeout, next_timeout_wait,
-    prepare_execution, resolve_tool, send_terminal, start_execution, track_rejections,
+    drain_jobs, install_bootstrap, install_prelude, invoke_timeout, new_state, next_due_timeout,
+    next_timeout_wait, prepare_execution, resolve_tool, send_terminal, start_execution,
+    track_rejections,
 };
 
 struct Prepared {
@@ -220,6 +222,14 @@ fn run_worker(
         match command_rx.recv() {
             Ok(HostCommand::Start(start)) => {
                 interrupted.store(false, Ordering::Release);
+                if let Err(error) = install_prelude(&runtime, start.prelude.as_deref()) {
+                    let _ = event_tx.send(RuntimeEvent::Error {
+                        cell_id: start.execution_id,
+                        message: error,
+                        stored: HashMap::new(),
+                    });
+                    continue;
+                }
                 let bytes = start.prelude.is_some();
                 let next = match prepared.take() {
                     Some(next) if next.bytes == bytes => Ok(next),
@@ -284,7 +294,7 @@ fn run_execution_in_context(
         &run_cell,
         start.source,
         start.tools,
-        start.prelude.as_deref(),
+        start.prelude.is_some(),
     )?;
 
     let result = (|| {
@@ -303,9 +313,13 @@ fn run_execution_in_context(
                     drain_jobs(ctx, state);
                 }
                 CommandPoll::TimerReady => {
-                    if let Some(id) = next_due_timeout(state) {
+                    let now = Instant::now();
+                    while let Some(id) = next_due_timeout(state, now) {
                         invoke_timeout(ctx, state, id)?;
                         drain_jobs(ctx, state);
+                        if let Some(terminal) = completed_terminal(ctx, &promise)? {
+                            return send_terminal(state, terminal);
+                        }
                     }
                 }
                 CommandPoll::Command(HostCommand::Shutdown) | CommandPoll::Disconnected => {

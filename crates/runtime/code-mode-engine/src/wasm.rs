@@ -6,15 +6,16 @@ use std::{
     time::Duration,
 };
 
+use nanocode_platform::Instant;
 use rquickjs::{CatchResultExt, Context, Function, Persistent, Promise, Runtime};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use crate::cell::{
-    ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, compile_prelude,
-    completed_terminal, drain_jobs, install_bootstrap, invoke_timeout, new_state, next_due_timeout,
-    next_timeout_wait, prepare_execution, resolve_tool, run_execution, send_terminal,
-    track_rejections,
+    ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, completed_terminal,
+    drain_jobs, import_prelude, install_bootstrap, install_prelude, invoke_timeout, new_state,
+    next_due_timeout, next_timeout_wait, prepare_execution, resolve_tool, run_execution,
+    send_terminal, track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
@@ -62,6 +63,7 @@ impl Engine {
     }
 
     fn prepare(&self, prelude: Option<&Arc<str>>) -> Result<Prepared, String> {
+        install_prelude(&self.runtime, prelude.map(|source| &**source))?;
         let context = Context::full(&self.runtime)
             .map_err(|error| format!("failed to create embedded QuickJS context: {error}"))?;
         let state = new_state(
@@ -74,7 +76,7 @@ impl Engine {
             let run_cell = prepare_execution(&ctx, &state, prelude.is_some())?;
             let prelude = prelude
                 .map(|source| {
-                    compile_prelude(&ctx, &run_cell, source)
+                    import_prelude(&ctx)
                         .map(|compiled| (Arc::clone(source), Persistent::save(&ctx, compiled)))
                 })
                 .transpose()?;
@@ -279,19 +281,31 @@ impl EmbeddedHost {
                     return event.ok_or_else(|| "embedded QuickJS code-mode host ended before a result".to_owned());
                 }
                 () = nanocode_platform::sleep(wait) => {
-                    self.step(|engine| {
-                        let Some(execution) = engine.execution.as_ref() else {
-                            return Ok(());
-                        };
-                        let Some(id) = next_due_timeout(&execution.state) else {
-                            return Ok(());
-                        };
-                        execution.context.with(|ctx| {
-                            invoke_timeout(&ctx, &execution.state, id)?;
-                            drain_jobs(&ctx, &execution.state);
-                            Ok(())
-                        })
-                    })?;
+                    let now = Instant::now();
+                    let budget = INTERRUPT_CHECKS.get();
+                    let mut spent = 0;
+                    while spent < budget {
+                        let mut ran = false;
+                        self.step(|engine| {
+                            let Some(execution) = engine.execution.as_ref() else {
+                                return Ok(());
+                            };
+                            let Some(id) = next_due_timeout(&execution.state, now) else {
+                                return Ok(());
+                            };
+                            ran = true;
+                            let result = execution.context.with(|ctx| {
+                                invoke_timeout(&ctx, &execution.state, id)?;
+                                drain_jobs(&ctx, &execution.state);
+                                Ok(())
+                            });
+                            spent += budget - engine.budget.get();
+                            result
+                        })?;
+                        if !ran {
+                            break;
+                        }
+                    }
                 }
             }
         }

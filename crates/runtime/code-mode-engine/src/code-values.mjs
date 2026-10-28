@@ -6,6 +6,7 @@
 function createValueHelpers() {
   const helpers = {
     stringify(value) {
+      if (typeof value === "string") return value;
       if (value === null || ["undefined", "boolean", "number", "bigint", "string"].includes(typeof value)) return String(value);
 
       if (Object.prototype.toString.call(value) === "[object Error]") return String(value);

@@ -2,6 +2,7 @@
   const { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } = valueHelpers;
   const nativeTool = __nanocodeTool;
   const nativeContent = __nanocodeContent;
+  const nativeText = __nanocodeText;
   const nativeLoad = __nanocodeLoad;
   const nativeNotify = __nanocodeNotify;
   const nativeScript = __nanocodeScript;
@@ -176,6 +177,7 @@
   }
 
   function format(values) {
+    if (values.length === 1 && typeof values[0] === "string") return values[0];
     const [first, ...rest] = values;
     let head;
     if (typeof first === "string" && rest.length) {
@@ -374,7 +376,7 @@
     );
 
     function text(value) {
-      nativeContent(jsonStringify({ type: "input_text", text: stringify(value) }));
+      nativeText(stringify(value));
     }
 
     const console = createConsole(text);
@@ -442,7 +444,7 @@
     }
     try {
       const prelude = preludeSource
-        ? (typeof preludeSource === "function" ? preludeSource : compilePrelude(preludeSource))(
+        ? preludeSource(
           tools,
           (name, input) => invokeTool(name, input, true),
         ) ?? {}
@@ -530,8 +532,6 @@
       });
     }
   };
-  const compilePrelude = (preludeSource) => new Function("tools", "call", preludeSource);
-  runCell.compile = compilePrelude;
   runCell.uncaught = uncaught;
   return runCell;
 })

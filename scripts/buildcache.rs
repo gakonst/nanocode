@@ -244,6 +244,7 @@ fn rust(cache: &Path, mut args: Vec<OsString>, mut environment: Environment, com
     if restore(&entry, &out_dir, &environment, kind, &inputs).is_ok() {
         return ExitCode::SUCCESS;
     }
+    let started = SystemTime::now();
     let mut child = match Command::new(&args[0])
         .args(&args[1..])
         .env_clear()
@@ -338,6 +339,9 @@ fn rust(cache: &Path, mut args: Vec<OsString>, mut environment: Environment, com
             for path in &dependencies {
                 let local = !path.starts_with(b"/") || path.starts_with(&workspace_root);
                 if !local && !inside(path) {
+                    return ExitCode::SUCCESS;
+                }
+                if unchanged_since(Path::new(OsStr::from_bytes(path)), started).is_none() {
                     return ExitCode::SUCCESS;
                 }
                 let Ok(digest) = digest_file(Path::new(OsStr::from_bytes(path))) else {
@@ -511,6 +515,10 @@ fn memo_path(path: &Path) -> PathBuf {
 
 fn modified(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
+}
+
+fn unchanged_since(path: &Path, started: SystemTime) -> Option<()> {
+    (modified(path)? < started).then_some(())
 }
 
 fn fresh_memo(path: &Path) -> Option<String> {
@@ -994,6 +1002,7 @@ fn c(cache: &Path, args: &[OsString], environment: Environment) -> ExitCode {
     }
     let mut depfile = object.clone().into_os_string();
     depfile.push(format!(".{}.buildcache.d", std::process::id()));
+    let started = SystemTime::now();
     let mut map = OsString::from("-ffile-prefix-map=");
     map.push(OsStr::from_bytes(&out_dir));
     map.push("=.");
@@ -1020,6 +1029,9 @@ fn c(cache: &Path, args: &[OsString], environment: Environment) -> ExitCode {
     let _ = fs::remove_file(&depfile);
     if output.status.success()
         && let Ok(dependencies) = dependencies
+        && dependency_paths(&dependencies)
+            .iter()
+            .all(|path| unchanged_since(Path::new(OsStr::from_bytes(path)), started).is_some())
         && let Some(manifest) = manifest(&dependencies, &out_dir)
     {
         let _ = store_object(cache, &entry, &object, &manifest, &output.stderr);

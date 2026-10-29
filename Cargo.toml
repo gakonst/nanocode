@@ -54,6 +54,7 @@ members = [
     "bin/cua-driver",
 ]
 default-members = ["crates/nanocode"]
+exclude = ["crates/patches"]
 resolver = "2"
 
 [workspace.package]
@@ -181,7 +182,7 @@ thiserror = "2.0.17"
 tempfile = "3.27.0"
 tokio = "1.48.0"
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "__rustls-tls"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
 tower = { version = "0.5.2", features = ["retry", "util"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
@@ -191,6 +192,10 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "jso
 url = "2.5.7"
 uuid = { version = "1", features = ["serde", "v5"] }
 nanocode-zstd = { version = "0.6.7", path = "crates/core/zstd" }
+
+[patch.crates-io]
+iana-time-zone = { path = "crates/patches/iana-time-zone" }
+rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -233,6 +238,7 @@ codegen-units = 16
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+panic = "abort"
 
 [profile.profiling]
 inherits = "release"

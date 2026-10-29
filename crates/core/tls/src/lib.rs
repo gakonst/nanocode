@@ -73,7 +73,7 @@ fn load() -> io::Result<ClientConfig> {
             elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
         return Ok(config);
     }
-    let loaded = rustls_native_certs::load_native_certs();
+    let loaded = native_certs();
     let mut roots = RootCertStore::empty();
     let (added, rejected) = roots.add_parsable_certificates(loaded.certs);
     tracing::info!(target: "nanocode_tls", stage = "tls.native_roots", elapsed_ms = began.elapsed().as_secs_f64() * 1000.0,
@@ -87,6 +87,69 @@ fn load() -> io::Result<ClientConfig> {
     Ok(ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_certs() -> rustls_native_certs::CertificateResult {
+    rustls_native_certs::load_native_certs()
+}
+
+#[cfg(target_os = "macos")]
+struct PathCerts {
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    errors: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+fn native_certs() -> PathCerts {
+    let mut loaded = PathCerts {
+        certs: Vec::new(),
+        errors: Vec::new(),
+    };
+    if let Some(file) = std::env::var_os("SSL_CERT_FILE") {
+        pem_certs(std::path::Path::new(&file), &mut loaded);
+    }
+    let dirs = std::env::var_os("SSL_CERT_DIR").unwrap_or_default();
+    for dir in std::env::split_paths(&dirs).filter(|dir| !dir.as_os_str().is_empty()) {
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            if std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+                                pem_certs(&path, &mut loaded);
+                            }
+                        }
+                        Err(error) => loaded.errors.push(format!("{}: {error}", dir.display())),
+                    }
+                }
+            }
+            Err(error) => loaded.errors.push(format!("{}: {error}", dir.display())),
+        }
+    }
+    loaded
+        .certs
+        .sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    loaded.certs.dedup();
+    loaded
+}
+
+#[cfg(target_os = "macos")]
+fn pem_certs(path: &std::path::Path, loaded: &mut PathCerts) {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+
+    match CertificateDer::pem_file_iter(path) {
+        Ok(certs) => {
+            for cert in certs {
+                match cert {
+                    Ok(cert) => loaded.certs.push(cert),
+                    Err(error) => loaded.errors.push(format!("{}: {error}", path.display())),
+                }
+            }
+        }
+        Err(error) => loaded.errors.push(format!("{}: {error}", path.display())),
+    }
 }
 
 pub fn install_default_rustls_crypto_provider() {

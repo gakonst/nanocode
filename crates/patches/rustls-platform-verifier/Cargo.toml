@@ -1,0 +1,50 @@
+[package]
+edition = "2021"
+rust-version = "1.85"
+name = "rustls-platform-verifier"
+version = "0.7.0"
+description = "rustls-platform-verifier supports verifying TLS certificates in rustls with the operating system verifier"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rustls/rustls-platform-verifier"
+publish = false
+
+[features]
+cert-logging = ["base64"]
+dbg = []
+docsrs = ["jni", "once_cell"]
+ffi-testing = ["android_logger", "rustls/ring"]
+
+[lib]
+name = "rustls_platform_verifier"
+path = "src/lib.rs"
+
+[dependencies]
+base64 = { version = "0.22", optional = true }
+jni = { version = "0.22.4", optional = true, default-features = false }
+log = "0.4"
+once_cell = { version = "1.9", optional = true }
+rustls = { version = "0.23.27", default-features = false, features = ["std"] }
+
+[target.'cfg(all(unix, not(target_os = "android"), not(target_vendor = "apple"), not(target_arch = "wasm32")))'.dependencies]
+rustls-native-certs = "0.8"
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
+
+[target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+security-framework = "3.5.0"
+security-framework-sys = "2.15"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
+webpki-root-certs = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = { version = "0.15", optional = true }
+jni = { version = "0.22", default-features = false }
+once_cell = "1.9"
+rustls-platform-verifier-android = "0.1.0"
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", default-features = false, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

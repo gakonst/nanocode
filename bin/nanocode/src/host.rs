@@ -230,6 +230,7 @@ pub struct HostConfig {
     pub subagents: bool,
     pub runners: Vec<Runner>,
     pub runner_servers: Vec<RunnerServerConfig>,
+    pub tab: Option<String>,
     pub gateway: Option<Gateway>,
     pub clients: ModelClients,
     pub headless: bool,
@@ -632,9 +633,47 @@ pub async fn open_store(home: &Path) -> Result<SessionStore> {
     Ok(nanocode::session_store(store)?)
 }
 
-pub fn runner_configs(args: &RemoteArgs) -> Result<(Vec<Runner>, Vec<RunnerServerConfig>)> {
+const HAND_RELAY: &str = "wss://nanocode.xyz/api/hands";
+const HAND_PAGE: &str = "https://nanocode.xyz/hand";
+
+pub fn tab_notice(link: &str) -> String {
+    format!(
+        "Make a browser tab this session's hand: open {link} and click Attach. The session starts once the tab attaches."
+    )
+}
+
+pub struct RunnerConfigs {
+    pub runners: Vec<Runner>,
+    pub servers: Vec<RunnerServerConfig>,
+    pub tab: Option<String>,
+}
+
+pub fn runner_configs(args: &RemoteArgs) -> Result<RunnerConfigs> {
     let mut runners = Vec::new();
     let mut servers = Vec::new();
+    if args.tab {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes)?;
+        let token = bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut runner = Runner::connect(format!("{HAND_RELAY}?role=brain&wait"))
+            .token(&token)
+            .replace();
+        if let Some(name) = &args.runner_name {
+            runner = runner.name(name);
+        }
+        if let Some(ms) = args.runner_call_timeout_ms {
+            runner = runner.call_timeout(std::time::Duration::from_millis(ms));
+        }
+        runners.push(runner);
+        return Ok(RunnerConfigs {
+            runners,
+            servers,
+            tab: Some(format!("{HAND_PAGE}#url={HAND_RELAY}&token={token}")),
+        });
+    }
     match (&args.runner_connect, args.runner_host) {
         (Some(url), _) => {
             let token = args
@@ -679,5 +718,9 @@ pub fn runner_configs(args: &RemoteArgs) -> Result<(Vec<Runner>, Vec<RunnerServe
         }
         (None, None) => {}
     }
-    Ok((runners, servers))
+    Ok(RunnerConfigs {
+        runners,
+        servers,
+        tab: None,
+    })
 }

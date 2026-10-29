@@ -3315,6 +3315,7 @@ version = "0.6.7"
 dependencies = [
  "clap",
  "futures-util",
+ "getrandom 0.4.3",
  "nanocode",
  "nanocode-home",
  "nanocode-observability",

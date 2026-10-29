@@ -28,6 +28,7 @@ bench = false
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 clap.workspace = true
 futures-util.workspace = true
+getrandom.workspace = true
 nanocode = { path = "../../crates/nanocode", version = "0.6.7" }
 nanocode-home = { path = "../../crates/core/home", version = "0.6.7" }
 nanocode-observability = { path = "../../crates/integrations/observability", version = "0.6.7" }

@@ -282,6 +282,7 @@ impl SessionArgs {
                     .remote
                     .runner_call_timeout_ms
                     .or(root.remote.runner_call_timeout_ms),
+                tab: self.remote.tab || root.remote.tab,
                 ..self.remote
             },
         }
@@ -340,6 +341,13 @@ pub struct RemoteArgs {
         help = "Hard deadline for each remote tool call, in milliseconds"
     )]
     pub runner_call_timeout_ms: Option<u64>,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["runner_connect", "runner_host"],
+        help = "Make a browser tab this session's hand: prints a nanocode.xyz/hand link that pairs the tab with this agent through the nanocode.xyz hand relay, and waits for it"
+    )]
+    pub tab: bool,
 }
 
 #[derive(Clone, Debug, Args)]

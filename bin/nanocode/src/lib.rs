@@ -254,13 +254,14 @@ async fn prepare(
     } else {
         Some(host::open_store(&home).await?)
     };
-    let (runners, runner_servers) = host::runner_configs(&args.remote)?;
+    let runner_configs = host::runner_configs(&args.remote)?;
     let config = HostConfig {
         workspace,
         store,
         subagents: !args.no_subagents,
-        runners,
-        runner_servers,
+        runners: runner_configs.runners,
+        runner_servers: runner_configs.servers,
+        tab: runner_configs.tab,
         gateway,
         clients,
         headless,
@@ -277,6 +278,9 @@ async fn prepare(
     .await?;
     for server in host.runtime.runner_servers() {
         notify(&host::listener_notice(&server));
+    }
+    if let Some(link) = &host.config.tab {
+        notify(&host::tab_notice(link));
     }
     Ok(Prepared {
         host,

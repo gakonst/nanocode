@@ -397,6 +397,9 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
     for server in app.host.runtime.runner_servers() {
         app.notice(NoticeLevel::Info, crate::host::listener_notice(&server));
     }
+    if let Some(link) = &app.host.config.tab {
+        app.notice(NoticeLevel::Info, crate::host::tab_notice(link));
+    }
     forward_runners(&app.host.runtime, app.tx.clone());
     if let Some(notices) = app.host.config.clients.notifying() {
         forward_notices(notices, app.tx.clone());

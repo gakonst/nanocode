@@ -629,7 +629,7 @@ pub fn home_dir(explicit: Option<&Path>) -> Result<PathBuf> {
 }
 
 pub async fn open_store(home: &Path) -> Result<SessionStore> {
-    let store = nanocode_store_jsonl::JsonlStore::open_home_async(home).await?;
+    let store = nanocode_store_jsonl::JsonlStore::open_home_in_background(home)?;
     Ok(nanocode::session_store(store)?)
 }
 

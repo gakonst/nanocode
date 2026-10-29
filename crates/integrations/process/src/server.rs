@@ -593,9 +593,51 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
             prefix.extend_from_slice(option.as_bytes());
         }
     }
+    direct(&mut prefix, &job.script);
     let split = prefix.len();
     prefix.extend_from_slice(job.script.as_bytes());
     Some((prefix, split))
+}
+
+fn direct(prefix: &mut Vec<u8>, script: &str) {
+    let plain = |word: &&str| {
+        !word.starts_with('=')
+            && word
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_-./,:+=%".contains(&byte))
+    };
+    let words = script.split([' ', '\t']).filter(|word| !word.is_empty());
+    let Some(command) = words.clone().next() else {
+        return;
+    };
+    if !words.clone().all(|word| plain(&word))
+        || command.contains('=')
+        || command.starts_with(['-', '%'])
+    {
+        return;
+    }
+    prefix.extend_from_slice(
+        format!("if (( ! ${{+aliases[{command}]}} && ! ${{+functions[{command}]}}").as_bytes(),
+    );
+    if let Some((_, suffix)) = command.rsplit_once('.') {
+        prefix.extend_from_slice(format!(" && ! ${{+saliases[{suffix}]}}").as_bytes());
+    }
+    for word in words.clone() {
+        prefix.extend_from_slice(format!(" && ! ${{+galiases[{word}]}}").as_bytes());
+    }
+    if command.contains('/') {
+        prefix.extend_from_slice(format!(" )) && [[ -x {command} && ! -d {command} ]]").as_bytes());
+    } else {
+        prefix.extend_from_slice(
+            format!(" && ! ${{+builtins[{command}]}} && ! ${{reswords[(Ie){command}]}} )) && \\builtin whence -p -- {command} >/dev/null").as_bytes(),
+        );
+    }
+    prefix.extend_from_slice(b"; then \\builtin exec");
+    for word in words {
+        prefix.push(b' ');
+        prefix.extend_from_slice(word.as_bytes());
+    }
+    prefix.extend_from_slice(b"; fi; ");
 }
 
 fn quote(out: &mut Vec<u8>, bytes: &[u8]) {

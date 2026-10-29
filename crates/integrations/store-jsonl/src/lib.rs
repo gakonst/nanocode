@@ -21,6 +21,7 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     ops::Range,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -1995,6 +1996,7 @@ impl Journal {
 pub struct JsonlStore {
     jobs: mpsc::Sender<Job>,
     closed: oneshot::Receiver<()>,
+    failed: Arc<OnceLock<StoreError>>,
 }
 
 impl JsonlStore {
@@ -2017,14 +2019,25 @@ impl JsonlStore {
         Self::opened(Self::start(move || Journal::open(&Journal::home(&home)?))?).await
     }
 
+    pub fn open_home_in_background(home: &Path) -> Result<Self, StoreError> {
+        let home = home.to_owned();
+        Self::start(move || Journal::open(&Journal::home(&home)?)).map(|(store, _)| store)
+    }
+
     pub async fn compact(&mut self) -> Result<CompactionStats, StoreError> {
         self.write(Journal::compact).await
     }
 
     pub async fn close(self) -> Result<(), StoreError> {
-        let Self { jobs, closed } = self;
+        let Self {
+            jobs,
+            closed,
+            failed,
+        } = self;
         drop(jobs);
-        closed.await.map_err(|_| stopped())
+        closed
+            .await
+            .map_err(|_| failed.get().cloned().unwrap_or_else(stopped))
     }
 
     fn start(
@@ -2033,13 +2046,18 @@ impl JsonlStore {
         let (jobs, mut receiver) = mpsc::channel::<Job>(JOB_CAPACITY);
         let (finished, closed) = oneshot::channel();
         let (ready, opened) = oneshot::channel();
+        let failed = Arc::new(OnceLock::new());
+        let failure = Arc::clone(&failed);
         let span = tracing::Span::current();
         thread::Builder::new()
             .name("nanocode-jsonl".into())
             .spawn(move || {
                 let mut journal = match span.in_scope(open) {
                     Ok(journal) => journal,
-                    Err(error) => return drop(ready.send(Err(error))),
+                    Err(error) => {
+                        drop(failure.set(error.clone()));
+                        return drop(ready.send(Err(error)));
+                    }
                 };
                 drop(ready.send(Ok(())));
                 while let Some(job) = receiver.blocking_recv() {
@@ -2052,7 +2070,14 @@ impl JsonlStore {
                 let _ = finished.send(());
             })
             .map_err(backend)?;
-        Ok((Self { jobs, closed }, opened))
+        Ok((
+            Self {
+                jobs,
+                closed,
+                failed,
+            },
+            opened,
+        ))
     }
 
     async fn opened(
@@ -2097,6 +2122,7 @@ impl JsonlStore {
             drop(reply.send(action(journal)));
         });
         Box::pin(async move {
+            let stopped = || self.failed.get().cloned().unwrap_or_else(stopped);
             self.jobs.send(job).await.map_err(|_| stopped())?;
             result.await.map_err(|_| stopped())?
         })

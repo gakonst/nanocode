@@ -1,9 +1,11 @@
 use std::{
+    borrow::Cow,
     collections::HashSet,
     io::{self, Write},
 };
 
 use nanocode::agent::events::{AgentEvent, AgentEventKind};
+use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Eq, PartialEq)]
@@ -11,6 +13,34 @@ enum Block {
     Reasoning(u64),
     Answer(String),
     Notice,
+}
+
+#[derive(Default, Deserialize)]
+struct Payload<'a> {
+    #[serde(default, borrow)]
+    text: Option<Cow<'a, str>>,
+    #[serde(default, borrow)]
+    item_id: Option<Cow<'a, str>>,
+    #[serde(default)]
+    model_call_index: Option<u64>,
+    #[serde(default, borrow)]
+    tool: Option<Cow<'a, str>>,
+    #[serde(default)]
+    error: Option<Value>,
+    #[serde(default)]
+    observational: Option<Value>,
+}
+
+impl Payload<'_> {
+    fn key(&self) -> Cow<'_, str> {
+        match &self.item_id {
+            Some(id) => Cow::Borrowed(id),
+            None => Cow::Owned(match self.model_call_index {
+                Some(index) => format!("call-{index}"),
+                None => "call-null".to_owned(),
+            }),
+        }
+    }
 }
 
 pub struct Printer<O> {
@@ -31,24 +61,43 @@ impl<O: Write> Printer<O> {
     }
 
     pub fn event(&mut self, event: &AgentEvent) -> io::Result<()> {
-        let payload = serde_json::from_str::<Value>(event.payload.get()).unwrap_or_default();
-        let text = payload["text"].as_str().unwrap_or_default();
+        if !matches!(
+            event.kind,
+            AgentEventKind::ReasoningSummaryDelta
+                | AgentEventKind::AssistantDelta
+                | AgentEventKind::AssistantMessage
+                | AgentEventKind::ToolCall
+                | AgentEventKind::RunError
+        ) {
+            return Ok(());
+        }
+        let payload = serde_json::from_str::<Payload>(event.payload.get()).unwrap_or_default();
+        let text = payload.text.as_deref().unwrap_or_default();
         match event.kind {
             AgentEventKind::ReasoningSummaryDelta => self.write(
-                Block::Reasoning(payload["model_call_index"].as_u64().unwrap_or_default()),
+                Block::Reasoning(payload.model_call_index.unwrap_or_default()),
                 text,
             ),
-            AgentEventKind::AssistantDelta => self.answer(&payload, text),
-            AgentEventKind::AssistantMessage if !self.streamed.contains(&key(&payload)) => {
-                self.answer(&payload, text)
+            AgentEventKind::AssistantDelta => self.answer(&payload.key(), text),
+            AgentEventKind::AssistantMessage if !self.streamed.contains(&*payload.key()) => {
+                self.answer(&payload.key(), text)
             }
-            AgentEventKind::ToolCall => {
-                self.notice(&format!("· {}", payload["tool"].as_str().unwrap_or("tool")))
-            }
-            AgentEventKind::RunError if payload["observational"] == true => self.notice(&format!(
-                "warning: {}",
-                payload["error"].as_str().unwrap_or_default()
+            AgentEventKind::ToolCall => self.notice(&format!(
+                "· {}",
+                payload.tool.as_deref().unwrap_or("tool")
             )),
+            AgentEventKind::RunError
+                if payload.observational.as_ref() == Some(&Value::Bool(true)) =>
+            {
+                self.notice(&format!(
+                    "warning: {}",
+                    payload
+                        .error
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                ))
+            }
             _ => Ok(()),
         }
     }
@@ -61,13 +110,18 @@ impl<O: Write> Printer<O> {
         self.answers.flush()
     }
 
-    fn answer(&mut self, payload: &Value, text: &str) -> io::Result<()> {
+    fn answer(&mut self, key: &str, text: &str) -> io::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
-        let key = key(payload);
-        self.streamed.insert(key.clone());
-        self.write(Block::Answer(key), text)
+        if matches!(&self.block, Some(Block::Answer(current)) if current == key) {
+            self.answers.write_all(text.as_bytes())?;
+            self.answers.flush()?;
+            self.open = !text.ends_with('\n');
+            return Ok(());
+        }
+        self.streamed.insert(key.to_owned());
+        self.write(Block::Answer(key.to_owned()), text)
     }
 
     fn write(&mut self, block: Block, text: &str) -> io::Result<()> {
@@ -118,11 +172,4 @@ impl<O: Write> Printer<O> {
         self.open = false;
         Ok(())
     }
-}
-
-fn key(payload: &Value) -> String {
-    payload["item_id"].as_str().map_or_else(
-        || format!("call-{}", payload["model_call_index"]),
-        str::to_owned,
-    )
 }

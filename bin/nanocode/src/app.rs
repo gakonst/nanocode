@@ -286,6 +286,7 @@ pub struct App {
     resuming: bool,
     hold_queue: bool,
     moved: bool,
+    reload_file: Option<PathBuf>,
     pub(crate) pending_copy: Option<(String, &'static str)>,
     pub(crate) interrupting: bool,
     thinking_override: Option<Thinking>,
@@ -361,6 +362,7 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         resuming: false,
         hold_queue: false,
         moved: false,
+        reload_file: None,
         pending_copy: None,
         interrupting: false,
         thinking_override: launch.thinking_override,
@@ -430,19 +432,8 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
         );
         app.connect(launch.resume.clone());
     } else {
-        let connection = app.connection(launch.resume.clone());
-        match connection.await {
-            Ok(ready) => {
-                app.ready(ready);
-                if let Some(path) = launch.reload_path {
-                    tokio::fs::remove_file(path).await?;
-                }
-            }
-            Err(error) => {
-                app.starting = false;
-                app.notice(NoticeLevel::Error, error.to_string());
-            }
-        }
+        app.reload_file = launch.reload_path;
+        app.connect(launch.resume.clone());
     }
     let outcome = app.event_loop(&mut terminal, &mut rx).await;
     drop(terminal);
@@ -1116,6 +1107,17 @@ impl App {
             }
             AppEvent::AgentReady(ready) => {
                 self.ready(*ready);
+                if let Some(path) = self.reload_file.take() {
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = tokio::fs::remove_file(&path).await {
+                            drop(tx.send(AppEvent::Notice(
+                                NoticeLevel::Error,
+                                format!("could not remove {}: {error}", path.display()),
+                            )));
+                        }
+                    });
+                }
                 Redraw::Immediate
             }
             AppEvent::AgentFailed(error) => {

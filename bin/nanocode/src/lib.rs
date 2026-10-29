@@ -416,7 +416,7 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
         (_, true) => Some(latest_session(&host).await?),
         _ => None,
     };
-    let (agent, mut events, pending) = match resume {
+    let (agent, events, pending) = match resume {
         Some(id) => {
             let ready = app::open_session(
                 &host,
@@ -439,7 +439,7 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
     if let Some(reason) = host.runtime.computer_use_unavailable() {
         eprintln!("nanocode: computer use unavailable, continuing without it: {reason}");
     }
-    tokio::spawn(async move { while events.recv().await.is_some() {} });
+    drop(events);
     if let Some(mut notices) = host.config.clients.notifying() {
         tokio::spawn(async move {
             while let Some(notice) = notices.next().await {

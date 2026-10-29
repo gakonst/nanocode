@@ -157,6 +157,12 @@ impl Index {
         Ok(())
     }
 
+    pub(super) fn deferred_bytes(&self, id: &str) -> usize {
+        self.deferred
+            .get(id)
+            .map_or(0, |block| block.location.length)
+    }
+
     pub(super) fn load_records(&mut self, id: &str) -> io::Result<()> {
         let Some(block) = self.deferred.get(id).copied() else {
             return Ok(());

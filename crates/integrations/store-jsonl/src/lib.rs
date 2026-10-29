@@ -30,6 +30,7 @@ const JOB_CAPACITY: usize = 1;
 const JOURNAL_READ_BUFFER_BYTES: usize = 128 * 1024;
 const SEAL_POLL_FIRST: Duration = Duration::from_millis(1);
 const SEAL_POLL_LONGEST: Duration = Duration::from_millis(100);
+const SHARED_RECORD: char = '\u{1}';
 
 type Job = Box<dyn FnOnce(&mut Journal) + Send>;
 
@@ -1101,6 +1102,32 @@ impl Journal {
     }
 
     fn record(&mut self, id: &str, key: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.resolved(id, key)?.map(|(_, value)| value))
+    }
+
+    fn resolved(&mut self, id: &str, key: &str) -> Result<Option<(String, String)>, StoreError> {
+        let Some(stored) = self.stored(id, key)? else {
+            return Ok(None);
+        };
+        let Some(marked) = stored.strip_prefix(SHARED_RECORD) else {
+            return Ok(Some((id.to_owned(), stored)));
+        };
+        if marked.starts_with(SHARED_RECORD) {
+            return Ok(Some((id.to_owned(), marked.to_owned())));
+        }
+        let holder = marked.to_owned();
+        match self.stored(&holder, key)? {
+            Some(value) if !value.starts_with(SHARED_RECORD) => Ok(Some((holder, value))),
+            Some(value) if value[SHARED_RECORD.len_utf8()..].starts_with(SHARED_RECORD) => {
+                Ok(Some((holder, value[SHARED_RECORD.len_utf8()..].to_owned())))
+            }
+            _ => Err(self.invalidated(format!(
+                "JSONL record {key} of {id} names {holder}, which does not hold it"
+            ))),
+        }
+    }
+
+    fn stored(&mut self, id: &str, key: &str) -> Result<Option<String>, StoreError> {
         match self.location(id, key)? {
             None => Ok(None),
             Some(Record::Value { location, digest }) => {
@@ -1108,6 +1135,70 @@ impl Journal {
             }
             Some(Record::Entry(location)) => self.entry_record(id, key, location).map(Some),
         }
+    }
+
+    fn share(
+        &mut self,
+        id: &str,
+        records: Vec<StoreRecord>,
+        fresh: Vec<bool>,
+    ) -> Result<Vec<StoreRecord>, StoreError> {
+        let mut records = records
+            .into_iter()
+            .zip(fresh)
+            .filter_map(|(record, fresh)| fresh.then_some((record, None::<String>)))
+            .collect::<Vec<_>>();
+        let mut budget = records
+            .iter()
+            .map(|(record, _)| record.value.len())
+            .sum::<usize>();
+        let candidates = self
+            .index
+            .created
+            .iter()
+            .rev()
+            .filter(|candidate| candidate.as_str() != id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for candidate in candidates {
+            let cost = self.index.deferred_bytes(&candidate);
+            if cost > budget {
+                break;
+            }
+            budget -= cost;
+            for (record, holder) in &mut records {
+                if holder.is_some()
+                    || record.value.len() <= SHARED_RECORD.len_utf8() + candidate.len()
+                    || self.location(&candidate, &record.key)?.is_none()
+                {
+                    continue;
+                }
+                if let Some((found, value)) = self.resolved(&candidate, &record.key)?
+                    && value == record.value
+                    && record.value.len() > SHARED_RECORD.len_utf8() + found.len()
+                {
+                    budget = budget.saturating_sub(record.value.len());
+                    *holder = Some(found);
+                }
+            }
+            if records.iter().all(|(_, holder)| holder.is_some()) {
+                break;
+            }
+        }
+        Ok(records
+            .into_iter()
+            .map(|(record, holder)| match holder {
+                Some(holder) => StoreRecord {
+                    key: record.key,
+                    value: format!("{SHARED_RECORD}{holder}"),
+                },
+                None if record.value.starts_with(SHARED_RECORD) => StoreRecord {
+                    key: record.key,
+                    value: format!("{SHARED_RECORD}{}", record.value),
+                },
+                None => record,
+            })
+            .collect())
     }
 
     fn value(
@@ -1573,12 +1664,7 @@ impl Journal {
                     planned = Some((current, Some(replacement)));
                     continue;
                 }
-                let records = replacement
-                    .records
-                    .into_iter()
-                    .zip(fresh)
-                    .filter_map(|(record, fresh)| fresh.then_some(record))
-                    .collect();
+                let records = self.share(id, replacement.records, fresh)?;
                 state = StoredState {
                     revision,
                     payload: Some(replacement.payload.clone()),
@@ -1737,12 +1823,7 @@ impl Journal {
                 let fresh = store.validate_records(id, &replacement.records)?;
                 Ok((revision, fresh))
             })?;
-            let records = replacement
-                .records
-                .into_iter()
-                .zip(fresh)
-                .filter_map(|(record, fresh)| fresh.then_some(record))
-                .collect();
+            let records = self.share(id, replacement.records, fresh)?;
             let entry = Entry::Replace {
                 state_id: id.into(),
                 owner: owner.clone(),
@@ -1817,18 +1898,16 @@ impl Journal {
                     let fresh = store.validate_records(&state_id, &records)?;
                     Ok((revision, fresh))
                 });
-                match validated {
-                    Ok((revision, fresh)) => {
+                match validated.and_then(|(revision, fresh)| {
+                    Ok((revision, self.share(&state_id, records, fresh)?))
+                }) {
+                    Ok((revision, records)) => {
                         entries.push(Entry::Replace {
                             state_id,
                             owner,
                             revision,
                             payload,
-                            records: records
-                                .into_iter()
-                                .zip(fresh)
-                                .filter_map(|(record, fresh)| fresh.then_some(record))
-                                .collect(),
+                            records,
                         });
                         slots.push((slot, expected, revision));
                     }

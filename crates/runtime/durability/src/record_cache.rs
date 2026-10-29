@@ -4,8 +4,8 @@ use std::{
 };
 
 use nanocode_durability_core::{
-    Committed, OwnedCommit, OwnedState, OwnerId, OwnerToken, StateCommit, StateStore, StoreError,
-    StoreFuture, StoreRecord, StoreUpdate, StoredState,
+    Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
+    StateCommit, StateStore, StoreError, StoreFuture, StoreRecord, StoreUpdate, StoredState,
 };
 use nanocode_sync::Actor;
 
@@ -193,6 +193,20 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         state_id: &'a str,
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
         self.base.list_records(state_id)
+    }
+
+    fn list_summaries<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        self.base.list_summaries(limit)
+    }
+
+    fn remember_summaries<'a>(
+        &'a mut self,
+        summaries: Vec<KnownSummary>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        self.base.remember_summaries(summaries)
     }
 
     fn owner<'a>(

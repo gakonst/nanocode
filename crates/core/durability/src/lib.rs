@@ -15,15 +15,15 @@ pub use sql::{
 };
 pub use staged::{StagedStore, StagedWrites};
 pub use state::{
-    DurableCheckpoint, IdentifiedSteerReceipt, JournalState, OperationState, OperationStatus, Operations,
-    RetainedCheckpoint, SteerState, StepState, StepStatus, Transition,
+    DurableCheckpoint, IdentifiedSteerReceipt, JournalState, OperationState, OperationStatus,
+    Operations, RetainedCheckpoint, SteerState, StepState, StepStatus, Transition,
 };
 pub use store::{
     Committed, EventCursor, EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange,
-    IndexedState, OwnedCommit, OwnedState, OwnerId, OwnerToken, StateCommit, StateCursor,
-    StatePage, StateQuery, StateReader, StateStore, StateSummary, StoreError, StoreEvent,
-    StoreFuture, StoreRecord, StoreReplacement, StoreUpdate, StoredEvent, StoredState,
-    SummaryUpdate,
+    IndexedState, KnownSummary, ListedState, ListedSummary, OwnedCommit, OwnedState, OwnerId,
+    OwnerToken, StateCommit, StateCursor, StatePage, StateQuery, StateReader, StateStore,
+    StateSummary, StoreError, StoreEvent, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate,
+    StoredEvent, StoredState, SummaryUpdate,
 };
 
 pub type Result<T> = std::result::Result<T, Error>;

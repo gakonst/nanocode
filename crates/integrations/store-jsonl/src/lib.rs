@@ -6,8 +6,9 @@ mod index;
 pub use compact::CompactionStats;
 
 use nanocode_durability_core::{
-    Committed, OwnedCommit, OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture,
-    StoreRecord, StoreReplacement, StoreUpdate, StoredState,
+    Committed, KnownSummary, ListedState, ListedSummary, OwnedCommit, OwnedState, OwnerId,
+    OwnerToken, StateStore, StoreError, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate,
+    StoredState,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
 use sha2::{Digest, Sha256};
@@ -1640,6 +1641,57 @@ impl Journal {
             .collect())
     }
 
+    fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
+        self.sync()?;
+        let created = self
+            .index
+            .created
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let summaries = self.index.load_summaries().clone();
+        Ok(created
+            .into_iter()
+            .map(|state_id| {
+                let revision = self.revision(&state_id);
+                let summary = match summaries.get(&state_id) {
+                    Some((known, Some(summary))) if *known == revision => {
+                        ListedSummary::Listed(summary.clone())
+                    }
+                    Some((known, None)) if *known == revision => ListedSummary::Unlisted,
+                    _ => ListedSummary::Unknown,
+                };
+                ListedState {
+                    state_id,
+                    revision,
+                    summary,
+                }
+            })
+            .collect())
+    }
+
+    fn remember_summaries(&mut self, known: Vec<KnownSummary>) -> Result<(), StoreError> {
+        self.sync()?;
+        let revisions = known
+            .iter()
+            .map(|summary| self.revision(&summary.state_id))
+            .collect::<Vec<_>>();
+        let summaries = self.index.load_summaries();
+        let mut changed = false;
+        for (summary, revision) in known.into_iter().zip(revisions) {
+            if summary.revision == revision && revision > 0 {
+                summaries.insert(summary.state_id, (revision, summary.summary));
+                changed = true;
+            }
+        }
+        if changed {
+            self.index.migrated = true;
+        }
+        Ok(())
+    }
+
     fn acquire(&mut self, id: &str, owner_id: OwnerId) -> Result<OwnedState, StoreError> {
         loop {
             self.writable()?;
@@ -2036,6 +2088,18 @@ impl StateStore for JsonlStore {
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
         let id = id.to_owned();
         self.read(move |journal| journal.list_records(&id))
+    }
+    fn list_summaries<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        self.read(move |journal| journal.list_summaries(limit).map(Some))
+    }
+    fn remember_summaries<'a>(
+        &'a mut self,
+        summaries: Vec<KnownSummary>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        self.write(move |journal| journal.remember_summaries(summaries))
     }
     fn acquire<'a>(
         &'a mut self,

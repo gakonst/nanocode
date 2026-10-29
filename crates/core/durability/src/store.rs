@@ -132,6 +132,27 @@ pub struct StateSummary {
     pub value: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ListedSummary {
+    Listed(StateSummary),
+    Unlisted,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListedState {
+    pub state_id: String,
+    pub revision: u64,
+    pub summary: ListedSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KnownSummary {
+    pub state_id: String,
+    pub revision: u64,
+    pub summary: Option<StateSummary>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum SummaryUpdate {
     #[default]
@@ -419,6 +440,20 @@ pub trait StateStore: Send {
         Box::pin(async { Err(record_listing_unsupported()) })
     }
 
+    fn list_summaries<'a>(
+        &'a mut self,
+        _limit: usize,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn remember_summaries<'a>(
+        &'a mut self,
+        _summaries: Vec<KnownSummary>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn owner<'a>(
         &'a mut self,
         _state_id: &'a str,
@@ -571,6 +606,20 @@ pub trait StateStore {
         _state_id: &'a str,
     ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
         Box::pin(async { Err(record_listing_unsupported()) })
+    }
+
+    fn list_summaries<'a>(
+        &'a mut self,
+        _limit: usize,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn remember_summaries<'a>(
+        &'a mut self,
+        _summaries: Vec<KnownSummary>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async { Ok(()) })
     }
 
     fn owner<'a>(

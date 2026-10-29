@@ -261,9 +261,9 @@ mod store {
     use super::{BranchBoundary, SessionRecord};
     use crate::{
         AdmittedTurn, CheckpointFormat, DurableSession, DurableState, EncodedPayload, Error,
-        EventHits, EventPage, EventQuery, EventRange, OperationState, OperationStatus, OwnerId,
-        PayloadReader, Result, SessionWrite, StateCommit, StateCursor, StateQuery, StateReader,
-        StateStore, StateSummary, StoreError, SummaryUpdate, Transition,
+        EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedSummary, OperationState,
+        OperationStatus, OwnerId, PayloadReader, Result, SessionWrite, StateCommit, StateCursor,
+        StateQuery, StateReader, StateStore, StateSummary, StoreError, SummaryUpdate, Transition,
         format::Formats,
         session::reduce_peeked,
         shared_store::{SharedReader, SharedStore, WeakSharedStore},
@@ -580,18 +580,78 @@ mod store {
         }
 
         pub async fn list(&self) -> Result<Vec<SessionSummary>> {
-            let ids = self.store.clone().list_states(usize::MAX).await?;
-            let mut sessions: Vec<_> = futures_util::future::try_join_all(
-                ids.iter()
-                    .filter(|id| !is_auxiliary_state(id))
-                    .map(|id| self.summary(id)),
+            let Some(listed) = self.store.clone().list_summaries(usize::MAX).await? else {
+                let ids = self.store.clone().list_states(usize::MAX).await?;
+                let mut sessions: Vec<_> = futures_util::future::try_join_all(
+                    ids.iter()
+                        .filter(|id| !is_auxiliary_state(id))
+                        .map(|id| self.summary(id)),
+                )
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
+                sessions.sort_by_key(|session| std::cmp::Reverse(session.record.updated_at_ms));
+                return Ok(sessions);
+            };
+            let mut sessions = Vec::with_capacity(listed.len());
+            let mut unknown = Vec::new();
+            for state in listed {
+                if is_auxiliary_state(&state.state_id) {
+                    continue;
+                }
+                match state.summary {
+                    ListedSummary::Listed(summary) => sessions.push(SessionSummary {
+                        record: serde_json::from_str(&summary.value)?,
+                        preview: summary.preview,
+                    }),
+                    ListedSummary::Unlisted => {}
+                    ListedSummary::Unknown => unknown.push(state.state_id),
+                }
+            }
+            let found = futures_util::future::try_join_all(
+                unknown.iter().map(|id| self.revised_summary(id)),
             )
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
+            .await?;
+            let mut known = Vec::new();
+            for (state_id, found) in unknown.into_iter().zip(found) {
+                let Some((revision, summary)) = found else {
+                    continue;
+                };
+                known.push(KnownSummary {
+                    state_id,
+                    revision,
+                    summary: summary.as_ref().map(listed_summary).transpose()?,
+                });
+                sessions.extend(summary);
+            }
+            if !known.is_empty() {
+                self.store.clone().remember_summaries(known).await?;
+            }
             sessions.sort_by_key(|session| std::cmp::Reverse(session.record.updated_at_ms));
             Ok(sessions)
+        }
+
+        async fn revised_summary(&self, id: &str) -> Result<Option<(u64, Option<SessionSummary>)>> {
+            let Some(state) = self.peek(id).await? else {
+                return Ok(None);
+            };
+            let revision = state.revision();
+            if !is_listed(&state) {
+                return Ok(Some((revision, None)));
+            }
+            let preview = self.first_prompt(id, &state).await?;
+            let record = match state.session() {
+                Some(record) => record.clone(),
+                None => {
+                    let Some(checkpoint) = self.native_checkpoint(id, &state).await? else {
+                        return Ok(Some((revision, None)));
+                    };
+                    self.infer_record(id, &checkpoint)?
+                }
+            };
+            let preview = preview.or_else(|| record.event_preview.clone());
+            Ok(Some((revision, Some(SessionSummary { record, preview }))))
         }
 
         pub async fn query(&self, query: &SessionQuery) -> Result<SessionPage> {
@@ -623,24 +683,10 @@ mod store {
         }
 
         pub async fn summary(&self, id: &str) -> Result<Option<SessionSummary>> {
-            let Some(state) = self.peek(id).await? else {
-                return Ok(None);
-            };
-            if !is_listed(&state) {
-                return Ok(None);
-            }
-            let preview = self.first_prompt(id, &state).await?;
-            let record = match state.session() {
-                Some(record) => record.clone(),
-                None => {
-                    let Some(checkpoint) = self.native_checkpoint(id, &state).await? else {
-                        return Ok(None);
-                    };
-                    self.infer_record(id, &checkpoint)?
-                }
-            };
-            let preview = preview.or_else(|| record.event_preview.clone());
-            Ok(Some(SessionSummary { record, preview }))
+            Ok(self
+                .revised_summary(id)
+                .await?
+                .and_then(|(_, summary)| summary))
         }
 
         pub async fn record(&self, id: &str) -> Result<Option<SessionRecord>> {
@@ -1439,6 +1485,23 @@ mod store {
             updated_at_ms: record.updated_at_ms,
             value: serde_json::to_string(record)?,
         }))
+    }
+
+    fn listed_summary(summary: &SessionSummary) -> Result<StateSummary> {
+        Ok(StateSummary {
+            scope: summary
+                .record
+                .workspace
+                .as_ref()
+                .and_then(|workspace| workspace.to_str())
+                .map(str::to_owned),
+            parent: summary.record.lineage.parent_session_id.clone(),
+            title: summary.record.title.clone(),
+            preview: summary.preview.clone(),
+            attributes: BTreeMap::new(),
+            updated_at_ms: summary.record.updated_at_ms,
+            value: serde_json::to_string(&summary.record)?,
+        })
     }
 
     fn origin_name(origin: Origin) -> Result<String> {

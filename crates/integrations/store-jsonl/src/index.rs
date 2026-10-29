@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-use nanocode_durability_core::OwnerToken;
+use nanocode_durability_core::{OwnerToken, StateSummary};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -28,6 +28,8 @@ pub(super) struct Index {
     pub(super) migrated: bool,
     anchor: [u8; 32],
     deferred: HashMap<String, RecordBlock>,
+    summaries: Option<HashMap<String, (u64, Option<StateSummary>)>>,
+    deferred_summaries: Option<RecordBlock>,
     file: Option<File>,
     saved: Option<String>,
 }
@@ -62,6 +64,8 @@ struct SavedIndex {
     created: Vec<String>,
     last: Option<Location>,
     anchor: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summaries: Option<RecordBlock>,
 }
 
 #[derive(Deserialize)]
@@ -94,9 +98,35 @@ impl Index {
             migrated: false,
             anchor: Sha256::digest([]).into(),
             deferred: HashMap::new(),
+            summaries: None,
+            deferred_summaries: None,
             file: None,
             saved: None,
         }
+    }
+
+    pub(super) fn load_summaries(&mut self) -> &mut HashMap<String, (u64, Option<StateSummary>)> {
+        if self.summaries.is_none() {
+            let loaded = self.deferred_summaries.take().map(|block| {
+                let file = self.file.as_mut().ok_or_else(invalid)?;
+                let bytes = read_block(file, block)?;
+                serde_json::from_slice::<Vec<(String, u64, Option<StateSummary>)>>(&bytes)
+                    .map_err(io::Error::other)
+            });
+            let summaries = match loaded {
+                Some(Ok(summaries)) => summaries
+                    .into_iter()
+                    .map(|(id, revision, summary)| (id, (revision, summary)))
+                    .collect(),
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "dropping unreadable JSONL session summaries");
+                    HashMap::new()
+                }
+                None => HashMap::new(),
+            };
+            self.summaries = Some(summaries);
+        }
+        self.summaries.get_or_insert_with(HashMap::new)
     }
 
     pub(super) fn relocate(
@@ -110,6 +140,7 @@ impl Index {
         for id in deferred {
             self.load_records(&id)?;
         }
+        self.load_summaries();
         self.file = None;
         self.migrated = false;
         self.offset = offset;
@@ -307,6 +338,18 @@ impl Journal {
                 },
             );
         }
+        if let Some(block) = saved.summaries {
+            if block.location.position < MAGIC.len() as u64
+                || block
+                    .location
+                    .position
+                    .checked_add(block.location.length as u64)
+                    .is_none_or(|end| end > header_start)
+            {
+                return Err(invalid());
+            }
+            index.deferred_summaries = Some(block);
+        }
         index.file = Some(file);
         self.checked_index(index, file_identity)
     }
@@ -419,6 +462,51 @@ impl Journal {
                 },
             );
         }
+        let summaries = if self.index.summaries.is_some() || self.index.deferred_summaries.is_some()
+        {
+            let position = temporary.stream_position()?;
+            let mut output = DigestWriter {
+                output: &mut temporary,
+                digest: Sha256::new(),
+                length: 0,
+            };
+            if let Some(summaries) = &self.index.summaries {
+                let mut buffered =
+                    io::BufWriter::with_capacity(INDEX_COPY_BUFFER_BYTES, &mut output);
+                serde_json::to_writer(
+                    &mut buffered,
+                    &summaries
+                        .iter()
+                        .map(|(id, (revision, summary))| (id, revision, summary))
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(io::Error::other)?;
+                buffered.flush()?;
+            } else if let Some(block) = self.index.deferred_summaries {
+                let file = self.index.file.as_mut().ok_or_else(invalid)?;
+                file.seek(SeekFrom::Start(block.location.position))?;
+                let mut source = BufReader::with_capacity(
+                    INDEX_COPY_BUFFER_BYTES,
+                    file.take(block.location.length as u64),
+                );
+                io::copy(&mut source, &mut output)?;
+                if output.length != block.location.length
+                    || output.digest.clone().finalize()[..] != block.digest
+                {
+                    return Err(invalid());
+                }
+            }
+            Some(RecordBlock {
+                location: Location {
+                    position,
+                    length: output.length,
+                },
+                digest: output.digest.finalize().into(),
+                format: None,
+            })
+        } else {
+            None
+        };
         let saved = SavedIndex {
             source: self.index.source.clone(),
             offset: self.index.offset,
@@ -427,6 +515,7 @@ impl Journal {
             created: self.index.created.clone(),
             last: self.index.last,
             anchor: self.index.anchor,
+            summaries,
         };
         let payload = serde_json::to_vec(&saved).map_err(io::Error::other)?;
         temporary.write_all(&payload)?;

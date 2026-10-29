@@ -5,9 +5,9 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 use crate::{
-    Committed, EventHits, EventPage, EventQuery, EventRange, OwnedCommit, OwnedState, OwnerId,
-    OwnerToken, StateCommit, StatePage, StateQuery, StateReader, StateStore, StoreError,
-    StoreEvent, StoreFuture, StoredState, SummaryUpdate,
+    Committed, EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedState,
+    OwnedCommit, OwnedState, OwnerId, OwnerToken, StateCommit, StatePage, StateQuery, StateReader,
+    StateStore, StoreError, StoreEvent, StoreFuture, StoredState, SummaryUpdate,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::{Error, StoreUpdate};
@@ -79,6 +79,14 @@ enum Command {
     ListRecords {
         state_id: String,
         result: oneshot::Sender<Result<Vec<String>, StoreError>>,
+    },
+    ListSummaries {
+        limit: usize,
+        result: oneshot::Sender<Result<Option<Vec<ListedState>>, StoreError>>,
+    },
+    RememberSummaries {
+        summaries: Vec<KnownSummary>,
+        result: oneshot::Sender<Result<(), StoreError>>,
     },
     Flush {
         result: oneshot::Sender<Result<(), StoreError>>,
@@ -521,6 +529,12 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
             Command::ListRecords { state_id, result } => {
                 drop(result.send(store.list_records(&state_id).await));
             }
+            Command::ListSummaries { limit, result } => {
+                drop(result.send(store.list_summaries(limit).await));
+            }
+            Command::RememberSummaries { summaries, result } => {
+                drop(result.send(store.remember_summaries(summaries).await));
+            }
             Command::Flush { result } => {
                 drop(result.send(store.flush().await));
             }
@@ -892,6 +906,54 @@ impl StateStore for SharedStore {
                         state_id: state_id.to_owned(),
                         result,
                     },
+                    span,
+                    queued: Instant::now(),
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn list_summaries<'a>(
+        &'a mut self,
+        limit: usize,
+    ) -> StoreFuture<'a, Result<Option<Vec<ListedState>>, StoreError>> {
+        let span = tracing::info_span!(
+            "durability.store",
+            operation = "list_summaries",
+            state.limit = limit,
+            queue.duration_ms = tracing::field::Empty
+        );
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(StoreRequest {
+                    command: Command::ListSummaries { limit, result },
+                    span,
+                    queued: Instant::now(),
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn remember_summaries<'a>(
+        &'a mut self,
+        summaries: Vec<KnownSummary>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        let span = tracing::info_span!(
+            "durability.store",
+            operation = "remember_summaries",
+            state.count = summaries.len(),
+            queue.duration_ms = tracing::field::Empty
+        );
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(StoreRequest {
+                    command: Command::RememberSummaries { summaries, result },
                     span,
                     queued: Instant::now(),
                 })

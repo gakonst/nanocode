@@ -229,6 +229,10 @@ pub struct Registry {
     completed_tools: Atom<std::collections::HashSet<(String, AgentId)>>,
     pending_resume: Atom<HashMap<String, Vec<AgentId>>>,
 
+    manual_resume: std::sync::atomic::AtomicBool,
+
+    deferred_resume: Atom<HashMap<String, Vec<AgentId>>>,
+
     wait_reported: Atom<HashMap<(String, AgentId), u64>>,
 
     idle_waits: Atom<HashMap<String, (Vec<AgentId>, u32)>>,
@@ -1634,6 +1638,8 @@ impl Registry {
             progress_captures: Atom::default(),
             completed_tools: Atom::default(),
             pending_resume: Atom::default(),
+            manual_resume: std::sync::atomic::AtomicBool::new(false),
+            deferred_resume: Atom::default(),
             wait_reported: Atom::default(),
             idle_waits: Atom::default(),
             this: std::sync::OnceLock::new(),
@@ -2774,9 +2780,15 @@ impl Registry {
                 )
             })?;
         }
-        self.pending_resume.update(|pending| {
-            pending.insert(root_session_id.to_owned(), report.interrupted.clone());
-        });
+        if self.manual_resume.load(std::sync::atomic::Ordering::SeqCst) {
+            self.deferred_resume.update(|deferred| {
+                deferred.insert(root_session_id.to_owned(), report.interrupted.clone());
+            });
+        } else {
+            self.pending_resume.update(|pending| {
+                pending.insert(root_session_id.to_owned(), report.interrupted.clone());
+            });
+        }
         self.changed();
         Ok(report)
     }
@@ -5537,6 +5549,59 @@ impl SubagentControl {
 
     pub async fn close_all(&self, root_session_id: &str) -> std::io::Result<()> {
         self.registry.close_all(root_session_id).await.map(drop)
+    }
+
+    pub fn set_manual_resume(&self, manual: bool) {
+        self.registry
+            .manual_resume
+            .store(manual, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub async fn deferred_resume(&self, root_session_id: &str) -> std::io::Result<Vec<AgentId>> {
+        self.registry.await_restored(root_session_id).await?;
+        Ok(self
+            .registry
+            .deferred_resume
+            .read(|deferred| deferred.get(root_session_id).cloned())
+            .unwrap_or_default())
+    }
+
+    pub async fn resume_restored(
+        &self,
+        root_session_id: &str,
+    ) -> std::io::Result<Vec<(AgentId, std::io::Result<MessageReceipt>)>> {
+        self.registry.await_restored(root_session_id).await?;
+        let mut ids = Vec::new();
+        self.registry.deferred_resume.update(|deferred| {
+            ids = deferred.remove(root_session_id).unwrap_or_default();
+        });
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.registry.pending_resume.update(|pending| {
+            pending
+                .entry(root_session_id.to_owned())
+                .or_default()
+                .extend(ids.iter().copied());
+        });
+        self.registry.changed();
+        Ok(self.registry.resume_interrupted(root_session_id).await)
+    }
+
+    pub async fn discard_restored(&self, root_session_id: &str) -> std::io::Result<()> {
+        self.registry.await_restored(root_session_id).await?;
+        let deferred = self
+            .registry
+            .deferred_resume
+            .read(|deferred| deferred.get(root_session_id).cloned())
+            .unwrap_or_default();
+        self.registry.deferred_resume.update(|deferred| {
+            deferred.remove(root_session_id);
+        });
+        if deferred.is_empty() {
+            return Ok(());
+        }
+        self.close_all(root_session_id).await
     }
 
     pub fn runtime_id(&self) -> SubagentRuntimeId {

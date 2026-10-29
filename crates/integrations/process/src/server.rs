@@ -20,6 +20,10 @@ use tokio::{
 
 use super::{output, process, selection::Shell};
 
+mod direct;
+
+pub(crate) use direct::Fifos;
+
 const MAX_JOBS: usize = 997;
 const DEPTH: usize = 2;
 const UNDIFFED: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
@@ -30,6 +34,7 @@ type Output = pipe::Receiver;
 pub(super) struct Servers {
     root: OnceLock<Option<PathBuf>>,
     pools: [Pool; 2],
+    direct: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 pub(super) struct Request<'a> {
@@ -61,36 +66,37 @@ impl Servers {
             return None;
         }
         let pool = &self.pools[usize::from(request.login)];
-        let ended = Arc::new(Signal::new());
-        let (exit, exited) = oneshot::channel();
-        let (reply, accepted) = oneshot::channel();
-        let job = Job {
-            script: request.script.to_owned(),
-            workdir: request.workdir.to_owned(),
-            environment: request.environment.to_vec(),
-            secrets: request
-                .secrets
-                .iter()
-                .map(|(name, _)| name.clone())
-                .collect(),
-            exit,
-            ended: Arc::clone(&ended),
-            reply,
-        };
-        pool.dispatcher(self.root()?, request.shell, request.login)
+        let root = self.root()?;
+        if let Some(words) = direct::words(request.script)
+            && let Some(admission) = direct::Admission::new(&self.direct)
+        {
+            let (offer, offered) = oneshot::channel();
+            let (job, pending) = Pending::job(&request, Some(offer));
+            pool.dispatcher(root.clone(), request.shell, request.login)
+                .send(Note::Job(job))
+                .ok()?;
+            let Ok(direct) = offered.await else {
+                return pending.spawned().await;
+            };
+            let spawned = direct::spawn(
+                admission,
+                direct,
+                words,
+                request.workdir.to_owned(),
+                request.environment.to_vec(),
+                request.secrets.to_vec(),
+                root.clone(),
+            )
+            .await;
+            if spawned.is_some() {
+                return spawned;
+            }
+        }
+        let (job, pending) = Pending::job(&request, None);
+        pool.dispatcher(root, request.shell, request.login)
             .send(Note::Job(job))
             .ok()?;
-        let lease = accepted.await.ok()??;
-        let child = process::ProcessChild::served(lease.pid, exited);
-        Some(process::SpawnedProcess {
-            process_group: child.process_group(),
-            child,
-            stdin: None,
-            output: process::ProcessOutput::Served(Served {
-                lease: Arc::new(lease),
-                ended,
-            }),
-        })
+        pending.spawned().await
     }
 
     pub(super) async fn stop(&self) {
@@ -121,6 +127,59 @@ impl Servers {
     }
 }
 
+struct Pending {
+    accepted: oneshot::Receiver<Option<Lease>>,
+    exited: oneshot::Receiver<io::Result<i32>>,
+    ended: Arc<Signal>,
+}
+
+impl Pending {
+    fn job(
+        request: &Request<'_>,
+        direct: Option<oneshot::Sender<Arc<direct::Direct>>>,
+    ) -> (Job, Self) {
+        let ended = Arc::new(Signal::new());
+        let (exit, exited) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+        let job = Job {
+            script: request.script.to_owned(),
+            workdir: request.workdir.to_owned(),
+            environment: request.environment.to_vec(),
+            secrets: request
+                .secrets
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+            exit,
+            ended: Arc::clone(&ended),
+            reply,
+            direct,
+        };
+        (
+            job,
+            Self {
+                accepted,
+                exited,
+                ended,
+            },
+        )
+    }
+
+    async fn spawned(self) -> Option<process::SpawnedProcess> {
+        let lease = self.accepted.await.ok()??;
+        let child = process::ProcessChild::served(lease.pid, self.exited);
+        Some(process::SpawnedProcess {
+            process_group: child.process_group(),
+            child,
+            stdin: None,
+            output: process::ProcessOutput::Served(Served {
+                lease: Arc::new(lease),
+                ended: self.ended,
+            }),
+        })
+    }
+}
+
 #[derive(Default)]
 struct Pool {
     dispatcher: OnceLock<mpsc::UnboundedSender<Note>>,
@@ -147,6 +206,8 @@ impl Pool {
                 notes: notes.downgrade(),
                 probe: None,
                 watch: None,
+                direct: None,
+                probed: None,
             };
             tokio::spawn(dispatcher.run(inbox));
             notes
@@ -167,11 +228,13 @@ struct Job {
     exit: oneshot::Sender<io::Result<i32>>,
     ended: Arc<Signal>,
     reply: oneshot::Sender<Option<Lease>>,
+    direct: Option<oneshot::Sender<Arc<direct::Direct>>>,
 }
 
 enum Note {
     Job(Job),
-    Ready(u64, Probe),
+    Ready(u64, Probe, Arc<direct::Shape>),
+    Direct(Fingerprint, Option<Arc<direct::Direct>>),
     Credit(u64),
     Stopped(u64, Option<Fingerprint>),
     Stop(oneshot::Sender<()>),
@@ -182,6 +245,7 @@ struct Handle {
     messages: mpsc::UnboundedSender<Message>,
     fingerprint: Option<Fingerprint>,
     credit: usize,
+    origin: Arc<direct::Origin>,
 }
 
 struct Dispatcher {
@@ -196,6 +260,8 @@ struct Dispatcher {
     notes: mpsc::WeakUnboundedSender<Note>,
     probe: Option<Probe>,
     watch: Option<Watch>,
+    direct: Option<Arc<direct::Direct>>,
+    probed: Option<Fingerprint>,
 }
 
 impl Dispatcher {
@@ -230,6 +296,7 @@ impl Dispatcher {
         }
         let stale = probe.fingerprint.clone();
         self.probe = None;
+        self.direct = None;
         self.servers.retain(|server| {
             let retired = server.fingerprint.as_ref() == Some(&stale);
             if retired {
@@ -241,7 +308,13 @@ impl Dispatcher {
 
     async fn note(&mut self, note: Note) {
         match note {
-            Note::Job(job) => {
+            Note::Job(mut job) => {
+                if let Some(offer) = job.direct.take()
+                    && let Some(direct) = &self.direct
+                {
+                    let _ = offer.send(Arc::clone(direct));
+                    return;
+                }
                 if self
                     .servers
                     .iter()
@@ -253,10 +326,21 @@ impl Dispatcher {
                     let _ = job.reply.send(None);
                 }
             }
-            Note::Ready(id, probe) => {
+            Note::Ready(id, probe, shape) => {
                 if let Some(server) = self.servers.iter_mut().find(|server| server.id == id) {
                     server.fingerprint = Some(probe.fingerprint.clone());
                     server.credit = DEPTH;
+                    let origin = Arc::clone(&server.origin);
+                    if self.direct.is_none() && self.probed.as_ref() != Some(&probe.fingerprint) {
+                        self.probed = Some(probe.fingerprint.clone());
+                        tokio::spawn(direct::probe(
+                            self.notes.clone(),
+                            self.root.clone(),
+                            origin,
+                            shape,
+                            probe.fingerprint.clone(),
+                        ));
+                    }
                     if self
                         .probe
                         .as_ref()
@@ -272,6 +356,15 @@ impl Dispatcher {
                         watch.missed();
                     }
                     self.probe = Some(probe);
+                }
+            }
+            Note::Direct(fingerprint, direct) => {
+                if self
+                    .probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.fingerprint == fingerprint)
+                {
+                    self.direct = direct;
                 }
             }
             Note::Credit(id) => {
@@ -299,6 +392,7 @@ impl Dispatcher {
                     let _ = job.reply.send(None);
                 }
                 self.probe = None;
+                self.direct = None;
                 for server in self.servers.drain(..) {
                     let (stopped, done) = oneshot::channel();
                     if server.messages.send(Message::Stop(stopped)).is_ok() {
@@ -357,6 +451,11 @@ impl Dispatcher {
         };
         self.next += 1;
         let (messages, inbox) = mpsc::unbounded_channel();
+        let origin = Arc::new(direct::Origin {
+            workdir: job.workdir.clone(),
+            environment: environment.clone(),
+            listed: job.environment.clone(),
+        });
         let launch = Launch {
             id: self.next,
             dir: self
@@ -379,6 +478,7 @@ impl Dispatcher {
             messages,
             fingerprint: None,
             credit: 0,
+            origin,
         });
         drop(notes);
         tokio::spawn(async move {
@@ -401,7 +501,7 @@ impl Dispatcher {
 struct Ready {
     environment: HashMap<OsString, OsString>,
     listed: Vec<(OsString, OsString)>,
-    readonly: HashSet<Vec<u8>>,
+    shape: Arc<direct::Shape>,
     argzero: bool,
     bgnice: bool,
     notify: bool,
@@ -463,6 +563,17 @@ async fn drain(
     let Some(pipe) = lease.pipes[stream].take() else {
         return;
     };
+    if let Some(pipe) = read_all(pipe, &ended, &chunks, &activity).await {
+        lease.pipes[stream].put(pipe);
+    }
+}
+
+async fn read_all(
+    pipe: Output,
+    ended: &Signal,
+    chunks: &mpsc::UnboundedSender<Vec<u8>>,
+    activity: &nanocode_process_contracts::LastActivity,
+) -> Option<Output> {
     // On the heap: in the future itself, every spawn copied it.
     let mut buffer = vec![0_u8; output::READ_BUFFER_LENGTH];
     let mut polling = false;
@@ -503,19 +614,16 @@ async fn drain(
             }
         };
         match read {
-            Ok(0) => {
-                lease.pipes[stream].put(pipe);
-                return;
-            }
+            Ok(0) => return Some(pipe),
             Ok(length) => {
                 activity.touch();
                 if chunks.send(buffer[..length].to_vec()).is_err() {
-                    return;
+                    return None;
                 }
             }
             Err(error) => {
                 let _ = chunks.send(format!("failed to read command output: {error}").into_bytes());
-                return;
+                return None;
             }
         }
     }
@@ -547,7 +655,7 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
     }
     prefix.extend_from_slice(b"OLDPWD=$PWD; ");
     let settable = |name: &OsStr| {
-        is_shell_identifier(name.as_bytes()) && !ready.readonly.contains(name.as_bytes())
+        is_shell_identifier(name.as_bytes()) && !ready.shape.readonly.contains(name.as_bytes())
     };
     let undiffed = |name: &OsStr| UNDIFFED.iter().any(|undiffed| name == *undiffed);
     // Commands usually have the server's environment exactly, in the same
@@ -865,7 +973,7 @@ impl std::fmt::Display for Stop {
 /// job once it reaped it; a command's prelude restores both.
 fn bootstrap(nonce: &str, dir: &Path) -> OsString {
     let mut script = format!(
-        "for __nc_f in /dev/fd/<3->(N:t); do [[ -p /dev/fd/$__nc_f || -S /dev/fd/$__nc_f ]] && \\builtin exec {{__nc_f}}>&-; done\n\\builtin unset __nc_f\n\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin hash -r\n\\builtin setopt monitor notify no_bg_nice\n__nc_d="
+        "for __nc_f in /dev/fd/<3->(N:t); do [[ -p /dev/fd/$__nc_f || -S /dev/fd/$__nc_f ]] && \\builtin exec {{__nc_f}}>&-; done\n\\builtin unset __nc_f\n\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin print -r -- ${{(k)aliases[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{(k)functions[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)builtins[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{reswords[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)galiases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)saliases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin hash -r\n\\builtin setopt monitor notify no_bg_nice\n__nc_d="
     )
     .into_bytes();
     quote(&mut script, dir.as_os_str().as_bytes());
@@ -911,7 +1019,7 @@ async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> 
         }
     };
     if let Some(notes) = launch.notes.upgrade() {
-        let _ = notes.send(Note::Ready(launch.id, probe));
+        let _ = notes.send(Note::Ready(launch.id, probe, Arc::clone(&ready.shape)));
     }
     let mut owner = Owner {
         id: launch.id,
@@ -1093,6 +1201,18 @@ async fn read_ready(
     let [argzero, bgnice, notify] = options[..] else {
         return Err(io::Error::other("the shell reported unexpected options"));
     };
+    let mut names = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let line = events.line().await?;
+        names.push(
+            line.split(u8::is_ascii_whitespace)
+                .filter(|name| !name.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect::<HashSet<_>>(),
+        );
+    }
+    let [commands, builtins, global, suffixes] = <[_; 4]>::try_from(names)
+        .map_err(|_| io::Error::other("the shell reported unexpected names"))?;
     let files = startup_files(launch.login, &launch.environment, Some(&zdotdir));
     let probe = Probe {
         fingerprint: if files == launch.probe.files {
@@ -1105,7 +1225,13 @@ async fn read_ready(
     let ready = Ready {
         environment: launch.environment.clone(),
         listed: launch.listed.clone(),
-        readonly,
+        shape: Arc::new(direct::Shape {
+            readonly,
+            commands,
+            builtins,
+            global,
+            suffixes,
+        }),
         argzero,
         bgnice,
         notify,

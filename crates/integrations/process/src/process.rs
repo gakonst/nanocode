@@ -303,6 +303,8 @@ pub(super) enum ProcessOutput {
     Pty(Box<dyn Read + Send>),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     Served(super::server::Served),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Fifos(super::server::Fifos),
 }
 
 pub(super) fn spawn(

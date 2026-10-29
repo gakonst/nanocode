@@ -627,6 +627,8 @@ impl Session {
             )],
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             process::ProcessOutput::Served(served) => served.drains(&chunks, &activity),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            process::ProcessOutput::Fifos(fifos) => fifos.drains(&chunks, &activity),
         };
         let process_group = spawned.process_group;
         let exited = spawned.child.exited();

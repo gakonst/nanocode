@@ -51,6 +51,7 @@ members = [
     "crates/integrations/store-jsonl",
     "crates/tui",
     "bin/nanocode",
+    "bin/cua-driver",
 ]
 default-members = ["crates/nanocode"]
 resolver = "2"
@@ -227,6 +228,11 @@ debug = "none"
 strip = "symbols"
 panic = "unwind"
 codegen-units = 16
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
 
 [profile.profiling]
 inherits = "release"

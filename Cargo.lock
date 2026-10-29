@@ -3317,7 +3317,6 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "nanocode",
- "nanocode-cua",
  "nanocode-home",
  "nanocode-observability",
  "nanocode-store-jsonl",
@@ -3384,6 +3383,14 @@ dependencies = [
  "nanocode-mcp-tools",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "nanocode-cua-driver"
+version = "0.6.7"
+dependencies = [
+ "nanocode-cua",
  "tokio",
 ]
 

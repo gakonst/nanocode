@@ -1409,11 +1409,12 @@ impl App {
         }
         let mapped = self.mapper.apply(&mut self.transcript, event);
         let shown = self.focus.and_then(|id| self.views.get(&id)).is_none();
-        let redraw = if mapped.changed && shown
-            || mapped.accepted.is_some()
+        let redraw = if mapped.accepted.is_some()
             || event.kind == AgentEventKind::RunStarted
             || event.kind.is_terminal()
         {
+            Redraw::Immediate
+        } else if mapped.changed && shown {
             Redraw::Streaming
         } else {
             Redraw::None

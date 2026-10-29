@@ -125,10 +125,13 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         runtime.duration_ms = tracing::field::Empty
     );
     let runtime_started = std::time::Instant::now();
+    let headless = matches!(cli.command, Some(Command::Exec(_) | Command::Sessions(_)));
     let runtime = match startup.in_scope(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        if headless {
+            builder.worker_threads(1);
+        }
+        builder.enable_all().build()
     }) {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -155,9 +158,9 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
             Some(Command::Cua(args)) => cua::cua(args).await,
             Some(Command::Sessions(mut args)) => {
                 args.home = args.home.or(cli.session.home);
-                list_sessions(args).await
+                on_worker(list_sessions(args)).await
             }
-            Some(Command::Exec(args)) => exec(args.or(cli.session), clients).await,
+            Some(Command::Exec(args)) => on_worker(exec(args.or(cli.session), clients)).await,
             Some(Command::Models) => {
                 print_models();
                 Ok(())
@@ -181,6 +184,10 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     }
 }
 
+async fn on_worker(work: impl Future<Output = Result<()>> + Send + 'static) -> Result<()> {
+    tokio::spawn(work).await?
+}
+
 struct Prepared {
     host: Host,
     model: ModelSelection,
@@ -192,7 +199,7 @@ struct Prepared {
 async fn prepare(
     args: &SessionArgs,
     clients: ModelClients,
-    notify: &mut dyn FnMut(&str),
+    notify: &mut (dyn FnMut(&str) + Send),
     headless: bool,
 ) -> Result<Prepared> {
     let workspace = match &args.workspace {

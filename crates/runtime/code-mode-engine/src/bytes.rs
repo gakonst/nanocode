@@ -69,12 +69,13 @@ const LATIN1: &str = "(buffer, offset, length) => { const view = new Uint8Array(
 
 const SLICE: &str = "(text, start, size) => { let end = Math.min(text.length, start + size); if (end < text.length) { const code = text.charCodeAt(end - 1); if (code >= 0xd800 && code < 0xdc00) end--; } return [start === 0 && end === text.length ? text : text.substring(start, end), end, text.length]; }";
 
-fn view<'js>(
+fn chunks<'js>(
     ctx: &Ctx<'js>,
     buffer: &ArrayBuffer<'js>,
     offset: Opt<usize>,
     length: Opt<usize>,
-) -> rquickjs::Result<Vec<u8>> {
+    mut each: impl FnMut(&[u8]),
+) -> rquickjs::Result<usize> {
     if buffer.as_raw().is_none() {
         return Err(Exception::throw_type(ctx, "the ArrayBuffer is detached"));
     }
@@ -86,13 +87,14 @@ fn view<'js>(
         .filter(|end| *end <= size && start <= *end)
         .ok_or_else(|| Exception::throw_range(ctx, "byte range is outside the ArrayBuffer"))?;
     let latin1: rquickjs::Function<'js> = ctx.eval(LATIN1)?;
-    let mut bytes = Vec::with_capacity(end - start);
+    let mut bytes = Vec::with_capacity((end - start).min(CHUNK));
     let mut at = start;
     while at < end {
         let length = (end - at).min(CHUNK);
         let text: rquickjs::String<'js> = latin1.call((buffer.clone(), at, length))?;
         let text = text.to_cstring()?;
         let mut units = AsRef::<[u8]>::as_ref(&text).iter();
+        bytes.clear();
         while let Some(&byte) = units.next() {
             bytes.push(if byte < 0x80 {
                 byte
@@ -100,9 +102,34 @@ fn view<'js>(
                 ((byte & 0x03) << 6) | (units.next().copied().unwrap_or(0) & 0x3f)
             });
         }
+        each(&bytes);
         at += length;
     }
+    Ok(end - start)
+}
+
+fn view<'js>(
+    ctx: &Ctx<'js>,
+    buffer: &ArrayBuffer<'js>,
+    offset: Opt<usize>,
+    length: Opt<usize>,
+) -> rquickjs::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    chunks(ctx, buffer, offset, length, |chunk| {
+        bytes.extend_from_slice(chunk)
+    })?;
     Ok(bytes)
+}
+
+fn hash<'js, D: sha2::Digest>(
+    ctx: &Ctx<'js>,
+    buffer: &ArrayBuffer<'js>,
+    offset: Opt<usize>,
+    length: Opt<usize>,
+) -> rquickjs::Result<Vec<u8>> {
+    let mut hasher = D::new();
+    chunks(ctx, buffer, offset, length, |chunk| hasher.update(chunk))?;
+    Ok(hasher.finalize().to_vec())
 }
 
 fn utf8<'js>(ctx: &Ctx<'js>, text: rquickjs::String<'js>) -> rquickjs::Result<Vec<u8>> {
@@ -240,6 +267,37 @@ pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
             ArrayBuffer::new(ctx, bytes)
         },
     );
+    let digest = Func::from(
+        |ctx: Ctx<'js>,
+         algorithm: rquickjs::String<'js>,
+         buffer: ArrayBuffer<'js>,
+         offset: Opt<usize>,
+         length: Opt<usize>|
+         -> rquickjs::Result<ArrayBuffer<'js>> {
+            let digest = match algorithm.to_string()?.as_str() {
+                "SHA-1" => hash::<sha1::Sha1>(&ctx, &buffer, offset, length)?,
+                "SHA-256" => hash::<sha2::Sha256>(&ctx, &buffer, offset, length)?,
+                "SHA-384" => hash::<sha2::Sha384>(&ctx, &buffer, offset, length)?,
+                "SHA-512" => hash::<sha2::Sha512>(&ctx, &buffer, offset, length)?,
+                other => {
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        &format!("unsupported digest {other}"),
+                    ));
+                }
+            };
+            ArrayBuffer::new(ctx, digest)
+        },
+    );
+    let random = Func::from(
+        |ctx: Ctx<'js>, length: usize| -> rquickjs::Result<ArrayBuffer<'js>> {
+            let mut bytes = vec![0; length];
+            nanocode_platform::fill_random(&mut bytes).map_err(|error| {
+                Exception::throw_internal(&ctx, &format!("no randomness: {error}"))
+            })?;
+            ArrayBuffer::new(ctx, bytes)
+        },
+    );
     bytes
         .set("put", put_bytes)
         .and_then(|()| bytes.set("take", take_bytes))
@@ -249,6 +307,8 @@ pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
         .and_then(|()| bytes.set("encode", encode))
         .and_then(|()| bytes.set("toBase64", to_base64))
         .and_then(|()| bytes.set("fromBase64", from_base64))
+        .and_then(|()| bytes.set("digest", digest))
+        .and_then(|()| bytes.set("random", random))
         .and_then(|()| ctx.globals().set("__nanocodeBytes", bytes))
         .catch(ctx)
         .map_err(|error| format!("failed to install QuickJS byte buffers: {error}"))

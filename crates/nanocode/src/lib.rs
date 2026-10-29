@@ -162,9 +162,9 @@ pub use tools as oai_tools;
 pub use nanocode_backend_claude::tools as claude_tools;
 
 #[cfg(all(not(target_family = "wasm"), feature = "cua"))]
-pub use nanocode_cua as cua;
+pub use nanocode_cua_tools as cua;
 #[cfg(all(not(target_family = "wasm"), feature = "cua"))]
-pub use nanocode_cua::{ComputerConfig, ComputerTools};
+pub use nanocode_cua_tools::{ComputerConfig, ComputerTools};
 
 pub mod prelude {
     pub use crate::ClaudeHarness;

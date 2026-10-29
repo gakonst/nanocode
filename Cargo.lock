@@ -3024,7 +3024,7 @@ dependencies = [
  "nanocode-backend-claude",
  "nanocode-backend-codex",
  "nanocode-code-mode",
- "nanocode-cua",
+ "nanocode-cua-tools",
  "nanocode-durability",
  "nanocode-home",
  "nanocode-platform",
@@ -3098,7 +3098,7 @@ dependencies = [
  "async-trait",
  "nanocode-agent",
  "nanocode-agent-core",
- "nanocode-cua",
+ "nanocode-cua-tools",
  "nanocode-durability",
  "nanocode-home",
  "nanocode-platform",
@@ -3317,6 +3317,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "nanocode",
+ "nanocode-cua",
  "nanocode-home",
  "nanocode-observability",
  "nanocode-store-jsonl",
@@ -3372,14 +3373,25 @@ name = "nanocode-cua"
 version = "0.6.7"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
- "base64-simd",
  "cua-driver-core",
  "cua-driver-sdk",
  "cursor-overlay",
  "libc",
+ "nanocode-cua-tools",
  "nanocode-mcp",
  "nanocode-mcp-tools",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "nanocode-cua-tools"
+version = "0.6.7"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "base64-simd",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-types",

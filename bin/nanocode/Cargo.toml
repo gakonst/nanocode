@@ -25,6 +25,12 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "nanocode-cua-driver"
+path = "src/cua_driver.rs"
+test = false
+bench = false
+
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 clap.workspace = true
 futures-util.workspace = true
@@ -45,6 +51,9 @@ uuid = { workspace = true, features = ["v7"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nanocode-cua = { path = "../../crates/integrations/cua", version = "0.6.7" }
 
 [lints]
 workspace = true

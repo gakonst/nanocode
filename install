@@ -29,6 +29,15 @@ if [ ! -x "$bin/nanocode" ] || [ "$(cat "$bin/.nanocode.sha256" 2>/dev/null)" !=
   echo "$expected" > "$bin/.nanocode.sha256"
   echo "nanocode: installed $bin/nc" >&2
 fi
+driver="$(grep " nanocode-cua-driver-$target.gz$" "$tmp/SHA256SUMS" | cut -d' ' -f1 || true)"
+if [ -n "$driver" ] && { [ ! -x "$bin/nanocode-cua-driver" ] || [ "$(cat "$bin/.nanocode-cua-driver.sha256" 2>/dev/null)" != "$driver" ]; }; then
+  curl -fsSL "$release/nanocode-cua-driver-$target.gz" -o "$tmp/nanocode-cua-driver.gz"
+  if [ "$(digest "$tmp/nanocode-cua-driver.gz")" != "$driver" ]; then echo "nanocode: checksum mismatch for nanocode-cua-driver-$target.gz" >&2; exit 1; fi
+  gunzip -c "$tmp/nanocode-cua-driver.gz" > "$tmp/nanocode-cua-driver"
+  chmod +x "$tmp/nanocode-cua-driver"
+  mv "$tmp/nanocode-cua-driver" "$bin/nanocode-cua-driver"
+  echo "$driver" > "$bin/.nanocode-cua-driver.sha256"
+fi
 case ":$PATH:" in
   *":$bin:"*) ;;
   *)

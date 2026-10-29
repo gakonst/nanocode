@@ -43,13 +43,15 @@ fn driver() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn permissions(permissions: nanocode::cua::embedded::Permissions) {
-    let state = |granted| if granted { "granted" } else { "not granted" };
-    println!(
-        "accessibility: {}\nscreen recording: {}",
-        state(permissions.accessibility),
-        state(permissions.screen_recording)
-    );
+fn embedded_driver() -> Result<PathBuf> {
+    Ok(nanocode::cua::embedded_driver().ok_or_else(|| {
+        format!(
+            "the built-in cua-driver, nanocode-cua-driver, is missing beside {}; reinstall nanocode",
+            std::env::current_exe()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        )
+    })?)
 }
 
 fn run(command: &mut Command) -> Result<()> {
@@ -69,12 +71,15 @@ pub async fn cua(args: CuaArgs) -> Result<()> {
             skip_driver,
         } => {
             if !skip_driver && cfg!(target_os = "macos") {
-                println!(
-                    "cua-driver is built into nanocode ({}), so macOS asks for Accessibility and Screen & System Audio Recording for the app that runs it",
-                    std::env::current_exe()?.display()
-                );
                 #[cfg(target_os = "macos")]
-                permissions(nanocode::cua::embedded::request_permissions());
+                {
+                    let driver = embedded_driver()?;
+                    println!(
+                        "cua-driver is built into nanocode ({}), so macOS asks for Accessibility and Screen & System Audio Recording for the app that runs it",
+                        driver.display()
+                    );
+                    run(Command::new(driver).arg("request-permissions"))?;
+                }
             } else if !skip_driver {
                 match driver() {
                     Some(path) => println!("cua-driver: {}", path.display()),
@@ -142,7 +147,7 @@ pub async fn cua(args: CuaArgs) -> Result<()> {
                 Err(error) => println!("cua-driver backend unavailable: {error}"),
             }
             #[cfg(target_os = "macos")]
-            permissions(nanocode::cua::embedded::permissions());
+            run(Command::new(embedded_driver()?).arg("permissions"))?;
             for browser in browser::browsers(&home) {
                 println!(
                     "{}: native host {}, extension {}",
@@ -162,7 +167,7 @@ pub async fn cua(args: CuaArgs) -> Result<()> {
             println!("browser socket: {}", browser_socket(&home).display());
         }
         #[cfg(target_os = "macos")]
-        CuaCommand::DriverMcp => nanocode::cua::embedded::serve_stdio().await?,
+        CuaCommand::DriverMcp => run(Command::new(embedded_driver()?).arg("mcp"))?,
         CuaCommand::BrowserHost { .. } => {
             let socket = browser_socket(&home);
             tokio::task::spawn_blocking(move || browser::serve_host(&socket)).await??;

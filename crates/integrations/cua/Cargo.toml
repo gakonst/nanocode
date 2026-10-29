@@ -12,14 +12,10 @@ description = "Thin MCP transport for the official external Sky computer provide
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-nanocode-tool-contracts.workspace = true
+nanocode-cua-tools.workspace = true
 nanocode-mcp.workspace = true
 nanocode-mcp-tools.workspace = true
-nanocode-sync.workspace = true
 async-trait.workspace = true
-base64.workspace = true
-base64-simd.workspace = true
-nanocode-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }

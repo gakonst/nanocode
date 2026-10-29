@@ -11,7 +11,7 @@ use nanocode_agent::configuration::{NativeDefaults, RunnerServices};
 #[cfg(not(target_family = "wasm"))]
 use nanocode_agent_core::{NanocodeError, WeakAgent};
 #[cfg(all(not(target_family = "wasm"), feature = "cua"))]
-pub use nanocode_cua::{ComputerConfig, ComputerTools};
+pub use nanocode_cua_tools::{ComputerConfig, ComputerTools};
 /// Built without the `cua` feature: no computer tools can exist.
 #[cfg(all(not(target_family = "wasm"), not(feature = "cua")))]
 #[derive(Clone)]

@@ -718,6 +718,27 @@ impl Journal {
     }
 
     fn temporary(&self, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
+        let (directory, prefix) = self.temporary_prefix(suffix)?;
+        tempfile::Builder::new()
+            .prefix(&prefix)
+            .tempfile_in(directory)
+    }
+
+    fn temporary_copy(
+        &self,
+        suffix: &str,
+        source: &Path,
+    ) -> std::io::Result<tempfile::NamedTempFile> {
+        let (directory, prefix) = self.temporary_prefix(suffix)?;
+        tempfile::Builder::new()
+            .prefix(&prefix)
+            .make_in(directory, |path| {
+                std::fs::copy(source, path)?;
+                OpenOptions::new().read(true).append(true).open(path)
+            })
+    }
+
+    fn temporary_prefix(&self, suffix: &str) -> std::io::Result<(&Path, std::ffi::OsString)> {
         let directory = self
             .path
             .parent()
@@ -729,9 +750,7 @@ impl Journal {
             .to_os_string();
         prefix.push(suffix);
         prefix.push(format!("{}-", std::process::id()));
-        tempfile::Builder::new()
-            .prefix(&prefix)
-            .tempfile_in(directory)
+        Ok((directory, prefix))
     }
 
     fn clear_temporaries(&self) -> std::io::Result<()> {

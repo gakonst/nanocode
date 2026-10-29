@@ -30,7 +30,11 @@ pub(super) struct Index {
     deferred: HashMap<String, RecordBlock>,
     summaries: Option<HashMap<String, (u64, Option<StateSummary>)>>,
     deferred_summaries: Option<RecordBlock>,
+    pristine: HashMap<String, RecordBlock>,
+    pristine_summaries: Option<RecordBlock>,
     file: Option<File>,
+    length: u64,
+    checksum: [u8; 32],
     saved: Option<String>,
 }
 
@@ -100,24 +104,32 @@ impl Index {
             deferred: HashMap::new(),
             summaries: None,
             deferred_summaries: None,
+            pristine: HashMap::new(),
+            pristine_summaries: None,
             file: None,
+            length: 0,
+            checksum: [0; 32],
             saved: None,
         }
     }
 
     pub(super) fn load_summaries(&mut self) -> &mut HashMap<String, (u64, Option<StateSummary>)> {
         if self.summaries.is_none() {
-            let loaded = self.deferred_summaries.take().map(|block| {
+            let block = self.deferred_summaries.take();
+            let loaded = block.map(|block| {
                 let file = self.file.as_mut().ok_or_else(invalid)?;
                 let bytes = read_block(file, block)?;
                 serde_json::from_slice::<Vec<(String, u64, Option<StateSummary>)>>(&bytes)
                     .map_err(io::Error::other)
             });
             let summaries = match loaded {
-                Some(Ok(summaries)) => summaries
-                    .into_iter()
-                    .map(|(id, revision, summary)| (id, (revision, summary)))
-                    .collect(),
+                Some(Ok(summaries)) => {
+                    self.pristine_summaries = block;
+                    summaries
+                        .into_iter()
+                        .map(|(id, revision, summary)| (id, (revision, summary)))
+                        .collect()
+                }
                 Some(Err(error)) => {
                     tracing::warn!(%error, "dropping unreadable JSONL session summaries");
                     HashMap::new()
@@ -142,6 +154,8 @@ impl Index {
         }
         self.load_summaries();
         self.file = None;
+        self.pristine.clear();
+        self.pristine_summaries = None;
         self.migrated = false;
         self.offset = offset;
         self.last = last;
@@ -189,6 +203,7 @@ impl Index {
         }
         self.states.get_mut(id).ok_or_else(invalid)?.records = records;
         self.deferred.remove(id);
+        self.pristine.insert(id.to_owned(), block);
         Ok(())
     }
 
@@ -357,6 +372,10 @@ impl Journal {
             index.deferred_summaries = Some(block);
         }
         index.file = Some(file);
+        if format.is_none() {
+            index.length = length;
+            index.checksum = checksum;
+        }
         self.checked_index(index, file_identity)
     }
 
@@ -419,10 +438,129 @@ impl Journal {
 
     fn write_index(&mut self) -> io::Result<()> {
         self.index.anchor = digest_anchor(&mut self.reads, self.index.last)?;
+        if self.index.length > 0
+            && self.index.file.is_some()
+            && self.index_file_unchanged()
+            && self.append_index()?
+        {
+            return Ok(());
+        }
+        self.rewrite_index()
+    }
+
+    fn append_index(&mut self) -> io::Result<bool> {
+        let path = self.index_path();
+        let start = self.index.length;
+        let mut copy = self.temporary_copy(".index-", &path)?;
+        if copy.as_file().metadata()?.len() != start
+            || trailer_checksum(copy.as_file_mut())? != self.index.checksum
+        {
+            return Ok(false);
+        }
+        let mut appended = Vec::new();
+        let mut written = Vec::new();
+        let mut live = MAGIC.len() as u64;
+        let mut states = HashMap::with_capacity(self.index.states.len());
+        for (id, state) in &self.index.states {
+            let records = match self.index.deferred.get(id) {
+                Some(block) => *block,
+                None => {
+                    let before = appended.len();
+                    encode_records(&state.records, &mut appended)?;
+                    let block =
+                        appended_block(&appended, before, start, Some(BlockFormat::Records));
+                    match self.index.pristine.get(id) {
+                        Some(pristine) if same_block(pristine, &block) => {
+                            appended.truncate(before);
+                            *pristine
+                        }
+                        _ => {
+                            written.push((id.clone(), block));
+                            block
+                        }
+                    }
+                }
+            };
+            live += records.location.length as u64;
+            states.insert(
+                id.clone(),
+                SavedState {
+                    revision: state.revision,
+                    location: state.location,
+                    records,
+                },
+            );
+        }
+        let mut summaries_written = None;
+        let summaries = match &self.index.summaries {
+            Some(summaries) => {
+                let before = appended.len();
+                encode_summaries(summaries, &mut appended)?;
+                let block = appended_block(&appended, before, start, None);
+                match self.index.pristine_summaries {
+                    Some(pristine) if same_block(&pristine, &block) => {
+                        appended.truncate(before);
+                        Some(pristine)
+                    }
+                    _ => {
+                        summaries_written = Some(block);
+                        Some(block)
+                    }
+                }
+            }
+            None => self.index.deferred_summaries,
+        };
+        live += summaries.map_or(0, |block| block.location.length as u64);
+        let header = appended.len();
+        let checksum = self.append_header(&mut appended, states, summaries)?;
+        live += (appended.len() - header) as u64;
+        let length = start + appended.len() as u64;
+        if length > live.saturating_mul(2) {
+            return Ok(false);
+        }
+        copy.write_all(&appended)?;
+        let file = copy.persist(path).map_err(|error| error.error)?;
+        self.index.saved = Some(identity(&file.metadata()?).map_err(io::Error::other)?);
+        self.index.pristine.extend(written);
+        if summaries_written.is_some() {
+            self.index.pristine_summaries = summaries_written;
+        }
+        self.index.file = Some(file);
+        self.index.length = length;
+        self.index.checksum = checksum;
+        Ok(true)
+    }
+
+    fn append_header(
+        &self,
+        output: &mut Vec<u8>,
+        states: HashMap<String, SavedState>,
+        summaries: Option<RecordBlock>,
+    ) -> io::Result<[u8; 32]> {
+        let saved = SavedIndex {
+            source: self.index.source.clone(),
+            offset: self.index.offset,
+            owners: self.index.owners.clone(),
+            states,
+            created: self.index.created.clone(),
+            last: self.index.last,
+            anchor: self.index.anchor,
+            summaries,
+        };
+        let payload = serde_json::to_vec(&saved).map_err(io::Error::other)?;
+        let checksum: [u8; 32] = Sha256::digest(&payload).into();
+        output.extend_from_slice(&payload);
+        output.extend_from_slice(&checksum);
+        output.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        Ok(checksum)
+    }
+
+    fn rewrite_index(&mut self) -> io::Result<()> {
         let path = self.index_path();
         let mut temporary = self.temporary(".index-")?;
         temporary.write_all(MAGIC)?;
         let mut states = HashMap::with_capacity(self.index.states.len());
+        let mut blocks = Vec::with_capacity(self.index.states.len());
         for (id, state) in &self.index.states {
             let position = temporary.stream_position()?;
             let mut output = DigestWriter {
@@ -459,6 +597,7 @@ impl Journal {
                 digest: output.digest.finalize().into(),
                 format,
             };
+            blocks.push((id.clone(), records));
             states.insert(
                 id.clone(),
                 SavedState {
@@ -479,14 +618,7 @@ impl Journal {
             if let Some(summaries) = &self.index.summaries {
                 let mut buffered =
                     io::BufWriter::with_capacity(INDEX_COPY_BUFFER_BYTES, &mut output);
-                serde_json::to_writer(
-                    &mut buffered,
-                    &summaries
-                        .iter()
-                        .map(|(id, (revision, summary))| (id, revision, summary))
-                        .collect::<Vec<_>>(),
-                )
-                .map_err(io::Error::other)?;
+                encode_summaries(summaries, &mut buffered)?;
                 buffered.flush()?;
             } else if let Some(block) = self.index.deferred_summaries {
                 let file = self.index.file.as_mut().ok_or_else(invalid)?;
@@ -513,24 +645,71 @@ impl Journal {
         } else {
             None
         };
-        let saved = SavedIndex {
-            source: self.index.source.clone(),
-            offset: self.index.offset,
-            owners: self.index.owners.clone(),
-            states,
-            created: self.index.created.clone(),
-            last: self.index.last,
-            anchor: self.index.anchor,
-            summaries,
-        };
-        let payload = serde_json::to_vec(&saved).map_err(io::Error::other)?;
-        temporary.write_all(&payload)?;
-        temporary.write_all(&Sha256::digest(&payload))?;
-        temporary.write_all(&(payload.len() as u64).to_le_bytes())?;
+        let mut header = Vec::new();
+        let checksum = self.append_header(&mut header, states, summaries)?;
+        temporary.write_all(&header)?;
         let file = temporary.persist(path).map_err(|error| error.error)?;
-        self.index.saved = Some(identity(&file.metadata()?).map_err(io::Error::other)?);
+        let metadata = file.metadata()?;
+        self.index.saved = Some(identity(&metadata).map_err(io::Error::other)?);
+        for (id, block) in blocks {
+            match self.index.deferred.get_mut(&id) {
+                Some(deferred) => *deferred = block,
+                None => {
+                    self.index.pristine.insert(id, block);
+                }
+            }
+        }
+        if self.index.summaries.is_some() {
+            self.index.pristine_summaries = summaries;
+        } else {
+            self.index.deferred_summaries = summaries;
+        }
+        self.index.file = Some(file);
+        self.index.length = metadata.len();
+        self.index.checksum = checksum;
         Ok(())
     }
+}
+
+fn appended_block(
+    output: &[u8],
+    start: usize,
+    base: u64,
+    format: Option<BlockFormat>,
+) -> RecordBlock {
+    RecordBlock {
+        location: Location {
+            position: base + start as u64,
+            length: output.len() - start,
+        },
+        digest: Sha256::digest(&output[start..]).into(),
+        format,
+    }
+}
+
+fn same_block(saved: &RecordBlock, block: &RecordBlock) -> bool {
+    saved.location.length == block.location.length && saved.digest == block.digest
+}
+
+fn trailer_checksum(file: &mut File) -> io::Result<[u8; 32]> {
+    file.seek(SeekFrom::End(
+        -((Sha256::output_size() + size_of::<u64>()) as i64),
+    ))?;
+    let mut checksum = [0; 32];
+    file.read_exact(&mut checksum)?;
+    Ok(checksum)
+}
+
+fn encode_summaries(
+    summaries: &HashMap<String, (u64, Option<StateSummary>)>,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    let mut listed = summaries
+        .iter()
+        .map(|(id, (revision, summary))| (id, revision, summary))
+        .collect::<Vec<_>>();
+    listed.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    serde_json::to_writer(output, &listed).map_err(io::Error::other)
 }
 
 struct DigestWriter<'a, W> {
@@ -568,7 +747,9 @@ fn valid_location(location: Location, end: u64) -> bool {
 }
 
 fn encode_records(records: &HashMap<String, Record>, output: &mut impl Write) -> io::Result<()> {
-    for (key, record) in records {
+    let mut sorted = records.iter().collect::<Vec<_>>();
+    sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    for (key, record) in sorted {
         output.write_all(&(key.len() as u64).to_le_bytes())?;
         output.write_all(key.as_bytes())?;
         let (tag, location, digest) = match record {

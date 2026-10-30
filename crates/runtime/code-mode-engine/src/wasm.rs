@@ -72,7 +72,7 @@ impl Engine {
             HashMap::new(),
             Rc::clone(&self.rejections),
         );
-        let (run_cell, prelude) = context.with(|ctx| {
+        let compiled = context.with(|ctx| {
             let run_cell = prepare_execution(&ctx, &state, prelude.is_some())?;
             let prelude = prelude
                 .map(|source| {
@@ -81,7 +81,8 @@ impl Engine {
                 })
                 .transpose()?;
             Ok::<_, String>((Persistent::save(&ctx, run_cell), prelude))
-        })?;
+        });
+        let (run_cell, prelude) = compiled.inspect_err(|_| clear_pending(&state))?;
         Ok(Prepared {
             context,
             state,
@@ -196,13 +197,19 @@ impl EmbeddedHost {
                 previous.close(&engine.runtime);
             }
             engine.retire();
-            let prepared = engine
-                .prepared
-                .take()
-                .filter(|prepared| {
-                    prepared.prelude.as_ref().map(|(source, _)| source) == prelude.as_ref()
-                })
-                .map_or_else(|| engine.prepare(prelude.as_ref()), Ok)?;
+            let prepared = match engine.prepared.take() {
+                Some(prepared)
+                    if prepared.prelude.as_ref().map(|(source, _)| source) == prelude.as_ref() =>
+                {
+                    prepared
+                }
+                stale => {
+                    if let Some(stale) = stale {
+                        clear_pending(&stale.state);
+                    }
+                    engine.prepare(prelude.as_ref())?
+                }
+            };
             engine.prelude = Some(prelude);
             begin_execution(&prepared.state, execution_id, stored, journaling);
             let Prepared {
@@ -331,12 +338,7 @@ impl EmbeddedHost {
             .try_with(|engines| engines.borrow_mut().remove(&self.key))
             .ok()
             .flatten();
-        if let Some(mut engine) = engine {
-            if let Some(execution) = engine.execution.take() {
-                execution.close(&engine.runtime);
-            }
-            engine.retire();
-        }
+        drop(engine);
     }
 
     fn with_engine<T>(&self, run: impl FnOnce(&mut Engine) -> T) -> Option<T> {
@@ -416,11 +418,18 @@ impl Drop for EmbeddedHost {
             .try_with(|engines| engines.borrow_mut().remove(&self.key))
             .ok()
             .flatten();
-        if let Some(mut engine) = engine {
-            if let Some(execution) = engine.execution.take() {
-                execution.close(&engine.runtime);
-            }
-            engine.retire();
+        drop(engine);
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if let Some(execution) = self.execution.take() {
+            execution.close(&self.runtime);
+        }
+        self.retire();
+        if let Some(prepared) = self.prepared.take() {
+            clear_pending(&prepared.state);
         }
     }
 }

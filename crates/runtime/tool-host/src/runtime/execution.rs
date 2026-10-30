@@ -526,6 +526,9 @@ impl NativeToolRuntime {
             self.default_shell_name = Arc::clone(default_shell);
         }
         self.executors.clone_from(&tools.code_mode_executors);
+        if let Some(journals) = &tools.cell_journals {
+            self.code_mode.set_journals(journals.clone());
+        }
         registry.hand_calls = tools.hand_calls.clone().or_else(|| {
             tools
                 .code_mode_executors
@@ -600,6 +603,7 @@ impl NativeToolRuntime {
                 .await);
         }
         let session_id = self.executors.is_some().then(|| context.session_id.clone());
+        self.code_mode.adopt(self.registry.clone(), &context).await;
         let execution = match observer {
             Some(observer) => {
                 self.code_mode
@@ -783,6 +787,12 @@ impl NativeToolRuntime {
         Result<CodeModeExecution, crate::embedded::CodeModeHostError>,
     > {
         Box::pin(async move {
+            self.code_mode
+                .adopt(
+                    self.registry.clone(),
+                    &OwnedToolContext::from_context(context),
+                )
+                .await;
             let Some(executors) = &self.executors else {
                 return Ok(self
                     .code_mode
@@ -855,6 +865,14 @@ impl NativeToolRuntime {
                         host: Some(host), ..
                     }),
                 ) => host.recover(context).await,
+                (_, Placement::Local) => Ok(self
+                    .code_mode
+                    .recover_with_updates(
+                        self.registry.clone(),
+                        OwnedToolContext::from_context(context),
+                        &mut IgnoreUpdates,
+                    )
+                    .await),
                 _ => Ok(None),
             }
         })

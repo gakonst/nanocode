@@ -22,6 +22,8 @@ use tokio::sync::mpsc;
 
 use nanocode_tool_contracts::ToolOutputContent;
 
+use crate::journal::{CellJournaling, JournalEntry, SharedJournal, lock as lock_journal};
+
 pub enum RuntimeEvent {
     ToolCall {
         cell_id: u64,
@@ -50,6 +52,16 @@ pub enum RuntimeEvent {
         message: String,
         stored: HashMap<String, Arc<RawValue>>,
     },
+    Held {
+        cell_id: u64,
+    },
+    Replayed {
+        cell_id: u64,
+    },
+    Diverged {
+        cell_id: u64,
+        reason: String,
+    },
 }
 
 impl RuntimeEvent {
@@ -60,7 +72,10 @@ impl RuntimeEvent {
             | Self::Content { cell_id, .. }
             | Self::Yielded { cell_id, .. }
             | Self::Done { cell_id, .. }
-            | Self::Error { cell_id, .. } => *cell_id,
+            | Self::Error { cell_id, .. }
+            | Self::Held { cell_id }
+            | Self::Replayed { cell_id }
+            | Self::Diverged { cell_id, .. } => *cell_id,
         }
     }
 }
@@ -230,11 +245,100 @@ pub(crate) struct ExecutionState {
     uncaught: Option<SavedFunction>,
     failure: Option<String>,
     pending_text: RefCell<Option<String>>,
+    journal: Option<SharedJournal>,
+    replay: Option<Replay>,
+}
+
+pub(crate) struct Replay {
+    entries: Vec<JournalEntry>,
+    pos: usize,
+    diverged: Option<String>,
+}
+
+pub(crate) enum Expectation {
+    Live(JournalEntry),
+    Replayed(JournalEntry),
+    Diverged,
 }
 
 const PENDING_TEXT_BYTES: usize = 64 * 1024;
 
 impl ExecutionState {
+    const fn journaling(&self) -> bool {
+        self.journal.is_some() || self.replay.is_some()
+    }
+
+    fn record(&self, entry: JournalEntry, weight: usize) {
+        if let Some(journal) = &self.journal {
+            lock_journal(journal).record(entry, weight);
+        }
+    }
+
+    pub(crate) fn expect(&mut self, wanted: JournalEntry, weight: usize) -> Expectation {
+        if self
+            .replay
+            .as_ref()
+            .is_some_and(|replay| replay.diverged.is_none() && replay.pos >= replay.entries.len())
+        {
+            self.finish_replay();
+        }
+        let Some(replay) = self.replay.as_mut() else {
+            if self.journal.is_some() {
+                self.record(wanted.clone(), weight);
+            }
+            return Expectation::Live(wanted);
+        };
+        if replay.diverged.is_some() {
+            return Expectation::Diverged;
+        }
+        match replay.entries.get(replay.pos).cloned() {
+            Some(found) if found.same_step(&wanted) => {
+                replay.pos += 1;
+                self.record(found.clone(), weight);
+                Expectation::Replayed(found)
+            }
+            found => {
+                replay.diverged = Some(divergence(replay.pos, found.as_ref(), &wanted));
+                Expectation::Diverged
+            }
+        }
+    }
+
+    pub(crate) fn finish_replay(&mut self) {
+        if self.replay.take().is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let wall = wall_ms();
+        let mut scheduled = Vec::new();
+        for (id, timeout) in &mut self.pending_timeouts {
+            let Some((at_ms, delay_ms)) = timeout.planned.take() else {
+                continue;
+            };
+            let due = at_ms.saturating_add(delay_ms).saturating_sub(wall);
+            timeout.deadline = now.checked_add(Duration::from_millis(due));
+            if let Some(deadline) = timeout.deadline {
+                scheduled.push((deadline, *id));
+            }
+        }
+        self.timeout_order.extend(scheduled);
+        let _ = self.send(RuntimeEvent::Replayed {
+            cell_id: self.execution_id,
+        });
+    }
+
+    pub(crate) fn random_bytes(&mut self, live: Vec<u8>) -> Vec<u8> {
+        if !self.journaling() {
+            return live;
+        }
+        let length = live.len();
+        match self.expect(JournalEntry::Bytes { data: live }, length) {
+            Expectation::Live(JournalEntry::Bytes { data })
+            | Expectation::Replayed(JournalEntry::Bytes { data }) => data,
+            _ => vec![0; length],
+        }
+    }
+
     pub(crate) fn send(
         &self,
         event: RuntimeEvent,
@@ -276,6 +380,29 @@ impl ExecutionState {
 pub(crate) struct PendingTimeout {
     callback: SavedFunction,
     deadline: Option<Instant>,
+    planned: Option<(u64, u64)>,
+}
+
+fn wall_ms() -> u64 {
+    nanocode_platform::system_time()
+        .duration_since(nanocode_platform::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn divergence(position: usize, found: Option<&JournalEntry>, wanted: &JournalEntry) -> String {
+    match found {
+        Some(found) => format!(
+            "at journal entry {position} the script reached {} where the journal recorded {}",
+            wanted.describe(),
+            found.describe()
+        ),
+        None => format!(
+            "the script reached {} past the journal's end",
+            wanted.describe()
+        ),
+    }
 }
 
 #[derive(Deserialize)]
@@ -314,6 +441,8 @@ pub(crate) fn new_state(
         uncaught: None,
         failure: None,
         pending_text: RefCell::new(None),
+        journal: None,
+        replay: None,
     }))
 }
 
@@ -321,11 +450,24 @@ pub(crate) fn begin_execution(
     state: &Rc<RefCell<ExecutionState>>,
     execution_id: u64,
     stored: HashMap<String, Arc<RawValue>>,
+    journaling: Option<CellJournaling>,
 ) {
     let mut state = state.borrow_mut();
     state.rejections.borrow_mut().clear();
     state.execution_id = execution_id;
     state.stored = stored;
+    let (journal, replay) = journaling.map_or((None, None), |journaling| {
+        (
+            Some(journaling.journal),
+            journaling.replay.map(|entries| Replay {
+                entries,
+                pos: 0,
+                diverged: None,
+            }),
+        )
+    });
+    state.journal = journal;
+    state.replay = replay;
 }
 
 pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
@@ -334,6 +476,8 @@ pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
     state.pending_timeouts.clear();
     state.timeout_order.clear();
     state.uncaught = None;
+    state.journal = None;
+    state.replay = None;
     let rejections = std::mem::take(&mut *state.rejections.borrow_mut());
     drop(state);
     drop(rejections);
@@ -394,7 +538,7 @@ pub(crate) fn prepare_execution<'js>(
     state.borrow_mut().uncaught = Some(Persistent::save(ctx, uncaught));
     remove_native_globals(ctx)?;
     if bytes {
-        crate::bytes::install(ctx)?;
+        crate::bytes::install(ctx, state)?;
     }
     Ok(run_cell)
 }
@@ -476,13 +620,44 @@ pub(crate) fn install_native_functions<'js>(
                             Persistent::save(&ctx, reject),
                         ),
                     );
-                    let _ = state.send(RuntimeEvent::ToolCall {
-                        cell_id: state.execution_id,
-                        id,
-                        name,
-                        input,
-                        host: host.0.unwrap_or(false),
-                    });
+                    let host = host.0.unwrap_or(false);
+                    if !state.journaling() {
+                        let _ = state.send(RuntimeEvent::ToolCall {
+                            cell_id: state.execution_id,
+                            id,
+                            name,
+                            input,
+                            host,
+                        });
+                        return Ok(promise);
+                    }
+                    let weight = name.len().saturating_add(input_json.len());
+                    match state.expect(
+                        JournalEntry::Call {
+                            id,
+                            name,
+                            input,
+                            host,
+                        },
+                        weight,
+                    ) {
+                        Expectation::Live(JournalEntry::Call {
+                            id,
+                            name,
+                            input,
+                            host,
+                        }) => {
+                            let _ = state.send(RuntimeEvent::ToolCall {
+                                cell_id: state.execution_id,
+                                id,
+                                name,
+                                input,
+                                host,
+                            });
+                        }
+                        Expectation::Live(_) | Expectation::Replayed(_) => state.flush_text(),
+                        Expectation::Diverged => {}
+                    }
                     Ok(promise)
                 },
             ),
@@ -626,7 +801,23 @@ pub(crate) fn install_native_functions<'js>(
                     let mut state = timeout_state.borrow_mut();
                     let id = state.next_timeout_id;
                     state.next_timeout_id = state.next_timeout_id.saturating_add(1);
-                    let deadline = Instant::now().checked_add(Duration::from_millis(delay_ms));
+                    let mut deadline = Instant::now().checked_add(Duration::from_millis(delay_ms));
+                    let mut planned = None;
+                    if state.journaling() {
+                        let wanted = JournalEntry::Timeout {
+                            id,
+                            delay_ms,
+                            at_ms: wall_ms(),
+                        };
+                        match state.expect(wanted, 0) {
+                            Expectation::Replayed(JournalEntry::Timeout { at_ms, .. }) => {
+                                planned = Some((at_ms, delay_ms));
+                                deadline = None;
+                            }
+                            Expectation::Diverged => deadline = None,
+                            Expectation::Live(_) | Expectation::Replayed(_) => {}
+                        }
+                    }
                     if let Some(deadline) = deadline {
                         state.timeout_order.insert((deadline, id));
                     }
@@ -635,6 +826,7 @@ pub(crate) fn install_native_functions<'js>(
                         PendingTimeout {
                             callback: Persistent::save(&ctx, callback),
                             deadline,
+                            planned,
                         },
                     );
                     Ok(id)
@@ -643,6 +835,33 @@ pub(crate) fn install_native_functions<'js>(
         )
         .catch(ctx)
         .map_err(|error| format!("failed to install QuickJS timer callback: {error}"))?;
+
+    let value_state = Rc::clone(state);
+    globals
+        .set(
+            "__nanocodeValue",
+            Func::from(move |kind: u8, live: f64| -> f64 {
+                let mut state = value_state.borrow_mut();
+                if !state.journaling() {
+                    return live;
+                }
+                let wanted = match kind {
+                    0 => JournalEntry::Clock { value: live },
+                    1 => JournalEntry::Monotonic { value: live },
+                    _ => JournalEntry::Random { value: live },
+                };
+                match state.expect(wanted, 0) {
+                    Expectation::Replayed(
+                        JournalEntry::Clock { value }
+                        | JournalEntry::Monotonic { value }
+                        | JournalEntry::Random { value },
+                    ) => value,
+                    _ => live,
+                }
+            }),
+        )
+        .catch(ctx)
+        .map_err(|error| format!("failed to install QuickJS value callback: {error}"))?;
 
     let clear_timeout_state = Rc::clone(state);
     globals
@@ -698,6 +917,7 @@ pub(crate) fn remove_native_globals(ctx: &Ctx<'_>) -> Result<(), String> {
         "__nanocodeYield",
         "__nanocodeSetTimeout",
         "__nanocodeClearTimeout",
+        "__nanocodeValue",
         "console",
         "Atomics",
         "SharedArrayBuffer",
@@ -793,6 +1013,20 @@ pub(crate) fn resolve_tool(
         .pending_tools
         .remove(&id)
         .ok_or_else(|| format!("embedded QuickJS received a result for unknown tool call {id}"))?;
+    {
+        let state = state.borrow();
+        if state.journal.is_some() {
+            let weight = encoded.len();
+            state.record(
+                JournalEntry::Result {
+                    id,
+                    encoded: encoded.clone(),
+                    success,
+                },
+                weight,
+            );
+        }
+    }
     let function = if success { resolve } else { reject };
     let function = function
         .restore(ctx)
@@ -819,6 +1053,7 @@ pub(crate) fn invoke_timeout(
     let Some(timeout) = timeout else {
         return Ok(());
     };
+    state.borrow().record(JournalEntry::Timer { id }, 0);
     let callback = timeout
         .callback
         .restore(ctx)
@@ -827,6 +1062,62 @@ pub(crate) fn invoke_timeout(
         .call::<_, ()>(())
         .catch(ctx)
         .map_err(|error| format!("embedded QuickJS timeout callback failed: {error}"))
+}
+
+pub(crate) fn replay_inputs(
+    ctx: &Ctx<'_>,
+    state: &Rc<RefCell<ExecutionState>>,
+    promise: &Promise<'_>,
+) -> Result<Option<String>, String> {
+    loop {
+        let (position, next) = {
+            let state = state.borrow();
+            let Some(replay) = state.replay.as_ref() else {
+                return Ok(None);
+            };
+            if let Some(reason) = &replay.diverged {
+                return Ok(Some(reason.clone()));
+            }
+            (replay.pos, replay.entries.get(replay.pos).cloned())
+        };
+        let Some(entry) = next else {
+            state.borrow_mut().finish_replay();
+            return Ok(None);
+        };
+        if !matches!(promise.state(), PromiseState::Pending) {
+            return Ok(Some(format!(
+                "the script finished before journal entry {position} ({})",
+                entry.describe()
+            )));
+        }
+        let known = {
+            let state = state.borrow();
+            match &entry {
+                JournalEntry::Result { id, .. } => state.pending_tools.contains_key(id),
+                JournalEntry::Timer { id } => state.pending_timeouts.contains_key(id),
+                _ => false,
+            }
+        };
+        if !known {
+            return Ok(Some(format!(
+                "the script did not reach {} that the journal recorded at entry {position}",
+                entry.describe()
+            )));
+        }
+        if let Some(replay) = state.borrow_mut().replay.as_mut() {
+            replay.pos += 1;
+        }
+        match entry {
+            JournalEntry::Result {
+                id,
+                encoded,
+                success,
+            } => resolve_tool(ctx, state, id, encoded, success)?,
+            JournalEntry::Timer { id } => invoke_timeout(ctx, state, id)?,
+            _ => {}
+        }
+        drain_jobs(ctx, state);
+    }
 }
 
 pub(crate) fn next_timeout_wait(state: &Rc<RefCell<ExecutionState>>) -> Option<Duration> {

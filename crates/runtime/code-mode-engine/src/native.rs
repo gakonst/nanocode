@@ -15,11 +15,14 @@ use rquickjs::{CatchResultExt, Context, Ctx, Function, Persistent, Runtime};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::cell::{
-    ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, completed_terminal,
-    drain_jobs, install_bootstrap, install_prelude, invoke_timeout, new_state, next_due_timeout,
-    next_timeout_wait, prepare_execution, resolve_tool, send_terminal, start_execution,
-    track_rejections,
+use crate::{
+    cell::{
+        ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
+        completed_terminal, drain_jobs, install_bootstrap, install_prelude, invoke_timeout,
+        new_state, next_due_timeout, next_timeout_wait, prepare_execution, replay_inputs,
+        resolve_tool, send_terminal, start_execution, track_rejections,
+    },
+    journal::CellJournaling,
 };
 
 struct Prepared {
@@ -80,6 +83,7 @@ struct StartExecution {
     tools: Vec<Value>,
     stored: HashMap<String, Arc<RawValue>>,
     prelude: Option<Arc<str>>,
+    journaling: Option<CellJournaling>,
 }
 
 enum HostCommand {
@@ -89,6 +93,12 @@ enum HostCommand {
         id: u64,
         encoded: String,
         success: bool,
+    },
+    Hold {
+        execution_id: u64,
+    },
+    Release {
+        execution_id: u64,
     },
     Shutdown,
 }
@@ -139,6 +149,7 @@ impl EmbeddedHost {
         stored: HashMap<String, Arc<RawValue>>,
         tools: Vec<Value>,
         prelude: Option<Arc<str>>,
+        journaling: Option<CellJournaling>,
     ) -> Result<(), String> {
         self.command_tx
             .send(HostCommand::Start(StartExecution {
@@ -147,6 +158,7 @@ impl EmbeddedHost {
                 tools,
                 stored,
                 prelude,
+                journaling,
             }))
             .map_err(|_| self.unavailable("embedded QuickJS code-mode host is unavailable"))
     }
@@ -175,6 +187,18 @@ impl EmbeddedHost {
             .map_err(|_| {
                 "embedded QuickJS code-mode host closed before accepting a tool result".into()
             })
+    }
+
+    pub fn hold(&self, execution_id: u64) -> Result<(), String> {
+        self.command_tx
+            .send(HostCommand::Hold { execution_id })
+            .map_err(|_| "embedded QuickJS code-mode host closed before holding a cell".into())
+    }
+
+    pub fn release(&self, execution_id: u64) -> Result<(), String> {
+        self.command_tx
+            .send(HostCommand::Release { execution_id })
+            .map_err(|_| "embedded QuickJS code-mode host closed before releasing a cell".into())
     }
 
     pub async fn terminate(&mut self) {
@@ -257,7 +281,11 @@ fn run_worker(
                 }
                 prepared = Prepared::new(&runtime, event_tx, &rejections, bytes).ok();
             }
-            Ok(HostCommand::ToolResult { .. }) => {}
+            Ok(
+                HostCommand::ToolResult { .. }
+                | HostCommand::Hold { .. }
+                | HostCommand::Release { .. },
+            ) => {}
             Ok(HostCommand::Shutdown) | Err(_) => return,
         }
     }
@@ -281,7 +309,7 @@ fn run_execution_in_context(
 ) -> Result<(), String> {
     let execution_id = start.execution_id;
     let state = &prepared.state;
-    begin_execution(state, execution_id, start.stored);
+    begin_execution(state, execution_id, start.stored, start.journaling);
     let run_cell = prepared
         .run_cell
         .clone()
@@ -298,6 +326,15 @@ fn run_execution_in_context(
     )?;
 
     let result = (|| {
+        if let Some(reason) = replay_inputs(ctx, state, &promise)? {
+            return state
+                .borrow()
+                .send(RuntimeEvent::Diverged {
+                    cell_id: execution_id,
+                    reason,
+                })
+                .map_err(|_| "embedded QuickJS execution observer closed".to_owned());
+        }
         loop {
             if let Some(terminal) = completed_terminal(ctx, &promise)? {
                 return send_terminal(state, terminal);
@@ -322,15 +359,62 @@ fn run_execution_in_context(
                         }
                     }
                 }
+                CommandPoll::Command(HostCommand::Hold { execution_id: held })
+                    if held == execution_id =>
+                {
+                    hold_execution(ctx, state, execution_id, command_rx)?;
+                }
                 CommandPoll::Command(HostCommand::Shutdown) | CommandPoll::Disconnected => {
                     return Err("embedded QuickJS host stopped".into());
                 }
-                CommandPoll::Command(HostCommand::Start(_) | HostCommand::ToolResult { .. }) => {}
+                CommandPoll::Command(
+                    HostCommand::Start(_)
+                    | HostCommand::ToolResult { .. }
+                    | HostCommand::Hold { .. }
+                    | HostCommand::Release { .. },
+                ) => {}
             }
         }
     })();
     clear_pending(state);
     result
+}
+
+fn hold_execution(
+    ctx: &Ctx<'_>,
+    state: &Rc<std::cell::RefCell<ExecutionState>>,
+    execution_id: u64,
+    command_rx: &std_mpsc::Receiver<HostCommand>,
+) -> Result<(), String> {
+    state
+        .borrow()
+        .send(RuntimeEvent::Held {
+            cell_id: execution_id,
+        })
+        .map_err(|_| "embedded QuickJS execution observer closed".to_owned())?;
+    let mut stashed = Vec::new();
+    loop {
+        match command_rx.recv() {
+            Ok(HostCommand::Release {
+                execution_id: released,
+            }) if released == execution_id => break,
+            Ok(HostCommand::ToolResult {
+                execution_id: result_execution_id,
+                id,
+                encoded,
+                success,
+            }) if result_execution_id == execution_id => stashed.push((id, encoded, success)),
+            Ok(HostCommand::Shutdown) | Err(_) => {
+                return Err("embedded QuickJS host stopped".into());
+            }
+            Ok(_) => {}
+        }
+    }
+    for (id, encoded, success) in stashed {
+        resolve_tool(ctx, state, id, encoded, success)?;
+        drain_jobs(ctx, state);
+    }
+    Ok(())
 }
 
 fn receive_command(

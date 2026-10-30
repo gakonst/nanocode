@@ -183,7 +183,14 @@ impl EmbeddedHost {
         stored: HashMap<String, Arc<RawValue>>,
         tools: Vec<Value>,
         prelude: Option<Arc<str>>,
+        journaling: Option<crate::journal::CellJournaling>,
     ) -> Result<(), String> {
+        if journaling
+            .as_ref()
+            .is_some_and(|journaling| journaling.replay.is_some())
+        {
+            return Err("this Code Mode host cannot replay a cell".into());
+        }
         self.step(|engine| {
             if let Some(previous) = engine.execution.take() {
                 previous.close(&engine.runtime);
@@ -197,7 +204,7 @@ impl EmbeddedHost {
                 })
                 .map_or_else(|| engine.prepare(prelude.as_ref()), Ok)?;
             engine.prelude = Some(prelude);
-            begin_execution(&prepared.state, execution_id, stored);
+            begin_execution(&prepared.state, execution_id, stored, journaling);
             let Prepared {
                 context,
                 state,
@@ -309,6 +316,14 @@ impl EmbeddedHost {
                 }
             }
         }
+    }
+
+    pub fn hold(&self, _execution_id: u64) -> Result<(), String> {
+        Err("this Code Mode host cannot hold a cell".into())
+    }
+
+    pub fn release(&self, _execution_id: u64) -> Result<(), String> {
+        Err("this Code Mode host cannot hold a cell".into())
     }
 
     pub async fn terminate(&mut self) {

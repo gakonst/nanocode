@@ -1,6 +1,7 @@
 mod audio;
 mod local;
 mod output;
+mod replay;
 use crate::code_mode_spec as spec;
 
 use std::{
@@ -44,11 +45,17 @@ pub use crate::embedded::{
 };
 pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
+pub use nanocode_code_mode_engine::JournalEntry;
 pub use nanocode_code_mode_engine::bytes;
 #[cfg(target_family = "wasm")]
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
 use nanocode_code_mode_engine::{EmbeddedHost as ExecutionWorker, RuntimeEvent};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
+pub use replay::{
+    CELL_JOURNAL_VERSION, CellJournal, CellJournalState, CellJournals, JournaledCall,
+    JournaledCallState,
+};
+use replay::{CellRecord, CellStatus, ReplayPlan};
 pub use spec::{exec_spec, wait_spec};
 
 const INITIAL_YIELD: Duration = Duration::from_secs(10);
@@ -77,6 +84,7 @@ pub struct CodeModeRuntime {
     preempt: watch::Sender<(u64, u64)>,
     preempt_consumed: Arc<AtomicU64>,
     prelude: Option<Arc<str>>,
+    journals: Option<CellJournals>,
 }
 
 #[derive(Clone)]
@@ -148,6 +156,7 @@ struct LiveCell {
     terminate: Slot<oneshot::Sender<()>>,
     finished: Arc<Signal>,
     relay: Slot<CellRelay>,
+    record: Option<Arc<CellRecord>>,
 }
 
 struct CellRelay {
@@ -171,6 +180,7 @@ struct CellObservationState {
     receipts: Vec<Arc<dyn ToolReceipt>>,
     streamed: usize,
     streamed_bytes: usize,
+    content_seen: u64,
 }
 
 #[derive(Default)]
@@ -331,6 +341,9 @@ enum CellTerminal {
         stored: HashMap<String, Arc<RawValue>>,
     },
     Terminated,
+    Diverged {
+        message: String,
+    },
 }
 
 struct HostFailure {
@@ -353,7 +366,164 @@ impl CodeModeRuntime {
             preempt: watch::channel((0, 0)).0,
             preempt_consumed: Arc::new(AtomicU64::new(0)),
             prelude: None,
+            journals: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_journals(mut self, journals: CellJournals) -> Self {
+        self.journals = Some(journals);
+        self
+    }
+
+    pub fn set_journals(&mut self, journals: CellJournals) {
+        self.journals = Some(journals);
+    }
+
+    #[must_use]
+    pub const fn journals(&self) -> Option<&CellJournals> {
+        self.journals.as_ref()
+    }
+
+    pub async fn adopt(&self, tools: Arc<dyn CodeModeToolset>, context: &OwnedToolContext) {
+        let Some(journals) = &self.journals else {
+            return;
+        };
+        if !journals.has_restored(&context.session_id) {
+            return;
+        }
+        let _admission = self.admission.enter().await;
+        let Some(restored) = journals.take_restored(&context.session_id) else {
+            return;
+        };
+        let turn = self.current_turn.load(Ordering::Acquire);
+        for journal in restored.cells {
+            if journal.version != CELL_JOURNAL_VERSION || journal.session_id != context.session_id {
+                tracing::warn!(
+                    target: "nanocode_code_mode",
+                    cell_id = journal.cell_id,
+                    version = journal.version,
+                    "skipped a Code Mode cell journal this runtime cannot replay"
+                );
+                continue;
+            }
+            let cell_id = journal.cell_id;
+            let cell_context = OwnedToolContext {
+                instruction_revision: context.instruction_revision,
+                model: context.model.clone(),
+                session_id: context.session_id.clone(),
+                call_id: journal.origin_call_id.clone(),
+                turn_id: context.turn_id.clone(),
+                history: Arc::clone(&context.history),
+                output_token_budget: journal
+                    .max_output_tokens
+                    .unwrap_or(context.output_token_budget),
+                host_context: context.host_context.clone(),
+            };
+            let stored = journal.stored_values();
+            let record = Arc::new(CellRecord {
+                cell_id,
+                session_id: journal.session_id.clone(),
+                origin_call_id: journal.origin_call_id.clone(),
+                script: journal.script.clone(),
+                tools: journal.tools.clone(),
+                stored: stored.clone(),
+                prelude: journal.prelude,
+                yield_time_ms: journal.yield_time_ms,
+                max_output_tokens: journal.max_output_tokens,
+                journal: nanocode_code_mode_engine::Journal::shared(),
+                status: std::sync::Mutex::new(CellStatus {
+                    observer_call_id: journal.observer_call_id.clone(),
+                    replaying: true,
+                    content_returned: journal.content_returned,
+                    ..CellStatus::default()
+                }),
+                hold: watch::channel(journals.holding(&journal.session_id)).0,
+            });
+            journals.register(&record);
+            let plan = ReplayPlan {
+                entries: journal.entries,
+                calls: journal.calls,
+                fallback: restored.fallback.clone(),
+                outcomes: restored.outcomes.clone(),
+                content_returned: journal.content_returned,
+            };
+            let metadata = journal.tools;
+            let cell = Arc::new(LiveCell::spawn(
+                cell_id,
+                turn,
+                journal.script,
+                Arc::clone(&tools),
+                metadata,
+                cell_context,
+                stored,
+                Arc::clone(&self.stored),
+                Arc::clone(&self.host),
+                self.prelude.clone(),
+                Some((record, Some(plan))),
+            ));
+            self.cells.update(|registry| {
+                registry.next_cell_id = registry.next_cell_id.max(cell_id.saturating_add(1));
+                registry.live_cells.insert(cell_id, Arc::clone(&cell));
+            });
+            cell.yielded();
+        }
+    }
+
+    pub async fn recover_with_updates(
+        &self,
+        tools: Arc<dyn CodeModeToolset>,
+        context: OwnedToolContext,
+        observer: &mut dyn CodeModeObserver,
+    ) -> Option<CodeModeExecution> {
+        let started_at = Instant::now();
+        let preempt = Preemption {
+            signal: self.preempt.subscribe(),
+            turn: self.current_turn.load(Ordering::Acquire),
+            seen: self.preempt_consumed.load(Ordering::Acquire),
+            consumed: Arc::clone(&self.preempt_consumed),
+        };
+        self.adopt(tools, &context).await;
+        let call_id = context.call_id.as_str();
+        let cell = self.cells.read(|registry| {
+            registry
+                .live_cells
+                .values()
+                .find(|cell| {
+                    cell.record.as_ref().is_some_and(|record| {
+                        record.origin_call_id == call_id
+                            || record.status().observer_call_id.as_deref() == Some(call_id)
+                    })
+                })
+                .cloned()
+        })?;
+        let record = cell.record.clone()?;
+        let observation = cell.begin_observation().await.ok()?;
+        record.status().observer_call_id = Some(call_id.to_owned());
+        cell.turn_id
+            .store(self.current_turn.load(Ordering::Acquire), Ordering::Release);
+        cell.tools.cell_observed(&cell.origin_call_id, true);
+        let yield_after = observer_yield_timeout(Duration::from_millis(record.yield_time_ms));
+        let (mut execution, running) = observe_cell(
+            &cell,
+            observation,
+            started_at,
+            ObservationMode::YieldAfter(yield_after, preempt),
+            record.max_output_tokens,
+            Some(call_id),
+            observer,
+        )
+        .await;
+        if running {
+            cell.yielded();
+        } else {
+            self.remove_and_join(&cell).await;
+        }
+        execution.cell = Some(CodeModeCell {
+            origin_call_id: cell.origin_call_id.clone(),
+            running,
+        });
+        Some(execution)
     }
 
     #[must_use]
@@ -460,16 +630,37 @@ impl CodeModeRuntime {
         let cell = {
             let cell_id = self.cells.update(CellRegistry::allocate_cell_id);
             tracing::Span::current().record("cell.id", cell_id);
+            let metadata = tools.nested_tool_metadata();
+            let record = self.journals.as_ref().map(|journals| {
+                let record = Arc::new(CellRecord {
+                    cell_id,
+                    session_id: context.session_id.clone(),
+                    origin_call_id: context.call_id.clone(),
+                    script: source.code.clone(),
+                    tools: metadata.clone(),
+                    stored: stored.clone(),
+                    prelude: self.prelude.is_some(),
+                    yield_time_ms: source.yield_time_ms.unwrap_or(default_wait_yield_time_ms()),
+                    max_output_tokens: Some(output_token_budget),
+                    journal: nanocode_code_mode_engine::Journal::shared(),
+                    status: std::sync::Mutex::default(),
+                    hold: watch::channel(journals.holding(&context.session_id)).0,
+                });
+                journals.register(&record);
+                (record, None)
+            });
             let cell = Arc::new(LiveCell::spawn(
                 cell_id,
                 self.current_turn.load(Ordering::Acquire),
                 source.code,
                 tools,
+                metadata,
                 context,
                 stored,
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
                 self.prelude.clone(),
+                record,
             ));
             self.cells.update(|registry| {
                 registry.live_cells.insert(cell_id, Arc::clone(&cell));
@@ -605,6 +796,9 @@ impl CodeModeRuntime {
             }
         };
         cell.tools.cell_observed(&cell.origin_call_id, true);
+        if let Some(record) = &cell.record {
+            record.status().observer_call_id = Some(call_id.to_owned());
+        }
         let output_token_budget = arguments.max_tokens;
         if arguments.terminate {
             cell.request_terminate();
@@ -652,6 +846,7 @@ impl CodeModeRuntime {
     }
 
     async fn remove_and_join(&self, cell: &Arc<LiveCell>) {
+        cell.retire();
         self.cells.update(|registry| {
             if registry
                 .live_cells
@@ -742,6 +937,7 @@ impl CodeModeControl {
                 .collect::<Vec<_>>()
         });
         for cell in &cells {
+            cell.retire();
             cell.request_terminate();
         }
         for cell in cells {
@@ -765,6 +961,7 @@ impl CodeModeControl {
             .into_values()
             .collect::<Vec<_>>();
         for cell in &cells {
+            cell.retire();
             cell.request_terminate();
         }
         for cell in cells {
@@ -904,11 +1101,13 @@ impl LiveCell {
         turn_id: u64,
         source: String,
         tools: Arc<dyn CodeModeToolset>,
+        metadata: Vec<Value>,
         context: OwnedToolContext,
         stored: HashMap<String, Arc<RawValue>>,
         shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
         host: Arc<Slot<EmbeddedHost>>,
         prelude: Option<Arc<str>>,
+        journaling: Option<(Arc<CellRecord>, Option<ReplayPlan>)>,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
         let (terminate, terminate_rx) = oneshot::channel();
@@ -933,6 +1132,16 @@ impl LiveCell {
         let session_id = context.session_id.clone();
         let finished = Arc::new(Signal::new());
         let guard = Finished(Arc::clone(&finished));
+        let content_seen = journaling
+            .as_ref()
+            .and_then(|(_, plan)| plan.as_ref())
+            .map_or(0, |plan| plan.content_returned);
+        let record = journaling.as_ref().map(|(record, _)| Arc::clone(record));
+        let journaling = journaling.map(|(record, plan)| ActorJournaling {
+            hold: record.hold.subscribe(),
+            record,
+            plan,
+        });
         spawn(
             run_cell_actor(
                 host,
@@ -940,12 +1149,14 @@ impl LiveCell {
                 source,
                 prelude,
                 Arc::clone(&tools),
+                metadata,
                 context,
                 stored,
                 shared_stored,
                 updates_tx,
                 terminate_rx,
                 Arc::clone(&lifecycle),
+                journaling,
             )
             .instrument(actor_span)
             .map(move |()| drop(guard)),
@@ -963,11 +1174,19 @@ impl LiveCell {
                 receipts: Vec::new(),
                 streamed: 0,
                 streamed_bytes: 0,
+                content_seen,
             })),
             lifecycle,
             terminate: Slot::new(Some(terminate)),
             finished,
             relay: Slot::default(),
+            record,
+        }
+    }
+
+    fn retire(&self) {
+        if let Some(record) = &self.record {
+            record.status().retired = true;
         }
     }
 
@@ -1211,6 +1430,9 @@ async fn observe_cell(
         observer,
     )
     .await;
+    if let Some(record) = &cell.record {
+        record.status().content_returned = observation.content_seen;
+    }
     if !running && let Some(carrier) = carrier {
         for receipt in observation.receipts.drain(..) {
             receipt.carried_by(Some(carrier));
@@ -1365,6 +1587,7 @@ async fn observe_updates(
                 observation.buffered.notifications.push(notification);
             }
             Some(CellUpdate::Content(item)) => {
+                observation.content_seen += 1;
                 let unstreamed = observation.buffered.content.len() > observation.streamed;
                 match (observation.buffered.content.last_mut(), item) {
                     (
@@ -1616,7 +1839,165 @@ fn observed_execution(
     }
 }
 
+struct CellCalls<'a, 'b> {
+    pending_calls: &'b mut FuturesUnordered<CallFuture<'a>>,
+    pending_receipts: &'b mut PendingCallReceipts,
+    unlogged: &'b mut UnloggedCalls,
+    updates: &'b mpsc::UnboundedSender<CellUpdate>,
+    record: Option<&'b CellRecord>,
+    tools: &'a dyn CodeModeToolset,
+    context: &'a OwnedToolContext,
+    actor_started_at: Instant,
+}
+
+impl CellCalls<'_, '_> {
+    fn dispatch(&mut self, id: u64, name: String, input: Value, host: bool) {
+        let nested_call_id = format!("{}/code-{id}", self.context.call_id);
+        if let Some(record) = self.record {
+            record.status().calls.insert(
+                id,
+                JournaledCall {
+                    id,
+                    call_id: nested_call_id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                    host,
+                    state: JournaledCallState::Running,
+                },
+            );
+        }
+        let started = Instant::now();
+        let input = Arc::new(input);
+        let logged = self.unlogged.admit(&name);
+        self.pending_receipts.calls.insert(
+            id,
+            PendingCall {
+                call_id: nested_call_id.clone(),
+                name: name.clone(),
+                input: Arc::clone(&input),
+                started,
+                started_after_ns: u64::try_from(
+                    started.duration_since(self.actor_started_at).as_nanos(),
+                )
+                .unwrap_or(u64::MAX),
+                logged,
+            },
+        );
+        let _ = self.updates.send(CellUpdate::NestedCallStarted {
+            call_id: nested_call_id,
+            name: name.clone(),
+            input: Arc::clone(&input),
+            delivered: false,
+            logged,
+        });
+        self.pending_calls.push(Box::pin(execute_nested_call(
+            self.tools,
+            id,
+            name,
+            host,
+            input,
+            self.context,
+            self.actor_started_at,
+        )));
+    }
+
+    fn queue(&self, id: u64, name: String, input: Value, host: bool) {
+        if let Some(record) = self.record {
+            record.status().calls.insert(
+                id,
+                JournaledCall {
+                    id,
+                    call_id: format!("{}/code-{id}", self.context.call_id),
+                    name,
+                    input,
+                    host,
+                    state: JournaledCallState::Queued,
+                },
+            );
+        }
+    }
+}
+
 impl EmbeddedHost {
+    fn hold_cell(&self, cell_id: u64, record: Option<&CellRecord>) -> bool {
+        let Some(record) = record else {
+            return false;
+        };
+        if self.worker.hold(cell_id).is_ok() {
+            true
+        } else {
+            record.status().unsupported = true;
+            false
+        }
+    }
+
+    fn release_cell(
+        &self,
+        cell_id: u64,
+        record: &CellRecord,
+        calls: &mut CellCalls<'_, '_>,
+    ) -> Result<(), HostFailure> {
+        let undelivered = {
+            let mut status = record.status();
+            status.held = false;
+            let ids = status
+                .calls
+                .iter()
+                .filter(|(_, call)| !matches!(call.state, JournaledCallState::Running))
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|id| status.calls.remove(&id))
+                .collect::<Vec<_>>()
+        };
+        for call in undelivered {
+            match call.state {
+                JournaledCallState::Completed { encoded, success } => self
+                    .worker
+                    .send_tool_result(cell_id, call.id, encoded, success)
+                    .map_err(HostFailure::new)?,
+                JournaledCallState::Queued => {
+                    calls.dispatch(call.id, call.name, call.input, call.host);
+                }
+                JournaledCallState::Running => {}
+            }
+        }
+        self.worker.release(cell_id).map_err(HostFailure::new)
+    }
+
+    fn resume_replayed(
+        &self,
+        cell_id: u64,
+        plan: &ReplayPlan,
+        held: bool,
+        calls: &mut CellCalls<'_, '_>,
+    ) -> Result<(), HostFailure> {
+        for call in &plan.calls {
+            if matches!(call.state, JournaledCallState::Queued) {
+                if held {
+                    calls.queue(call.id, call.name.clone(), call.input.clone(), call.host);
+                } else {
+                    calls.dispatch(call.id, call.name.clone(), call.input.clone(), call.host);
+                }
+                continue;
+            }
+            let (encoded, success) = plan.outcome(call);
+            if held {
+                if let Some(record) = calls.record {
+                    let mut journaled = call.clone();
+                    journaled.state = JournaledCallState::Completed { encoded, success };
+                    record.status().calls.insert(call.id, journaled);
+                }
+            } else {
+                self.worker
+                    .send_tool_result(cell_id, call.id, encoded, success)
+                    .map_err(HostFailure::new)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn drive_cell(
         &mut self,
         cell_id: u64,
@@ -1625,6 +2006,9 @@ impl EmbeddedHost {
         context: &OwnedToolContext,
         updates: &mpsc::UnboundedSender<CellUpdate>,
         actor_started_at: Instant,
+        record: Option<Arc<CellRecord>>,
+        mut plan: Option<ReplayPlan>,
+        mut hold: Option<watch::Receiver<bool>>,
     ) -> Result<CellTerminal, HostFailure> {
         let mut pending_calls: FuturesUnordered<CallFuture<'_>> = FuturesUnordered::new();
         let mut unlogged = UnloggedCalls {
@@ -1637,15 +2021,62 @@ impl EmbeddedHost {
             updates: updates.clone(),
         };
         let mut event_count = 0_u64;
+        let mut replaying = plan.is_some();
+        let mut suppressed = plan.as_ref().map_or(0, |plan| plan.content_returned);
+        let mut held = false;
+        if let Some(receiver) = hold.as_mut()
+            && *receiver.borrow_and_update()
+        {
+            held = self.hold_cell(cell_id, record.as_deref());
+        }
         loop {
             tokio::select! {
                 biased;
+                changed = async {
+                    match hold.as_mut() {
+                        Some(receiver) => receiver.changed().await.is_ok(),
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let Some(receiver) = hold.as_mut() else {
+                        continue;
+                    };
+                    if !changed {
+                        hold = None;
+                        continue;
+                    }
+                    let wanted = *receiver.borrow_and_update();
+                    if wanted && !held {
+                        held = self.hold_cell(cell_id, record.as_deref());
+                    } else if !wanted && held && !replaying {
+                        held = false;
+                        if let Some(record) = record.as_deref() {
+                            let mut calls = CellCalls {
+                                pending_calls: &mut pending_calls,
+                                pending_receipts: &mut pending_receipts,
+                                unlogged: &mut unlogged,
+                                updates,
+                                record: Some(record),
+                                tools,
+                                context,
+                                actor_started_at,
+                            };
+                            self.release_cell(cell_id, record, &mut calls)?;
+                        }
+                    }
+                }
                 completed = pending_calls.next(), if !pending_calls.is_empty() => {
                     let Some(completed) = completed else {
                         continue;
                     };
 
-                    self.send_completed_call(cell_id, completed, &mut pending_receipts)?;
+                    self.send_completed_call(
+                        cell_id,
+                        completed,
+                        &mut pending_receipts,
+                        record.as_deref(),
+                        held,
+                    )?;
                 }
                 event = self.worker.read_event() => {
                     let event = event.map_err(HostFailure::new)?;
@@ -1663,51 +2094,79 @@ impl EmbeddedHost {
                             "local code-mode host returned cell {event_cell_id} while executing cell {cell_id}"
                         )));
                     }
+                    let mut calls = CellCalls {
+                        pending_calls: &mut pending_calls,
+                        pending_receipts: &mut pending_receipts,
+                        unlogged: &mut unlogged,
+                        updates,
+                        record: record.as_deref(),
+                        tools,
+                        context,
+                        actor_started_at,
+                    };
                     match event {
                         RuntimeEvent::ToolCall {
                             id, name, input, host, ..
                         } => {
-                            let nested_call_id = format!("{}/code-{id}", context.call_id);
-                            let started = Instant::now();
-                            let input = Arc::new(input);
-                            let logged = unlogged.admit(&name);
-                            pending_receipts.calls.insert(id, PendingCall {
-                                call_id: nested_call_id.clone(),
-                                name: name.clone(),
-                                input: Arc::clone(&input),
-                                started,
-                                started_after_ns: u64::try_from(started.duration_since(actor_started_at).as_nanos()).unwrap_or(u64::MAX),
-                                logged,
-                            });
-                            let _ = updates.send(CellUpdate::NestedCallStarted {
-                                call_id: nested_call_id,
-                                name: name.clone(),
-                                input: Arc::clone(&input),
-                                delivered: false,
-                                logged,
-                            });
-                            let nested_call = execute_nested_call(
-                                tools,
-                                id,
-                                name,
-                                host,
-                                input,
-                                context,
-                                actor_started_at,
-                            );
-                            pending_calls.push(Box::pin(nested_call));
+                            if held {
+                                calls.queue(id, name, input, host);
+                            } else {
+                                calls.dispatch(id, name, input, host);
+                            }
                         }
                         RuntimeEvent::Notify { text, .. } => {
-                            let _ = updates.send(CellUpdate::Notification {
-                                notification: CodeModeNotification::new(parent_call_id, text),
-                                delivered: false,
-                            });
+                            if !replaying {
+                                let _ = updates.send(CellUpdate::Notification {
+                                    notification: CodeModeNotification::new(parent_call_id, text),
+                                    delivered: false,
+                                });
+                            }
                         }
                         RuntimeEvent::Content { content, .. } => {
-                            let _ = updates.send(CellUpdate::Content(content));
+                            if suppressed > 0 {
+                                suppressed -= 1;
+                            } else {
+                                let _ = updates.send(CellUpdate::Content(content));
+                            }
                         }
                         RuntimeEvent::Yielded { .. } => {
-                            let _ = updates.send(CellUpdate::Yielded);
+                            if !replaying {
+                                let _ = updates.send(CellUpdate::Yielded);
+                            }
+                        }
+                        RuntimeEvent::Held { .. } => {
+                            if let Some(record) = record.as_deref() {
+                                record.status().held = true;
+                            }
+                        }
+                        RuntimeEvent::Replayed { .. } => {
+                            replaying = false;
+                            if let Some(record) = record.as_deref() {
+                                record.status().replaying = false;
+                            }
+                            if let Some(plan) = plan.take() {
+                                self.resume_replayed(cell_id, &plan, held, &mut calls)?;
+                            }
+                            if held
+                                && hold.as_ref().is_some_and(|receiver| !*receiver.borrow())
+                                && let Some(record) = record.as_deref()
+                            {
+                                held = false;
+                                self.release_cell(cell_id, record, &mut calls)?;
+                            }
+                        }
+                        RuntimeEvent::Diverged { reason, .. } => {
+                            tracing::warn!(
+                                target: "nanocode_code_mode",
+                                cell_id,
+                                %reason,
+                                "a replayed Code Mode cell diverged from its journal"
+                            );
+                            let message = plan.as_ref().map_or_else(
+                                || replay::divergence_text(None, cell_id, &reason),
+                                |plan| plan.divergence(cell_id, &reason),
+                            );
+                            return Ok(CellTerminal::Diverged { message });
                         }
                         RuntimeEvent::Done {
                             stored,
@@ -1738,6 +2197,8 @@ impl EmbeddedHost {
         cell_id: u64,
         completed: CompletedNestedCall,
         pending_receipts: &mut PendingCallReceipts,
+        record: Option<&CellRecord>,
+        held: bool,
     ) -> Result<(), HostFailure> {
         let CompletedNestedCall {
             id,
@@ -1766,25 +2227,45 @@ impl EmbeddedHost {
                 logged,
                 receipts,
             }));
+        if let Some(record) = record {
+            let mut status = record.status();
+            if held {
+                if let Some(journaled) = status.calls.get_mut(&id) {
+                    journaled.state = JournaledCallState::Completed { encoded, success };
+                    return Ok(());
+                }
+                status.unsupported = true;
+            } else {
+                status.calls.remove(&id);
+            }
+        }
         self.worker
             .send_tool_result(cell_id, id, encoded, success)
             .map_err(HostFailure::new)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ActorJournaling {
+    record: Arc<CellRecord>,
+    plan: Option<ReplayPlan>,
+    hold: watch::Receiver<bool>,
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_cell_actor(
     shared_host: Arc<Slot<EmbeddedHost>>,
     cell_id: u64,
     source: String,
     prelude: Option<Arc<str>>,
     tools: Arc<dyn CodeModeToolset>,
+    metadata: Vec<Value>,
     context: OwnedToolContext,
     stored: HashMap<String, Arc<RawValue>>,
     shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
     updates: mpsc::UnboundedSender<CellUpdate>,
     mut terminate: oneshot::Receiver<()>,
     lifecycle: Arc<CellLifecycle>,
+    journaling: Option<ActorJournaling>,
 ) {
     let started_at = Instant::now();
     let host_wait_started_at = Instant::now();
@@ -1814,14 +2295,30 @@ async fn run_cell_actor(
     };
     record_elapsed("host.wait_ns", host_wait_started_at);
     tracing::Span::current().record("host.reused", reused);
+    let (record, mut plan, hold) = match journaling {
+        Some(journaling) => (
+            Some(journaling.record),
+            journaling.plan,
+            Some(journaling.hold),
+        ),
+        None => (None, None, None),
+    };
+    let engine_journaling =
+        record
+            .as_ref()
+            .map(|record| nanocode_code_mode_engine::CellJournaling {
+                journal: Arc::clone(&record.journal),
+                replay: plan.as_mut().map(|plan| std::mem::take(&mut plan.entries)),
+            });
     let run = async {
         host.worker
             .start_cell(
                 cell_id,
                 &source,
                 stored,
-                tools.nested_tool_metadata(),
+                metadata,
                 prelude,
+                engine_journaling,
             )
             .map_err(HostFailure::new)?;
         host.drive_cell(
@@ -1831,6 +2328,9 @@ async fn run_cell_actor(
             &context,
             &updates,
             started_at,
+            record.clone(),
+            plan,
+            hold,
         )
         .await
     };
@@ -1853,15 +2353,27 @@ async fn run_cell_actor(
     let (status, otel_status) = match &terminal {
         Ok(CellTerminal::Completed { .. }) => ("completed", "OK"),
         Ok(CellTerminal::Terminated) => ("cancelled", "ERROR"),
-        Ok(CellTerminal::ScriptFailed { .. }) | Err(_) => ("failed", "ERROR"),
+        Ok(CellTerminal::ScriptFailed { .. } | CellTerminal::Diverged { .. }) | Err(_) => {
+            ("failed", "ERROR")
+        }
     };
     tracing::Span::current().record("status", status);
     tracing::Span::current().record("otel.status_code", otel_status);
     let terminated = matches!(&terminal, Ok(CellTerminal::Terminated));
     let host_healthy = matches!(
         &terminal,
-        Ok(CellTerminal::Completed { .. } | CellTerminal::ScriptFailed { .. })
+        Ok(CellTerminal::Completed { .. }
+            | CellTerminal::ScriptFailed { .. }
+            | CellTerminal::Diverged { .. })
     );
+    if let Some(record) = &record
+        && matches!(
+            &terminal,
+            Ok(CellTerminal::Completed { .. } | CellTerminal::ScriptFailed { .. })
+        )
+    {
+        record.status().finished = true;
+    }
     match terminal {
         Ok(CellTerminal::Completed { stored }) => {
             shared_stored.update(|shared| {
@@ -1882,6 +2394,12 @@ async fn run_cell_actor(
                 )
             });
             let _ = updates.send(CellUpdate::ScriptFailed { message });
+        }
+        Ok(CellTerminal::Diverged { message }) => {
+            if let Some(record) = &record {
+                record.status().retired = true;
+            }
+            let _ = updates.send(CellUpdate::HostFailed(message));
         }
         Ok(CellTerminal::Terminated) => {
             let _ = updates.send(CellUpdate::Terminated);

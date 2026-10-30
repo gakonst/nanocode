@@ -793,8 +793,12 @@ impl Shared {
                             .deliver(with_request_id(error, message.request_id()));
                         return Ok(());
                     }
-                    _ => tracing::warn!(
-                        "HTTP {status}: could not parse JSON body as a JSON-RPC error"
+                    // The error returned below carries the status and the body, so a
+                    // second report here would only repeat it (a rate-limited server
+                    // answering 429 with its own JSON logged a warning per request).
+                    parsed => tracing::debug!(
+                        parse_error = ?parsed.err(),
+                        "HTTP {status}: JSON body is not a JSON-RPC error; returning it as a transport error"
                     ),
                 }
             }

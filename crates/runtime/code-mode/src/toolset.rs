@@ -27,6 +27,15 @@ pub trait CodeModeToolset: Send + Sync {
         self.execute_nested(name, input, context)
     }
 
+    fn recover_nested<'a>(
+        &'a self,
+        _name: &'a str,
+        _input: Value,
+        _context: ToolContext<'a>,
+    ) -> Option<HostFuture<'a, Option<ToolOutput>>> {
+        None
+    }
+
     fn cell_observed(&self, _origin_call_id: &str, _observed: bool) {}
 
     fn append_observation_content(

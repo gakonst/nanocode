@@ -99,6 +99,14 @@ pub trait HandCalls: Send + Sync + 'static {
         input: Value,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, ToolOutput>;
+
+    fn recover<'a>(
+        &'a self,
+        _hand: &'a str,
+        _context: ToolContext<'a>,
+    ) -> HostFuture<'a, Option<ToolOutput>> {
+        Box::pin(async { None })
+    }
 }
 
 pub trait CodeModeHost: Send + Sync + 'static {
@@ -202,6 +210,21 @@ pub trait CodeModeHost: Send + Sync + 'static {
         _context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
         Box::pin(async { Ok(None) })
+    }
+
+    fn recover_call<'a>(
+        &'a self,
+        _context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<Option<ToolOutput>, CodeModeHostError>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _context: ToolContext<'a>,
+        _tools: Vec<std::sync::Arc<dyn crate::Tool>>,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async {})
     }
 
     fn route_hands(&self, _name: &str, _hands: std::sync::Arc<dyn HandCalls>) {}
@@ -345,6 +368,19 @@ impl<T: CodeModeHost + ?Sized> CodeModeHost for std::sync::Arc<T> {
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
         (**self).recover(context)
+    }
+    fn recover_call<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<Option<ToolOutput>, CodeModeHostError>> {
+        (**self).recover_call(context)
+    }
+    fn adopt<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<std::sync::Arc<dyn crate::Tool>>,
+    ) -> HostFuture<'a, ()> {
+        (**self).adopt(context, tools)
     }
     fn route_hands(&self, name: &str, hands: std::sync::Arc<dyn HandCalls>) {
         (**self).route_hands(name, hands);

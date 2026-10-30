@@ -14,8 +14,8 @@ use tokio::sync::mpsc::{self, error::TryRecvError};
 use crate::cell::{
     ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, completed_terminal,
     drain_jobs, import_prelude, install_bootstrap, install_prelude, invoke_timeout, new_state,
-    next_due_timeout, next_timeout_wait, prepare_execution, resolve_tool, run_execution,
-    send_terminal, track_rejections,
+    next_due_timeout, next_timeout_wait, prepare_execution, replay_inputs, resolve_tool,
+    run_execution, send_terminal, track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
@@ -186,12 +186,10 @@ impl EmbeddedHost {
         prelude: Option<Arc<str>>,
         journaling: Option<crate::journal::CellJournaling>,
     ) -> Result<(), String> {
-        if journaling
+        let replayed = journaling
             .as_ref()
-            .is_some_and(|journaling| journaling.replay.is_some())
-        {
-            return Err("this Code Mode host cannot replay a cell".into());
-        }
+            .and_then(|journaling| journaling.replay.as_ref())
+            .map(|entries| entries.iter().filter(|entry| entry.is_input()).count());
         self.step(|engine| {
             if let Some(previous) = engine.execution.take() {
                 previous.close(&engine.runtime);
@@ -230,8 +228,26 @@ impl EmbeddedHost {
                         .into_value(),
                     None => rquickjs::Value::new_undefined(ctx.clone()),
                 };
-                run_execution(&ctx, &state, &run_cell, source.to_owned(), tools, prelude)
-                    .map(|promise| Persistent::save(&ctx, promise))
+                let promise =
+                    run_execution(&ctx, &state, &run_cell, source.to_owned(), tools, prelude)?;
+                if let Some(inputs) = replayed {
+                    let checks = INTERRUPT_CHECKS.get();
+                    engine.budget.set(
+                        checks
+                            .saturating_mul(u64::try_from(inputs).unwrap_or(u64::MAX))
+                            .saturating_add(checks),
+                    );
+                    if let Some(reason) = replay_inputs(&ctx, &state, &promise)? {
+                        state
+                            .borrow()
+                            .send(RuntimeEvent::Diverged {
+                                cell_id: execution_id,
+                                reason,
+                            })
+                            .map_err(|_| "embedded QuickJS execution observer closed".to_owned())?;
+                    }
+                }
+                Ok(Persistent::save(&ctx, promise))
             });
             engine.execution = Some(Execution {
                 id: execution_id,

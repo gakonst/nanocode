@@ -532,6 +532,12 @@ impl CodeModeHost for RemoteCodeModeHost {
                 .map_err(|error| CodeModeHostError::new(error.to_string()))
         })
     }
+    fn recover_call<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<Option<ToolOutput>, CodeModeHostError>> {
+        Self::recover_call(self, context)
+    }
     fn route_hands(&self, name: &str, hands: Arc<dyn HandCalls>) {
         self.hand.set(Some(name.into()));
         self.transport.route_hands(hands);

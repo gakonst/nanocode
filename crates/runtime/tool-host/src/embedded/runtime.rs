@@ -420,17 +420,9 @@ impl EmbeddedToolRuntime {
             return Ok(code_mode_unavailable("exec"));
         };
         if host.tool_mode() == EmbeddedToolMode::CodeOnly {
+            host.adopt(context, self.cell_tools()).await;
             return host
-                .execute_with_local_tools(
-                    source,
-                    context,
-                    self.local
-                        .iter()
-                        .filter(|tool| tool.model_visible)
-                        .map(|tool| Arc::clone(&tool.handler))
-                        .collect(),
-                    None,
-                )
+                .execute_with_local_tools(source, context, self.cell_tools(), None)
                 .await;
         }
         host.execute(source, context).await
@@ -468,21 +460,26 @@ impl EmbeddedToolRuntime {
             return Ok(code_mode_unavailable("exec"));
         };
         if host.tool_mode() == EmbeddedToolMode::CodeOnly {
+            host.adopt(context.as_context(), self.cell_tools()).await;
             return host
                 .execute_with_local_tools(
                     source,
                     context.as_context(),
-                    self.local
-                        .iter()
-                        .filter(|tool| tool.model_visible)
-                        .map(|tool| Arc::clone(&tool.handler))
-                        .collect(),
+                    self.cell_tools(),
                     Some(observer),
                 )
                 .await;
         }
         host.execute_with_updates(source, context.as_context(), observer)
             .await
+    }
+
+    fn cell_tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.local
+            .iter()
+            .filter(|tool| tool.model_visible)
+            .map(|tool| Arc::clone(&tool.handler))
+            .collect()
     }
 
     pub async fn recover_tool(&self, name: &str, context: ToolContext<'_>) -> Option<ToolOutput> {
@@ -494,7 +491,12 @@ impl EmbeddedToolRuntime {
         context: ToolContext<'_>,
     ) -> Result<Option<CodeModeExecution>, CodeModeHostError> {
         match &self.host {
-            Some(host) => host.recover(context).await,
+            Some(host) => {
+                if host.tool_mode() == EmbeddedToolMode::CodeOnly {
+                    host.adopt(context, self.cell_tools()).await;
+                }
+                host.recover(context).await
+            }
             None => Ok(None),
         }
     }
@@ -517,6 +519,9 @@ impl EmbeddedToolRuntime {
         let Some(host) = &self.host else {
             return Ok(code_mode_unavailable("wait"));
         };
+        if host.tool_mode() == EmbeddedToolMode::CodeOnly {
+            host.adopt(context, self.cell_tools()).await;
+        }
         host.wait_with_updates(input, context, observer).await
     }
 }

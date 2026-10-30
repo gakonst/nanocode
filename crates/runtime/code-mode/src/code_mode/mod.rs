@@ -37,7 +37,7 @@ use nanocode_sync::{Atom, Leased, Owned, Sequencer, Signal, Slot, Turn};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{Instrument, info_span};
 
-use super::{ToolContext, ToolOutputBody, ToolOutputContent};
+use super::{ToolContext, ToolOutput, ToolOutputBody, ToolOutputContent};
 use crate::embedded::OwnedToolContext;
 pub use crate::embedded::{
     CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
@@ -52,8 +52,8 @@ pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_chec
 use nanocode_code_mode_engine::{EmbeddedHost as ExecutionWorker, RuntimeEvent};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use replay::{
-    CELL_JOURNAL_VERSION, CellJournal, CellJournalState, CellJournals, JournaledCall,
-    JournaledCallState,
+    CELL_JOURNAL_VERSION, CellJournal, CellJournalHeader, CellJournalSink, CellJournalState,
+    CellJournalUpdate, CellJournals, JournaledCall, JournaledCallState,
 };
 use replay::{CellRecord, CellStatus, ReplayPlan};
 pub use spec::{exec_spec, wait_spec};
@@ -238,6 +238,7 @@ struct CompletedNestedCall {
     call: NestedToolCall,
     process_trace: Option<ToolProcessTraceWire>,
     receipts: Vec<Arc<dyn ToolReceipt>>,
+    encoded: Option<String>,
 }
 
 struct ObservedNestedCall {
@@ -439,6 +440,7 @@ impl CodeModeRuntime {
                     ..CellStatus::default()
                 }),
                 hold: watch::channel(journals.holding(&journal.session_id)).0,
+                persistence: journals.persistence(),
             });
             journals.register(&record);
             let plan = ReplayPlan {
@@ -500,6 +502,7 @@ impl CodeModeRuntime {
         let record = cell.record.clone()?;
         let observation = cell.begin_observation().await.ok()?;
         record.status().observer_call_id = Some(call_id.to_owned());
+        record.persist(Vec::new()).await;
         cell.turn_id
             .store(self.current_turn.load(Ordering::Acquire), Ordering::Release);
         cell.tools.cell_observed(&cell.origin_call_id, true);
@@ -516,6 +519,9 @@ impl CodeModeRuntime {
         .await;
         if running {
             cell.yielded();
+            if let Some(record) = &cell.record {
+                record.persist(Vec::new()).await;
+            }
         } else {
             self.remove_and_join(&cell).await;
         }
@@ -645,6 +651,7 @@ impl CodeModeRuntime {
                     journal: nanocode_code_mode_engine::Journal::shared(),
                     status: std::sync::Mutex::default(),
                     hold: watch::channel(journals.holding(&context.session_id)).0,
+                    persistence: journals.persistence(),
                 });
                 journals.register(&record);
                 (record, None)
@@ -685,6 +692,9 @@ impl CodeModeRuntime {
         .await;
         if running {
             cell.yielded();
+            if let Some(record) = &cell.record {
+                record.persist(Vec::new()).await;
+            }
         }
         execution.cell = Some(CodeModeCell {
             origin_call_id: cell.origin_call_id.clone(),
@@ -798,6 +808,7 @@ impl CodeModeRuntime {
         cell.tools.cell_observed(&cell.origin_call_id, true);
         if let Some(record) = &cell.record {
             record.status().observer_call_id = Some(call_id.to_owned());
+            record.persist(Vec::new()).await;
         }
         let output_token_budget = arguments.max_tokens;
         if arguments.terminate {
@@ -835,6 +846,9 @@ impl CodeModeRuntime {
         .await;
         if running {
             cell.yielded();
+            if let Some(record) = &cell.record {
+                record.persist(Vec::new()).await;
+            }
         } else {
             self.remove_and_join(&cell).await;
         }
@@ -1187,6 +1201,7 @@ impl LiveCell {
     fn retire(&self) {
         if let Some(record) = &self.record {
             record.status().retired = true;
+            record.forget();
         }
     }
 
@@ -1845,6 +1860,7 @@ struct CellCalls<'a, 'b> {
     unlogged: &'b mut UnloggedCalls,
     updates: &'b mpsc::UnboundedSender<CellUpdate>,
     record: Option<&'b CellRecord>,
+    journal: Option<Arc<CellRecord>>,
     tools: &'a dyn CodeModeToolset,
     context: &'a OwnedToolContext,
     actor_started_at: Instant,
@@ -1852,19 +1868,31 @@ struct CellCalls<'a, 'b> {
 
 impl CellCalls<'_, '_> {
     fn dispatch(&mut self, id: u64, name: String, input: Value, host: bool) {
+        self.start(id, name, input, host, false);
+    }
+
+    fn recover(&mut self, call: &JournaledCall) {
+        self.start(
+            call.id,
+            call.name.clone(),
+            call.input.clone(),
+            call.host,
+            true,
+        );
+    }
+
+    fn start(&mut self, id: u64, name: String, input: Value, host: bool, recovering: bool) {
         let nested_call_id = format!("{}/code-{id}", self.context.call_id);
+        let journaled = JournaledCall {
+            id,
+            call_id: nested_call_id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+            host,
+            state: JournaledCallState::Running,
+        };
         if let Some(record) = self.record {
-            record.status().calls.insert(
-                id,
-                JournaledCall {
-                    id,
-                    call_id: nested_call_id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    host,
-                    state: JournaledCallState::Running,
-                },
-            );
+            record.status().calls.insert(id, journaled.clone());
         }
         let started = Instant::now();
         let input = Arc::new(input);
@@ -1890,14 +1918,19 @@ impl CellCalls<'_, '_> {
             delivered: false,
             logged,
         });
-        self.pending_calls.push(Box::pin(execute_nested_call(
-            self.tools,
-            id,
-            name,
-            host,
-            input,
-            self.context,
-            self.actor_started_at,
+        self.pending_calls.push(Box::pin(journaled_call(
+            self.journal.clone(),
+            journaled,
+            execute_nested_call(
+                self.tools,
+                id,
+                name,
+                host,
+                input,
+                self.context,
+                self.actor_started_at,
+                recovering,
+            ),
         )));
     }
 
@@ -1981,6 +2014,13 @@ impl EmbeddedHost {
                 }
                 continue;
             }
+            if !held
+                && matches!(call.state, JournaledCallState::Running)
+                && !plan.outcomes.contains_key(&call.call_id)
+            {
+                calls.recover(call);
+                continue;
+            }
             let (encoded, success) = plan.outcome(call);
             if held {
                 if let Some(record) = calls.record {
@@ -2024,6 +2064,7 @@ impl EmbeddedHost {
         let mut replaying = plan.is_some();
         let mut suppressed = plan.as_ref().map_or(0, |plan| plan.content_returned);
         let mut held = false;
+        let journal = record.clone();
         if let Some(receiver) = hold.as_mut()
             && *receiver.borrow_and_update()
         {
@@ -2057,6 +2098,7 @@ impl EmbeddedHost {
                                 unlogged: &mut unlogged,
                                 updates,
                                 record: Some(record),
+                                journal: journal.clone(),
                                 tools,
                                 context,
                                 actor_started_at,
@@ -2100,6 +2142,7 @@ impl EmbeddedHost {
                         unlogged: &mut unlogged,
                         updates,
                         record: record.as_deref(),
+                        journal: journal.clone(),
                         tools,
                         context,
                         actor_started_at,
@@ -2206,6 +2249,7 @@ impl EmbeddedHost {
             mut call,
             process_trace,
             receipts,
+            encoded,
         } = completed;
         let success = call.success;
 
@@ -2214,9 +2258,12 @@ impl EmbeddedHost {
             .remove(&id)
             .is_none_or(|pending| pending.logged);
         call.input = Arc::unwrap_or_clone(input);
-        let encoded = serde_json::to_string(&call.structured_result).map_err(|error| {
-            HostFailure::new(format!("failed to encode Code Mode tool result: {error}"))
-        })?;
+        let encoded = match encoded {
+            Some(encoded) => encoded,
+            None => serde_json::to_string(&call.structured_result).map_err(|error| {
+                HostFailure::new(format!("failed to encode Code Mode tool result: {error}"))
+            })?,
+        };
         let _ = pending_receipts
             .updates
             .send(CellUpdate::NestedCall(ObservedNestedCall {
@@ -2398,6 +2445,7 @@ async fn run_cell_actor(
         Ok(CellTerminal::Diverged { message }) => {
             if let Some(record) = &record {
                 record.status().retired = true;
+                record.forget();
             }
             let _ = updates.send(CellUpdate::HostFailed(message));
         }
@@ -2440,6 +2488,29 @@ fn ordered_calls(mut calls: Vec<ObservedNestedCall>) -> Vec<NestedToolCall> {
     calls.into_iter().map(|call| call.call).collect()
 }
 
+async fn journaled_call(
+    journal: Option<Arc<CellRecord>>,
+    mut call: JournaledCall,
+    execution: impl std::future::Future<Output = CompletedNestedCall>,
+) -> CompletedNestedCall {
+    let Some(journal) = journal.filter(|record| record.persistence.is_some()) else {
+        return execution.await;
+    };
+    journal.persist(vec![call.clone()]).await;
+    let mut completed = execution.await;
+    let encoded = serde_json::to_string(&completed.call.structured_result).ok();
+    if let Some(encoded) = &encoded {
+        call.state = JournaledCallState::Completed {
+            encoded: encoded.clone(),
+            success: completed.call.success,
+        };
+        journal.persist(vec![call]).await;
+    }
+    completed.encoded = encoded;
+    completed
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn execute_nested_call(
     tools: &dyn CodeModeToolset,
     id: u64,
@@ -2448,6 +2519,7 @@ async fn execute_nested_call(
     input: Arc<Value>,
     context: &OwnedToolContext,
     cell_started_at: Instant,
+    recovering: bool,
 ) -> CompletedNestedCall {
     let started_at = Instant::now();
     let started_after_ns =
@@ -2466,12 +2538,24 @@ async fn execute_nested_call(
     .with_instruction_revision(context.instruction_revision())
     .with_host_context(context.host_context())
     .with_turn_id(context.turn_id());
-    let mut execution = if host {
-        tools.execute_host_nested(&name, Value::clone(&input), context)
+    let mut execution = if recovering {
+        let recovered = match tools.recover_nested(&name, Value::clone(&input), context) {
+            Some(recovered) => recovered.await,
+            None => None,
+        };
+        recovered.unwrap_or_else(|| {
+            ToolOutput::error(replay::UNKNOWN_OUTCOME)
+                .with_structured_result(replay::unknown_outcome())
+        })
+    } else if host {
+        tools
+            .execute_host_nested(&name, Value::clone(&input), context)
+            .await
     } else {
-        tools.execute_nested(&name, Value::clone(&input), context)
-    }
-    .await;
+        tools
+            .execute_nested(&name, Value::clone(&input), context)
+            .await
+    };
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let value = execution.take_structured_result();
     let process_trace = execution.process_trace().copied().map(Into::into);
@@ -2484,6 +2568,7 @@ async fn execute_nested_call(
         input,
         process_trace,
         receipts,
+        encoded: None,
         call: NestedToolCall {
             call_id,
             name,

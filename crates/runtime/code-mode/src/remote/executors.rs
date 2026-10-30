@@ -165,6 +165,18 @@ impl HandCalls for ExecutorCalls {
             }
         })
     }
+
+    fn recover<'a>(
+        &'a self,
+        hand: &'a str,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Option<ToolOutput>> {
+        Box::pin(async move {
+            let state = self.0.upgrade()?;
+            let host = state.read(|state| state.executors.get(hand).cloned())?;
+            host.recover_call(context).await.ok().flatten()
+        })
+    }
 }
 
 pub struct HandsTool(CodeModeExecutors);
@@ -600,6 +612,9 @@ impl CodeModeExecutors {
         if !places.contains(&current) {
             places.push(current);
         }
+        if state.fallback.is_some() && !places.contains(&state.fallback) {
+            places.push(state.fallback.clone());
+        }
         places
     }
 
@@ -801,18 +816,50 @@ impl CodeModeHost for CodeModeExecutors {
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
         Box::pin(async move {
-            let Placement::Hand(HandRoute {
+            let mut routes = Vec::new();
+            if let Placement::Hand(HandRoute {
                 name,
                 host: Some(host),
             }) = self.placement(context.session_id())
-            else {
-                return Ok(None);
-            };
-            let recovered = host.recover(context).await?;
-            if let Some(execution) = &recovered {
-                self.record(context.session_id(), Some(&name), execution);
+            {
+                routes.push((name, host));
             }
-            Ok(recovered)
+            if let Some((name, host)) = self.state.read(|state| {
+                let name = state.fallback.clone()?;
+                let host = state.executors.get(&name).cloned()?;
+                Some((name, host))
+            }) && !routes.iter().any(|(placed, _)| *placed == name)
+            {
+                routes.push((name, host));
+            }
+            for (name, host) in routes {
+                let recovered = host.recover(context).await?;
+                if let Some(execution) = &recovered {
+                    self.record(context.session_id(), Some(&name), execution);
+                    return Ok(recovered);
+                }
+            }
+            Ok(None)
+        })
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async move {
+            let hosts = self.state.read(|state| {
+                state
+                    .executors
+                    .values()
+                    .filter(|host| host.runs_cells())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+            for host in hosts {
+                host.adopt(context, tools.clone()).await;
+            }
         })
     }
 

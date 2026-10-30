@@ -10,7 +10,9 @@ use futures_util::FutureExt;
 use nanocode_sync::Atom;
 use serde_json::{Value, json, value::to_raw_value};
 
-use super::{CodeModeExecution, CodeModeObserver, CodeModeRuntime, IgnoreCodeModeUpdates};
+use super::{
+    CellJournals, CodeModeExecution, CodeModeObserver, CodeModeRuntime, IgnoreCodeModeUpdates,
+};
 use crate::{
     CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
     embedded::{
@@ -24,6 +26,7 @@ pub struct LocalCells {
     prelude: Option<Arc<str>>,
     host_tools: Vec<Arc<dyn Tool>>,
     hands: Atom<Option<Hands>>,
+    journals: Option<CellJournals>,
 }
 
 type Hands = (Arc<str>, Arc<dyn HandCalls>);
@@ -51,6 +54,20 @@ impl LocalCells {
         self
     }
 
+    #[must_use]
+    pub fn journals(mut self, journals: CellJournals) -> Self {
+        self.journals = Some(journals);
+        self
+    }
+
+    fn toolset(&self, tools: Vec<Arc<dyn Tool>>) -> Arc<dyn CodeModeToolset> {
+        Arc::new(LocalTools::new(
+            tools,
+            &self.host_tools,
+            Option::clone(&self.hands.get()),
+        ))
+    }
+
     fn session(&self, session_id: &str) -> Arc<LocalSession> {
         if let Some(session) = self.existing(session_id) {
             return session;
@@ -61,6 +78,10 @@ impl LocalCells {
                 let runtime = CodeModeRuntime::new_with_turn(Arc::clone(&turn));
                 let runtime = match &self.prelude {
                     Some(prelude) => runtime.with_prelude(Arc::clone(prelude)),
+                    None => runtime,
+                };
+                let runtime = match &self.journals {
+                    Some(journals) => runtime.with_journals(journals.clone()),
                     None => runtime,
                 };
                 Arc::new(LocalSession { runtime, turn })
@@ -159,6 +180,21 @@ impl CodeModeToolset for LocalTools {
     ) -> HostFuture<'a, ToolOutput> {
         let found = find(&self.host, name).or_else(|| find(&self.tools, name));
         execute(found, name, input, context)
+    }
+
+    fn recover_nested<'a>(
+        &'a self,
+        _name: &'a str,
+        input: Value,
+        context: ToolContext<'a>,
+    ) -> Option<HostFuture<'a, Option<ToolOutput>>> {
+        let (here, hands) = self.hands.as_ref()?;
+        match take_hand(input) {
+            Ok((_, Some(hand))) if hand != here.as_ref() && !hands.here(&hand) => {
+                Some(Box::pin(async move { hands.recover(&hand, context).await }))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -272,11 +308,7 @@ impl CodeModeHost for LocalCells {
         observer: Option<&'a mut dyn CodeModeObserver>,
     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
         let session = self.session(context.session_id());
-        let tools: Arc<dyn CodeModeToolset> = Arc::new(LocalTools::new(
-            tools,
-            &self.host_tools,
-            Option::clone(&self.hands.get()),
-        ));
+        let tools = self.toolset(tools);
         let context = OwnedToolContext::from_context(context);
         Box::pin(async move {
             let mut ignore = IgnoreCodeModeUpdates;
@@ -304,6 +336,32 @@ impl CodeModeHost for LocalCells {
                 .wait_with_updates(input, context, observer)
                 .await)
         })
+    }
+
+    fn recover<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
+        let session = self.session(context.session_id());
+        let tools = self.toolset(Vec::new());
+        let context = OwnedToolContext::from_context(context);
+        Box::pin(async move {
+            Ok(session
+                .runtime
+                .recover_with_updates(tools, context, &mut IgnoreCodeModeUpdates)
+                .await)
+        })
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        context: ToolContext<'a>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> HostFuture<'a, ()> {
+        let session = self.session(context.session_id());
+        let tools = self.toolset(tools);
+        let context = OwnedToolContext::from_context(context);
+        Box::pin(async move { session.runtime.adopt(tools, &context).await })
     }
 
     fn route_hands(&self, name: &str, hands: Arc<dyn HandCalls>) {

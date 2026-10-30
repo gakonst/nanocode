@@ -230,7 +230,6 @@ fn admit_options(
         .ok_or(SpawnPolicyError::ParentThinkingUnknown)?;
     let options = options.resolve(parent.model.clone(), thinking)?;
     policy.admit(
-        parent,
         options.selected_harness_model().as_ref(),
         options.selected_thinking(),
     )?;
@@ -250,7 +249,7 @@ async fn child_settings(
             let (model, thinking) = (checkpoint.model(), checkpoint.thinking());
             if let Some((registry, parent)) = policy {
                 let policy = registry.spawn_policy();
-                policy.admit(parent, Some(&model), Some(thinking))?;
+                policy.admit(Some(&model), Some(thinking))?;
                 policy.admit_reasoning_mode(parent, checkpoint.reasoning_mode())?;
             }
             Ok((Some(model), Some(thinking), checkpoint.reasoning_mode()))
@@ -869,15 +868,6 @@ fn spawn_agent_parameters_for(policy: &SpawnPolicy) -> Value {
             .collect::<Vec<_>>();
         levels.push(Value::Null);
         properties["thinking"]["enum"] = Value::Array(levels);
-    }
-    if policy.bounded_by_parent_thinking {
-        let description = format!(
-            "{} A registered subagent cannot request more effort than its own.",
-            properties["thinking"]["description"]
-                .as_str()
-                .unwrap_or_default()
-        );
-        properties["thinking"]["description"] = json!(description);
     }
     parameters
 }

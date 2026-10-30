@@ -3589,7 +3589,7 @@ async fn start_turn(
             .await;
         let panicked = outcome.is_err();
         let result = outcome.unwrap_or(Err(NanocodeError::TurnStopped));
-        telemetry::finish_turn(&finished_span, &result);
+        telemetry::finish_turn(&finished_span, &result, panicked);
         if panicked {
             running.stopped.store(true, Ordering::SeqCst);
             for cancel in running.cancellations.get().values() {

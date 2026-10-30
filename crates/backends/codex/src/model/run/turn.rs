@@ -886,6 +886,7 @@ impl ModelRun {
         model_call_index.store(next_call, std::sync::atomic::Ordering::Release);
         self.prompt_cache.publish_live(None);
         let mut first_batch = true;
+        let mut reprompted = false;
         loop {
             let call_index = self.stats.model_calls + 1;
             if can_drain_steers {
@@ -1014,6 +1015,12 @@ impl ModelRun {
                     } else {
                         message
                     });
+                }
+                if !reprompted {
+                    reprompted = true;
+                    session.conversation.append([empty_response()]);
+                    session.conversation.clear_delta();
+                    continue;
                 }
                 return Err(NanocodeError::MalformedResponse {
                     detail: "model completed without a final message or exec call",

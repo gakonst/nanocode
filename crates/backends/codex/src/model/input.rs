@@ -59,6 +59,21 @@ pub(in crate::model) fn turn_aborted() -> ResponseItem {
     )
 }
 
+pub(in crate::model) fn empty_response() -> ResponseItem {
+    ResponseItem::message(
+        MessageRole::User,
+        [ContentItem::InputText {
+            text: concat!(
+                "<empty_response>\n",
+                "Your last response had no message and no exec call, so nothing happened. ",
+                "Continue the task: call exec, or reply with your final message.\n",
+                "</empty_response>"
+            )
+            .into(),
+        }],
+    )
+}
+
 pub(in crate::model) fn developer_context(config: &ModelConfig, tools: &Tools) -> ResponseItem {
     ResponseItem::message(
         MessageRole::Developer,

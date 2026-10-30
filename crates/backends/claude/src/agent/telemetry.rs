@@ -53,7 +53,11 @@ pub(super) fn turn_span(parent: &Span, labels: &TurnLabels<'_>) -> Span {
     span
 }
 
-pub(super) fn finish_turn(span: &Span, result: &Result<TurnResult>) {
+/// Records a turn's end on its span. A turn the host stopped (`shutdown`, which
+/// ends every live turn with `TurnStopped`) ended as asked, as a cancelled one
+/// does, so it is `cancelled` without an error event, as Codex records it; a
+/// panic also surfaces as `TurnStopped`, so `panicked` keeps that one `failed`.
+pub(super) fn finish_turn(span: &Span, result: &Result<TurnResult>, panicked: bool) {
     if let Some(usage) = result.as_ref().ok().and_then(TurnResult::usage) {
         span.record("usage.input_tokens", usage.input_tokens());
         span.record("usage.cached_input_tokens", usage.cached_input_tokens());
@@ -72,6 +76,12 @@ pub(super) fn finish_turn(span: &Span, result: &Result<TurnResult>) {
             span.record("cost.usd", cost.amount().decimal().as_str());
             span.record("cost.service_tier", cost.service_tier().as_str());
         }
+    }
+    if panicked {
+        span.record("status", "failed");
+        span.record("otel.status_code", "ERROR");
+        tracing::error!(target: "nanocode", parent: span, "agent turn panicked");
+        return;
     }
     finish(span, result.as_ref().err(), "agent turn failed");
 }
@@ -300,9 +310,15 @@ pub(super) fn fail_attempt(
 }
 
 fn finish(span: &Span, error: Option<&NanocodeError>, message: &'static str) {
+    let ended_as_asked = |error: &NanocodeError| {
+        matches!(
+            error,
+            NanocodeError::TurnCancelled | NanocodeError::TurnStopped
+        )
+    };
     let status = match error {
         None => "completed",
-        Some(NanocodeError::TurnCancelled) => "cancelled",
+        Some(error) if ended_as_asked(error) => "cancelled",
         Some(_) => "failed",
     };
     span.record("status", status);
@@ -311,7 +327,7 @@ fn finish(span: &Span, error: Option<&NanocodeError>, message: &'static str) {
         if error.is_none() { "OK" } else { "ERROR" },
     );
     if let Some(error) = error
-        && !matches!(error, NanocodeError::TurnCancelled)
+        && !ended_as_asked(error)
     {
         tracing::error!(target: "nanocode", parent: span, error = %error, "{message}");
     }

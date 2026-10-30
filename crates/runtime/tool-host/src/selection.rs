@@ -103,6 +103,8 @@ pub struct Tools {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) hand_calls: Option<Arc<dyn crate::embedded::HandCalls>>,
     #[cfg(not(target_family = "wasm"))]
+    pub(crate) cell_journals: Option<nanocode_code_mode::code_mode::CellJournals>,
+    #[cfg(not(target_family = "wasm"))]
     pub(super) deferred_tools_guidance_enabled: bool,
 
     pub(crate) embedded_host: Option<Arc<dyn crate::embedded::CodeModeHost>>,
@@ -155,6 +157,8 @@ impl Default for Tools {
             code_mode_executors: None,
             #[cfg(not(target_family = "wasm"))]
             hand_calls: None,
+            #[cfg(not(target_family = "wasm"))]
+            cell_journals: None,
             #[cfg(not(target_family = "wasm"))]
             deferred_tools_guidance_enabled: false,
 
@@ -334,6 +338,22 @@ impl Tools {
         &self,
     ) -> Option<&nanocode_code_mode::remote::CodeModeExecutors> {
         self.code_mode_executors.as_ref()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub fn with_cell_journals(
+        mut self,
+        journals: nanocode_code_mode::code_mode::CellJournals,
+    ) -> Self {
+        self.cell_journals = Some(journals);
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub const fn cell_journals(&self) -> Option<&nanocode_code_mode::code_mode::CellJournals> {
+        self.cell_journals.as_ref()
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -544,6 +564,13 @@ impl ToolsBuilder {
     #[cfg(not(target_family = "wasm"))]
     pub fn process_route_store(mut self, store: Arc<dyn ProcessRouteStore>) -> Self {
         self.tools.process_route_store = Some(store);
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub fn cell_journals(mut self, journals: nanocode_code_mode::code_mode::CellJournals) -> Self {
+        self.tools.cell_journals = Some(journals);
         self
     }
 

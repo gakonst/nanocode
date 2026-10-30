@@ -187,7 +187,10 @@ fn text<'js>(ctx: &Ctx<'js>, bytes: &[u8], fatal: bool) -> rquickjs::Result<rqui
     }
 }
 
-pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
+pub(crate) fn install<'js>(
+    ctx: &Ctx<'js>,
+    state: &std::rc::Rc<std::cell::RefCell<crate::cell::ExecutionState>>,
+) -> Result<(), String> {
     let bytes = Object::new(ctx.clone())
         .catch(ctx)
         .map_err(|error| error.to_string())?;
@@ -289,12 +292,14 @@ pub(crate) fn install<'js>(ctx: &Ctx<'js>) -> Result<(), String> {
             ArrayBuffer::new(ctx, digest)
         },
     );
+    let random_state = std::rc::Rc::clone(state);
     let random = Func::from(
-        |ctx: Ctx<'js>, length: usize| -> rquickjs::Result<ArrayBuffer<'js>> {
+        move |ctx: Ctx<'js>, length: usize| -> rquickjs::Result<ArrayBuffer<'js>> {
             let mut bytes = vec![0; length];
             nanocode_platform::fill_random(&mut bytes).map_err(|error| {
                 Exception::throw_internal(&ctx, &format!("no randomness: {error}"))
             })?;
+            let bytes = random_state.borrow_mut().random_bytes(bytes);
             ArrayBuffer::new(ctx, bytes)
         },
     );

@@ -9,6 +9,31 @@
   const nativeYield = __nanocodeYield;
   const nativeSetTimeout = __nanocodeSetTimeout;
   const nativeClearTimeout = __nanocodeClearTimeout;
+  const nativeValue = __nanocodeValue;
+  const OriginalDate = Date;
+  const originalNow = OriginalDate.now;
+  const clockNow = () => nativeValue(0, originalNow());
+  function JournaledDate(...args) {
+    if (new.target === undefined) return new OriginalDate(clockNow()).toString();
+    return Reflect.construct(OriginalDate, args.length === 0 ? [clockNow()] : args, new.target);
+  }
+  Object.setPrototypeOf(JournaledDate, OriginalDate);
+  JournaledDate.prototype = OriginalDate.prototype;
+  Object.defineProperty(JournaledDate, "name", { value: "Date", configurable: true });
+  Object.defineProperty(JournaledDate, "length", { value: 7, configurable: true });
+  Object.defineProperty(JournaledDate, "now", { value: clockNow, writable: true, configurable: true });
+  OriginalDate.prototype.constructor = JournaledDate;
+  Object.defineProperty(globalThis, "Date", { value: JournaledDate, writable: true, configurable: true });
+  const originalRandom = Math.random;
+  Object.defineProperty(Math, "random", { value: () => nativeValue(2, originalRandom()), writable: true, configurable: true });
+  const performanceObject = globalThis.performance;
+  if (typeof performanceObject?.now === "function") {
+    const originalPerformanceNow = performanceObject.now.bind(performanceObject);
+    const journaledPerformance = Object.create(performanceObject, {
+      now: { value: () => nativeValue(1, originalPerformanceNow()), writable: true, configurable: true },
+    });
+    Object.defineProperty(globalThis, "performance", { value: journaledPerformance, writable: true, configurable: true });
+  }
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const jsonParse = JSON.parse;
   const jsonStringify = JSON.stringify;

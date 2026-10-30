@@ -20,6 +20,7 @@ use nanocode_agent_core::{
     SteerReceiptStatus, Thinking, TurnResult, WeakAgent,
     events::{AgentEventKind, RunStatus},
 };
+use nanocode_durability_core::StoreError;
 use nanocode_platform::Instant;
 use nanocode_schema::Validator;
 use nanocode_sync::{Atom, Owned, Sequencer, Turn};
@@ -532,7 +533,30 @@ pub(super) struct ScopeLocks {
 }
 
 fn copy_error(error: &std::io::Error) -> std::io::Error {
+    if is_fenced(error) {
+        return std::io::Error::other(StoreError::Fenced);
+    }
     std::io::Error::new(error.kind(), error.to_string())
+}
+
+/// Whether a journal save failed because another process acquired the journal
+/// after this one: every store answers `Fenced` once the writer's owner token is
+/// no longer the head's, a state's fence only grows, and the journal keeps its
+/// token after `Fenced` rather than acquiring again, which would take the journal
+/// back from its new owner. No retry of this writer can succeed.
+fn is_fenced(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<StoreError>())
+        .is_some_and(|error| matches!(error, StoreError::Fenced))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JournalSave {
+    Idle,
+    Saved,
+    Failed,
+    Fenced,
 }
 
 async fn journal_writer(
@@ -546,6 +570,7 @@ async fn journal_writer(
     let mut cache = durable::JournalCache::default();
     let mut pending = Vec::new();
     let mut failures = 0_u32;
+    let mut fenced = false;
     loop {
         for _ in 0..requests.len() {
             if let Ok(request) = requests.try_recv() {
@@ -555,16 +580,28 @@ async fn journal_writer(
         let Some(live) = registry.upgrade() else {
             return;
         };
-        let (finished, failed) = live
+        let (finished, save) = live
             .write_journal(
                 &root_session_id,
                 std::mem::take(&mut pending),
                 &mut saved,
                 &mut recorded,
                 &mut cache,
+                fenced,
             )
             .await;
-        failures = if failed {
+        match save {
+            JournalSave::Fenced if !fenced => {
+                fenced = true;
+                tracing::info!(
+                    %root_session_id,
+                    "another process owns the subagent journal now; this process stops saving it"
+                );
+            }
+            JournalSave::Saved => fenced = false,
+            JournalSave::Idle | JournalSave::Failed | JournalSave::Fenced => {}
+        }
+        failures = if save == JournalSave::Failed {
             failures.saturating_add(1)
         } else {
             0
@@ -1987,7 +2024,8 @@ impl Registry {
         saved: &mut Option<String>,
         recorded: &mut HashMap<String, Arc<str>>,
         cache: &mut durable::JournalCache,
-    ) -> (bool, bool) {
+        fenced: bool,
+    ) -> (bool, JournalSave) {
         let (restoring, background) = {
             let gate = self.claims.read(|claims| {
                 claims
@@ -2000,7 +2038,7 @@ impl Registry {
                     gate,
                     Some(RestorationState::Loading | RestorationState::Failed(_))
                 ),
-                matches!(gate, None | Some(RestorationState::Ready)),
+                matches!(gate, None | Some(RestorationState::Ready)) && !fenced,
             )
         };
         let mut waiters = Vec::new();
@@ -2024,7 +2062,7 @@ impl Registry {
             {
                 let _ = done.send(Err(std::io::Error::other("no subagent store is installed")));
             }
-            return (true, false);
+            return (true, JournalSave::Idle);
         };
         let frozen = || {
             Err(std::io::Error::other(
@@ -2073,6 +2111,7 @@ impl Registry {
                 snapshot.encode(cache)
             })
         });
+        let attempted = encoded.is_some();
         let result = match encoded {
             None => Ok(()),
             Some(Err(error)) => Err(error),
@@ -2118,13 +2157,19 @@ impl Registry {
         };
         if waiters.is_empty()
             && let Err(error) = &result
+            && !is_fenced(error)
         {
             tracing::warn!(%error, %root_session_id, "could not save subagent journal");
         }
         for (_, done) in waiters {
             let _ = done.send(result.as_ref().copied().map_err(copy_error));
         }
-        let failed = result.is_err();
+        let save = match &result {
+            Ok(()) if attempted => JournalSave::Saved,
+            Ok(()) => JournalSave::Idle,
+            Err(error) if is_fenced(error) => JournalSave::Fenced,
+            Err(_) => JournalSave::Failed,
+        };
         let closed = !finals.is_empty();
         for (write, done) in finals {
             *saved = None;
@@ -2133,7 +2178,7 @@ impl Registry {
                     .await,
             );
         }
-        (finished || closed, failed)
+        (finished || closed, save)
     }
 
     async fn record_children(
@@ -3074,6 +3119,11 @@ impl Registry {
         let durable = match outcome {
             SubmissionOutcome::Accepted { .. } => match self.persist_durably(&root).await {
                 Ok(()) => true,
+                Err(error) if is_fenced(&error) => {
+                    tracing::debug!(%error, %root, "accepted subagent result is not journaled: another process owns the journal");
+                    self.changed();
+                    false
+                }
                 Err(error) => {
                     tracing::warn!(%error, %root, "accepted subagent result is not journaled yet");
                     self.changed();
@@ -3167,8 +3217,16 @@ impl Registry {
                     self.finish_pending_checkpoint(root_session_id);
                 }
 
-                if let Err(error) = self.persist_durably(root_session_id).await {
-                    tracing::warn!(%error, %root_session_id, "settled subagent turn not journaled yet; the writer retries");
+                match self.persist_durably(root_session_id).await {
+                    Ok(()) => {}
+                    Err(error) if is_fenced(&error) => tracing::debug!(
+                        %error, %root_session_id,
+                        "settled subagent turn not journaled: another process owns the journal"
+                    ),
+                    Err(error) => tracing::warn!(
+                        %error, %root_session_id,
+                        "settled subagent turn not journaled yet; the writer retries"
+                    ),
                 }
                 self.send_unless_closed(
                     root_session_id,
@@ -4736,7 +4794,11 @@ impl Registry {
         if self.store_for(root_session_id).is_some()
             && let Err(error) = self.persist_durably(root_session_id).await
         {
-            tracing::warn!(%error, root_session_id, "redelivered subagent messages are not journaled yet");
+            if is_fenced(&error) {
+                tracing::debug!(%error, root_session_id, "redelivered subagent messages are not journaled: another process owns the journal");
+            } else {
+                tracing::warn!(%error, root_session_id, "redelivered subagent messages are not journaled yet");
+            }
         }
     }
 

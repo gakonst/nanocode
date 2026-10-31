@@ -263,7 +263,7 @@ impl App {
                 });
                 Redraw::Streaming
             }
-            AgentUpdate::Event { id, event } => {
+            AgentUpdate::Event { id, event, .. } => {
                 let payload = matches!(
                     event.kind,
                     AgentEventKind::RunStarted

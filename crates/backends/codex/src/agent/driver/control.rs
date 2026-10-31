@@ -333,8 +333,11 @@ fn spawn_side_question(
     let images = spawner.images.clone();
     let service = (spawner.service_factory)(Arc::clone(&config));
     let thread_id = session_id.to_owned();
-    let host_context = spawner.host_context.as_ref().map(Arc::clone);
-    let task = crate::client::transport::layer::origin::scope(host_context, async move {
+    let origin = crate::client::transport::layer::origin::Origin {
+        context: spawner.host_context.as_ref().map(Arc::clone),
+        session: Some(Arc::from(session_id)),
+    };
+    let task = origin.scope(async move {
         let outcome = latest
             .model()
             .side_question(

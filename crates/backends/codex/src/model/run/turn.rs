@@ -21,7 +21,10 @@ impl ModelRun {
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelCompactOutcome> {
         let configured = (Arc::clone(&self.config), self.model);
-        let host_context = self.host_context.clone();
+        let origin = origin::Origin {
+            context: self.host_context.clone(),
+            session: Some(Arc::from(self.events.request_id())),
+        };
         let execution: ExecutionFuture<'_, Result<ModelCompactOutcome>> =
             Box::pin(self.compact_inner(
                 requested_workspace,
@@ -31,7 +34,7 @@ impl ModelRun {
                 cancel,
                 execution_steps,
             ));
-        let outcome = origin::scope(host_context, execution).await;
+        let outcome = origin.scope(execution).await;
         self.restore_runtime(configured, logical_turn)?;
         outcome
     }
@@ -273,7 +276,10 @@ impl ModelRun {
         )?;
 
         let configured = (Arc::clone(&self.config), self.model);
-        let host_context = self.host_context.clone();
+        let origin = origin::Origin {
+            context: self.host_context.clone(),
+            session: Some(Arc::from(self.events.request_id())),
+        };
         let execution: ExecutionFuture<'_, Result<ModelTaskOutcome>> = Box::pin(self.execute_task(
             task,
             workspace,
@@ -282,7 +288,7 @@ impl ModelRun {
             &mut cancel,
             &fork_snapshots,
         ));
-        let outcome = origin::scope(host_context, execution).await;
+        let outcome = origin.scope(execution).await;
         self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {

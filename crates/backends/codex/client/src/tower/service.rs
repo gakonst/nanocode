@@ -998,12 +998,13 @@ impl Service<ResponsesAttempt> for ResponsesService {
             let connection = service.connection()?.clone();
             let origin = request.origin.clone();
             let attempt = connection.run(move |connection| {
-                Box::pin(nanocode_http::layer::origin::scope(
-                    origin,
-                    service
-                        .attempt(connection, request, queued_at)
-                        .instrument(span),
-                ))
+                Box::pin(
+                    origin.scope(
+                        service
+                            .attempt(connection, request, queued_at)
+                            .instrument(span),
+                    ),
+                )
             });
             attempt.await.map_err(|_| {
                 ResponsesServiceError::from(ResponsesError::Closed {

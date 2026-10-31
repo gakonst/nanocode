@@ -44,7 +44,7 @@ impl Serialize for Stored<'_> {
                 SessionEvent::Subagent(ScopedAgentUpdate {
                     detach,
                     root_session_id,
-                    update: AgentUpdate::Event { id, event },
+                    update: AgentUpdate::Event { id, parent, event },
                 }),
                 compact @ Some(_),
             ) => {
@@ -56,6 +56,7 @@ impl Serialize for Stored<'_> {
                     "update",
                     &ChildEvent {
                         id,
+                        parent: *parent,
                         event: Event {
                             event,
                             root: false,
@@ -72,14 +73,16 @@ impl Serialize for Stored<'_> {
 
 struct ChildEvent<'a> {
     id: &'a AgentId,
+    parent: Option<AgentId>,
     event: Event<'a>,
 }
 
 impl Serialize for ChildEvent<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(3))?;
+        let mut map = serializer.serialize_map(Some(4))?;
         map.serialize_entry("type", "event")?;
         map.serialize_entry("id", self.id)?;
+        map.serialize_entry("parent", &self.parent)?;
         map.serialize_entry("event", &self.event)?;
         map.end()
     }

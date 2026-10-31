@@ -136,9 +136,10 @@ impl Serialize for Update<'_> {
                 map.serialize_entry("type", "added")?;
                 map.serialize_entry("agent", agent)?;
             }
-            AgentUpdate::Event { id, event } => {
+            AgentUpdate::Event { id, parent, event } => {
                 map.serialize_entry("type", "event")?;
                 map.serialize_entry("id", id)?;
+                map.serialize_entry("parent", parent)?;
                 map.serialize_entry("event", event)?;
             }
             AgentUpdate::Status { id, status } => {

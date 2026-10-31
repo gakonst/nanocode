@@ -4543,12 +4543,13 @@ impl State {
         context: ResponseContext<'_>,
     ) -> std::result::Result<ResponseOutcome, ResponseFailure> {
         let template = context.template;
-        let origin = context.origin.clone();
-        let mut outcome = nanocode_http::layer::origin::scope(
-            origin,
-            self.observed_response(messages, tools, cancel, events, index, context),
-        )
-        .await;
+        let origin = nanocode_http::layer::origin::Origin {
+            context: context.origin.clone(),
+            session: Some(Arc::from(self.session_id.as_str())),
+        };
+        let mut outcome = origin
+            .scope(self.observed_response(messages, tools, cancel, events, index, context))
+            .await;
         if let Ok(outcome) = &mut outcome {
             outcome.message.usage.estimated_cost =
                 self.estimate_cost(template, &outcome.message.usage);

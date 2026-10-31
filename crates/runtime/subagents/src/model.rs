@@ -371,6 +371,7 @@ pub enum AgentUpdate {
     Added(AgentDescriptor),
     Event {
         id: AgentId,
+        parent: Option<AgentId>,
         event: AgentEvent,
     },
     Status {

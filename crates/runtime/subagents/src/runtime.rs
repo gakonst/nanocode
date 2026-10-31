@@ -3076,6 +3076,27 @@ impl Registry {
             .and_then(|session| session.host_context.as_ref().map(Arc::clone))
     }
 
+    async fn lineage(&self, session_id: &str) -> Vec<AgentId> {
+        let state = self.state.acquire().await;
+        let Some(scope) = state
+            .root_by_session
+            .get(session_id)
+            .and_then(|root| state.scopes.get(root))
+        else {
+            return Vec::new();
+        };
+        let mut lineage = Vec::new();
+        let mut next = scope.topology.agent_for_session(session_id);
+        while let Some(id) = next {
+            lineage.push(id);
+            next = scope
+                .sessions
+                .get(&id)
+                .and_then(|session| session.descriptor.parent);
+        }
+        lineage
+    }
+
     pub(super) async fn reserve(&self, session_id: &str) -> std::io::Result<AgentReservation> {
         self.state.acquire().await.reserve_for(session_id)
     }
@@ -4581,6 +4602,7 @@ impl Registry {
                     );
                 missing.push((
                     id,
+                    session.descriptor.parent,
                     parent_session,
                     snapshot,
                     session.host_context.clone(),
@@ -4594,7 +4616,9 @@ impl Registry {
             }
             (root, missing)
         };
-        while let Some((id, parent_session, snapshot, host_context, schema, task)) = missing.pop() {
+        while let Some((id, parent_id, parent_session, snapshot, host_context, schema, task)) =
+            missing.pop()
+        {
             let snapshot = match snapshot {
                 Some(snapshot) => snapshot,
                 None => self.journal_snapshot(&root, id).await?,
@@ -4620,6 +4644,7 @@ impl Registry {
             let event_task = forward_events(
                 root.clone(),
                 id,
+                parent_id,
                 events,
                 ready,
                 Arc::downgrade(self),
@@ -5597,6 +5622,10 @@ impl SubagentControl {
         self.registry.host_context_for_session(session_id).await
     }
 
+    pub async fn lineage(&self, session_id: &str) -> Vec<AgentId> {
+        self.registry.lineage(session_id).await
+    }
+
     pub fn set_max_concurrency(&self, limit: usize) {
         self.registry.set_max_concurrency(limit);
     }
@@ -5674,6 +5703,7 @@ impl SubagentControl {
 pub(super) fn forward_events(
     root_session_id: String,
     id: AgentId,
+    parent: Option<AgentId>,
     mut events: AgentEvents,
     start: oneshot::Receiver<()>,
     registry: Weak<Registry>,
@@ -5696,7 +5726,7 @@ pub(super) fn forward_events(
             let _ = send_update(
                 &updates,
                 &root_session_id,
-                AgentUpdate::Event { id, event },
+                AgentUpdate::Event { id, parent, event },
                 false,
             );
             if let Some(registry) = registry.upgrade() {

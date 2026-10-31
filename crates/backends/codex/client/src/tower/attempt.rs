@@ -173,7 +173,7 @@ pub struct ResponsesAttempt {
     session_transport: Arc<SessionTransport>,
     pub(crate) model_call_started_at: Option<Instant>,
     input_trace: Option<InputTrace>,
-    pub(crate) origin: Option<Arc<str>>,
+    pub(crate) origin: nanocode_http::layer::origin::Origin,
 }
 
 #[derive(Clone)]
@@ -212,7 +212,7 @@ impl ResponsesAttempt {
             session_transport,
             model_call_started_at: None,
             input_trace: None,
-            origin: nanocode_http::layer::origin::current(),
+            origin: nanocode_http::layer::origin::captured(),
         }
     }
 
@@ -250,7 +250,7 @@ impl ResponsesAttempt {
             session_transport,
             model_call_started_at: None,
             input_trace: None,
-            origin: nanocode_http::layer::origin::current(),
+            origin: nanocode_http::layer::origin::captured(),
         }
     }
 
@@ -289,7 +289,7 @@ impl ResponsesAttempt {
             session_transport,
             model_call_started_at: None,
             input_trace: None,
-            origin: nanocode_http::layer::origin::current(),
+            origin: nanocode_http::layer::origin::captured(),
         }
     }
 

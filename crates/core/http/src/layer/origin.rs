@@ -6,35 +6,66 @@ use std::{
     task::{Context, Poll},
 };
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Origin {
+    pub context: Option<Arc<str>>,
+    pub session: Option<Arc<str>>,
+}
+
+impl Origin {
+    pub fn scope<F: Future>(self, future: F) -> Scoped<F> {
+        Scoped {
+            origin: self,
+            future: Box::pin(future),
+        }
+    }
+}
+
 thread_local! {
-    static CURRENT: RefCell<Option<Arc<str>>> = const { RefCell::new(None) };
+    static CURRENT: RefCell<Origin> = const {
+        RefCell::new(Origin {
+            context: None,
+            session: None,
+        })
+    };
 }
 
 #[must_use]
 pub fn current() -> Option<Arc<str>> {
+    CURRENT.with_borrow(|origin| origin.context.clone())
+}
+
+#[must_use]
+pub fn session() -> Option<Arc<str>> {
+    CURRENT.with_borrow(|origin| origin.session.clone())
+}
+
+#[must_use]
+pub fn captured() -> Origin {
     CURRENT.with_borrow(Clone::clone)
 }
 
 pub fn scope<F: Future>(origin: Option<Arc<str>>, future: F) -> Scoped<F> {
-    Scoped {
-        origin,
-        future: Box::pin(future),
+    Origin {
+        context: origin,
+        session: None,
     }
+    .scope(future)
 }
 
 pub struct Scoped<F> {
-    origin: Option<Arc<str>>,
+    origin: Origin,
     future: Pin<Box<F>>,
 }
 
 struct Entered<'a> {
-    origin: &'a mut Option<Arc<str>>,
-    previous: Option<Arc<str>>,
+    origin: &'a mut Origin,
+    previous: Origin,
 }
 
 impl Drop for Entered<'_> {
     fn drop(&mut self) {
-        *self.origin = CURRENT.replace(self.previous.take());
+        *self.origin = CURRENT.replace(std::mem::take(&mut self.previous));
     }
 }
 
@@ -43,7 +74,7 @@ impl<F: Future> Future for Scoped<F> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         let this = self.get_mut();
-        let previous = CURRENT.replace(this.origin.take());
+        let previous = CURRENT.replace(std::mem::take(&mut this.origin));
         let _entered = Entered {
             origin: &mut this.origin,
             previous,

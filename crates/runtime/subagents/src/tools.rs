@@ -498,6 +498,7 @@ pub async fn start_agents_observed(
         let event_task = forward_events(
             reservation.root_session_id.clone(),
             id,
+            reservation.parent,
             events,
             events_ready,
             Arc::downgrade(registry),
@@ -726,6 +727,7 @@ async fn start_child(
     let event_task = forward_events(
         reservation.root_session_id.clone(),
         id,
+        reservation.parent,
         events,
         events_ready,
         Arc::downgrade(registry),

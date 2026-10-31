@@ -732,6 +732,7 @@ impl<'a> ResponseCreate<'a> {
                 strip_image_detail: matches!(
                     policy.model,
                     crate::client::Model::Sol
+                        | crate::client::Model::Terra
                         | crate::client::Model::Luna
                         | crate::client::Model::Astra
                         | crate::client::Model::DaybreakBlue

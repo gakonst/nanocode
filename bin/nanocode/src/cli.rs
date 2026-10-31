@@ -209,7 +209,7 @@ pub struct GatewayArgs {
         long,
         value_enum,
         env = "NANOCODE_GATEWAY",
-        help = "Route Codex models (gpt-6.1-sol, luna, astra) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login; restart to change"
+        help = "Route Codex models (gpt-6.1-sol, terra, luna, astra) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login; restart to change"
     )]
     pub gateway: Option<GatewayArg>,
 

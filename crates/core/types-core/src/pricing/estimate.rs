@@ -27,6 +27,30 @@ const SOL_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     cache_write_input: 10_000,
     output: 30_000,
 };
+const TERRA_STANDARD: TokenRates = TokenRates {
+    input: 1_000,
+    cached_input: 50,
+    cache_write_input: 1_250,
+    output: 5_000,
+};
+const TERRA_PRIORITY: TokenRates = TokenRates {
+    input: 2_000,
+    cached_input: 100,
+    cache_write_input: 2_500,
+    output: 10_000,
+};
+const TERRA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 2_000,
+    cached_input: 100,
+    cache_write_input: 2_500,
+    output: 7_500,
+};
+const TERRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+    input: 4_000,
+    cached_input: 200,
+    cache_write_input: 5_000,
+    output: 15_000,
+};
 const LUNA_STANDARD: TokenRates = TokenRates {
     input: 100,
     cached_input: 10,
@@ -152,6 +176,10 @@ impl TokenRates {
             (Model::Sol, Standard, true) => SOL_LONG_CONTEXT_STANDARD,
             (Model::Sol, Priority | Fast, true) => SOL_LONG_CONTEXT_PRIORITY,
             (Model::Sol, Ultrafast, true) => SOL_LONG_CONTEXT_ULTRAFAST,
+            (Model::Terra, Standard, false) => TERRA_STANDARD,
+            (Model::Terra, Priority | Fast | Ultrafast, false) => TERRA_PRIORITY,
+            (Model::Terra, Standard, true) => TERRA_LONG_CONTEXT_STANDARD,
+            (Model::Terra, Priority | Fast | Ultrafast, true) => TERRA_LONG_CONTEXT_PRIORITY,
             (Model::Luna, Standard, false) => LUNA_STANDARD,
             (Model::Luna, Priority | Fast | Ultrafast, false) => LUNA_PRIORITY,
             (Model::Luna, Standard, true) => LUNA_LONG_CONTEXT_STANDARD,
@@ -199,7 +227,7 @@ impl ServiceTier {
     pub const fn effective_for_model(self, model: Model) -> Self {
         match (model, self) {
             (Model::Glm53 | Model::Kimi | Model::Mimo, _) => Self::Standard,
-            (Model::Luna, Self::Ultrafast) => Self::Fast,
+            (Model::Terra | Model::Luna, Self::Ultrafast) => Self::Fast,
             _ => self,
         }
     }

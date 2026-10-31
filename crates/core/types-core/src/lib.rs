@@ -17,6 +17,8 @@ pub const MODEL: &str = Model::Astra.as_str();
 pub enum Model {
     Sol,
 
+    Terra,
+
     Luna,
 
     #[default]
@@ -86,12 +88,13 @@ impl<'de> Deserialize<'de> for CustomModel {
 }
 
 impl Model {
-    pub const ALL: [Self; 3] = [Self::Astra, Self::Sol, Self::Luna];
+    pub const ALL: [Self; 4] = [Self::Astra, Self::Sol, Self::Terra, Self::Luna];
 
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
             Self::Astra
+            | Self::Terra
             | Self::DaybreakBlue
             | Self::Glm53
             | Self::Kimi
@@ -105,6 +108,7 @@ impl Model {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Sol => "gpt-6.1-sol",
+            Self::Terra => "gpt-6.1-terra",
             Self::Luna => "gpt-6-luna",
             Self::Astra => "gpt-6-astra",
             Self::Glm53 => "@cf/zai-org/glm-5.3",
@@ -127,14 +131,17 @@ impl Model {
             Self::Glm53 | Self::Mimo => {
                 matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
             }
-            Self::Luna | Self::Custom(_) => true,
+            Self::Terra | Self::Luna | Self::Custom(_) => true,
             Self::Astra | Self::Sol | Self::DaybreakBlue => !matches!(thinking, Thinking::None),
         }
     }
 
     #[must_use]
     pub const fn supports_reasoning_effort_updates(self) -> bool {
-        matches!(self, Self::Astra | Self::Sol | Self::DaybreakBlue)
+        matches!(
+            self,
+            Self::Astra | Self::Sol | Self::Terra | Self::DaybreakBlue
+        )
     }
 
     #[must_use]
@@ -170,6 +177,7 @@ impl Model {
     pub fn known(value: &str) -> Option<Self> {
         match value {
             "gpt-6.1-sol" | "sol" => Some(Self::Sol),
+            "gpt-6.1-terra" | "terra" => Some(Self::Terra),
             "gpt-6-luna" | "luna" => Some(Self::Luna),
             "gpt-6-astra" | "astra" => Some(Self::Astra),
             "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Some(Self::Glm53),

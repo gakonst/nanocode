@@ -168,7 +168,7 @@ fn validate_responses_gateway(
     }
     if !gateway.serves(config.model) {
         return Err(OpenAiError::InvalidConfiguration {
-            detail: "Responses gateways serve the OpenAI Codex models Sol, Luna and Astra, and the Vercel AI Gateway also GLM-5.3, Kimi and MiMo; use the Chat Completions gateway for those elsewhere",
+            detail: "Responses gateways serve the OpenAI Codex models Sol, Terra, Luna and Astra, and the Vercel AI Gateway also GLM-5.3, Kimi and MiMo; use the Chat Completions gateway for those elsewhere",
         });
     }
     if matches!(config.responses_transport, ResponsesTransport::WebSocket)

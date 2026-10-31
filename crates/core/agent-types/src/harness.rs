@@ -249,7 +249,11 @@ impl ModelSelection {
                         model.default_thinking(),
                         matches!(
                             model,
-                            Model::Astra | Model::Sol | Model::Luna | Model::DaybreakBlue
+                            Model::Astra
+                                | Model::Sol
+                                | Model::Terra
+                                | Model::Luna
+                                | Model::DaybreakBlue
                         ),
                         matches!(transport, ModelTransport::Native)
                             && matches!(model, Model::Astra | Model::Sol),
@@ -544,6 +548,7 @@ pub fn model_catalog(transport: ModelTransport) -> impl Iterator<Item = ModelInf
 fn display_name(model: &ModelSelection) -> &'static str {
     match (model.as_codex(), model.as_claude()) {
         (Some(Model::Sol), _) => "GPT-6.1 Sol",
+        (Some(Model::Terra), _) => "GPT-6.1 Terra",
         (Some(Model::Luna), _) => "GPT-6 Luna",
         (Some(Model::Astra), _) => "GPT-6 Astra",
         (Some(Model::Glm53), _) => "GLM-5.3",

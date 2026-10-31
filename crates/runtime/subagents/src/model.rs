@@ -35,6 +35,7 @@ impl AgentContext {
         let model = match self.model.as_codex() {
             Some(Model::Luna) => "luna",
             Some(Model::Sol) => "sol",
+            Some(Model::Terra) => "terra",
             Some(Model::Astra) => "astra",
             _ => self.model.as_str(),
         };

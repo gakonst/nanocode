@@ -283,7 +283,12 @@ impl ResponsesGateway {
     pub const fn serves(&self, model: Model) -> bool {
         matches!(
             model,
-            Model::Sol | Model::Luna | Model::Astra | Model::DaybreakBlue | Model::Custom(_)
+            Model::Sol
+                | Model::Terra
+                | Model::Luna
+                | Model::Astra
+                | Model::DaybreakBlue
+                | Model::Custom(_)
         ) || matches!(self.provider, Provider::Vercel)
             && matches!(model, Model::Glm53 | Model::Kimi | Model::Mimo)
     }

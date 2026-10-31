@@ -11,6 +11,7 @@ type Price = dyn Fn(&PricedOperation) -> Result<Option<f64>, String> + Send + Sy
 
 #[derive(Clone)]
 pub struct HandPricing {
+    currency: Option<&'static str>,
     describe: Option<String>,
     payee: String,
     price: Arc<Price>,
@@ -33,6 +34,8 @@ pub struct PricedOperation {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RulesFile {
+    #[serde(default)]
+    currency: Option<String>,
     #[serde(default)]
     describe: Option<String>,
     payee: String,
@@ -64,6 +67,7 @@ impl HandPricing {
             ));
         }
         Ok(Self {
+            currency: None,
             describe: None,
             payee,
             price: Arc::new(price),
@@ -74,6 +78,24 @@ impl HandPricing {
     pub fn describe(mut self, text: impl Into<String>) -> Self {
         self.describe = Some(text.into());
         self
+    }
+
+    pub fn currency(mut self, name: &str) -> Result<Self, CodeModeHostError> {
+        let normalized: String = name
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .map(|letter| letter.to_ascii_lowercase())
+            .collect();
+        self.currency = Some(match normalized.as_str() {
+            "ousd" => "ousd",
+            "usdce" => "usdce",
+            _ => {
+                return Err(CodeModeHostError::new(
+                    "the pricing currency must be OUSD or USDC.e",
+                ));
+            }
+        });
+        Ok(self)
     }
 
     pub fn rules(text: &str) -> Result<Self, CodeModeHostError> {
@@ -96,6 +118,10 @@ impl HandPricing {
                 .find(|rule| rule.matches(operation))
                 .map(|rule| rule.usd))
         })?;
+        let pricing = match file.currency {
+            Some(name) => pricing.currency(&name)?,
+            None => pricing,
+        };
         Ok(match file.describe {
             Some(text) => pricing.describe(text),
             None => pricing,
@@ -226,10 +252,13 @@ impl Meter {
     }
 
     pub(super) fn catalog(&self, text: String) -> String {
-        let advertised = match &self.pricing.describe {
-            Some(describe) => json!({ "describe": describe, "payee": self.pricing.payee }),
-            None => json!({ "payee": self.pricing.payee }),
-        };
+        let mut advertised = json!({ "payee": self.pricing.payee });
+        if let Some(describe) = &self.pricing.describe {
+            advertised["describe"] = json!(describe);
+        }
+        if let Some(currency) = self.pricing.currency {
+            advertised["currency"] = json!(currency);
+        }
         append(text, "pricing", &advertised.to_string())
     }
 

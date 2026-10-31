@@ -391,7 +391,7 @@ pub struct HandArgs {
     #[arg(
         long,
         value_name = "FILE",
-        help = "Charge for operations by the rules in this JSON file, matched first to last: {\"payee\": \"0x…\", \"describe\": \"…\", \"rules\": [{\"paths\": [\"data/**\"], \"ops\": [\"read\"], \"usd\": 0.01}]}"
+        help = "Charge for operations by the rules in this JSON file, matched first to last: {\"payee\": \"0x…\", \"describe\": \"…\", \"currency\": \"OUSD\" (default) or \"USDC.e\", \"rules\": [{\"paths\": [\"data/**\"], \"ops\": [\"read\"], \"usd\": 0.01}]}"
     )]
     pub pricing: Option<PathBuf>,
 

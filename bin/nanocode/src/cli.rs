@@ -387,6 +387,19 @@ pub struct HandArgs {
 
     #[arg(long, help = "Also serve computer use from the installed provider")]
     pub cua: bool,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Charge for operations by the rules in this JSON file, matched first to last: {\"payee\": \"0x…\", \"describe\": \"…\", \"rules\": [{\"paths\": [\"data/**\"], \"ops\": [\"read\"], \"usd\": 0.01}]}"
+    )]
+    pub pricing: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Run no scripts here: agents call this hand's tools one at a time, so --pricing sees every file and command"
+    )]
+    pub tools_only: bool,
 }
 
 #[derive(Clone, Debug, Args)]

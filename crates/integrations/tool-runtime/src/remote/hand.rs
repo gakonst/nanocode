@@ -10,6 +10,7 @@ use super::native::{
     Dial, SocketPolicy, dial, error, hand_core, request_headers, serve, serve_tracked_stream,
     serving, validate_policy,
 };
+use super::pricing::{HandPricing, Meter, Priced};
 use super::{ExecutorOptions, HandActivity};
 use crate::embedded::CodeModeHostError;
 
@@ -63,6 +64,7 @@ pub struct Hand {
     device: Option<std::sync::Arc<dyn super::HandCapabilities>>,
     tools_only: bool,
     environment: Option<nanocode_code_mode::remote::HandEnvironment>,
+    pricing: Option<HandPricing>,
 }
 
 impl Hand {
@@ -88,7 +90,14 @@ impl Hand {
             device: None,
             tools_only: false,
             environment: None,
+            pricing: None,
         }
+    }
+
+    #[must_use]
+    pub fn pricing(mut self, pricing: HandPricing) -> Self {
+        self.pricing = Some(pricing);
+        self
     }
 
     #[must_use]
@@ -192,12 +201,24 @@ impl Hand {
                 None => Self::machine_name()?,
             };
             crate::attachment::RemoteRunner::new(&name).map_err(error)?;
+            let meter = self
+                .pricing
+                .clone()
+                .map(|pricing| Meter::new(pricing, &directory));
+            let device = match &self.pricing {
+                Some(pricing) => Some(std::sync::Arc::new(Priced {
+                    capability: pricing.capability(),
+                    inner: self.device.clone(),
+                })
+                    as std::sync::Arc<dyn super::HandCapabilities>),
+                None => self.device.clone(),
+            };
             let mut options = ExecutorOptions {
                 name: Some(name),
                 runtime_id: Some(uuid::Uuid::new_v4().to_string()),
                 callback_timeout: None,
                 callback_hold: self.callback_hold,
-                device: self.device.clone(),
+                device,
                 tools_only: self.tools_only,
                 environment: self.environment.clone(),
             };
@@ -224,7 +245,7 @@ impl Hand {
                                 let started = Instant::now();
                                 // Connected only once the brain serves the socket: it may
                                 // still refuse this runtime after the upgrade.
-                                let served = serve(socket, &core, policy, || {
+                                let served = serve(socket, &core, policy, meter.clone(), || {
                                     events(HandEvent::Connected { endpoint });
                                 })
                                 .await;
@@ -314,8 +335,9 @@ impl Hand {
                                     let tools = self.tools.clone();
                                     let options = options.clone();
                                     let activity = self.activity.clone();
+                                    let meter = meter.clone();
                                     connections.spawn(async move {
-                                        serve_tracked_stream(stream, &token, &directory, tools, policy, options, activity).await
+                                        serve_tracked_stream(stream, &token, &directory, tools, policy, options, activity, meter).await
                                     });
                                 }
                                 Err(issue) => events(HandEvent::Disconnected { reason: issue.to_string() }),

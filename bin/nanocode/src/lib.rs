@@ -568,6 +568,17 @@ async fn hand(args: HandArgs) -> Result<()> {
     }
     .name(&name)
     .directory(directory.clone());
+    let hand = match &args.pricing {
+        Some(path) => hand.pricing(nanocode::hand::HandPricing::rules(
+            &std::fs::read_to_string(path)?,
+        )?),
+        None => hand,
+    };
+    let hand = if args.tools_only {
+        hand.tools_only()
+    } else {
+        hand
+    };
     eprintln!("nanocode hand {name} in {}", directory.display());
     let run = hand.run(|event| match event {
         HandEvent::Connecting { endpoint } => eprintln!("hand: connecting {endpoint}"),

@@ -8,6 +8,8 @@ mod hand;
 #[cfg(not(target_family = "wasm"))]
 mod native;
 #[cfg(not(target_family = "wasm"))]
+mod pricing;
+#[cfg(not(target_family = "wasm"))]
 pub use hand::{Hand, HandEndpoint, HandEvent};
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use native::SocketShutdown;
@@ -15,3 +17,5 @@ pub(crate) use native::SocketShutdown;
 pub use native::{
     SocketPolicy, SocketTransport, serve_accept, serve_connect, serve_connect_with, serve_stream,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use pricing::{HandPricing, PricedOperation};

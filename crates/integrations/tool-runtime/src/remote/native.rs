@@ -1,3 +1,4 @@
+use super::pricing::{Meter, Screened};
 use super::*;
 use crate::{
     ToolOutput,
@@ -189,10 +190,10 @@ async fn read_live<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
     socket: &mut S,
     liveness: &Liveness,
     watchdog: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
-) -> Result<Option<Frame>, CodeModeHostError> {
+) -> Result<Option<String>, CodeModeHostError> {
     tokio::select! {
         biased;
-        frame = read(socket, liveness) => frame,
+        text = read_text(socket, liveness) => text,
         () = watchdog => Err(error(UNRESPONSIVE)),
     }
 }
@@ -395,13 +396,23 @@ async fn read<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
     socket: &mut S,
     liveness: &Liveness,
 ) -> Result<Option<Frame>, CodeModeHostError> {
+    match read_text(socket, liveness).await? {
+        Some(text) => serde_json::from_str(&text).map(Some).map_err(error),
+        None => Ok(None),
+    }
+}
+
+async fn read_text<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
+    socket: &mut S,
+    liveness: &Liveness,
+) -> Result<Option<String>, CodeModeHostError> {
     while let Some(message) = socket.next().await {
         let message = message.map_err(error)?;
         liveness.touch();
         match message {
             Message::Text(text) => {
                 liveness.heard.fire();
-                return serde_json::from_str(&text).map(Some).map_err(error);
+                return Ok(Some(text.as_str().to_owned()));
             }
             Message::Close(frame) => {
                 if let Some(frame) = &frame {
@@ -1022,6 +1033,7 @@ pub async fn serve_accept(
         policy,
         policy_options(policy),
         HandActivity::default(),
+        None,
     )
     .await
 }
@@ -1040,6 +1052,7 @@ pub async fn serve_connect_with(
         policy,
         options,
         HandActivity::default(),
+        None,
     )
     .await
 }
@@ -1059,9 +1072,14 @@ pub async fn serve_stream(
         policy,
         options,
         HandActivity::default(),
+        None,
     )
     .await
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the listener's per-connection state"
+)]
 pub(super) async fn serve_tracked_stream(
     stream: TcpStream,
     bearer: &str,
@@ -1070,9 +1088,10 @@ pub(super) async fn serve_tracked_stream(
     policy: SocketPolicy,
     options: ExecutorOptions,
     activity: HandActivity,
+    meter: Option<Arc<Meter>>,
 ) -> Result<(), CodeModeHostError> {
     let socket = handshake(stream, bearer, policy).await?;
-    serve_once(socket, workspace, tools, policy, options, activity).await
+    serve_once(socket, workspace, tools, policy, options, activity, meter).await
 }
 
 async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -1082,9 +1101,10 @@ async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     policy: SocketPolicy,
     options: ExecutorOptions,
     activity: HandActivity,
+    meter: Option<Arc<Meter>>,
 ) -> Result<(), CodeModeHostError> {
     let core = hand_core(workspace.to_owned(), tools, options, activity);
-    let served = serve(socket, &core, policy, || {}).await;
+    let served = serve(socket, &core, policy, meter, || {}).await;
     core.reset().await;
     served.result
 }
@@ -1102,10 +1122,11 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     socket: WebSocketStream<S>,
     core: &HandCore,
     policy: SocketPolicy,
+    meter: Option<Arc<Meter>>,
     heard: impl FnOnce() + Send,
 ) -> Served {
     let liveness = Liveness::new();
-    let result = serve_link(socket, core, policy, &liveness, heard).await;
+    let result = serve_link(socket, core, policy, meter, &liveness, heard).await;
     Served {
         result,
         close_code: liveness.close_code(),
@@ -1116,20 +1137,37 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut socket: WebSocketStream<S>,
     core: &HandCore,
     policy: SocketPolicy,
+    meter: Option<Arc<Meter>>,
     liveness: &Arc<Liveness>,
     heard: impl FnOnce() + Send,
 ) -> Result<(), CodeModeHostError> {
     let mut heard = Some(heard);
-    write(
-        &mut socket,
-        core.catalog(policy.max_frame_bytes).await?,
-        policy,
-    )
-    .await?;
+    let catalog = core.catalog(policy.max_frame_bytes).await?;
+    let catalog = match &meter {
+        Some(meter) => meter.catalog(catalog),
+        None => catalog,
+    };
+    write(&mut socket, catalog, policy).await?;
     let (sink, mut socket) = socket.split();
     let watchdog = liveness.watch(policy.request_timeout / 2);
     tokio::pin!(watchdog);
     let (wire, mut writer) = writer(sink, policy, Arc::clone(liveness), Arc::default());
+    let answers = wire.clone();
+    let wire = match &meter {
+        Some(meter) => {
+            let (metered, mut frames) = mpsc::unbounded_channel::<String>();
+            let meter = Arc::clone(meter);
+            tokio::spawn(async move {
+                while let Some(frame) = frames.recv().await {
+                    if wire.send(meter.stamp(frame)).is_err() {
+                        return;
+                    }
+                }
+            });
+            metered
+        }
+        None => wire,
+    };
     let mut connection = core.connect(wire, policy.max_frame_bytes);
     let mut open = true;
     let result = async {
@@ -1145,9 +1183,15 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     Ok(issue) => return Err(issue),
                     Err(_) => open = false,
                 },
-                frame = read_live(&mut socket, liveness, watchdog.as_mut()) => {
-                    let Some(frame) = frame? else { return Ok(()); };
-                    core.receive(connection.id, frame);
+                text = read_live(&mut socket, liveness, watchdog.as_mut()) => {
+                    let Some(text) = text? else { return Ok(()); };
+                    if let Some(meter) = &meter
+                        && let Screened::Answer(answer) = meter.screen(&text)
+                    {
+                        let _ = answers.send(answer);
+                        continue;
+                    }
+                    core.receive(connection.id, serde_json::from_str(&text).map_err(error)?);
                 },
             }
         }

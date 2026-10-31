@@ -59,7 +59,7 @@ pub mod hand {
     use std::{net::SocketAddr, path::PathBuf};
 
     pub use nanocode_tool_runtime::remote::{
-        Hand, HandCapabilities, HandEndpoint, HandEvent, SocketPolicy,
+        Hand, HandCapabilities, HandEndpoint, HandEvent, HandPricing, PricedOperation, SocketPolicy,
     };
 
     pub fn tools(directory: impl Into<PathBuf>) -> Result<crate::Tools, crate::NanocodeError> {

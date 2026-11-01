@@ -1724,8 +1724,7 @@ impl ClaudeBuilder {
             #[cfg(not(target_family = "wasm"))]
             task_board: self.task_board,
             cancellations: Atom::default(),
-            stopped: AtomicBool::new(false),
-            closing: AtomicBool::new(false),
+            life: AgentLife::new(),
             accepted_turns: AtomicU64::new(accepted_turns),
             steering: Owned::default(),
             live_nested_starts: Atom::default(),
@@ -2932,7 +2931,7 @@ impl ClaudeNativeFactory {
             .get()
             .upgrade()
             .ok_or(NanocodeError::AgentStopped)?;
-        if state.stopped.load(Ordering::SeqCst) {
+        if state.life.stopped() {
             return Err(NanocodeError::AgentStopped);
         }
         Ok(state)
@@ -3181,6 +3180,41 @@ struct TurnSteering {
     events: AgentEventPublisher,
 }
 
+struct AgentLife(AtomicU8);
+
+impl AgentLife {
+    const RUNNING: u8 = 0;
+    const STOPPED: u8 = 1;
+    const CLOSING: u8 = 2;
+
+    const fn new() -> Self {
+        Self(AtomicU8::new(Self::RUNNING))
+    }
+
+    fn stopped(&self) -> bool {
+        self.0.load(Ordering::SeqCst) != Self::RUNNING
+    }
+
+    fn closing(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::CLOSING
+    }
+
+    fn stop(&self) -> bool {
+        self.0
+            .compare_exchange(
+                Self::RUNNING,
+                Self::STOPPED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    fn close(&self) -> bool {
+        self.0.swap(Self::CLOSING, Ordering::SeqCst) == Self::RUNNING
+    }
+}
+
 struct State {
     adapter_cleanup: Vec<ToolCleanup>,
     adapter_shutdown: Vec<ToolCleanup>,
@@ -3261,8 +3295,7 @@ struct State {
     #[cfg(not(target_family = "wasm"))]
     task_board: Option<Arc<crate::tools::tasks::ClaudeTasks>>,
     cancellations: Atom<HashMap<BackendTurnKey, Arc<Cancellation>>>,
-    stopped: AtomicBool,
-    closing: AtomicBool,
+    life: AgentLife,
 
     accepted_turns: AtomicU64,
     steering: Owned<HashMap<BackendTurnKey, TurnSteering>>,
@@ -3472,7 +3505,7 @@ impl Drop for AttemptGuard {
 }
 impl State {
     fn local_blocker(&self, order: u64) -> bool {
-        !self.stopped.load(Ordering::SeqCst)
+        !self.life.stopped()
             && (self.attempts.load(Ordering::SeqCst) > 0
                 || self
                     .waiters
@@ -3591,7 +3624,7 @@ async fn start_turn(
         let result = outcome.unwrap_or(Err(NanocodeError::TurnStopped));
         telemetry::finish_turn(&finished_span, &result, panicked);
         if panicked {
-            running.stopped.store(true, Ordering::SeqCst);
+            running.life.stop();
             for cancel in running.cancellations.get().values() {
                 cancel.cancel();
             }
@@ -3658,7 +3691,7 @@ async fn defer_turn(
                 admission = state.admission.enter() => admission,
                 () = cancellation.cancelled() => break Err((cancellation.interruption(automatic), false)),
             };
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 break Err((NanocodeError::AgentStopped, false));
             }
             match policy.begin_attempt(id.clone()).await {
@@ -3700,7 +3733,7 @@ async fn defer_turn(
                         }
                         continue;
                     }
-                    if blocked && state.stopped.load(Ordering::SeqCst) {
+                    if blocked && state.life.stopped() {
                         break Err((NanocodeError::AgentStopped, false));
                     }
                     break Err((error, false));
@@ -3943,7 +3976,7 @@ impl State {
 
     async fn latest_boundary(&self) -> Result<Snapshot> {
         if let Some(conversation) = self.conversation.try_acquire() {
-            if self.stopped.load(Ordering::SeqCst) {
+            if self.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             return self.snapshot(&conversation).await;
@@ -3955,7 +3988,7 @@ impl State {
         }
         let boundary: Arc<Snapshot> = self.round_boundary.read(Arc::clone);
         let mut snapshot = Snapshot::clone(&boundary);
-        if self.stopped.load(Ordering::SeqCst) {
+        if self.life.stopped() {
             return Err(NanocodeError::AgentStopped);
         }
 
@@ -4122,7 +4155,7 @@ impl State {
             tokio::pin!(notified);
             notified.as_mut().enable();
             let update = self.persistence_update.enter().await;
-            if self.stopped.load(Ordering::SeqCst) {
+            if self.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             let mut snapshot = self.latest_boundary().await?;
@@ -5230,9 +5263,7 @@ impl State {
         if let Err(error) = self.settle(&mut conversation, &request, &result).await {
             result = Err(error);
         }
-        if matches!(result, Err(NanocodeError::TurnCancelled))
-            && self.closing.load(Ordering::SeqCst)
-        {
+        if matches!(result, Err(NanocodeError::TurnCancelled)) && self.life.closing() {
             result = Err(NanocodeError::TurnStopped);
         }
         if result
@@ -5240,7 +5271,7 @@ impl State {
             .err()
             .is_some_and(|error| error.execution_policy_disposition().is_some())
         {
-            self.stopped.store(true, Ordering::SeqCst);
+            self.life.stop();
             result = result.map_err(|error| match error.execution_policy_disposition() {
                 Some(nanocode_agent_core::ExecutionPolicyDisposition::Retry) => {
                     durable::recovery_error(error)
@@ -7101,7 +7132,7 @@ impl Driver {
         let state = self.state.clone();
         Box::pin(async move {
             state.store_prompt_images(&mut prompt).await?;
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             let mut turns = state.steering.acquire().await;
@@ -7180,7 +7211,7 @@ impl LifecycleBackend for Driver {
         let state = self.state.clone();
         Box::pin(async move {
             let _admission = state.admission.enter().await;
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             if model.family() != HarnessFamily::Claude {
@@ -7204,7 +7235,7 @@ impl LifecycleBackend for Driver {
             let task = async move {
                 let result = async move {
                     let _admission = state.admission.enter().await;
-                    if state.stopped.load(Ordering::SeqCst) {
+                    if state.life.stopped() {
                         return Err(NanocodeError::AgentStopped);
                     }
                     let resolution = crate::prompt::ImageResolution::of(&state.model());
@@ -7275,7 +7306,7 @@ impl LifecycleBackend for Driver {
                                     } else {
                                         let _ = policy.release(id).await;
                                     }
-                                    if blocked && state.stopped.load(Ordering::SeqCst) {
+                                    if blocked && state.life.stopped() {
                                         return Err(NanocodeError::AgentStopped);
                                     }
                                     return Err(error);
@@ -7348,7 +7379,7 @@ impl LifecycleBackend for Driver {
         let start = self.submit(request);
         Box::pin(async move {
             state.store_prompt_images(&mut prompt).await?;
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             {
@@ -7451,7 +7482,7 @@ impl LifecycleBackend for Driver {
                     }
                     notified.await;
                 }
-                if state.stopped.load(Ordering::SeqCst) {
+                if state.life.stopped() {
                     return Err(NanocodeError::ExecutionPolicyOwnerStopped);
                 }
             }
@@ -7476,7 +7507,7 @@ impl LifecycleBackend for Driver {
         let state = self.state.clone();
         Box::pin(async move {
             let _admission = state.admission.enter().await;
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
 
@@ -7497,7 +7528,7 @@ impl LifecycleBackend for Driver {
         let state = self.state.clone();
         Box::pin(async move {
             let _admission = state.admission.enter().await;
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             state.auto_compact_token_limit.set(limit);
@@ -7508,7 +7539,7 @@ impl LifecycleBackend for Driver {
         let state = self.state.clone();
         Box::pin(async move {
             let _admission = state.admission.enter().await;
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             if let Ok(model) = state
@@ -7535,7 +7566,7 @@ impl LifecycleBackend for Driver {
                 let result = async move {
                     let _admission = state.admission.enter().await;
                     state.compaction_cancel.set(Some(cancellation.clone()));
-                    if state.stopped.load(Ordering::SeqCst) {
+                    if state.life.stopped() {
                         return Err(NanocodeError::AgentStopped);
                     }
 
@@ -7631,7 +7662,7 @@ impl LifecycleBackend for Driver {
                             .err()
                             .is_some_and(|error| error.execution_policy_disposition().is_some())
                         {
-                            state.stopped.store(true, Ordering::SeqCst);
+                            state.life.stop();
                         } else {
                             let checkpoint = serde_json::to_value(state.snapshot(&context).await?)
                                 .map_err(provider_error)?;
@@ -7643,7 +7674,7 @@ impl LifecycleBackend for Driver {
                                 Err(error) => policy.fail(id, checkpoint, error.to_string()).await,
                             };
                             if settled.is_err() {
-                                state.stopped.store(true, Ordering::SeqCst);
+                                state.life.stop();
                             }
                             settled.map_err(|error| {
                                 match error.execution_policy_disposition() {
@@ -7678,7 +7709,7 @@ impl LifecycleBackend for Driver {
                     .err()
                     .is_some_and(|error| error.execution_policy_disposition().is_some())
                 {
-                    cleanup.stopped.store(true, Ordering::SeqCst);
+                    cleanup.life.stop();
                 }
                 let _ = accepted.send(result);
             };
@@ -7738,7 +7769,7 @@ impl LifecycleBackend for Driver {
     fn flush(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {
-            if state.stopped.load(Ordering::SeqCst) {
+            if state.life.stopped() {
                 return Err(NanocodeError::AgentStopped);
             }
             Ok(())
@@ -7753,7 +7784,7 @@ impl LifecycleBackend for Driver {
         Box::pin(async move {
             {
                 let _admission = state.admission.enter().await;
-                if state.stopped.swap(true, Ordering::SeqCst) {
+                if !state.life.stop() {
                     return Ok(());
                 }
             }
@@ -7769,8 +7800,7 @@ impl LifecycleBackend for Driver {
     fn shutdown(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {
-            state.closing.store(true, Ordering::SeqCst);
-            let first_shutdown = !state.stopped.swap(true, Ordering::SeqCst);
+            let first_shutdown = state.life.close();
             if let Some(cancel) = state.compaction_cancel.get().as_ref() {
                 cancel.cancel();
             }

@@ -128,7 +128,7 @@ fn side_messages(mut messages: Vec<HistoryMessage>, question: &str) -> Vec<Histo
 
 impl State {
     pub(super) async fn transcript(&self) -> Result<Vec<PromptMessage>> {
-        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.life.stopped() {
             return Err(NanocodeError::AgentStopped);
         }
         let snapshot = self.latest_boundary().await?;
@@ -175,7 +175,7 @@ impl State {
 
 impl State {
     pub(super) async fn side_question(&self, question: String) -> Result<SideAnswer> {
-        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+        if self.life.stopped() {
             return Err(NanocodeError::AgentStopped);
         }
         let transcript = self.side_transcript().await?;

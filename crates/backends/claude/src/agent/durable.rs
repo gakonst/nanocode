@@ -649,12 +649,10 @@ impl State {
             .err()
             .is_some_and(|error| error.execution_policy_disposition().is_some())
         {
-            self.stopped.store(true, Ordering::SeqCst);
+            self.life.stop();
             return Ok(());
         }
-        if matches!(result, Err(NanocodeError::TurnCancelled))
-            && self.closing.load(Ordering::SeqCst)
-        {
+        if matches!(result, Err(NanocodeError::TurnCancelled)) && self.life.closing() {
             let released = policy.release(operation.clone()).await;
             if let Some(turn) = self.steering.acquire().await.get_mut(&request.key) {
                 turn.operation = None;
@@ -687,7 +685,7 @@ impl State {
             .settle_encoded(operation.clone(), checkpoint, settlement)
             .await;
         if settled.is_err() {
-            self.stopped.store(true, Ordering::SeqCst);
+            self.life.stop();
         }
         if let Some(turn) = self.steering.acquire().await.get_mut(&request.key) {
             turn.operation = None;

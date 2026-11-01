@@ -97,14 +97,11 @@ impl Registry {
             }
             if session.descriptor.parent.is_none()
                 && session.status.wakes_parent()
-                && !session.completion_parked
-                && let Some(revision) = session.pending_completion
+                && let super::Completion::Pending { revision, .. } = session.completion
             {
                 activity.pending_completions.push((id, revision));
             }
-            let deliverable = (session.harness.is_some()
-                || session.stored_runtime.is_some()
-                || session.journaled_runtime)
+            let deliverable = (session.harness().is_some() || session.stored_runtime.recoverable())
                 && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed);
             if deliverable && scope.messages.has_pending_for(id) {
                 activity.pending_messages.push(id);

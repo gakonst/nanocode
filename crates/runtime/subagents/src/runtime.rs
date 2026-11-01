@@ -45,21 +45,119 @@ mod focus;
 pub use activity::SubagentActivity;
 pub use completion::{RunningSubagents, SubagentCompletion};
 
+pub(super) enum Residency {
+    Detached,
+    Resident(HarnessHandle),
+    Evicted,
+}
+
+#[derive(Clone)]
+pub(super) enum StoredRuntime {
+    None,
+    Checkpoint(SessionCheckpoint),
+    Journaled,
+}
+
+impl StoredRuntime {
+    pub(super) const fn recoverable(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub(super) const fn checkpoint(&self) -> Option<&SessionCheckpoint> {
+        match self {
+            Self::Checkpoint(checkpoint) => Some(checkpoint),
+            Self::None | Self::Journaled => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Completion {
+    #[default]
+    None,
+    Pending {
+        revision: u64,
+        attempt: u32,
+    },
+    Parked {
+        revision: u64,
+        attempt: u32,
+    },
+}
+
+impl Completion {
+    pub(super) const fn journaled(revision: Option<u64>, attempt: u32, parked: bool) -> Self {
+        match (revision, parked) {
+            (None, _) => Self::None,
+            (Some(revision), false) => Self::Pending { revision, attempt },
+            (Some(revision), true) => Self::Parked { revision, attempt },
+        }
+    }
+
+    pub(super) const fn revision(self) -> Option<u64> {
+        match self {
+            Self::None => None,
+            Self::Pending { revision, .. } | Self::Parked { revision, .. } => Some(revision),
+        }
+    }
+
+    pub(super) const fn attempt(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::Pending { attempt, .. } | Self::Parked { attempt, .. } => attempt,
+        }
+    }
+
+    pub(super) const fn parked(self) -> bool {
+        matches!(self, Self::Parked { .. })
+    }
+
+    pub(super) const fn awaits(self, revision: u64) -> bool {
+        matches!(self.revision(), Some(pending) if pending == revision)
+    }
+
+    const fn next_attempt(&mut self) {
+        match self {
+            Self::None => {}
+            Self::Pending { attempt, .. } | Self::Parked { attempt, .. } => {
+                *attempt = attempt.saturating_add(1);
+            }
+        }
+    }
+
+    const fn park(&mut self) {
+        if let Self::Pending { revision, attempt } = *self {
+            *self = Self::Parked { revision, attempt };
+        }
+    }
+
+    const fn unpark(&mut self) -> Option<u64> {
+        match *self {
+            Self::Parked { revision, attempt } => {
+                *self = Self::Pending {
+                    revision,
+                    attempt: attempt.saturating_add(1),
+                };
+                Some(revision)
+            }
+            _ => None,
+        }
+    }
+}
+
 pub(super) struct ChildSession {
     pub(super) descriptor: AgentDescriptor,
 
     pub(super) binding_task: String,
     pub(super) host_context: Option<Arc<str>>,
     pub(super) event_task: Option<Task<()>>,
-    pub(super) harness: Option<HarnessHandle>,
+    pub(super) residency: Residency,
     pub(super) harness_task: Option<Task<()>>,
     pub(super) status: AgentStatus,
     pub(super) active: bool,
     pub(super) output_validator: Validator,
     pub(super) output_schema: Value,
-    pub(super) stored_runtime: Option<SessionCheckpoint>,
-
-    pub(super) journaled_runtime: bool,
+    pub(super) stored_runtime: StoredRuntime,
     pub(super) next_instruction_revision: u64,
     pub(super) active_instruction_revision: Option<u64>,
     pub(super) steering: bool,
@@ -68,7 +166,6 @@ pub(super) struct ChildSession {
     pub(super) follow_up_output: Option<Value>,
     pub(super) delegated_turn: bool,
     pub(super) last_used: u64,
-    pub(super) evicted: bool,
 
     pub(super) resume_attempts: u32,
 
@@ -76,11 +173,7 @@ pub(super) struct ChildSession {
 
     pub(super) in_flight_omitted: u32,
 
-    pub(super) pending_completion: Option<u64>,
-
-    pub(super) completion_attempt: u32,
-
-    pub(super) completion_parked: bool,
+    pub(super) completion: Completion,
 
     pub(super) cancelled_revision: Option<u64>,
 
@@ -1137,7 +1230,7 @@ impl RegistryState {
         self.scopes
             .get(root_session_id)
             .and_then(|scope| scope.sessions.get(&id))
-            .and_then(|session| session.harness.clone())
+            .and_then(|session| session.harness().cloned())
             .ok_or_else(|| std::io::Error::other(format!("agent {id} is closed")))
     }
 
@@ -1160,9 +1253,7 @@ impl RegistryState {
                 let session = scope.sessions.get(&id)?;
 
                 let recoverable_interrupted = matches!(session.status, AgentStatus::Interrupted)
-                    && (session.harness.is_some()
-                        || session.stored_runtime.is_some()
-                        || session.journaled_runtime);
+                    && (session.harness().is_some() || session.stored_runtime.recoverable());
                 if !include_completed
                     && !matches!(session.status, AgentStatus::Pending | AgentStatus::Running)
                     && !recoverable_interrupted
@@ -1170,9 +1261,7 @@ impl RegistryState {
                     return None;
                 }
                 let can_message = caller != Some(id)
-                    && (session.harness.is_some()
-                        || session.stored_runtime.is_some()
-                        || session.journaled_runtime)
+                    && (session.harness().is_some() || session.stored_runtime.recoverable())
                     && !matches!(
                         session.status,
                         AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
@@ -1251,7 +1340,7 @@ impl RegistryState {
                 target.status
             )));
         }
-        let harness = target.harness.clone().ok_or_else(|| {
+        let harness = target.harness().cloned().ok_or_else(|| {
             std::io::Error::other(format!(
                 "agent {to} has no in-memory runtime history and cannot resume. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
             ))
@@ -1494,7 +1583,7 @@ impl RegistryState {
             if closing && !matches!(session.status, AgentStatus::Closed) {
                 session.status = AgentStatus::Closing;
             }
-            harnesses.extend(session.harness.iter().cloned());
+            harnesses.extend(session.harness().into_iter().cloned());
         }
         Ok(harnesses)
     }
@@ -1520,8 +1609,7 @@ impl RegistryState {
                     "agent {id} is still running"
                 )));
             }
-            session.harness = None;
-            session.evicted = false;
+            session.residency = Residency::Detached;
             harness_tasks.extend(session.harness_task.take());
             event_tasks.extend(session.event_task.take());
             session.status = AgentStatus::Closed;
@@ -1559,7 +1647,7 @@ impl RegistryState {
         let resident = scope
             .sessions
             .values()
-            .filter(|session| session.harness.is_some())
+            .filter(|session| session.harness().is_some())
             .count();
         if resident <= limit {
             return None;
@@ -1572,21 +1660,24 @@ impl RegistryState {
                 !session.active
                     && session.status.can_start_turn()
                     && session
-                        .harness
-                        .as_ref()
+                        .harness()
                         .is_some_and(|harness| !harness.answering_side_questions())
             })
             .filter(|(id, _)| !scope.messages.has_pending_for(**id))
             .filter(|(id, _)| {
                 !scope.sessions.iter().any(|(other_id, other)| {
-                    other.harness.is_some() && scope.topology.is_descendant(*other_id, **id)
+                    other.harness().is_some() && scope.topology.is_descendant(*other_id, **id)
                 })
             })
             .min_by_key(|(id, session)| (session.last_used, **id))
             .map(|(id, _)| *id)?;
         let session = scope.sessions.get_mut(&candidate)?;
-        let harness = session.harness.take()?;
-        session.evicted = true;
+        let Residency::Resident(harness) =
+            std::mem::replace(&mut session.residency, Residency::Evicted)
+        else {
+            session.residency = Residency::Detached;
+            return None;
+        };
         Some(ResidentEviction {
             id: candidate,
             harness,
@@ -2218,7 +2309,7 @@ impl Registry {
                 let checkpoint = match checkpoints.get(&(root_session_id.to_owned(), id)) {
                     Some(checkpoint) => checkpoint.clone(),
                     None => durable::JournalCheckpoint::encode(
-                        scope.sessions.get(&id)?.stored_runtime.clone()?,
+                        scope.sessions.get(&id)?.stored_runtime.checkpoint()?.clone(),
                         true,
                     )
                     .ok()?,
@@ -2681,7 +2772,7 @@ impl Registry {
             .get(root_session_id)
             .and_then(|scope| scope.sessions.get(&id))
             .filter(|session| session.active || matches!(session.status, AgentStatus::Running))
-            .and_then(|session| session.harness.clone())
+            .and_then(|session| session.harness().cloned())
     }
 
     pub async fn restore(
@@ -2783,10 +2874,10 @@ impl Registry {
             let id = agent.descriptor.id;
             let checkpoint = agent.snapshot(&lineage)?;
             let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
-            if session.pending_completion.is_some() && session.status.wakes_parent() && !resume {
+            if session.completion.revision().is_some() && session.status.wakes_parent() && !resume {
                 report.completed.push(id);
             }
-            match (stored.remove(&id), &session.stored_runtime) {
+            match (stored.remove(&id), session.stored_runtime.checkpoint()) {
                 (Some(checkpoint), _) => self.insert_checkpoint(root_session_id, id, checkpoint),
 
                 (None, Some(snapshot)) => {
@@ -2949,7 +3040,7 @@ impl Registry {
                 .and_then(|scope| scope.sessions.get_mut(&id))
                 .filter(|session| {
                     !session.active
-                        && session.harness.is_none()
+                        && session.harness().is_none()
                         && matches!(session.status, AgentStatus::Interrupted)
                 })
             else {
@@ -3282,7 +3373,7 @@ impl Registry {
                 .get_mut(root_session_id)
                 .and_then(|scope| scope.sessions.get_mut(&id))
             {
-                Some(session) if session.pending_completion == Some(revision) => {
+                Some(session) if session.completion.awaits(revision) => {
                     session.clear_completion();
                     true
                 }
@@ -3330,8 +3421,7 @@ impl Registry {
                     .get(&key.0)
                     .and_then(|scope| scope.sessions.get(&key.1))
                     .filter(|session| {
-                        session.pending_completion == Some(revision)
-                            && session.status.wakes_parent()
+                        session.completion.awaits(revision) && session.status.wakes_parent()
                     })
                     .map(|session| session.status.clone())
             };
@@ -3359,7 +3449,7 @@ impl Registry {
                 else {
                     continue;
                 };
-                let Some(revision) = session.pending_completion else {
+                let Some(revision) = session.completion.revision() else {
                     continue;
                 };
                 if !session.status.wakes_parent() {
@@ -3459,14 +3549,13 @@ impl Registry {
                 descriptor,
                 host_context,
                 event_task: Some(event_task),
-                harness: Some(harness),
+                residency: Residency::Resident(harness),
                 harness_task: Some(harness_task),
                 status: AgentStatus::Pending,
                 active: false,
                 output_validator: validator,
                 output_schema: serde_json::from_str(&schema).expect("compiled schema is JSON"),
-                stored_runtime: None,
-                journaled_runtime: false,
+                stored_runtime: StoredRuntime::None,
                 next_instruction_revision: 0,
                 active_instruction_revision: None,
                 steering: false,
@@ -3475,13 +3564,10 @@ impl Registry {
                 follow_up_output: None,
                 delegated_turn: false,
                 last_used: 0,
-                evicted: false,
                 resume_attempts: 0,
                 in_flight_calls: Vec::new(),
                 in_flight_omitted: 0,
-                pending_completion: None,
-                completion_attempt: 0,
-                completion_parked: false,
+                completion: Completion::None,
                 cancelled_revision: None,
                 in_spawning_turn: false,
                 settled_revision: None,
@@ -3721,8 +3807,8 @@ impl Registry {
             .clone_into(&mut session.status);
 
             let harness = session
-                .harness
-                .clone()
+                .harness()
+                .cloned()
                 .filter(|_| self.begin_pending_checkpoint(root_session_id));
             let settled = revision.unwrap_or(session.next_instruction_revision);
             session.settled_revision = Some(settled);
@@ -3783,8 +3869,8 @@ impl Registry {
                         .get_mut(root_session_id)
                         .and_then(|scope| scope.sessions.get_mut(&id))
                     {
-                        session.journaled_runtime = stored.is_none();
-                        session.stored_runtime = stored;
+                        session.stored_runtime =
+                            stored.map_or(StoredRuntime::Journaled, StoredRuntime::Checkpoint);
                     }
                 }
                 Err(_) => {
@@ -3796,8 +3882,7 @@ impl Registry {
                         .get_mut(root_session_id)
                         .and_then(|scope| scope.sessions.get_mut(&id))
                     {
-                        session.harness = Some(harness);
-                        session.evicted = false;
+                        session.residency = Residency::Resident(harness);
                     }
                     return;
                 }
@@ -3840,15 +3925,20 @@ impl Registry {
             let status = if matches!(session.status, AgentStatus::Closed) {
                 None
             } else {
-                session.harness = None;
+                let evicted = matches!(session.residency, Residency::Evicted)
+                    && !matches!(session.status, AgentStatus::Closing);
+                session.residency = if evicted {
+                    Residency::Evicted
+                } else {
+                    Residency::Detached
+                };
                 session.active = false;
                 session.active_instruction_revision = None;
                 session.steering = false;
                 session.submitted_output = None;
-                if session.evicted && !matches!(session.status, AgentStatus::Closing) {
+                if evicted {
                     None
                 } else {
-                    session.evicted = false;
                     session.status = AgentStatus::Closed;
                     Some(AgentStatus::Closed)
                 }
@@ -3876,7 +3966,7 @@ impl Registry {
                 .filter(|session| {
                     !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
                 })
-                .and_then(|session| session.harness.clone())
+                .and_then(|session| session.harness().cloned())
         };
         let Some(harness) = harness else {
             self.harness_closed(root_session_id, id).await;
@@ -4038,15 +4128,13 @@ impl Registry {
             .scopes
             .get(root_session_id)
             .and_then(|scope| scope.sessions.get(&id))
-            .filter(|session| {
-                session.pending_completion == Some(revision) && session.status.wakes_parent()
-            })
+            .filter(|session| session.completion.awaits(revision) && session.status.wakes_parent())
             .map(|session| {
                 (
                     session.status.clone(),
                     session.descriptor.session_id.clone(),
-                    session.completion_attempt,
-                    session.completion_parked,
+                    session.completion.attempt(),
+                    session.completion.parked(),
                 )
             })
     }
@@ -4112,10 +4200,10 @@ impl Registry {
             && scope
                 .sessions
                 .get(&id)
-                .is_some_and(|session| session.pending_completion == Some(revision))
+                .is_some_and(|session| session.completion.awaits(revision))
             && let Some(session) = scope.sessions.get_mut(&id)
         {
-            session.completion_attempt = session.completion_attempt.saturating_add(1);
+            session.completion.next_attempt();
         }
     }
 
@@ -4132,18 +4220,19 @@ impl Registry {
                 return false;
             };
             let lineage = held
-                || scope.sessions.values().any(|session| {
-                    session.completion_parked && session.pending_completion.is_some()
-                });
+                || scope
+                    .sessions
+                    .values()
+                    .any(|session| session.completion.parked());
             let pending = scope
                 .sessions
                 .get(&id)
-                .is_some_and(|session| session.pending_completion == Some(revision));
+                .is_some_and(|session| session.completion.awaits(revision));
             if lineage
                 && pending
                 && let Some(session) = scope.sessions.get_mut(&id)
             {
-                session.completion_parked = true;
+                session.completion.park();
                 true
             } else {
                 false
@@ -4254,7 +4343,7 @@ impl Registry {
             .get(root_session_id)
             .is_some_and(|scope| {
                 scope.sessions.values().any(|session| {
-                    (session.completion_parked && session.pending_completion.is_some())
+                    session.completion.parked()
                         || (session.descriptor.parent.is_none() && session.status.is_active())
                 })
             })
@@ -4342,15 +4431,13 @@ impl Registry {
             let ids = scope
                 .sessions
                 .iter()
-                .filter(|(_, session)| session.completion_parked)
+                .filter(|(_, session)| session.completion.parked())
                 .map(|(id, _)| *id)
                 .collect::<Vec<_>>();
             ids.into_iter()
                 .filter_map(|id| {
-                    let session = scope.sessions.get_mut(&id)?;
-                    session.completion_parked = false;
-                    session.completion_attempt = session.completion_attempt.saturating_add(1);
-                    session.pending_completion.map(|revision| (id, revision))
+                    let revision = scope.sessions.get_mut(&id)?.completion.unpark()?;
+                    Some((id, revision))
                 })
                 .collect::<Vec<_>>()
         };
@@ -4369,11 +4456,14 @@ impl Registry {
             .scopes
             .get_mut(root_session_id)
             .and_then(|scope| scope.sessions.get_mut(&id))
-            && session.pending_completion.is_none()
+            && session.completion == Completion::None
             && session.settled_revision == Some(revision)
             && session.status.wakes_parent()
         {
-            session.pending_completion = Some(revision);
+            session.completion = Completion::Pending {
+                revision,
+                attempt: 0,
+            };
         }
         drop(state);
         self.changed();
@@ -4396,7 +4486,7 @@ impl Registry {
             ids.iter()
                 .filter_map(|id| {
                     let session = scope.sessions.get(id)?;
-                    let revision = session.pending_completion?;
+                    let revision = session.completion.revision()?;
                     session.status.wakes_parent().then_some((*id, revision))
                 })
                 .collect::<Vec<_>>()
@@ -4502,8 +4592,8 @@ impl Registry {
                 .copied()
                 .filter(|id| {
                     scope.sessions.get_mut(id).is_some_and(|session| {
-                        let observed =
-                            session.status.wakes_parent() && session.pending_completion.is_some();
+                        let observed = session.status.wakes_parent()
+                            && session.completion.revision().is_some();
                         if observed {
                             session.clear_completion();
                         }
@@ -4583,14 +4673,14 @@ impl Registry {
                 if matches!(
                     session.status,
                     AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
-                ) || session.harness.is_some()
+                ) || session.harness().is_some()
                 {
                     break;
                 }
-                let snapshot = match (&session.stored_runtime, session.journaled_runtime) {
-                    (Some(snapshot), _) => Some(snapshot.clone()),
-                    (None, true) => None,
-                    (None, false) => break,
+                let snapshot = match &session.stored_runtime {
+                    StoredRuntime::Checkpoint(snapshot) => Some(snapshot.clone()),
+                    StoredRuntime::Journaled => None,
+                    StoredRuntime::None => break,
                 };
                 let parent_session = session
                     .descriptor
@@ -4671,10 +4761,9 @@ impl Registry {
             session.descriptor.model = Some(context.model);
             session.descriptor.thinking = Some(context.thinking);
             session.descriptor.reasoning_mode = context.reasoning_mode;
-            session.harness = Some(harness);
+            session.residency = Residency::Resident(harness);
             session.harness_task = Some(task);
             session.event_task = Some(event_task);
-            session.evicted = false;
 
             let announce = std::mem::take(&mut session.announce).then(|| {
                 let mut descriptor = session.descriptor.clone();
@@ -5525,7 +5614,7 @@ impl ChildSession {
         status: AgentStatus,
         contract: OutputContract,
         output_schema: Value,
-        stored_runtime: Option<SessionCheckpoint>,
+        stored_runtime: StoredRuntime,
         next_instruction_revision: u64,
         last_output: Option<Value>,
     ) -> Self {
@@ -5534,14 +5623,13 @@ impl ChildSession {
             descriptor,
             host_context,
             event_task: None,
-            harness: None,
+            residency: Residency::Evicted,
             harness_task: None,
             status,
             active: false,
             output_validator: contract.validator,
             output_schema,
             stored_runtime,
-            journaled_runtime: false,
             next_instruction_revision,
             active_instruction_revision: None,
             steering: false,
@@ -5550,13 +5638,10 @@ impl ChildSession {
             follow_up_output: None,
             delegated_turn: false,
             last_used: 0,
-            evicted: true,
             resume_attempts: 0,
             in_flight_calls: Vec::new(),
             in_flight_omitted: 0,
-            pending_completion: None,
-            completion_attempt: 0,
-            completion_parked: false,
+            completion: Completion::None,
             cancelled_revision: None,
             in_spawning_turn: false,
             settled_revision: None,
@@ -5567,18 +5652,22 @@ impl ChildSession {
         }
     }
 
+    pub(super) const fn harness(&self) -> Option<&HarnessHandle> {
+        match &self.residency {
+            Residency::Resident(harness) => Some(harness),
+            Residency::Detached | Residency::Evicted => None,
+        }
+    }
+
     pub(super) fn settle_completion(&mut self, revision: u64) {
-        self.pending_completion = Some(revision);
-        self.completion_attempt = 0;
-        self.completion_parked = self
+        let parked = self
             .cancelled_revision
             .is_some_and(|cancelled| revision <= cancelled);
+        self.completion = Completion::journaled(Some(revision), 0, parked);
     }
 
     const fn clear_completion(&mut self) {
-        self.pending_completion = None;
-        self.completion_attempt = 0;
-        self.completion_parked = false;
+        self.completion = Completion::None;
     }
 
     pub(super) fn summary(&self) -> AgentSummary {

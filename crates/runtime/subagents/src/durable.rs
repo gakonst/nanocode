@@ -1,6 +1,6 @@
 use super::{
     model::{AgentDescriptor, AgentId, AgentStatus},
-    runtime::{ChildSession, OutputContract},
+    runtime::{ChildSession, Completion, OutputContract, StoredRuntime},
 };
 use nanocode_agent_core::{AgentUsage, Lineage, ModelSelection, SessionCheckpoint, Thinking};
 use nanocode_durability_core::EncodedPayload;
@@ -1072,7 +1072,7 @@ pub(super) fn persist_agent(
     checkpoint: Option<&JournalCheckpoint>,
     records: &mut Vec<(Arc<str>, Arc<str>)>,
 ) -> std::io::Result<PersistedAgent> {
-    let checkpoint_ref = match (checkpoint, &session.stored_runtime) {
+    let checkpoint_ref = match (checkpoint, session.stored_runtime.checkpoint()) {
         (Some(checkpoint), _) => {
             if let Some(json) = &checkpoint.pending {
                 records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
@@ -1116,11 +1116,11 @@ pub(super) fn persist_agent(
         accepted_revision: (session.active && session.submitted_output.is_some())
             .then_some(session.active_instruction_revision)
             .flatten(),
-        pending_completion: session.pending_completion,
+        pending_completion: session.completion.revision(),
         settled_revision: session.settled_revision,
         usage: session.usage.clone(),
-        completion_attempt: session.completion_attempt,
-        completion_parked: session.completion_parked,
+        completion_attempt: session.completion.attempt(),
+        completion_parked: session.completion.parked(),
         cancelled_revision: session.cancelled_revision,
     })
 }
@@ -1282,7 +1282,11 @@ pub(super) fn restored_session(
         status,
         contract,
         agent.output_schema,
-        snapshot,
+        match snapshot {
+            Some(snapshot) => StoredRuntime::Checkpoint(snapshot),
+            None if journaled => StoredRuntime::Journaled,
+            None => StoredRuntime::None,
+        },
         agent.next_instruction_revision,
         accepted.or(agent.last_output),
     );
@@ -1303,12 +1307,13 @@ pub(super) fn restored_session(
         if completed_by_acceptance {
             session.settle_completion(accepted_revision);
         } else if pending_completion.is_some() {
-            session.pending_completion = pending_completion;
-            session.completion_attempt = agent.completion_attempt;
-            session.completion_parked = agent.completion_parked;
+            session.completion = Completion::journaled(
+                pending_completion,
+                agent.completion_attempt,
+                agent.completion_parked,
+            );
         }
     }
-    session.journaled_runtime = journaled;
 
     if in_flight {
         session.in_flight_calls = agent.in_flight_calls;

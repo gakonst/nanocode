@@ -743,22 +743,27 @@ impl ExecutionPolicy for DurableExecution {
     }
 }
 
+struct Deferred {
+    existing: Arc<AtomicBool>,
+    journal: JournalClaim,
+    attempted: AtomicBool,
+}
+
+struct Acquired {
+    execution: DurableExecution,
+    reopened: bool,
+}
+
 struct LazyExecution {
     store: SharedStore,
     record: SessionRecord,
-    ready: tokio::sync::OnceCell<DurableExecution>,
-
-    reopened: std::sync::atomic::AtomicBool,
+    ready: tokio::sync::OnceCell<Acquired>,
 
     initialized: std::sync::atomic::AtomicBool,
 
     created_with: ArcSwapOption<crate::execution::InitialSettings>,
 
-    existing: Option<Arc<AtomicBool>>,
-
-    attempted: AtomicBool,
-
-    journal: Option<JournalClaim>,
+    deferred: Option<Deferred>,
 }
 
 impl LazyExecution {
@@ -767,12 +772,9 @@ impl LazyExecution {
             store,
             record,
             ready: tokio::sync::OnceCell::new(),
-            reopened: std::sync::atomic::AtomicBool::new(false),
             initialized: std::sync::atomic::AtomicBool::new(false),
             created_with: ArcSwapOption::empty(),
-            existing: None,
-            attempted: AtomicBool::new(false),
-            journal: None,
+            deferred: None,
         }
     }
 
@@ -783,20 +785,26 @@ impl LazyExecution {
         journal: JournalClaim,
     ) -> Self {
         Self {
-            existing: Some(existing),
-            journal: Some(journal),
+            deferred: Some(Deferred {
+                existing,
+                journal,
+                attempted: AtomicBool::new(false),
+            }),
             ..Self::new(store, record)
         }
     }
 
-    async fn get(&self) -> AgentResult<&DurableExecution> {
-        self.acquire(None).await.map(|(policy, _)| policy)
+    fn acquired(&self) -> Option<&DurableExecution> {
+        self.ready.get().map(|acquired| &acquired.execution)
     }
 
-    async fn acquire(
-        &self,
-        initial: Option<EncodedPayload>,
-    ) -> AgentResult<(&DurableExecution, bool)> {
+    async fn get(&self) -> AgentResult<&DurableExecution> {
+        self.acquire(None)
+            .await
+            .map(|(acquired, _)| &acquired.execution)
+    }
+
+    async fn acquire(&self, initial: Option<EncodedPayload>) -> AgentResult<(&Acquired, bool)> {
         let committed = AtomicBool::new(false);
         let policy = self
             .ready
@@ -812,7 +820,7 @@ impl LazyExecution {
                         thinking: settings.thinking,
                         service_tier: settings.service_tier,
                     });
-                    if self.existing.is_none() {
+                    if self.deferred.is_none() {
                         record.initial = initial_settings;
                     }
                 }
@@ -827,7 +835,7 @@ impl LazyExecution {
                 .map_err(agent_error)?;
                 let (owner, checkpoint) = match initial {
                     Some(payload) => {
-                        match match &self.journal {
+                        match match self.deferred.as_ref().map(|deferred| &deferred.journal) {
                             Some(journal) => {
                                 state
                                     .acquire_agent_with_initial_checkpoint_and_journal(
@@ -863,24 +871,24 @@ impl LazyExecution {
                         "described durable session has no record".to_owned(),
                     ))
                 })?;
-                self.reopened.store(
-                    checkpoint.is_some()
-                        || !state
-                            .state()
-                            .await
-                            .map_err(agent_error)?
-                            .pending_operations()
-                            .is_empty(),
-                    std::sync::atomic::Ordering::SeqCst,
-                );
-                Ok::<_, NanocodeError>(DurableExecution::ready(
-                    owner,
-                    record.session_id.clone(),
-                    Some(Branches {
-                        store: self.store.clone(),
-                        record: Some(record),
-                    }),
-                ))
+                let reopened = checkpoint.is_some()
+                    || !state
+                        .state()
+                        .await
+                        .map_err(agent_error)?
+                        .pending_operations()
+                        .is_empty();
+                Ok::<_, NanocodeError>(Acquired {
+                    execution: DurableExecution::ready(
+                        owner,
+                        record.session_id.clone(),
+                        Some(Branches {
+                            store: self.store.clone(),
+                            record: Some(record),
+                        }),
+                    ),
+                    reopened,
+                })
             })
             .await?;
         Ok((policy, committed.load(Ordering::SeqCst)))
@@ -893,7 +901,7 @@ impl ExecutionPolicy for LazyExecution {
     }
 
     fn commits_initial(&self) -> bool {
-        self.existing.is_some()
+        self.deferred.is_some()
     }
 
     fn branch(
@@ -925,7 +933,7 @@ impl ExecutionPolicy for LazyExecution {
 
     fn shutdown<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            match self.ready.get() {
+            match self.acquired() {
                 Some(policy) => policy.shutdown().await,
                 None => Ok(()),
             }
@@ -948,7 +956,11 @@ impl ExecutionPolicy for LazyExecution {
             if self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
-            if self.existing.is_some() && self.attempted.swap(true, Ordering::SeqCst) {
+            if self
+                .deferred
+                .as_ref()
+                .is_some_and(|deferred| deferred.attempted.swap(true, Ordering::SeqCst))
+            {
                 return Err(NanocodeError::InvalidExecutionPolicy(
                     "the deferred durable acquisition already failed".to_owned(),
                 ));
@@ -965,18 +977,19 @@ impl ExecutionPolicy for LazyExecution {
                 ),
                 snapshot => (snapshot, None),
             };
-            let (policy, committed) = self
+            let (acquired, committed) = self
                 .acquire(prepared.as_ref().map(|prepared| prepared.payload.clone()))
                 .await?;
-            if let Some(existing) = self.existing.as_ref().filter(|_| !committed) {
-                existing.store(true, Ordering::SeqCst);
+            if let Some(deferred) = self.deferred.as_ref().filter(|_| !committed) {
+                deferred.existing.store(true, Ordering::SeqCst);
                 return Err(NanocodeError::InvalidExecutionPolicy(
                     "the prepared durable session already holds state".to_owned(),
                 ));
             }
-            if self.reopened.load(std::sync::atomic::Ordering::SeqCst) {
+            if acquired.reopened {
                 return Ok(());
             }
+            let policy = &acquired.execution;
             self.initialized
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some(prepared) = prepared {
@@ -998,7 +1011,7 @@ impl ExecutionPolicy for LazyExecution {
 
     fn discard_initial_checkpoint<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            let Some(policy) = self.ready.get() else {
+            let Some(policy) = self.acquired() else {
                 return Ok(());
             };
             if !self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1031,7 +1044,7 @@ impl ExecutionPolicy for LazyExecution {
 
     fn release<'a>(&'a self, operation_id: String) -> ExecutionFuture<'a, ()> {
         Box::pin(async move {
-            if let Some(policy) = self.ready.get() {
+            if let Some(policy) = self.acquired() {
                 policy.release(operation_id).await;
             }
         })

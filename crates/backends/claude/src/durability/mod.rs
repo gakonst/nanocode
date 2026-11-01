@@ -192,24 +192,28 @@ struct ClaudeExecution {
     branches: Branches,
 }
 
+struct Deferred {
+    initial: InitialSettings,
+    existing: Arc<AtomicBool>,
+    journal: JournalClaim,
+    attempted: AtomicBool,
+}
+
+struct Acquired {
+    execution: ClaudeExecution,
+    reopened: bool,
+}
+
 struct LazyClaudeExecution {
     store: SharedStore,
     record: SessionRecord,
-    ready: tokio::sync::OnceCell<ClaudeExecution>,
-
-    reopened: std::sync::atomic::AtomicBool,
+    ready: tokio::sync::OnceCell<Acquired>,
 
     initialized: std::sync::atomic::AtomicBool,
 
     model: nanocode_sync::Atom<Option<nanocode_agent_core::ModelSelection>>,
 
-    initial: Option<InitialSettings>,
-
-    existing: Option<Arc<AtomicBool>>,
-
-    attempted: AtomicBool,
-
-    journal: Option<JournalClaim>,
+    deferred: Option<Deferred>,
 }
 
 impl LazyClaudeExecution {
@@ -218,13 +222,9 @@ impl LazyClaudeExecution {
             store,
             record,
             ready: tokio::sync::OnceCell::new(),
-            reopened: std::sync::atomic::AtomicBool::new(false),
             initialized: std::sync::atomic::AtomicBool::new(false),
             model: nanocode_sync::Atom::default(),
-            initial: None,
-            existing: None,
-            attempted: AtomicBool::new(false),
-            journal: None,
+            deferred: None,
         }
     }
 
@@ -236,21 +236,27 @@ impl LazyClaudeExecution {
         journal: JournalClaim,
     ) -> Self {
         Self {
-            initial: Some(initial),
-            existing: Some(existing),
-            journal: Some(journal),
+            deferred: Some(Deferred {
+                initial,
+                existing,
+                journal,
+                attempted: AtomicBool::new(false),
+            }),
             ..Self::new(store, record)
         }
     }
 
-    async fn get(&self) -> AgentResult<&ClaudeExecution> {
-        self.acquire(None).await.map(|(policy, _)| policy)
+    fn acquired(&self) -> Option<&ClaudeExecution> {
+        self.ready.get().map(|acquired| &acquired.execution)
     }
 
-    async fn acquire(
-        &self,
-        initial: Option<EncodedPayload>,
-    ) -> AgentResult<(&ClaudeExecution, bool)> {
+    async fn get(&self) -> AgentResult<&ClaudeExecution> {
+        self.acquire(None)
+            .await
+            .map(|(acquired, _)| &acquired.execution)
+    }
+
+    async fn acquire(&self, initial: Option<EncodedPayload>) -> AgentResult<(&Acquired, bool)> {
         let committed = AtomicBool::new(false);
         let policy = self
             .ready
@@ -267,9 +273,12 @@ impl LazyClaudeExecution {
                 )
                 .await
                 .map_err(agent_error)?;
-                let (owner, checkpoint) = match (initial, self.initial) {
+                let (owner, checkpoint) = match (
+                    initial,
+                    self.deferred.as_ref().map(|deferred| deferred.initial),
+                ) {
                     (Some(payload), settings) => {
-                        match match &self.journal {
+                        match match self.deferred.as_ref().map(|deferred| &deferred.journal) {
                             Some(journal) => {
                                 state
                                     .acquire_agent_with_initial_checkpoint_and_journal(
@@ -309,24 +318,24 @@ impl LazyClaudeExecution {
                         "described durable session has no record".to_owned(),
                     ))
                 })?;
-                self.reopened.store(
-                    checkpoint.is_some()
-                        || !state
-                            .state()
-                            .await
-                            .map_err(agent_error)?
-                            .pending_operations()
-                            .is_empty(),
-                    std::sync::atomic::Ordering::SeqCst,
-                );
-                Ok::<_, nanocode_agent_core::NanocodeError>(ClaudeExecution {
-                    state_id: record.session_id.clone(),
-                    owner,
-                    session: state,
-                    branches: Branches {
-                        store: self.store.clone(),
-                        record: Some(record),
+                let reopened = checkpoint.is_some()
+                    || !state
+                        .state()
+                        .await
+                        .map_err(agent_error)?
+                        .pending_operations()
+                        .is_empty();
+                Ok::<_, nanocode_agent_core::NanocodeError>(Acquired {
+                    execution: ClaudeExecution {
+                        state_id: record.session_id.clone(),
+                        owner,
+                        session: state,
+                        branches: Branches {
+                            store: self.store.clone(),
+                            record: Some(record),
+                        },
                     },
+                    reopened,
                 })
             })
             .await?;
@@ -498,7 +507,7 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
 
     fn release(&self, id: String) -> PolicyFuture<'_, ()> {
         Box::pin(async move {
-            match self.ready.get() {
+            match self.acquired() {
                 Some(policy) => policy.release(id).await,
                 None => Ok(()),
             }
@@ -507,7 +516,7 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
 
     fn shutdown(&self) -> PolicyFuture<'_, ()> {
         Box::pin(async move {
-            match self.ready.get() {
+            match self.acquired() {
                 Some(policy) => policy.shutdown().await,
                 None => Ok(()),
             }
@@ -531,7 +540,11 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
             if self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
             }
-            if self.existing.is_some() && self.attempted.swap(true, Ordering::SeqCst) {
+            if self
+                .deferred
+                .as_ref()
+                .is_some_and(|deferred| deferred.attempted.swap(true, Ordering::SeqCst))
+            {
                 return Err(nanocode_agent_core::NanocodeError::InvalidExecutionPolicy(
                     "the deferred durable acquisition already failed".to_owned(),
                 ));
@@ -544,18 +557,18 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
                 .is_none()
                 .then(|| payload(&state))
                 .transpose()?;
-            let (policy, committed) = self.acquire(prepared).await?;
-            if let Some(existing) = self.existing.as_ref().filter(|_| !committed) {
-                existing.store(true, Ordering::SeqCst);
+            let (acquired, committed) = self.acquire(prepared).await?;
+            if let Some(deferred) = self.deferred.as_ref().filter(|_| !committed) {
+                deferred.existing.store(true, Ordering::SeqCst);
                 return Err(nanocode_agent_core::NanocodeError::InvalidExecutionPolicy(
                     "the prepared durable session already holds state".to_owned(),
                 ));
             }
-            if self.reopened.load(std::sync::atomic::Ordering::SeqCst) {
+            if acquired.reopened {
                 return Ok(());
             }
             if !committed {
-                policy.checkpoint(state).await?;
+                acquired.execution.checkpoint(state).await?;
             }
             self.initialized
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -565,7 +578,7 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
 
     fn discard_initial(&self) -> PolicyFuture<'_, ()> {
         Box::pin(async move {
-            let Some(policy) = self.ready.get() else {
+            let Some(policy) = self.acquired() else {
                 return Ok(());
             };
             if !self.initialized.load(std::sync::atomic::Ordering::SeqCst) {

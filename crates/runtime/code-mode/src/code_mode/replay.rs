@@ -1,9 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{
-        Arc, Mutex, MutexGuard, PoisonError, Weak,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
 };
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +8,7 @@ use serde_json::{Value, value::RawValue};
 use tokio::sync::watch;
 
 use nanocode_code_mode_engine::{JournalEntry, SharedJournal};
-use nanocode_sync::Sequencer;
+use nanocode_sync::Owned;
 
 use crate::embedded::HostFuture;
 
@@ -209,11 +206,13 @@ struct Journals {
 
 pub(super) struct Persistence {
     sink: Arc<dyn CellJournalSink>,
-    order: Sequencer,
-    seq: AtomicU64,
-    persisted: AtomicUsize,
-    saved: AtomicBool,
-    stopped: AtomicBool,
+    saving: Owned<Saving>,
+}
+
+enum Saving {
+    Unsaved,
+    Saved { persisted: usize, next_seq: u64 },
+    Stopped,
 }
 
 pub(super) struct Restored {
@@ -243,11 +242,7 @@ impl CellJournals {
     pub(super) fn persistence(&self) -> Option<Persistence> {
         self.0.sink.as_ref().map(|sink| Persistence {
             sink: Arc::clone(sink),
-            order: Sequencer::new(),
-            seq: AtomicU64::new(0),
-            persisted: AtomicUsize::new(0),
-            saved: AtomicBool::new(false),
-            stopped: AtomicBool::new(false),
+            saving: Owned::new(Saving::Unsaved),
         })
     }
 
@@ -446,16 +441,23 @@ impl CellRecord {
         let Some(persistence) = &self.persistence else {
             return;
         };
-        let _turn = persistence.order.enter().await;
-        if persistence.stopped.load(Ordering::Acquire) || self.status().replaying {
+        let mut saving = persistence.saving.acquire().await;
+        let (from, seq) = match *saving {
+            Saving::Stopped => return,
+            Saving::Unsaved => (0, 0),
+            Saving::Saved {
+                persisted,
+                next_seq,
+            } => (persisted, next_seq),
+        };
+        if self.status().replaying {
             return;
         }
-        let from = persistence.persisted.load(Ordering::Acquire);
         let entries = locked(&self.journal)
             .entries()
             .map(|entries| entries.get(from..).unwrap_or_default().to_vec());
         let Some(entries) = entries else {
-            persistence.stopped.store(true, Ordering::Release);
+            *saving = Saving::Stopped;
             persistence
                 .sink
                 .forget(&self.session_id, self.cell_id)
@@ -466,7 +468,7 @@ impl CellRecord {
             let status = self.status();
             (status.observer_call_id.clone(), status.content_returned)
         };
-        let header = (!persistence.saved.load(Ordering::Acquire)).then(|| CellJournalHeader {
+        let header = matches!(*saving, Saving::Unsaved).then(|| CellJournalHeader {
             version: CELL_JOURNAL_VERSION,
             origin_call_id: self.origin_call_id.clone(),
             script: self.script.clone(),
@@ -480,7 +482,7 @@ impl CellRecord {
         let update = CellJournalUpdate {
             session_id: self.session_id.clone(),
             cell_id: self.cell_id,
-            seq: persistence.seq.fetch_add(1, Ordering::AcqRel),
+            seq,
             header,
             entries_from: from,
             entries,
@@ -490,8 +492,10 @@ impl CellRecord {
         };
         match persistence.sink.save(update).await {
             Ok(()) => {
-                persistence.persisted.store(persisted, Ordering::Release);
-                persistence.saved.store(true, Ordering::Release);
+                *saving = Saving::Saved {
+                    persisted,
+                    next_seq: seq + 1,
+                };
             }
             Err(error) => {
                 tracing::warn!(
@@ -500,7 +504,7 @@ impl CellRecord {
                     %error,
                     "a Code Mode cell journal could not be saved, so the cell cannot be resumed after a restart"
                 );
-                persistence.stopped.store(true, Ordering::Release);
+                *saving = Saving::Stopped;
                 persistence
                     .sink
                     .forget(&self.session_id, self.cell_id)
@@ -518,8 +522,7 @@ impl CellRecord {
             let Some(persistence) = &record.persistence else {
                 return;
             };
-            let _turn = persistence.order.enter().await;
-            persistence.stopped.store(true, Ordering::Release);
+            *persistence.saving.acquire().await = Saving::Stopped;
             persistence
                 .sink
                 .forget(&record.session_id, record.cell_id)

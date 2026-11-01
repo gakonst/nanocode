@@ -175,10 +175,21 @@ type ResponseRun<'a> = Pin<Box<dyn Future<Output = Result<CompletedResponse, Res
 pub struct Response<'a> {
     events: mpsc::Receiver<ResponseEvent>,
     run: ResponseRun<'a>,
-    result: Option<Result<CompletedResponse, ResponseError>>,
-    run_finished: bool,
-    completed_event_seen: bool,
-    stream_error_emitted: bool,
+    progress: Progress,
+}
+
+enum Progress {
+    Running {
+        completed: bool,
+    },
+    Succeeded {
+        result: CompletedResponse,
+        completed: bool,
+    },
+    Failed {
+        error: ResponseError,
+        reported: bool,
+    },
 }
 
 impl<'a> Response<'a> {
@@ -186,10 +197,7 @@ impl<'a> Response<'a> {
         Self {
             events,
             run,
-            result: None,
-            run_finished: false,
-            completed_event_seen: false,
-            stream_error_emitted: false,
+            progress: Progress::Running { completed: false },
         }
     }
 }
@@ -198,49 +206,54 @@ impl Stream for Response<'_> {
     type Item = Result<ResponseEvent, ResponseError>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = &mut *self;
         loop {
-            match self.events.poll_recv(context) {
-                Poll::Ready(Some(event)) => {
-                    if matches!(event, ResponseEvent::Completed { .. }) {
-                        self.completed_event_seen = true;
-                    }
-                    return Poll::Ready(Some(Ok(event)));
+            if let Poll::Ready(Some(event)) = this.events.poll_recv(context) {
+                if matches!(event, ResponseEvent::Completed { .. })
+                    && let Progress::Running { completed } | Progress::Succeeded { completed, .. } =
+                        &mut this.progress
+                {
+                    *completed = true;
                 }
-                Poll::Ready(None) | Poll::Pending => {}
-            }
-
-            if !self.run_finished {
-                match self.run.as_mut().poll(context) {
-                    Poll::Ready(result) => {
-                        self.result = Some(result);
-                        self.run_finished = true;
-                        continue;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-
-            if !self.completed_event_seen
-                && let Some(Ok(result)) = self.result.as_ref()
-            {
-                let event = ResponseEvent::Completed {
-                    usage: result.usage.clone(),
-                    end_turn: result.end_turn,
-                };
-                self.completed_event_seen = true;
                 return Poll::Ready(Some(Ok(event)));
             }
-
-            let stream_error = (!self.stream_error_emitted)
-                .then(|| self.result.as_ref())
-                .flatten()
-                .and_then(|result| result.as_ref().err())
-                .cloned();
-            if let Some(error) = stream_error {
-                self.stream_error_emitted = true;
-                return Poll::Ready(Some(Err(error)));
-            }
-            return Poll::Ready(None);
+            return match &mut this.progress {
+                Progress::Running { completed } => match this.run.as_mut().poll(context) {
+                    Poll::Ready(Ok(result)) => {
+                        this.progress = Progress::Succeeded {
+                            result,
+                            completed: *completed,
+                        };
+                        continue;
+                    }
+                    Poll::Ready(Err(error)) => {
+                        this.progress = Progress::Failed {
+                            error,
+                            reported: false,
+                        };
+                        continue;
+                    }
+                    Poll::Pending => Poll::Pending,
+                },
+                Progress::Succeeded {
+                    result,
+                    completed: completed @ false,
+                } => {
+                    *completed = true;
+                    Poll::Ready(Some(Ok(ResponseEvent::Completed {
+                        usage: result.usage.clone(),
+                        end_turn: result.end_turn,
+                    })))
+                }
+                Progress::Failed {
+                    error,
+                    reported: reported @ false,
+                } => {
+                    *reported = true;
+                    Poll::Ready(Some(Err(error.clone())))
+                }
+                Progress::Succeeded { .. } | Progress::Failed { .. } => Poll::Ready(None),
+            };
         }
     }
 }
@@ -262,11 +275,13 @@ impl<'a> IntoFuture for Response<'a> {
                 .await
                 .is_some()
             {}
-            self.result.take().unwrap_or_else(|| {
-                Err(ResponseError::protocol(
+            match self.progress {
+                Progress::Succeeded { result, .. } => Ok(result),
+                Progress::Failed { error, .. } => Err(error),
+                Progress::Running { .. } => Err(ResponseError::protocol(
                     "response stream ended without a terminal service result",
-                ))
-            })
+                )),
+            }
         })
     }
 }

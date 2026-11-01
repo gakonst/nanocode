@@ -59,7 +59,11 @@ static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<ArcSwap<OriginalImageEstimateCach
 pub fn auto_compact_token_limit(model: &str, context_window_tokens: u64) -> Option<u64> {
     matches!(
         model,
-        "gpt-6-astra" | "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6-luna"
+        "gpt-6-astra"
+            | "gpt-6.1-sol"
+            | "gpt-6.1-terra"
+            | "gpt-6-luna"
+            | "gpt-daybreak-blue-latest"
     )
     .then_some(context_window_tokens.saturating_mul(9) / 10)
 }

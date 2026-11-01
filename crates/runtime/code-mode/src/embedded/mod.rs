@@ -109,6 +109,29 @@ pub trait HandCalls: Send + Sync + 'static {
     }
 }
 
+#[must_use]
+pub fn declares_hand(definition: &ToolDefinition) -> bool {
+    definition
+        .parameters()
+        .is_some_and(|schema| schema.as_value()["properties"].get("hand").is_some())
+}
+
+pub fn take_hand(declared: bool, input: Value) -> Result<(Value, Option<String>), ToolOutput> {
+    let Value::Object(mut fields) = input else {
+        return Ok((input, None));
+    };
+    if declared {
+        return Ok((Value::Object(fields), None));
+    }
+    match fields.remove("hand") {
+        None => Ok((Value::Object(fields), None)),
+        Some(Value::String(hand)) => Ok((Value::Object(fields), Some(hand))),
+        Some(_) => Err(ToolOutput::error(
+            "`hand` must be the name of an attached hand; nothing was dispatched",
+        )),
+    }
+}
+
 pub trait CodeModeHost: Send + Sync + 'static {
     fn tool_mode(&self) -> EmbeddedToolMode {
         EmbeddedToolMode::Code

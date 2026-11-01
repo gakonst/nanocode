@@ -17,6 +17,7 @@ use crate::{
     CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
     embedded::{
         CodeModeHost, CodeModeHostError, EmbeddedToolMode, HandCalls, HostFuture, OwnedToolContext,
+        declares_hand, take_hand,
     },
 };
 
@@ -160,15 +161,17 @@ impl CodeModeToolset for LocalTools {
         input: Value,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, ToolOutput> {
+        let found = find(&self.tools, name);
         let Some((here, hands)) = &self.hands else {
-            return execute(find(&self.tools, name), name, input, context);
+            return execute(found, name, input, context);
         };
-        match take_hand(input) {
+        let declared = found.is_some_and(|(_, definition)| declares_hand(definition));
+        match take_hand(declared, input) {
             Err(output) => Box::pin(async move { output }),
             Ok((input, Some(hand))) if hand != here.as_ref() && !hands.here(&hand) => {
                 Box::pin(async move { hands.call(&hand, name, input, context).await })
             }
-            Ok((input, _)) => execute(find(&self.tools, name), name, input, context),
+            Ok((input, _)) => execute(found, name, input, context),
         }
     }
 
@@ -184,30 +187,19 @@ impl CodeModeToolset for LocalTools {
 
     fn recover_nested<'a>(
         &'a self,
-        _name: &'a str,
+        name: &'a str,
         input: Value,
         context: ToolContext<'a>,
     ) -> Option<HostFuture<'a, Option<ToolOutput>>> {
         let (here, hands) = self.hands.as_ref()?;
-        match take_hand(input) {
+        let declared =
+            find(&self.tools, name).is_some_and(|(_, definition)| declares_hand(definition));
+        match take_hand(declared, input) {
             Ok((_, Some(hand))) if hand != here.as_ref() && !hands.here(&hand) => {
                 Some(Box::pin(async move { hands.recover(&hand, context).await }))
             }
             _ => None,
         }
-    }
-}
-
-fn take_hand(input: Value) -> Result<(Value, Option<String>), ToolOutput> {
-    let Value::Object(mut fields) = input else {
-        return Ok((input, None));
-    };
-    match fields.remove("hand") {
-        None => Ok((Value::Object(fields), None)),
-        Some(Value::String(hand)) => Ok((Value::Object(fields), Some(hand))),
-        Some(_) => Err(ToolOutput::error(
-            "`hand` must be the name of an attached hand; nothing was dispatched",
-        )),
     }
 }
 

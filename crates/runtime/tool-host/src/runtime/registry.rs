@@ -3,6 +3,7 @@ use super::execution::{
 };
 use super::*;
 use crate::attachment::{ProcessRouteStore, RemoteRoute, RunnerRouting};
+use nanocode_code_mode::embedded::{declares_hand, take_hand};
 
 pub struct RoutingCatalog<'a> {
     registry: &'a mut ToolRegistry,
@@ -211,7 +212,7 @@ impl ToolRegistry {
             record_tool_content(&span, "tool.arguments", arguments_content);
         }
         let (input, hand) = match &self.hand_calls {
-            Some(calls) => match take_hand(input) {
+            Some(calls) => match take_hand(self.declares_hand(name), input) {
                 Ok((input, hand)) => (
                     input,
                     hand.filter(|hand| !calls.here(hand)).zip(Some(calls)),
@@ -425,6 +426,18 @@ impl ToolRegistry {
         }
     }
 
+    fn declares_hand(&self, name: &str) -> bool {
+        match self.get(name) {
+            Some((_, definition)) => declares_hand(definition),
+            None => self.providers.iter().any(|provider| {
+                provider
+                    .available_definitions()
+                    .iter()
+                    .any(|definition| definition.name() == name && declares_hand(definition))
+            }),
+        }
+    }
+
     fn get(&self, name: &str) -> Option<(&Arc<dyn Tool>, &ToolDefinition)> {
         let index = *self.by_name.get(name)?;
         Some((self.ordered.get(index)?, self.definitions.get(index)?))
@@ -570,19 +583,6 @@ fn nested_definition(definition: ToolDefinition) -> ToolDefinition {
             ..
         } => ToolDefinition::function("tool_search", description, parameters),
         other => other,
-    }
-}
-
-fn take_hand(input: Value) -> Result<(Value, Option<String>), ToolOutput> {
-    let Value::Object(mut fields) = input else {
-        return Ok((input, None));
-    };
-    match fields.remove("hand") {
-        None => Ok((Value::Object(fields), None)),
-        Some(Value::String(hand)) => Ok((Value::Object(fields), Some(hand))),
-        Some(_) => Err(ToolOutput::error(
-            "`hand` must be the name of an attached hand; nothing was dispatched",
-        )),
     }
 }
 

@@ -736,29 +736,70 @@ pub(super) struct PersistedAgent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "JournaledCall", into = "JournaledCall")]
 pub(super) struct InFlightCall {
     pub(super) call_id: String,
     pub(super) tool: String,
-
     pub(super) arguments: String,
+    pub(super) state: CallState,
+}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum CallState {
+    Restored {
+        result_recorded: bool,
+        yielded: bool,
+    },
+    Live {
+        parent_call_id: Option<String>,
+        progress: CallProgress,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CallProgress {
+    Started,
+    Recorded,
+    Yielded,
+    Settled,
+    Committable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct JournaledCall {
+    call_id: String,
+    tool: String,
+    arguments: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(super) result_recorded: bool,
-
+    result_recorded: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(super) yielded: bool,
+    yielded: bool,
+}
 
-    #[serde(skip)]
-    pub(super) parent_call_id: Option<String>,
+impl From<JournaledCall> for InFlightCall {
+    fn from(call: JournaledCall) -> Self {
+        Self {
+            call_id: call.call_id,
+            tool: call.tool,
+            arguments: call.arguments,
+            state: CallState::Restored {
+                result_recorded: call.result_recorded,
+                yielded: call.yielded,
+            },
+        }
+    }
+}
 
-    #[serde(skip)]
-    pub(super) live: bool,
-
-    #[serde(skip)]
-    pub(super) settled: bool,
-
-    #[serde(skip)]
-    pub(super) committable: bool,
+impl From<InFlightCall> for JournaledCall {
+    fn from(call: InFlightCall) -> Self {
+        Self {
+            result_recorded: call.result_recorded(),
+            yielded: call.yielded(),
+            call_id: call.call_id,
+            tool: call.tool,
+            arguments: call.arguments,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -786,13 +827,31 @@ impl InFlightCall {
             call_id: call_id.to_owned(),
             tool: tool.to_owned(),
             arguments,
-            result_recorded: false,
-            yielded: false,
-            parent_call_id: parent_call_id.map(str::to_owned),
-            live: true,
-            settled: false,
-            committable: false,
+            state: CallState::Live {
+                parent_call_id: parent_call_id.map(str::to_owned),
+                progress: CallProgress::Started,
+            },
         }
+    }
+
+    pub(super) const fn result_recorded(&self) -> bool {
+        match &self.state {
+            CallState::Restored {
+                result_recorded, ..
+            } => *result_recorded,
+            CallState::Live { progress, .. } => !matches!(progress, CallProgress::Started),
+        }
+    }
+
+    pub(super) const fn yielded(&self) -> bool {
+        match &self.state {
+            CallState::Restored { yielded, .. } => *yielded,
+            CallState::Live { progress, .. } => matches!(progress, CallProgress::Yielded),
+        }
+    }
+
+    pub(super) fn live(&self, progress: CallProgress) -> bool {
+        matches!(&self.state, CallState::Live { progress: current, .. } if *current == progress)
     }
 }
 
@@ -808,9 +867,9 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     let mut lines = calls
         .iter()
         .map(|call| {
-            let state = if call.yielded {
+            let state = if call.yielded() {
                 "yielded; still running at the restart"
-            } else if call.result_recorded {
+            } else if call.result_recorded() {
                 "a result was observed before the restart"
             } else {
                 "started; no result was observed"

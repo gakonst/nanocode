@@ -2309,7 +2309,12 @@ impl Registry {
                 let checkpoint = match checkpoints.get(&(root_session_id.to_owned(), id)) {
                     Some(checkpoint) => checkpoint.clone(),
                     None => durable::JournalCheckpoint::encode(
-                        scope.sessions.get(&id)?.stored_runtime.checkpoint()?.clone(),
+                        scope
+                            .sessions
+                            .get(&id)?
+                            .stored_runtime
+                            .checkpoint()?
+                            .clone(),
                         true,
                     )
                     .ok()?,
@@ -2559,8 +2564,10 @@ impl Registry {
             return;
         };
         for call in &mut session.in_flight_calls {
-            if call.live && call.settled {
-                call.committable = true;
+            if let durable::CallState::Live { progress, .. } = &mut call.state
+                && *progress == durable::CallProgress::Settled
+            {
+                *progress = durable::CallProgress::Committable;
             }
         }
         let progress = &mut session.in_flight_progress;
@@ -2582,7 +2589,7 @@ impl Registry {
         let call_ids = session
             .in_flight_calls
             .iter()
-            .filter(|call| call.live && call.committable)
+            .filter(|call| call.live(durable::CallProgress::Committable))
             .map(|call| call.call_id.clone())
             .collect::<Vec<_>>();
         let omitted = session.in_flight_progress.committable;
@@ -2607,9 +2614,10 @@ impl Registry {
             if session.active_instruction_revision != Some(commits.revision) {
                 return;
             }
-            session
-                .in_flight_calls
-                .retain(|call| !(call.live && commits.call_ids.contains(&call.call_id)));
+            session.in_flight_calls.retain(|call| {
+                !(matches!(call.state, durable::CallState::Live { .. })
+                    && commits.call_ids.contains(&call.call_id))
+            });
             let progress = &mut session.in_flight_progress;
             let omitted = commits.omitted.min(progress.committable);
             progress.committable -= omitted;
@@ -2728,28 +2736,48 @@ impl Registry {
                         .iter_mut()
                         .find(|existing| existing.call_id == call.call_id)
                     {
-                        existing.result_recorded = true;
-                        if existing.live && existing.parent_call_id.is_none() {
-                            if matches!(cell, Some((origin, true)) if origin == call.call_id) {
-                                existing.yielded = true;
-                            } else {
-                                existing.settled = true;
+                        let yielded =
+                            matches!(cell, Some((origin, true)) if origin == call.call_id);
+                        match &mut existing.state {
+                            durable::CallState::Restored {
+                                result_recorded, ..
+                            } => *result_recorded = true,
+                            durable::CallState::Live {
+                                parent_call_id: None,
+                                progress,
+                            } => {
+                                *progress = if yielded {
+                                    durable::CallProgress::Yielded
+                                } else {
+                                    durable::CallProgress::Settled
+                                };
+                            }
+                            durable::CallState::Live { progress, .. } => {
+                                if *progress == durable::CallProgress::Started {
+                                    *progress = durable::CallProgress::Recorded;
+                                }
                             }
                         }
                     }
 
                     if top_level && let Some((origin, false)) = cell {
                         for listed in &mut session.in_flight_calls {
-                            if !listed.live {
+                            let durable::CallState::Live {
+                                parent_call_id,
+                                progress,
+                            } = &mut listed.state
+                            else {
                                 continue;
-                            }
-                            if listed.parent_call_id.as_deref() == Some(origin)
-                                && listed.result_recorded
-                            {
-                                listed.settled = true;
-                            } else if listed.call_id == origin && listed.yielded {
-                                listed.yielded = false;
-                                listed.settled = true;
+                            };
+                            let settles = match *progress {
+                                durable::CallProgress::Recorded => {
+                                    parent_call_id.as_deref() == Some(origin)
+                                }
+                                durable::CallProgress::Yielded => listed.call_id == origin,
+                                _ => false,
+                            };
+                            if settles {
+                                *progress = durable::CallProgress::Settled;
                             }
                         }
                         if let Some(count) = session.in_flight_progress.nested.remove(origin) {

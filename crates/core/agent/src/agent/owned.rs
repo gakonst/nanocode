@@ -5,7 +5,41 @@ use super::backend::{
 use super::handle::{Interrupted, OwnershipProbe, Signal};
 use super::*;
 use arc_swap::{ArcSwap, ArcSwapOption};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Life {
+    Live,
+    Stale,
+    Closed,
+}
+
+struct Lifecycle(AtomicU8);
+
+impl Lifecycle {
+    const fn new() -> Self {
+        Self(AtomicU8::new(Life::Live as u8))
+    }
+
+    fn get(&self) -> Life {
+        match self.0.load(Ordering::Acquire) {
+            0 => Life::Live,
+            1 => Life::Stale,
+            _ => Life::Closed,
+        }
+    }
+
+    fn turn(&self, from: Life, to: Life) {
+        let _ = self
+            .0
+            .compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    fn close(&self) {
+        self.0.store(Life::Closed as u8, Ordering::Release);
+    }
+}
 
 #[doc(hidden)]
 pub trait AgentOwner: Send + Sync + 'static {
@@ -35,8 +69,7 @@ pub async fn adopt(agent: Agent, owner: &Arc<dyn AgentOwner>) -> Result<Agent> {
         interrupted: Arc::clone(&agent.interrupted),
         next_turn: Arc::clone(&agent.next_turn),
         healing: ArcSwapOption::empty(),
-        stopped: AtomicBool::new(false),
-        closed: AtomicBool::new(false),
+        life: Lifecycle::new(),
     })));
     let owned = Agent {
         backend,
@@ -91,8 +124,7 @@ struct Shared {
     interrupted: Arc<Interrupted>,
     next_turn: Arc<AtomicU64>,
     healing: ArcSwapOption<Signal>,
-    stopped: AtomicBool,
-    closed: AtomicBool,
+    life: Lifecycle,
 }
 
 struct Healing<'a> {
@@ -119,7 +151,7 @@ impl Shared {
         if let Err(error) = &result
             && requires_reopen(error)
         {
-            self.stopped.store(true, Ordering::Release);
+            self.life.turn(Life::Live, Life::Stale);
         }
         result
     }
@@ -135,12 +167,12 @@ impl Shared {
 
     fn heals(&self, error: &NanocodeError, prompt: &BackendPrompt) -> bool {
         requires_reopen(error)
-            && !self.closed.load(Ordering::Acquire)
+            && self.life.get() != Life::Closed
             && !prompt.events.turn_is_terminal()
     }
 
     fn stale(&self) -> bool {
-        self.stopped.load(Ordering::Acquire) && !self.closed.load(Ordering::Acquire)
+        self.life.get() == Life::Stale
     }
 
     async fn healed(&self, retry: &mut BackendPrompt) -> Arc<dyn LifecycleBackend> {
@@ -191,7 +223,7 @@ impl Shared {
         let backend = Arc::clone(&agent.backend);
         let previous = self.inner.swap(Arc::new(Arc::clone(&backend)));
         self.probe.store(agent.ownership.clone().map(Arc::new));
-        self.stopped.store(false, Ordering::Release);
+        self.life.turn(Life::Stale, Life::Live);
         forward_events(agent_events, self.events.clone());
         spawn_detached(async move {
             let _ = previous.shutdown().await;
@@ -351,7 +383,7 @@ impl LifecycleBackend for Owned {
         })
     }
     fn is_stopped(&self) -> bool {
-        self.0.stopped.load(Ordering::Acquire) || self.0.backend().is_stopped()
+        self.0.life.get() != Life::Live || self.0.backend().is_stopped()
     }
     fn owns_session(&self) -> BackendFuture<Result<bool>> {
         match self.0.probe.load_full() {
@@ -365,7 +397,7 @@ impl LifecycleBackend for Owned {
     ) -> BackendFuture<Result<()>> {
         let shared = Arc::clone(&self.0);
         Box::pin(async move {
-            if shared.closed.load(Ordering::Acquire) {
+            if shared.life.get() == Life::Closed {
                 return Err(NanocodeError::AgentStopped);
             }
             let backend = shared.backend();
@@ -467,7 +499,7 @@ impl LifecycleBackend for Owned {
         self.0.backend().flush()
     }
     fn disconnect(&self) -> BackendFuture<Result<()>> {
-        self.0.closed.store(true, Ordering::Release);
+        self.0.life.close();
         let disconnected = self.0.backend().disconnect();
         let owner = self.0.owner.clone();
         let key = self.0.key;
@@ -480,7 +512,7 @@ impl LifecycleBackend for Owned {
         })
     }
     fn shutdown(&self) -> BackendFuture<Result<()>> {
-        self.0.closed.store(true, Ordering::Release);
+        self.0.life.close();
         let stopped = self.0.backend().shutdown();
         let owner = self.0.owner.clone();
         let key = self.0.key;

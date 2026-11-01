@@ -576,44 +576,35 @@ async fn read_all(
 ) -> Option<Output> {
     // On the heap: in the future itself, every spawn copied it.
     let mut buffer = vec![0_u8; output::READ_BUFFER_LENGTH];
-    let mut polling = false;
+    let mut exited = false;
     loop {
-        let read = if polling {
+        // readable() spends no budget: a ready pipe would starve the runtime.
+        tokio::task::consume_budget().await;
+        let read = if exited && cfg!(target_os = "macos") {
             match rustix::io::read(&pipe, &mut buffer[..]) {
                 Err(rustix::io::Errno::AGAIN) => {
                     tokio::time::sleep(process::REAP_POLL_INTERVAL).await;
                     continue;
                 }
-                Err(rustix::io::Errno::INTR) => continue,
                 read => read.map_err(io::Error::from),
             }
         } else {
-            let ready = tokio::select! {
-                ready = pipe.readable() => ready,
-                () = ended.wait() => {
-                    polling = true;
+            tokio::select! {
+                ready = pipe.readable() => ready.and_then(|()| {
+                    pipe.try_io(|| rustix::io::read(&pipe, &mut buffer[..]).map_err(io::Error::from))
+                }),
+                () = ended.wait(), if cfg!(target_os = "macos") && !exited => {
+                    exited = true;
                     continue;
                 }
-            };
-            let read = ready.and_then(|()| {
-                pipe.try_io(|| match rustix::io::read(&pipe, &mut buffer[..]) {
-                    Ok(0) => Err(io::ErrorKind::WouldBlock.into()),
-                    read => read.map_err(io::Error::from),
-                })
-            });
-            match read {
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ) =>
-                {
-                    continue;
-                }
-                read => read,
             }
         };
         match read {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
             Ok(0) => return Some(pipe),
             Ok(length) => {
                 activity.touch();
@@ -1271,6 +1262,7 @@ struct Busy {
     )>,
     exit: Option<oneshot::Sender<io::Result<i32>>>,
     ended: Arc<Signal>,
+    keeper: Option<[std::fs::File; 2]>,
     released: Option<[Option<Output>; 2]>,
     pid: Option<u32>,
     /// The status the command's EXIT trap reported.
@@ -1304,6 +1296,7 @@ impl Entry {
 
 impl Busy {
     fn end(&mut self, status: io::Result<i32>) {
+        self.keeper = None;
         self.ended.fire();
         if let Some(exit) = self.exit.take() {
             let _ = exit.send(status);
@@ -1343,6 +1336,38 @@ impl Slots {
         Ok(slot)
     }
 
+    fn keeper(&self, slot: usize) -> io::Result<[std::fs::File; 2]> {
+        let path = self.path(slot);
+        let open = |name| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NONBLOCK)
+                .open(path.join(name))
+        };
+        Ok([open("1")?, open("2")?])
+    }
+
+    fn reregister(&mut self, slot: usize) -> io::Result<()> {
+        let entry = self
+            .entry(slot)
+            .ok_or_else(|| io::Error::other("the slot is gone"))?;
+        for pipe in &mut entry.pipes {
+            if let Some(reader) = pipe.take() {
+                *pipe = Some(pipe::Receiver::from_owned_fd_unchecked(
+                    reader.into_nonblocking_fd()?,
+                )?);
+            }
+        }
+        Ok(())
+    }
+
+    fn retire(&mut self, slot: usize) {
+        if let Some(entry) = self.entries.get_mut(slot) {
+            *entry = None;
+            let _ = std::fs::remove_dir_all(self.path(slot));
+        }
+    }
+
     fn entry(&mut self, slot: usize) -> Option<&mut Entry> {
         self.entries.get_mut(slot).and_then(Option::as_mut)
     }
@@ -1379,8 +1404,7 @@ impl Slots {
             entry.pipes = [Some(stdout), Some(stderr)];
             self.free.push(slot);
         } else {
-            self.entries[slot] = None;
-            let _ = std::fs::remove_dir_all(self.path(slot));
+            self.retire(slot);
         }
     }
 }
@@ -1609,6 +1633,18 @@ impl Owner {
             Ok(slot) => slot,
             Err(error) => return Err((reply, Some(error))),
         };
+        let keeper = match self.slots.keeper(slot) {
+            Ok(keeper) => keeper,
+            Err(error) => {
+                self.slots.free.push(slot);
+                return Err((reply, Some(error)));
+            }
+        };
+        // Once a pipe's writers all closed, tokio keeps it readable for good.
+        if let Err(error) = self.slots.reregister(slot) {
+            self.slots.retire(slot);
+            return Err((reply, Some(error)));
+        }
         let Some(entry) = self.slots.entry(slot) else {
             return Err((reply, None));
         };
@@ -1621,6 +1657,7 @@ impl Owner {
             pending: Some((reply, release)),
             exit: Some(exit),
             ended,
+            keeper: Some(keeper),
             released: None,
             pid: None,
             reported: None,

@@ -1291,23 +1291,26 @@ struct Entry {
 
 struct Busy {
     secret: bool,
-    /// Until the server names the command's process: the caller waiting for
-    /// its lease, and the channel the lease returns its pipes on.
-    pending: Option<(
-        oneshot::Sender<Option<Lease>>,
-        mpsc::UnboundedSender<Message>,
-    )>,
-    exit: Option<oneshot::Sender<io::Result<i32>>>,
+    stage: Stage,
+    owed: Option<Owed>,
     ended: Arc<Signal>,
-    keeper: Option<[std::fs::File; 2]>,
     released: Option<[Option<Output>; 2]>,
-    pid: Option<u32>,
-    /// The status the command's EXIT trap reported.
     reported: Option<i32>,
-    /// Its process exited without reporting, so the server's wait was asked.
-    exited: bool,
-    /// zsh is done with the process, so the slot may take another command.
-    waited: bool,
+}
+
+enum Stage {
+    Forking {
+        reply: oneshot::Sender<Option<Lease>>,
+        release: mpsc::UnboundedSender<Message>,
+    },
+    Running,
+    Unreported,
+    Waited,
+}
+
+struct Owed {
+    exit: oneshot::Sender<io::Result<i32>>,
+    keeper: [std::fs::File; 2],
 }
 
 impl Entry {
@@ -1333,10 +1336,22 @@ impl Entry {
 
 impl Busy {
     fn end(&mut self, status: io::Result<i32>) {
-        self.keeper = None;
+        let owed = self.owed.take();
+        let exit = owed.map(|Owed { exit, keeper }| {
+            drop(keeper);
+            exit
+        });
         self.ended.fire();
-        if let Some(exit) = self.exit.take() {
+        if let Some(exit) = exit {
             let _ = exit.send(status);
+        }
+    }
+
+    fn abandon(&mut self) {
+        if let Stage::Forking { .. } = self.stage
+            && let Stage::Forking { reply, .. } = std::mem::replace(&mut self.stage, Stage::Running)
+        {
+            let _ = reply.send(None);
         }
     }
 }
@@ -1419,7 +1434,7 @@ impl Slots {
             .iter()
             .flatten()
             .filter_map(|entry| entry.busy.as_ref())
-            .any(|busy| busy.exit.is_some())
+            .any(|busy| busy.owed.is_some())
     }
 
     fn settle(&mut self, slot: usize) {
@@ -1429,7 +1444,7 @@ impl Slots {
         if entry
             .busy
             .as_ref()
-            .is_none_or(|busy| !busy.waited || busy.released.is_none())
+            .is_none_or(|busy| !matches!(busy.stage, Stage::Waited) || busy.released.is_none())
         {
             return;
         }
@@ -1542,13 +1557,11 @@ impl Owner {
             let Some(busy) = entry.busy.as_mut() else {
                 continue;
             };
-            if busy.pid.is_none() {
+            if let Stage::Forking { .. } = busy.stage {
                 // Never forked: its caller starts a shell of its own.
-                if let Some((reply, _)) = busy.pending.take() {
-                    let _ = reply.send(None);
-                }
+                busy.abandon();
                 entry.busy = None;
-            } else if busy.exited {
+            } else if let Stage::Unreported = busy.stage {
                 // It exited without reporting, and the server died before
                 // its wait answered.
                 busy.end(Err(io::Error::other("the shell server stopped")));
@@ -1691,15 +1704,11 @@ impl Owner {
         }
         entry.busy = Some(Busy {
             secret,
-            pending: Some((reply, release)),
-            exit: Some(exit),
+            stage: Stage::Forking { reply, release },
+            owed: Some(Owed { exit, keeper }),
             ended,
-            keeper: Some(keeper),
             released: None,
-            pid: None,
             reported: None,
-            exited: false,
-            waited: false,
         });
         self.live += 1;
         self.outbound
@@ -1761,7 +1770,7 @@ impl Owner {
         match busy.reported {
             Some(status) => {
                 busy.end(Ok(status));
-                busy.waited = true;
+                busy.stage = Stage::Waited;
                 if busy.secret {
                     let _ = entry.erase();
                 }
@@ -1771,7 +1780,7 @@ impl Owner {
                 self.slots.settle(slot);
             }
             None if self.alive => {
-                busy.exited = true;
+                busy.stage = Stage::Unreported;
                 self.outbound
                     .extend_from_slice(format!("w{pid}\n").as_bytes());
             }
@@ -1820,9 +1829,9 @@ impl Owner {
         let Some(busy) = entry.busy.as_mut() else {
             return;
         };
-        busy.pid = Some(pid);
-        let owned = match (busy.pending.take(), std::mem::take(&mut entry.pipes)) {
-            (Some((reply, release)), [Some(stdout), Some(stderr)]) => reply
+        let stage = std::mem::replace(&mut busy.stage, Stage::Running);
+        let owned = match (stage, std::mem::take(&mut entry.pipes)) {
+            (Stage::Forking { reply, release }, [Some(stdout), Some(stderr)]) => reply
                 .send(Some(Lease {
                     slot,
                     pid,
@@ -1854,7 +1863,7 @@ impl Owner {
             && let Some(busy) = entry.busy.as_mut()
         {
             busy.end(Ok(status));
-            busy.waited = true;
+            busy.stage = Stage::Waited;
             if busy.secret {
                 let _ = entry.erase();
             }
@@ -1866,9 +1875,7 @@ impl Owner {
     fn fail(&mut self) {
         for entry in self.slots.entries.iter_mut().flatten() {
             if let Some(busy) = entry.busy.as_mut() {
-                if let Some((reply, _)) = busy.pending.take() {
-                    let _ = reply.send(None);
-                }
+                busy.abandon();
                 busy.end(Err(io::Error::other("the shell server stopped")));
             }
         }

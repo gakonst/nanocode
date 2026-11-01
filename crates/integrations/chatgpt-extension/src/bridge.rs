@@ -377,10 +377,6 @@ impl Bridge {
         ours(manifest, launcher) && self.proxy_manifest(manifest)
     }
 
-    pub(crate) fn still_ours(manifest: &Path, launcher: &Path) -> bool {
-        ours(manifest, launcher)
-    }
-
     fn proxy_manifest(&self, path: &Path) -> bool {
         fs::read(path)
             .ok()

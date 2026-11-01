@@ -373,14 +373,17 @@ impl Drop for Extension {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Handshake {
+    Controls,
+    Refused,
+    Forwards,
+}
+
 pub struct Connection {
     extension: Extension,
-    controls: bool,
-    /// The official extension did not answer the handshake.
-    refused: bool,
+    handshake: Handshake,
     record: PathBuf,
-    manifest: PathBuf,
-    launcher: PathBuf,
     owner: String,
     namespace: String,
 }
@@ -398,7 +401,7 @@ impl Bridge {
         let result = self.open(manifest, browser, args);
         let failure = match result {
             Err(ref error) => Some(error.to_string()),
-            Ok(ref connection) if connection.refused => {
+            Ok(ref connection) if connection.handshake == Handshake::Refused => {
                 Some("the ChatGPT extension did not answer the getInfo handshake".into())
             }
             Ok(_) => None,
@@ -434,24 +437,28 @@ impl Bridge {
             return Err("original OpenAI host does not allow this extension".into());
         }
         let mut extension = Extension::start(upstream.executable.as_deref(), args, self)?;
-        let chatgpt = origin == ORIGIN || origin == EDGE_ORIGIN;
-        let controls = chatgpt && {
-            let expected = if origin == EDGE_ORIGIN {
-                EDGE_EXTENSION_ID
-            } else {
-                EXTENSION_ID
-            };
-            extension
-                .rpc("getInfo", json!({}))
-                .is_ok_and(|info| info["metadata"]["extensionId"] == expected)
+        let expected = match origin.as_str() {
+            ORIGIN => Some(EXTENSION_ID),
+            EDGE_ORIGIN => Some(EDGE_EXTENSION_ID),
+            _ => None,
+        };
+        let handshake = match expected {
+            None => Handshake::Forwards,
+            Some(expected) => {
+                if extension
+                    .rpc("getInfo", json!({}))
+                    .is_ok_and(|info| info["metadata"]["extensionId"] == expected)
+                {
+                    Handshake::Controls
+                } else {
+                    Handshake::Refused
+                }
+            }
         };
         Ok(Connection {
             extension,
-            controls,
-            refused: chatgpt && !controls,
+            handshake,
             record: record_path,
-            manifest: manifest.to_path_buf(),
-            launcher,
             owner: self.owner_name().to_string(),
             namespace: self.namespace_name().to_string(),
         })
@@ -459,8 +466,8 @@ impl Bridge {
 }
 
 impl Connection {
-    pub const fn controls(&self) -> bool {
-        self.controls
+    pub fn controls(&self) -> bool {
+        self.handshake == Handshake::Controls
     }
 
     pub fn connected(&self) -> bool {
@@ -468,11 +475,11 @@ impl Connection {
     }
 
     pub fn owned(&self) -> bool {
-        self.record.exists() && Bridge::still_ours(&self.manifest, &self.launcher)
+        self.record.exists()
     }
 
     pub fn live(&self) -> bool {
-        self.controls && self.connected() && self.owned()
+        self.controls() && self.connected() && self.owned()
     }
 
     pub fn step(
@@ -515,7 +522,7 @@ impl Connection {
     }
 
     fn controlled(&self) -> Result<(), Error> {
-        if self.controls {
+        if self.controls() {
             Ok(())
         } else {
             Err("this extension connection only forwards to the original host".into())

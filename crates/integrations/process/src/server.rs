@@ -576,28 +576,42 @@ async fn read_all(
 ) -> Option<Output> {
     // On the heap: in the future itself, every spawn copied it.
     let mut buffer = vec![0_u8; output::READ_BUFFER_LENGTH];
-    let mut exited = false;
+    let mut reading = Reading::Watching { sooner: false };
     loop {
         // readable() spends no budget: a ready pipe would starve the runtime.
         tokio::task::consume_budget().await;
-        let read = if exited && cfg!(target_os = "macos") {
-            match rustix::io::read(&pipe, &mut buffer[..]) {
+        let read = match reading {
+            Reading::Watching { sooner } => tokio::select! {
+                ready = pipe.readable() => ready.and_then(|()| {
+                    pipe.try_io(|| rustix::io::read(&pipe, &mut buffer[..]).map_err(io::Error::from))
+                }),
+                () = ended.wait(), if cfg!(target_os = "macos") => {
+                    reading = Reading::Exited;
+                    continue;
+                }
+                () = unreported(sooner) => {
+                    reading = Reading::Unreported { found: false };
+                    continue;
+                }
+            },
+            Reading::Unreported { found } => match rustix::io::read(&pipe, &mut buffer[..]) {
+                Err(rustix::io::Errno::AGAIN) => {
+                    reading = Reading::Watching { sooner: found };
+                    continue;
+                }
+                Ok(length) => {
+                    reading = Reading::Unreported { found: true };
+                    Ok(length)
+                }
+                read => read.map_err(io::Error::from),
+            },
+            Reading::Exited => match rustix::io::read(&pipe, &mut buffer[..]) {
                 Err(rustix::io::Errno::AGAIN) => {
                     tokio::time::sleep(process::REAP_POLL_INTERVAL).await;
                     continue;
                 }
                 read => read.map_err(io::Error::from),
-            }
-        } else {
-            tokio::select! {
-                ready = pipe.readable() => ready.and_then(|()| {
-                    pipe.try_io(|| rustix::io::read(&pipe, &mut buffer[..]).map_err(io::Error::from))
-                }),
-                () = ended.wait(), if cfg!(target_os = "macos") && !exited => {
-                    exited = true;
-                    continue;
-                }
-            }
+            },
         };
         match read {
             Err(error)
@@ -618,6 +632,29 @@ async fn read_all(
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum Reading {
+    Watching { sooner: bool },
+    Unreported { found: bool },
+    Exited,
+}
+
+#[cfg(target_os = "macos")]
+const UNREPORTED_READ_INTERVAL: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(50),
+    process::REAP_POLL_INTERVAL,
+];
+
+#[cfg(target_os = "macos")]
+async fn unreported(sooner: bool) {
+    tokio::time::sleep(UNREPORTED_READ_INTERVAL[usize::from(sooner)]).await;
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn unreported(_sooner: bool) {
+    std::future::pending::<()>().await;
 }
 
 fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {

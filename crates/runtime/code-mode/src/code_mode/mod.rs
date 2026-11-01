@@ -55,7 +55,7 @@ pub use replay::{
     CELL_JOURNAL_VERSION, CellJournal, CellJournalHeader, CellJournalSink, CellJournalState,
     CellJournalUpdate, CellJournals, JournaledCall, JournaledCallState,
 };
-use replay::{CellRecord, CellStatus, ReplayPlan};
+use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan};
 pub use spec::{exec_spec, wait_spec};
 
 const INITIAL_YIELD: Duration = Duration::from_secs(10);
@@ -432,12 +432,11 @@ impl CodeModeRuntime {
                 prelude: journal.prelude,
                 yield_time_ms: journal.yield_time_ms,
                 max_output_tokens: journal.max_output_tokens,
-                journal: nanocode_code_mode_engine::Journal::shared(),
-                status: std::sync::Mutex::new(CellStatus {
+                journal: nanocode_code_mode_engine::SharedJournal::new(),
+                status: nanocode_sync::Atom::new(CellStatus {
                     observer_call_id: journal.observer_call_id.clone(),
-                    replaying: true,
                     content_returned: journal.content_returned,
-                    ..CellStatus::default()
+                    ..CellStatus::new(CellLife::started(Replay::Replaying))
                 }),
                 hold: watch::channel(journals.holding(&journal.session_id)).0,
                 persistence: journals.persistence(),
@@ -494,14 +493,16 @@ impl CodeModeRuntime {
                 .find(|cell| {
                     cell.record.as_ref().is_some_and(|record| {
                         record.origin_call_id == call_id
-                            || record.status().observer_call_id.as_deref() == Some(call_id)
+                            || record.status(|status| {
+                                status.observer_call_id.as_deref() == Some(call_id)
+                            })
                     })
                 })
                 .cloned()
         })?;
         let record = cell.record.clone()?;
         let observation = cell.begin_observation().await.ok()?;
-        record.status().observer_call_id = Some(call_id.to_owned());
+        record.update(|status| status.observer_call_id = Some(call_id.to_owned()));
         record.persist(Vec::new()).await;
         cell.turn_id
             .store(self.current_turn.load(Ordering::Acquire), Ordering::Release);
@@ -648,8 +649,10 @@ impl CodeModeRuntime {
                     prelude: self.prelude.is_some(),
                     yield_time_ms: source.yield_time_ms.unwrap_or(default_wait_yield_time_ms()),
                     max_output_tokens: Some(output_token_budget),
-                    journal: nanocode_code_mode_engine::Journal::shared(),
-                    status: std::sync::Mutex::default(),
+                    journal: nanocode_code_mode_engine::SharedJournal::new(),
+                    status: nanocode_sync::Atom::new(CellStatus::new(CellLife::started(
+                        Replay::Live,
+                    ))),
                     hold: watch::channel(journals.holding(&context.session_id)).0,
                     persistence: journals.persistence(),
                 });
@@ -807,7 +810,7 @@ impl CodeModeRuntime {
         };
         cell.tools.cell_observed(&cell.origin_call_id, true);
         if let Some(record) = &cell.record {
-            record.status().observer_call_id = Some(call_id.to_owned());
+            record.update(|status| status.observer_call_id = Some(call_id.to_owned()));
             record.persist(Vec::new()).await;
         }
         let output_token_budget = arguments.max_tokens;
@@ -1200,7 +1203,7 @@ impl LiveCell {
 
     fn retire(&self) {
         if let Some(record) = &self.record {
-            record.status().retired = true;
+            record.update(|status| status.life = CellLife::Retired);
             record.forget();
         }
     }
@@ -1446,7 +1449,7 @@ async fn observe_cell(
     )
     .await;
     if let Some(record) = &cell.record {
-        record.status().content_returned = observation.content_seen;
+        record.update(|status| status.content_returned = observation.content_seen);
     }
     if !running && let Some(carrier) = carrier {
         for receipt in observation.receipts.drain(..) {
@@ -1892,7 +1895,8 @@ impl CellCalls<'_, '_> {
             state: JournaledCallState::Running,
         };
         if let Some(record) = self.record {
-            record.status().calls.insert(id, journaled.clone());
+            let journaled = Arc::new(journaled.clone());
+            record.update(|status| status.calls.insert(id, Arc::clone(&journaled)));
         }
         let started = Instant::now();
         let input = Arc::new(input);
@@ -1936,17 +1940,15 @@ impl CellCalls<'_, '_> {
 
     fn queue(&self, id: u64, name: String, input: Value, host: bool) {
         if let Some(record) = self.record {
-            record.status().calls.insert(
+            let queued = Arc::new(JournaledCall {
                 id,
-                JournaledCall {
-                    id,
-                    call_id: format!("{}/code-{id}", self.context.call_id),
-                    name,
-                    input,
-                    host,
-                    state: JournaledCallState::Queued,
-                },
-            );
+                call_id: format!("{}/code-{id}", self.context.call_id),
+                name,
+                input,
+                host,
+                state: JournaledCallState::Queued,
+            });
+            record.update(|status| status.calls.insert(id, Arc::clone(&queued)));
         }
     }
 }
@@ -1959,7 +1961,7 @@ impl EmbeddedHost {
         if self.worker.hold(cell_id).is_ok() {
             true
         } else {
-            record.status().unsupported = true;
+            record.update(|status| status.unsupported = true);
             false
         }
     }
@@ -1970,20 +1972,17 @@ impl EmbeddedHost {
         record: &CellRecord,
         calls: &mut CellCalls<'_, '_>,
     ) -> Result<(), HostFailure> {
-        let undelivered = {
-            let mut status = record.status();
-            status.held = false;
-            let ids = status
-                .calls
-                .iter()
-                .filter(|(_, call)| !matches!(call.state, JournaledCallState::Running))
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|id| status.calls.remove(&id))
-                .collect::<Vec<_>>()
-        };
-        for call in undelivered {
+        let undelivered = record.update(|status| {
+            status.life = status.life.holding(Hold::Running);
+            let (running, undelivered) = std::mem::take(&mut status.calls)
+                .into_iter()
+                .partition::<std::collections::BTreeMap<_, _>, _>(
+                |(_, call)| matches!(call.state, JournaledCallState::Running),
+            );
+            status.calls = running;
+            undelivered
+        });
+        for call in undelivered.into_values().map(Arc::unwrap_or_clone) {
             match call.state {
                 JournaledCallState::Completed { encoded, success } => self
                     .worker
@@ -2026,7 +2025,8 @@ impl EmbeddedHost {
                 if let Some(record) = calls.record {
                     let mut journaled = call.clone();
                     journaled.state = JournaledCallState::Completed { encoded, success };
-                    record.status().calls.insert(call.id, journaled);
+                    let journaled = Arc::new(journaled);
+                    record.update(|status| status.calls.insert(call.id, Arc::clone(&journaled)));
                 }
             } else {
                 self.worker
@@ -2179,13 +2179,13 @@ impl EmbeddedHost {
                         }
                         RuntimeEvent::Held { .. } => {
                             if let Some(record) = record.as_deref() {
-                                record.status().held = true;
+                                record.update(|status| status.life = status.life.holding(Hold::Held));
                             }
                         }
                         RuntimeEvent::Replayed { .. } => {
                             replaying = false;
                             if let Some(record) = record.as_deref() {
-                                record.status().replaying = false;
+                                record.update(|status| status.life = status.life.replayed());
                             }
                             if let Some(plan) = plan.take() {
                                 self.resume_replayed(cell_id, &plan, held, &mut calls)?;
@@ -2275,15 +2275,23 @@ impl EmbeddedHost {
                 receipts,
             }));
         if let Some(record) = record {
-            let mut status = record.status();
-            if held {
-                if let Some(journaled) = status.calls.get_mut(&id) {
-                    journaled.state = JournaledCallState::Completed { encoded, success };
-                    return Ok(());
+            let kept = record.update(|status| {
+                if !held {
+                    status.calls.remove(&id);
+                    return false;
                 }
-                status.unsupported = true;
-            } else {
-                status.calls.remove(&id);
+                let Some(journaled) = status.calls.get_mut(&id) else {
+                    status.unsupported = true;
+                    return false;
+                };
+                Arc::make_mut(journaled).state = JournaledCallState::Completed {
+                    encoded: encoded.clone(),
+                    success,
+                };
+                true
+            });
+            if kept {
+                return Ok(());
             }
         }
         self.worker
@@ -2354,7 +2362,7 @@ async fn run_cell_actor(
         record
             .as_ref()
             .map(|record| nanocode_code_mode_engine::CellJournaling {
-                journal: Arc::clone(&record.journal),
+                journal: record.journal.clone(),
                 replay: plan.as_mut().map(|plan| std::mem::take(&mut plan.entries)),
             });
     let run = async {
@@ -2419,7 +2427,7 @@ async fn run_cell_actor(
             Ok(CellTerminal::Completed { .. } | CellTerminal::ScriptFailed { .. })
         )
     {
-        record.status().finished = true;
+        record.update(|status| status.life = status.life.finished());
     }
     match terminal {
         Ok(CellTerminal::Completed { stored }) => {
@@ -2444,7 +2452,7 @@ async fn run_cell_actor(
         }
         Ok(CellTerminal::Diverged { message }) => {
             if let Some(record) = &record {
-                record.status().retired = true;
+                record.update(|status| status.life = CellLife::Retired);
                 record.forget();
             }
             let _ = updates.send(CellUpdate::HostFailed(message));

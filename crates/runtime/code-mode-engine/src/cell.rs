@@ -22,7 +22,7 @@ use tokio::sync::mpsc;
 
 use nanocode_tool_contracts::ToolOutputContent;
 
-use crate::journal::{CellJournaling, JournalEntry, SharedJournal, lock as lock_journal};
+use crate::journal::{CellJournaling, JournalEntry, JournalWriter};
 
 pub enum RuntimeEvent {
     ToolCall {
@@ -245,7 +245,7 @@ pub(crate) struct ExecutionState {
     uncaught: Option<SavedFunction>,
     failure: Option<String>,
     pending_text: RefCell<Option<String>>,
-    journal: Option<SharedJournal>,
+    journal: Option<RefCell<JournalWriter>>,
     replay: Option<Replay>,
 }
 
@@ -270,7 +270,7 @@ impl ExecutionState {
 
     fn record(&self, entry: JournalEntry, weight: usize) {
         if let Some(journal) = &self.journal {
-            lock_journal(journal).record(entry, weight);
+            journal.borrow_mut().record(entry, weight);
         }
     }
 
@@ -344,6 +344,9 @@ impl ExecutionState {
         event: RuntimeEvent,
     ) -> Result<(), mpsc::error::SendError<RuntimeEvent>> {
         self.flush_text();
+        if let Some(journal) = &self.journal {
+            journal.borrow_mut().publish();
+        }
         self.event_tx.send(event)
     }
 
@@ -458,7 +461,7 @@ pub(crate) fn begin_execution(
     state.stored = stored;
     let (journal, replay) = journaling.map_or((None, None), |journaling| {
         (
-            Some(journaling.journal),
+            Some(RefCell::new(journaling.journal.writer())),
             journaling.replay.map(|entries| Replay {
                 entries,
                 pos: 0,

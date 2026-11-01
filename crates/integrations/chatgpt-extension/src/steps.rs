@@ -880,7 +880,6 @@ impl Tabs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     fn cdp(params: &Value) -> Value {
         match params["method"].as_str() {
@@ -927,11 +926,10 @@ mod tests {
 
     #[test]
     fn an_unanswered_request_moves_the_thread_to_a_new_session() {
-        let sessions = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&sessions);
+        let (seen, sessions) = std::sync::mpsc::channel();
         let mut ext = Extension::fake(move |method, params| {
             let session = params["session_id"].as_str().unwrap_or_default().to_owned();
-            seen.lock().unwrap().push(format!("{method} {session}"));
+            let _ = seen.send(format!("{method} {session}"));
             match method {
                 _ if session == "pyramid:thread" && method != "getInfo" => None,
                 "createTab" => Some(json!({"id": 11})),
@@ -978,7 +976,7 @@ mod tests {
             &snapshot,
         )
         .unwrap();
-        let sessions = sessions.lock().unwrap();
+        let sessions = sessions.try_iter().collect::<Vec<_>>();
         assert_eq!(sessions[0], "createTab pyramid:thread");
         assert!(
             sessions[1..]

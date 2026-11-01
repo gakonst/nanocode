@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
+    sync::{Arc, Weak},
 };
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use serde_json::{Value, value::RawValue};
 use tokio::sync::watch;
 
 use nanocode_code_mode_engine::{JournalEntry, SharedJournal};
-use nanocode_sync::Owned;
+use nanocode_sync::{Atom, Owned};
 
 use crate::embedded::HostFuture;
 
@@ -198,9 +198,9 @@ pub struct CellJournals(Arc<Journals>);
 
 #[derive(Default)]
 struct Journals {
-    cells: Mutex<Vec<Weak<CellRecord>>>,
-    held: Mutex<HashSet<String>>,
-    restored: Mutex<HashMap<String, Restored>>,
+    cells: Atom<Vec<Weak<CellRecord>>>,
+    held: Atom<HashSet<String>>,
+    restored: Atom<HashMap<String, Arc<Restored>>>,
     sink: Option<Arc<dyn CellJournalSink>>,
 }
 
@@ -215,14 +215,11 @@ enum Saving {
     Stopped,
 }
 
+#[derive(Clone)]
 pub(super) struct Restored {
     pub(super) cells: Vec<CellJournal>,
     pub(super) fallback: Option<String>,
     pub(super) outcomes: HashMap<String, (Value, bool)>,
-}
-
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl CellJournals {
@@ -247,33 +244,42 @@ impl CellJournals {
     }
 
     pub(super) fn register(&self, record: &Arc<CellRecord>) {
-        let mut cells = locked(&self.0.cells);
-        cells.retain(|cell| cell.strong_count() > 0);
-        cells.push(Arc::downgrade(record));
+        let record = Arc::downgrade(record);
+        self.0.cells.update(|cells| {
+            cells.retain(|cell| cell.strong_count() > 0);
+            cells.push(Weak::clone(&record));
+        });
     }
 
     #[must_use]
     pub fn holding(&self, session_id: &str) -> bool {
-        locked(&self.0.held).contains(session_id)
+        self.0.held.read(|held| held.contains(session_id))
     }
 
     fn live(&self, session_id: &str) -> Vec<Arc<CellRecord>> {
-        locked(&self.0.cells)
-            .iter()
-            .filter_map(Weak::upgrade)
-            .filter(|record| record.session_id == session_id && !record.status().retired)
-            .collect()
+        self.0.cells.read(|cells| {
+            cells
+                .iter()
+                .filter_map(Weak::upgrade)
+                .filter(|record| {
+                    record.session_id == session_id
+                        && record.status(|status| status.life != CellLife::Retired)
+                })
+                .collect()
+        })
     }
 
     pub fn hold(&self, session_id: &str) {
-        locked(&self.0.held).insert(session_id.to_owned());
+        self.0
+            .held
+            .update(|held| held.insert(session_id.to_owned()));
         for record in self.live(session_id) {
             record.hold.send_replace(true);
         }
     }
 
     pub fn release(&self, session_id: &str) {
-        locked(&self.0.held).remove(session_id);
+        self.0.held.update(|held| held.remove(session_id));
         for record in self.live(session_id) {
             record.hold.send_replace(false);
         }
@@ -286,18 +292,19 @@ impl CellJournals {
             ..CellJournalState::default()
         };
         for record in self.live(session_id) {
-            let overflowed = record.overflowed();
-            let status = record.status();
-            state.cells += 1;
-            if status.held || status.finished {
-                state.held += 1;
-            }
-            state.running_calls += status
-                .calls
-                .values()
-                .filter(|call| matches!(call.state, JournaledCallState::Running))
-                .count();
-            state.replayable &= !status.unsupported && !overflowed;
+            let overflowed = record.journal.overflowed();
+            record.status(|status| {
+                state.cells += 1;
+                if status.life.settled() {
+                    state.held += 1;
+                }
+                state.running_calls += status
+                    .calls
+                    .values()
+                    .filter(|call| matches!(call.state, JournaledCallState::Running))
+                    .count();
+                state.replayable &= !status.unsupported && !overflowed;
+            });
         }
         state
     }
@@ -322,23 +329,26 @@ impl CellJournals {
         if cells.is_empty() {
             return;
         }
-        locked(&self.0.restored).insert(
-            session_id.to_owned(),
-            Restored {
-                cells,
-                fallback,
-                outcomes,
-            },
-        );
+        let restored = Arc::new(Restored {
+            cells,
+            fallback,
+            outcomes,
+        });
+        self.0.restored.update(|map| {
+            map.insert(session_id.to_owned(), Arc::clone(&restored));
+        });
     }
 
     #[must_use]
     pub fn has_restored(&self, session_id: &str) -> bool {
-        locked(&self.0.restored).contains_key(session_id)
+        self.0.restored.read(|map| map.contains_key(session_id))
     }
 
     pub(super) fn take_restored(&self, session_id: &str) -> Option<Restored> {
-        locked(&self.0.restored).remove(session_id)
+        self.0
+            .restored
+            .try_update(|map| map.remove(session_id))
+            .map(Arc::unwrap_or_clone)
     }
 }
 
@@ -353,21 +363,105 @@ pub(super) struct CellRecord {
     pub(super) yield_time_ms: u64,
     pub(super) max_output_tokens: Option<usize>,
     pub(super) journal: SharedJournal,
-    pub(super) status: Mutex<CellStatus>,
+    pub(super) status: Atom<CellStatus>,
     pub(super) hold: watch::Sender<bool>,
     pub(super) persistence: Option<Persistence>,
 }
 
-#[derive(Default)]
+#[derive(Clone)]
 pub(super) struct CellStatus {
     pub(super) observer_call_id: Option<String>,
-    pub(super) held: bool,
-    pub(super) replaying: bool,
-    pub(super) finished: bool,
+    pub(super) life: CellLife,
     pub(super) unsupported: bool,
-    pub(super) retired: bool,
     pub(super) content_returned: u64,
-    pub(super) calls: BTreeMap<u64, JournaledCall>,
+    pub(super) calls: BTreeMap<u64, Arc<JournaledCall>>,
+}
+
+impl CellStatus {
+    pub(super) const fn new(life: CellLife) -> Self {
+        Self {
+            observer_call_id: None,
+            life,
+            unsupported: false,
+            content_returned: 0,
+            calls: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CellLife {
+    Active { replay: Replay, hold: Hold },
+    Finished,
+    Retired,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Replay {
+    Replaying,
+    Live,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Hold {
+    Running,
+    Held,
+}
+
+impl CellLife {
+    pub(super) const fn started(replay: Replay) -> Self {
+        Self::Active {
+            replay,
+            hold: Hold::Running,
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn holding(self, hold: Hold) -> Self {
+        match self {
+            Self::Active { replay, .. } => Self::Active { replay, hold },
+            ended => ended,
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn replayed(self) -> Self {
+        match self {
+            Self::Active { hold, .. } => Self::Active {
+                replay: Replay::Live,
+                hold,
+            },
+            ended => ended,
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn finished(self) -> Self {
+        match self {
+            Self::Active { .. } => Self::Finished,
+            ended => ended,
+        }
+    }
+
+    pub(super) const fn replaying(self) -> bool {
+        matches!(
+            self,
+            Self::Active {
+                replay: Replay::Replaying,
+                ..
+            }
+        )
+    }
+
+    pub(super) const fn settled(self) -> bool {
+        matches!(
+            self,
+            Self::Active {
+                hold: Hold::Held,
+                ..
+            } | Self::Finished
+        )
+    }
 }
 
 pub(super) struct ReplayPlan {
@@ -418,12 +512,12 @@ pub(super) fn divergence_text(fallback: Option<&str>, cell_id: u64, reason: &str
 }
 
 impl CellRecord {
-    pub(super) fn status(&self) -> MutexGuard<'_, CellStatus> {
-        locked(&self.status)
+    pub(super) fn status<R>(&self, read: impl FnOnce(&CellStatus) -> R) -> R {
+        self.status.read(read)
     }
 
-    fn overflowed(&self) -> bool {
-        locked(&self.journal).overflowed()
+    pub(super) fn update<R>(&self, change: impl FnMut(&mut CellStatus) -> R) -> R {
+        self.status.update(change)
     }
 
     fn stored_json(&self) -> BTreeMap<String, Value> {
@@ -450,12 +544,10 @@ impl CellRecord {
                 next_seq,
             } => (persisted, next_seq),
         };
-        if self.status().replaying {
+        if self.status(|status| status.life.replaying()) {
             return;
         }
-        let entries = locked(&self.journal)
-            .entries()
-            .map(|entries| entries.get(from..).unwrap_or_default().to_vec());
+        let entries = self.journal.entries_from(from);
         let Some(entries) = entries else {
             *saving = Saving::Stopped;
             persistence
@@ -464,10 +556,8 @@ impl CellRecord {
                 .await;
             return;
         };
-        let (observer_call_id, content_returned) = {
-            let status = self.status();
-            (status.observer_call_id.clone(), status.content_returned)
-        };
+        let (observer_call_id, content_returned) =
+            self.status(|status| (status.observer_call_id.clone(), status.content_returned));
         let header = matches!(*saving, Saving::Unsaved).then(|| CellJournalHeader {
             version: CELL_JOURNAL_VERSION,
             origin_call_id: self.origin_call_id.clone(),
@@ -531,9 +621,9 @@ impl CellRecord {
     }
 
     fn snapshot(&self) -> Option<CellJournal> {
-        let entries = locked(&self.journal).entries()?.to_vec();
-        let status = self.status();
-        if status.unsupported || !(status.held || status.finished) {
+        let entries = self.journal.entries()?;
+        let status = self.status.get();
+        if status.unsupported || !status.life.settled() {
             return None;
         }
         Some(CellJournal {
@@ -558,7 +648,11 @@ impl CellRecord {
             max_output_tokens: self.max_output_tokens,
             content_returned: status.content_returned,
             entries,
-            calls: status.calls.values().cloned().collect(),
+            calls: status
+                .calls
+                .values()
+                .map(|call| JournaledCall::clone(call))
+                .collect(),
         })
     }
 }

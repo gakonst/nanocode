@@ -1,5 +1,6 @@
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
+use nanocode_sync::Atom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -86,64 +87,146 @@ impl JournalEntry {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct Journal {
+#[derive(Clone, Default)]
+pub struct SharedJournal(Arc<Atom<Published>>);
+
+#[derive(Default)]
+enum Published {
+    #[default]
+    Empty,
+    Pages(Arc<Page>),
+    Overflowed,
+}
+
+struct Page {
     entries: Vec<JournalEntry>,
-    bytes: usize,
-    overflowed: bool,
+    end: usize,
+    previous: Option<Arc<Self>>,
 }
 
-pub type SharedJournal = Arc<Mutex<Journal>>;
+impl Drop for Page {
+    fn drop(&mut self) {
+        let mut previous = self.previous.take();
+        while let Some(page) = previous {
+            previous = Arc::try_unwrap(page)
+                .ok()
+                .and_then(|mut page| page.previous.take());
+        }
+    }
+}
 
-impl Journal {
+impl SharedJournal {
     #[must_use]
-    pub fn shared() -> SharedJournal {
-        Arc::default()
+    pub fn new() -> Self {
+        Self::default()
     }
 
+    #[must_use]
+    pub fn overflowed(&self) -> bool {
+        self.0
+            .read(|published| matches!(published, Published::Overflowed))
+    }
+
+    #[must_use]
+    pub fn entries(&self) -> Option<Vec<JournalEntry>> {
+        self.entries_from(0)
+    }
+
+    #[must_use]
+    pub fn entries_from(&self, from: usize) -> Option<Vec<JournalEntry>> {
+        let head = match &*self.0.get() {
+            Published::Empty => return Some(Vec::new()),
+            Published::Overflowed => return None,
+            Published::Pages(head) => Arc::clone(head),
+        };
+        let mut pages = Vec::new();
+        let mut page = Some(&head);
+        while let Some(current) = page.filter(|current| current.end > from) {
+            pages.push(current);
+            page = current.previous.as_ref();
+        }
+        let mut entries = Vec::with_capacity(head.end.saturating_sub(from));
+        for page in pages.into_iter().rev() {
+            let start = page.end - page.entries.len();
+            entries.extend_from_slice(&page.entries[from.saturating_sub(start)..]);
+        }
+        Some(entries)
+    }
+
+    pub(crate) fn writer(&self) -> JournalWriter {
+        JournalWriter {
+            shared: self.clone(),
+            state: Writing::Recording {
+                pending: Vec::new(),
+                head: None,
+                len: 0,
+                bytes: 0,
+            },
+        }
+    }
+}
+
+pub(crate) struct JournalWriter {
+    shared: SharedJournal,
+    state: Writing,
+}
+
+enum Writing {
+    Recording {
+        pending: Vec<JournalEntry>,
+        head: Option<Arc<Page>>,
+        len: usize,
+        bytes: usize,
+    },
+    Overflowed {
+        published: bool,
+    },
+}
+
+impl JournalWriter {
     pub(crate) fn record(&mut self, entry: JournalEntry, weight: usize) {
-        if self.overflowed {
+        let Writing::Recording {
+            pending,
+            len,
+            bytes,
+            ..
+        } = &mut self.state
+        else {
+            return;
+        };
+        *bytes = bytes.saturating_add(weight.saturating_add(ENTRY_BYTES));
+        if *bytes > JOURNAL_LIMIT_BYTES {
+            self.state = Writing::Overflowed { published: false };
             return;
         }
-        self.bytes = self
-            .bytes
-            .saturating_add(weight.saturating_add(ENTRY_BYTES));
-        if self.bytes > JOURNAL_LIMIT_BYTES {
-            self.overflowed = true;
-            self.entries = Vec::new();
-            return;
+        pending.push(entry);
+        *len += 1;
+    }
+
+    pub(crate) fn publish(&mut self) {
+        match &mut self.state {
+            Writing::Recording {
+                pending, head, len, ..
+            } => {
+                if pending.is_empty() {
+                    return;
+                }
+                let page = Arc::new(Page {
+                    entries: std::mem::take(pending),
+                    end: *len,
+                    previous: head.take(),
+                });
+                *head = Some(Arc::clone(&page));
+                self.shared.0.set(Published::Pages(page));
+            }
+            Writing::Overflowed { published } => {
+                if !*published {
+                    *published = true;
+                    self.shared.0.set(Published::Overflowed);
+                }
+            }
         }
-        self.entries.push(entry);
     }
-
-    #[must_use]
-    pub const fn overflowed(&self) -> bool {
-        self.overflowed
-    }
-
-    #[must_use]
-    pub fn entries(&self) -> Option<&[JournalEntry]> {
-        (!self.overflowed).then_some(self.entries.as_slice())
-    }
-
-    #[must_use]
-    pub const fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    #[must_use]
-    pub const fn bytes(&self) -> usize {
-        self.bytes
-    }
-}
-
-pub(crate) fn lock(journal: &SharedJournal) -> std::sync::MutexGuard<'_, Journal> {
-    journal.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub struct CellJournaling {

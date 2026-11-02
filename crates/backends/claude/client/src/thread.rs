@@ -289,20 +289,14 @@ impl MessageThread {
             self.state = State::default();
             return Ok(());
         }
-        // Encodes as the `Message` the caller appends to its conversation.
-        #[derive(Serialize)]
-        struct Reply<'a> {
-            role: Role,
-            content: &'a [ContentBlock],
-        }
+        // The reply as the caller appends it to its conversation, hashed as `plan` hashes the
+        // conversation, so the two cannot encode it differently.
+        let reply = Message {
+            role: Role::Assistant,
+            content: response.content.clone(),
+        };
         let mut digest = turn.digest.clone();
-        absorb_encoded(
-            &mut digest,
-            &serde_json::to_string(&Reply {
-                role: Role::Assistant,
-                content: &response.content,
-            })?,
-        );
+        absorb(&mut digest, &reply)?;
         self.state = State::Stored(Anchor {
             response_id: response.id.clone(),
             messages: turn.sent + 1,

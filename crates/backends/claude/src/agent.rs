@@ -1,7 +1,7 @@
 use crate::{
     ClaudeClient, ClaudeError, ClaudeToolSpec, ContentBlock, ContentDelta, Message,
     MessageAccumulator, MessagesRequest, Role, ServerToolDefinition, StopReason, StreamEvent,
-    ToolDefinition, ToolResultContent, Usage, collect_stream,
+    ThreadRecovery, ToolDefinition, ToolResultContent, Usage, collect_stream,
 };
 use futures_util::{FutureExt as _, StreamExt};
 use nanocode_agent_core::{
@@ -634,6 +634,7 @@ pub struct ClaudeBuilder {
     fast_mode: bool,
     message_diagnostics: bool,
     tool_input_deltas: bool,
+    message_threads: bool,
     context_window_tokens: u64,
     auto_compact_window_tokens: Option<u64>,
     images: ImageHistory,
@@ -702,6 +703,7 @@ impl ClaudeBuilder {
             fast_mode: false,
             message_diagnostics: false,
             tool_input_deltas: false,
+            message_threads: false,
             context_window_tokens,
             auto_compact_window_tokens: None,
             images: ImageHistory::default(),
@@ -977,6 +979,18 @@ impl ClaudeBuilder {
 
     pub const fn message_diagnostics(mut self) -> Self {
         self.message_diagnostics = true;
+        self
+    }
+
+    /// Sends the conversation's model requests in a message thread (beta), so that each request
+    /// after the first sends only the messages after the previous response.
+    ///
+    /// The API holds the conversation in memory for up to an hour after its last use, so
+    /// threads are not eligible for zero data retention. A thread that expired or that the API
+    /// lost is sent again whole, and a conversation the API cannot hold goes without one.
+    /// Threads apply to the Messages API wire; subscription requests never use them.
+    pub const fn message_threads(mut self, enabled: bool) -> Self {
+        self.message_threads = enabled;
         self
     }
 
@@ -1672,6 +1686,7 @@ impl ClaudeBuilder {
             fast_mode: AtomicBool::new(self.fast_mode),
             message_diagnostics: self.message_diagnostics,
             tool_input_deltas: self.tool_input_deltas,
+            message_thread: self.message_threads.then(Atom::default),
             context_window_tokens: self.context_window_tokens,
             auto_compact_window_tokens: self.auto_compact_window_tokens,
             auto_compact_token_limit: Atom::default(),
@@ -3241,6 +3256,8 @@ struct State {
     fast_mode: AtomicBool,
     message_diagnostics: bool,
     tool_input_deltas: bool,
+    /// The conversation's message thread, when the builder enabled threads.
+    message_thread: Option<Atom<crate::MessageThread>>,
     context_window_tokens: u64,
     auto_compact_window_tokens: Option<u64>,
     /// A host's override of the compaction threshold, which the next turn's cursor takes.
@@ -4116,6 +4133,8 @@ struct ResponseContext<'a> {
     wire_profile: Option<&'a crate::FrozenWireProfile>,
     effect: Option<Effect<'a>>,
     journal: Option<&'a mut Journal>,
+    /// The request is a step of the conversation, which may use its message thread.
+    threaded: bool,
 }
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
 const DEVELOPER_NOTICE_CLOSE: &str = "\n</system-reminder>";
@@ -4846,11 +4865,17 @@ impl State {
             }
         }
 
-        if let Some(inlined) = images::inline_images(&self.images, &sent).await? {
+        let inlined = images::inline_images(&self.images, &sent).await?;
+        if let Some(inlined) = &inlined {
             wire = client
-                .prepare_wire(&request, &inlined, true)
+                .prepare_wire(&request, inlined, true)
                 .map_err(provider_error)?;
         }
+        let outgoing = inlined.as_deref().unwrap_or(&sent);
+        let thread = self
+            .message_thread
+            .as_ref()
+            .filter(|_| context.threaded && !client.uses_subscription());
         let max_attempts = if context.disable_tools { 3 } else { 5 };
         let mut attempt = 0;
         let mut dispatched: Option<u64> = None;
@@ -4877,6 +4902,18 @@ impl State {
 
             let mut message_id: Option<String> = None;
 
+            let turn = match thread {
+                Some(thread) => {
+                    let turn = thread
+                        .read(|thread| thread.plan(&request, outgoing, Instant::now()))
+                        .map_err(provider_error)?;
+                    client
+                        .attach_thread(&mut wire, &request, outgoing, &turn)
+                        .map_err(provider_error)?;
+                    Some(turn)
+                }
+                None => None,
+            };
             dispatched.get_or_insert_with(&elapsed_ns);
 
             let opened = tokio::select! {
@@ -5075,6 +5112,12 @@ impl State {
             let error = match result {
                 Ok(mut response) => {
                     telemetry::complete_attempt(&attempt_span);
+                    if let (Some(thread), Some(turn)) = (thread, &turn) {
+                        let completed_at = Instant::now();
+                        thread
+                            .modify(|thread| thread.complete(turn, &response, completed_at))
+                            .map_err(provider_error)?;
+                    }
                     if let Some(effect) = active_effect {
                         let completion =
                             effect.model_completion(&mut response, self.pages_messages())?;
@@ -5110,6 +5153,21 @@ impl State {
                 }
                 Err(error) => error,
             };
+            if let (Some(thread), Some(turn)) = (thread, &turn)
+                && thread.update(|thread| thread.recover(turn, &error)) == ThreadRecovery::Resend
+            {
+                telemetry::fail_attempt(&attempt_span, &error, Some(0), false);
+                tracing::debug!(
+                    target: "nanocode_claude",
+                    session_id = %self.session_id,
+                    model_call_index = index.saturating_add(1),
+                    %error,
+                    "Claude could not use the conversation's message thread; sending the request again"
+                );
+                // The API refused the thread before the model ran, so this was no attempt.
+                attempt -= 1;
+                continue;
+            }
 
             let uncertain = accepted
                 || matches!(&error, ClaudeError::Transport(error) if !error.is_unsent())
@@ -5517,6 +5575,7 @@ impl State {
                                 effect
                             },
                             journal: None,
+                            threaded: false,
                         },
                     )
                     .await;
@@ -6430,6 +6489,7 @@ impl State {
                                 effect
                             },
                             journal: Some(&mut *journal),
+                            threaded: true,
                         },
                     )
                     .await;

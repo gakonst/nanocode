@@ -210,6 +210,7 @@ impl State {
                     wire_profile: wire_profile.as_ref(),
                     effect: None,
                     journal: None,
+                    threaded: false,
                 },
             )
             .await

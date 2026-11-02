@@ -23,9 +23,14 @@ pub mod transport;
 pub use subscription_wire::SubscriptionIdentity;
 use transport::{HttpClient, HttpError, HttpResponse, layer::retry};
 pub mod subscription;
+pub mod thread;
 pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
+pub use thread::{
+    CreateReason, MESSAGE_THREADS_BETA, MessageThread, THREAD_IDLE_EXPIRY, ThreadErrorCode,
+    ThreadMode, ThreadParam, ThreadRecovery, ThreadTurn,
+};
 
 pub const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 
@@ -1396,7 +1401,7 @@ impl ClaudeClient {
                 self.subscription_cache_tail,
             )
         } else {
-            api_body(head, messages, streaming)
+            api_body(head, messages, streaming, None)
         }
     }
 
@@ -1421,6 +1426,7 @@ impl ClaudeClient {
         }
         Ok(PreparedWire {
             body: self.wire_body(head, messages, streaming)?,
+            thread: None,
             subscription: self.subscription_compatibility,
             streaming,
             agent: !head.tools.is_empty() || head.thinking.is_some(),
@@ -1447,6 +1453,7 @@ impl ClaudeClient {
     ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         PreparedWire {
             body: self.wire_body(request, &request.messages, true)?,
+            thread: None,
             subscription: self.subscription_compatibility,
             streaming: true,
             agent: false,
@@ -1458,6 +1465,40 @@ impl ClaudeClient {
         }
         .legacy_durable_input()
     }
+
+    /// Makes `wire`, prepared from `head` and `messages`, send `turn`: with the `thread` field
+    /// and, on a continue, only the messages after the previous response and no `system` or
+    /// `tools`, which the thread keeps. A turn without a thread sends `wire` as prepared.
+    ///
+    /// `wire` keeps its full body for [`PreparedWire::durable_input`], so a request's durable
+    /// identity does not depend on whether the API still held its thread.
+    ///
+    /// Threads use the Messages API wire; the subscription wire cannot carry them.
+    pub fn attach_thread<M: WireMessage>(
+        &self,
+        wire: &mut PreparedWire,
+        head: &MessagesRequest,
+        messages: &[M],
+        turn: &ThreadTurn,
+    ) -> Result<(), ClaudeError> {
+        let Some(param) = turn.param() else {
+            wire.thread = None;
+            return Ok(());
+        };
+        if self.subscription_compatibility {
+            return Err(ClaudeError::Protocol(
+                "message threads need the Messages API wire, not the subscription wire".into(),
+            ));
+        }
+        wire.thread = Some(api_body(
+            head,
+            turn.new_messages(messages),
+            wire.streaming,
+            Some(param),
+        )?);
+        Ok(())
+    }
+
     const fn decode_block(&self, block: &mut ContentBlock) {
         if self.subscription_compatibility
             && let ContentBlock::ToolUse { name, .. } = block
@@ -1560,6 +1601,9 @@ impl ClaudeClient {
             if wire.speed && !betas.contains(&FAST_MODE_BETA) {
                 betas.push(FAST_MODE_BETA);
             }
+            if wire.thread.is_some() && !betas.contains(&MESSAGE_THREADS_BETA) {
+                betas.push(MESSAGE_THREADS_BETA);
+            }
             if !betas.is_empty() {
                 let value =
                     http::header::HeaderValue::from_str(&betas.join(",")).map_err(|_| {
@@ -1622,7 +1666,8 @@ impl ClaudeClient {
                     }
                 }
             }
-            let gzip = self.gzip_request_body(wire.body.len());
+            let body = wire.sent_body();
+            let gzip = self.gzip_request_body(body.len());
             let layer = self.http_layer.as_deref();
             let response = match &self.http {
                 HttpConnection::Client(client) => {
@@ -1630,7 +1675,7 @@ impl ClaudeClient {
                         client,
                         &self.endpoint,
                         headers,
-                        wire.body.clone(),
+                        body.to_owned(),
                         gzip,
                         layer,
                     )
@@ -1641,7 +1686,7 @@ impl ClaudeClient {
                         transport.as_ref(),
                         &self.endpoint,
                         headers,
-                        wire.body.clone(),
+                        body.to_owned(),
                         layer,
                     )
                     .await?
@@ -1828,7 +1873,10 @@ impl ClaudeClient {
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct PreparedWire {
+    /// The whole request, which durable inputs record.
     body: String,
+    /// The request as a thread turn sends it, when it uses a thread.
+    thread: Option<String>,
     subscription: bool,
     streaming: bool,
     agent: bool,
@@ -1842,6 +1890,11 @@ pub struct PreparedWire {
 impl PreparedWire {
     pub fn body(&self) -> &str {
         &self.body
+    }
+
+    /// The body this request posts: the thread turn's when it has one, else [`Self::body`].
+    pub fn sent_body(&self) -> &str {
+        self.thread.as_deref().unwrap_or(&self.body)
     }
 
     pub fn durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
@@ -1909,7 +1962,10 @@ fn api_body<M: WireMessage>(
     head: &MessagesRequest,
     messages: &[M],
     streaming: bool,
+    thread: Option<&ThreadParam>,
 ) -> Result<String, ClaudeError> {
+    // A continue request must leave out `system` and `tools`: the thread keeps them.
+    let continuing = matches!(thread, Some(ThreadParam::Continue { .. }));
     let MessagesRequest {
         model,
         max_tokens,
@@ -1952,6 +2008,8 @@ fn api_body<M: WireMessage>(
         container: Option<&'a str>,
         #[serde(skip_serializing_if = "<[_]>::is_empty")]
         tools: &'a [ClaudeToolSpec],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread: Option<&'a ThreadParam>,
         stream: bool,
     }
     let encode = |message: &Message| serde_json::to_string(message).map_err(ClaudeError::from);
@@ -1969,11 +2027,12 @@ fn api_body<M: WireMessage>(
         thinking: thinking.as_ref(),
         context_management: context_management.as_ref(),
         diagnostics: diagnostics.as_ref(),
-        system: system.as_ref(),
+        system: system.as_ref().filter(|_| !continuing),
     })?;
     let tail = serde_json::to_string(&Tail {
         container: container.as_deref(),
-        tools,
+        tools: if continuing { &[] } else { tools },
+        thread,
         stream: streaming,
     })?;
     let mut body = String::with_capacity(

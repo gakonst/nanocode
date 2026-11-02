@@ -7,6 +7,10 @@ pub struct SpawnPolicy {
     pub models: Option<Vec<ModelSelection>>,
     pub min_thinking: Option<Thinking>,
     pub max_thinking: Option<Thinking>,
+    /// Refuses a child whose thinking ranks above its spawning agent's own,
+    /// whether that agent is the root or a registered subagent, so a
+    /// lower-effort agent cannot escalate into higher-effort descendants.
+    pub bounded_by_parent_thinking: bool,
     pub max_reasoning_mode: Option<ReasoningMode>,
 }
 
@@ -16,6 +20,7 @@ impl Default for SpawnPolicy {
             models: None,
             min_thinking: Some(Thinking::Low),
             max_thinking: None,
+            bounded_by_parent_thinking: false,
             max_reasoning_mode: None,
         }
     }
@@ -33,6 +38,10 @@ pub enum SpawnPolicyError {
     ThinkingExceedsMaximum {
         requested: Thinking,
         maximum: Thinking,
+    },
+    ThinkingExceedsParent {
+        requested: Thinking,
+        parent: Thinking,
     },
     ParentThinkingUnknown,
     ReasoningModeExceedsMaximum {
@@ -64,6 +73,10 @@ impl fmt::Display for SpawnPolicyError {
             Self::ThinkingExceedsMaximum { requested, maximum } => write!(
                 formatter,
                 "{requested} thinking exceeds the subagent maximum of {maximum}"
+            ),
+            Self::ThinkingExceedsParent { requested, parent } => write!(
+                formatter,
+                "{requested} thinking exceeds the spawning agent's own {parent} thinking"
             ),
             Self::ParentThinkingUnknown => formatter.write_str(
                 "the spawning agent's thinking is not recorded, so its children cannot inherit it",
@@ -104,6 +117,7 @@ impl SpawnPolicy {
         self.models.is_none()
             && self.min_thinking.is_none()
             && self.max_thinking.is_none()
+            && !self.bounded_by_parent_thinking
             && self.max_reasoning_mode.is_none()
     }
 
@@ -157,6 +171,7 @@ impl SpawnPolicy {
 
     pub(crate) fn admit(
         &self,
+        parent: &SpawnParent,
         model: Option<&ModelSelection>,
         thinking: Option<Thinking>,
     ) -> Result<(), SpawnPolicyError> {
@@ -165,6 +180,24 @@ impl SpawnPolicy {
         }
         if let Some(thinking) = thinking {
             self.admit_thinking(thinking)?;
+            self.admit_parent_thinking(parent, thinking)?;
+        }
+        Ok(())
+    }
+
+    fn admit_parent_thinking(
+        &self,
+        parent: &SpawnParent,
+        requested: Thinking,
+    ) -> Result<(), SpawnPolicyError> {
+        if !self.bounded_by_parent_thinking {
+            return Ok(());
+        }
+        let parent = parent
+            .thinking
+            .ok_or(SpawnPolicyError::ParentThinkingUnknown)?;
+        if rank(requested) > rank(parent) {
+            return Err(SpawnPolicyError::ThinkingExceedsParent { requested, parent });
         }
         Ok(())
     }

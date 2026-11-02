@@ -1,7 +1,8 @@
 use crate::{
-    ClaudeClient, ClaudeError, ClaudeToolSpec, ContentBlock, ContentDelta, Message,
+    ClaudeClient, ClaudeError, ClaudeToolSpec, ContentBlock, ContentDelta, CreateReason, Message,
     MessageAccumulator, MessagesRequest, Role, ServerToolDefinition, StopReason, StreamEvent,
-    ThreadRecovery, ToolDefinition, ToolResultContent, Usage, collect_stream,
+    ThreadMode, ThreadRecovery, ThreadTurn, ToolDefinition, ToolResultContent, Usage,
+    collect_stream,
 };
 use futures_util::{FutureExt as _, StreamExt};
 use nanocode_agent_core::{
@@ -4687,7 +4688,8 @@ impl State {
                          first_event: u64,
                          first_output: Option<u64>,
                          dispatch: Option<u64>,
-                         mut timing: telemetry::CallTiming| {
+                         mut timing: telemetry::CallTiming,
+                         thread: Option<ThreadMode>| {
             let Some(events) = events else { return };
             let duration_ns = elapsed_ns();
             timing.total_ns = duration_ns;
@@ -4707,7 +4709,7 @@ impl State {
                 .input_tokens
                 .saturating_add(response.usage.cache_read_input_tokens)
                 .saturating_add(response.usage.cache_creation_input_tokens);
-            self.emit(events, AgentEventKind::ModelCallCompleted, json!({
+            let mut payload = json!({
                 "call_index": index.saturating_add(1),
                 "model": response.model,
                 "response_id": response.id,
@@ -4729,7 +4731,14 @@ impl State {
                     "total_tokens": input_tokens.saturating_add(response.usage.output_tokens),
                 },
                 "timing": timing,
-            }));
+            });
+            if let Some(mode) = thread {
+                payload["message_thread"] = json!({
+                    "mode": mode.as_str(),
+                    "create_reason": mode.create_reason().map(CreateReason::as_str),
+                });
+            }
+            self.emit(events, AgentEventKind::ModelCallCompleted, payload);
         };
         let client = self.client.restore_wire_profile(context.wire_profile);
         let mut recovery = (!context.disable_tools
@@ -4803,6 +4812,7 @@ impl State {
                         replayed: true,
                         ..telemetry::CallTiming::default()
                     },
+                    None,
                 );
                 return Ok(ResponseOutcome {
                     message: response,
@@ -4856,6 +4866,7 @@ impl State {
                         replayed: true,
                         ..telemetry::CallTiming::default()
                     },
+                    None,
                 );
                 return Ok(ResponseOutcome {
                     message: response,
@@ -4910,6 +4921,15 @@ impl State {
                     client
                         .attach_thread(&mut wire, &request, outgoing, &turn)
                         .map_err(provider_error)?;
+                    if let ThreadMode::Create(reason) = turn.mode() {
+                        tracing::debug!(
+                            target: "nanocode_claude",
+                            session_id = %self.session_id,
+                            model_call_index = index.saturating_add(1),
+                            reason = reason.as_str(),
+                            "Claude sends the whole conversation to create a message thread"
+                        );
+                    }
                     Some(turn)
                 }
                 None => None,
@@ -5144,6 +5164,7 @@ impl State {
                             total_ns: 0,
                             pipeline: Some(pipeline),
                         },
+                        turn.as_ref().map(ThreadTurn::mode),
                     );
                     return Ok(ResponseOutcome {
                         message: response,

@@ -28,8 +28,8 @@ pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
 pub use thread::{
-    MESSAGE_THREADS_BETA, MessageThread, THREAD_IDLE_EXPIRY, ThreadErrorCode, ThreadParam,
-    ThreadRecovery, ThreadTurn,
+    CreateReason, MESSAGE_THREADS_BETA, MessageThread, THREAD_IDLE_EXPIRY, ThreadErrorCode,
+    ThreadMode, ThreadParam, ThreadRecovery, ThreadTurn,
 };
 
 pub const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";

@@ -116,6 +116,7 @@ impl ClaudeError {
 #[derive(Clone, Debug)]
 pub struct ThreadTurn {
     param: Option<ThreadParam>,
+    mode: ThreadMode,
     /// The messages the thread already holds, which a continue leaves out.
     held: usize,
     /// The number of messages in the conversation the turn was planned for.
@@ -123,7 +124,7 @@ pub struct ThreadTurn {
     /// Every message of that conversation, hashed in order.
     digest: blake3::Hasher,
     fixed: blake3::Hash,
-    /// This create sends again a conversation whose thread the API lost.
+    /// The thread this turn uses was created to replace one the API lost.
     recreated: bool,
 }
 
@@ -132,6 +133,12 @@ impl ThreadTurn {
     #[must_use]
     pub const fn param(&self) -> Option<&ThreadParam> {
         self.param.as_ref()
+    }
+
+    /// Whether this turn continues, creates or goes without a thread, and why it creates one.
+    #[must_use]
+    pub const fn mode(&self) -> ThreadMode {
+        self.mode
     }
 
     /// The messages this turn sends: on a continue, those after the previous response.
@@ -150,6 +157,80 @@ impl ThreadTurn {
             "a thread turn sends the conversation it was planned for"
         );
         &messages[self.held..]
+    }
+}
+
+/// How a turn uses the conversation's thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadMode {
+    /// Continues the stored thread, sending only the new messages.
+    Continue,
+    /// Sends the whole conversation in a request that creates a thread.
+    Create(CreateReason),
+    /// Sends the whole conversation without a thread, which the API refused for it.
+    Unthreaded,
+}
+
+impl ThreadMode {
+    /// The mode's name: `continue`, `create` or `unthreaded`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Create(_) => "create",
+            Self::Unthreaded => "unthreaded",
+        }
+    }
+
+    /// Why the turn creates a thread, when it does.
+    #[must_use]
+    pub const fn create_reason(self) -> Option<CreateReason> {
+        match self {
+            Self::Create(reason) => Some(reason),
+            Self::Continue | Self::Unthreaded => None,
+        }
+    }
+}
+
+/// Why a turn creates a thread instead of continuing one.
+///
+/// [`CreateReason::HistoryDiverged`] is expected after the caller compacts or edits its history.
+/// Seen on turns that only appended messages, it means the conversation no longer encodes the
+/// way the thread recorded it, and every turn pays for the whole conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateReason {
+    /// The conversation has not had a thread yet.
+    First,
+    /// The API does not keep the previous response: a refusal, or a tool call cut off by
+    /// `max_tokens`.
+    NotStored,
+    /// The API lost the thread (`thread_not_found`).
+    Lost,
+    /// The API would not continue the previous response again (`thread_already_continued` or
+    /// `thread_continue_in_flight`).
+    Consumed,
+    /// The thread was idle for [`THREAD_IDLE_EXPIRY`].
+    Expired,
+    /// A create-only or fixed field changed, or the API reported one that did
+    /// (`thread_fingerprint_mismatch`).
+    FieldsChanged,
+    /// The conversation no longer begins with the messages the thread holds.
+    HistoryDiverged,
+}
+
+impl CreateReason {
+    /// The reason's name in snake case, such as `history_diverged`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::First => "first",
+            Self::NotStored => "not_stored",
+            Self::Lost => "lost",
+            Self::Consumed => "consumed",
+            Self::Expired => "expired",
+            Self::FieldsChanged => "fields_changed",
+            Self::HistoryDiverged => "history_diverged",
+        }
     }
 }
 
@@ -176,11 +257,9 @@ pub struct MessageThread {
 
 #[derive(Clone, Debug)]
 enum State {
-    /// Nothing to continue: the next request creates a thread. `recreating` when the API
-    /// lost the previous thread, so that losing the new one too ends threading.
-    Fresh {
-        recreating: bool,
-    },
+    /// Nothing to continue: the next request creates a thread, for this reason. After
+    /// [`CreateReason::Lost`], losing the new thread too ends threading.
+    Fresh(CreateReason),
     Stored(Anchor),
     /// The API cannot hold this conversation: send it whole.
     Unthreaded,
@@ -188,7 +267,7 @@ enum State {
 
 impl Default for State {
     fn default() -> Self {
-        Self::Fresh { recreating: false }
+        Self::Fresh(CreateReason::First)
     }
 }
 
@@ -217,9 +296,9 @@ impl MessageThread {
 
     /// Plans the request `head` with the full conversation `messages` at `now`.
     ///
-    /// It continues the stored thread only when `messages` begins with exactly the messages the
-    /// thread holds, `head` keeps the thread's create-only and fixed fields, and the thread has
-    /// not expired. Otherwise it creates a new thread.
+    /// It continues the stored thread only when `head` keeps the thread's create-only and fixed
+    /// fields, the thread has not expired, and `messages` begins with exactly the messages the
+    /// thread holds. Otherwise it creates a new thread, and [`ThreadTurn::mode`] says why.
     pub fn plan<M: WireMessage>(
         &self,
         head: &MessagesRequest,
@@ -227,48 +306,60 @@ impl MessageThread {
         now: Instant,
     ) -> Result<ThreadTurn, ClaudeError> {
         let fixed = fingerprint(head)?;
-        let mut digest = blake3::Hasher::new();
-        let mut hashed = 0;
-        let (param, held, recreated) = match &self.state {
-            State::Unthreaded => (None, 0, false),
-            State::Fresh { recreating } => (Some(ThreadParam::Create), 0, *recreating),
+        let mut turn = ThreadTurn {
+            param: None,
+            mode: ThreadMode::Unthreaded,
+            held: 0,
+            sent: messages.len(),
+            digest: blake3::Hasher::new(),
+            fixed,
+            recreated: false,
+        };
+        // The anchor to continue from, or why the turn creates a thread.
+        let continued = match &self.state {
+            State::Unthreaded => return Ok(turn),
+            State::Fresh(reason) => Err(*reason),
+            State::Stored(anchor) if anchor.fixed != fixed => Err(CreateReason::FieldsChanged),
             State::Stored(anchor)
-                if anchor.fixed == fixed
-                    && anchor.messages <= messages.len()
-                    && now.saturating_duration_since(anchor.stored_at) < THREAD_IDLE_EXPIRY =>
+                if now.saturating_duration_since(anchor.stored_at) >= THREAD_IDLE_EXPIRY =>
             {
+                Err(CreateReason::Expired)
+            }
+            State::Stored(anchor) if anchor.messages > messages.len() => {
+                Err(CreateReason::HistoryDiverged)
+            }
+            State::Stored(anchor) => {
                 for message in &messages[..anchor.messages] {
-                    absorb(&mut digest, message)?;
+                    absorb(&mut turn.digest, message)?;
                 }
-                hashed = anchor.messages;
-                if digest.finalize() == anchor.digest {
-                    let previous_message_id = anchor.response_id.clone();
-                    (
-                        Some(ThreadParam::Continue {
-                            previous_message_id,
-                        }),
-                        anchor.messages,
-                        anchor.recreated,
-                    )
+                turn.held = anchor.messages;
+                if turn.digest.finalize() == anchor.digest {
+                    Ok(anchor)
                 } else {
-                    (Some(ThreadParam::Create), 0, false)
+                    Err(CreateReason::HistoryDiverged)
                 }
             }
-            State::Stored(_) => (Some(ThreadParam::Create), 0, false),
         };
-        if param.is_some() {
-            for message in &messages[hashed..] {
-                absorb(&mut digest, message)?;
+        // The prefix check hashed the held messages already; hash the rest.
+        for message in &messages[turn.held..] {
+            absorb(&mut turn.digest, message)?;
+        }
+        match continued {
+            Ok(anchor) => {
+                turn.param = Some(ThreadParam::Continue {
+                    previous_message_id: anchor.response_id.clone(),
+                });
+                turn.mode = ThreadMode::Continue;
+                turn.recreated = anchor.recreated;
+            }
+            Err(reason) => {
+                turn.param = Some(ThreadParam::Create);
+                turn.mode = ThreadMode::Create(reason);
+                turn.held = 0;
+                turn.recreated = reason == CreateReason::Lost;
             }
         }
-        Ok(ThreadTurn {
-            param,
-            held,
-            sent: messages.len(),
-            digest,
-            fixed,
-            recreated,
-        })
+        Ok(turn)
     }
 
     /// Records the response to `turn`, which completed at `completed_at`.
@@ -286,7 +377,7 @@ impl MessageThread {
             return Ok(());
         }
         if !stored(response) {
-            self.state = State::default();
+            self.state = State::Fresh(CreateReason::NotStored);
             return Ok(());
         }
         // The reply as the caller appends it to its conversation, hashed as `plan` hashes the
@@ -303,7 +394,8 @@ impl MessageThread {
             digest: digest.finalize(),
             fixed: turn.fixed,
             stored_at: completed_at,
-            recreated: matches!(turn.param, Some(ThreadParam::Create)) && turn.recreated,
+            // A continue that succeeded shows the API can hold the conversation.
+            recreated: turn.mode == ThreadMode::Create(CreateReason::Lost),
         });
         Ok(())
     }
@@ -317,20 +409,23 @@ impl MessageThread {
     /// same response; should the failed attempt have consumed it, the retry fails with a thread
     /// error and is sent again as a create.
     pub fn recover(&mut self, turn: &ThreadTurn, error: &ClaudeError) -> ThreadRecovery {
-        let Some(param) = &turn.param else {
+        if turn.param.is_none() {
             return ThreadRecovery::Unrelated;
-        };
-        let continuing = matches!(param, ThreadParam::Continue { .. });
+        }
+        let continuing = turn.mode == ThreadMode::Continue;
         self.state = match error.thread_error() {
             Some(ThreadErrorCode::UnsupportedRequest) => State::Unthreaded,
             // Losing a thread right after sending it again means the API cannot store it.
             Some(ThreadErrorCode::NotFound) if continuing && turn.recreated => State::Unthreaded,
-            Some(ThreadErrorCode::NotFound) if continuing => State::Fresh { recreating: true },
-            Some(
-                ThreadErrorCode::AlreadyContinued
-                | ThreadErrorCode::ContinueInFlight
-                | ThreadErrorCode::FingerprintMismatch,
-            ) if continuing => State::default(),
+            Some(ThreadErrorCode::NotFound) if continuing => State::Fresh(CreateReason::Lost),
+            Some(ThreadErrorCode::AlreadyContinued | ThreadErrorCode::ContinueInFlight)
+                if continuing =>
+            {
+                State::Fresh(CreateReason::Consumed)
+            }
+            Some(ThreadErrorCode::FingerprintMismatch) if continuing => {
+                State::Fresh(CreateReason::FieldsChanged)
+            }
             _ => return ThreadRecovery::Unrelated,
         };
         ThreadRecovery::Resend

@@ -19,10 +19,8 @@ pub struct StreamingDecoder {
     output_pos: usize,
     literals_scratch: Vec<u8>,
     state: DecoderState,
-    current_frame: Option<Box<FrameDecodeState>>,
     spare_frame: Option<Box<FrameDecodeState>>,
     total_output_size: u64,
-    received_input: bool,
     finished_input: bool,
     input_dropped: usize,
     decoded_a_frame: bool,
@@ -44,7 +42,6 @@ impl StreamingDecoder {
         if self.finished_input {
             return Err(Error::InvalidParameter("cannot push after finish"));
         }
-        self.received_input |= !src.is_empty();
         self.input.extend_from_slice(src);
         self.process()
     }
@@ -71,7 +68,7 @@ impl StreamingDecoder {
         count
     }
     pub fn take_output(&mut self) -> Vec<u8> {
-        if self.output_pos == 0 && self.current_frame.is_none() {
+        if self.output_pos == 0 && !self.in_frame() {
             return mem::take(&mut self.output);
         }
         let out = self.output[self.output_pos..].to_vec();
@@ -103,7 +100,6 @@ impl StreamingDecoder {
     pub const fn is_finished(&self) -> bool {
         self.finished_input
             && matches!(self.state, DecoderState::FrameHeader)
-            && self.current_frame.is_none()
             && self.input_pos == self.input.len()
     }
     fn initialize(options: DecoderOptions) -> Self {
@@ -115,10 +111,8 @@ impl StreamingDecoder {
             output_pos: 0,
             literals_scratch: Vec::new(),
             state: DecoderState::FrameHeader,
-            current_frame: None,
             spare_frame: None,
             total_output_size: 0,
-            received_input: false,
             finished_input: false,
             input_dropped: 0,
             decoded_a_frame: false,
@@ -131,9 +125,18 @@ impl StreamingDecoder {
             let progress = match self.state {
                 DecoderState::FrameHeader => self.process_frame_header()?,
                 DecoderState::Skippable { .. } => self.process_skippable_frame(),
-                DecoderState::BlockHeader => self.process_block_header()?,
-                DecoderState::BlockPayload { .. } => self.process_block_payload()?,
-                DecoderState::FrameChecksum => self.process_frame_checksum()?,
+                DecoderState::Frame {
+                    stage: FrameStage::BlockHeader,
+                    ..
+                } => self.process_block_header()?,
+                DecoderState::Frame {
+                    stage: FrameStage::BlockPayload { .. },
+                    ..
+                } => self.process_block_payload()?,
+                DecoderState::Frame {
+                    stage: FrameStage::Checksum,
+                    ..
+                } => self.process_frame_checksum()?,
             };
             if !progress {
                 break;
@@ -167,7 +170,6 @@ impl StreamingDecoder {
             Ok(FrameHeader::Zstandard(header)) => {
                 self.input_pos += header.header_size;
                 self.start_frame(header)?;
-                self.state = DecoderState::BlockHeader;
                 Ok(true)
             }
             Err(Error::UnexpectedEof) => Ok(false),
@@ -194,37 +196,30 @@ impl StreamingDecoder {
         let header =
             BlockHeader::parse(&self.input[self.input_pos..self.input_pos + BlockHeader::SIZE])?;
         self.input_pos += BlockHeader::SIZE;
-        self.state = DecoderState::BlockPayload { header };
+        self.set_stage(FrameStage::BlockPayload { header });
         Ok(true)
     }
     fn process_block_payload(&mut self) -> Result<bool> {
-        let DecoderState::BlockPayload { header } = self.state else {
+        let DecoderState::Frame {
+            ref frame,
+            stage: FrameStage::BlockPayload { header },
+        } = self.state
+        else {
             unreachable!();
         };
+        let checksum = frame.header.checksum;
         let payload_size = header.payload_size();
         if self.input.len() - self.input_pos < payload_size {
-            self.state = DecoderState::BlockPayload { header };
             return Ok(false);
         }
         let payload = self.input_pos..self.input_pos + payload_size;
         self.input_pos += payload_size;
         self.decode_block(header, payload)?;
-        let checksum = self
-            .current_frame
-            .as_ref()
-            .expect("compressed block requires an active frame")
-            .header
-            .checksum;
-        self.state = if header.last_block {
-            if checksum {
-                DecoderState::FrameChecksum
-            } else {
-                self.finish_frame()?;
-                DecoderState::FrameHeader
-            }
-        } else {
-            DecoderState::BlockHeader
-        };
+        match (header.last_block, checksum) {
+            (false, _) => self.set_stage(FrameStage::BlockHeader),
+            (true, true) => self.set_stage(FrameStage::Checksum),
+            (true, false) => self.finish_frame()?,
+        }
         Ok(true)
     }
     fn process_frame_checksum(&mut self) -> Result<bool> {
@@ -238,7 +233,9 @@ impl StreamingDecoder {
             self.input[self.input_pos + 3],
         ]);
         self.input_pos += 4;
-        let frame = self.current_frame.as_ref().ok_or(Error::Generic)?;
+        let DecoderState::Frame { frame, .. } = &self.state else {
+            return Err(Error::Generic);
+        };
         if self.options.verify_checksum {
             let actual = frame
                 .checksum
@@ -250,7 +247,6 @@ impl StreamingDecoder {
             }
         }
         self.finish_frame()?;
-        self.state = DecoderState::FrameHeader;
         Ok(true)
     }
     fn start_frame(&mut self, header: ZstandardFrameHeader) -> Result<()> {
@@ -285,13 +281,17 @@ impl StreamingDecoder {
             frame_start: self.output.len(),
             header,
         };
-        self.current_frame = Some(match self.spare_frame.take() {
+        let frame = match self.spare_frame.take() {
             Some(mut recycled) => {
                 *recycled = frame;
                 recycled
             }
             None => Box::new(frame),
-        });
+        };
+        self.state = DecoderState::Frame {
+            frame,
+            stage: FrameStage::BlockHeader,
+        };
         Ok(())
     }
     fn decode_block(
@@ -304,7 +304,9 @@ impl StreamingDecoder {
         let limit = OutputLimit::after(released, self.options.max_output_size);
         let payload = &self.input[payload_range];
         let dictionary_content = None;
-        let frame = self.current_frame.as_mut().ok_or(Error::Generic)?;
+        let DecoderState::Frame { frame, .. } = &mut self.state else {
+            return Err(Error::Generic);
+        };
         let oversized = block_header.block_size > frame.header.block_size_max;
         match block_header.block_type {
             BlockType::Raw => {
@@ -348,7 +350,13 @@ impl StreamingDecoder {
         Ok(())
     }
     fn finish_frame(&mut self) -> Result<()> {
-        let frame = self.current_frame.take().ok_or(Error::Generic)?;
+        let frame = match mem::replace(&mut self.state, DecoderState::FrameHeader) {
+            DecoderState::Frame { frame, .. } => frame,
+            other => {
+                self.state = other;
+                return Err(Error::Generic);
+            }
+        };
         if let Some(expected_size) = frame.header.content_size
             && frame.frame_output_size != expected_size
         {
@@ -362,10 +370,10 @@ impl StreamingDecoder {
         Ok(())
     }
     const fn finish_status(&self) -> Result<()> {
-        if !self.received_input {
+        if self.input_dropped == 0 && self.input.is_empty() {
             return Err(Error::UnexpectedEof);
         }
-        if self.current_frame.is_some() || !matches!(self.state, DecoderState::FrameHeader) {
+        if !matches!(self.state, DecoderState::FrameHeader) {
             return Err(Error::UnexpectedEof);
         }
         if self.input_pos != self.input.len() {
@@ -406,7 +414,7 @@ impl StreamingDecoder {
             self.release_history(droppable);
             return;
         }
-        if self.current_frame.is_none() {
+        if !self.in_frame() {
             return;
         }
         if droppable * 2 >= self.output.len() {
@@ -417,7 +425,7 @@ impl StreamingDecoder {
     }
     fn compact_between_frames(&mut self) {
         debug_assert!(
-            self.current_frame.is_none(),
+            !self.in_frame(),
             "a frame is opening while another is still current"
         );
         if self.output_pos != 0 && self.output_pos * 2 >= self.output.len() {
@@ -425,14 +433,23 @@ impl StreamingDecoder {
             self.output_pos = 0;
         }
     }
+    const fn in_frame(&self) -> bool {
+        matches!(self.state, DecoderState::Frame { .. })
+    }
+    const fn set_stage(&mut self, next: FrameStage) {
+        if let DecoderState::Frame { stage, .. } = &mut self.state {
+            *stage = next;
+        }
+    }
     fn retain_for_matches(&self) -> usize {
-        self.current_frame
-            .as_ref()
-            .map_or(0, |frame| frame.window_size.saturating_add(1))
+        match &self.state {
+            DecoderState::Frame { frame, .. } => frame.window_size.saturating_add(1),
+            DecoderState::FrameHeader | DecoderState::Skippable { .. } => 0,
+        }
     }
     fn release_history(&mut self, dropped: usize) {
         let retained = self.output.len();
-        if let Some(frame) = self.current_frame.as_mut() {
+        if let DecoderState::Frame { frame, .. } = &mut self.state {
             frame.frame_start = frame.frame_start.saturating_sub(dropped);
             debug_assert!(
                 frame.frame_start <= retained,
@@ -450,22 +467,32 @@ impl StreamingDecoder {
     fn reset_state(&mut self) {
         self.input.clear();
         self.input_pos = 0;
-        self.state = DecoderState::FrameHeader;
-        self.spare_frame = self.current_frame.take().or(self.spare_frame.take());
+        if let DecoderState::Frame { frame, .. } =
+            mem::replace(&mut self.state, DecoderState::FrameHeader)
+        {
+            self.spare_frame = Some(frame);
+        }
         self.total_output_size = 0;
-        self.received_input = false;
         self.finished_input = false;
         self.input_dropped = 0;
         self.decoded_a_frame = false;
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecoderState {
     FrameHeader,
-    Skippable { remaining: usize },
+    Skippable {
+        remaining: usize,
+    },
+    Frame {
+        frame: Box<FrameDecodeState>,
+        stage: FrameStage,
+    },
+}
+#[derive(Clone, Copy)]
+enum FrameStage {
     BlockHeader,
     BlockPayload { header: BlockHeader },
-    FrameChecksum,
+    Checksum,
 }
 struct FrameDecodeState {
     header: ZstandardFrameHeader,

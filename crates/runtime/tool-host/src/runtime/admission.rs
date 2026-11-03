@@ -48,22 +48,42 @@ pub(super) struct AdmissionGate {
 
 pub(super) struct Admission<'gate> {
     gate: &'gate AdmissionGate,
-    token: u64,
-    origin: OriginKey,
-    epoch: Option<u64>,
-    fast: bool,
-    exclusive: bool,
+    grant: Grant,
+}
+
+enum Grant {
+    Fast,
+    Shared {
+        token: u64,
+        origin: OriginKey,
+        epoch: Option<u64>,
+    },
+    Exclusive {
+        token: u64,
+    },
+}
+
+impl Admission<'_> {
+    const fn granted(&mut self, granted: Option<u64>) {
+        if let Grant::Shared { epoch, .. } = &mut self.grant {
+            *epoch = granted;
+        }
+    }
 }
 
 impl Drop for Admission<'_> {
     fn drop(&mut self) {
-        if self.fast {
-            self.gate.release_fast();
-            return;
-        }
-        self.gate.release(self.token, &self.origin, self.epoch);
-        if self.exclusive {
-            self.gate.fast.fetch_sub(CLOSER, Ordering::SeqCst);
+        match &self.grant {
+            Grant::Fast => self.gate.release_fast(),
+            Grant::Shared {
+                token,
+                origin,
+                epoch,
+            } => self.gate.release(*token, origin, *epoch),
+            Grant::Exclusive { token } => {
+                self.gate.release(*token, &None, None);
+                self.gate.fast.fetch_sub(CLOSER, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -146,11 +166,7 @@ impl AdmissionGate {
         if !exclusive && origin.is_none() && self.admit_fast() {
             return Admission {
                 gate: self,
-                token: 0,
-                origin: None,
-                epoch: None,
-                fast: true,
-                exclusive: false,
+                grant: Grant::Fast,
             };
         }
         if exclusive {
@@ -160,11 +176,15 @@ impl AdmissionGate {
         let origin: OriginKey = origin.map(Arc::from);
         let mut admission = Admission {
             gate: self,
-            token,
-            origin: origin.clone(),
-            epoch: None,
-            fast: false,
-            exclusive,
+            grant: if exclusive {
+                Grant::Exclusive { token }
+            } else {
+                Grant::Shared {
+                    token,
+                    origin: origin.clone(),
+                    epoch: None,
+                }
+            },
         };
         let immediate = self.state.update(|state| {
             if state.waiting.is_empty() && state.admits(exclusive, &self.fast) {
@@ -174,7 +194,7 @@ impl AdmissionGate {
             }
         });
         if let Entry::Admitted(epoch) = immediate {
-            admission.epoch = epoch;
+            admission.granted(epoch);
             return admission;
         }
         let admitted = Arc::new(Signal::new());
@@ -193,7 +213,7 @@ impl AdmissionGate {
         });
         match entry {
             Entry::Admitted(epoch) => {
-                admission.epoch = epoch;
+                admission.granted(epoch);
                 admission
             }
             Entry::Wait => {

@@ -27,8 +27,8 @@ pub(super) fn bridge_shared(tool: Arc<dyn Tool>) -> Result<(ToolDefinition, Hand
     }
     let definition = ToolDefinition {
         name: shared.name().to_owned(),
-        description,
-        input_schema: parameters.as_value().clone(),
+        description: description.into(),
+        input_schema: parameters.shared(),
         strict: None,
         defer_loading: false,
     };

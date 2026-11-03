@@ -15,6 +15,34 @@ use nanocode_tool_host::{
 };
 use serde_json::{Value, json};
 
+static EXEC_SCHEMA: std::sync::LazyLock<Arc<Value>> = std::sync::LazyLock::new(|| {
+    Arc::new(json!({
+        "type": "object",
+        "properties": {"code": {"type": "string", "description": "JavaScript source to evaluate."}},
+        "required": ["code"],
+        "additionalProperties": false,
+    }))
+});
+
+fn shared_description(name: &str, description: String) -> Arc<str> {
+    static DESCRIPTIONS: std::sync::LazyLock<
+        nanocode_sync::Atom<std::collections::HashMap<String, Arc<str>>>,
+    > = std::sync::LazyLock::new(nanocode_sync::Atom::default);
+    if let Some(shared) = DESCRIPTIONS.read(|known| {
+        known
+            .get(name)
+            .filter(|known| ***known == *description)
+            .cloned()
+    }) {
+        return shared;
+    }
+    let shared: Arc<str> = Arc::from(description);
+    DESCRIPTIONS.update(|known| {
+        known.insert(name.to_owned(), Arc::clone(&shared));
+    });
+    shared
+}
+
 pub fn install_shared_tools(
     workspace: PathBuf,
     handle: &AgentHandle,
@@ -91,33 +119,24 @@ pub(super) fn install(
             _ => None,
         };
         let output_schema = definition.output_schema().cloned();
-        let (name, mut description, input_schema, call) = match definition {
+        let (name, description, input_schema, call) = match definition {
             RuntimeDefinition::Custom {
                 name, description, ..
-            } if &*name == "exec" => (
-                name,
-                format!(
-                    "{description}\n\nPass the complete JavaScript source as the `code` string."
-                ),
-                json!({
-                    "type": "object",
-                    "properties": {"code": {"type": "string", "description": "JavaScript source to evaluate."}},
-                    "required": ["code"],
-                    "additionalProperties": false,
-                }),
-                Call::Exec,
-            ),
+            } if &*name == "exec" => {
+                let description = shared_description(
+                    &name,
+                    format!(
+                        "{description}\n\nPass the complete JavaScript source as the `code` string."
+                    ),
+                );
+                (name, description, Arc::clone(&EXEC_SCHEMA), Call::Exec)
+            }
             RuntimeDefinition::Function {
                 name,
                 description,
                 parameters,
                 ..
-            } if &*name == "wait" => (
-                name,
-                description.into(),
-                parameters.as_value().clone(),
-                Call::Wait,
-            ),
+            } if &*name == "wait" => (name, description, parameters.shared(), Call::Wait),
             RuntimeDefinition::Function {
                 name,
                 description,
@@ -125,12 +144,7 @@ pub(super) fn install(
                 ..
             } => {
                 let call = Call::Function(Arc::from(name.as_ref()));
-                (
-                    name,
-                    description.into(),
-                    parameters.as_value().clone(),
-                    call,
-                )
+                (name, description, parameters.shared(), call)
             }
             RuntimeDefinition::ToolSearch {
                 description,
@@ -138,8 +152,8 @@ pub(super) fn install(
                 ..
             } => (
                 "tool_search".into(),
-                description.into(),
-                parameters.as_value().clone(),
+                description,
+                parameters.shared(),
                 Call::Function(Arc::from("tool_search")),
             ),
             other => {
@@ -149,15 +163,18 @@ pub(super) fn install(
                 )));
             }
         };
-        if let Some(schema) = output_schema {
-            description.push_str("\nOutput schema: ");
-            description.push_str(&schema.as_value().to_string());
-        }
+        let description = match output_schema {
+            Some(schema) => shared_description(
+                &name,
+                format!("{description}\nOutput schema: {}", schema.as_value()),
+            ),
+            None => description,
+        };
         let tool_name = name.to_string();
         native.shared_tool_names.insert(tool_name.clone());
         let definition = ToolDefinition {
-            name: tool_name.clone(),
             description,
+            name: tool_name.clone(),
             input_schema,
             strict,
             defer_loading: false,

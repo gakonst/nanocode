@@ -360,8 +360,8 @@ impl Message {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
-    pub description: String,
-    pub input_schema: Value,
+    pub description: std::sync::Arc<str>,
+    pub input_schema: std::sync::Arc<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
     #[serde(default, skip_serializing_if = "is_false")]

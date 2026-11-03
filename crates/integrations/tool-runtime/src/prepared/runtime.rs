@@ -366,7 +366,7 @@ fn catalog_entry(entry: &PreparedToolEntry) -> Result<PreparedToolCatalogEntry, 
             ..
         } => PreparedToolDefinition::Function {
             name: name.clone(),
-            description: description.clone(),
+            description: description.as_ref().into(),
             strict: *strict,
             parameters: parameters.as_value().clone(),
             output_schema: output_schema
@@ -380,7 +380,7 @@ fn catalog_entry(entry: &PreparedToolEntry) -> Result<PreparedToolCatalogEntry, 
             ..
         } => PreparedToolDefinition::Custom {
             name: name.clone(),
-            description: description.clone(),
+            description: description.as_ref().into(),
             format: PreparedCustomToolFormat {
                 kind: "grammar",
                 syntax: format.syntax.clone(),

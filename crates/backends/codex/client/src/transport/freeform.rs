@@ -103,7 +103,7 @@ fn function_tool(tool: &ToolDefinition) -> ToolDefinition {
             }
             ToolDefinition::Function {
                 name: name.clone(),
-                description: lines.join("\n").into_boxed_str(),
+                description: lines.join("\n").into(),
                 strict: false,
                 defer_loading: *defer_loading,
                 asynchronous: *asynchronous,

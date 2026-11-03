@@ -274,16 +274,15 @@ impl EmbeddedToolRuntime {
                         .map(|definition| normalize_identifier(definition.name()))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    *description =
-                        format!("{description}\nDeferred nested tools: {names}.").into_boxed_str();
+                    *description = format!("{description}\nDeferred nested tools: {names}.").into();
                 }
                 if mode == EmbeddedToolMode::CodeOnly {
                     *description = description
                         .replace("Use `tool_search`", "Use `tools.tool_search`")
-                        .into_boxed_str();
+                        .into();
                 }
                 *description = description
-                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into_boxed_str();
+                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into();
             }
             let mut model_definitions = vec![exec, crate::code_mode_spec::wait_spec()];
             model_definitions.extend(direct_definitions);

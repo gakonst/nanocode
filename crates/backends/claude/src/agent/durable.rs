@@ -1178,22 +1178,43 @@ pub(super) struct Paging {
     code_calls: Pages<history::CodeRound>,
     pending: Pages<HistoryMessage>,
     tools: ToolIds,
-    template: Option<(Option<Value>, Vec<ClaudeToolSpec>, EncodedPayload)>,
+    template: Option<Arc<EncodedTemplate>>,
+}
+
+struct EncodedTemplate {
+    system: Option<Value>,
+    tools: Vec<ClaudeToolSpec>,
+    record: EncodedPayload,
+}
+
+impl EncodedTemplate {
+    fn encodes(&self, prompt: &TemplatePrompt<'_>) -> bool {
+        self.system.as_ref() == prompt.system && self.tools.as_slice() == prompt.tools
+    }
 }
 
 fn template_record(prompt: &TemplatePrompt<'_>, paging: &mut Paging) -> Result<EncodedPayload> {
-    if let Some((system, tools, record)) = &paging.template
-        && system.as_ref() == prompt.system
-        && tools.as_slice() == prompt.tools
+    static LAST: std::sync::LazyLock<nanocode_sync::Atom<Option<Arc<EncodedTemplate>>>> =
+        std::sync::LazyLock::new(nanocode_sync::Atom::default);
+    if let Some(template) = &paging.template
+        && template.encodes(prompt)
     {
-        return Ok(record.clone());
+        return Ok(template.record.clone());
     }
-    let record = EncodedPayload::encode(prompt).map_err(provider_error)?;
-    paging.template = Some((
-        prompt.system.cloned(),
-        prompt.tools.to_vec(),
-        record.clone(),
-    ));
+    let template = match LAST.read(Clone::clone).filter(|last| last.encodes(prompt)) {
+        Some(last) => last,
+        None => {
+            let template = Arc::new(EncodedTemplate {
+                system: prompt.system.cloned(),
+                tools: prompt.tools.to_vec(),
+                record: EncodedPayload::encode(prompt).map_err(provider_error)?,
+            });
+            LAST.update(|last| *last = Some(Arc::clone(&template)));
+            template
+        }
+    };
+    let record = template.record.clone();
+    paging.template = Some(template);
     Ok(record)
 }
 

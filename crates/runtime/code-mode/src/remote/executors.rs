@@ -183,27 +183,30 @@ pub struct HandsTool(CodeModeExecutors);
 
 impl Tool for HandsTool {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            "hands",
-            HANDS_DESCRIPTION,
-            json!({
-                "type": "object",
-                "properties": {
-                    "request": {
-                        "type": "object",
-                        "description": "Ask a hand's user to allow one of its capabilities",
-                        "properties": {
-                            "hand": {"type": "string"},
-                            "capability": {"type": "string"},
-                            "reason": {"type": "string", "description": "Why the task needs it, shown to the user"}
-                        },
-                        "required": ["hand", "capability", "reason"],
-                        "additionalProperties": false
-                    }
-                },
-                "additionalProperties": false
-            }),
-        )
+        static DEFINITION: std::sync::LazyLock<ToolDefinition> = std::sync::LazyLock::new(|| {
+            ToolDefinition::function(
+                "hands",
+                HANDS_DESCRIPTION,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "request": {
+                            "type": "object",
+                            "description": "Ask a hand's user to allow one of its capabilities",
+                            "properties": {
+                                "hand": {"type": "string"},
+                                "capability": {"type": "string"},
+                                "reason": {"type": "string", "description": "Why the task needs it, shown to the user"}
+                            },
+                            "required": ["hand", "capability", "reason"],
+                            "additionalProperties": false
+                        }
+                    },
+                    "additionalProperties": false
+                }),
+            )
+        });
+        DEFINITION.clone()
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {

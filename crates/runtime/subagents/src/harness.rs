@@ -22,9 +22,9 @@ const COMMAND_CAPACITY: usize = 8;
 
 #[derive(Clone)]
 pub(super) struct HarnessHandle {
-    commands: mpsc::Sender<HarnessCommand>,
-    deferred: mpsc::UnboundedSender<DeliveryCommand>,
-    urgent: mpsc::UnboundedSender<DeliveryCommand>,
+    commands: mpsc::Sender<Box<HarnessCommand>>,
+    deferred: mpsc::UnboundedSender<Box<DeliveryCommand>>,
+    urgent: mpsc::UnboundedSender<Box<DeliveryCommand>>,
     side_questions: Arc<AtomicUsize>,
 }
 
@@ -94,9 +94,9 @@ struct Harness {
     context: Option<AgentContext>,
     agent: Option<Agent>,
     active: Option<ActiveTurn>,
-    commands: mpsc::Receiver<HarnessCommand>,
-    deferred: mpsc::UnboundedReceiver<DeliveryCommand>,
-    urgent: mpsc::UnboundedReceiver<DeliveryCommand>,
+    commands: mpsc::Receiver<Box<HarnessCommand>>,
+    deferred: mpsc::UnboundedReceiver<Box<DeliveryCommand>>,
+    urgent: mpsc::UnboundedReceiver<Box<DeliveryCommand>>,
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
     output_schema: String,
@@ -114,9 +114,9 @@ struct ActiveTurn {
 }
 
 enum HarnessEvent {
-    Command(Option<HarnessCommand>),
-    Deferred(Option<DeliveryCommand>),
-    Urgent(Option<DeliveryCommand>),
+    Command(Option<Box<HarnessCommand>>),
+    Deferred(Option<Box<DeliveryCommand>>),
+    Urgent(Option<Box<DeliveryCommand>>),
     CapacityChanged,
     TurnFinished(Result<AgentResult<TurnResult>, TaskError>),
 }
@@ -125,7 +125,7 @@ impl HarnessHandle {
     pub(super) async fn snapshot(&self) -> std::io::Result<SessionCheckpoint> {
         let (response, result) = oneshot::channel();
         self.commands
-            .send(HarnessCommand::Snapshot { response })
+            .send(Box::new(HarnessCommand::Snapshot { response }))
             .await
             .map_err(|_| std::io::Error::other("subagent harness is closed"))?;
         result
@@ -145,7 +145,7 @@ impl HarnessHandle {
     pub(super) async fn agent(&self) -> std::io::Result<Agent> {
         let (response, result) = oneshot::channel();
         self.commands
-            .send(HarnessCommand::Agent { response })
+            .send(Box::new(HarnessCommand::Agent { response }))
             .await
             .map_err(|_| std::io::Error::other("subagent harness is closed"))?;
         result
@@ -216,7 +216,7 @@ impl HarnessHandle {
             MessagePriority::Urgent => &self.urgent,
         };
         sender
-            .send(command)
+            .send(Box::new(command))
             .map_err(|_| std::io::Error::other("subagent harness is closed"))
     }
 
@@ -226,7 +226,7 @@ impl HarnessHandle {
     ) -> std::io::Result<()> {
         let (response, result) = oneshot::channel();
         self.commands
-            .send(command(response))
+            .send(Box::new(command(response)))
             .await
             .map_err(|_| std::io::Error::other("subagent harness is closed"))?;
         result
@@ -291,7 +291,7 @@ impl Harness {
         loop {
             match self.next_event().await {
                 HarnessEvent::Command(Some(command)) => {
-                    if self.handle(command).await {
+                    if self.handle(*command).await {
                         return;
                     }
                 }
@@ -301,11 +301,12 @@ impl Harness {
                     return;
                 }
                 HarnessEvent::Deferred(Some(command)) => {
-                    self.accept_delivery(command, MessagePriority::Deferred)
+                    self.accept_delivery(*command, MessagePriority::Deferred)
                         .await;
                 }
                 HarnessEvent::Urgent(Some(command)) => {
-                    self.accept_delivery(command, MessagePriority::Urgent).await;
+                    self.accept_delivery(*command, MessagePriority::Urgent)
+                        .await;
                 }
                 HarnessEvent::Deferred(None) | HarnessEvent::Urgent(None) => {}
                 HarnessEvent::CapacityChanged => self.start_pending().await,
@@ -535,10 +536,10 @@ impl Harness {
 
     async fn reject_waiting_deliveries(&mut self, reason: &str) {
         while let Ok(command) = self.urgent.try_recv() {
-            self.reject(command, reason.to_owned()).await;
+            self.reject(*command, reason.to_owned()).await;
         }
         while let Ok(command) = self.deferred.try_recv() {
-            self.reject(command, reason.to_owned()).await;
+            self.reject(*command, reason.to_owned()).await;
         }
     }
 

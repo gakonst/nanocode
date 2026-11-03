@@ -1290,7 +1290,8 @@ impl ClaudeBuilder {
                 "query":{"type":"string"},
                 "allowed_domains":{"type":"array","items":{"type":"string"}},
                 "blocked_domains":{"type":"array","items":{"type":"string"}}
-            },"required":["query"],"additionalProperties":false}),
+            },"required":["query"],"additionalProperties":false})
+            .into(),
             strict: None,
             defer_loading: deferred,
         };
@@ -1511,13 +1512,13 @@ impl ClaudeBuilder {
             definitions.push(ToolDefinition {
                 name: "ToolSearch".into(),
                 description: "Find deferred tools by name or purpose; use select:ToolName for an exact match.".into(),
-                input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}),
+                input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}).into(),
                 strict: None, defer_loading: false,
             });
             definitions.push(ToolDefinition {
                 name: "DeferredToolPlaceholder".into(),
                 description: "Placeholder for deferred tools; call ToolSearch to load one.".into(),
-                input_schema: json!({"type":"object","properties":{}}),
+                input_schema: json!({"type":"object","properties":{}}).into(),
                 strict: None,
                 defer_loading: false,
             });
@@ -2122,8 +2123,8 @@ pub fn web_search_tool(
         crate::upstream::tool_definition("WebSearch").expect("upstream WebSearch definition");
     nanocode_tool_host::FunctionTool::new(
         upstream.name.clone(),
-        upstream.description.clone(),
-        upstream.input_schema.clone(),
+        upstream.description.to_string(),
+        Value::clone(&upstream.input_schema),
         Arc::new(NestedSearch { client, max_tokens }),
     )
     .parallel_tool_calls(true)

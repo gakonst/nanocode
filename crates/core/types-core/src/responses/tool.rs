@@ -7,7 +7,7 @@ pub enum ToolDefinition {
     Function {
         name: Box<str>,
 
-        description: Box<str>,
+        description: std::sync::Arc<str>,
 
         strict: bool,
 
@@ -25,7 +25,7 @@ pub enum ToolDefinition {
     Namespace {
         name: Box<str>,
 
-        description: Box<str>,
+        description: std::sync::Arc<str>,
 
         #[serde(serialize_with = "serialize_namespace_tools")]
         tools: Vec<Self>,
@@ -34,7 +34,7 @@ pub enum ToolDefinition {
     Custom {
         name: Box<str>,
 
-        description: Box<str>,
+        description: std::sync::Arc<str>,
 
         #[serde(default, skip_serializing_if = "Option::is_none")]
         defer_loading: Option<bool>,
@@ -48,7 +48,7 @@ pub enum ToolDefinition {
     ToolSearch {
         execution: Box<str>,
 
-        description: Box<str>,
+        description: std::sync::Arc<str>,
 
         parameters: JsonSchema,
     },
@@ -79,7 +79,7 @@ impl ToolDefinition {
     #[must_use]
     pub fn function(
         name: impl Into<Box<str>>,
-        description: impl Into<Box<str>>,
+        description: impl Into<std::sync::Arc<str>>,
         parameters: impl Into<JsonSchema>,
     ) -> Self {
         Self::Function {
@@ -96,7 +96,7 @@ impl ToolDefinition {
     #[must_use]
     pub fn custom(
         name: impl Into<Box<str>>,
-        description: impl Into<Box<str>>,
+        description: impl Into<std::sync::Arc<str>>,
         format: CustomToolFormat,
     ) -> Self {
         Self::Custom {
@@ -111,7 +111,7 @@ impl ToolDefinition {
     #[must_use]
     pub fn namespace(
         name: impl Into<Box<str>>,
-        description: impl Into<Box<str>>,
+        description: impl Into<std::sync::Arc<str>>,
         tools: impl IntoIterator<Item = Self>,
     ) -> Self {
         Self::Namespace {
@@ -124,7 +124,7 @@ impl ToolDefinition {
     #[must_use]
     pub fn tool_search(
         execution: impl Into<Box<str>>,
-        description: impl Into<Box<str>>,
+        description: impl Into<std::sync::Arc<str>>,
         parameters: impl Into<JsonSchema>,
     ) -> Self {
         Self::ToolSearch {
@@ -262,6 +262,11 @@ impl JsonSchema {
     #[must_use]
     pub fn as_value(&self) -> &Value {
         &self.0
+    }
+
+    #[must_use]
+    pub fn shared(&self) -> std::sync::Arc<Value> {
+        std::sync::Arc::clone(&self.0)
     }
 }
 

@@ -486,17 +486,11 @@ impl Command {
     }
 }
 
-struct CommandRequest {
-    command: Command,
-    span: tracing::Span,
-}
+struct CommandRequest(Box<(Command, tracing::Span)>);
 
 impl From<Command> for CommandRequest {
     fn from(command: Command) -> Self {
-        Self {
-            command,
-            span: tracing::Span::current(),
-        }
+        Self(Box::new((command, tracing::Span::current())))
     }
 }
 
@@ -581,9 +575,10 @@ impl Driver {
                     continue;
                 }
             };
-            let Some(CommandRequest { command, span }) = command else {
+            let Some(CommandRequest(request)) = command else {
                 break;
             };
+            let (command, span) = *request;
 
             for _ in 0..RELEASE_BURST_LIMIT {
                 let Ok(release) = self.releases.try_recv() else {

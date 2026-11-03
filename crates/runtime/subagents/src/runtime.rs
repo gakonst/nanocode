@@ -405,7 +405,7 @@ pub struct Registry {
 
     this: std::sync::OnceLock<Weak<Self>>,
 
-    status_queues: Atom<AgentMap<mpsc::UnboundedSender<OrderedJob>>>,
+    status_queues: Atom<AgentMap<Arc<StatusQueue>>>,
 
     completion_retries: Atom<AgentMap<(u32, bool)>>,
     completion_dispatch: Atom<AgentMap<Sequencer>>,
@@ -653,6 +653,12 @@ struct CommittedCalls {
     revision: u64,
     call_ids: Vec<String>,
     omitted: u32,
+}
+
+struct StatusQueue {
+    jobs: mpsc::UnboundedSender<Box<OrderedJob>>,
+    receiver: nanocode_sync::Slot<mpsc::UnboundedReceiver<Box<OrderedJob>>>,
+    queued: AtomicUsize,
 }
 
 enum OrderedJob {
@@ -3438,39 +3444,56 @@ impl Registry {
             return;
         };
         let key = (root_session_id.to_owned(), id);
-        let mut job = job;
-        let (sender, mut receiver) = loop {
-            if let Some(sender) = self
-                .status_queues
-                .read(|queues| queues.get(&key).cloned())
-                .filter(|sender| !sender.is_closed())
-            {
-                match sender.send(job) {
-                    Ok(()) => return,
-                    Err(mpsc::error::SendError(returned)) => job = returned,
-                }
-            }
-            let (sender, receiver) = mpsc::unbounded_channel();
-            let installed = self
-                .status_queues
-                .try_update(|queues| match queues.get(&key) {
-                    Some(existing) if !existing.is_closed() => None,
-                    _ => {
-                        queues.insert(key.clone(), sender.clone());
-                        Some(())
-                    }
+        let queue = self
+            .status_queues
+            .read(|queues| queues.get(&key).cloned())
+            .unwrap_or_else(|| {
+                let (jobs, receiver) = mpsc::unbounded_channel();
+                let created = Arc::new(StatusQueue {
+                    jobs,
+                    receiver: nanocode_sync::Slot::new(Some(receiver)),
+                    queued: AtomicUsize::new(0),
                 });
-            if installed.is_some() {
-                break (sender, receiver);
-            }
-        };
-        let _ = sender.send(job);
+                self.status_queues.update(|queues| {
+                    Arc::clone(
+                        queues
+                            .entry(key.clone())
+                            .or_insert_with(|| Arc::clone(&created)),
+                    )
+                })
+            });
+        if queue.jobs.send(Box::new(job)).is_err()
+            || queue
+                .queued
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+                != 0
+        {
+            return;
+        }
         drop(platform::spawn(async move {
-            while let Some(job) = receiver.recv().await {
+            let Some(mut receiver) = queue.receiver.take() else {
+                return;
+            };
+            loop {
+                let Ok(job) = receiver.try_recv() else {
+                    return;
+                };
                 let Some(registry) = registry.upgrade() else {
                     return;
                 };
-                registry.run_ordered(&key.0, key.1, job).await;
+                registry.run_ordered(&key.0, key.1, *job).await;
+                drop(queue.receiver.put(receiver));
+                if queue
+                    .queued
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+                    == 1
+                {
+                    return;
+                }
+                let Some(next) = queue.receiver.take() else {
+                    return;
+                };
+                receiver = next;
             }
         }));
     }

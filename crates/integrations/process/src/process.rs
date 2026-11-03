@@ -173,13 +173,15 @@ impl ProcessChild {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    pub(super) fn served(pid: u32, mut exit: oneshot::Receiver<io::Result<i32>>) -> Self {
+    pub(super) fn served(
+        mut guard: ProcessGroupGuard,
+        mut exit: oneshot::Receiver<io::Result<i32>>,
+    ) -> Self {
         let (commands, mut received) = mpsc::unbounded_channel();
         let process_group = SharedProcessGroup(commands);
         let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
         let wait = tokio::spawn(async move {
-            let mut guard = ProcessGroupGuard::new(pid);
             let mut listening = true;
             let result = loop {
                 tokio::select! {

@@ -2,9 +2,12 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
     io,
-    os::unix::{
-        ffi::{OsStrExt, OsStringExt},
-        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    os::{
+        fd::OwnedFd,
+        unix::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+        },
     },
     path::{Path, PathBuf},
     process::Stdio,
@@ -166,8 +169,9 @@ impl Pending {
     }
 
     async fn spawned(self) -> Option<process::SpawnedProcess> {
-        let lease = self.accepted.await.ok()??;
-        let child = process::ProcessChild::served(lease.pid, self.exited);
+        let mut lease = self.accepted.await.ok()??;
+        let guard = lease.guard.take()?;
+        let child = process::ProcessChild::served(guard, self.exited);
         Some(process::SpawnedProcess {
             process_group: child.process_group(),
             child,
@@ -555,7 +559,7 @@ impl Served {
 
 struct Lease {
     slot: usize,
-    pid: u32,
+    guard: Option<process::ProcessGroupGuard>,
     pipes: [Slot<Output>; 2],
     release: mpsc::UnboundedSender<Message>,
 }
@@ -988,8 +992,8 @@ struct Launch {
 enum Stop {
     /// The shell did not start; a later command tries again.
     Launch(io::Error),
-    /// Startup files printed output or ended the shell: commands start their
-    /// own shells until those files change.
+    /// Startup files printed output or ended the shell, or zsh had no job
+    /// control: commands start their own shells until those files change.
     Unready(io::Error),
     /// The server died after it was ready and already said so (Owner::died).
     Died,
@@ -1015,7 +1019,7 @@ impl std::fmt::Display for Stop {
 /// job once it reaped it; a command's prelude restores both.
 fn bootstrap(nonce: &str, dir: &Path) -> OsString {
     let mut script = format!(
-        "for __nc_f in /dev/fd/<3->(N:t); do [[ -p /dev/fd/$__nc_f || -S /dev/fd/$__nc_f ]] && \\builtin exec {{__nc_f}}>&-; done\n\\builtin unset __nc_f\n\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin print -r -- ${{(k)aliases[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{(k)functions[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)builtins[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{reswords[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)galiases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)saliases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin hash -r\n\\builtin setopt monitor notify no_bg_nice\n__nc_d="
+        "for __nc_f in /dev/fd/<3->(N:t); do [[ -p /dev/fd/$__nc_f || -S /dev/fd/$__nc_f ]] && \\builtin exec {{__nc_f}}>&-; done\n\\builtin unset __nc_f\n\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin print -r -- ${{(k)aliases[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{(k)functions[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)builtins[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{reswords[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)galiases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)saliases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin hash -r\n\\builtin setopt notify no_bg_nice\n\\builtin setopt monitor 2>/dev/null\n\\builtin print -r -- $options[monitor]\n__nc_d="
     )
     .into_bytes();
     quote(&mut script, dir.as_os_str().as_bytes());
@@ -1044,7 +1048,7 @@ async fn run(launch: &Launch, inbox: mpsc::UnboundedReceiver<Message>) -> Result
 }
 
 async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> Result<(), Stop> {
-    let (mut child, _keeper, requests, mut events, nonce) =
+    let (mut child, _keeper, requests, mut events, nonce, _terminal) =
         launch_shell(launch).map_err(Stop::Launch)?;
     let ready = match read_ready(&mut events, &nonce, launch).await {
         Ok(ready) => Exits::new()
@@ -1121,7 +1125,38 @@ async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> 
     }
 }
 
-type Launched = (Child, pipe::Receiver, pipe::Sender, Events, String);
+type Launched = (
+    Child,
+    pipe::Receiver,
+    pipe::Sender,
+    Events,
+    String,
+    Option<OwnedFd>,
+);
+
+fn own_terminal() -> Option<(OwnedFd, OwnedFd)> {
+    use rustix::fs::{Mode, OFlags, open};
+    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+    let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
+    if open("/dev/tty", flags, Mode::empty()).is_ok() {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).ok()?;
+    #[cfg(not(target_os = "linux"))]
+    let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).ok()?;
+    #[cfg(not(target_os = "linux"))]
+    rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC).ok()?;
+    grantpt(&master).ok()?;
+    unlockpt(&master).ok()?;
+    let slave = open(
+        ptsname(&master, Vec::new()).ok()?.as_c_str(),
+        flags,
+        Mode::empty(),
+    )
+    .ok()?;
+    Some((master, slave))
+}
 
 fn launch_shell(launch: &Launch) -> io::Result<Launched> {
     let queue = launch.dir.join("q");
@@ -1133,6 +1168,10 @@ fn launch_shell(launch: &Launch) -> io::Result<Launched> {
     let mut random = [0_u8; 16];
     getrandom::fill(&mut random).map_err(io::Error::other)?;
     let nonce = format!("nanocode-shell-{}", hex(&random));
+    let (master, stdin) = match own_terminal() {
+        Some((master, slave)) => (Some(master), Stdio::from(slave)),
+        None => (None, Stdio::null()),
+    };
     let mut command = Command::new(&launch.shell);
     command
         .arg(if launch.login { "-lc" } else { "-c" })
@@ -1140,7 +1179,7 @@ fn launch_shell(launch: &Launch) -> io::Result<Launched> {
         .current_dir(&launch.workdir)
         .env_clear()
         .envs(&launch.environment)
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::from(writer))
         .stderr(Stdio::from(errors))
         .kill_on_drop(true)
@@ -1151,7 +1190,7 @@ fn launch_shell(launch: &Launch) -> io::Result<Launched> {
         pipe: pipe::Receiver::from_owned_fd(reader.into())?,
         buffer: Vec::new(),
     };
-    Ok((child, keeper, requests, events, nonce))
+    Ok((child, keeper, requests, events, nonce, master))
 }
 
 /// The server's output: its startup report, then a line per event.
@@ -1254,6 +1293,9 @@ async fn read_ready(
     }
     let [commands, builtins, global, suffixes] = <[_; 4]>::try_from(names)
         .map_err(|_| io::Error::other("the shell reported unexpected names"))?;
+    if events.line().await? != b"on" {
+        return Err(io::Error::other("zsh has no job control"));
+    }
     let files = startup_files(launch.login, &launch.environment, Some(&zdotdir));
     let probe = Probe {
         fingerprint: if files == launch.probe.files {
@@ -1852,7 +1894,7 @@ impl Owner {
             (Stage::Forking { reply, release }, [Some(stdout), Some(stderr)]) => reply
                 .send(Some(Lease {
                     slot,
-                    pid,
+                    guard: Some(process::ProcessGroupGuard::new(pid)),
                     pipes: [Slot::new(Some(stdout)), Slot::new(Some(stderr))],
                     release,
                 }))

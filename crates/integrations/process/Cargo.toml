@@ -25,7 +25,7 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["event", "fs"] }
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process", "pty"] }
 
 [lints]
 workspace = true

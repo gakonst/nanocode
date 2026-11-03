@@ -286,15 +286,53 @@ impl StateStore for PostgresStore {
 }
 
 pub struct PostgresSql {
-    client: nanocode_sync::Owned<Client>,
+    clients: Vec<nanocode_sync::Owned<Connection>>,
+    next: std::sync::atomic::AtomicUsize,
+}
+
+struct Connection {
+    client: Client,
+    prepared: std::collections::HashMap<&'static str, tokio_postgres::Statement>,
+}
+
+fn reusable(sql: &str) -> bool {
+    ["SELECT", "INSERT", "UPDATE", "DELETE", "WITH"]
+        .iter()
+        .any(|verb| sql.starts_with(verb))
 }
 
 impl PostgresSql {
     #[must_use]
     pub fn new(client: Client) -> Self {
+        Self::pool(vec![client])
+    }
+
+    #[must_use]
+    pub fn pool(clients: Vec<Client>) -> Self {
+        assert!(!clients.is_empty(), "a Postgres pool needs a connection");
         Self {
-            client: nanocode_sync::Owned::new(client),
+            clients: clients
+                .into_iter()
+                .map(|client| {
+                    nanocode_sync::Owned::new(Connection {
+                        client,
+                        prepared: std::collections::HashMap::new(),
+                    })
+                })
+                .collect(),
+            next: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    async fn client(&self) -> nanocode_sync::Held<'_, Connection> {
+        let start = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let count = self.clients.len();
+        for offset in 0..count {
+            if let Some(client) = self.clients[(start + offset) % count].try_acquire() {
+                return client;
+            }
+        }
+        self.clients[start % count].acquire().await
     }
 }
 
@@ -305,7 +343,30 @@ impl Sql for PostgresSql {
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
         Box::pin(async move {
-            let mut client = self.client.acquire().await;
+            let mut connection = self.client().await;
+            let prepare = statements.iter().all(|statement| reusable(statement.sql));
+            if prepare {
+                let missing = statements
+                    .iter()
+                    .filter(|statement| !connection.prepared.contains_key(statement.sql))
+                    .map(|statement| (statement.sql, statement.params.len()))
+                    .collect::<std::collections::HashMap<_, _>>();
+                let prepared =
+                    futures_util::future::try_join_all(missing.iter().map(|(sql, count)| {
+                        let types = vec![Type::TEXT; *count];
+                        let client = &connection.client;
+                        async move {
+                            client
+                                .prepare_typed(sql, &types)
+                                .await
+                                .map(|statement| (*sql, statement))
+                        }
+                    }))
+                    .await
+                    .map_err(backend)?;
+                connection.prepared.extend(prepared);
+            }
+            let Connection { client, prepared } = &mut *connection;
             let transaction = client.transaction().await.map_err(backend)?;
             let params = statements
                 .iter()
@@ -317,12 +378,22 @@ impl Sql for PostgresSql {
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>();
-            let replies = futures_util::future::try_join_all(
-                statements
-                    .iter()
-                    .zip(&params)
-                    .map(|(statement, params)| transaction.query_typed(statement.sql, params)),
-            )
+            let replies = futures_util::future::try_join_all(statements.iter().zip(&params).map(
+                |(statement, params)| {
+                    let transaction = &transaction;
+                    let prepared = prepare.then(|| prepared.get(statement.sql)).flatten();
+                    async move {
+                        match prepared {
+                            Some(prepared) => {
+                                let values =
+                                    params.iter().map(|(value, _)| *value).collect::<Vec<_>>();
+                                transaction.query(prepared, &values).await
+                            }
+                            None => transaction.query_typed(statement.sql, params).await,
+                        }
+                    }
+                },
+            ))
             .await
             .map_err(backend)?;
             let mut results = Vec::with_capacity(replies.len());

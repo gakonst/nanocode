@@ -2424,15 +2424,38 @@ impl Registry {
             .is_some_and(|store| store.records_sessions())
     }
 
+    fn journal_holds_conversation(&self, root_session_id: &str, id: AgentId) -> bool {
+        !self.records_sessions(root_session_id)
+            && self
+                .captured_once
+                .read(|captured| captured.contains(&(root_session_id.to_owned(), id)))
+    }
+
+    fn recorded_conversation(&self, root_session_id: &str, id: AgentId, conversation: bool) {
+        if conversation && !self.records_sessions(root_session_id) {
+            self.captured_once.update(|captured| {
+                captured.insert((root_session_id.to_owned(), id));
+            });
+        }
+    }
+
     fn record_checkpoint(
         &self,
         root_session_id: &str,
         id: AgentId,
         snapshot: SessionCheckpoint,
     ) -> bool {
+        if self.journal_holds_conversation(root_session_id, id) {
+            return true;
+        }
+        let conversation = snapshot.has_conversation();
         let encoded =
             durable::JournalCheckpoint::encode(snapshot, self.records_sessions(root_session_id));
-        self.insert_encoded(root_session_id, id, encoded)
+        let recorded = self.insert_encoded(root_session_id, id, encoded);
+        if recorded {
+            self.recorded_conversation(root_session_id, id, conversation);
+        }
+        recorded
     }
 
     async fn record_checkpoint_off_thread(
@@ -2441,10 +2464,18 @@ impl Registry {
         id: AgentId,
         snapshot: SessionCheckpoint,
     ) -> bool {
+        if self.journal_holds_conversation(root_session_id, id) {
+            return true;
+        }
+        let conversation = snapshot.has_conversation();
         let retain = self.records_sessions(root_session_id);
         let encoded =
             platform::blocking(move || durable::JournalCheckpoint::encode(snapshot, retain)).await;
-        self.insert_encoded(root_session_id, id, encoded)
+        let recorded = self.insert_encoded(root_session_id, id, encoded);
+        if recorded {
+            self.recorded_conversation(root_session_id, id, conversation);
+        }
+        recorded
     }
 
     fn insert_encoded(
@@ -2582,9 +2613,7 @@ impl Registry {
             return;
         }
         let key = (root_session_id.to_owned(), id);
-        if !self.records_sessions(root_session_id)
-            && self.captured_once.read(|captured| captured.contains(&key))
-        {
+        if self.journal_holds_conversation(root_session_id, id) {
             return;
         }
         let started = self.progress_captures.update(|captures| {
@@ -2612,15 +2641,9 @@ impl Registry {
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
-                    let conversation = snapshot.has_conversation();
                     let recorded = registry
                         .record_checkpoint_off_thread(&key.0, key.1, snapshot)
                         .await;
-                    if recorded && conversation && !registry.records_sessions(&key.0) {
-                        registry.captured_once.update(|captured| {
-                            captured.insert(key.clone());
-                        });
-                    }
                     registry
                         .settle_capture(&key.0, key.1, commits.filter(|_| recorded), progressed)
                         .await;
@@ -3463,7 +3486,9 @@ impl Registry {
                 harness,
             } => {
                 if let Some(harness) = harness {
-                    if let Ok(snapshot) = harness.snapshot().await {
+                    if !self.journal_holds_conversation(root_session_id, id)
+                        && let Ok(snapshot) = harness.snapshot().await
+                    {
                         self.record_checkpoint(root_session_id, id, snapshot);
                     }
                     self.finish_pending_checkpoint(root_session_id);
@@ -3998,14 +4023,28 @@ impl Registry {
             let Some(ResidentEviction { id, harness, _lock }) = eviction else {
                 return;
             };
-            match harness.snapshot().await {
+            let snapshot = if self.store_for(root_session_id).is_some()
+                && self.journal_holds_conversation(root_session_id, id)
+            {
+                Ok(None)
+            } else {
+                harness.snapshot().await.map(Some)
+            };
+            match snapshot {
                 Ok(snapshot) => {
-                    let stored = if self.store_for(root_session_id).is_some()
-                        && self.record_checkpoint(root_session_id, id, snapshot.clone())
-                    {
-                        None
-                    } else {
+                    let stored = match snapshot {
+                        None => None,
                         Some(snapshot)
+                            if self.store_for(root_session_id).is_some()
+                                && self.record_checkpoint(
+                                    root_session_id,
+                                    id,
+                                    snapshot.clone(),
+                                ) =>
+                        {
+                            None
+                        }
+                        Some(snapshot) => Some(snapshot),
                     };
                     if let Some(session) = self
                         .state

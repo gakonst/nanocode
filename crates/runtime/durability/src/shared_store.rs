@@ -159,97 +159,104 @@ async fn drive_grouped<S: StateStore>(
     mut receiver: mpsc::UnboundedReceiver<StoreRequest>,
 ) {
     let (finished, mut completions) = mpsc::unbounded_channel();
-    let mut in_flight = 0_usize;
+    let mut operations = 0_usize;
+    let mut groups = 0_usize;
     let mut queued = std::collections::VecDeque::new();
+    let mut open = true;
     loop {
-        let request = match queued.pop_front() {
-            Some(request) => request,
-            None => tokio::select! {
-                biased;
-                Some(()) = completions.recv(), if in_flight > 0 => {
-                    in_flight -= 1;
-                    continue;
-                }
-                request = receiver.recv() => match request {
-                    Some(request) => request,
-                    None => break,
-                },
-            },
-        };
-        let first = match Grouped::from_request(request) {
-            Ok(grouped) => grouped,
-            Err(request) => {
-                if !matches!(request.command, Command::Flush { .. })
-                    && let Some(mut handle) = store.pipeline_handle()
-                {
-                    in_flight += 1;
-                    let completion = Completion(finished.clone());
-                    spawn_operation(async move {
-                        run(&mut *handle, request).await;
-                        drop(completion);
-                    });
-                    continue;
-                }
-                while in_flight > 0 && completions.recv().await.is_some() {
-                    in_flight -= 1;
-                }
-                run(&mut store, request).await;
+        let mut group = Vec::new();
+        let mut states = std::collections::HashSet::new();
+        let mut rest = std::collections::VecDeque::new();
+        let mut barrier = false;
+        while let Some(request) = queued.pop_front() {
+            if barrier {
+                rest.push_back(request);
                 continue;
             }
-        };
-        let mut states = std::collections::HashSet::from([first.commit.state_id.clone()]);
-        let mut group = vec![first];
-        let mut carried = std::collections::VecDeque::new();
-        loop {
-            let request = match queued.pop_front() {
-                Some(request) => request,
-                None => match receiver.try_recv() {
-                    Ok(request) => request,
-                    Err(_) => break,
-                },
-            };
             match Grouped::from_request(request) {
-                Ok(grouped) if states.insert(grouped.commit.state_id.clone()) => {
-                    group.push(grouped);
+                Ok(grouped) => {
+                    let state = grouped.commit.state_id.clone();
+                    if groups == 0 && states.insert(state) {
+                        group.push(grouped);
+                    } else {
+                        rest.push_back(grouped.into_request());
+                    }
                 }
-                Ok(grouped) => carried.push_back(grouped.into_request()),
                 Err(request) => {
                     if !matches!(request.command, Command::Flush { .. })
                         && let Some(mut handle) = store.pipeline_handle()
                     {
-                        in_flight += 1;
-                        let completion = Completion(finished.clone());
+                        operations += 1;
+                        let completion = Completion(finished.clone(), Vec::new());
                         spawn_operation(async move {
                             run(&mut *handle, request).await;
                             drop(completion);
                         });
-                        continue;
+                    } else if operations == 0 && groups == 0 && group.is_empty() {
+                        run(&mut store, request).await;
+                    } else {
+                        rest.push_back(request);
+                        barrier = true;
                     }
-                    carried.push_back(request);
-                    break;
                 }
             }
         }
-        carried.append(&mut queued);
-        queued = carried;
-        match group.pop() {
-            Some(single) if group.is_empty() => {
-                run(&mut store, single.into_request()).await;
+        queued = rest;
+        if !group.is_empty() {
+            match store.pipeline_handle() {
+                Some(mut handle) => {
+                    groups += 1;
+                    let completion = Completion(finished.clone(), states.into_iter().collect());
+                    spawn_operation(async move {
+                        run_grouped(&mut *handle, group).await;
+                        drop(completion);
+                    });
+                }
+                None => run_grouped(&mut store, group).await,
             }
-            Some(last) => {
-                group.push(last);
-                run_group(&mut store, group).await;
+            continue;
+        }
+        if !open && operations == 0 && groups == 0 && queued.is_empty() {
+            break;
+        }
+        tokio::select! {
+            biased;
+            Some(states) = completions.recv(), if operations + groups > 0 => {
+                if states.is_empty() {
+                    operations -= 1;
+                } else {
+                    groups -= 1;
+                }
             }
-            None => {}
+            request = receiver.recv(), if open => match request {
+                Some(request) => {
+                    queued.push_back(request);
+                    while let Ok(request) = receiver.try_recv() {
+                        queued.push_back(request);
+                    }
+                }
+                None => open = false,
+            },
         }
     }
 }
 
-struct Completion(mpsc::UnboundedSender<()>);
+async fn run_grouped<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped>) {
+    match group.pop() {
+        Some(single) if group.is_empty() => run(store, single.into_request()).await,
+        Some(last) => {
+            group.push(last);
+            run_group(store, group).await;
+        }
+        None => {}
+    }
+}
+
+struct Completion(mpsc::UnboundedSender<Vec<String>>, Vec<String>);
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        let _ = self.0.send(());
+        let _ = self.0.send(std::mem::take(&mut self.1));
     }
 }
 
@@ -262,7 +269,7 @@ async fn drive_concurrently<S: StateStore>(
     loop {
         let request = tokio::select! {
             biased;
-            Some(()) = completions.recv(), if in_flight > 0 => {
+            Some(_) = completions.recv(), if in_flight > 0 => {
                 in_flight -= 1;
                 continue;
             }
@@ -283,7 +290,7 @@ async fn drive_concurrently<S: StateStore>(
             continue;
         };
         in_flight += 1;
-        let completion = Completion(finished.clone());
+        let completion = Completion(finished.clone(), Vec::new());
         spawn_operation(async move {
             run(&mut *handle, request).await;
             drop(completion);

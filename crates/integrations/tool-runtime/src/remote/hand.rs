@@ -240,15 +240,29 @@ impl Hand {
                         events(HandEvent::Connecting {
                             endpoint: endpoint.clone(),
                         });
+                        // Redial at once, not after the backoff.
+                        let mut fresh = false;
                         match dial(&target, &headers, policy).await {
                             Ok(socket) => {
                                 let started = Instant::now();
+                                let mut heard = false;
                                 // Connected only once the brain serves the socket: it may
                                 // still refuse this runtime after the upgrade.
                                 let served = serve(socket, &core, policy, meter.clone(), || {
+                                    heard = true;
                                     events(HandEvent::Connected { endpoint });
                                 })
                                 .await;
+                                // A brain that served this socket and closed it with 1012
+                                // moves the Hand to another brain (a deploy), and a
+                                // connection that lasted was no failure: either way the
+                                // next dial is a fresh start. Only quick failures in a
+                                // row back off.
+                                fresh = (heard && served.close_code == Some(RESTART_CLOSE))
+                                    || started.elapsed() >= FRESH_CONNECTION;
+                                if fresh {
+                                    backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
+                                }
                                 let mut fenced = false;
                                 match served.result {
                                     Err(issue)
@@ -291,10 +305,8 @@ impl Hand {
                                         reason: issue.to_string(),
                                     }),
                                 }
-                                if started.elapsed() >= crate::attachment::STABLE_CONNECTION {
-                                    backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
-                                }
                                 if fenced {
+                                    fresh = false;
                                     backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
                                 }
                             }
@@ -309,9 +321,15 @@ impl Hand {
                                 reason: issue.to_string(),
                             }),
                         }
-                        let delay = crate::attachment::reconnect_delay(&mut backoff);
+                        let delay = if fresh {
+                            Duration::ZERO
+                        } else {
+                            crate::attachment::reconnect_delay(&mut backoff)
+                        };
                         events(HandEvent::Retrying { delay });
-                        tokio::time::sleep(delay).await;
+                        if !delay.is_zero() {
+                            tokio::time::sleep(delay).await;
+                        }
                     }
                 }
                 HandEndpoint::Listen(address) => {
@@ -361,6 +379,13 @@ impl Hand {
 const MAX_NAME_BYTES: usize = 48;
 /// WebSocket close code 1008 (policy violation, RFC 6455 section 7.4.1).
 const POLICY_CLOSE: u16 = 1008;
+/// WebSocket close code 1012 (service restart): the brain asks the Hand to
+/// reconnect, perhaps to another brain behind the same endpoint.
+const RESTART_CLOSE: u16 = 1012;
+/// A connection that lasted this long ended for a reason of its own (a cut
+/// path, a brain that restarted), not as one of a run of failed dials, so
+/// the Hand redials at once.
+const FRESH_CONNECTION: Duration = Duration::from_secs(10);
 
 #[cfg(unix)]
 fn host_name() -> Result<String, CodeModeHostError> {

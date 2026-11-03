@@ -23,7 +23,7 @@ use nanocode_agent_core::{
 use nanocode_durability_core::StoreError;
 use nanocode_platform::Instant;
 use nanocode_schema::Validator;
-use nanocode_sync::{Atom, Owned, Sequencer, Turn};
+use nanocode_sync::{Atom, Sequencer, Turn};
 use nanocode_tool_contracts::ToolReceipt;
 use serde::Serialize;
 use serde_json::Value;
@@ -364,7 +364,7 @@ pub struct Registry {
     roots: Atom<imbl::HashMap<String, String>>,
     spawn_router: Atom<Option<Arc<dyn crate::SpawnRouter>>>,
     id: SubagentRuntimeId,
-    state: Owned<RegistryState>,
+    state: nanocode_sync::Mailbox<RegistryState>,
     pub(super) updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
     revision: watch::Sender<u64>,
     capacity: Capacity,
@@ -646,6 +646,8 @@ struct AgentScope {
     messages: MessageThreads,
     closing: bool,
 
+    paused: usize,
+
     journal_frozen: bool,
 }
 
@@ -701,7 +703,28 @@ enum JournalRequest {
 
 #[derive(Default)]
 pub(super) struct ScopeLocks {
-    pub(super) message: Sequencer,
+    pub(super) closing: Sequencer,
+}
+
+pub(super) struct MessagePause {
+    state: nanocode_sync::Mailbox<RegistryState>,
+    root: String,
+    registry: Option<Weak<Registry>>,
+}
+
+impl Drop for MessagePause {
+    fn drop(&mut self) {
+        let root = std::mem::take(&mut self.root);
+        let registry = self.registry.take();
+        self.state.send(move |state| {
+            if let Some(scope) = state.scopes.get_mut(&root) {
+                scope.paused = scope.paused.saturating_sub(1);
+            }
+            if let Some(registry) = registry.and_then(|registry| registry.upgrade()) {
+                registry.changed();
+            }
+        });
+    }
 }
 
 fn copy_error(error: &std::io::Error) -> std::io::Error {
@@ -1835,6 +1858,10 @@ fn wait_mark(status: &AgentStatus, revision: u64) -> u64 {
 }
 
 impl Registry {
+    fn shared(&self) -> Option<Arc<Self>> {
+        self.this.get().and_then(Weak::upgrade)
+    }
+
     pub(super) fn new(
         updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
         max_concurrency: usize,
@@ -1843,7 +1870,7 @@ impl Registry {
         Self {
             id: SubagentRuntimeId::next(),
             spawn_router: Atom::default(),
-            state: Owned::default(),
+            state: nanocode_sync::Mailbox::default(),
             updates,
             revision,
             capacity: Capacity::new(max_concurrency),
@@ -2097,13 +2124,15 @@ impl Registry {
             };
             let roots = live
                 .state
-                .acquire()
-                .await
-                .scopes
-                .iter()
-                .filter(|(_, scope)| !scope.journal_frozen)
-                .map(|(root, _)| root.clone())
-                .collect::<Vec<_>>();
+                .call(|state| {
+                    state
+                        .scopes
+                        .iter()
+                        .filter(|(_, scope)| !scope.journal_frozen)
+                        .map(|(root, _)| root.clone())
+                        .collect::<Vec<_>>()
+                })
+                .await;
             for root in roots {
                 if live.store_for(&root).is_some() {
                     live.send_journal(&root, None);
@@ -2200,6 +2229,63 @@ impl Registry {
         self.scope_locks(&self.root_of(session_id))
     }
 
+    pub(super) async fn pause_messages(&self, session_id: &str) -> MessagePause {
+        let root = self.root_of(session_id);
+        let paused = root.clone();
+        self.state
+            .call(move |state| {
+                if let Some(scope) = state.scopes.get_mut(&paused) {
+                    scope.paused += 1;
+                }
+            })
+            .await;
+        MessagePause {
+            state: self.state.clone(),
+            root,
+            registry: self.this.get().cloned(),
+        }
+    }
+
+    pub(super) async fn when_messages_flow<T, F>(
+        &self,
+        session_id: &str,
+        job: F,
+    ) -> std::io::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut RegistryState) -> T + Send + 'static,
+    {
+        let root = self.root_of(session_id);
+        let mut changes = self.revision.subscribe();
+        let mut job = job;
+        loop {
+            let scoped = root.clone();
+            let outcome = self
+                .state
+                .call(move |state| {
+                    if state
+                        .scopes
+                        .get(&scoped)
+                        .is_some_and(|scope| scope.paused > 0)
+                    {
+                        return Err(job);
+                    }
+                    Ok(job(state))
+                })
+                .await;
+            match outcome {
+                Ok(value) => return Ok(value),
+                Err(returned) => {
+                    job = returned;
+                    changes
+                        .changed()
+                        .await
+                        .map_err(|_| std::io::Error::other("subagent runtime is closed"))?;
+                }
+            }
+        }
+    }
+
     async fn write_journal(
         &self,
         root_session_id: &str,
@@ -2252,47 +2338,60 @@ impl Registry {
                 "subagent journal is frozen for shutdown",
             ))
         };
-        let (snapshot, finished) = {
-            let mut state = self.state.acquire().await;
-            let _collect = tracing::info_span!(
-                "subagent.journal.collect",
-                session.root_id = root_session_id
-            )
-            .entered();
-            match state.scopes.get_mut(root_session_id) {
-                None => {
-                    for (scope, done) in waiters.drain(..) {
-                        let _ = done.send(if scope { Ok(()) } else { frozen() });
-                    }
-                    (None, true)
-                }
-                Some(scope) => {
-                    if scope.journal_frozen {
-                        let (scoped, unscoped): (Vec<_>, Vec<_>) =
-                            waiters.drain(..).partition(|(scope, _)| *scope);
-                        waiters = scoped;
-                        for (_, done) in unscoped {
-                            let _ = done.send(frozen());
-                        }
-                    }
-                    let write = !waiters.is_empty() || (background && !scope.journal_frozen);
-                    (
-                        write.then(|| {
-                            cache.track(
-                                self.checkpoint_changes
-                                    .update(|changes| changes.remove(root_session_id))
-                                    .into_iter()
-                                    .flatten(),
-                            );
-                            cache.track(scope.sessions.take_changed());
-                            let checkpoints = self.checkpoints.get();
-                            scope.journal_snapshot(root_session_id, &checkpoints, cache)
-                        }),
-                        scope.journal_frozen,
-                    )
-                }
-            }
+        let Some(registry) = self.shared() else {
+            return (true, JournalSave::Idle);
         };
+        let root = root_session_id.to_owned();
+        let mut owned_cache = std::mem::take(cache);
+        let (snapshot, finished, returned_waiters, returned_cache) = self
+            .state
+            .call(move |state| {
+                let root_session_id = root.as_str();
+                let cache = &mut owned_cache;
+                let _collect = tracing::info_span!(
+                    "subagent.journal.collect",
+                    session.root_id = root_session_id
+                )
+                .entered();
+                let (snapshot, finished) = match state.scopes.get_mut(root_session_id) {
+                    None => {
+                        for (scope, done) in waiters.drain(..) {
+                            let _ = done.send(if scope { Ok(()) } else { frozen() });
+                        }
+                        (None, true)
+                    }
+                    Some(scope) => {
+                        if scope.journal_frozen {
+                            let (scoped, unscoped): (Vec<_>, Vec<_>) =
+                                waiters.drain(..).partition(|(scope, _)| *scope);
+                            waiters = scoped;
+                            for (_, done) in unscoped {
+                                let _ = done.send(frozen());
+                            }
+                        }
+                        let write = !waiters.is_empty() || (background && !scope.journal_frozen);
+                        (
+                            write.then(|| {
+                                cache.track(
+                                    registry
+                                        .checkpoint_changes
+                                        .update(|changes| changes.remove(root_session_id))
+                                        .into_iter()
+                                        .flatten(),
+                                );
+                                cache.track(scope.sessions.take_changed());
+                                let checkpoints = registry.checkpoints.get();
+                                scope.journal_snapshot(root_session_id, &checkpoints, cache)
+                            }),
+                            scope.journal_frozen,
+                        )
+                    }
+                };
+                (snapshot, finished, waiters, owned_cache)
+            })
+            .await;
+        let waiters = returned_waiters;
+        *cache = returned_cache;
         let encoded = snapshot.map(|snapshot| {
             snapshot.and_then(|snapshot| {
                 let _encode = tracing::info_span!(
@@ -2398,31 +2497,36 @@ impl Registry {
     }
 
     async fn child_checkpoints(&self, root_session_id: &str) -> Vec<(Arc<str>, SessionCheckpoint)> {
-        let state = self.state.acquire().await;
         let checkpoints = self.checkpoints.get();
-        let Some(scope) = state.scopes.get(root_session_id) else {
-            return Vec::new();
-        };
-        let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.into_iter()
-            .filter_map(|id| {
-                let checkpoint = match checkpoints.get(&(root_session_id.to_owned(), id)) {
-                    Some(checkpoint) => checkpoint.clone(),
-                    None => durable::JournalCheckpoint::encode(
-                        scope
-                            .sessions
-                            .get(&id)?
-                            .stored_runtime
-                            .checkpoint()?
-                            .clone(),
-                        true,
-                    )
-                    .ok()?,
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let root_session_id = root.as_str();
+                let Some(scope) = state.scopes.get(root_session_id) else {
+                    return Vec::new();
                 };
-                Some((checkpoint.key, Arc::unwrap_or_clone(checkpoint.checkpoint?)))
+                let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+                ids.sort_unstable();
+                ids.into_iter()
+                    .filter_map(|id| {
+                        let checkpoint = match checkpoints.get(&(root_session_id.to_owned(), id)) {
+                            Some(checkpoint) => checkpoint.clone(),
+                            None => durable::JournalCheckpoint::encode(
+                                scope
+                                    .sessions
+                                    .get(&id)?
+                                    .stored_runtime
+                                    .checkpoint()?
+                                    .clone(),
+                                true,
+                            )
+                            .ok()?,
+                        };
+                        Some((checkpoint.key, Arc::unwrap_or_clone(checkpoint.checkpoint?)))
+                    })
+                    .collect()
             })
-            .collect()
+            .await
     }
 
     fn records_sessions(&self, root_session_id: &str) -> bool {
@@ -2684,32 +2788,36 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
     ) -> (Option<HarnessHandle>, Option<CommittedCalls>) {
-        let state = self.state.acquire().await;
-        let Some(session) = state
-            .scopes
-            .get(root_session_id)
-            .and_then(|scope| scope.sessions.get(&id))
-        else {
-            return (None, None);
-        };
-        let harness = (session.active || matches!(session.status, AgentStatus::Running))
-            .then(|| session.harness().cloned())
-            .flatten();
-        let commits = session.active_instruction_revision.and_then(|revision| {
-            let call_ids = session
-                .in_flight_calls
-                .iter()
-                .filter(|call| call.live(durable::CallProgress::Committable))
-                .map(|call| call.call_id.clone())
-                .collect::<Vec<_>>();
-            let omitted = session.in_flight_progress.committable;
-            (!call_ids.is_empty() || omitted > 0).then_some(CommittedCalls {
-                revision,
-                call_ids,
-                omitted,
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let Some(session) = state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                else {
+                    return (None, None);
+                };
+                let harness = (session.active || matches!(session.status, AgentStatus::Running))
+                    .then(|| session.harness().cloned())
+                    .flatten();
+                let commits = session.active_instruction_revision.and_then(|revision| {
+                    let call_ids = session
+                        .in_flight_calls
+                        .iter()
+                        .filter(|call| call.live(durable::CallProgress::Committable))
+                        .map(|call| call.call_id.clone())
+                        .collect::<Vec<_>>();
+                    let omitted = session.in_flight_progress.committable;
+                    (!call_ids.is_empty() || omitted > 0).then_some(CommittedCalls {
+                        revision,
+                        call_ids,
+                        omitted,
+                    })
+                });
+                (harness, commits)
             })
-        });
-        (harness, commits)
+            .await
     }
 
     async fn settle_capture(
@@ -2719,42 +2827,45 @@ impl Registry {
         commits: Option<CommittedCalls>,
         progressed: bool,
     ) {
-        let mut state = self.state.acquire().await;
-        let Some(session) = state
-            .scopes
-            .get_mut(root_session_id)
-            .and_then(|scope| scope.sessions.get_mut(&id))
-        else {
-            return;
-        };
-        if let Some(commits) = commits
-            && session.active_instruction_revision == Some(commits.revision)
-        {
-            session.in_flight_calls.retain(|call| {
-                !(matches!(call.state, durable::CallState::Live { .. })
-                    && commits.call_ids.contains(&call.call_id))
-            });
-            let progress = &mut session.in_flight_progress;
-            let omitted = commits.omitted.min(progress.committable);
-            progress.committable -= omitted;
-            session.in_flight_omitted = session.in_flight_omitted.saturating_sub(omitted);
-        }
-        if progressed && session.active {
-            session.resume_attempts = 0;
-        }
-    }
-
-    async fn track_events(&self, root_session_id: &str, id: AgentId, events: Vec<TrackedEvent>) {
-        let mut tracked = false;
-        {
-            let mut state = self.state.acquire().await;
+        let root = root_session_id.to_owned();
+        self.state.send(move |state| {
             let Some(session) = state
                 .scopes
-                .get_mut(root_session_id)
+                .get_mut(&root)
                 .and_then(|scope| scope.sessions.get_mut(&id))
             else {
                 return;
             };
+            if let Some(commits) = commits
+                && session.active_instruction_revision == Some(commits.revision)
+            {
+                session.in_flight_calls.retain(|call| {
+                    !(matches!(call.state, durable::CallState::Live { .. })
+                        && commits.call_ids.contains(&call.call_id))
+                });
+                let progress = &mut session.in_flight_progress;
+                let omitted = commits.omitted.min(progress.committable);
+                progress.committable -= omitted;
+                session.in_flight_omitted = session.in_flight_omitted.saturating_sub(omitted);
+            }
+            if progressed && session.active {
+                session.resume_attempts = 0;
+            }
+        });
+    }
+
+    async fn track_events(&self, root_session_id: &str, id: AgentId, events: Vec<TrackedEvent>) {
+        let root = root_session_id.to_owned();
+        let registry = self.shared();
+        self.state.send(move |state| {
+            let Some(session) = state
+                .scopes
+                .get_mut(&root)
+                .and_then(|scope| scope.sessions.get_mut(&id))
+            else {
+                return;
+            };
+            let mut tracked = false;
             for event in events {
                 match event {
                     TrackedEvent::Boundary => session.mark_boundary(),
@@ -2764,21 +2875,26 @@ impl Registry {
                     }
                 }
             }
-        }
-        if tracked {
-            self.changed();
-        }
+            if tracked && let Some(registry) = registry {
+                registry.changed();
+            }
+        });
     }
 
     async fn running_harness(&self, root_session_id: &str, id: AgentId) -> Option<HarnessHandle> {
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .filter(|session| {
+                        session.active || matches!(session.status, AgentStatus::Running)
+                    })
+                    .and_then(|session| session.harness().cloned())
+            })
             .await
-            .scopes
-            .get(root_session_id)
-            .and_then(|scope| scope.sessions.get(&id))
-            .filter(|session| session.active || matches!(session.status, AgentStatus::Running))
-            .and_then(|session| session.harness().cloned())
     }
 }
 
@@ -3020,57 +3136,71 @@ impl Registry {
                 stored.insert(agent.descriptor.id, checkpoint);
             }
         }
-        let mut report = RestoreReport::default();
-        let mut state = self.state.acquire().await;
-        if state
-            .scopes
-            .get(root_session_id)
-            .is_some_and(|scope| !scope.sessions.is_empty())
-        {
-            return Err(std::io::Error::other(
-                "subagent scope already has live children and cannot be restored",
-            ));
-        }
-        let lineages = durable::journaled_lineages(root_session_id, &agents);
-        let mut restored_sessions = Vec::with_capacity(agents.len());
-        for (agent, lineage) in agents.into_iter().zip(lineages) {
-            let id = agent.descriptor.id;
-            let checkpoint = agent.snapshot(&lineage)?;
-            let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
-            if session.completion.revision().is_some() && session.status.wakes_parent() && !resume {
-                report.completed.push(id);
-            }
-            match (stored.remove(&id), session.stored_runtime.checkpoint()) {
-                (Some(checkpoint), _) => self.insert_checkpoint(root_session_id, id, checkpoint),
-
-                (None, Some(snapshot)) => {
-                    self.insert_checkpoint(
-                        root_session_id,
-                        id,
-                        durable::JournalCheckpoint::encode(
-                            snapshot.clone(),
-                            store.records_sessions(),
-                        )?,
-                    );
+        let registry = self.shared();
+        let root = root_session_id.to_owned();
+        let records_sessions = store.records_sessions();
+        let (report, restored_sessions) = self
+            .state
+            .call(move |state| -> std::io::Result<_> {
+                let root_session_id = root.as_str();
+                let mut report = RestoreReport::default();
+                if state
+                    .scopes
+                    .get(root_session_id)
+                    .is_some_and(|scope| !scope.sessions.is_empty())
+                {
+                    return Err(std::io::Error::other(
+                        "subagent scope already has live children and cannot be restored",
+                    ));
                 }
-                (None, None) => {}
-            }
-            restored_sessions.push(session.descriptor.session_id.clone());
-            state.insert_restored(root_session_id, session)?;
-            report.restored += 1;
-            if resume {
-                report.interrupted.push(id);
-            }
-            if lost {
-                report.unrecoverable.push(id);
-            }
-        }
-        state
-            .scopes
-            .entry(root_session_id.to_owned())
-            .or_default()
-            .messages = messages;
-        drop(state);
+                let lineages = durable::journaled_lineages(root_session_id, &agents);
+                let mut restored_sessions = Vec::with_capacity(agents.len());
+                for (agent, lineage) in agents.into_iter().zip(lineages) {
+                    let id = agent.descriptor.id;
+                    let checkpoint = agent.snapshot(&lineage)?;
+                    let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
+                    if session.completion.revision().is_some()
+                        && session.status.wakes_parent()
+                        && !resume
+                    {
+                        report.completed.push(id);
+                    }
+                    match (stored.remove(&id), session.stored_runtime.checkpoint()) {
+                        (Some(checkpoint), _) => {
+                            if let Some(registry) = &registry {
+                                registry.insert_checkpoint(root_session_id, id, checkpoint);
+                            }
+                        }
+
+                        (None, Some(snapshot)) => {
+                            let checkpoint = durable::JournalCheckpoint::encode(
+                                snapshot.clone(),
+                                records_sessions,
+                            )?;
+                            if let Some(registry) = &registry {
+                                registry.insert_checkpoint(root_session_id, id, checkpoint);
+                            }
+                        }
+                        (None, None) => {}
+                    }
+                    restored_sessions.push(session.descriptor.session_id.clone());
+                    state.insert_restored(root_session_id, session)?;
+                    report.restored += 1;
+                    if resume {
+                        report.interrupted.push(id);
+                    }
+                    if lost {
+                        report.unrecoverable.push(id);
+                    }
+                }
+                state
+                    .scopes
+                    .entry(root_session_id.to_owned())
+                    .or_default()
+                    .messages = messages;
+                Ok((report, restored_sessions))
+            })
+            .await?;
         self.roots.update(|roots| {
             for session_id in &restored_sessions {
                 roots.insert(session_id.clone(), root_session_id.to_owned());
@@ -3168,23 +3298,26 @@ impl Registry {
             });
         };
         for id in ids {
+            let root = root_session_id.to_owned();
             let (task, evidence) = self
                 .state
-                .acquire()
-                .await
-                .scopes
-                .get(root_session_id)
-                .and_then(|scope| scope.sessions.get(&id))
-                .map(|session| {
-                    (
-                        Some(session.descriptor.task.clone()),
-                        durable::in_flight_evidence(
-                            &session.in_flight_calls,
-                            session.in_flight_omitted,
-                        ),
-                    )
+                .call(move |state| {
+                    state
+                        .scopes
+                        .get(&root)
+                        .and_then(|scope| scope.sessions.get(&id))
+                        .map(|session| {
+                            (
+                                Some(session.descriptor.task.clone()),
+                                durable::in_flight_evidence(
+                                    &session.in_flight_calls,
+                                    session.in_flight_omitted,
+                                ),
+                            )
+                        })
+                        .unwrap_or_default()
                 })
-                .unwrap_or_default();
+                .await;
             let mut message = durable::RESUME_MESSAGE.to_owned();
             if let Some(evidence) = evidence {
                 message = format!("{message}\n\n{evidence}");
@@ -3211,20 +3344,17 @@ impl Registry {
     }
 
     async fn fail_unresumable(&self, root_session_id: &str, id: AgentId, mut error: String) {
-        let settled = {
-            let mut state = self.state.acquire().await;
-            let Some(session) = state
+        let root = root_session_id.to_owned();
+        let settled = self.state.call(move |state| {
+            let session = state
                 .scopes
-                .get_mut(root_session_id)
+                .get_mut(&root)
                 .and_then(|scope| scope.sessions.get_mut(&id))
                 .filter(|session| {
                     !session.active
                         && session.harness().is_none()
                         && matches!(session.status, AgentStatus::Interrupted)
-                })
-            else {
-                return;
-            };
+                })?;
             if let Some(evidence) =
                 durable::in_flight_evidence(&session.in_flight_calls, session.in_flight_omitted)
             {
@@ -3242,9 +3372,11 @@ impl Registry {
             if let Some(revision) = completion {
                 session.settle_completion(revision);
             }
-            (session.status.clone(), completion)
+            Some((session.status.clone(), completion))
+        });
+        let Some((status, completion)) = settled.await else {
+            return;
         };
-        let (status, completion) = settled;
         self.enqueue_status(
             root_session_id,
             id,
@@ -3290,75 +3422,96 @@ impl Registry {
     }
 
     pub async fn is_root_session(&self, session_id: &str) -> bool {
+        let session_id = session_id.to_owned();
         !self
             .state
-            .acquire()
+            .call(move |state| state.root_by_session.contains_key(&session_id))
             .await
-            .root_by_session
-            .contains_key(session_id)
     }
 
     pub async fn child_session_id(&self, caller: &str, id: AgentId) -> std::io::Result<String> {
         self.await_restored(caller).await?;
-        let state = self.state.acquire().await;
-        let root = state.authorize(caller, id)?;
-        state
-            .scopes
-            .get(&root)
-            .and_then(|scope| scope.sessions.get(&id))
-            .map(|session| session.descriptor.session_id.clone())
-            .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))
+        let caller = caller.to_owned();
+        self.state
+            .call(move |state| {
+                let root = state.authorize(&caller, id)?;
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .map(|session| session.descriptor.session_id.clone())
+                    .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))
+            })
+            .await
     }
 
     #[doc(hidden)]
     pub async fn host_context(&self, root_session_id: &str, id: AgentId) -> Option<Arc<str>> {
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .and_then(|session| session.host_context.as_ref().map(Arc::clone))
+            })
             .await
-            .scopes
-            .get(root_session_id)
-            .and_then(|scope| scope.sessions.get(&id))
-            .and_then(|session| session.host_context.as_ref().map(Arc::clone))
     }
 
     pub(super) async fn descriptor_for_session(&self, session_id: &str) -> Option<AgentDescriptor> {
-        let state = self.state.acquire().await;
-        state
-            .session_for(session_id)
-            .map(|session| session.descriptor.clone())
+        let session_id = session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .session_for(&session_id)
+                    .map(|session| session.descriptor.clone())
+            })
+            .await
     }
 
     #[doc(hidden)]
     pub async fn host_context_for_session(&self, session_id: &str) -> Option<Arc<str>> {
-        let state = self.state.acquire().await;
-        state
-            .session_for(session_id)
-            .and_then(|session| session.host_context.as_ref().map(Arc::clone))
+        let session_id = session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .session_for(&session_id)
+                    .and_then(|session| session.host_context.as_ref().map(Arc::clone))
+            })
+            .await
     }
 
     async fn lineage(&self, session_id: &str) -> Vec<AgentId> {
-        let state = self.state.acquire().await;
-        let Some(scope) = state
-            .root_by_session
-            .get(session_id)
-            .and_then(|root| state.scopes.get(root))
-        else {
-            return Vec::new();
-        };
-        let mut lineage = Vec::new();
-        let mut next = scope.topology.agent_for_session(session_id);
-        while let Some(id) = next {
-            lineage.push(id);
-            next = scope
-                .sessions
-                .get(&id)
-                .and_then(|session| session.descriptor.parent);
-        }
-        lineage
+        let session_id = session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let Some(scope) = state
+                    .root_by_session
+                    .get(&session_id)
+                    .and_then(|root| state.scopes.get(root))
+                else {
+                    return Vec::new();
+                };
+                let mut lineage = Vec::new();
+                let mut next = scope.topology.agent_for_session(&session_id);
+                while let Some(id) = next {
+                    lineage.push(id);
+                    next = scope
+                        .sessions
+                        .get(&id)
+                        .and_then(|session| session.descriptor.parent);
+                }
+                lineage
+            })
+            .await
     }
 
     pub(super) async fn reserve(&self, session_id: &str) -> std::io::Result<AgentReservation> {
-        self.state.acquire().await.reserve_for(session_id)
+        let session_id = session_id.to_owned();
+        self.state
+            .call(move |state| state.reserve_for(&session_id))
+            .await
     }
 
     pub(super) async fn reserve_many(
@@ -3366,8 +3519,10 @@ impl Registry {
         session_id: &str,
         count: usize,
     ) -> std::io::Result<Vec<AgentReservation>> {
-        let mut state = self.state.acquire().await;
-        (0..count).map(|_| state.reserve_for(session_id)).collect()
+        let session_id = session_id.to_owned();
+        self.state
+            .call(move |state| (0..count).map(|_| state.reserve_for(&session_id)).collect())
+            .await
     }
 
     pub(super) async fn submit_result_durably(
@@ -3392,11 +3547,14 @@ impl Registry {
         output: Value,
     ) -> std::io::Result<(SubmissionOutcome, bool)> {
         self.await_restored(session_id).await?;
-        let (outcome, root) = {
-            let mut state = self.state.acquire().await;
-            let outcome = state.submit_result(session_id, instruction_revision, output)?;
-            (outcome, state.root_session_id(session_id).to_owned())
-        };
+        let session = session_id.to_owned();
+        let (outcome, root) = self
+            .state
+            .call(move |state| -> std::io::Result<_> {
+                let outcome = state.submit_result(&session, instruction_revision, output)?;
+                Ok((outcome, state.root_session_id(&session).to_owned()))
+            })
+            .await?;
         let durable = match outcome {
             SubmissionOutcome::Accepted { .. } => match self.persist_durably(&root).await {
                 Ok(()) => true,
@@ -3540,34 +3698,44 @@ impl Registry {
     }
 
     async fn send_unless_closed(&self, root_session_id: &str, id: AgentId, update: AgentUpdate) {
-        let state = self.state.acquire().await;
-        let closed = state
-            .scopes
-            .get(root_session_id)
-            .and_then(|scope| scope.sessions.get(&id))
-            .is_some_and(|session| matches!(session.status, AgentStatus::Closed));
-        let stale = closed
-            && matches!(&update, AgentUpdate::Status { status, .. } if !matches!(status, AgentStatus::Closed));
-        if !stale {
-            self.send(root_session_id, update);
-        }
+        let Some(registry) = self.shared() else {
+            return;
+        };
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let closed = state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .is_some_and(|session| matches!(session.status, AgentStatus::Closed));
+                let stale = closed
+                    && matches!(&update, AgentUpdate::Status { status, .. } if !matches!(status, AgentStatus::Closed));
+                if !stale {
+                    registry.send(&root, update);
+                }
+            })
+            .await;
     }
 
     pub async fn acknowledge_completion(&self, root_session_id: &str, id: AgentId, revision: u64) {
-        let acknowledged = {
-            let mut state = self.state.acquire().await;
-            match state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            {
-                Some(session) if session.completion.awaits(revision) => {
-                    session.clear_completion();
-                    true
+        let root = root_session_id.to_owned();
+        let acknowledged = self
+            .state
+            .call(move |state| {
+                match state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                {
+                    Some(session) if session.completion.awaits(revision) => {
+                        session.clear_completion();
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            }
-        };
+            })
+            .await;
         if acknowledged {
             self.completion_retries.update(|retries| {
                 retries.remove(&(root_session_id.to_owned(), id));
@@ -3602,17 +3770,20 @@ impl Registry {
                     entry.1 = false;
                 }
             });
-            let status = {
-                let state = registry.state.acquire().await;
-                state
-                    .scopes
-                    .get(&key.0)
-                    .and_then(|scope| scope.sessions.get(&key.1))
-                    .filter(|session| {
-                        session.completion.awaits(revision) && session.status.wakes_parent()
-                    })
-                    .map(|session| session.status.clone())
-            };
+            let lookup = key.clone();
+            let status = registry
+                .state
+                .call(move |state| {
+                    state
+                        .scopes
+                        .get(&lookup.0)
+                        .and_then(|scope| scope.sessions.get(&lookup.1))
+                        .filter(|session| {
+                            session.completion.awaits(revision) && session.status.wakes_parent()
+                        })
+                        .map(|session| session.status.clone())
+                })
+                .await;
             if let Some(status) = status {
                 registry.send_status(
                     &key.0,
@@ -3628,29 +3799,29 @@ impl Registry {
 
     async fn announce_restored_completions(&self, root_session_id: &str, ids: &[AgentId]) {
         for &id in ids {
-            let announced = {
-                let mut state = self.state.acquire().await;
-                let Some(session) = state
-                    .scopes
-                    .get_mut(root_session_id)
-                    .and_then(|scope| scope.sessions.get_mut(&id))
-                else {
-                    continue;
-                };
-                let Some(revision) = session.completion.revision() else {
-                    continue;
-                };
-                if !session.status.wakes_parent() {
-                    continue;
-                }
-                let descriptor = std::mem::take(&mut session.announce).then(|| {
-                    let mut descriptor = session.descriptor.clone();
-                    descriptor.task = session.binding_task.clone();
-                    descriptor
-                });
-                (descriptor, session.status.clone(), revision)
+            let root = root_session_id.to_owned();
+            let announced = self
+                .state
+                .call(move |state| {
+                    let session = state
+                        .scopes
+                        .get_mut(&root)
+                        .and_then(|scope| scope.sessions.get_mut(&id))?;
+                    let revision = session.completion.revision()?;
+                    if !session.status.wakes_parent() {
+                        return None;
+                    }
+                    let descriptor = std::mem::take(&mut session.announce).then(|| {
+                        let mut descriptor = session.descriptor.clone();
+                        descriptor.task = session.binding_task.clone();
+                        descriptor
+                    });
+                    Some((descriptor, session.status.clone(), revision))
+                })
+                .await;
+            let Some((descriptor, status, revision)) = announced else {
+                continue;
             };
-            let (descriptor, status, revision) = announced;
             if let Some(descriptor) = descriptor {
                 self.send(root_session_id, AgentUpdate::Added(descriptor));
             }
@@ -3671,10 +3842,10 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
     ) -> Option<TurnSteer> {
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
+            .call(move |state| state.begin_turn_steer(&root, id))
             .await
-            .begin_turn_steer(root_session_id, id)
     }
 
     pub(super) async fn finish_turn_steer(
@@ -3683,10 +3854,9 @@ impl Registry {
         steer: TurnSteer,
         committed: bool,
     ) {
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
-            .await
-            .finish_turn_steer(root_session_id, steer, committed);
+            .send(move |state| state.finish_turn_steer(&root, steer, committed));
     }
 
     pub(super) async fn insert(
@@ -3714,61 +3884,67 @@ impl Registry {
         } else {
             None
         };
-        let mut state = self.state.acquire().await;
-        state.validate_insert(&root_session_id, &descriptor)?;
-        let (harness, harness_task) = harness::spawn(
-            root_session_id.clone(),
-            descriptor.id,
-            descriptor.context(),
-            agent,
-            self.capacity.clone(),
-            Arc::downgrade(self),
-            schema.clone(),
-            None,
-        );
-        if let Some(snapshot) = checkpoint {
-            self.record_checkpoint(&root_session_id, descriptor.id, snapshot);
-        }
-        state.insert(
-            root_session_id.clone(),
-            descriptor.id,
-            descriptor.session_id.clone(),
-            ChildSession {
-                binding_task: descriptor.task.clone(),
-                descriptor,
-                host_context,
-                event_task: Some(event_task),
-                residency: Residency::Resident(harness),
-                harness_task: Some(harness_task),
-                status: AgentStatus::Pending,
-                active: false,
-                output_validator: validator,
-                output_schema: serde_json::from_str(&schema).expect("compiled schema is JSON"),
-                stored_runtime: StoredRuntime::None,
-                next_instruction_revision: 0,
-                active_instruction_revision: None,
-                steering: false,
-                submitted_output: None,
-                last_output: None,
-                follow_up_output: None,
-                delegated_turn: false,
-                last_used: 0,
-                resume_attempts: 0,
-                in_flight_calls: Vec::new(),
-                in_flight_omitted: 0,
-                completion: Completion::None,
-                cancelled_revision: None,
-                in_spawning_turn: false,
-                settled_revision: None,
-                usage: AgentUsage::default(),
-                in_flight_progress: durable::OmittedProgress::default(),
-                residency_lock: Sequencer::new(),
-                changes: watch::Sender::new(0),
-                announce: false,
-                journal_generation: 0,
-            },
-        )?;
-        drop(state);
+        let registry = Arc::clone(self);
+        let root = root_session_id.clone();
+        self.state
+            .call(move |state| -> std::io::Result<()> {
+                let root_session_id = root;
+                state.validate_insert(&root_session_id, &descriptor)?;
+                let (harness, harness_task) = harness::spawn(
+                    root_session_id.clone(),
+                    descriptor.id,
+                    descriptor.context(),
+                    agent,
+                    registry.capacity.clone(),
+                    Arc::downgrade(&registry),
+                    schema.clone(),
+                    None,
+                );
+                if let Some(snapshot) = checkpoint {
+                    registry.record_checkpoint(&root_session_id, descriptor.id, snapshot);
+                }
+                state.insert(
+                    root_session_id,
+                    descriptor.id,
+                    descriptor.session_id.clone(),
+                    ChildSession {
+                        binding_task: descriptor.task.clone(),
+                        descriptor,
+                        host_context,
+                        event_task: Some(event_task),
+                        residency: Residency::Resident(harness),
+                        harness_task: Some(harness_task),
+                        status: AgentStatus::Pending,
+                        active: false,
+                        output_validator: validator,
+                        output_schema: serde_json::from_str(&schema)
+                            .expect("compiled schema is JSON"),
+                        stored_runtime: StoredRuntime::None,
+                        next_instruction_revision: 0,
+                        active_instruction_revision: None,
+                        steering: false,
+                        submitted_output: None,
+                        last_output: None,
+                        follow_up_output: None,
+                        delegated_turn: false,
+                        last_used: 0,
+                        resume_attempts: 0,
+                        in_flight_calls: Vec::new(),
+                        in_flight_omitted: 0,
+                        completion: Completion::None,
+                        cancelled_revision: None,
+                        in_spawning_turn: false,
+                        settled_revision: None,
+                        usage: AgentUsage::default(),
+                        in_flight_progress: durable::OmittedProgress::default(),
+                        residency_lock: Sequencer::new(),
+                        changes: watch::Sender::new(0),
+                        announce: false,
+                        journal_generation: 0,
+                    },
+                )
+            })
+            .await?;
         self.roots.update(|roots| {
             roots.insert(child_session_id.clone(), root_session_id.clone());
         });
@@ -3782,17 +3958,19 @@ impl Registry {
         };
         cancellation.cleanup = None;
         if let Err(error) = saved {
-            if let Some(session) = self
-                .state
-                .acquire()
-                .await
-                .scopes
-                .get_mut(&root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-                && let Some(events) = session.event_task.take()
-            {
-                events.abort();
-            }
+            let root = root_session_id.clone();
+            self.state
+                .call(move |state| {
+                    if let Some(session) = state
+                        .scopes
+                        .get_mut(&root)
+                        .and_then(|scope| scope.sessions.get_mut(&id))
+                        && let Some(events) = session.event_task.take()
+                    {
+                        events.abort();
+                    }
+                })
+                .await;
             return match self.close_batch(&root_session_id, vec![id]).await {
                 Ok(()) => Err(error),
                 Err(cleanup) => Err(std::io::Error::other(format!(
@@ -3810,11 +3988,11 @@ impl Registry {
         prompt: String,
         capacity: TurnCapacity,
     ) -> std::io::Result<()> {
+        let root = root_session_id.to_owned();
         let harness = self
             .state
-            .acquire()
-            .await
-            .harness_in_scope(root_session_id, id)?;
+            .call(move |state| state.harness_in_scope(&root, id))
+            .await?;
         harness.start(prompt, capacity).await
     }
 
@@ -3836,55 +4014,66 @@ impl Registry {
         recovering: bool,
         context: Option<&AgentContext>,
     ) -> Option<u64> {
-        let mut descriptor = None;
-        let revision = {
-            let mut state = self.state.acquire().await;
-            let last_used = state.next_access();
-            let session = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))?;
-            if !session.status.can_start_turn() || session.active {
-                None
-            } else {
-                let revision = if recovering {
-                    session.next_instruction_revision
-                } else {
-                    session.next_instruction_revision.checked_add(1)?
+        let root = root_session_id.to_owned();
+        let context = context.cloned();
+        let (revision, descriptor) = self
+            .state
+            .call(move |state| {
+                let mut descriptor = None;
+                let last_used = state.next_access();
+                let Some(session) = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                else {
+                    return (None, None);
                 };
+                let revision = if !session.status.can_start_turn() || session.active {
+                    None
+                } else {
+                    let revision = if recovering {
+                        session.next_instruction_revision
+                    } else {
+                        let Some(next) = session.next_instruction_revision.checked_add(1) else {
+                            return (None, None);
+                        };
+                        next
+                    };
 
-                let delegated = std::mem::take(&mut session.delegated_turn);
-                if !recovering {
-                    session.follow_up_output = (!delegated
-                        && matches!(session.status, AgentStatus::Completed { .. }))
-                    .then(|| session.last_output.clone())
-                    .flatten();
-                }
-                if !matches!(session.status, AgentStatus::Interrupted) {
-                    session.in_flight_calls.clear();
-                    session.in_flight_omitted = 0;
-                    session.in_flight_progress = durable::OmittedProgress::default();
-                }
-                session.next_instruction_revision = revision;
-                session.active_instruction_revision = Some(revision);
-                session.active = true;
-                session.steering = false;
-                session.submitted_output = None;
-                session.last_used = last_used;
-                session.status = AgentStatus::Running;
-                if let Some(context) = context
-                    && session.descriptor.context().as_ref() != Some(context)
-                {
-                    session.descriptor.model = Some(context.model.clone());
-                    session.descriptor.thinking = Some(context.thinking);
-                    session.descriptor.reasoning_mode = context.reasoning_mode;
-                    let mut updated = session.descriptor.clone();
-                    updated.task = session.binding_task.clone();
-                    descriptor = Some(updated);
-                }
-                Some(revision)
-            }
-        };
+                    let delegated = std::mem::take(&mut session.delegated_turn);
+                    if !recovering {
+                        session.follow_up_output = (!delegated
+                            && matches!(session.status, AgentStatus::Completed { .. }))
+                        .then(|| session.last_output.clone())
+                        .flatten();
+                    }
+                    if !matches!(session.status, AgentStatus::Interrupted) {
+                        session.in_flight_calls.clear();
+                        session.in_flight_omitted = 0;
+                        session.in_flight_progress = durable::OmittedProgress::default();
+                    }
+                    session.next_instruction_revision = revision;
+                    session.active_instruction_revision = Some(revision);
+                    session.active = true;
+                    session.steering = false;
+                    session.submitted_output = None;
+                    session.last_used = last_used;
+                    session.status = AgentStatus::Running;
+                    if let Some(context) = &context
+                        && session.descriptor.context().as_ref() != Some(context)
+                    {
+                        session.descriptor.model = Some(context.model.clone());
+                        session.descriptor.thinking = Some(context.thinking);
+                        session.descriptor.reasoning_mode = context.reasoning_mode;
+                        let mut updated = session.descriptor.clone();
+                        updated.task = session.binding_task.clone();
+                        descriptor = Some(updated);
+                    }
+                    Some(revision)
+                };
+                (revision, descriptor)
+            })
+            .await;
         if revision.is_some() {
             if let Some(descriptor) = descriptor {
                 self.send(root_session_id, AgentUpdate::Added(descriptor));
@@ -3907,23 +4096,26 @@ impl Registry {
         id: AgentId,
         error: String,
     ) {
-        let status = {
-            let mut state = self.state.acquire().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-            session.active = false;
-            session.active_instruction_revision = None;
-            session.steering = false;
-            session.submitted_output = None;
-            if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
-                session.status = AgentStatus::Failed { error };
-            }
-            session.status.clone()
+        let root = root_session_id.to_owned();
+        let status = self
+            .state
+            .call(move |state| {
+                let session = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))?;
+                session.active = false;
+                session.active_instruction_revision = None;
+                session.steering = false;
+                session.submitted_output = None;
+                if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
+                    session.status = AgentStatus::Failed { error };
+                }
+                Some(session.status.clone())
+            })
+            .await;
+        let Some(status) = status else {
+            return;
         };
         self.send_status(root_session_id, AgentUpdate::Status { id, status });
         self.changed();
@@ -3935,87 +4127,79 @@ impl Registry {
         id: AgentId,
         result: AgentResult<TurnResult>,
     ) {
-        let status = {
-            let mut state = self.state.acquire().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-            if !session.active {
-                return;
-            }
-            session.active = false;
-            let revision = session.active_instruction_revision.take();
-            session.steering = false;
-            if matches!(result, Err(NanocodeError::TurnStopped))
-                && session.submitted_output.is_none()
-                && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
-            {
-                let status = session.status.clone();
-                drop(state);
-                self.enqueue_status(
-                    root_session_id,
-                    id,
-                    OrderedJob::Settle {
-                        status,
-                        completion: None,
-                        harness: None,
-                    },
-                );
-                self.changed();
-                return;
-            }
-
-            session.resume_attempts = 0;
-            session.in_flight_calls.clear();
-            session.in_flight_omitted = 0;
-            session.in_flight_progress = durable::OmittedProgress::default();
-            if let Ok(TurnResult {
-                usage: Some(usage), ..
-            }) = &result
-            {
-                session.usage.record(usage);
-            }
-            let follow_up_output = session.follow_up_output.take();
-            let submitted_output = session.submitted_output.take();
-
-            if let Some(output) = &submitted_output {
-                session.last_output = Some(output.clone());
-            }
-            if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
-                session.status.clone()
-            } else {
-                match result {
-                    Ok(_) => complete_session(session, submitted_output.or(follow_up_output)),
-                    Err(NanocodeError::TurnCancelled | NanocodeError::TurnStopped) => {
-                        AgentStatus::Interrupted
-                    }
-                    Err(error) => AgentStatus::Failed {
-                        error: error.to_string(),
-                    },
+        let registry = Arc::clone(self);
+        let root = root_session_id.to_owned();
+        let finished = self
+            .state
+            .call(move |state| {
+                let root_session_id = root.as_str();
+                let session = state
+                    .scopes
+                    .get_mut(root_session_id)
+                    .and_then(|scope| scope.sessions.get_mut(&id))?;
+                if !session.active {
+                    return None;
                 }
-            }
-            .clone_into(&mut session.status);
+                session.active = false;
+                let revision = session.active_instruction_revision.take();
+                session.steering = false;
+                if matches!(result, Err(NanocodeError::TurnStopped))
+                    && session.submitted_output.is_none()
+                    && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
+                {
+                    return Some((session.status.clone(), None, None, false));
+                }
 
-            let harness = session
-                .harness()
-                .cloned()
-                .filter(|_| self.begin_pending_checkpoint(root_session_id));
-            let settled = revision.unwrap_or(session.next_instruction_revision);
-            session.settled_revision = Some(settled);
+                session.resume_attempts = 0;
+                session.in_flight_calls.clear();
+                session.in_flight_omitted = 0;
+                session.in_flight_progress = durable::OmittedProgress::default();
+                if let Ok(TurnResult {
+                    usage: Some(usage), ..
+                }) = &result
+                {
+                    session.usage.record(usage);
+                }
+                let follow_up_output = session.follow_up_output.take();
+                let submitted_output = session.submitted_output.take();
 
-            let completion = (session.status.wakes_parent() && session.descriptor.parent.is_none())
+                if let Some(output) = &submitted_output {
+                    session.last_output = Some(output.clone());
+                }
+                if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
+                    session.status.clone()
+                } else {
+                    match result {
+                        Ok(_) => complete_session(session, submitted_output.or(follow_up_output)),
+                        Err(NanocodeError::TurnCancelled | NanocodeError::TurnStopped) => {
+                            AgentStatus::Interrupted
+                        }
+                        Err(error) => AgentStatus::Failed {
+                            error: error.to_string(),
+                        },
+                    }
+                }
+                .clone_into(&mut session.status);
+
+                let harness = session
+                    .harness()
+                    .cloned()
+                    .filter(|_| registry.begin_pending_checkpoint(root_session_id));
+                let settled = revision.unwrap_or(session.next_instruction_revision);
+                session.settled_revision = Some(settled);
+
+                let completion = (session.status.wakes_parent()
+                    && session.descriptor.parent.is_none())
                 .then_some(settled);
-            if let Some(revision) = completion {
-                session.settle_completion(revision);
-            }
-            (session.status.clone(), completion, harness)
+                if let Some(revision) = completion {
+                    session.settle_completion(revision);
+                }
+                Some((session.status.clone(), completion, harness, true))
+            })
+            .await;
+        let Some((status, completion, harness, settled)) = finished else {
+            return;
         };
-
-        let (status, completion, harness) = status;
         self.enqueue_status(
             root_session_id,
             id,
@@ -4026,6 +4210,9 @@ impl Registry {
             },
         );
         self.changed();
+        if !settled {
+            return;
+        }
         let registry = Arc::clone(self);
         let root_session_id = root_session_id.to_owned();
         drop(platform::spawn(async move {
@@ -4034,15 +4221,17 @@ impl Registry {
     }
 
     async fn enforce_resident_limit(&self, root_session_id: &str) {
-        let locks = self.scope_locks(root_session_id);
         loop {
-            let message_guard = locks.message.enter().await;
-            let eviction = self
-                .state
-                .acquire()
+            let root = root_session_id.to_owned();
+            let limit = self.max_resident.load(Ordering::Relaxed);
+            let Ok(eviction) = self
+                .when_messages_flow(root_session_id, move |state| {
+                    state.take_resident_eviction(&root, limit)
+                })
                 .await
-                .take_resident_eviction(root_session_id, self.max_resident.load(Ordering::Relaxed));
-            drop(message_guard);
+            else {
+                return;
+            };
             let Some(ResidentEviction { id, harness, _lock }) = eviction else {
                 return;
             };
@@ -4069,29 +4258,33 @@ impl Registry {
                         }
                         Some(snapshot) => Some(snapshot),
                     };
-                    if let Some(session) = self
-                        .state
-                        .acquire()
-                        .await
-                        .scopes
-                        .get_mut(root_session_id)
-                        .and_then(|scope| scope.sessions.get_mut(&id))
-                    {
-                        session.stored_runtime =
-                            stored.map_or(StoredRuntime::Journaled, StoredRuntime::Checkpoint);
-                    }
+                    let root = root_session_id.to_owned();
+                    self.state
+                        .call(move |state| {
+                            if let Some(session) = state
+                                .scopes
+                                .get_mut(&root)
+                                .and_then(|scope| scope.sessions.get_mut(&id))
+                            {
+                                session.stored_runtime = stored
+                                    .map_or(StoredRuntime::Journaled, StoredRuntime::Checkpoint);
+                            }
+                        })
+                        .await;
                 }
                 Err(_) => {
-                    if let Some(session) = self
-                        .state
-                        .acquire()
-                        .await
-                        .scopes
-                        .get_mut(root_session_id)
-                        .and_then(|scope| scope.sessions.get_mut(&id))
-                    {
-                        session.residency = Residency::Resident(harness);
-                    }
+                    let root = root_session_id.to_owned();
+                    self.state
+                        .call(move |state| {
+                            if let Some(session) = state
+                                .scopes
+                                .get_mut(&root)
+                                .and_then(|scope| scope.sessions.get_mut(&id))
+                            {
+                                session.residency = Residency::Resident(harness);
+                            }
+                        })
+                        .await;
                     return;
                 }
             }
@@ -4100,14 +4293,17 @@ impl Registry {
                 self.harness_closed(root_session_id, id).await;
             }
 
-            let tasks = {
-                let mut state = self.state.acquire().await;
-                let session = state
-                    .scopes
-                    .get_mut(root_session_id)
-                    .and_then(|scope| scope.sessions.get_mut(&id));
-                session.map(|session| (session.harness_task.take(), session.event_task.take()))
-            };
+            let root = root_session_id.to_owned();
+            let tasks = self
+                .state
+                .call(move |state| {
+                    let session = state
+                        .scopes
+                        .get_mut(&root)
+                        .and_then(|scope| scope.sessions.get_mut(&id));
+                    session.map(|session| (session.harness_task.take(), session.event_task.take()))
+                })
+                .await;
             if let Some((harness_task, event_task)) = tasks {
                 if let Some(task) = harness_task {
                     let _ = task.await;
@@ -4120,38 +4316,40 @@ impl Registry {
     }
 
     pub(super) async fn harness_closed(&self, root_session_id: &str, id: AgentId) {
-        let (status_update, detach) = {
-            let mut state = self.state.acquire().await;
-            let Some(scope) = state.scopes.get_mut(root_session_id) else {
-                return;
-            };
+        let root = root_session_id.to_owned();
+        let closed = self
+            .state
+            .call(move |state| {
+                let scope = state.scopes.get_mut(&root)?;
 
-            let detach = scope.closing;
-            let Some(session) = scope.sessions.get_mut(&id) else {
-                return;
-            };
-            let status = if matches!(session.status, AgentStatus::Closed) {
-                None
-            } else {
-                let evicted = matches!(session.residency, Residency::Evicted)
-                    && !matches!(session.status, AgentStatus::Closing);
-                session.residency = if evicted {
-                    Residency::Evicted
-                } else {
-                    Residency::Detached
-                };
-                session.active = false;
-                session.active_instruction_revision = None;
-                session.steering = false;
-                session.submitted_output = None;
-                if evicted {
+                let detach = scope.closing;
+                let session = scope.sessions.get_mut(&id)?;
+                let status = if matches!(session.status, AgentStatus::Closed) {
                     None
                 } else {
-                    session.status = AgentStatus::Closed;
-                    Some(AgentStatus::Closed)
-                }
-            };
-            (status, detach)
+                    let evicted = matches!(session.residency, Residency::Evicted)
+                        && !matches!(session.status, AgentStatus::Closing);
+                    session.residency = if evicted {
+                        Residency::Evicted
+                    } else {
+                        Residency::Detached
+                    };
+                    session.active = false;
+                    session.active_instruction_revision = None;
+                    session.steering = false;
+                    session.submitted_output = None;
+                    if evicted {
+                        None
+                    } else {
+                        session.status = AgentStatus::Closed;
+                        Some(AgentStatus::Closed)
+                    }
+                };
+                Some((status, detach))
+            })
+            .await;
+        let Some((status_update, detach)) = closed else {
+            return;
         };
         if let Some(status) = status_update {
             let _ = send_update(
@@ -4165,17 +4363,20 @@ impl Registry {
     }
 
     async fn runtime_closed(&self, root_session_id: &str, id: AgentId) {
-        let harness = {
-            let state = self.state.acquire().await;
-            state
-                .scopes
-                .get(root_session_id)
-                .and_then(|scope| scope.sessions.get(&id))
-                .filter(|session| {
-                    !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
-                })
-                .and_then(|session| session.harness().cloned())
-        };
+        let root = root_session_id.to_owned();
+        let harness = self
+            .state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .filter(|session| {
+                        !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
+                    })
+                    .and_then(|session| session.harness().cloned())
+            })
+            .await;
         let Some(harness) = harness else {
             self.harness_closed(root_session_id, id).await;
             return;
@@ -4532,20 +4733,26 @@ impl Registry {
         id: AgentId,
         revision: u64,
     ) -> Option<(AgentStatus, String, u32, bool)> {
-        let state = self.state.acquire().await;
-        state
-            .scopes
-            .get(root_session_id)
-            .and_then(|scope| scope.sessions.get(&id))
-            .filter(|session| session.completion.awaits(revision) && session.status.wakes_parent())
-            .map(|session| {
-                (
-                    session.status.clone(),
-                    session.descriptor.session_id.clone(),
-                    session.completion.attempt(),
-                    session.completion.parked(),
-                )
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .filter(|session| {
+                        session.completion.awaits(revision) && session.status.wakes_parent()
+                    })
+                    .map(|session| {
+                        (
+                            session.status.clone(),
+                            session.descriptor.session_id.clone(),
+                            session.completion.attempt(),
+                            session.completion.parked(),
+                        )
+                    })
             })
+            .await
     }
 
     async fn settle_notice(
@@ -4604,16 +4811,20 @@ impl Registry {
     }
 
     async fn next_completion_attempt(&self, root_session_id: &str, id: AgentId, revision: u64) {
-        let mut state = self.state.acquire().await;
-        if let Some(scope) = state.scopes.get_mut(root_session_id)
-            && scope
-                .sessions
-                .get(&id)
-                .is_some_and(|session| session.completion.awaits(revision))
-            && let Some(session) = scope.sessions.get_mut(&id)
-        {
-            session.completion.next_attempt();
-        }
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                if let Some(scope) = state.scopes.get_mut(&root)
+                    && scope
+                        .sessions
+                        .get(&id)
+                        .is_some_and(|session| session.completion.awaits(revision))
+                    && let Some(session) = scope.sessions.get_mut(&id)
+                {
+                    session.completion.next_attempt();
+                }
+            })
+            .await;
     }
 
     async fn park_completion(
@@ -4623,30 +4834,33 @@ impl Registry {
         revision: u64,
         held: bool,
     ) -> bool {
-        let parked = {
-            let mut state = self.state.acquire().await;
-            let Some(scope) = state.scopes.get_mut(root_session_id) else {
-                return false;
-            };
-            let lineage = held
-                || scope
+        let root = root_session_id.to_owned();
+        let parked = self
+            .state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return false;
+                };
+                let lineage = held
+                    || scope
+                        .sessions
+                        .values()
+                        .any(|session| session.completion.parked());
+                let pending = scope
                     .sessions
-                    .values()
-                    .any(|session| session.completion.parked());
-            let pending = scope
-                .sessions
-                .get(&id)
-                .is_some_and(|session| session.completion.awaits(revision));
-            if lineage
-                && pending
-                && let Some(session) = scope.sessions.get_mut(&id)
-            {
-                session.completion.park();
-                true
-            } else {
-                false
-            }
-        };
+                    .get(&id)
+                    .is_some_and(|session| session.completion.awaits(revision));
+                if lineage
+                    && pending
+                    && let Some(session) = scope.sessions.get_mut(&id)
+                {
+                    session.completion.park();
+                    true
+                } else {
+                    false
+                }
+            })
+            .await;
         if parked {
             self.completion_retries.update(|retries| {
                 retries.remove(&(root_session_id.to_owned(), id));
@@ -4745,35 +4959,38 @@ impl Registry {
     }
 
     async fn needs_root_watch(&self, root_session_id: &str) -> bool {
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
-            .await
-            .scopes
-            .get(root_session_id)
-            .is_some_and(|scope| {
-                scope.sessions.values().any(|session| {
-                    session.completion.parked()
-                        || (session.descriptor.parent.is_none() && session.status.is_active())
+            .call(move |state| {
+                state.scopes.get(&root).is_some_and(|scope| {
+                    scope.sessions.values().any(|session| {
+                        session.completion.parked()
+                            || (session.descriptor.parent.is_none() && session.status.is_active())
+                    })
                 })
             })
+            .await
     }
 
     pub(super) async fn spawned_in_turn(self: &Arc<Self>, session_id: &str, id: AgentId) {
-        let root = {
-            let mut state = self.state.acquire().await;
-            let root = state.root_session_id(session_id).to_owned();
-            if root != session_id {
-                return;
-            }
-            let Some(session) = state
-                .scopes
-                .get_mut(&root)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-            session.in_spawning_turn = true;
-            root
+        let session = session_id.to_owned();
+        let root = self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                if root != session {
+                    return None;
+                }
+                let spawned = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))?;
+                spawned.in_spawning_turn = true;
+                Some(root)
+            })
+            .await;
+        let Some(root) = root else {
+            return;
         };
         self.running_roots.update(|running| {
             running.insert(root.clone());
@@ -4791,38 +5008,48 @@ impl Registry {
         request_id: Option<&str>,
         cancelled: bool,
     ) {
-        let marked = {
-            let mut state = self.state.acquire().await;
-            let Some(scope) = state.scopes.get_mut(root_session_id) else {
-                return;
-            };
-            let spawned = scope
-                .sessions
-                .iter()
-                .filter(|(_, session)| {
-                    session.descriptor.parent.is_none()
-                        && (session.in_spawning_turn
-                            || session.host_context.as_deref().is_some_and(|context| {
-                                context == turn_id || Some(context) == request_id
-                            }))
-                })
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            let mut marked = false;
-            for id in spawned {
-                let Some(session) = scope.sessions.get_mut(&id) else {
-                    continue;
+        let root = root_session_id.to_owned();
+        let turn_id = turn_id.to_owned();
+        let request_id = request_id.map(str::to_owned);
+        let marked = self
+            .state
+            .call(move |state| {
+                let turn_id = turn_id.as_str();
+                let request_id = request_id.as_deref();
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return false;
                 };
-                session.in_spawning_turn = false;
-                if cancelled && session.status.is_active() && session.cancelled_revision.is_none() {
-                    session.cancelled_revision = session
-                        .active_instruction_revision
-                        .or_else(|| session.next_instruction_revision.checked_add(1));
-                    marked = true;
+                let spawned = scope
+                    .sessions
+                    .iter()
+                    .filter(|(_, session)| {
+                        session.descriptor.parent.is_none()
+                            && (session.in_spawning_turn
+                                || session.host_context.as_deref().is_some_and(|context| {
+                                    context == turn_id || Some(context) == request_id
+                                }))
+                    })
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                let mut marked = false;
+                for id in spawned {
+                    let Some(session) = scope.sessions.get_mut(&id) else {
+                        continue;
+                    };
+                    session.in_spawning_turn = false;
+                    if cancelled
+                        && session.status.is_active()
+                        && session.cancelled_revision.is_none()
+                    {
+                        session.cancelled_revision = session
+                            .active_instruction_revision
+                            .or_else(|| session.next_instruction_revision.checked_add(1));
+                        marked = true;
+                    }
                 }
-            }
-            marked
-        };
+                marked
+            })
+            .await;
         if marked
             && self.store_for(root_session_id).is_some()
             && let Err(error) = self.persist_durably(root_session_id).await
@@ -4832,24 +5059,27 @@ impl Registry {
     }
 
     async fn unpark_completions(&self, root_session_id: &str) {
-        let unparked = {
-            let mut state = self.state.acquire().await;
-            let Some(scope) = state.scopes.get_mut(root_session_id) else {
-                return;
-            };
-            let ids = scope
-                .sessions
-                .iter()
-                .filter(|(_, session)| session.completion.parked())
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|id| {
-                    let revision = scope.sessions.get_mut(&id)?.completion.unpark()?;
-                    Some((id, revision))
-                })
-                .collect::<Vec<_>>()
-        };
+        let root = root_session_id.to_owned();
+        let unparked = self
+            .state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return Vec::new();
+                };
+                let ids = scope
+                    .sessions
+                    .iter()
+                    .filter(|(_, session)| session.completion.parked())
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                ids.into_iter()
+                    .filter_map(|id| {
+                        let revision = scope.sessions.get_mut(&id)?.completion.unpark()?;
+                        Some((id, revision))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
         if unparked.is_empty() {
             return;
         }
@@ -4860,21 +5090,24 @@ impl Registry {
     }
 
     async fn restore_completion(&self, root_session_id: &str, id: AgentId, revision: u64) {
-        let mut state = self.state.acquire().await;
-        if let Some(session) = state
-            .scopes
-            .get_mut(root_session_id)
-            .and_then(|scope| scope.sessions.get_mut(&id))
-            && session.completion == Completion::None
-            && session.settled_revision == Some(revision)
-            && session.status.wakes_parent()
-        {
-            session.completion = Completion::Pending {
-                revision,
-                attempt: 0,
-            };
-        }
-        drop(state);
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                if let Some(session) = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                    && session.completion == Completion::None
+                    && session.settled_revision == Some(revision)
+                    && session.status.wakes_parent()
+                {
+                    session.completion = Completion::Pending {
+                        revision,
+                        attempt: 0,
+                    };
+                }
+            })
+            .await;
         self.changed();
     }
 
@@ -4889,17 +5122,24 @@ impl Registry {
             self.acknowledge_observed(root_session_id, ids).await;
             return None;
         };
-        let pending = {
-            let state = self.state.acquire().await;
-            let scope = state.scopes.get(root_session_id)?;
-            ids.iter()
-                .filter_map(|id| {
-                    let session = scope.sessions.get(id)?;
-                    let revision = session.completion.revision()?;
-                    session.status.wakes_parent().then_some((*id, revision))
-                })
-                .collect::<Vec<_>>()
-        };
+        let root = root_session_id.to_owned();
+        let wanted = ids.to_vec();
+        let pending = self
+            .state
+            .call(move |state| {
+                let scope = state.scopes.get(&root)?;
+                Some(
+                    wanted
+                        .iter()
+                        .filter_map(|id| {
+                            let session = scope.sessions.get(id)?;
+                            let revision = session.completion.revision()?;
+                            session.status.wakes_parent().then_some((*id, revision))
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .await?;
         let (claimed, routed) = self.completion_routes.update(|routes| {
             let mut claimed = Vec::new();
             let mut routed = Vec::new();
@@ -4975,12 +5215,11 @@ impl Registry {
         listed: &[AgentDirectoryEntry],
         call_id: &str,
     ) -> Option<Arc<dyn ToolReceipt>> {
+        let session = session_id.to_owned();
         let root = self
             .state
-            .acquire()
-            .await
-            .root_session_id(session_id)
-            .to_owned();
+            .call(move |state| state.root_session_id(&session).to_owned())
+            .await;
         if root != session_id {
             return None;
         }
@@ -4992,25 +5231,29 @@ impl Registry {
     }
 
     async fn acknowledge_observed(&self, root_session_id: &str, ids: &[AgentId]) {
-        let observed = {
-            let mut state = self.state.acquire().await;
-            let Some(scope) = state.scopes.get_mut(root_session_id) else {
-                return;
-            };
-            ids.iter()
-                .copied()
-                .filter(|id| {
-                    scope.sessions.get_mut(id).is_some_and(|session| {
-                        let observed = session.status.wakes_parent()
-                            && session.completion.revision().is_some();
-                        if observed {
-                            session.clear_completion();
-                        }
-                        observed
+        let root = root_session_id.to_owned();
+        let wanted = ids.to_vec();
+        let observed = self
+            .state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return Vec::new();
+                };
+                wanted
+                    .into_iter()
+                    .filter(|id| {
+                        scope.sessions.get_mut(id).is_some_and(|session| {
+                            let observed = session.status.wakes_parent()
+                                && session.completion.revision().is_some();
+                            if observed {
+                                session.clear_completion();
+                            }
+                            observed
+                        })
                     })
-                })
-                .collect::<Vec<_>>()
-        };
+                    .collect::<Vec<_>>()
+            })
+            .await;
         if observed.is_empty() {
             return;
         }
@@ -5029,10 +5272,16 @@ impl Registry {
         include_self: bool,
     ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
         self.await_restored(session_id).await?;
-        let state = self.state.acquire().await;
-        let mut entries = state.directory(session_id, include_completed, include_self);
-        let root = state.root_session_id(session_id).to_owned();
-        drop(state);
+        let session = session_id.to_owned();
+        let (mut entries, root) = self
+            .state
+            .call(move |state| {
+                (
+                    state.directory(&session, include_completed, include_self),
+                    state.root_session_id(&session).to_owned(),
+                )
+            })
+            .await;
 
         if let Some(resuming) = self
             .pending_resume
@@ -5059,46 +5308,54 @@ impl Registry {
         to: AgentId,
         purpose: MessagePurpose,
     ) -> std::io::Result<Turn> {
-        let (root, target) = {
-            let state = self.state.acquire().await;
-            let root = state.root_session_id(session_id).to_owned();
-            let scope = state
-                .scopes
-                .get(&root)
-                .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?;
-            if scope.topology.agent_for_session(session_id) == Some(to) {
-                return Err(std::io::Error::other("agents cannot message themselves"));
-            }
-            if purpose == MessagePurpose::Delegate {
-                scope.topology.authorize(session_id, to)?;
-            }
-            let target = scope
-                .sessions
-                .get(&to)
-                .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?
-                .residency_lock
-                .clone();
-            (root, target)
-        };
-        let guard = target.enter().await;
-        let mut ancestors = HashMap::new();
-        let mut missing = loop {
-            let (missing, locks) = {
-                let state = self.state.acquire().await;
+        let session = session_id.to_owned();
+        let (root, target) = self
+            .state
+            .call(move |state| -> std::io::Result<_> {
+                let session_id = session.as_str();
+                let root = state.root_session_id(session_id).to_owned();
                 let scope = state
                     .scopes
                     .get(&root)
                     .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?;
-                let missing = Self::missing_runtimes(scope, &root, to)?;
-                let locks = missing
-                    .iter()
-                    .filter(|(id, ..)| *id != to && !ancestors.contains_key(id))
-                    .filter_map(|(id, ..)| {
-                        Some((*id, scope.sessions.get(id)?.residency_lock.clone()))
+                if scope.topology.agent_for_session(session_id) == Some(to) {
+                    return Err(std::io::Error::other("agents cannot message themselves"));
+                }
+                if purpose == MessagePurpose::Delegate {
+                    scope.topology.authorize(session_id, to)?;
+                }
+                let target = scope
+                    .sessions
+                    .get(&to)
+                    .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?
+                    .residency_lock
+                    .clone();
+                Ok((root, target))
+            })
+            .await?;
+        let guard = target.enter().await;
+        let mut ancestors = HashMap::new();
+        let mut missing = loop {
+            let held = ancestors.keys().copied().collect::<HashSet<_>>();
+            let scoped = root.clone();
+            let (missing, locks) =
+                self.state
+                    .call(move |state| -> std::io::Result<_> {
+                        let root = scoped;
+                        let scope = state.scopes.get(&root).ok_or_else(|| {
+                            std::io::Error::other(format!("unknown agent_id {to}"))
+                        })?;
+                        let missing = Self::missing_runtimes(scope, &root, to)?;
+                        let locks = missing
+                            .iter()
+                            .filter(|(id, ..)| *id != to && !held.contains(id))
+                            .filter_map(|(id, ..)| {
+                                Some((*id, scope.sessions.get(id)?.residency_lock.clone()))
+                            })
+                            .collect::<Vec<_>>();
+                        Ok((missing, locks))
                     })
-                    .collect::<Vec<_>>();
-                (missing, locks)
-            };
+                    .await?;
             if locks.is_empty() {
                 break missing;
             }
@@ -5210,27 +5467,31 @@ impl Registry {
                 contract.schema,
                 needs_assignment.then(|| super::model::agent_prompt(id, &task)),
             );
-            let mut state = self.state.acquire().await;
-            let session = state
-                .scopes
-                .get_mut(&root)
-                .expect("locked scope")
-                .sessions
-                .get_mut(&id)
-                .expect("retained child");
-            session.descriptor.model = Some(context.model);
-            session.descriptor.thinking = Some(context.thinking);
-            session.descriptor.reasoning_mode = context.reasoning_mode;
-            session.residency = Residency::Resident(harness);
-            session.harness_task = Some(task);
-            session.event_task = Some(event_task);
+            let scoped = root.clone();
+            let announce = self
+                .state
+                .call(move |state| {
+                    let session = state
+                        .scopes
+                        .get_mut(&scoped)
+                        .expect("locked scope")
+                        .sessions
+                        .get_mut(&id)
+                        .expect("retained child");
+                    session.descriptor.model = Some(context.model);
+                    session.descriptor.thinking = Some(context.thinking);
+                    session.descriptor.reasoning_mode = context.reasoning_mode;
+                    session.residency = Residency::Resident(harness);
+                    session.harness_task = Some(task);
+                    session.event_task = Some(event_task);
 
-            let announce = std::mem::take(&mut session.announce).then(|| {
-                let mut descriptor = session.descriptor.clone();
-                descriptor.task = session.binding_task.clone();
-                descriptor
-            });
-            drop(state);
+                    std::mem::take(&mut session.announce).then(|| {
+                        let mut descriptor = session.descriptor.clone();
+                        descriptor.task = session.binding_task.clone();
+                        descriptor
+                    })
+                })
+                .await;
             if let Some(descriptor) = announce {
                 self.send(&root, AgentUpdate::Added(descriptor));
             }
@@ -5278,42 +5539,38 @@ impl Registry {
         user: bool,
     ) -> std::io::Result<MessageReceipt> {
         let target = self.rehydrate(session_id, to, purpose).await?;
-        let locks = self.session_locks(session_id).await;
-        let message_guard = locks.message.enter().await;
-        let prepared = self.state.acquire().await.prepare_message(
-            session_id,
-            to,
-            priority,
-            purpose,
-            in_reply_to,
-            body,
-            user,
-        )?;
-        let delivery = prepared
-            .harness
-            .enqueue_delivery(prepared.message.clone())?;
-        self.state
-            .acquire()
-            .await
-            .commit_message(&prepared.root_session_id, prepared.message.clone())?;
-        drop(message_guard);
+        let session = session_id.to_owned();
+        let (prepared, delivery) = self
+            .when_messages_flow(session_id, move |state| -> std::io::Result<_> {
+                let prepared = state.prepare_message(
+                    &session,
+                    to,
+                    priority,
+                    purpose,
+                    in_reply_to,
+                    body,
+                    user,
+                )?;
+                let delivery = prepared
+                    .harness
+                    .enqueue_delivery(prepared.message.clone())?;
+                state.commit_message(&prepared.root_session_id, prepared.message.clone())?;
+                Ok((prepared, delivery))
+            })
+            .await??;
         drop(target);
         if self.store_for(&prepared.root_session_id).is_some()
             && let Err(error) = self.persist_durably(&prepared.root_session_id).await
         {
-            self.state
-                .acquire()
-                .await
-                .rollback_message(&prepared.root_session_id, prepared.message.id);
+            self.rollback_message(&prepared.root_session_id, prepared.message.id)
+                .await;
             return Err(error);
         }
         let disposition = match delivery.release().await {
             Ok(disposition) => disposition,
             Err(error) => {
-                self.state
-                    .acquire()
-                    .await
-                    .rollback_message(&prepared.root_session_id, prepared.message.id);
+                self.rollback_message(&prepared.root_session_id, prepared.message.id)
+                    .await;
                 if self.store_for(&prepared.root_session_id).is_some()
                     && let Err(persist) = self.persist_durably(&prepared.root_session_id).await
                 {
@@ -5337,14 +5594,24 @@ impl Registry {
         })
     }
 
-    async fn pending_messages(&self, root_session_id: &str) -> Vec<AgentMessage> {
+    async fn rollback_message(&self, root_session_id: &str, id: MessageId) {
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
+            .call(move |state| state.rollback_message(&root, id))
+            .await;
+    }
+
+    async fn pending_messages(&self, root_session_id: &str) -> Vec<AgentMessage> {
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .map(|scope| scope.messages.pending_messages())
+                    .unwrap_or_default()
+            })
             .await
-            .scopes
-            .get(root_session_id)
-            .map(|scope| scope.messages.pending_messages())
-            .unwrap_or_default()
     }
 
     async fn redeliver_messages(
@@ -5385,14 +5652,13 @@ impl Registry {
         let _target = self
             .rehydrate(root_session_id, message.to, MessagePurpose::Coordinate)
             .await?;
-        let locks = self.session_locks(root_session_id).await;
-        let message_guard = locks.message.enter().await;
+        let root = root_session_id.to_owned();
+        let to = message.to;
         let harness = self
-            .state
-            .acquire()
-            .await
-            .harness_in_scope(root_session_id, message.to)?;
-        drop(message_guard);
+            .when_messages_flow(root_session_id, move |state| {
+                state.harness_in_scope(&root, to)
+            })
+            .await??;
         harness.redeliver(message).await
     }
 
@@ -5402,12 +5668,15 @@ impl Registry {
         id: MessageId,
         disposition: MessageDisposition,
     ) {
-        let thread = {
-            let mut state = self.state.acquire().await;
-            let thread = state.thread_for_message(root_session_id, id);
-            state.mark_message_admitted(root_session_id, id, disposition);
-            thread
-        };
+        let root = root_session_id.to_owned();
+        let thread = self
+            .state
+            .call(move |state| {
+                let thread = state.thread_for_message(&root, id);
+                state.mark_message_admitted(&root, id, disposition);
+                thread
+            })
+            .await;
         let Some(thread) = thread else {
             return;
         };
@@ -5423,10 +5692,7 @@ impl Registry {
     }
 
     pub(super) async fn message_rejected(&self, root_session_id: &str, id: MessageId) {
-        self.state
-            .acquire()
-            .await
-            .rollback_message(root_session_id, id);
+        self.rollback_message(root_session_id, id).await;
     }
 
     pub(super) async fn message_delivered(
@@ -5448,11 +5714,11 @@ impl Registry {
         root_session_id: &str,
         id: MessageId,
     ) -> Option<DelegationChange> {
+        let root = root_session_id.to_owned();
         let (change, descriptor) = self
             .state
-            .acquire()
-            .await
-            .begin_delegation(root_session_id, id)?;
+            .call(move |state| state.begin_delegation(&root, id))
+            .await?;
         self.send(root_session_id, AgentUpdate::Added(descriptor));
         self.changed();
         Some(change)
@@ -5463,11 +5729,11 @@ impl Registry {
         root_session_id: &str,
         change: DelegationChange,
     ) {
+        let root = root_session_id.to_owned();
         let descriptor = self
             .state
-            .acquire()
-            .await
-            .rollback_delegation(root_session_id, change);
+            .call(move |state| state.rollback_delegation(&root, change))
+            .await;
         if let Some(descriptor) = descriptor {
             self.send(root_session_id, AgentUpdate::Added(descriptor));
             self.changed();
@@ -5485,27 +5751,27 @@ impl Registry {
         message_id: MessageId,
         delivery: MessageDeliveryState,
     ) {
-        let thread = self
-            .state
-            .acquire()
-            .await
-            .thread_for_message(root_session_id, message_id);
-        let Some(thread) = thread else {
+        let Some(registry) = self.shared() else {
             return;
         };
-        self.send(
-            root_session_id,
-            AgentUpdate::Message(AgentMessageUpdate {
-                message_id,
-                thread,
-                delivery,
-            }),
-        );
-        self.changed();
+        let root = root_session_id.to_owned();
         self.state
-            .acquire()
-            .await
-            .mark_message_terminal(root_session_id, message_id);
+            .call(move |state| {
+                let Some(thread) = state.thread_for_message(&root, message_id) else {
+                    return;
+                };
+                registry.send(
+                    &root,
+                    AgentUpdate::Message(AgentMessageUpdate {
+                        message_id,
+                        thread,
+                        delivery,
+                    }),
+                );
+                registry.changed();
+                state.mark_message_terminal(&root, message_id);
+            })
+            .await;
     }
 
     pub async fn wait(
@@ -5535,27 +5801,36 @@ impl Registry {
         if ids.is_empty() {
             return Err(std::io::Error::other("agent_ids must not be empty"));
         }
-        let mut changes = {
-            let state = self.state.acquire().await;
-            state
-                .scopes
-                .get(state.root_session_id(session_id))
-                .map(|scope| {
-                    ids.iter()
-                        .filter_map(|id| scope.sessions.get(id))
-                        .map(|session| session.changes.subscribe())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
+        let session = session_id.to_owned();
+        let wanted = ids.to_vec();
+        let mut changes = self
+            .state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(state.root_session_id(&session))
+                    .map(|scope| {
+                        wanted
+                            .iter()
+                            .filter_map(|id| scope.sessions.get(id))
+                            .map(|session| session.changes.subscribe())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .await;
 
         let deadline = Instant::now().checked_add(duration);
         loop {
-            let (snapshot, root) = {
-                let state = self.state.acquire().await;
-                let root = state.root_session_id(session_id).to_owned();
-                (state.wait_snapshot(session_id, ids)?, root)
-            };
+            let session = session_id.to_owned();
+            let wanted = ids.to_vec();
+            let (snapshot, root) = self
+                .state
+                .call(move |state| -> std::io::Result<_> {
+                    let root = state.root_session_id(&session).to_owned();
+                    Ok((state.wait_snapshot(&session, &wanted)?, root))
+                })
+                .await?;
 
             let resuming = self
                 .pending_resume
@@ -5654,7 +5929,12 @@ impl Registry {
                 }
             };
             if timed_out {
-                let summaries = self.state.acquire().await.summaries(session_id, ids)?;
+                let session = session_id.to_owned();
+                let wanted = ids.to_vec();
+                let summaries = self
+                    .state
+                    .call(move |state| state.summaries(&session, &wanted))
+                    .await?;
                 return Ok((summaries, delivered, true, None));
             }
         }
@@ -5675,33 +5955,37 @@ impl Registry {
     ) -> std::io::Result<Vec<AgentSummary>> {
         self.await_restored(session_id).await?;
         let locks = self.session_locks(session_id).await;
-        let _message_guard = locks.message.enter().await;
-        let (root_session_id, ids, harnesses) = {
-            let mut state = self.state.acquire().await;
-            state.request_interrupt(session_id, id)?
-        };
+        let _closing = locks.closing.enter().await;
+        let _paused = self.pause_messages(session_id).await;
+        let session = session_id.to_owned();
+        let (root_session_id, ids, harnesses) = self
+            .state
+            .call(move |state| state.request_interrupt(&session, id))
+            .await?;
         self.changed();
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
         self.interrupt_harnesses(&root_session_id, &ids, harnesses, deadline)
             .await?;
         self.state
-            .acquire()
+            .call(move |state| state.summaries_in_scope(&root_session_id, &ids))
             .await
-            .summaries_in_scope(&root_session_id, &ids)
     }
 
     pub async fn close(&self, session_id: &str, id: AgentId) -> std::io::Result<Vec<AgentSummary>> {
         self.await_restored(session_id).await?;
         let locks = self.session_locks(session_id).await;
-        let _message_guard = locks.message.enter().await;
+        let _closing = locks.closing.enter().await;
+        let _paused = self.pause_messages(session_id).await;
         let CloseRequest {
             root_session_id,
             ids,
             harnesses,
             status_updates,
         } = {
-            let mut state = self.state.acquire().await;
-            state.request_close(session_id, id)?
+            let session = session_id.to_owned();
+            self.state
+                .call(move |state| state.request_close(&session, id))
+                .await?
         };
         for (id, status) in status_updates {
             self.send_status(&root_session_id, AgentUpdate::Status { id, status });
@@ -5710,13 +5994,16 @@ impl Registry {
         let summaries = self
             .stop_and_close(root_session_id.clone(), ids, harnesses, false)
             .await?;
+        let root = root_session_id.clone();
         let frozen = self
             .state
-            .acquire()
-            .await
-            .scopes
-            .get(&root_session_id)
-            .is_some_and(|scope| scope.journal_frozen);
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .is_some_and(|scope| scope.journal_frozen)
+            })
+            .await;
         if self.store_for(&root_session_id).is_some() && !frozen {
             self.persist_durably(&root_session_id)
                 .await
@@ -5752,18 +6039,45 @@ impl Registry {
     async fn close_all(&self, session_id: &str) -> std::io::Result<Vec<AgentSummary>> {
         self.await_restored(session_id).await?;
         let locks = self.session_locks(session_id).await;
-        let _message_guard = locks.message.enter().await;
+        let _closing = locks.closing.enter().await;
+        let _paused = self.pause_messages(session_id).await;
         let mut revision = self.revision.subscribe();
         let capture_deadline = Instant::now() + AGENT_STOP_TIMEOUT;
+        let registry = self.shared();
         let (request, final_journal) = loop {
-            let mut state = self.state.acquire().await;
-            let root = state.root_session_id(session_id).to_owned();
-            let captures_pending = self
-                .pending_checkpoints
-                .read(|pending| pending.contains_key(&root));
-            if captures_pending {
-                drop(state);
-
+            let session = session_id.to_owned();
+            let registry = registry.clone();
+            let attempt = self
+                .state
+                .call(move |state| -> std::io::Result<_> {
+                    let root = state.root_session_id(&session).to_owned();
+                    let Some(registry) = registry else {
+                        return Err(std::io::Error::other("subagent runtime is closed"));
+                    };
+                    let captures_pending = registry
+                        .pending_checkpoints
+                        .read(|pending| pending.contains_key(&root));
+                    if captures_pending {
+                        return Ok(Err(root));
+                    }
+                    let frozen = state
+                        .scopes
+                        .get(&root)
+                        .is_some_and(|scope| scope.journal_frozen);
+                    let final_journal = match registry.store_for(&root) {
+                        Some(_) if !frozen => {
+                            let checkpoints = registry.checkpoints.get();
+                            let scope = state.scope_mut(&root);
+                            let payload = scope.journal_payload(&root, &checkpoints)?;
+                            scope.journal_frozen = true;
+                            Some(payload)
+                        }
+                        _ => None,
+                    };
+                    Ok(Ok((state.request_close_all(&session)?, final_journal)))
+                })
+                .await?;
+            if let Err(root) = attempt {
                 match timeout_at(capture_deadline, revision.changed()).await {
                     Ok(Ok(())) => continue,
                     Ok(Err(_)) => {
@@ -5778,23 +6092,9 @@ impl Registry {
                     }
                 }
             }
-
-            let frozen = state
-                .scopes
-                .get(&root)
-                .is_some_and(|scope| scope.journal_frozen);
-            let final_journal = match self.store_for(&root) {
-                Some(_) if !frozen => {
-                    let checkpoints = self.checkpoints.get();
-                    let scope = state.scope_mut(&root);
-                    let payload = scope.journal_payload(&root, &checkpoints)?;
-                    scope.journal_frozen = true;
-                    Some(payload)
-                }
-                _ => None,
-            };
-
-            break (state.request_close_all(session_id)?, final_journal);
+            if let Ok(ready) = attempt {
+                break ready;
+            }
         };
         let CloseRequest {
             root_session_id,
@@ -5845,11 +6145,13 @@ impl Registry {
             summaries,
             harness_tasks,
             event_tasks,
-        } = self
-            .state
-            .acquire()
-            .await
-            .finish_close(&root_session_id, &ids)?;
+        } = {
+            let root = root_session_id.clone();
+            let closing = ids.clone();
+            self.state
+                .call(move |state| state.finish_close(&root, &closing))
+                .await?
+        };
         for summary in &summaries {
             let _ = send_update(
                 &self.updates,
@@ -5862,21 +6164,27 @@ impl Registry {
             );
         }
         let closed_sessions = {
-            let state = self.state.acquire().await;
-            state
-                .scopes
-                .get(&root_session_id)
-                .map(|scope| {
-                    ids.iter()
-                        .filter_map(|id| {
-                            scope
-                                .sessions
-                                .get(id)
-                                .map(|session| session.descriptor.session_id.clone())
+            let root = root_session_id.clone();
+            let closing = ids.clone();
+            self.state
+                .call(move |state| {
+                    state
+                        .scopes
+                        .get(&root)
+                        .map(|scope| {
+                            closing
+                                .iter()
+                                .filter_map(|id| {
+                                    scope
+                                        .sessions
+                                        .get(id)
+                                        .map(|session| session.descriptor.session_id.clone())
+                                })
+                                .collect::<Vec<_>>()
                         })
-                        .collect::<Vec<_>>()
+                        .unwrap_or_default()
                 })
-                .unwrap_or_default()
+                .await
         };
         self.session_handles.update(|handles| {
             for session in &closed_sessions {
@@ -5896,11 +6204,13 @@ impl Registry {
             return;
         }
         let locks = self.session_locks(session_id).await;
-        let _message_guard = locks.message.enter().await;
-        let (root_session_id, ids, harnesses) = {
-            let mut state = self.state.acquire().await;
-            state.request_interrupt_all(session_id)
-        };
+        let _closing = locks.closing.enter().await;
+        let _paused = self.pause_messages(session_id).await;
+        let session = session_id.to_owned();
+        let (root_session_id, ids, harnesses) = self
+            .state
+            .call(move |state| state.request_interrupt_all(&session))
+            .await;
         self.changed();
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
         drop(
@@ -5998,11 +6308,12 @@ impl Registry {
     ) -> std::io::Result<()> {
         let mut revision = self.revision.subscribe();
         loop {
+            let root = root_session_id.to_owned();
+            let waiting = ids.to_vec();
             if self
                 .state
-                .acquire()
-                .await
-                .all_inactive(root_session_id, ids)?
+                .call(move |state| state.all_inactive(&root, &waiting))
+                .await?
             {
                 return Ok(());
             }

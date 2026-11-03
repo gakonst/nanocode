@@ -79,39 +79,45 @@ impl Registry {
             checkpoint_captures,
             ..SubagentActivity::default()
         };
-        let state = self.state.acquire().await;
-        if state.root_by_session.contains_key(root_session_id) {
-            activity.restore_failure = Some(not_root(root_session_id));
-            return activity;
-        }
-        let Some(scope) = state.scopes.get(root_session_id) else {
-            return activity;
-        };
-        let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
-        ids.sort_unstable();
-        for id in ids {
-            let session = &scope.sessions[&id];
-            if session.active
-                || matches!(
-                    session.status,
-                    AgentStatus::Pending | AgentStatus::Running | AgentStatus::Closing
-                )
-            {
-                activity.active.push(id);
-            }
-            if session.descriptor.parent.is_none()
-                && session.status.wakes_parent()
-                && let super::Completion::Pending { revision, .. } = session.completion
-            {
-                activity.pending_completions.push((id, revision));
-            }
-            let deliverable = (session.harness().is_some() || session.stored_runtime.recoverable())
-                && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed);
-            if deliverable && scope.messages.has_pending_for(id) {
-                activity.pending_messages.push(id);
-            }
-        }
-        activity
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let root_session_id = root.as_str();
+                if state.root_by_session.contains_key(root_session_id) {
+                    activity.restore_failure = Some(not_root(root_session_id));
+                    return activity;
+                }
+                let Some(scope) = state.scopes.get(root_session_id) else {
+                    return activity;
+                };
+                let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+                ids.sort_unstable();
+                for id in ids {
+                    let session = &scope.sessions[&id];
+                    if session.active
+                        || matches!(
+                            session.status,
+                            AgentStatus::Pending | AgentStatus::Running | AgentStatus::Closing
+                        )
+                    {
+                        activity.active.push(id);
+                    }
+                    if session.descriptor.parent.is_none()
+                        && session.status.wakes_parent()
+                        && let super::Completion::Pending { revision, .. } = session.completion
+                    {
+                        activity.pending_completions.push((id, revision));
+                    }
+                    let deliverable = (session.harness().is_some()
+                        || session.stored_runtime.recoverable())
+                        && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed);
+                    if deliverable && scope.messages.has_pending_for(id) {
+                        activity.pending_messages.push(id);
+                    }
+                }
+                activity
+            })
+            .await
     }
 
     pub async fn deliver_completions(
@@ -146,18 +152,21 @@ impl Registry {
         if self.store_for(root_session_id).is_none() {
             return Ok(());
         }
-        {
-            let state = self.state.acquire().await;
-            if state.root_by_session.contains_key(root_session_id) {
-                return Err(std::io::Error::other(not_root(root_session_id)));
-            }
-            if state
-                .scopes
-                .get(root_session_id)
-                .is_none_or(|scope| scope.journal_frozen)
-            {
-                return Ok(());
-            }
+        let root = root_session_id.to_owned();
+        let skip = self
+            .state
+            .call(move |state| {
+                if state.root_by_session.contains_key(&root) {
+                    return Err(std::io::Error::other(not_root(&root)));
+                }
+                Ok(state
+                    .scopes
+                    .get(&root)
+                    .is_none_or(|scope| scope.journal_frozen))
+            })
+            .await?;
+        if skip {
+            return Ok(());
         }
         if self.claims.read(|claims| {
             claims

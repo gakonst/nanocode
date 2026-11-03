@@ -101,16 +101,18 @@ impl SubagentControl {
             .registry
             .rehydrate(root_session_id, id, MessagePurpose::Coordinate)
             .await?;
-        let locks = self.registry.scope_locks(root_session_id);
-        let _message_guard = locks.message.enter().await;
-        let harness = self
+        let root = root_session_id.to_owned();
+        let (harness, side_lease) = self
             .registry
-            .state
-            .acquire()
-            .await
-            .harness_in_scope(root_session_id, id)?;
+            .when_messages_flow(root_session_id, move |state| {
+                state.harness_in_scope(&root, id).map(|harness| {
+                    let lease = harness.lease_side_question();
+                    (harness, lease)
+                })
+            })
+            .await??;
         let lease = SideQuestion {
-            lease: Some(harness.lease_side_question()),
+            lease: Some(side_lease),
             registry: Arc::clone(&self.registry),
             root_session_id: root_session_id.to_owned(),
         };

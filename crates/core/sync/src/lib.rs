@@ -789,3 +789,136 @@ impl<S: 'static> Actor<S> {
         self.jobs.is_closed()
     }
 }
+
+type Letter<S> = Box<dyn FnOnce(&mut S) + Send>;
+
+const MAILBOX_BUDGET: usize = 128;
+
+struct Desk<S> {
+    state: S,
+    letters: mpsc::UnboundedReceiver<Letter<S>>,
+}
+
+struct Mailroom<S> {
+    desk: crossbeam_utils::atomic::AtomicCell<Option<Box<Desk<S>>>>,
+    letters: mpsc::UnboundedSender<Letter<S>>,
+    queued: std::sync::atomic::AtomicUsize,
+}
+
+pub struct Mailbox<S>(Arc<Mailroom<S>>);
+
+impl<S> Clone for Mailbox<S> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<S: Default> Default for Mailbox<S> {
+    fn default() -> Self {
+        Self::new(S::default())
+    }
+}
+
+impl<S> Mailbox<S> {
+    #[must_use]
+    pub fn new(state: S) -> Self {
+        let (letters, received) = mpsc::unbounded_channel();
+        Self(Arc::new(Mailroom {
+            desk: crossbeam_utils::atomic::AtomicCell::new(Some(Box::new(Desk {
+                state,
+                letters: received,
+            }))),
+            letters,
+            queued: std::sync::atomic::AtomicUsize::new(0),
+        }))
+    }
+}
+
+impl<S: Send + 'static> Mailbox<S> {
+    pub fn send(&self, job: impl FnOnce(&mut S) + Send + 'static) {
+        post(&self.0, Box::new(job), hand_off::<S>);
+    }
+
+    pub fn call<R, F>(&self, job: F) -> impl Future<Output = R> + Send + use<R, F, S>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut S) -> R + Send + 'static,
+    {
+        let (reply, receiver) = oneshot::channel();
+        self.send(move |state| {
+            if !reply.is_closed() {
+                drop(reply.send(job(state)));
+            }
+        });
+        replied(receiver)
+    }
+}
+
+async fn replied<R>(receiver: oneshot::Receiver<R>) -> R {
+    match receiver.await {
+        Ok(output) => output,
+        Err(_) => panic!("a mailbox job panicked before it replied"),
+    }
+}
+
+type HandOff<S> = fn(&Arc<Mailroom<S>>) -> bool;
+
+fn post<S>(room: &Arc<Mailroom<S>>, letter: Letter<S>, hand_off: HandOff<S>) {
+    if room.letters.send(letter).is_err() {
+        return;
+    }
+    if room
+        .queued
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        == 0
+    {
+        deliver(room, hand_off);
+    }
+}
+
+fn deliver<S>(room: &Arc<Mailroom<S>>, hand_off: HandOff<S>) {
+    let mut budget = MAILBOX_BUDGET;
+    loop {
+        let Some(mut desk) = room.desk.take() else {
+            return;
+        };
+        let delivered = desk.letters.try_recv().is_ok_and(|letter| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| letter(&mut desk.state)))
+                .is_ok()
+        });
+        room.desk.store(Some(desk));
+        if room
+            .queued
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            return;
+        }
+        if delivered {
+            budget -= 1;
+        }
+        if budget == 0 {
+            if hand_off(room) {
+                return;
+            }
+            budget = MAILBOX_BUDGET;
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return false;
+    };
+    let room = Arc::clone(room);
+    drop(runtime.spawn(async move { deliver(&room, hand_off::<S>) }));
+    true
+}
+
+#[cfg(target_family = "wasm")]
+fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
+    let room = Arc::clone(room);
+    nanocode_platform::spawn_local(async move { deliver(&room, hand_off::<S>) });
+    true
+}

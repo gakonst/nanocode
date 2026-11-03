@@ -100,11 +100,15 @@ struct Harness {
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
     output_schema: String,
-    contract_delivered: bool,
-    rehydrated_assignment: Option<String>,
+    contract: Contract,
     capacity: Capacity,
     capacity_revision: watch::Receiver<u64>,
     registry: Weak<Registry>,
+}
+
+enum Contract {
+    Pending { assignment: Option<String> },
+    Delivered,
 }
 
 struct ActiveTurn {
@@ -274,8 +278,9 @@ pub(super) fn spawn(
             pending_deferred: VecDeque::new(),
             pending_urgent: VecDeque::new(),
             output_schema,
-            contract_delivered: false,
-            rehydrated_assignment,
+            contract: Contract::Pending {
+                assignment: rehydrated_assignment,
+            },
             capacity,
             capacity_revision,
             registry,
@@ -646,14 +651,17 @@ impl Harness {
             )));
         };
 
-        let prompt = match &self.rehydrated_assignment {
-            Some(assignment) => format!("{assignment}\n\n{prompt}"),
-            None => prompt,
-        };
-        let contract = if self.contract_delivered {
-            completion_reminder()
-        } else {
-            completion_instructions(&self.output_schema)
+        let (prompt, contract) = match &self.contract {
+            Contract::Pending {
+                assignment: Some(assignment),
+            } => (
+                format!("{assignment}\n\n{prompt}"),
+                completion_instructions(&self.output_schema),
+            ),
+            Contract::Pending { assignment: None } => {
+                (prompt, completion_instructions(&self.output_schema))
+            }
+            Contract::Delivered => (prompt, completion_reminder()),
         };
         let prompt = format!("{prompt}\n\n{contract}");
         let request = match pending {
@@ -683,8 +691,7 @@ impl Harness {
                 return Err(std::io::Error::other(error));
             }
         };
-        self.rehydrated_assignment = None;
-        self.contract_delivered = true;
+        self.contract = Contract::Delivered;
         let control = turn.control();
         let result = platform::spawn(turn.result());
         self.active = Some(ActiveTurn {

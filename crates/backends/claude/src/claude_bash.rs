@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -38,13 +38,44 @@ const ENDS_WITH_TURN: &str = "If it exits while you are still working you will b
 const UNWATCHED: &str = "Nothing notifies you when the command finishes: read the output file that the result names to check on it. The file gets no line when the command ends, so if you need to know that it has, end the command with an `echo` of your own.";
 
 type Outcome = Result<BashResult, String>;
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+enum Phase {
+    Foreground,
+    Background,
+    Delivered,
+}
+
+struct AtomicPhase(AtomicU8);
+
+impl AtomicPhase {
+    const fn new() -> Self {
+        Self(AtomicU8::new(Phase::Foreground as u8))
+    }
+
+    const fn decode(phase: u8) -> Phase {
+        match phase {
+            0 => Phase::Foreground,
+            1 => Phase::Background,
+            _ => Phase::Delivered,
+        }
+    }
+
+    fn get(&self) -> Phase {
+        Self::decode(self.0.load(Ordering::SeqCst))
+    }
+
+    fn advance(&self, phase: Phase) -> Phase {
+        Self::decode(self.0.fetch_max(phase as u8, Ordering::SeqCst))
+    }
+}
 struct Job {
     result: watch::Receiver<Option<Outcome>>,
     finished: Arc<Signal>,
     abort: tokio::task::AbortHandle,
     waiting: AtomicUsize,
-    delivered: AtomicBool,
-    backgrounded: AtomicBool,
+    phase: AtomicPhase,
     expired: Arc<AtomicBool>,
     capped: Arc<Signal>,
     written: Arc<Signal>,
@@ -390,7 +421,7 @@ impl Jobs {
             .entries
             .read(|entries| entries.jobs.values().cloned().collect::<Vec<_>>());
         for job in jobs {
-            if job.backgrounded.load(Ordering::SeqCst) && job.status() == "running" {
+            if job.phase.get() >= Phase::Background && job.status() == "running" {
                 job.abort.abort();
             }
         }
@@ -418,7 +449,7 @@ impl Jobs {
             };
             if job.result.borrow().is_none()
                 || job.waiting.load(Ordering::SeqCst) > 0
-                || job.delivered.swap(true, Ordering::SeqCst)
+                || job.phase.advance(Phase::Delivered) == Phase::Delivered
             {
                 return;
             }
@@ -579,8 +610,7 @@ impl BashExecutor for LocalBash {
                 finished,
                 result: receiver,
                 waiting: AtomicUsize::new(0),
-                delivered: AtomicBool::new(false),
-                backgrounded: AtomicBool::new(false),
+                phase: AtomicPhase::new(),
                 expired,
                 capped,
                 written,
@@ -636,7 +666,7 @@ impl BashExecutor for LocalBash {
             }
         };
         admission.0 = None;
-        job.backgrounded.store(true, Ordering::SeqCst);
+        job.phase.advance(Phase::Background);
         let output_file = job.output.clone();
         let watch = self.jobs.watch(job);
         Ok(BashExecution::Background {
@@ -830,7 +860,7 @@ impl TaskTool {
             })
         };
         if result.is_some() {
-            job.delivered.store(true, Ordering::SeqCst);
+            job.phase.advance(Phase::Delivered);
         }
         drop(waiting);
         Ok(match result {

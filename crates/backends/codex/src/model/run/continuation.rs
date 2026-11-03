@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::telemetry::UsageCost;
 
 #[derive(Deserialize, Serialize)]
 struct CurrentExecution {
@@ -205,10 +206,9 @@ impl ModelRun {
             &self.config.host_instructions(),
         );
         saved.stats.last_response_id = None;
-        saved.stats.usage.reported = saved.usage_reported;
-        saved.stats.usage.estimated_cost = saved.usage_cost;
-        saved.stats.warmup_usage.reported = saved.warmup_reported;
-        saved.stats.warmup_usage.estimated_cost = saved.warmup_cost;
+        saved.stats.usage.cost = UsageCost::restored(saved.usage_reported, saved.usage_cost);
+        saved.stats.warmup_usage.cost =
+            UsageCost::restored(saved.warmup_reported, saved.warmup_cost);
         self.stats = saved.stats;
         if let Some(origin) = saved.operation_started_at {
             self.elapsed_before_attempt = self
@@ -315,10 +315,10 @@ impl ModelRun {
             store_responses: self.config.store_responses,
             stats: self.stats.clone(),
             operation_started_at: self.operation_started_at,
-            usage_reported: self.stats.usage.reported,
-            usage_cost: self.stats.usage.estimated_cost.clone(),
-            warmup_reported: self.stats.warmup_usage.reported,
-            warmup_cost: self.stats.warmup_usage.estimated_cost.clone(),
+            usage_reported: self.stats.usage.cost.reported(),
+            usage_cost: self.stats.usage.cost.estimated().cloned(),
+            warmup_reported: self.stats.warmup_usage.cost.reported(),
+            warmup_cost: self.stats.warmup_usage.cost.estimated().cloned(),
             context_window_tokens: self.config.context_window_tokens,
             force_compaction: self.force_compaction,
             tool_call_indices: self.tool_call_indices.clone(),

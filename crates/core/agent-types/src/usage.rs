@@ -88,30 +88,6 @@ pub struct ReportedTurnUsage {
     pub cost_status: CostStatus,
 }
 
-#[allow(clippy::struct_field_names)]
-#[derive(Clone)]
-#[doc(hidden)]
-pub struct TurnUsageCounts {
-    #[doc(hidden)]
-    pub input_tokens: u64,
-    #[doc(hidden)]
-    pub cached_input_tokens: u64,
-    #[doc(hidden)]
-    pub cache_write_input_tokens: u64,
-    #[doc(hidden)]
-    pub output_tokens: u64,
-    #[doc(hidden)]
-    pub reasoning_output_tokens: u64,
-    #[doc(hidden)]
-    pub total_tokens: u64,
-    #[doc(hidden)]
-    pub reported: bool,
-    #[doc(hidden)]
-    pub rate_estimated: bool,
-    #[doc(hidden)]
-    pub estimated_cost: Option<EstimatedUsdCost>,
-}
-
 impl TurnUsage {
     #[must_use]
     pub fn from_reported(reported: ReportedTurnUsage) -> Self {
@@ -124,32 +100,6 @@ impl TurnUsage {
             total_tokens: reported.total_tokens,
             estimated_cost: reported.estimated_cost.map(Box::new),
             cost_status: reported.cost_status,
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn from_counts(counts: TurnUsageCounts) -> Self {
-        let (estimated_cost, cost_status) = if !counts.reported {
-            (None, CostStatus::UsageNotReported)
-        } else {
-            (
-                counts.estimated_cost.map(Box::new),
-                if counts.rate_estimated {
-                    CostStatus::EstimatedFromUsage
-                } else {
-                    CostStatus::ReportedByProvider
-                },
-            )
-        };
-        Self {
-            input_tokens: counts.input_tokens,
-            cached_input_tokens: counts.cached_input_tokens,
-            cache_write_input_tokens: counts.cache_write_input_tokens,
-            output_tokens: counts.output_tokens,
-            reasoning_output_tokens: counts.reasoning_output_tokens,
-            total_tokens: counts.total_tokens,
-            estimated_cost,
-            cost_status,
         }
     }
 

@@ -12,7 +12,7 @@ use nanocode_platform::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 
-use crate::usage::TurnUsage;
+use crate::usage::{CostStatus, TurnUsage};
 
 use nanocode_code_mode::contract::ToolOutputBody;
 
@@ -238,12 +238,74 @@ pub(super) struct UsageTotals {
     pub(super) reasoning_output_tokens: u64,
     pub(super) total_tokens: u64,
     #[serde(skip)]
-    pub(super) reported: bool,
+    pub(super) cost: UsageCost,
+}
 
-    #[serde(skip)]
-    pub(super) rate_estimated: bool,
-    #[serde(skip)]
-    pub(super) estimated_cost: Option<crate::client::pricing::EstimatedUsdCost>,
+#[derive(Clone, Default)]
+pub(super) enum UsageCost {
+    #[default]
+    Unreported,
+    Reported {
+        rate_estimated: bool,
+        estimated: Option<crate::client::pricing::EstimatedUsdCost>,
+    },
+}
+
+impl UsageCost {
+    pub(super) const fn restored(
+        reported: bool,
+        estimated: Option<crate::client::pricing::EstimatedUsdCost>,
+    ) -> Self {
+        if reported {
+            Self::Reported {
+                rate_estimated: false,
+                estimated,
+            }
+        } else {
+            Self::Unreported
+        }
+    }
+
+    pub(super) const fn reported(&self) -> bool {
+        matches!(self, Self::Reported { .. })
+    }
+
+    pub(super) const fn estimated(&self) -> Option<&crate::client::pricing::EstimatedUsdCost> {
+        match self {
+            Self::Reported {
+                estimated: Some(estimated),
+                ..
+            } => Some(estimated),
+            Self::Reported {
+                estimated: None, ..
+            }
+            | Self::Unreported => None,
+        }
+    }
+
+    fn merged(
+        &self,
+        other: &Self,
+    ) -> (Option<crate::client::pricing::EstimatedUsdCost>, CostStatus) {
+        let estimated = match (self.estimated().cloned(), other.estimated().cloned()) {
+            (Some(left), Some(right)) => Some(left.saturating_add(right)),
+            (left, right) => left.or(right),
+        };
+        let rate_estimated = [self, other].into_iter().any(|cost| {
+            matches!(
+                cost,
+                Self::Reported {
+                    rate_estimated: true,
+                    ..
+                }
+            )
+        });
+        match (self.reported() || other.reported(), rate_estimated) {
+            (false, _) => (None, CostStatus::UsageNotReported),
+            (true, true) => (estimated, CostStatus::EstimatedFromUsage),
+            (true, false) => (estimated, CostStatus::ReportedByProvider),
+        }
+    }
 }
 
 impl UsageTotals {
@@ -253,8 +315,6 @@ impl UsageTotals {
         model: crate::client::Model,
         service_tier: ServiceTier,
     ) {
-        self.reported = true;
-        self.rate_estimated |= usage.provider_cost().is_none();
         self.input_tokens += usage.input_tokens;
         self.cached_input_tokens += usage
             .input_tokens_details
@@ -271,11 +331,19 @@ impl UsageTotals {
             .map_or(0, |details| details.reasoning_tokens);
         self.total_tokens += usage.total_tokens;
         let estimate = crate::client::pricing::estimate_for_model(usage, model, service_tier);
-        self.estimated_cost = Some(
-            self.estimated_cost
-                .take()
-                .map_or(estimate.clone(), |total| total.saturating_add(estimate)),
-        );
+        let (rate_estimated, estimated) = match std::mem::take(&mut self.cost) {
+            UsageCost::Unreported => (false, None),
+            UsageCost::Reported {
+                rate_estimated,
+                estimated,
+            } => (rate_estimated, estimated),
+        };
+        self.cost = UsageCost::Reported {
+            rate_estimated: rate_estimated || usage.provider_cost().is_none(),
+            estimated: Some(
+                estimated.map_or(estimate.clone(), |total| total.saturating_add(estimate)),
+            ),
+        };
     }
 }
 
@@ -312,16 +380,8 @@ impl RunStats {
     }
 
     pub(super) fn turn_usage(&self) -> TurnUsage {
-        let estimated_cost = match (
-            self.usage.estimated_cost.clone(),
-            self.warmup_usage.estimated_cost.clone(),
-        ) {
-            (Some(usage), Some(warmup)) => Some(usage.saturating_add(warmup)),
-            (Some(usage), None) => Some(usage),
-            (None, Some(warmup)) => Some(warmup),
-            (None, None) => None,
-        };
-        TurnUsage::from_counts(crate::usage::TurnUsageCounts {
+        let (estimated_cost, cost_status) = self.usage.cost.merged(&self.warmup_usage.cost);
+        TurnUsage::from_reported(crate::usage::ReportedTurnUsage {
             input_tokens: self.usage.input_tokens + self.warmup_usage.input_tokens,
             cached_input_tokens: self.usage.cached_input_tokens
                 + self.warmup_usage.cached_input_tokens,
@@ -331,9 +391,8 @@ impl RunStats {
             reasoning_output_tokens: self.usage.reasoning_output_tokens
                 + self.warmup_usage.reasoning_output_tokens,
             total_tokens: self.usage.total_tokens + self.warmup_usage.total_tokens,
-            reported: self.usage.reported || self.warmup_usage.reported,
-            rate_estimated: self.usage.rate_estimated || self.warmup_usage.rate_estimated,
             estimated_cost,
+            cost_status,
         })
     }
 }

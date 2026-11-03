@@ -5,11 +5,19 @@ use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Restoration {
+    #[default]
+    Restored,
+    Restoring,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SubagentActivity {
     pub revision: u64,
     pub durable: bool,
-    pub restoring: bool,
-    pub restore_failure: Option<String>,
+    pub restoration: Restoration,
     pub active: Vec<AgentId>,
     pub resuming: Vec<AgentId>,
     pub pending_completions: Vec<(AgentId, u64)>,
@@ -20,7 +28,7 @@ pub struct SubagentActivity {
 impl SubagentActivity {
     #[must_use]
     pub const fn is_quiescent(&self) -> bool {
-        !self.restoring
+        !matches!(self.restoration, Restoration::Restoring)
             && self.active.is_empty()
             && self.resuming.is_empty()
             && self.pending_completions.is_empty()
@@ -46,18 +54,18 @@ impl Registry {
                 claims.reserved.contains_key(root_session_id),
             )
         });
-        let restoring = match gate {
-            None => reserved,
-            Some(RestorationState::Ready) => false,
+        let restoration = match gate {
+            None if reserved => Restoration::Restoring,
+            None | Some(RestorationState::Ready) => Restoration::Restored,
             Some(RestorationState::Failed(error)) => {
                 return SubagentActivity {
                     revision,
                     durable,
-                    restore_failure: Some(error),
+                    restoration: Restoration::Failed(error),
                     ..SubagentActivity::default()
                 };
             }
-            Some(RestorationState::Loading | RestorationState::Resuming) => true,
+            Some(RestorationState::Loading | RestorationState::Resuming) => Restoration::Restoring,
         };
         let resuming = self
             .pending_resume
@@ -74,7 +82,7 @@ impl Registry {
         let mut activity = SubagentActivity {
             revision,
             durable,
-            restoring,
+            restoration,
             resuming,
             checkpoint_captures,
             ..SubagentActivity::default()
@@ -84,7 +92,7 @@ impl Registry {
             .call(move |state| {
                 let root_session_id = root.as_str();
                 if state.root_by_session.contains_key(root_session_id) {
-                    activity.restore_failure = Some(not_root(root_session_id));
+                    activity.restoration = Restoration::Failed(not_root(root_session_id));
                     return activity;
                 }
                 let Some(scope) = state.scopes.get(root_session_id) else {
@@ -94,7 +102,7 @@ impl Registry {
                 ids.sort_unstable();
                 for id in ids {
                     let session = &scope.sessions[&id];
-                    if session.active
+                    if session.active()
                         || matches!(
                             session.status,
                             AgentStatus::Pending | AgentStatus::Running | AgentStatus::Closing
@@ -162,7 +170,7 @@ impl Registry {
                 Ok(state
                     .scopes
                     .get(&root)
-                    .is_none_or(|scope| scope.journal_frozen))
+                    .is_none_or(|scope| scope.life.frozen()))
             })
             .await?;
         if skip {

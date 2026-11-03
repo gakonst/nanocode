@@ -29,7 +29,7 @@ pub use model::{
 };
 pub use runtime::{
     AgentDirectoryEntry, AgentSummary, COMPLETION_INSTRUCTIONS_LEAD, MessageReceipt,
-    ParentResolver, Registry, RunningSubagents, SubagentActivity, SubagentCompletion,
+    ParentResolver, Registry, Restoration, RunningSubagents, SubagentActivity, SubagentCompletion,
     SubagentControl, channel, completion_continuation_prompt,
 };
 pub use tools::{

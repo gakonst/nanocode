@@ -1355,20 +1355,17 @@ pub(super) fn persist_agent(
             .flatten(),
         output_in_status,
         next_instruction_revision: session.next_instruction_revision,
-        turn_in_flight: session.active || matches!(session.status, AgentStatus::Running),
+        turn_in_flight: session.active() || matches!(session.status, AgentStatus::Running),
         resume_attempts: session.resume_attempts,
         checkpoint: None,
         native_checkpoint: None,
         checkpoint_ref,
         in_flight_calls: session.in_flight_calls.clone(),
         in_flight_omitted: session.in_flight_omitted,
-        accepted_output: session
-            .active
-            .then(|| session.submitted_output.clone())
-            .flatten(),
-        accepted_revision: (session.active && session.submitted_output.is_some())
-            .then_some(session.active_instruction_revision)
-            .flatten(),
+        accepted_output: session.submitted_output().cloned(),
+        accepted_revision: session
+            .submitted_output()
+            .and_then(|_| session.turn_revision()),
         pending_completion: session.completion.revision(),
         settled_revision: session.settled_revision,
         usage: session.usage.clone(),

@@ -42,7 +42,7 @@ mod activity;
 mod completion;
 mod focus;
 
-pub use activity::SubagentActivity;
+pub use activity::{Restoration, SubagentActivity};
 pub use completion::{RunningSubagents, SubagentCompletion};
 
 type AgentMap<V> = imbl::HashMap<(String, AgentId), V>;
@@ -166,14 +166,11 @@ pub(super) struct ChildSession {
     pub(super) residency: Residency,
     pub(super) harness_task: Option<Task<()>>,
     pub(super) status: AgentStatus,
-    pub(super) active: bool,
+    pub(super) turn: Option<ActiveTurn>,
     pub(super) output_validator: Validator,
     pub(super) output_schema: Value,
     pub(super) stored_runtime: StoredRuntime,
     pub(super) next_instruction_revision: u64,
-    pub(super) active_instruction_revision: Option<u64>,
-    pub(super) steering: bool,
-    pub(super) submitted_output: Option<Value>,
     pub(super) last_output: Option<Value>,
     pub(super) follow_up_output: Option<Value>,
     pub(super) delegated_turn: bool,
@@ -204,6 +201,17 @@ pub(super) struct ChildSession {
     announce: bool,
 
     journal_generation: u64,
+}
+
+pub(super) struct ActiveTurn {
+    pub(super) revision: u64,
+    pub(super) stage: TurnStage,
+}
+
+pub(super) enum TurnStage {
+    Working,
+    Steering,
+    Submitted(Value),
 }
 
 static JOURNAL_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -263,7 +271,7 @@ impl Sessions {
                 self.resident.remove(&id);
             }
             let idle = resident
-                && !session.active
+                && !session.active()
                 && !matches!(session.status, AgentStatus::Pending)
                 && session.status.can_start_turn();
             let at = idle.then_some(session.last_used);
@@ -644,11 +652,27 @@ struct AgentScope {
     topology: TaskTree,
     sessions: Sessions,
     messages: MessageThreads,
-    closing: bool,
+    life: ScopeLife,
 
     paused: usize,
+}
 
-    journal_frozen: bool,
+#[derive(Clone, Copy, Default)]
+enum ScopeLife {
+    #[default]
+    Open,
+    Closing,
+    Frozen,
+}
+
+impl ScopeLife {
+    const fn closing(self) -> bool {
+        !matches!(self, Self::Open)
+    }
+
+    const fn frozen(self) -> bool {
+        matches!(self, Self::Frozen)
+    }
 }
 
 struct CommittedCalls {
@@ -1135,7 +1159,7 @@ impl RegistryState {
             .sessions
             .get_mut(&id)
             .ok_or_else(|| std::io::Error::other("subagent session disappeared"))?;
-        if !session.active {
+        let Some(turn) = session.turn.as_mut() else {
             return Err(CompletionError::new(
                 CompletionErrorCode::InactiveTurn,
                 false,
@@ -1143,7 +1167,7 @@ impl RegistryState {
                 "Start a new assigned turn before submitting.",
             )
             .into());
-        }
+        };
         let Some(instruction_revision) = instruction_revision else {
             return Err(CompletionError::new(
                 CompletionErrorCode::MissingInstructionRevision,
@@ -1154,10 +1178,10 @@ impl RegistryState {
             .into());
         };
 
-        if session.steering || session.active_instruction_revision != Some(instruction_revision) {
+        if matches!(turn.stage, TurnStage::Steering) || turn.revision != instruction_revision {
             return Ok(SubmissionOutcome::Superseded);
         }
-        if session.submitted_output.is_some() {
+        if matches!(turn.stage, TurnStage::Submitted(_)) {
             return Err(CompletionError::new(
                 CompletionErrorCode::AlreadyAccepted,
                 false,
@@ -1168,7 +1192,7 @@ impl RegistryState {
         }
         let (output, decoded_json_text) =
             validate_submitted_output(&session.output_validator, &session.output_schema, output)?;
-        session.submitted_output = Some(output);
+        turn.stage = TurnStage::Submitted(output);
         Ok(SubmissionOutcome::Accepted { decoded_json_text })
     }
 
@@ -1178,14 +1202,15 @@ impl RegistryState {
             .get_mut(root_session_id)?
             .sessions
             .get_mut(&id)?;
-        if !session.active || session.steering || session.submitted_output.is_some() {
+        let turn = session.turn.as_mut()?;
+        if !matches!(turn.stage, TurnStage::Working) {
             return None;
         }
-        let previous_revision = session.active_instruction_revision?;
+        let previous_revision = turn.revision;
         let revision = session.next_instruction_revision.checked_add(1)?;
         session.next_instruction_revision = revision;
-        session.active_instruction_revision = Some(revision);
-        session.steering = true;
+        turn.revision = revision;
+        turn.stage = TurnStage::Steering;
         Some(TurnSteer {
             id,
             previous_revision,
@@ -1194,20 +1219,21 @@ impl RegistryState {
     }
 
     fn finish_turn_steer(&mut self, root_session_id: &str, steer: TurnSteer, committed: bool) {
-        let Some(session) = self
+        let Some(turn) = self
             .scopes
             .get_mut(root_session_id)
             .and_then(|scope| scope.sessions.get_mut(&steer.id))
+            .and_then(|session| session.turn.as_mut())
+            .filter(|turn| turn.revision == steer.revision)
         else {
             return;
         };
-        if session.active_instruction_revision != Some(steer.revision) {
-            return;
-        }
         if !committed {
-            session.active_instruction_revision = Some(steer.previous_revision);
+            turn.revision = steer.previous_revision;
         }
-        session.steering = false;
+        if matches!(turn.stage, TurnStage::Steering) {
+            turn.stage = TurnStage::Working;
+        }
     }
 
     fn reserve_for(&mut self, session_id: &str) -> std::io::Result<AgentReservation> {
@@ -1215,7 +1241,7 @@ impl RegistryState {
         if self
             .scopes
             .get(&root_session_id)
-            .is_some_and(|scope| scope.closing)
+            .is_some_and(|scope| scope.life.closing())
         {
             return Err(std::io::Error::other(
                 "subagent scope is closing and cannot spawn children",
@@ -1252,7 +1278,7 @@ impl RegistryState {
         if self
             .scopes
             .get(&root_session_id)
-            .is_some_and(|scope| scope.closing)
+            .is_some_and(|scope| scope.life.closing())
         {
             return Err(std::io::Error::other(
                 "subagent scope is closing and cannot reserve children",
@@ -1312,7 +1338,7 @@ impl RegistryState {
         if self
             .scopes
             .get(root_session_id)
-            .is_some_and(|scope| scope.closing)
+            .is_some_and(|scope| scope.life.closing())
         {
             return Err(std::io::Error::other(
                 "subagent scope stopped while spawning children",
@@ -1650,7 +1676,9 @@ impl RegistryState {
         let root_session_id = self.root_session_id(session_id).to_owned();
         let ids = {
             let scope = self.scope_mut(&root_session_id);
-            scope.closing = true;
+            if !scope.life.closing() {
+                scope.life = ScopeLife::Closing;
+            }
             scope.topology.all_postorder()
         };
         let harnesses = self.harnesses(&root_session_id, &ids, true)?;
@@ -1719,7 +1747,7 @@ impl RegistryState {
                 .sessions
                 .get_mut(id)
                 .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
-            if session.active {
+            if session.active() {
                 return Err(std::io::Error::other(format!(
                     "agent {id} is still running"
                 )));
@@ -1749,7 +1777,7 @@ impl RegistryState {
             scope
                 .sessions
                 .get(id)
-                .is_some_and(|session| !session.active)
+                .is_some_and(|session| !session.active())
         }))
     }
 
@@ -2128,7 +2156,7 @@ impl Registry {
                     state
                         .scopes
                         .iter()
-                        .filter(|(_, scope)| !scope.journal_frozen)
+                        .filter(|(_, scope)| !scope.life.frozen())
                         .map(|(root, _)| root.clone())
                         .collect::<Vec<_>>()
                 })
@@ -2361,7 +2389,7 @@ impl Registry {
                         (None, true)
                     }
                     Some(scope) => {
-                        if scope.journal_frozen {
+                        if scope.life.frozen() {
                             let (scoped, unscoped): (Vec<_>, Vec<_>) =
                                 waiters.drain(..).partition(|(scope, _)| *scope);
                             waiters = scoped;
@@ -2369,7 +2397,7 @@ impl Registry {
                                 let _ = done.send(frozen());
                             }
                         }
-                        let write = !waiters.is_empty() || (background && !scope.journal_frozen);
+                        let write = !waiters.is_empty() || (background && !scope.life.frozen());
                         (
                             write.then(|| {
                                 cache.track(
@@ -2383,7 +2411,7 @@ impl Registry {
                                 let checkpoints = registry.checkpoints.get();
                                 scope.journal_snapshot(root_session_id, &checkpoints, cache)
                             }),
-                            scope.journal_frozen,
+                            scope.life.frozen(),
                         )
                     }
                 };
@@ -2797,10 +2825,10 @@ impl Registry {
                 else {
                     return (None, None);
                 };
-                let harness = (session.active || matches!(session.status, AgentStatus::Running))
+                let harness = (session.active() || matches!(session.status, AgentStatus::Running))
                     .then(|| session.harness().cloned())
                     .flatten();
-                let commits = session.active_instruction_revision.and_then(|revision| {
+                let commits = session.turn_revision().and_then(|revision| {
                     let call_ids = session
                         .in_flight_calls
                         .iter()
@@ -2836,7 +2864,7 @@ impl Registry {
                 return;
             };
             if let Some(commits) = commits
-                && session.active_instruction_revision == Some(commits.revision)
+                && session.turn_revision() == Some(commits.revision)
             {
                 session.in_flight_calls.retain(|call| {
                     !(matches!(call.state, durable::CallState::Live { .. })
@@ -2847,7 +2875,7 @@ impl Registry {
                 progress.committable -= omitted;
                 session.in_flight_omitted = session.in_flight_omitted.saturating_sub(omitted);
             }
-            if progressed && session.active {
+            if progressed && session.active() {
                 session.resume_attempts = 0;
             }
         });
@@ -2889,7 +2917,7 @@ impl Registry {
                     .get(&root)
                     .and_then(|scope| scope.sessions.get(&id))
                     .filter(|session| {
-                        session.active || matches!(session.status, AgentStatus::Running)
+                        session.active() || matches!(session.status, AgentStatus::Running)
                     })
                     .and_then(|session| session.harness().cloned())
             })
@@ -3350,7 +3378,7 @@ impl Registry {
                 .get_mut(&root)
                 .and_then(|scope| scope.sessions.get_mut(&id))
                 .filter(|session| {
-                    !session.active
+                    !session.active()
                         && session.harness().is_none()
                         && matches!(session.status, AgentStatus::Interrupted)
                 })?;
@@ -3914,15 +3942,12 @@ impl Registry {
                         residency: Residency::Resident(harness),
                         harness_task: Some(harness_task),
                         status: AgentStatus::Pending,
-                        active: false,
+                        turn: None,
                         output_validator: validator,
                         output_schema: serde_json::from_str(&schema)
                             .expect("compiled schema is JSON"),
                         stored_runtime: StoredRuntime::None,
                         next_instruction_revision: 0,
-                        active_instruction_revision: None,
-                        steering: false,
-                        submitted_output: None,
                         last_output: None,
                         follow_up_output: None,
                         delegated_turn: false,
@@ -4027,7 +4052,7 @@ impl Registry {
                 else {
                     return (None, None);
                 };
-                let revision = if !session.status.can_start_turn() || session.active {
+                let revision = if !session.status.can_start_turn() || session.active() {
                     None
                 } else {
                     let revision = if recovering {
@@ -4052,10 +4077,10 @@ impl Registry {
                         session.in_flight_progress = durable::OmittedProgress::default();
                     }
                     session.next_instruction_revision = revision;
-                    session.active_instruction_revision = Some(revision);
-                    session.active = true;
-                    session.steering = false;
-                    session.submitted_output = None;
+                    session.turn = Some(ActiveTurn {
+                        revision,
+                        stage: TurnStage::Working,
+                    });
                     session.last_used = last_used;
                     session.status = AgentStatus::Running;
                     if let Some(context) = &context
@@ -4103,10 +4128,7 @@ impl Registry {
                     .scopes
                     .get_mut(&root)
                     .and_then(|scope| scope.sessions.get_mut(&id))?;
-                session.active = false;
-                session.active_instruction_revision = None;
-                session.steering = false;
-                session.submitted_output = None;
+                session.turn = None;
                 if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
                     session.status = AgentStatus::Failed { error };
                 }
@@ -4136,14 +4158,14 @@ impl Registry {
                     .scopes
                     .get_mut(root_session_id)
                     .and_then(|scope| scope.sessions.get_mut(&id))?;
-                if !session.active {
-                    return None;
-                }
-                session.active = false;
-                let revision = session.active_instruction_revision.take();
-                session.steering = false;
+                let turn = session.turn.take()?;
+                let settled = turn.revision;
+                let submitted_output = match turn.stage {
+                    TurnStage::Submitted(output) => Some(output),
+                    TurnStage::Working | TurnStage::Steering => None,
+                };
                 if matches!(result, Err(NanocodeError::TurnStopped))
-                    && session.submitted_output.is_none()
+                    && submitted_output.is_none()
                     && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
                 {
                     return Some((session.status.clone(), None, None, false));
@@ -4160,7 +4182,6 @@ impl Registry {
                     session.usage.record(usage);
                 }
                 let follow_up_output = session.follow_up_output.take();
-                let submitted_output = session.submitted_output.take();
 
                 if let Some(output) = &submitted_output {
                     session.last_output = Some(output.clone());
@@ -4184,7 +4205,6 @@ impl Registry {
                     .harness()
                     .cloned()
                     .filter(|_| registry.begin_pending_checkpoint(root_session_id));
-                let settled = revision.unwrap_or(session.next_instruction_revision);
                 session.settled_revision = Some(settled);
 
                 let completion = (session.status.wakes_parent()
@@ -4321,7 +4341,7 @@ impl Registry {
             .call(move |state| {
                 let scope = state.scopes.get_mut(&root)?;
 
-                let detach = scope.closing;
+                let detach = scope.life.closing();
                 let session = scope.sessions.get_mut(&id)?;
                 let status = if matches!(session.status, AgentStatus::Closed) {
                     None
@@ -4333,10 +4353,7 @@ impl Registry {
                     } else {
                         Residency::Detached
                     };
-                    session.active = false;
-                    session.active_instruction_revision = None;
-                    session.steering = false;
-                    session.submitted_output = None;
+                    session.turn = None;
                     if evicted {
                         None
                     } else {
@@ -5041,7 +5058,7 @@ impl Registry {
                         && session.cancelled_revision.is_none()
                     {
                         session.cancelled_revision = session
-                            .active_instruction_revision
+                            .turn_revision()
                             .or_else(|| session.next_instruction_revision.checked_add(1));
                         marked = true;
                     }
@@ -6000,7 +6017,7 @@ impl Registry {
                 state
                     .scopes
                     .get(&root)
-                    .is_some_and(|scope| scope.journal_frozen)
+                    .is_some_and(|scope| scope.life.frozen())
             })
             .await;
         if self.store_for(&root_session_id).is_some() && !frozen {
@@ -6062,13 +6079,13 @@ impl Registry {
                     let frozen = state
                         .scopes
                         .get(&root)
-                        .is_some_and(|scope| scope.journal_frozen);
+                        .is_some_and(|scope| scope.life.frozen());
                     let final_journal = match registry.store_for(&root) {
                         Some(_) if !frozen => {
                             let checkpoints = registry.checkpoints.get();
                             let scope = state.scope_mut(&root);
                             let payload = scope.journal_payload(&root, &checkpoints)?;
-                            scope.journal_frozen = true;
+                            scope.life = ScopeLife::Frozen;
                             Some(payload)
                         }
                         _ => None,
@@ -6423,14 +6440,11 @@ impl ChildSession {
             residency: Residency::Evicted,
             harness_task: None,
             status,
-            active: false,
+            turn: None,
             output_validator: contract.validator,
             output_schema,
             stored_runtime,
             next_instruction_revision,
-            active_instruction_revision: None,
-            steering: false,
-            submitted_output: None,
             last_output,
             follow_up_output: None,
             delegated_turn: false,
@@ -6448,6 +6462,24 @@ impl ChildSession {
             changes: watch::Sender::new(0),
             announce: true,
             journal_generation: 0,
+        }
+    }
+
+    pub(super) const fn active(&self) -> bool {
+        self.turn.is_some()
+    }
+
+    pub(super) fn turn_revision(&self) -> Option<u64> {
+        self.turn.as_ref().map(|turn| turn.revision)
+    }
+
+    pub(super) const fn submitted_output(&self) -> Option<&Value> {
+        match &self.turn {
+            Some(ActiveTurn {
+                stage: TurnStage::Submitted(output),
+                ..
+            }) => Some(output),
+            _ => None,
         }
     }
 

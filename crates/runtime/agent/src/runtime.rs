@@ -756,11 +756,9 @@ fn persistent_recipe(
                         .take()
                         .unwrap_or_else(|| nanocode_platform::uuid_v7().to_string());
                     let lineage = if let Some(parent) = &spec.parent {
-                        let parent_lineage = match store.load(parent.session_id()).await {
-                            Ok(stored) => stored.summary.record.lineage,
-                            Err(crate::durability::Error::SessionNotFound { .. }) => {
-                                crate::Lineage::root(parent.session_id())
-                            }
+                        let parent_lineage = match store.record(parent.session_id()).await {
+                            Ok(Some(record)) => record.lineage,
+                            Ok(None) => crate::Lineage::root(parent.session_id()),
                             Err(error) => return Err(catalog_error(error)),
                         };
                         crate::Lineage::child_of(
@@ -1389,7 +1387,7 @@ pub(crate) struct Ownership {
     admissions: AtomicUsize,
     drained: AtomicBool,
     owned: ArcSwap<Vec<(usize, WeakAgent)>>,
-    children: ArcSwap<Vec<WeakAgent>>,
+    children: ArcSwap<imbl::Vector<WeakAgent>>,
     opening: ArcSwap<HashMap<String, Arc<Opening>>>,
     services: OnceLock<std::sync::Weak<dyn HostServices>>,
     reopener: OnceLock<Reopener>,
@@ -1525,12 +1523,12 @@ impl Ownership {
         let created = construct.await?;
         let weak: Vec<_> = created.iter().map(|(agent, _)| agent.downgrade()).collect();
         self.children.rcu(|children| {
+            let mut children = imbl::Vector::clone(children);
+            children.extend(weak.iter().cloned());
+            if children.len().is_power_of_two() {
+                children.retain(WeakAgent::is_live);
+            }
             children
-                .iter()
-                .filter(|child| child.is_live())
-                .chain(&weak)
-                .cloned()
-                .collect::<Vec<_>>()
         });
         if let Some(runners) = self.services() {
             for (agent, _) in &created {
@@ -1571,8 +1569,8 @@ impl Ownership {
                         failures.push(error.to_string());
                     }
                     self.children.rcu(|children| {
-                        let mut children = Vec::clone(children);
-                        children.pop();
+                        let mut children = imbl::Vector::clone(children);
+                        children.pop_back();
                         children
                     });
                 }

@@ -107,7 +107,7 @@ struct EmbeddedHost {
     worker: ExecutionWorker,
 }
 
-fn spawn_host() -> Result<EmbeddedHost, String> {
+async fn spawn_host() -> Result<EmbeddedHost, String> {
     let started_at = Instant::now();
     let span = info_span!(
         target: "nanocode_code_mode",
@@ -117,8 +117,9 @@ fn spawn_host() -> Result<EmbeddedHost, String> {
         status = tracing::field::Empty,
         duration_ns = tracing::field::Empty,
     );
-    let result = span
-        .in_scope(ExecutionWorker::spawn)
+    let result = ExecutionWorker::spawn_available()
+        .instrument(span.clone())
+        .await
         .map(|worker| EmbeddedHost { worker });
     span.record(
         "status",
@@ -2329,7 +2330,7 @@ async fn run_cell_actor(
         let reused = taken.is_some();
         let host = match taken {
             Some(host) => host,
-            None => match spawn_host() {
+            None => match spawn_host().await {
                 Ok(host) => host,
                 Err(message) => {
                     tracing::Span::current().record("status", "failed");

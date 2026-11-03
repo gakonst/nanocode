@@ -85,6 +85,10 @@ impl Sql for SqliteSql {
             result.await.map_err(|_| stopped())?
         })
     }
+
+    fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {
+        Some(self)
+    }
 }
 
 fn configure(connection: &Connection) -> Result<(), StoreError> {

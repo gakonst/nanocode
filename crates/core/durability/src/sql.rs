@@ -51,6 +51,10 @@ pub trait Sql: Send + Sync {
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
     }
+
+    fn concurrent(self: Arc<Self>) -> Option<Arc<dyn Sql>> {
+        None
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -63,6 +67,10 @@ pub trait Sql {
 
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
+    }
+
+    fn concurrent(self: Arc<Self>) -> Option<Arc<dyn Sql>> {
+        None
     }
 }
 
@@ -489,7 +497,7 @@ const MIGRATIONS: [Migration; 2] = [
 
 pub struct SqlStore<H: ?Sized> {
     host: Arc<H>,
-    ready: bool,
+    ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl<H: Sql + ?Sized> SqlStore<H> {
@@ -500,21 +508,24 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         Self::shared(Arc::new(host))
     }
 
-    pub const fn shared(host: Arc<H>) -> Self {
-        Self { host, ready: false }
+    pub fn shared(host: Arc<H>) -> Self {
+        Self {
+            host,
+            ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
     }
 
     pub const FORMAT: u32 = MIGRATIONS.len() as u32;
 
     #[must_use]
-    pub const fn migrated(mut self) -> Self {
-        self.ready = true;
+    pub fn migrated(self) -> Self {
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
         self
     }
 
     pub async fn migrate(&mut self) -> Result<(), StoreError> {
         migrate_format(&*self.host, "records", &MIGRATIONS).await?;
-        self.ready = true;
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -527,7 +538,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         operation: &'static str,
         statements: Vec<SqlStatement<'_>>,
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-        if !self.ready {
+        if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
             self.migrate().await?;
         }
         run_checked(&*self.host, operation, &statements).await
@@ -967,5 +978,13 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
         commits: Vec<OwnedCommit>,
     ) -> StoreFuture<'_, Vec<Result<Committed, StoreError>>> {
         Box::pin(self.commit_all(commits))
+    }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
+        let host = Arc::clone(&self.host).concurrent()?;
+        Some(Box::new(SqlStore {
+            host,
+            ready: Arc::clone(&self.ready),
+        }))
     }
 }

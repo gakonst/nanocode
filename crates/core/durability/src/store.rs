@@ -565,6 +565,10 @@ pub trait StateStore: Send {
     fn concurrent_handle(&self) -> Option<Box<dyn StateStore>> {
         None
     }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
+        None
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -731,6 +735,10 @@ pub trait StateStore {
     }
 
     fn concurrent_handle(&self) -> Option<Box<dyn StateStore>> {
+        None
+    }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
         None
     }
 }

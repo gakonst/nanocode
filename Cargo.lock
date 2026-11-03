@@ -193,6 +193,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "archery"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33ca55ee147b1926dbea904f50fe4902494e97bc742205abbbf10c709e43815f"
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2575,6 +2581,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "imbl"
+version = "7.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46bad832b9b463ed9398b8506488cc2e3b897a9d44f13af115f382aac71f4fec"
+dependencies = [
+ "archery",
+ "equivalent",
+ "imbl-sized-chunks",
+ "rand_core 0.9.5",
+ "rand_xoshiro",
+ "version_check",
+ "wide 0.7.33",
+]
+
+[[package]]
+name = "imbl-sized-chunks"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0813be332553f857953298749fa19549e8b61b80589757c29b4e2a804fa9c6"
+
+[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3043,6 +3070,7 @@ dependencies = [
  "arc-swap",
  "blake3",
  "futures-util",
+ "imbl",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-durability",
@@ -3094,6 +3122,7 @@ name = "nanocode-agent-host"
 version = "0.6.7"
 dependencies = [
  "async-trait",
+ "imbl",
  "nanocode-agent",
  "nanocode-agent-core",
  "nanocode-cua-tools",
@@ -3336,6 +3365,7 @@ version = "0.6.7"
 dependencies = [
  "blake3",
  "futures-util",
+ "imbl",
  "nanocode-code-mode-engine",
  "nanocode-media",
  "nanocode-platform",
@@ -3675,6 +3705,7 @@ dependencies = [
 name = "nanocode-store-postgres"
 version = "0.6.7"
 dependencies = [
+ "futures-util",
  "nanocode-durability-core",
  "nanocode-sync",
  "tokio",
@@ -3724,6 +3755,7 @@ dependencies = [
  "arc-swap",
  "crossbeam-utils",
  "futures-util",
+ "imbl",
  "nanocode-platform",
  "tokio",
 ]
@@ -3855,7 +3887,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
- "wide",
+ "wide 1.7.1",
 ]
 
 [[package]]
@@ -5174,6 +5206,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xoshiro"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
+dependencies = [
+ "rand_core 0.9.5",
+]
+
+[[package]]
 name = "ratatui"
 version = "0.30.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5644,6 +5685,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "safe_arch"
@@ -7517,12 +7567,22 @@ dependencies = [
 
 [[package]]
 name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch 0.7.4",
+]
+
+[[package]]
+name = "wide"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
 dependencies = [
  "bytemuck",
- "safe_arch",
+ "safe_arch 1.2.0",
 ]
 
 [[package]]

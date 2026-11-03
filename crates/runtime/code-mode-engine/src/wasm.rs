@@ -137,6 +137,10 @@ pub struct EmbeddedHost {
 }
 
 impl EmbeddedHost {
+    pub async fn spawn_available() -> Result<Self, String> {
+        Self::spawn()
+    }
+
     pub fn spawn() -> Result<Self, String> {
         let runtime = Runtime::new()
             .map_err(|error| format!("failed to initialize embedded QuickJS runtime: {error}"))?;

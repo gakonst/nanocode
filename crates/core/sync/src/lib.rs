@@ -353,7 +353,7 @@ impl<T: Clone> SingleFlight<T> {
 #[derive(Clone, Default)]
 struct Queue {
     holder: Option<u64>,
-    waiting: std::collections::VecDeque<(u64, Arc<Signal>)>,
+    waiting: imbl::OrdMap<u64, Arc<Signal>>,
 }
 
 const LINE_FREE: u8 = 0;
@@ -404,13 +404,13 @@ impl Drop for Turn {
             }
         }
         let next = self.line.queue.update(|queue| {
-            queue.waiting.retain(|(ticket, _)| *ticket != self.ticket);
+            queue.waiting.remove(&self.ticket);
             if queue.holder != Some(self.ticket) {
                 return None;
             }
-            let next = queue.waiting.pop_front();
-            queue.holder = next.as_ref().map(|(ticket, _)| *ticket);
-            next.map(|(_, admitted)| admitted)
+            let next = queue.waiting.get_min().map(|(ticket, _)| *ticket);
+            queue.holder = next;
+            next.and_then(|ticket| queue.waiting.remove(&ticket))
         });
         if let Some(next) = next {
             next.fire();
@@ -466,9 +466,7 @@ impl Sequencer {
                         let admitted = Arc::new(Signal::new());
                         self.0.queue.update(|queue| {
                             queue.holder = Some(FAST_TICKET);
-                            queue
-                                .waiting
-                                .push_back((turn.ticket, Arc::clone(&admitted)));
+                            queue.waiting.insert(turn.ticket, Arc::clone(&admitted));
                         });
                         self.0.mode.store(LINE_QUEUED, Release);
                         admitted.wait().await;
@@ -492,9 +490,7 @@ impl Sequencer {
                 queue.holder = Some(turn.ticket);
                 true
             } else {
-                queue
-                    .waiting
-                    .push_back((turn.ticket, Arc::clone(&admitted)));
+                queue.waiting.insert(turn.ticket, Arc::clone(&admitted));
                 false
             }
         });

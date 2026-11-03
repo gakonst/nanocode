@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     sync::{Arc, Weak},
 };
 
@@ -42,13 +42,13 @@ pub struct CodeModeExecutors {
 #[derive(Clone, Default)]
 struct State {
     executors: BTreeMap<Arc<str>, Arc<dyn CodeModeHost>>,
-    selections: HashMap<Box<str>, ExecutorSelection>,
-    roots: HashMap<Box<str>, Box<str>>,
-    backends: HashMap<Box<str>, Box<str>>,
+    selections: imbl::HashMap<Box<str>, ExecutorSelection>,
+    roots: imbl::HashMap<Box<str>, Box<str>>,
+    backends: imbl::HashMap<Box<str>, Box<str>>,
     default: Option<Arc<str>>,
     fallback: Option<Arc<str>>,
     awaiting: bool,
-    sessions: HashMap<Box<str>, SessionPlaces>,
+    sessions: imbl::HashMap<Box<str>, SessionPlaces>,
 }
 
 #[derive(Clone, Default)]
@@ -118,7 +118,7 @@ impl State {
     }
 
     fn forget_executor(&mut self, name: &str) {
-        for places in self.sessions.values_mut() {
+        for (_, places) in self.sessions.iter_mut() {
             places.touched.retain(|touched| &**touched != name);
             places
                 .cells

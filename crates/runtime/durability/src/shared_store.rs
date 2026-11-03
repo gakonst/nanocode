@@ -155,18 +155,41 @@ impl SharedStore {
 }
 
 async fn drive_grouped<S: StateStore>(mut store: S, mut receiver: mpsc::Receiver<StoreRequest>) {
+    let (finished, mut completions) = mpsc::unbounded_channel();
+    let mut in_flight = 0_usize;
     let mut next = None;
     loop {
         let request = match next.take() {
             Some(request) => request,
-            None => match receiver.recv().await {
-                Some(request) => request,
-                None => break,
+            None => tokio::select! {
+                biased;
+                Some(()) = completions.recv(), if in_flight > 0 => {
+                    in_flight -= 1;
+                    continue;
+                }
+                request = receiver.recv() => match request {
+                    Some(request) => request,
+                    None => break,
+                },
             },
         };
         let first = match Grouped::from_request(request) {
             Ok(grouped) => grouped,
             Err(request) => {
+                if !matches!(request.command, Command::Flush { .. })
+                    && let Some(mut handle) = store.pipeline_handle()
+                {
+                    in_flight += 1;
+                    let completion = Completion(finished.clone());
+                    spawn_operation(async move {
+                        run(&mut *handle, request).await;
+                        drop(completion);
+                    });
+                    continue;
+                }
+                while in_flight > 0 && completions.recv().await.is_some() {
+                    in_flight -= 1;
+                }
                 run(&mut store, request).await;
                 continue;
             }

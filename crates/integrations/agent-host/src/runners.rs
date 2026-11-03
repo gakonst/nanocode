@@ -4,7 +4,7 @@ pub use nanocode_tool_runtime::attachment::{
 };
 
 use nanocode_sync::{Atom, Signal, Slot};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 type Startup = tokio::sync::watch::Receiver<Option<Result<(), AttachmentError>>>;
@@ -14,9 +14,9 @@ pub(crate) struct RunnerAgents {
     pending: Slot<Pending>,
     startup: Atom<Vec<Startup>>,
     activated: Signal,
-    code_mode_hosts: Atom<HashMap<String, bool>>,
-    agents: Atom<Vec<(String, crate::WeakAgent, mpsc::UnboundedSender<Notice>)>>,
-    folded: Atom<Vec<(String, crate::WeakAgent, String)>>,
+    code_mode_hosts: Atom<imbl::HashMap<String, bool>>,
+    agents: Atom<imbl::HashMap<String, (crate::WeakAgent, mpsc::UnboundedSender<Notice>)>>,
+    folded: Atom<imbl::HashMap<String, (crate::WeakAgent, String)>>,
     initialized: tokio::sync::OnceCell<Result<(), AttachmentError>>,
 }
 
@@ -206,7 +206,7 @@ impl RunnerAgents {
             }
         };
         let mut stale = false;
-        for (_, agent, notices) in self.agents.get().iter() {
+        for (agent, notices) in self.agents.get().values() {
             stale |= !agent.is_live()
                 || notices
                     .send(Notice {
@@ -218,17 +218,19 @@ impl RunnerAgents {
         }
         if stale {
             self.agents.update(|agents| {
-                agents.retain(|(_, agent, notices)| agent.is_live() && !notices.is_closed());
+                agents.retain(|_, (agent, notices)| agent.is_live() && !notices.is_closed());
             });
         }
     }
 
     pub(crate) fn unregister(&self, session_id: &str) {
         self.pool.code_mode_executors().forget(session_id);
-        self.agents
-            .update(|agents| agents.retain(|(id, _, _)| id != session_id));
-        self.folded
-            .update(|folded| folded.retain(|(id, _, _)| id != session_id));
+        self.agents.update(|agents| {
+            agents.remove(session_id);
+        });
+        self.folded.update(|folded| {
+            folded.remove(session_id);
+        });
         self.code_mode_hosts.update(|hosts| {
             hosts.remove(session_id);
         });
@@ -257,8 +259,7 @@ impl RunnerAgents {
     pub(crate) fn initial_notice_committed(&self, agent: &crate::Agent, text: String) {
         let weak = agent.downgrade();
         self.folded.update(|folded| {
-            folded.retain(|(_, agent, _)| agent.is_live());
-            folded.push((agent.session_id().to_owned(), weak.clone(), text.clone()));
+            folded.insert(agent.session_id().to_owned(), (weak.clone(), text.clone()));
         });
     }
 
@@ -300,22 +301,26 @@ impl RunnerAgents {
         let (notices, mut receiver) = mpsc::unbounded_channel::<Notice>();
         let (completed, result) = oneshot::channel();
         let claimed = self.agents.try_update(|agents| {
-            agents.retain(|(_, agent, notices)| agent.is_live() && !notices.is_closed());
-            if agents.iter().any(|(id, _, _)| id == agent.session_id()) {
+            if agents
+                .get(agent.session_id())
+                .is_some_and(|(agent, notices)| agent.is_live() && !notices.is_closed())
+            {
                 return None;
             }
-            agents.push((agent.session_id().to_owned(), weak.clone(), notices.clone()));
+            agents.insert(
+                agent.session_id().to_owned(),
+                (weak.clone(), notices.clone()),
+            );
             Some(())
         });
         if claimed.is_none() {
             return Ok(());
         }
         let folded = self.folded.update(|folded| {
-            folded.retain(|(_, agent, _)| agent.is_live());
             folded
-                .iter()
-                .position(|(id, _, _)| id == agent.session_id())
-                .map(|index| folded.swap_remove(index).2)
+                .remove(agent.session_id())
+                .filter(|(agent, _)| agent.is_live())
+                .map(|(_, text)| text)
         });
         let folded_initial = folded.is_some();
         let text = match (folded, self.summary()) {

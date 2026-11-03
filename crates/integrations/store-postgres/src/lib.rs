@@ -1,6 +1,9 @@
 #![cfg(not(target_family = "wasm"))]
 
-use tokio_postgres::{Client, types::ToSql};
+use tokio_postgres::{
+    Client,
+    types::{ToSql, Type},
+};
 
 use nanocode_durability_core::{
     OwnedState, OwnerId, OwnerToken, Sql, SqlDialect, SqlRow, SqlStatement, StateStore, StoreError,
@@ -304,17 +307,26 @@ impl Sql for PostgresSql {
         Box::pin(async move {
             let mut client = self.client.acquire().await;
             let transaction = client.transaction().await.map_err(backend)?;
-            let mut results = Vec::with_capacity(statements.len());
-            for statement in statements {
-                let params: Vec<&(dyn ToSql + Sync)> = statement
-                    .params
+            let params = statements
+                .iter()
+                .map(|statement| {
+                    statement
+                        .params
+                        .iter()
+                        .map(|param| (param as &(dyn ToSql + Sync), Type::TEXT))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let replies = futures_util::future::try_join_all(
+                statements
                     .iter()
-                    .map(|param| param as &(dyn ToSql + Sync))
-                    .collect();
-                let rows = transaction
-                    .query(statement.sql, &params)
-                    .await
-                    .map_err(backend)?;
+                    .zip(&params)
+                    .map(|(statement, params)| transaction.query_typed(statement.sql, params)),
+            )
+            .await
+            .map_err(backend)?;
+            let mut results = Vec::with_capacity(replies.len());
+            for rows in replies {
                 results.push(
                     rows.iter()
                         .map(|row| {
@@ -333,6 +345,10 @@ impl Sql for PostgresSql {
 
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Postgres
+    }
+
+    fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {
+        Some(self)
     }
 }
 

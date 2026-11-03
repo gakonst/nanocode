@@ -109,8 +109,32 @@ enum CommandPoll {
     Disconnected,
 }
 
+static WORKER_EXITS: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 impl EmbeddedHost {
     pub fn spawn() -> Result<Self, String> {
+        Self::start()
+            .map_err(|error| format!("failed to start embedded QuickJS code-mode host: {error}"))
+    }
+
+    pub async fn spawn_available() -> Result<Self, String> {
+        loop {
+            let exited = WORKER_EXITS.notified();
+            tokio::pin!(exited);
+            exited.as_mut().enable();
+            match Self::start() {
+                Ok(host) => return Ok(host),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => exited.await,
+                Err(error) => {
+                    return Err(format!(
+                        "failed to start embedded QuickJS code-mode host: {error}"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn start() -> std::io::Result<Self> {
         let (command_tx, command_rx) = std_mpsc::channel();
         let (event_tx, events) = mpsc::unbounded_channel();
         let interrupted = Arc::new(AtomicBool::new(false));
@@ -124,8 +148,8 @@ impl EmbeddedHost {
                 run_worker(&command_rx, &event_tx, &worker_startup, &worker_interrupted);
                 drop((command_rx, event_tx));
                 let _ = stopped_tx.send(());
-            })
-            .map_err(|error| format!("failed to start embedded QuickJS code-mode host: {error}"))?;
+                WORKER_EXITS.notify_one();
+            })?;
         Ok(Self {
             command_tx,
             events,

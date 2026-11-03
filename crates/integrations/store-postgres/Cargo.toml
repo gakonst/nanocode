@@ -13,6 +13,7 @@ repository.workspace = true
 description = "Postgres state store for Nanocode durability"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+futures-util.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-sync.workspace = true
 tokio = { workspace = true, features = ["sync"] }

@@ -366,4 +366,13 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
             }) as Box<dyn StateStore>
         })
     }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
+        self.base.pipeline_handle().map(|base| {
+            Box::new(CachedStore {
+                cache: self.cache.clone(),
+                base,
+            }) as Box<dyn StateStore>
+        })
+    }
 }

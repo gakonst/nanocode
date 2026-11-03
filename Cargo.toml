@@ -111,6 +111,7 @@ brotli-decompressor = "5.0.3"
 flate2 = "1.1.9"
 zstd = { version = "0.14.3", default-features = false }
 arc-swap = "1.9.2"
+imbl = "7.0.2"
 crossbeam-utils = { version = "0.8.22", default-features = false, features = ["std"] }
 sync_wrapper = "1.0.2"
 async-trait = "=0.1.89"

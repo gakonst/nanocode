@@ -544,9 +544,13 @@ async fn intercept<C: Client>(
             header.eq_ignore_ascii_case(name)
                 || header.eq_ignore_ascii_case(b"connection")
                 || header.eq_ignore_ascii_case(b"keep-alive")
+                || header.eq_ignore_ascii_case(b"accept-encoding")
+                || header.eq_ignore_ascii_case(b"upgrade")
+                || header.eq_ignore_ascii_case(b"te")
         },
         &[
             (&injection.header, &injection.value),
+            ("Accept-Encoding", "identity"),
             ("Connection", "close"),
         ],
     );
@@ -555,9 +559,308 @@ async fn intercept<C: Client>(
     {
         return;
     }
-    tokio::io::copy_bidirectional(&mut client, &mut upstream)
-        .await
-        .ok();
+    let head_only = head.starts_with(b"HEAD ");
+    let forms = masks(&injection.value);
+    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let requests = async {
+        tokio::io::copy(&mut client_read, &mut upstream_write)
+            .await
+            .ok();
+        upstream_write.shutdown().await.ok();
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        () = requests => {}
+        _ = relay(upstream_read, &mut client_write, head_only, &forms) => {}
+    }
+}
+
+const MAX_RESPONSE_HEAD: usize = 64 * 1024;
+const MAX_CHUNK_LINE: usize = 1024;
+const MIN_MASKED: usize = 4;
+const MIN_MASKED_TOKEN: usize = 8;
+
+pub fn masks(value: &str) -> Vec<Vec<u8>> {
+    let mut forms = vec![value.as_bytes().to_vec()];
+    if let Some((_, token)) = value.trim().rsplit_once([' ', '\t'])
+        && token.len() >= MIN_MASKED_TOKEN
+    {
+        forms.push(token.as_bytes().to_vec());
+    }
+    let escaped: Vec<Vec<u8>> = forms
+        .iter()
+        .flat_map(|form| [json_escape(form, true), json_escape(form, false)])
+        .collect();
+    forms.extend(escaped);
+    forms.retain(|form| form.len() >= MIN_MASKED);
+    forms.sort_by_key(|form| std::cmp::Reverse(form.len()));
+    forms.dedup();
+    forms
+}
+
+fn json_escape(bytes: &[u8], slash: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'/' if slash => out.extend_from_slice(b"\\/"),
+            0..=0x1f => out.extend_from_slice(format!("\\u{b:04x}").as_bytes()),
+            _ => out.push(b),
+        }
+    }
+    out
+}
+
+pub fn mask(bytes: &mut [u8], forms: &[Vec<u8>]) {
+    let mut at = 0;
+    'scan: while at < bytes.len() {
+        for form in forms {
+            if bytes[at..].starts_with(form) {
+                bytes[at..at + form.len()].fill(b'*');
+                at += form.len();
+                continue 'scan;
+            }
+        }
+        at += 1;
+    }
+}
+
+fn partial(bytes: &[u8], forms: &[Vec<u8>]) -> usize {
+    forms
+        .iter()
+        .filter_map(|form| {
+            (1..form.len().min(bytes.len() + 1))
+                .rev()
+                .find(|len| bytes.ends_with(&form[..*len]))
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+pub struct Masker<'a> {
+    forms: &'a [Vec<u8>],
+    carry: Vec<u8>,
+}
+
+impl<'a> Masker<'a> {
+    pub const fn new(forms: &'a [Vec<u8>]) -> Self {
+        Self {
+            forms,
+            carry: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, data: &[u8]) -> Vec<u8> {
+        self.carry.extend_from_slice(data);
+        mask(&mut self.carry, self.forms);
+        let keep = partial(&self.carry, self.forms);
+        self.carry.drain(..self.carry.len() - keep).collect()
+    }
+
+    pub fn finish(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.carry)
+    }
+}
+
+struct Buffered<R> {
+    inner: R,
+    buffer: Vec<u8>,
+}
+
+impl<R: AsyncRead + Unpin> Buffered<R> {
+    async fn fill(&mut self) -> io::Result<bool> {
+        let mut chunk = [0u8; 16 * 1024];
+        let read = self.inner.read(&mut chunk).await?;
+        self.buffer.extend_from_slice(&chunk[..read]);
+        Ok(read > 0)
+    }
+
+    async fn until(&mut self, delimiter: &[u8], max: usize) -> io::Result<Vec<u8>> {
+        loop {
+            if let Some(at) = self
+                .buffer
+                .windows(delimiter.len())
+                .position(|window| window == delimiter)
+            {
+                if at > max {
+                    return Err(other("response line too long"));
+                }
+                return Ok(self.buffer.drain(..at + delimiter.len()).collect());
+            }
+            if self.buffer.len() > max + delimiter.len() {
+                return Err(other("response line too long"));
+            }
+            if !self.fill().await? {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+        }
+    }
+
+    async fn some(&mut self, limit: u64) -> io::Result<Vec<u8>> {
+        if self.buffer.is_empty() && !self.fill().await? {
+            return Ok(Vec::new());
+        }
+        let take =
+            usize::try_from(limit).map_or(self.buffer.len(), |limit| limit.min(self.buffer.len()));
+        Ok(self.buffer.drain(..take).collect())
+    }
+}
+
+struct Response {
+    status: u16,
+    chunked: bool,
+    length: Option<u64>,
+    encoded: bool,
+}
+
+fn parse_response(head: &[u8]) -> Option<Response> {
+    let text = std::str::from_utf8(head).ok()?;
+    let mut lines = text.split("\r\n");
+    let status = lines.next()?.split(' ').nth(1)?.parse().ok()?;
+    let mut response = Response {
+        status,
+        chunked: false,
+        length: None,
+        encoded: false,
+    };
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.eq_ignore_ascii_case("content-encoding") {
+            response.encoded |= value
+                .split(',')
+                .map(str::trim)
+                .any(|coding| !coding.is_empty() && !coding.eq_ignore_ascii_case("identity"));
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            response.chunked = value
+                .rsplit(',')
+                .next()
+                .is_some_and(|coding| coding.trim().eq_ignore_ascii_case("chunked"));
+            response.encoded |= value.split(',').map(str::trim).any(|coding| {
+                !coding.eq_ignore_ascii_case("chunked") && !coding.eq_ignore_ascii_case("identity")
+            });
+        } else if name.eq_ignore_ascii_case("content-length") {
+            let length = value.parse().ok()?;
+            if response.length.is_some_and(|seen| seen != length) {
+                return None;
+            }
+            response.length = Some(length);
+        }
+    }
+    Some(response)
+}
+
+async fn write_chunk<W: AsyncWrite + Unpin>(client: &mut W, data: &[u8]) -> io::Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    client
+        .write_all(format!("{:x}\r\n", data.len()).as_bytes())
+        .await?;
+    client.write_all(data).await?;
+    client.write_all(b"\r\n").await
+}
+
+async fn relay<R, W>(
+    upstream: R,
+    client: &mut W,
+    head_only: bool,
+    forms: &[Vec<u8>],
+) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut upstream = Buffered {
+        inner: upstream,
+        buffer: Vec::new(),
+    };
+    loop {
+        let mut head = upstream.until(b"\r\n\r\n", MAX_RESPONSE_HEAD).await?;
+        let Some(response) = parse_response(&head) else {
+            respond(client, "502 Bad Gateway").await;
+            return Ok(());
+        };
+        if response.status == 101 || response.encoded {
+            respond_text(
+                client,
+                "502 Bad Gateway",
+                "The egress proxy refused a compressed or upgraded response to a request it added a secret to.",
+            )
+            .await;
+            return Ok(());
+        }
+        mask(&mut head, forms);
+        client.write_all(&head).await?;
+        if (100..200).contains(&response.status) {
+            continue;
+        }
+        if head_only || response.status == 204 || response.status == 304 {
+            break;
+        }
+        let mut masker = Masker::new(forms);
+        if response.chunked {
+            loop {
+                let line = upstream.until(b"\r\n", MAX_CHUNK_LINE).await?;
+                let size = std::str::from_utf8(&line)
+                    .ok()
+                    .and_then(|line| line.trim().split(';').next())
+                    .and_then(|size| u64::from_str_radix(size.trim(), 16).ok())
+                    .ok_or_else(|| other("malformed chunk size"))?;
+                if size == 0 {
+                    break;
+                }
+                let mut left = size;
+                while left > 0 {
+                    let data = upstream.some(left).await?;
+                    if data.is_empty() {
+                        return Err(io::ErrorKind::UnexpectedEof.into());
+                    }
+                    left -= data.len() as u64;
+                    write_chunk(client, &masker.push(&data)).await?;
+                }
+                upstream.until(b"\r\n", 0).await?;
+            }
+            write_chunk(client, &masker.finish()).await?;
+            let mut trailers = b"0\r\n".to_vec();
+            loop {
+                let line = upstream.until(b"\r\n", MAX_RESPONSE_HEAD).await?;
+                let end = line == b"\r\n";
+                trailers.extend_from_slice(&line);
+                if end || trailers.len() > MAX_RESPONSE_HEAD {
+                    break;
+                }
+            }
+            mask(&mut trailers, forms);
+            client.write_all(&trailers).await?;
+        } else if let Some(length) = response.length {
+            let mut left = length;
+            while left > 0 {
+                let data = upstream.some(left).await?;
+                if data.is_empty() {
+                    break;
+                }
+                left -= data.len() as u64;
+                client.write_all(&masker.push(&data)).await?;
+            }
+            client.write_all(&masker.finish()).await?;
+        } else {
+            loop {
+                match upstream.some(u64::MAX).await {
+                    Ok(data) if !data.is_empty() => client.write_all(&masker.push(&data)).await?,
+                    _ => break,
+                }
+            }
+            client.write_all(&masker.finish()).await?;
+        }
+        break;
+    }
+    client.flush().await?;
+    client.shutdown().await
 }
 
 async fn forward<C: Client>(

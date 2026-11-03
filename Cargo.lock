@@ -3259,6 +3259,7 @@ dependencies = [
  "http",
  "iana-time-zone",
  "image",
+ "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",
  "nanocode-backend-codex-client",
@@ -3646,6 +3647,7 @@ dependencies = [
  "portable-pty",
  "rustix",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

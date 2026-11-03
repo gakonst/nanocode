@@ -61,6 +61,11 @@ nanocode-tool-contracts.workspace = true
 "nanocode-http" = { "workspace" = true }
 "async-trait" = { "workspace" = true }
 
+["target"."cfg(unix)"]
+
+["target"."cfg(unix)"."dependencies"]
+"libc" = { "workspace" = true }
+
 ["target"."cfg(target_os = \"macos\")"]
 
 ["target"."cfg(target_os = \"macos\")"."dependencies"]

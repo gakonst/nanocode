@@ -63,7 +63,30 @@ pub(super) struct SpawnedProcess {
 pub(super) struct ProcessChild {
     reaping: Reaping,
     process_group: SharedProcessGroup,
-    exited: Arc<AtomicBool>,
+    exited: Arc<Exit>,
+}
+
+#[derive(Default)]
+pub(super) struct Exit {
+    done: AtomicBool,
+    waiters: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+}
+
+impl Exit {
+    fn mark(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        if let Some(waiters) = self.waiters.get() {
+            waiters.notify_waiters();
+        }
+    }
+
+    pub(super) fn get(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn notify(&self, waiters: &Arc<tokio::sync::Notify>) {
+        let _ = self.waiters.set(Arc::clone(waiters));
+    }
 }
 
 enum Reaping {
@@ -82,7 +105,7 @@ impl ProcessChild {
         let (commands, mut received) = mpsc::unbounded_channel();
         let process_group = SharedProcessGroup(commands);
         let mut guard = ProcessGroupGuard::new(pid);
-        let exited = Arc::new(AtomicBool::new(false));
+        let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
         let wait = tokio::spawn(async move {
             let mut listening = true;
@@ -107,14 +130,14 @@ impl ProcessChild {
                     Ok(None) => {}
                     Ok(Some(status)) => {
                         guard.disarm();
-                        reaped.store(true, Ordering::SeqCst);
+                        reaped.mark();
                         return Ok(status);
                     }
 
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => {
                         guard.disarm();
-                        reaped.store(true, Ordering::SeqCst);
+                        reaped.mark();
                         return Err(error);
                     }
                 }
@@ -153,7 +176,7 @@ impl ProcessChild {
     pub(super) fn served(pid: u32, mut exit: oneshot::Receiver<io::Result<i32>>) -> Self {
         let (commands, mut received) = mpsc::unbounded_channel();
         let process_group = SharedProcessGroup(commands);
-        let exited = Arc::new(AtomicBool::new(false));
+        let exited = Arc::new(Exit::default());
         let reaped = Arc::clone(&exited);
         let wait = tokio::spawn(async move {
             let mut guard = ProcessGroupGuard::new(pid);
@@ -173,7 +196,7 @@ impl ProcessChild {
                     }
                 }
             };
-            reaped.store(true, Ordering::SeqCst);
+            reaped.mark();
             result
         });
         Self {
@@ -188,7 +211,7 @@ impl ProcessChild {
         self.process_group.clone()
     }
 
-    pub(super) fn exited(&self) -> Arc<AtomicBool> {
+    pub(super) fn exited(&self) -> Arc<Exit> {
         Arc::clone(&self.exited)
     }
 

@@ -4,6 +4,10 @@ pub use nanocode_home::SessionEnvironment;
 
 mod foreground;
 pub use foreground::{ForegroundOutput, run_bash};
+#[cfg(unix)]
+mod marked;
+#[cfg(unix)]
+pub use marked::terminate_marked;
 mod output;
 mod process;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -17,18 +21,22 @@ pub use process::ProcessGroupGuard;
 pub use process::ambient_sensitive_environment;
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
 
 use nanocode_sync::{Actor, Atom};
-use tokio::{sync::mpsc, task::JoinHandle, time::timeout};
+use tokio::{
+    sync::{Notify, mpsc},
+    task::JoinHandle,
+    time::timeout,
+};
 
 pub use nanocode_process_contracts::{
     DEFAULT_EXEC_YIELD_MS, DEFAULT_POLL_YIELD_MS, DEFAULT_WRITE_YIELD_MS, MAX_EXEC_YIELD_MS,
@@ -134,6 +142,7 @@ impl ForegroundExecutor for EnvironmentForeground {
 struct Sessions {
     shards: [Atom<HashMap<i64, Arc<Session>>>; SHARDS],
     count: AtomicUsize,
+    exits: Arc<Notify>,
 }
 
 /// One shard for each session a Hand keeps when it is full.
@@ -144,6 +153,7 @@ impl Sessions {
         Self {
             shards: std::array::from_fn(|_| Atom::default()),
             count: AtomicUsize::new(0),
+            exits: Arc::default(),
         }
     }
 
@@ -171,6 +181,7 @@ impl Sessions {
         let removed = self.shard(id).try_update(|sessions| sessions.remove(&id));
         if removed.is_some() {
             self.count.fetch_sub(1, Ordering::SeqCst);
+            self.exits.notify_waiters();
         }
         removed
     }
@@ -201,11 +212,33 @@ impl Sessions {
             self.count.fetch_sub(sessions.len(), Ordering::SeqCst);
             taken.extend(sessions.values().cloned());
         }
+        self.exits.notify_waiters();
         taken
     }
 }
 
 pub type SecretEnvironment = Arc<dyn Fn() -> Vec<(OsString, OsString)> + Send + Sync>;
+
+#[must_use]
+pub fn file_secrets(file: PathBuf) -> SecretEnvironment {
+    Arc::new(move || {
+        let secrets: BTreeMap<String, String> = std::fs::read(&file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        secrets
+            .into_iter()
+            .filter(|(name, _)| {
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+                    && !name.as_bytes()[0].is_ascii_digit()
+            })
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect()
+    })
+}
 
 pub struct ShellSessions {
     terminations: AtomicU64,
@@ -216,8 +249,18 @@ pub struct ShellSessions {
     environment: Arc<Vec<(OsString, OsString)>>,
     secrets: Option<SecretEnvironment>,
     per_caller: bool,
+    origin: Instant,
+    busy_at: AtomicU64,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     servers: server::Servers,
+}
+
+struct CallEnds<'a>(&'a ShellSessions);
+
+impl Drop for CallEnds<'_> {
+    fn drop(&mut self) {
+        self.0.touch();
+    }
 }
 
 impl ShellSessions {
@@ -231,6 +274,8 @@ impl ShellSessions {
             environment,
             secrets: None,
             per_caller: false,
+            origin: Instant::now(),
+            busy_at: AtomicU64::new(0),
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             servers: server::Servers::default(),
         }
@@ -252,6 +297,40 @@ impl ShellSessions {
         }
     }
 
+    fn touch(&self) {
+        let now = u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.busy_at.store(now, Ordering::Relaxed);
+    }
+
+    fn active(&self) -> bool {
+        let mut active = false;
+        self.sessions
+            .each(|session| active |= !session.exited.get());
+        active
+    }
+
+    pub fn idle_for(&self) -> Duration {
+        if self.active() {
+            self.touch();
+            return Duration::ZERO;
+        }
+        self.origin
+            .elapsed()
+            .saturating_sub(Duration::from_millis(self.busy_at.load(Ordering::Relaxed)))
+    }
+
+    pub async fn quiet(&self) {
+        loop {
+            let exited = self.sessions.exits.notified();
+            tokio::pin!(exited);
+            exited.as_mut().enable();
+            if !self.active() {
+                return;
+            }
+            exited.await;
+        }
+    }
+
     pub const fn default_shell_name(&self) -> &'static str {
         self.default_shell.name()
     }
@@ -263,6 +342,7 @@ impl ShellSessions {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ExecCommandResult> + Send + 'call>>
     {
         Box::pin(async move {
+            let _ends = CallEnds(self);
             let started_at = Instant::now();
             let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
             let workdir = resolve_workdir(workspace, command.workdir.as_deref());
@@ -353,15 +433,16 @@ impl ShellSessions {
                 started_at: SystemTime::now(),
                 caller: command.caller,
             };
-            let session = match Session::new(session_id, spawned, secrets, launch) {
-                Ok(session) => session,
-                Err(error) => {
-                    return ExecCommandResult::failed(
-                        started_at.elapsed(),
-                        format!("exec_command failed for `{}`: {error}", command.script),
-                    );
-                }
-            };
+            let session =
+                match Session::new(session_id, spawned, secrets, launch, &self.sessions.exits) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        return ExecCommandResult::failed(
+                            started_at.elapsed(),
+                            format!("exec_command failed for `{}`: {error}", command.script),
+                        );
+                    }
+                };
             let mut cancellation = CancelExecution {
                 session: Some(Arc::clone(&session)),
                 sessions: Arc::clone(&self.sessions),
@@ -409,6 +490,7 @@ impl ShellSessions {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ExecCommandResult> + Send + 'call>>
     {
         Box::pin(async move {
+            let _ends = CallEnds(self);
             let started_at = Instant::now();
             let session_id = i64::from(request.session_id);
             let session = self.sessions.get(session_id);
@@ -488,7 +570,7 @@ impl ShellSessions {
     pub fn running(&self) -> Vec<RunningProcess> {
         let mut running = Vec::new();
         self.sessions.each(|session| {
-            if !session.exited.load(Ordering::SeqCst) {
+            if !session.exited.get() {
                 running.push(RunningProcess {
                     session_id: session.id,
                     caller: session.launch.caller.clone(),
@@ -537,7 +619,7 @@ struct Session {
     launch: Launch,
     last_used: AtomicU64,
     busy: AtomicUsize,
-    exited: Arc<AtomicBool>,
+    exited: Arc<process::Exit>,
     activity: Arc<LastActivity>,
 }
 
@@ -588,7 +670,7 @@ fn prune(sessions: &[&Arc<Session>]) -> Option<i64> {
         })
     };
     candidates()
-        .find(|(_, id)| sessions[id].exited.load(Ordering::SeqCst))
+        .find(|(_, id)| sessions[id].exited.get())
         .or_else(|| candidates().next())
         .map(|(_, id)| *id)
 }
@@ -611,6 +693,7 @@ impl Session {
         spawned: process::SpawnedProcess,
         secrets: nanocode_process_contracts::Redactor,
         launch: Launch,
+        exits: &Arc<Notify>,
     ) -> std::io::Result<Arc<Self>> {
         let tty = matches!(spawned.stdin.as_ref(), Some(process::ProcessStdin::Pty(_)));
         let (chunks, output) = mpsc::unbounded_channel();
@@ -632,6 +715,7 @@ impl Session {
         };
         let process_group = spawned.process_group;
         let exited = spawned.child.exited();
+        exited.notify(exits);
         let owner = Actor::spawn(SessionState {
             id,
             tty,

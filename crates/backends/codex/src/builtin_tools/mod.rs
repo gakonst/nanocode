@@ -24,6 +24,8 @@ mod view_image;
 pub mod workspace_runtime;
 #[cfg(not(target_family = "wasm"))]
 pub use workspace_runtime::WorkspaceTools;
+#[cfg(unix)]
+pub mod served;
 
 mod runtime_config;
 

@@ -382,6 +382,7 @@ enum Command {
         caller: Caller,
         operation_id: String,
         writes: Vec<OwnerWrite>,
+        deferred: bool,
         result: oneshot::Sender<Result<Vec<WriteOutcome>>>,
     },
     Complete {
@@ -1014,10 +1015,14 @@ impl Driver {
                 caller,
                 operation_id,
                 writes,
+                deferred,
                 result,
             } => {
                 let outcome = match self.authorize(&caller) {
-                    Ok(()) => self.commit_writes(&caller, operation_id, writes).await,
+                    Ok(()) => {
+                        self.commit_writes(&caller, operation_id, writes, deferred)
+                            .await
+                    }
                     Err(error) => Err(error),
                 };
                 drop(result.send(outcome));
@@ -1873,10 +1878,15 @@ impl Driver {
         caller: &Caller,
         operation_id: String,
         writes: Vec<OwnerWrite>,
+        deferred: bool,
     ) -> Result<Vec<WriteOutcome>> {
-        let revision = self.state.revision().checked_add(1).ok_or_else(|| {
-            Error::InvalidState("state revision exceeded the u64 range".to_owned())
-        })?;
+        let revision = if deferred {
+            self.state.revision()
+        } else {
+            self.state.revision().checked_add(1).ok_or_else(|| {
+                Error::InvalidState("state revision exceeded the u64 range".to_owned())
+            })?
+        };
         let base = self.state.clone();
         self.batch = Some(revision);
         let mut outcomes = Vec::with_capacity(writes.len());
@@ -1923,6 +1933,10 @@ impl Driver {
         let mut next = std::mem::replace(&mut self.state, base);
         if let Some(error) = failure {
             return Err(error);
+        }
+        if deferred {
+            self.state = next;
+            return Ok(outcomes);
         }
         if next.revision() == revision {
             if let Some(limit) = self.terminal_receipt_limit {
@@ -3543,11 +3557,29 @@ impl DurableOwner {
         operation_id: String,
         writes: Vec<OwnerWrite>,
     ) -> Result<Vec<WriteOutcome>> {
+        self.send_writes(operation_id, writes, false).await
+    }
+
+    pub async fn commit_writes_deferred(
+        &self,
+        operation_id: String,
+        writes: Vec<OwnerWrite>,
+    ) -> Result<Vec<WriteOutcome>> {
+        self.send_writes(operation_id, writes, true).await
+    }
+
+    async fn send_writes(
+        &self,
+        operation_id: String,
+        writes: Vec<OwnerWrite>,
+        deferred: bool,
+    ) -> Result<Vec<WriteOutcome>> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::CommitWrites {
             caller: self.caller()?,
             operation_id,
             writes,
+            deferred,
             result,
         })
         .await?;

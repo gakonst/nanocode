@@ -826,7 +826,13 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                 kind: begin.kind.clone(),
                 input: EncodedPayload::from_json(Arc::from(begin.input.get())),
             });
-            let begun = match self.owner.commit_writes(id.clone(), fused).await {
+            let model = matches!(begin.kind.as_str(), "model" | "model_call");
+            let committed = if model {
+                self.owner.commit_writes_deferred(id.clone(), fused).await
+            } else {
+                self.owner.commit_writes(id.clone(), fused).await
+            };
+            let begun = match committed {
                 Ok(mut outcomes) => match outcomes.pop() {
                     Some(WriteOutcome::Began(begun)) => Ok(begun),
                     _ => Err(nanocode_durability::Error::InvalidState(

@@ -42,6 +42,7 @@ impl SqliteStore {
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let connection = Connection::open(path).map_err(backend)?;
+        write_ahead(&connection)?;
         Self::from_connection(connection)
     }
 
@@ -137,6 +138,12 @@ impl SqliteStore {
     }
 }
 
+fn write_ahead(connection: &Connection) -> Result<(), StoreError> {
+    connection
+        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
+        .map_err(backend)
+}
+
 impl Database {
     fn home(home: &Path) -> Result<PathBuf, StoreError> {
         std::fs::create_dir_all(home).map_err(|error| {
@@ -146,7 +153,9 @@ impl Database {
     }
 
     fn open(path: PathBuf) -> Result<Self, StoreError> {
-        Self::initialize(Connection::open(path).map_err(backend)?)
+        let connection = Connection::open(path).map_err(backend)?;
+        write_ahead(&connection)?;
+        Self::initialize(connection)
     }
 
     fn initialize(connection: Connection) -> Result<Self, StoreError> {

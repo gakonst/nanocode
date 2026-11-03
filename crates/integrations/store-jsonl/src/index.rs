@@ -390,7 +390,7 @@ impl Journal {
     }
 
     pub(super) fn persist_index(&mut self) {
-        if self.sealed.is_some() {
+        if !self.sidecar || self.sealed.is_some() {
             return;
         }
         if std::fs::metadata(&self.path)
@@ -837,7 +837,7 @@ impl Journal {
     }
 
     pub(super) fn adopt_saved_index(&mut self) {
-        if !self.ready || self.index_file_unchanged() {
+        if !self.sidecar || !self.ready || self.index_file_unchanged() {
             return;
         }
         let (Ok(journal), Ok(saved)) =
@@ -877,6 +877,9 @@ impl Journal {
     }
 
     pub(super) fn flush_lagging_index(&mut self) {
+        if !self.sidecar {
+            return;
+        }
         let lag = self
             .index
             .offset

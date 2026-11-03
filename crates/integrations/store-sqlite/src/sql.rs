@@ -102,7 +102,10 @@ fn configure(connection: &Connection) -> Result<(), StoreError> {
 }
 
 fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<()>> {
-    let path = connection.path().filter(|path| !path.is_empty())?.to_owned();
+    let path = connection
+        .path()
+        .filter(|path| !path.is_empty())?
+        .to_owned();
     connection
         .execute_batch("PRAGMA wal_autocheckpoint = 0;")
         .ok()?;
@@ -113,7 +116,10 @@ fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<(
             let Ok(checkpoints) = Connection::open(&path) else {
                 return;
             };
-            if checkpoints.execute_batch("PRAGMA busy_timeout = 5000;").is_err() {
+            if checkpoints
+                .execute_batch("PRAGMA busy_timeout = 5000;")
+                .is_err()
+            {
                 return;
             }
             while woken.recv().is_ok() {

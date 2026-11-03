@@ -104,20 +104,6 @@ fn spawn_detached(future: BackendFuture<()>) {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub(crate) async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
-) -> std::io::Result<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(std::io::Error::other)?
-}
-
-#[cfg(target_family = "wasm")]
-pub(crate) async fn blocking<T>(work: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
-    work()
-}
-
-#[cfg(not(target_family = "wasm"))]
 pub(crate) async fn sleep(duration: Duration) {
     tokio::time::sleep(duration).await;
 }

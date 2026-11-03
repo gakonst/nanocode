@@ -2579,8 +2579,7 @@ impl Registry {
         }
         let conversation = snapshot.has_conversation();
         let retain = self.records_sessions(root_session_id);
-        let encoded =
-            platform::blocking(move || durable::JournalCheckpoint::encode(snapshot, retain)).await;
+        let encoded = durable::JournalCheckpoint::encode(snapshot, retain);
         let recorded = self.insert_encoded(root_session_id, id, encoded);
         if recorded {
             self.recorded_conversation(root_session_id, id, conversation);

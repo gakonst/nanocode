@@ -2,6 +2,9 @@
 
 mod compact;
 mod index;
+mod migrate;
+mod sessions;
+mod summaries;
 
 pub use compact::CompactionStats;
 
@@ -47,6 +50,18 @@ enum Entry {
         payload: String,
         records: Vec<StoreRecord>,
     },
+    Import {
+        state_id: String,
+        owner: OwnerToken,
+        after: Option<OwnerToken>,
+        revision: u64,
+        payload: String,
+    },
+    Records {
+        state_id: String,
+        owner: OwnerToken,
+        records: Vec<StoreRecord>,
+    },
 }
 
 impl Entry {
@@ -55,7 +70,7 @@ impl Entry {
             Self::Acquire { state_id, owner } => Claim {
                 state_id,
                 owner,
-                revision: None,
+                kind: Claimed::Acquire,
             },
             Self::Replace {
                 state_id,
@@ -65,8 +80,36 @@ impl Entry {
             } => Claim {
                 state_id,
                 owner,
-                revision: Some(*revision),
+                kind: Claimed::Replace(*revision),
             },
+            Self::Import {
+                state_id,
+                owner,
+                after,
+                revision,
+                ..
+            } => Claim {
+                state_id,
+                owner,
+                kind: Claimed::Import {
+                    after: after.as_ref(),
+                    revision: *revision,
+                },
+            },
+            Self::Records {
+                state_id, owner, ..
+            } => Claim {
+                state_id,
+                owner,
+                kind: Claimed::Records,
+            },
+        }
+    }
+
+    fn records(&self) -> &[StoreRecord] {
+        match self {
+            Self::Replace { records, .. } | Self::Records { records, .. } => records,
+            Self::Acquire { .. } | Self::Import { .. } => &[],
         }
     }
 }
@@ -76,7 +119,7 @@ fn replacement(entries: Vec<Entry>) -> Option<StoreReplacement> {
         Entry::Replace {
             payload, records, ..
         } => Some(StoreReplacement { payload, records }),
-        Entry::Acquire { .. } => None,
+        Entry::Acquire { .. } | Entry::Import { .. } | Entry::Records { .. } => None,
     })
 }
 
@@ -106,6 +149,37 @@ fn encode(
                 owner,
                 revision: *revision,
                 payload,
+                records: Spanned {
+                    value: records,
+                    spans,
+                },
+                batch,
+            },
+            Entry::Import {
+                state_id,
+                owner,
+                after,
+                revision,
+                payload,
+            } => Line::Import {
+                state_id,
+                owner,
+                after: after.as_ref(),
+                revision: *revision,
+                payload,
+                records: Spanned {
+                    value: &[],
+                    spans,
+                },
+                batch,
+            },
+            Entry::Records {
+                state_id,
+                owner,
+                records,
+            } => Line::Records {
+                state_id,
+                owner,
                 records: Spanned {
                     value: records,
                     spans,
@@ -165,6 +239,24 @@ enum Line<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         batch: Option<&'a Batch>,
     },
+    Import {
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after: Option<&'a OwnerToken>,
+        revision: u64,
+        payload: &'a str,
+        records: Spanned<'a, [StoreRecord]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        batch: Option<&'a Batch>,
+    },
+    Records {
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        records: Spanned<'a, [StoreRecord]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        batch: Option<&'a Batch>,
+    },
     Seal {
         seal: &'a str,
         pid: u32,
@@ -177,7 +269,18 @@ enum Line<'a> {
 struct Claim<'a> {
     state_id: &'a str,
     owner: &'a OwnerToken,
-    revision: Option<u64>,
+    kind: Claimed<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum Claimed<'a> {
+    Acquire,
+    Replace(u64),
+    Import {
+        after: Option<&'a OwnerToken>,
+        revision: u64,
+    },
+    Records,
 }
 
 enum Verdict {
@@ -198,8 +301,8 @@ fn judge(view: &impl Owners, claims: &[Claim<'_>]) -> Result<Verdict, StoreError
             .get(claim.state_id)
             .copied()
             .or_else(|| view.owner(claim.state_id));
-        match claim.revision {
-            None => {
+        match claim.kind {
+            Claimed::Acquire => {
                 let next = owner
                     .map_or(Some(1), |owner| owner.fence().checked_add(1))
                     .ok_or_else(|| backend("JSONL owner fence overflow"))?;
@@ -211,7 +314,7 @@ fn judge(view: &impl Owners, claims: &[Claim<'_>]) -> Result<Verdict, StoreError
                     Ordering::Greater => return Err(backend("invalid JSONL owner fence sequence")),
                 }
             }
-            Some(revision) => match owner {
+            Claimed::Replace(revision) => match owner {
                 Some(current) if current == claim.owner => {
                     let next = revisions
                         .get(claim.state_id)
@@ -234,6 +337,27 @@ fn judge(view: &impl Owners, claims: &[Claim<'_>]) -> Result<Verdict, StoreError
                 }
                 _ => return Err(backend("invalid JSONL state revision or owner")),
             },
+            Claimed::Import { after, revision } => {
+                if owner != after {
+                    return Ok(Verdict::Stale);
+                }
+                let next = owner
+                    .map_or(Some(1), |owner| owner.fence().checked_add(1))
+                    .ok_or_else(|| backend("JSONL owner fence overflow"))?;
+                match claim.owner.fence().cmp(&next) {
+                    Ordering::Equal => {
+                        owners.insert(claim.state_id, claim.owner);
+                        revisions.insert(claim.state_id, revision);
+                    }
+                    Ordering::Less => return Ok(Verdict::Stale),
+                    Ordering::Greater => return Err(backend("invalid JSONL owner fence sequence")),
+                }
+            }
+            Claimed::Records => {
+                if owner != Some(claim.owner) {
+                    return Ok(Verdict::Stale);
+                }
+            }
         }
     }
     Ok(Verdict::Valid)
@@ -344,23 +468,26 @@ fn claim<'a>(entry: &'a Indexed<'_>) -> Result<Claim<'a>, StoreError> {
         .owner
         .as_ref()
         .ok_or_else(|| backend("JSONL entry has no owner"))?;
-    match entry.kind {
-        Kind::Acquire => Ok(Claim {
-            state_id,
-            owner,
-            revision: None,
-        }),
-        Kind::Replace => Ok(Claim {
-            state_id,
-            owner,
-            revision: Some(
-                entry
-                    .revision
-                    .ok_or_else(|| backend("invalid JSONL replacement entry"))?,
-            ),
-        }),
-        Kind::Seal | Kind::Unseal => Err(backend("JSONL seal inside an entry batch")),
-    }
+    let revision = || {
+        entry
+            .revision
+            .ok_or_else(|| backend("invalid JSONL replacement entry"))
+    };
+    let kind = match entry.kind {
+        Kind::Acquire => Claimed::Acquire,
+        Kind::Replace => Claimed::Replace(revision()?),
+        Kind::Import => Claimed::Import {
+            after: entry.after.as_ref(),
+            revision: revision()?,
+        },
+        Kind::Records => Claimed::Records,
+        Kind::Seal | Kind::Unseal => return Err(backend("JSONL seal inside an entry batch")),
+    };
+    Ok(Claim {
+        state_id,
+        owner,
+        kind,
+    })
 }
 
 #[cfg(target_vendor = "apple")]
@@ -458,6 +585,8 @@ impl Write for Counted<'_> {
 enum Kind {
     Acquire,
     Replace,
+    Import,
+    Records,
     Seal,
     Unseal,
 }
@@ -474,6 +603,7 @@ struct Indexed<'a> {
     #[serde(borrow)]
     state_id: Option<Cow<'a, str>>,
     owner: Option<OwnerToken>,
+    after: Option<OwnerToken>,
     revision: Option<u64>,
     payload: Option<Text>,
     #[serde(borrow)]
@@ -626,7 +756,7 @@ struct CachedEntry {
 impl CachedEntry {
     fn decode(location: Location, bytes: Vec<u8>) -> Result<Self, StoreError> {
         let entry: StoredEntry = serde_json::from_slice(&bytes).map_err(backend)?;
-        if !matches!(entry.kind, Kind::Replace) {
+        if !matches!(entry.kind, Kind::Replace | Kind::Import) {
             return Err(backend("JSONL index does not reference a replacement"));
         }
         let range = |value: &serde_json::value::RawValue| {
@@ -666,6 +796,7 @@ struct Journal {
     invalid_index: Option<String>,
     cached: Option<CachedEntry>,
     sealed: Option<Sealed>,
+    sidecar: bool,
 }
 
 impl Owners for index::Index {
@@ -679,7 +810,7 @@ impl Owners for index::Index {
 }
 
 impl Journal {
-    fn open(path: &Path) -> Result<Self, StoreError> {
+    fn open(path: &Path, sidecar: bool) -> Result<Self, StoreError> {
         let _span = tracing::info_span!("durability.jsonl.open").entered();
         let (file, path, mut reads, source) = loop {
             let file = OpenOptions::new()
@@ -707,12 +838,17 @@ impl Journal {
             invalid_index: None,
             cached: None,
             sealed: None,
+            sidecar,
         };
-        store.restore_index();
+        if sidecar {
+            store.restore_index();
+        }
         store.sync()?;
-        store.clear_temporaries().map_err(backend)?;
-        if store.persisted_offset.is_none() {
-            store.persist_index();
+        if sidecar {
+            store.clear_temporaries().map_err(backend)?;
+            if store.persisted_offset.is_none() {
+                store.persist_index();
+            }
         }
         store.ready = true;
         Ok(store)
@@ -791,15 +927,6 @@ impl Journal {
             }
         }
         Ok(())
-    }
-
-    fn home(home: &Path) -> Result<PathBuf, StoreError> {
-        std::fs::create_dir_all(home).map_err(backend)?;
-        Ok(Self::home_path(home))
-    }
-
-    fn home_path(home: &Path) -> PathBuf {
-        home.join("sessions.jsonl")
     }
 
     fn sync(&mut self) -> Result<(), StoreError> {
@@ -973,7 +1100,69 @@ impl Journal {
                 );
                 Ok(())
             }
+            Kind::Import => {
+                let (Some(revision), Some(Text)) = (indexed.revision, &indexed.payload) else {
+                    return Err(backend("invalid JSONL import entry"));
+                };
+                self.imported(id, owner, revision, location)
+            }
+            Kind::Records => {
+                let Some(records) = &indexed.records else {
+                    return Err(backend("invalid JSONL records entry"));
+                };
+                if self.index.owners.get(id) != Some(&owner) || self.revision(id) == 0 {
+                    return Err(backend("invalid JSONL records owner"));
+                }
+                if let Err(error) = self.index.load_records(id) {
+                    self.invalid_index = Some(error.to_string());
+                    return Err(backend(error));
+                }
+                let known = self.index.states.get(id).map(|state| &state.records);
+                let mut keys = HashSet::with_capacity(records.len());
+                if records.iter().any(|record| {
+                    !keys.insert(&*record.key)
+                        || known.is_some_and(|known| known.contains_key(&*record.key))
+                }) {
+                    let Records { records } = serde_json::from_slice(line).map_err(backend)?;
+                    self.validate_records(id, &records)?;
+                }
+                self.added(
+                    id,
+                    records.iter().map(|record| {
+                        (
+                            &*record.key,
+                            Record::located(id, &record.key, line, location.position, record.value),
+                        )
+                    }),
+                );
+                Ok(())
+            }
             Kind::Seal | Kind::Unseal => Err(backend("JSONL seal inside an entry batch")),
+        }
+    }
+
+    fn imported(
+        &mut self,
+        id: &str,
+        owner: OwnerToken,
+        revision: u64,
+        location: Location,
+    ) -> Result<(), StoreError> {
+        if revision == 0 {
+            return Err(backend("invalid JSONL import revision"));
+        }
+        self.acquired(id, owner)?;
+        self.replaced(id, revision, location, std::iter::empty());
+        Ok(())
+    }
+
+    fn added<'k>(&mut self, id: &str, records: impl Iterator<Item = (&'k str, Record)>) {
+        if let Some(state) = self.index.states.get_mut(id) {
+            for (key, record) in records {
+                if !state.records.contains_key(key) {
+                    state.records.insert(key.into(), record);
+                }
+            }
         }
     }
 
@@ -1470,34 +1659,8 @@ impl Journal {
                 position: self.index.offset,
                 length,
             };
-            match entry {
-                Entry::Acquire { state_id, owner } => self.acquired(&state_id, owner)?,
-                Entry::Replace {
-                    state_id,
-                    owner,
-                    revision,
-                    records,
-                    ..
-                } => {
-                    self.check_replacement(&state_id, &owner, revision)?;
-                    self.replaced(
-                        &state_id,
-                        revision,
-                        location,
-                        records.iter().zip(values.by_ref()).map(|(record, span)| {
-                            (
-                                record.key.as_str(),
-                                Record::value(
-                                    &state_id,
-                                    &record.key,
-                                    origin + span.start as u64,
-                                    &bytes[span],
-                                ),
-                            )
-                        }),
-                    );
-                }
-            }
+            let spans = values.by_ref().take(entry.records().len()).collect();
+            self.apply(entry, location, spans, origin, &bytes)?;
             self.index.last = Some(location);
             self.index.offset = self
                 .index
@@ -1546,10 +1709,8 @@ impl Journal {
                 position: self.index.offset,
                 length,
             };
-            let spans = match &entry {
-                Entry::Acquire { .. } => Vec::new(),
-                Entry::Replace { records, .. } => values.by_ref().take(records.len()).collect(),
-            };
+            let spans: Vec<Range<usize>> =
+                values.by_ref().take(entry.records().len()).collect();
             let verdict = if sealed {
                 Verdict::Stale
             } else {
@@ -1559,34 +1720,7 @@ impl Journal {
                 (Verdict::Stale, true) => Judged::Sealed(entry),
                 (Verdict::Stale, false) => Judged::Stale(entry),
                 (Verdict::Valid, _) => {
-                    match entry {
-                        Entry::Acquire { state_id, owner } => self.acquired(&state_id, owner)?,
-                        Entry::Replace {
-                            state_id,
-                            owner,
-                            revision,
-                            records,
-                            ..
-                        } => {
-                            self.check_replacement(&state_id, &owner, revision)?;
-                            self.replaced(
-                                &state_id,
-                                revision,
-                                location,
-                                records.iter().zip(spans).map(|(record, span)| {
-                                    (
-                                        record.key.as_str(),
-                                        Record::value(
-                                            &state_id,
-                                            &record.key,
-                                            origin + span.start as u64,
-                                            &bytes[span],
-                                        ),
-                                    )
-                                }),
-                            );
-                        }
-                    }
+                    self.apply(entry, location, spans, origin, &bytes)?;
                     Judged::Committed
                 }
             });
@@ -1607,6 +1741,106 @@ impl Journal {
 }
 
 impl Journal {
+    fn apply(
+        &mut self,
+        entry: Entry,
+        location: Location,
+        spans: Vec<Range<usize>>,
+        origin: u64,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        let located = |state_id: &str, records: &[StoreRecord]| {
+            records
+                .iter()
+                .zip(spans.iter())
+                .map(|(record, span)| {
+                    (
+                        record.key.clone(),
+                        Record::value(
+                            state_id,
+                            &record.key,
+                            origin + span.start as u64,
+                            &bytes[span.clone()],
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        match entry {
+            Entry::Acquire { state_id, owner } => self.acquired(&state_id, owner),
+            Entry::Replace {
+                state_id,
+                owner,
+                revision,
+                records,
+                ..
+            } => {
+                self.check_replacement(&state_id, &owner, revision)?;
+                let records = located(&state_id, &records);
+                self.replaced(
+                    &state_id,
+                    revision,
+                    location,
+                    records.iter().map(|(key, record)| (key.as_str(), *record)),
+                );
+                Ok(())
+            }
+            Entry::Import {
+                state_id,
+                owner,
+                revision,
+                ..
+            } => self.imported(&state_id, owner, revision, location),
+            Entry::Records {
+                state_id, records, ..
+            } => {
+                let records = located(&state_id, &records);
+                self.added(
+                    &state_id,
+                    records.iter().map(|(key, record)| (key.as_str(), *record)),
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn import(
+        &mut self,
+        id: &str,
+        after: Option<&OwnerToken>,
+        revision: u64,
+        payload: String,
+        records: Vec<Vec<StoreRecord>>,
+    ) -> Result<bool, StoreError> {
+        loop {
+            self.writable()?;
+            if self.index.owners.get(id) != after {
+                return Ok(false);
+            }
+            let fence = self
+                .next_fence(id)
+                .ok_or_else(|| StoreError::NotCommitted("JSONL owner fence overflow".into()))?;
+            let owner = OwnerToken::new(OwnerId::new(), fence);
+            let mut entries = vec![Entry::Import {
+                state_id: id.into(),
+                owner: owner.clone(),
+                after: after.cloned(),
+                revision,
+                payload: payload.clone(),
+            }];
+            entries.extend(records.iter().map(|records| Entry::Records {
+                state_id: id.into(),
+                owner: owner.clone(),
+                records: records.clone(),
+            }));
+            match self.commit(entries)? {
+                Outcome::Committed => return Ok(true),
+                Outcome::Stale(_) => return Ok(false),
+                Outcome::Sealed(_) => {}
+            }
+        }
+    }
+
     fn acquire_batch(
         &mut self,
         id: &str,

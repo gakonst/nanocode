@@ -185,10 +185,10 @@ fn host_lines() -> Vec<String> {
 #[cfg(not(target_family = "wasm"))]
 fn session_store_line() -> Option<String> {
     let home = nanocode_home::AgentHome::from_env().ok()?;
-    let store = home.nanocode_home();
-    store.join("sessions.jsonl").is_file().then(|| {
+    let store = home.nanocode_home().join("sessions");
+    store.is_dir().then(|| {
         format!(
-            "Nanocode sessions: {} (list them with `nc sessions --all`; print one's conversation with `nc sessions <ID>`)",
+            "Nanocode sessions: {}, one file per session (list them with `nc sessions --all`; print one's conversation with `nc sessions <ID>`)",
             store.display()
         )
     })

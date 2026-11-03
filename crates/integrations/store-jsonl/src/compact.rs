@@ -9,8 +9,8 @@ use serde_json::value::RawValue;
 use std::borrow::Cow;
 
 use super::{
-    Claim, Counted, IndexedRecord, JOURNAL_READ_BUFFER_BYTES, Journal, Kind, Location, OwnerToken,
-    Owners, Record, Spanned, Spans, StoreError, Unit, Verdict,
+    Claim, Claimed, Counted, IndexedRecord, JOURNAL_READ_BUFFER_BYTES, Journal, Kind, Location,
+    OwnerToken, Owners, Record, Spanned, Spans, StoreError, Unit, Verdict,
 };
 use super::{backend, claim, identity, identity_changed, index::Index, judge, scan, value_digest};
 use nanocode_durability_core::OwnerId;
@@ -52,14 +52,20 @@ impl Owners for Arbiter {
 impl Arbiter {
     fn apply(&mut self, claims: &[Claim<'_>]) {
         for claim in claims {
-            match claim.revision {
-                None => {
+            match claim.kind {
+                Claimed::Acquire => {
                     self.owners
                         .insert(claim.state_id.to_owned(), claim.owner.clone());
                 }
-                Some(revision) => {
+                Claimed::Replace(revision) => {
                     self.revisions.insert(claim.state_id.to_owned(), revision);
                 }
+                Claimed::Import { revision, .. } => {
+                    self.owners
+                        .insert(claim.state_id.to_owned(), claim.owner.clone());
+                    self.revisions.insert(claim.state_id.to_owned(), revision);
+                }
+                Claimed::Records => {}
             }
         }
     }
@@ -79,6 +85,22 @@ enum Line<'a> {
         owner: &'a OwnerToken,
         revision: u64,
         payload: &'a RawValue,
+        records: Spanned<'a, [IndexedRecord<'a>]>,
+    },
+    Import {
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after: Option<&'a OwnerToken>,
+        revision: u64,
+        payload: &'a RawValue,
+        records: Spanned<'a, [IndexedRecord<'a>]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        nanocode_journal: Option<&'a str>,
+    },
+    Records {
+        state_id: &'a str,
+        owner: &'a OwnerToken,
         records: Spanned<'a, [IndexedRecord<'a>]>,
     },
 }
@@ -154,14 +176,18 @@ impl Journal {
         self.invalid_index = None;
         self.cached = None;
         self.sealed = None;
-        self.restore_index();
+        if self.sidecar {
+            self.restore_index();
+        }
         Ok(())
     }
 
     pub(super) fn compact(&mut self) -> Result<CompactionStats, StoreError> {
         let (seal, end) = loop {
             self.writable()?;
-            self.clear_temporaries().map_err(backend)?;
+            if self.sidecar {
+                self.clear_temporaries().map_err(backend)?;
+            }
             if self.index.offset == 0 {
                 return Ok(CompactionStats {
                     before_bytes: 0,
@@ -295,16 +321,22 @@ impl Journal {
                         )
                         .map_err(backend)?;
                     }
-                    Kind::Replace => {
-                        if entry.payload.is_none() {
+                    Kind::Replace | Kind::Import | Kind::Records => {
+                        let carries_payload = !matches!(entry.kind, Kind::Records);
+                        if carries_payload && entry.payload.is_none() {
                             return Err(backend("missing payload"));
                         }
-                        let revision = entry.revision.ok_or_else(|| backend("missing revision"))?;
-                        let original = if self
-                            .index
-                            .states
-                            .get(id)
-                            .is_some_and(|state| state.location == *location)
+                        let revision = if carries_payload {
+                            entry.revision.ok_or_else(|| backend("missing revision"))?
+                        } else {
+                            0
+                        };
+                        let original = if carries_payload
+                            && self
+                                .index
+                                .states
+                                .get(id)
+                                .is_some_and(|state| state.location == *location)
                         {
                             Some(serde_json::from_slice::<Payload<'_>>(line).map_err(backend)?)
                         } else {
@@ -374,22 +406,38 @@ impl Journal {
                                 None => stats.records_removed += 1,
                             }
                         }
-                        serde_json::to_writer(
-                            counted,
-                            &Line::Replace {
+                        let payload = original
+                            .as_ref()
+                            .map_or(empty.as_ref(), |value| value.payload);
+                        let records_line = Spanned {
+                            value: records.as_slice(),
+                            spans: &spans,
+                        };
+                        let written_line = match entry.kind {
+                            Kind::Import => Line::Import {
+                                state_id: id,
+                                owner,
+                                after: entry.after.as_ref(),
+                                revision,
+                                payload,
+                                records: records_line,
+                                nanocode_journal: (written == 0).then_some(self.lineage.as_str()),
+                            },
+                            Kind::Records if records.is_empty() => continue,
+                            Kind::Records => Line::Records {
+                                state_id: id,
+                                owner,
+                                records: records_line,
+                            },
+                            _ => Line::Replace {
                                 state_id: id,
                                 owner,
                                 revision,
-                                payload: original
-                                    .as_ref()
-                                    .map_or(empty.as_ref(), |value| value.payload),
-                                records: Spanned {
-                                    value: &records,
-                                    spans: &spans,
-                                },
+                                payload,
+                                records: records_line,
                             },
-                        )
-                        .map_err(backend)?;
+                        };
+                        serde_json::to_writer(counted, &written_line).map_err(backend)?;
                         if original.is_some() {
                             current.insert(
                                 position,

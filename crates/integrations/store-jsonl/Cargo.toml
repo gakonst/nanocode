@@ -18,7 +18,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
-nix.workspace = true
+nix = { workspace = true, features = ["fs"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 nix = { workspace = true, features = ["fs"] }

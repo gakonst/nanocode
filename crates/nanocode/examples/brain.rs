@@ -22,7 +22,7 @@ Usage: cargo run --locked -p nanocode --example brain -- [OPTIONS] [PROMPT...]
 
 Options:
   --resume ID        Reopen a session and replay interrupted prompts before PROMPT
-  --store PATH       JSONL store (default: ~/.nanocode/sessions.jsonl, or under $NANOCODE_HOME)
+  --store DIR        JSONL store directory, one file per session (default: ~/.nanocode/sessions, or under $NANOCODE_HOME)
   --harness NAME     codex or claude (otherwise inferred from --model)
   --model NAME       SDK model name or alias (default: luna; claude: haiku)
   --thinking LEVEL   low, medium, high, xhigh, or max (default: low)
@@ -175,15 +175,7 @@ Examples:
 
     async fn store(args: &Args) -> Result<SessionStore> {
         let store = match &args.store {
-            Some(path) => {
-                if let Some(parent) = path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-                JsonlStore::open_async(path).await?
-            }
+            Some(path) => JsonlStore::open_async(path).await?,
             None => {
                 let home = nanocode_home::AgentHome::from_env()?;
                 JsonlStore::open_home_async(home.nanocode_home()).await?

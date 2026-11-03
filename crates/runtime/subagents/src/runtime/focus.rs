@@ -97,12 +97,12 @@ impl SubagentControl {
     ) -> std::io::Result<(HarnessHandle, SideQuestion)> {
         self.require_root(root_session_id).await?;
         self.registry.await_restored(root_session_id).await?;
-        let locks = self.registry.scope_locks(root_session_id);
-        let _residency_guard = locks.residency.enter().await;
-        let _message_guard = locks.message.enter().await;
-        self.registry
+        let _target = self
+            .registry
             .rehydrate(root_session_id, id, MessagePurpose::Coordinate)
             .await?;
+        let locks = self.registry.scope_locks(root_session_id);
+        let _message_guard = locks.message.enter().await;
         let harness = self
             .registry
             .state

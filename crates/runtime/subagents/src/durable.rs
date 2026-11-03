@@ -181,11 +181,13 @@ impl SubagentStore for MemorySubagentStore {
     }
 }
 
-pub(super) const JOURNAL_VERSION: u32 = 4;
+pub(super) const JOURNAL_VERSION: u32 = 5;
 
 pub(super) const LAZY_CHECKPOINT_VERSION: u32 = 3;
 
 const PAGE_MESSAGES: usize = 64;
+
+const PAGE_AGENT_BITS: u32 = PAGE_MESSAGES.trailing_zeros();
 
 pub(super) const MIN_JOURNAL_VERSION: u32 = 1;
 
@@ -280,8 +282,134 @@ pub(super) struct PersistedScope {
     pub(super) agents: Vec<PersistedAgent>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) agent_records: Vec<(AgentId, Arc<str>)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) agent_pages: Option<AgentPages>,
     #[serde(default)]
     pub(super) messages: PersistedMessages,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgentPages {
+    height: u32,
+    pages: Vec<(u64, Arc<str>)>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentPage {
+    entries: Vec<(u64, Arc<str>)>,
+}
+
+impl AgentPages {
+    pub(super) async fn agent_records(
+        self,
+        store: &dyn SubagentStore,
+        root_session_id: &str,
+    ) -> std::io::Result<Vec<(AgentId, Arc<str>)>> {
+        let mut entries = self.pages;
+        for _ in 0..self.height {
+            let keys = entries.iter().map(|(_, key)| key.to_string()).collect();
+            let pages = verified(store, root_session_id, keys).await?;
+            entries = Vec::with_capacity(pages.len() * PAGE_MESSAGES);
+            for json in pages {
+                let page: AgentPage = serde_json::from_str(&json).map_err(|error| {
+                    std::io::Error::other(format!("invalid subagent journal page: {error}"))
+                })?;
+                entries.extend(page.entries);
+            }
+        }
+        Ok(entries
+            .into_iter()
+            .map(|(id, key)| (AgentId::new(id), key))
+            .collect())
+    }
+}
+
+#[derive(Clone, Default)]
+struct TreePage {
+    entries: imbl::OrdMap<u64, Arc<str>>,
+    key: Option<Arc<str>>,
+}
+
+#[derive(Clone, Default)]
+struct AgentTree {
+    levels: Vec<imbl::OrdMap<u64, TreePage>>,
+}
+
+impl AgentTree {
+    fn set(&mut self, level: usize, index: u64, key: Arc<str>) {
+        if self.levels.len() <= level {
+            self.levels.resize_with(level + 1, imbl::OrdMap::new);
+        }
+        let page = self.levels[level]
+            .entry(index >> PAGE_AGENT_BITS)
+            .or_default();
+        if page.entries.get(&index) != Some(&key) {
+            page.entries.insert(index, key);
+            page.key = None;
+        }
+    }
+
+    fn encode(
+        &mut self,
+        records: &mut Vec<(Arc<str>, Arc<str>)>,
+    ) -> std::io::Result<Option<AgentPages>> {
+        let mut level = 0;
+        while let Some(pages) = self.levels.get(level) {
+            let top = self.levels.len() == level + 1;
+            let dirty = pages
+                .iter()
+                .filter(|(_, page)| page.key.is_none())
+                .map(|(index, page)| (*index, page.entries.clone()))
+                .collect::<Vec<_>>();
+            for (index, entries) in dirty {
+                let (key, json) = encoded(&AgentPage {
+                    entries: entries
+                        .iter()
+                        .map(|(id, key)| (*id, Arc::clone(key)))
+                        .collect(),
+                })?;
+                records.push((Arc::clone(&key), json));
+                if let Some(page) = self.levels[level].get_mut(&index) {
+                    page.key = Some(Arc::clone(&key));
+                }
+                if !top {
+                    self.set(level + 1, index, key);
+                }
+            }
+            if top {
+                let pages = self.levels[level]
+                    .iter()
+                    .map(|(index, page)| (*index, page.key.clone()))
+                    .collect::<Vec<_>>();
+                if pages
+                    .last()
+                    .is_some_and(|(index, _)| *index >> PAGE_AGENT_BITS == 0)
+                {
+                    return Ok(Some(AgentPages {
+                        height: u32::try_from(level + 1).map_err(std::io::Error::other)?,
+                        pages: pages
+                            .into_iter()
+                            .map(|(index, key)| {
+                                key.map(|key| (index, key)).ok_or_else(|| {
+                                    std::io::Error::other("subagent journal page was not encoded")
+                                })
+                            })
+                            .collect::<std::io::Result<_>>()?,
+                    }));
+                }
+                for (index, key) in pages {
+                    let key = key.ok_or_else(|| {
+                        std::io::Error::other("subagent journal page was not encoded")
+                    })?;
+                    self.set(level + 1, index, key);
+                }
+            }
+            level += 1;
+        }
+        Ok(None)
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -307,7 +435,7 @@ impl PersistedMessages {
         store: &dyn SubagentStore,
         root_session_id: &str,
     ) -> std::io::Result<super::message::MessageThreads> {
-        let mut keys: Vec<Arc<str>> = self.records.into_iter().map(Arc::from).collect();
+        let mut keys = self.records;
         let mut pages = Vec::new();
         let mut next = self.tail;
         while let Some(key) = next {
@@ -316,24 +444,44 @@ impl PersistedMessages {
             next = page.previous;
             pages.push(page.messages);
         }
-        keys.extend(pages.into_iter().rev().flatten());
-        let mut messages = Vec::with_capacity(keys.len());
-        for key in keys {
-            let json = load_verified(store, root_session_id, &key).await?;
-            messages.push(serde_json::from_str(&json).map_err(std::io::Error::other)?);
-        }
+        keys.extend(pages.into_iter().rev().flatten().map(|key| key.to_string()));
+        let messages = verified(store, root_session_id, keys)
+            .await?
+            .iter()
+            .map(|json| serde_json::from_str(json).map_err(std::io::Error::other))
+            .collect::<std::io::Result<Vec<_>>>()?;
         super::message::MessageThreads::restore(self.next_message_id, messages, self.pending)
     }
 }
 
-#[derive(Default)]
+#[derive(Clone)]
 pub(super) struct JournalCache {
-    agents: HashMap<AgentId, CachedAgent>,
-    messages: HashMap<super::model::MessageId, Arc<str>>,
-    pages: Vec<Arc<str>>,
-    paged: Vec<Arc<str>>,
+    full: bool,
+    dirty: std::collections::BTreeSet<AgentId>,
+    agents: imbl::HashMap<AgentId, CachedAgent>,
+    tree: AgentTree,
+    messages: imbl::HashMap<super::model::MessageId, Arc<str>>,
+    pages: imbl::Vector<Arc<str>>,
+    paged: imbl::Vector<Arc<str>>,
+    logged: Option<super::message::MessageLog>,
 }
 
+impl Default for JournalCache {
+    fn default() -> Self {
+        Self {
+            full: true,
+            dirty: std::collections::BTreeSet::new(),
+            agents: imbl::HashMap::new(),
+            tree: AgentTree::default(),
+            messages: imbl::HashMap::new(),
+            pages: imbl::Vector::new(),
+            paged: imbl::Vector::new(),
+            logged: None,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct CachedAgent {
     generation: u64,
     checkpoint: Option<Arc<str>>,
@@ -354,12 +502,19 @@ pub(super) enum MessageEntry {
     New(super::model::AgentMessage),
 }
 
+pub(super) enum MessagesSnapshot {
+    Full(Vec<(super::model::MessageId, MessageEntry)>),
+    Appended(Vec<super::model::AgentMessage>),
+}
+
 pub(super) struct JournalSnapshot {
     pub(super) agents: Vec<(AgentId, AgentEntry)>,
-    pub(super) messages: Vec<(super::model::MessageId, MessageEntry)>,
+    pub(super) messages: MessagesSnapshot,
+    pub(super) logged: super::message::MessageLog,
     pub(super) next_message_id: u64,
     pub(super) pending: Vec<super::model::MessageId>,
     pub(super) records: Vec<(Arc<str>, Arc<str>)>,
+    pub(super) acknowledged: Vec<(AgentId, Arc<str>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -557,6 +712,7 @@ fn agent_from(
 pub(super) struct EncodedJournal {
     pub(super) payload: String,
     pub(super) records: Vec<(Arc<str>, Arc<str>)>,
+    pub(super) acknowledged: Vec<(AgentId, Arc<str>)>,
     update: JournalCache,
 }
 
@@ -579,6 +735,24 @@ impl JournalCache {
         self.messages.get(&id)
     }
 
+    pub(super) const fn logged(&self) -> Option<super::message::MessageLog> {
+        self.logged
+    }
+
+    pub(super) fn track(&mut self, ids: impl IntoIterator<Item = AgentId>) {
+        if !self.full {
+            self.dirty.extend(ids);
+        }
+    }
+
+    pub(super) fn tracked(&self, all: impl FnOnce() -> Vec<AgentId>) -> Vec<AgentId> {
+        if self.full {
+            all()
+        } else {
+            self.dirty.iter().copied().collect()
+        }
+    }
+
     pub(super) fn committed(&mut self, encoded: EncodedJournal) {
         *self = encoded.update;
     }
@@ -587,23 +761,16 @@ impl JournalCache {
 impl JournalSnapshot {
     pub(super) fn encode(self, cache: &JournalCache) -> std::io::Result<EncodedJournal> {
         let mut records = self.records;
-        let mut update = JournalCache::default();
-        let mut agent_records = Vec::with_capacity(self.agents.len());
+        let mut update = cache.clone();
+        if update.full {
+            update.agents = imbl::HashMap::new();
+            update.tree = AgentTree::default();
+        }
+        update.full = false;
+        update.dirty.clear();
         for (id, entry) in self.agents {
             let key = match entry {
-                AgentEntry::Cached(key) => {
-                    if let Some(cached) = cache.agents.get(&id) {
-                        update.agents.insert(
-                            id,
-                            CachedAgent {
-                                generation: cached.generation,
-                                checkpoint: cached.checkpoint.clone(),
-                                key: Arc::clone(&key),
-                            },
-                        );
-                    }
-                    key
-                }
+                AgentEntry::Cached(key) => key,
                 AgentEntry::Changed {
                     generation,
                     checkpoint,
@@ -621,42 +788,68 @@ impl JournalSnapshot {
                     key
                 }
             };
-            agent_records.push((id, key));
+            update.tree.set(0, id.get(), key);
         }
-        let mut keys = Vec::with_capacity(self.messages.len());
-        for (id, entry) in self.messages {
-            let key = match entry {
-                MessageEntry::Cached(key) => key,
-                MessageEntry::New(message) => {
+        let agent_pages = update.tree.encode(&mut records)?;
+        let (mut keys, shared) = match self.messages {
+            MessagesSnapshot::Full(messages) => {
+                update.messages = imbl::HashMap::new();
+                let mut keys = imbl::Vector::new();
+                for (id, entry) in messages {
+                    let key = match entry {
+                        MessageEntry::Cached(key) => key,
+                        MessageEntry::New(message) => {
+                            let (key, json) = encoded(&message)?;
+                            records.push((Arc::clone(&key), json));
+                            key
+                        }
+                    };
+                    update.messages.insert(id, Arc::clone(&key));
+                    keys.push_back(key);
+                }
+                let shared = keys
+                    .iter()
+                    .zip(&cache.paged)
+                    .take_while(|(current, cached)| current == cached)
+                    .count();
+                (keys, shared)
+            }
+            MessagesSnapshot::Appended(messages) => {
+                let mut keys = cache.paged.clone();
+                for message in messages {
+                    let id = message.id;
                     let (key, json) = encoded(&message)?;
                     records.push((Arc::clone(&key), json));
-                    key
+                    update.messages.insert(id, Arc::clone(&key));
+                    keys.push_back(key);
                 }
-            };
-            update.messages.insert(id, Arc::clone(&key));
-            keys.push(key);
-        }
-        let shared = keys
-            .iter()
-            .zip(&cache.paged)
-            .take_while(|(current, cached)| current == cached)
-            .count();
+                (keys, cache.paged.len())
+            }
+        };
         let reused = (shared / PAGE_MESSAGES).min(cache.pages.len());
-        update.pages = cache.pages[..reused].to_vec();
-        for chunk in keys[reused * PAGE_MESSAGES..].chunks(PAGE_MESSAGES) {
+        update.pages = cache.pages.take(reused);
+        let unpaged = keys.split_off(reused * PAGE_MESSAGES);
+        let mut chunk = Vec::with_capacity(PAGE_MESSAGES);
+        let mut unpaged = unpaged.into_iter().peekable();
+        while unpaged.peek().is_some() {
+            chunk.clear();
+            chunk.extend(unpaged.by_ref().take(PAGE_MESSAGES));
             let (key, json) = encoded(&MessagePage {
                 previous: update.pages.last().cloned(),
-                messages: chunk.to_vec(),
+                messages: chunk.clone(),
             })?;
             records.push((Arc::clone(&key), json));
-            update.pages.push(key);
+            update.pages.push_back(key);
+            keys.extend(chunk.iter().cloned());
         }
         let tail = update.pages.last().cloned();
         update.paged = keys;
+        update.logged = Some(self.logged);
         let payload = serde_json::to_string(&PersistedScope {
             version: JOURNAL_VERSION,
             agents: Vec::new(),
-            agent_records,
+            agent_records: Vec::new(),
+            agent_pages,
             messages: PersistedMessages {
                 next_message_id: self.next_message_id,
                 records: Vec::new(),
@@ -668,6 +861,7 @@ impl JournalSnapshot {
         Ok(EncodedJournal {
             payload,
             records,
+            acknowledged: self.acknowledged,
             update,
         })
     }
@@ -1248,37 +1442,38 @@ impl PersistedAgent {
     }
 }
 
-pub(super) fn journaled_lineage(
-    root_session_id: &str,
-    agents: &[PersistedAgent],
-    id: AgentId,
-) -> Lineage {
-    let parent_of = |id: AgentId| {
-        agents
-            .iter()
-            .find(|agent| agent.descriptor.id == id)
-            .and_then(|agent| agent.descriptor.parent)
-    };
-    let parent_session_id = parent_of(id)
-        .and_then(|parent| agents.iter().find(|agent| agent.descriptor.id == parent))
-        .map_or_else(
-            || root_session_id.to_owned(),
-            |parent| parent.descriptor.session_id.clone(),
-        );
-    let mut depth = 1;
-    let mut current = parent_of(id);
-    while let Some(parent) = current
-        && depth <= agents.len()
-    {
-        depth += 1;
-        current = parent_of(parent);
-    }
-    Lineage::new(
-        root_session_id,
-        Some(parent_session_id),
-        nanocode_agent_core::Origin::Subagent,
-        u32::try_from(depth).unwrap_or(u32::MAX),
-    )
+pub(super) fn journaled_lineages(root_session_id: &str, agents: &[PersistedAgent]) -> Vec<Lineage> {
+    let by_id = agents
+        .iter()
+        .map(|agent| (agent.descriptor.id, agent))
+        .collect::<HashMap<_, _>>();
+    let parent_of = |id: AgentId| by_id.get(&id).and_then(|agent| agent.descriptor.parent);
+    agents
+        .iter()
+        .map(|agent| {
+            let id = agent.descriptor.id;
+            let parent_session_id = parent_of(id)
+                .and_then(|parent| by_id.get(&parent))
+                .map_or_else(
+                    || root_session_id.to_owned(),
+                    |parent| parent.descriptor.session_id.clone(),
+                );
+            let mut depth = 1;
+            let mut current = parent_of(id);
+            while let Some(parent) = current
+                && depth <= agents.len()
+            {
+                depth += 1;
+                current = parent_of(parent);
+            }
+            Lineage::new(
+                root_session_id,
+                Some(parent_session_id),
+                nanocode_agent_core::Origin::Subagent,
+                u32::try_from(depth).unwrap_or(u32::MAX),
+            )
+        })
+        .collect()
 }
 
 const fn is_zero(value: &u32) -> bool {

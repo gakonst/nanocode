@@ -45,6 +45,18 @@ mod focus;
 pub use activity::SubagentActivity;
 pub use completion::{RunningSubagents, SubagentCompletion};
 
+type AgentMap<V> = imbl::HashMap<(String, AgentId), V>;
+
+type MissingRuntime = (
+    AgentId,
+    Option<AgentId>,
+    String,
+    Option<SessionCheckpoint>,
+    Option<Arc<str>>,
+    Value,
+    String,
+);
+
 pub(super) enum Residency {
     Detached,
     Resident(HarnessHandle),
@@ -185,6 +197,10 @@ pub(super) struct ChildSession {
 
     pub(super) in_flight_progress: durable::OmittedProgress,
 
+    residency_lock: Sequencer,
+
+    changes: watch::Sender<u64>,
+
     announce: bool,
 
     journal_generation: u64,
@@ -197,38 +213,52 @@ fn next_generation() -> u64 {
 }
 
 #[derive(Default)]
-pub(super) struct Sessions(HashMap<AgentId, ChildSession>);
+pub(super) struct Sessions {
+    sessions: HashMap<AgentId, ChildSession>,
+    changed: HashSet<AgentId>,
+}
 
 impl Sessions {
     pub(super) fn get(&self, id: &AgentId) -> Option<&ChildSession> {
-        self.0.get(id)
+        self.sessions.get(id)
     }
 
     pub(super) fn get_mut(&mut self, id: &AgentId) -> Option<&mut ChildSession> {
-        let session = self.0.get_mut(id)?;
+        let session = self.sessions.get_mut(id)?;
         session.journal_generation = next_generation();
+        if session.changes.receiver_count() > 0 {
+            session
+                .changes
+                .send_modify(|version| *version = version.wrapping_add(1));
+        }
+        self.changed.insert(*id);
         Some(session)
     }
 
     fn insert(&mut self, id: AgentId, mut session: ChildSession) {
         session.journal_generation = next_generation();
-        self.0.insert(id, session);
+        self.changed.insert(id);
+        self.sessions.insert(id, session);
+    }
+
+    fn take_changed(&mut self) -> HashSet<AgentId> {
+        std::mem::take(&mut self.changed)
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&AgentId, &ChildSession)> {
-        self.0.iter()
+        self.sessions.iter()
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &AgentId> {
-        self.0.keys()
+        self.sessions.keys()
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &ChildSession> {
-        self.0.values()
+        self.sessions.values()
     }
 
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.sessions.is_empty()
     }
 }
 
@@ -236,7 +266,7 @@ impl std::ops::Index<&AgentId> for Sessions {
     type Output = ChildSession;
 
     fn index(&self, id: &AgentId) -> &ChildSession {
-        &self.0[id]
+        &self.sessions[id]
     }
 }
 
@@ -293,7 +323,8 @@ enum RestorationState {
 type RestorationOutcome = watch::Receiver<RestorationState>;
 
 pub struct Registry {
-    session_handles: Atom<HashMap<String, AgentHandle>>,
+    session_handles: Atom<imbl::HashMap<String, AgentHandle>>,
+    roots: Atom<imbl::HashMap<String, String>>,
     spawn_router: Atom<Option<Arc<dyn crate::SpawnRouter>>>,
     id: SubagentRuntimeId,
     state: Owned<RegistryState>,
@@ -314,31 +345,34 @@ pub struct Registry {
     journal_writer: std::sync::atomic::AtomicBool,
 
     journal_writers: Atom<HashMap<String, mpsc::UnboundedSender<JournalRequest>>>,
-    checkpoints: Atom<HashMap<(String, AgentId), durable::JournalCheckpoint>>,
+    checkpoints: Atom<AgentMap<durable::JournalCheckpoint>>,
+
+    checkpoint_changes: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
 
     pending_checkpoints: Atom<HashMap<String, usize>>,
 
-    progress_captures: Atom<HashMap<(String, AgentId), bool>>,
+    progress_captures: Atom<AgentMap<bool>>,
 
-    completed_tools: Atom<std::collections::HashSet<(String, AgentId)>>,
-    pending_resume: Atom<HashMap<String, Vec<AgentId>>>,
+    completed_tools: Atom<imbl::HashSet<(String, AgentId)>>,
+    pending_resume: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
 
     manual_resume: std::sync::atomic::AtomicBool,
 
-    deferred_resume: Atom<HashMap<String, Vec<AgentId>>>,
+    deferred_resume: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
 
-    wait_reported: Atom<HashMap<(String, AgentId), u64>>,
+    wait_reported: Atom<AgentMap<u64>>,
 
     idle_waits: Atom<HashMap<String, (Vec<AgentId>, u32)>>,
 
     this: std::sync::OnceLock<Weak<Self>>,
 
-    status_queues: Atom<HashMap<(String, AgentId), mpsc::UnboundedSender<OrderedJob>>>,
+    status_queues: Atom<AgentMap<mpsc::UnboundedSender<OrderedJob>>>,
 
-    completion_retries: Atom<HashMap<(String, AgentId), (u32, bool)>>,
-    completion_dispatch: Atom<HashMap<(String, AgentId), Sequencer>>,
-    completion_routes: Atom<HashMap<(String, AgentId), u64>>,
-    result_readers: Atom<HashMap<(String, AgentId), Readers>>,
+    completion_retries: Atom<AgentMap<(u32, bool)>>,
+    completion_dispatch: Atom<AgentMap<Sequencer>>,
+    completion_batches: Atom<imbl::HashMap<String, mpsc::UnboundedSender<(AgentId, u64)>>>,
+    completion_routes: Atom<AgentMap<u64>>,
+    result_readers: Atom<AgentMap<Readers>>,
     root_watches: Atom<HashSet<String>>,
     running_roots: Atom<HashSet<String>>,
 
@@ -606,6 +640,7 @@ const fn settled_update(id: AgentId, status: AgentStatus, completion: Option<u64
 struct JournalWrite {
     payload: String,
     records: Vec<(Arc<str>, Arc<str>)>,
+    acknowledged: Vec<(AgentId, Arc<str>)>,
 }
 
 enum JournalRequest {
@@ -621,7 +656,6 @@ enum JournalRequest {
 
 #[derive(Default)]
 pub(super) struct ScopeLocks {
-    pub(super) residency: Sequencer,
     pub(super) message: Sequencer,
 }
 
@@ -746,18 +780,27 @@ impl AgentScope {
     fn journal_snapshot(
         &self,
         root_session_id: &str,
-        checkpoints: &HashMap<(String, AgentId), durable::JournalCheckpoint>,
+        checkpoints: &AgentMap<durable::JournalCheckpoint>,
         cache: &durable::JournalCache,
     ) -> std::io::Result<durable::JournalSnapshot> {
-        let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
-        ids.sort_unstable();
+        let ids = cache.tracked(|| {
+            let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids
+        });
         let mut records = Vec::new();
+        let mut acknowledged = Vec::new();
         let mut agents = Vec::with_capacity(ids.len());
         for id in ids {
             let Some(session) = self.sessions.get(&id) else {
                 continue;
             };
             let checkpoint = checkpoints.get(&(root_session_id.to_owned(), id));
+            if let Some(checkpoint) = checkpoint
+                && checkpoint.pending.is_some()
+            {
+                acknowledged.push((id, Arc::clone(&checkpoint.key)));
+            }
             let checkpoint_key = checkpoint.map(|checkpoint| &checkpoint.key);
             let entry = match cache.agent(id, session.journal_generation, checkpoint_key) {
                 Some(key) => {
@@ -776,20 +819,22 @@ impl AgentScope {
             };
             agents.push((id, entry));
         }
-        let (next_message_id, messages, pending) = self.messages.snapshot(cache);
+        let (next_message_id, messages, logged, pending) = self.messages.snapshot(cache);
         Ok(durable::JournalSnapshot {
             agents,
             messages,
+            logged,
             next_message_id,
             pending,
             records,
+            acknowledged,
         })
     }
 
     fn journal_payload(
         &self,
         root_session_id: &str,
-        checkpoints: &HashMap<(String, AgentId), durable::JournalCheckpoint>,
+        checkpoints: &AgentMap<durable::JournalCheckpoint>,
     ) -> std::io::Result<JournalWrite> {
         let cache = durable::JournalCache::default();
         let encoded = self
@@ -798,6 +843,7 @@ impl AgentScope {
         Ok(JournalWrite {
             payload: encoded.payload,
             records: encoded.records,
+            acknowledged: encoded.acknowledged,
         })
     }
 }
@@ -955,6 +1001,7 @@ pub(super) struct TurnSteer {
 struct ResidentEviction {
     id: AgentId,
     harness: HarnessHandle,
+    _lock: Turn,
 }
 
 impl TurnSteer {
@@ -1646,31 +1693,42 @@ impl RegistryState {
         let scope = self.scopes.get_mut(root_session_id)?;
         let resident = scope
             .sessions
-            .values()
-            .filter(|session| session.harness().is_some())
-            .count();
-        if resident <= limit {
+            .iter()
+            .filter(|(_, session)| session.harness().is_some())
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        if resident.len() <= limit {
             return None;
         }
+        let mut holding = HashSet::new();
+        for &id in &resident {
+            let mut parent = scope.topology.parent(id);
+            while let Some(ancestor) = parent
+                && holding.insert(ancestor)
+            {
+                parent = scope.topology.parent(ancestor);
+            }
+        }
 
-        let candidate = scope
-            .sessions
+        let mut candidates = resident
             .iter()
+            .filter(|id| !holding.contains(*id))
+            .filter_map(|id| Some((*id, scope.sessions.get(id)?)))
             .filter(|(_, session)| {
                 !session.active
+                    && !matches!(session.status, AgentStatus::Pending)
                     && session.status.can_start_turn()
                     && session
                         .harness()
                         .is_some_and(|harness| !harness.answering_side_questions())
             })
-            .filter(|(id, _)| !scope.messages.has_pending_for(**id))
-            .filter(|(id, _)| {
-                !scope.sessions.iter().any(|(other_id, other)| {
-                    other.harness().is_some() && scope.topology.is_descendant(*other_id, **id)
-                })
-            })
-            .min_by_key(|(id, session)| (session.last_used, **id))
-            .map(|(id, _)| *id)?;
+            .filter(|(id, _)| !scope.messages.has_pending_for(*id))
+            .map(|(id, session)| (session.last_used, id))
+            .collect::<Vec<_>>();
+        candidates.sort_unstable();
+        let (candidate, lock) = candidates
+            .into_iter()
+            .find_map(|(_, id)| Some((id, scope.sessions.get(&id)?.residency_lock.try_enter()?)))?;
         let session = scope.sessions.get_mut(&candidate)?;
         let Residency::Resident(harness) =
             std::mem::replace(&mut session.residency, Residency::Evicted)
@@ -1681,6 +1739,7 @@ impl RegistryState {
         Some(ResidentEviction {
             id: candidate,
             harness,
+            _lock: lock,
         })
     }
 
@@ -1704,6 +1763,13 @@ impl RegistryState {
             .topology
             .authorize(session_id, id)?;
         Ok(root_session_id.to_owned())
+    }
+
+    fn session_for(&self, session_id: &str) -> Option<&ChildSession> {
+        let scope = self.scopes.get(self.root_by_session.get(session_id)?)?;
+        scope
+            .sessions
+            .get(&scope.topology.agent_for_session(session_id)?)
     }
 
     fn root_session_id<'a>(&'a self, session_id: &'a str) -> &'a str {
@@ -1752,6 +1818,7 @@ impl Registry {
             revision,
             capacity: Capacity::new(max_concurrency),
             session_handles: Atom::default(),
+            roots: Atom::default(),
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             max_resident_explicit: std::sync::atomic::AtomicBool::new(false),
             scope_locks: Atom::default(),
@@ -1762,6 +1829,7 @@ impl Registry {
             journal_writer: std::sync::atomic::AtomicBool::new(false),
             journal_writers: Atom::default(),
             checkpoints: Atom::default(),
+            checkpoint_changes: Atom::default(),
             pending_checkpoints: Atom::default(),
             progress_captures: Atom::default(),
             completed_tools: Atom::default(),
@@ -1774,6 +1842,7 @@ impl Registry {
             status_queues: Atom::default(),
             completion_retries: Atom::default(),
             completion_dispatch: Atom::default(),
+            completion_batches: Atom::default(),
             completion_routes: Atom::default(),
             result_readers: Atom::default(),
             root_watches: Atom::default(),
@@ -1920,13 +1989,14 @@ impl Registry {
         }));
     }
 
+    fn root_of(&self, session_id: &str) -> String {
+        self.roots
+            .read(|roots| roots.get(session_id).cloned())
+            .unwrap_or_else(|| session_id.to_owned())
+    }
+
     pub(crate) async fn admit_spawn(&self, session_id: &str) -> std::io::Result<Option<Turn>> {
-        let root = self
-            .state
-            .acquire()
-            .await
-            .root_session_id(session_id)
-            .to_owned();
+        let root = self.root_of(session_id);
         let admission = self
             .spawn_admission
             .read(|admission| admission.get(&root).cloned());
@@ -1939,12 +2009,7 @@ impl Registry {
     }
 
     pub(crate) async fn await_restored(&self, session_id: &str) -> std::io::Result<()> {
-        let root = self
-            .state
-            .acquire()
-            .await
-            .root_session_id(session_id)
-            .to_owned();
+        let root = self.root_of(session_id);
         let gate = self
             .claims
             .read(|claims| claims.restored.get(&root).cloned());
@@ -1986,29 +2051,22 @@ impl Registry {
             return;
         }
         let registry = Arc::downgrade(self);
-        let mut revision = self.revision.subscribe();
         drop(platform::spawn(async move {
-            loop {
-                let Some(live) = registry.upgrade() else {
-                    return;
-                };
-                let roots = live
-                    .state
-                    .acquire()
-                    .await
-                    .scopes
-                    .iter()
-                    .filter(|(_, scope)| !scope.journal_frozen)
-                    .map(|(root, _)| root.clone())
-                    .collect::<Vec<_>>();
-                for root in roots {
-                    if live.store_for(&root).is_some() {
-                        live.send_journal(&root, None);
-                    }
-                }
-                drop(live);
-                if revision.changed().await.is_err() {
-                    return;
+            let Some(live) = registry.upgrade() else {
+                return;
+            };
+            let roots = live
+                .state
+                .acquire()
+                .await
+                .scopes
+                .iter()
+                .filter(|(_, scope)| !scope.journal_frozen)
+                .map(|(root, _)| root.clone())
+                .collect::<Vec<_>>();
+            for root in roots {
+                if live.store_for(&root).is_some() {
+                    live.send_journal(&root, None);
                 }
             }
         }));
@@ -2099,13 +2157,7 @@ impl Registry {
     }
 
     async fn session_locks(&self, session_id: &str) -> Arc<ScopeLocks> {
-        let root = self
-            .state
-            .acquire()
-            .await
-            .root_session_id(session_id)
-            .to_owned();
-        self.scope_locks(&root)
+        self.scope_locks(&self.root_of(session_id))
     }
 
     async fn write_journal(
@@ -2161,14 +2213,13 @@ impl Registry {
             ))
         };
         let (snapshot, finished) = {
-            let state = self.state.acquire().await;
-            let checkpoints = self.checkpoints.get();
+            let mut state = self.state.acquire().await;
             let _collect = tracing::info_span!(
                 "subagent.journal.collect",
                 session.root_id = root_session_id
             )
             .entered();
-            match state.scopes.get(root_session_id) {
+            match state.scopes.get_mut(root_session_id) {
                 None => {
                     for (scope, done) in waiters.drain(..) {
                         let _ = done.send(if scope { Ok(()) } else { frozen() });
@@ -2186,7 +2237,17 @@ impl Registry {
                     }
                     let write = !waiters.is_empty() || (background && !scope.journal_frozen);
                     (
-                        write.then(|| scope.journal_snapshot(root_session_id, &checkpoints, cache)),
+                        write.then(|| {
+                            cache.track(
+                                self.checkpoint_changes
+                                    .update(|changes| changes.remove(root_session_id))
+                                    .into_iter()
+                                    .flatten(),
+                            );
+                            cache.track(scope.sessions.take_changed());
+                            let checkpoints = self.checkpoints.get();
+                            scope.journal_snapshot(root_session_id, &checkpoints, cache)
+                        }),
                         scope.journal_frozen,
                     )
                 }
@@ -2209,7 +2270,7 @@ impl Registry {
             Some(Ok(encoded)) => {
                 let records = &encoded.records;
                 if waiters.is_empty() && saved.as_deref() == Some(encoded.payload.as_str()) {
-                    self.acknowledge(root_session_id, records);
+                    self.acknowledge(root_session_id, &encoded.acknowledged);
                     cache.committed(encoded);
                     Ok(())
                 } else {
@@ -2229,7 +2290,7 @@ impl Registry {
                         .await;
                     match result {
                         Ok(()) => {
-                            self.acknowledge(root_session_id, &encoded.records);
+                            self.acknowledge(root_session_id, &encoded.acknowledged);
                             cache.committed(encoded);
                             if store.records_sessions() {
                                 self.record_children(root_session_id, store.as_ref(), recorded)
@@ -2414,6 +2475,12 @@ impl Registry {
         self.checkpoints.update(|checkpoints| {
             checkpoints.insert((root_session_id.to_owned(), id), checkpoint.clone());
         });
+        self.checkpoint_changes.update(|changes| {
+            changes
+                .entry(root_session_id.to_owned())
+                .or_default()
+                .insert(id);
+        });
     }
 
     fn release_recorded(&self, root_session_id: &str, key: &Arc<str>) {
@@ -2439,25 +2506,15 @@ impl Registry {
         });
     }
 
-    fn acknowledge(&self, root_session_id: &str, records: &[(Arc<str>, Arc<str>)]) {
-        if records.is_empty() {
-            return;
-        }
-        let acknowledged = |root: &String, checkpoint: &durable::JournalCheckpoint| {
-            root == root_session_id
-                && checkpoint.pending.is_some()
-                && records.iter().any(|(key, _)| *key == checkpoint.key)
-        };
-        if !self.checkpoints.read(|checkpoints| {
-            checkpoints
-                .iter()
-                .any(|((root, _), checkpoint)| acknowledged(root, checkpoint))
-        }) {
+    fn acknowledge(&self, root_session_id: &str, acknowledged: &[(AgentId, Arc<str>)]) {
+        if acknowledged.is_empty() {
             return;
         }
         self.checkpoints.update(|checkpoints| {
-            for ((root, _), checkpoint) in checkpoints.iter_mut() {
-                if acknowledged(root, checkpoint) {
+            for (id, key) in acknowledged {
+                if let Some(checkpoint) = checkpoints.get_mut(&(root_session_id.to_owned(), *id))
+                    && checkpoint.key == *key
+                {
                     checkpoint.pending = None;
                 }
             }
@@ -2510,24 +2567,18 @@ impl Registry {
                     .read(|completed| completed.contains(&key))
                     && registry
                         .completed_tools
-                        .update(|completed| completed.remove(&key));
-                let harness = registry.running_harness(&key.0, key.1).await;
-
-                let commits = registry.committable_calls(&key.0, key.1).await;
+                        .update(|completed| completed.remove(&key).is_some());
+                let (harness, commits) = registry.capture_target(&key.0, key.1).await;
                 if let Some(harness) = harness
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
-                    if registry
+                    let recorded = registry
                         .record_checkpoint_off_thread(&key.0, key.1, snapshot)
-                        .await
-                        && let Some(commits) = commits
-                    {
-                        registry.retire_committed(&key.0, key.1, commits).await;
-                    }
-                    if progressed {
-                        registry.reset_resume_attempts(&key.0, key.1).await;
-                    }
+                        .await;
+                    registry
+                        .settle_capture(&key.0, key.1, commits.filter(|_| recorded), progressed)
+                        .await;
                     registry.changed();
                 } else if progressed {
                     registry.completed_tools.update(|completed| {
@@ -2554,7 +2605,46 @@ impl Registry {
         }));
     }
 
-    async fn commit_boundary(&self, root_session_id: &str, id: AgentId) {
+    async fn capture_target(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> (Option<HarnessHandle>, Option<CommittedCalls>) {
+        let state = self.state.acquire().await;
+        let Some(session) = state
+            .scopes
+            .get(root_session_id)
+            .and_then(|scope| scope.sessions.get(&id))
+        else {
+            return (None, None);
+        };
+        let harness = (session.active || matches!(session.status, AgentStatus::Running))
+            .then(|| session.harness().cloned())
+            .flatten();
+        let commits = session.active_instruction_revision.and_then(|revision| {
+            let call_ids = session
+                .in_flight_calls
+                .iter()
+                .filter(|call| call.live(durable::CallProgress::Committable))
+                .map(|call| call.call_id.clone())
+                .collect::<Vec<_>>();
+            let omitted = session.in_flight_progress.committable;
+            (!call_ids.is_empty() || omitted > 0).then_some(CommittedCalls {
+                revision,
+                call_ids,
+                omitted,
+            })
+        });
+        (harness, commits)
+    }
+
+    async fn settle_capture(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        commits: Option<CommittedCalls>,
+        progressed: bool,
+    ) {
         let mut state = self.state.acquire().await;
         let Some(session) = state
             .scopes
@@ -2563,57 +2653,9 @@ impl Registry {
         else {
             return;
         };
-        for call in &mut session.in_flight_calls {
-            if let durable::CallState::Live { progress, .. } = &mut call.state
-                && *progress == durable::CallProgress::Settled
-            {
-                *progress = durable::CallProgress::Committable;
-            }
-        }
-        let progress = &mut session.in_flight_progress;
-        progress.committable = progress.committable.saturating_add(progress.settled);
-        progress.settled = 0;
-    }
-
-    async fn committable_calls(
-        &self,
-        root_session_id: &str,
-        id: AgentId,
-    ) -> Option<CommittedCalls> {
-        let state = self.state.acquire().await;
-        let session = state
-            .scopes
-            .get(root_session_id)
-            .and_then(|scope| scope.sessions.get(&id))?;
-        let revision = session.active_instruction_revision?;
-        let call_ids = session
-            .in_flight_calls
-            .iter()
-            .filter(|call| call.live(durable::CallProgress::Committable))
-            .map(|call| call.call_id.clone())
-            .collect::<Vec<_>>();
-        let omitted = session.in_flight_progress.committable;
-        (!call_ids.is_empty() || omitted > 0).then_some(CommittedCalls {
-            revision,
-            call_ids,
-            omitted,
-        })
-    }
-
-    async fn retire_committed(&self, root_session_id: &str, id: AgentId, commits: CommittedCalls) {
+        if let Some(commits) = commits
+            && session.active_instruction_revision == Some(commits.revision)
         {
-            let mut state = self.state.acquire().await;
-            let Some(session) = state
-                .scopes
-                .get_mut(root_session_id)
-                .and_then(|scope| scope.sessions.get_mut(&id))
-            else {
-                return;
-            };
-
-            if session.active_instruction_revision != Some(commits.revision) {
-                return;
-            }
             session.in_flight_calls.retain(|call| {
                 !(matches!(call.state, durable::CallState::Live { .. })
                     && commits.call_ids.contains(&call.call_id))
@@ -2623,88 +2665,13 @@ impl Registry {
             progress.committable -= omitted;
             session.in_flight_omitted = session.in_flight_omitted.saturating_sub(omitted);
         }
-        self.changed();
-    }
-
-    async fn reset_resume_attempts(&self, root_session_id: &str, id: AgentId) {
-        let mut state = self.state.acquire().await;
-        if let Some(session) = state
-            .scopes
-            .get_mut(root_session_id)
-            .and_then(|scope| scope.sessions.get_mut(&id))
-            && session.active
-        {
+        if progressed && session.active {
             session.resume_attempts = 0;
         }
     }
 
-    async fn track_in_flight(
-        &self,
-        root_session_id: &str,
-        id: AgentId,
-        kind: &AgentEventKind,
-        payload: &Option<Arc<serde_json::value::RawValue>>,
-    ) {
-        #[derive(serde::Deserialize)]
-        struct Call {
-            call_id: String,
-            #[serde(default)]
-            tool: String,
-            #[serde(default)]
-            arguments: Option<Box<serde_json::value::RawValue>>,
-            #[serde(default)]
-            parent_call_id: Option<String>,
-
-            #[serde(default)]
-            cell: Option<Cell>,
-
-            #[serde(default)]
-            metadata: Option<Metadata>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Cell {
-            origin_call_id: String,
-            running: bool,
-        }
-        #[derive(serde::Deserialize)]
-        struct Metadata {
-            #[serde(default, rename = "_nanocode_code")]
-            code: Option<Code>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Code {
-            #[serde(default)]
-            origin_call_id: Option<Value>,
-            #[serde(default)]
-            running: Option<Value>,
-        }
-        impl Call {
-            fn cell(&self) -> Option<(&str, bool)> {
-                if let Some(cell) = &self.cell {
-                    return Some((cell.origin_call_id.as_str(), cell.running));
-                }
-                let code = self.metadata.as_ref()?.code.as_ref()?;
-                let origin = code.origin_call_id.as_ref()?.as_str()?;
-                Some((
-                    origin,
-                    code.running.as_ref().and_then(Value::as_bool) != Some(false),
-                ))
-            }
-
-            fn arguments(&self) -> Option<Value> {
-                let raw = self.arguments.as_ref()?.get();
-                match serde_json::from_str::<String>(raw) {
-                    Ok(text) => Some(Value::String(text)),
-                    Err(_) => serde_json::from_str(raw).ok(),
-                }
-            }
-        }
-        let Some(call) = payload
-            .as_ref()
-            .and_then(|payload| serde_json::from_str::<Call>(payload.get()).ok())
-        else {
-            return;
-        };
+    async fn track_events(&self, root_session_id: &str, id: AgentId, events: Vec<TrackedEvent>) {
+        let mut tracked = false;
         {
             let mut state = self.state.acquire().await;
             let Some(session) = state
@@ -2714,82 +2681,19 @@ impl Registry {
             else {
                 return;
             };
-            match kind {
-                AgentEventKind::ToolCall => {
-                    durable::retain_call(
-                        &mut session.in_flight_calls,
-                        durable::InFlightCall::new(
-                            &call.call_id,
-                            &call.tool,
-                            call.arguments().as_ref(),
-                            parent_call(&call.call_id, call.parent_call_id.as_deref()),
-                        ),
-                    );
-                }
-
-                AgentEventKind::ToolResult => {
-                    let cell = call.cell();
-                    let top_level =
-                        parent_call(&call.call_id, call.parent_call_id.as_deref()).is_none();
-                    if let Some(existing) = session
-                        .in_flight_calls
-                        .iter_mut()
-                        .find(|existing| existing.call_id == call.call_id)
-                    {
-                        let yielded =
-                            matches!(cell, Some((origin, true)) if origin == call.call_id);
-                        match &mut existing.state {
-                            durable::CallState::Restored {
-                                result_recorded, ..
-                            } => *result_recorded = true,
-                            durable::CallState::Live {
-                                parent_call_id: None,
-                                progress,
-                            } => {
-                                *progress = if yielded {
-                                    durable::CallProgress::Yielded
-                                } else {
-                                    durable::CallProgress::Settled
-                                };
-                            }
-                            durable::CallState::Live { progress, .. } => {
-                                if *progress == durable::CallProgress::Started {
-                                    *progress = durable::CallProgress::Recorded;
-                                }
-                            }
-                        }
-                    }
-
-                    if top_level && let Some((origin, false)) = cell {
-                        for listed in &mut session.in_flight_calls {
-                            let durable::CallState::Live {
-                                parent_call_id,
-                                progress,
-                            } = &mut listed.state
-                            else {
-                                continue;
-                            };
-                            let settles = match *progress {
-                                durable::CallProgress::Recorded => {
-                                    parent_call_id.as_deref() == Some(origin)
-                                }
-                                durable::CallProgress::Yielded => listed.call_id == origin,
-                                _ => false,
-                            };
-                            if settles {
-                                *progress = durable::CallProgress::Settled;
-                            }
-                        }
-                        if let Some(count) = session.in_flight_progress.nested.remove(origin) {
-                            session.in_flight_progress.settled =
-                                session.in_flight_progress.settled.saturating_add(count);
-                        }
+            for event in events {
+                match event {
+                    TrackedEvent::Boundary => session.mark_boundary(),
+                    TrackedEvent::Call(kind, call) => {
+                        session.track_call(&kind, &call);
+                        tracked = true;
                     }
                 }
-                _ => return,
             }
         }
-        self.changed();
+        if tracked {
+            self.changed();
+        }
     }
 
     async fn running_harness(&self, root_session_id: &str, id: AgentId) -> Option<HarnessHandle> {
@@ -2802,7 +2706,164 @@ impl Registry {
             .filter(|session| session.active || matches!(session.status, AgentStatus::Running))
             .and_then(|session| session.harness().cloned())
     }
+}
 
+enum TrackedEvent {
+    Boundary,
+    Call(AgentEventKind, InFlightEvent),
+}
+
+#[derive(serde::Deserialize)]
+struct InFlightEvent {
+    call_id: String,
+    #[serde(default)]
+    tool: String,
+    #[serde(default)]
+    arguments: Option<Box<serde_json::value::RawValue>>,
+    #[serde(default)]
+    parent_call_id: Option<String>,
+
+    #[serde(default)]
+    cell: Option<InFlightCell>,
+
+    #[serde(default)]
+    metadata: Option<InFlightMetadata>,
+}
+
+#[derive(serde::Deserialize)]
+struct InFlightCell {
+    origin_call_id: String,
+    running: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct InFlightMetadata {
+    #[serde(default, rename = "_nanocode_code")]
+    code: Option<InFlightCode>,
+}
+
+#[derive(serde::Deserialize)]
+struct InFlightCode {
+    #[serde(default)]
+    origin_call_id: Option<Value>,
+    #[serde(default)]
+    running: Option<Value>,
+}
+
+impl InFlightEvent {
+    fn cell(&self) -> Option<(&str, bool)> {
+        if let Some(cell) = &self.cell {
+            return Some((cell.origin_call_id.as_str(), cell.running));
+        }
+        let code = self.metadata.as_ref()?.code.as_ref()?;
+        let origin = code.origin_call_id.as_ref()?.as_str()?;
+        Some((
+            origin,
+            code.running.as_ref().and_then(Value::as_bool) != Some(false),
+        ))
+    }
+
+    fn arguments(&self) -> Option<Value> {
+        let raw = self.arguments.as_ref()?.get();
+        match serde_json::from_str::<String>(raw) {
+            Ok(text) => Some(Value::String(text)),
+            Err(_) => serde_json::from_str(raw).ok(),
+        }
+    }
+}
+
+impl ChildSession {
+    fn mark_boundary(&mut self) {
+        for call in &mut self.in_flight_calls {
+            if let durable::CallState::Live { progress, .. } = &mut call.state
+                && *progress == durable::CallProgress::Settled
+            {
+                *progress = durable::CallProgress::Committable;
+            }
+        }
+        let progress = &mut self.in_flight_progress;
+        progress.committable = progress.committable.saturating_add(progress.settled);
+        progress.settled = 0;
+    }
+
+    fn track_call(&mut self, kind: &AgentEventKind, call: &InFlightEvent) {
+        match kind {
+            AgentEventKind::ToolCall => {
+                durable::retain_call(
+                    &mut self.in_flight_calls,
+                    durable::InFlightCall::new(
+                        &call.call_id,
+                        &call.tool,
+                        call.arguments().as_ref(),
+                        parent_call(&call.call_id, call.parent_call_id.as_deref()),
+                    ),
+                );
+            }
+
+            AgentEventKind::ToolResult => {
+                let cell = call.cell();
+                let top_level =
+                    parent_call(&call.call_id, call.parent_call_id.as_deref()).is_none();
+                if let Some(existing) = self
+                    .in_flight_calls
+                    .iter_mut()
+                    .find(|existing| existing.call_id == call.call_id)
+                {
+                    let yielded = matches!(cell, Some((origin, true)) if origin == call.call_id);
+                    match &mut existing.state {
+                        durable::CallState::Restored {
+                            result_recorded, ..
+                        } => *result_recorded = true,
+                        durable::CallState::Live {
+                            parent_call_id: None,
+                            progress,
+                        } => {
+                            *progress = if yielded {
+                                durable::CallProgress::Yielded
+                            } else {
+                                durable::CallProgress::Settled
+                            };
+                        }
+                        durable::CallState::Live { progress, .. } => {
+                            if *progress == durable::CallProgress::Started {
+                                *progress = durable::CallProgress::Recorded;
+                            }
+                        }
+                    }
+                }
+
+                if top_level && let Some((origin, false)) = cell {
+                    for listed in &mut self.in_flight_calls {
+                        let durable::CallState::Live {
+                            parent_call_id,
+                            progress,
+                        } = &mut listed.state
+                        else {
+                            continue;
+                        };
+                        let settles = match *progress {
+                            durable::CallProgress::Recorded => {
+                                parent_call_id.as_deref() == Some(origin)
+                            }
+                            durable::CallProgress::Yielded => listed.call_id == origin,
+                            _ => false,
+                        };
+                        if settles {
+                            *progress = durable::CallProgress::Settled;
+                        }
+                    }
+                    if let Some(count) = self.in_flight_progress.nested.remove(origin) {
+                        self.in_flight_progress.settled =
+                            self.in_flight_progress.settled.saturating_add(count);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Registry {
     pub async fn restore(
         self: &Arc<Self>,
         root_session_id: &str,
@@ -2839,10 +2900,12 @@ impl Registry {
             .messages
             .hydrate(store.as_ref(), root_session_id)
             .await?;
+        let mut records = journal.agent_records;
+        if let Some(pages) = journal.agent_pages {
+            records.extend(pages.agent_records(store.as_ref(), root_session_id).await?);
+        }
         let mut agents = journal.agents;
-        agents.extend(
-            durable::load_agents(store.as_ref(), root_session_id, journal.agent_records).await?,
-        );
+        agents.extend(durable::load_agents(store.as_ref(), root_session_id, records).await?);
         agents.sort_by_key(|agent| agent.descriptor.id);
         let spawning_turns = agents
             .iter()
@@ -2894,10 +2957,8 @@ impl Registry {
                 "subagent scope already has live children and cannot be restored",
             ));
         }
-        let lineages = agents
-            .iter()
-            .map(|agent| durable::journaled_lineage(root_session_id, &agents, agent.descriptor.id))
-            .collect::<Vec<_>>();
+        let lineages = durable::journaled_lineages(root_session_id, &agents);
+        let mut restored_sessions = Vec::with_capacity(agents.len());
         for (agent, lineage) in agents.into_iter().zip(lineages) {
             let id = agent.descriptor.id;
             let checkpoint = agent.snapshot(&lineage)?;
@@ -2920,6 +2981,7 @@ impl Registry {
                 }
                 (None, None) => {}
             }
+            restored_sessions.push(session.descriptor.session_id.clone());
             state.insert_restored(root_session_id, session)?;
             report.restored += 1;
             if resume {
@@ -2935,6 +2997,11 @@ impl Registry {
             .or_default()
             .messages = messages;
         drop(state);
+        self.roots.update(|roots| {
+            for session_id in &restored_sessions {
+                roots.insert(session_id.clone(), root_session_id.to_owned());
+            }
+        });
 
         if !report.interrupted.is_empty() || !report.completed.is_empty() {
             self.save_scope(root_session_id).await.map_err(|error| {
@@ -2946,11 +3013,17 @@ impl Registry {
         }
         if self.manual_resume.load(std::sync::atomic::Ordering::SeqCst) {
             self.deferred_resume.update(|deferred| {
-                deferred.insert(root_session_id.to_owned(), report.interrupted.clone());
+                deferred.insert(
+                    root_session_id.to_owned(),
+                    report.interrupted.iter().copied().collect(),
+                );
             });
         } else {
             self.pending_resume.update(|pending| {
-                pending.insert(root_session_id.to_owned(), report.interrupted.clone());
+                pending.insert(
+                    root_session_id.to_owned(),
+                    report.interrupted.iter().copied().collect(),
+                );
             });
         }
         self.changed();
@@ -2972,7 +3045,11 @@ impl Registry {
         store: &dyn SubagentStore,
         write: JournalWrite,
     ) -> std::io::Result<()> {
-        let JournalWrite { payload, records } = write;
+        let JournalWrite {
+            payload,
+            records,
+            acknowledged,
+        } = write;
         let contents = records.iter().map(|(_, json)| Arc::clone(json)).collect();
         store
             .save(root_session_id, payload, contents)
@@ -2981,7 +3058,7 @@ impl Registry {
                 session.root_id = root_session_id
             ))
             .await?;
-        self.acknowledge(root_session_id, &records);
+        self.acknowledge(root_session_id, &acknowledged);
         Ok(())
     }
 
@@ -3009,7 +3086,7 @@ impl Registry {
         let settle = |id: AgentId| {
             self.pending_resume.update(|pending| {
                 if let Some(ids) = pending.get_mut(root_session_id) {
-                    ids.retain(|pending| *pending != id);
+                    ids.remove(&id);
                     if ids.is_empty() {
                         pending.remove(root_session_id);
                     }
@@ -3172,26 +3249,16 @@ impl Registry {
 
     pub(super) async fn descriptor_for_session(&self, session_id: &str) -> Option<AgentDescriptor> {
         let state = self.state.acquire().await;
-        let root_session_id = state.root_by_session.get(session_id)?;
         state
-            .scopes
-            .get(root_session_id)?
-            .sessions
-            .values()
-            .find(|session| session.descriptor.session_id == session_id)
+            .session_for(session_id)
             .map(|session| session.descriptor.clone())
     }
 
     #[doc(hidden)]
     pub async fn host_context_for_session(&self, session_id: &str) -> Option<Arc<str>> {
         let state = self.state.acquire().await;
-        let root_session_id = state.root_by_session.get(session_id)?;
         state
-            .scopes
-            .get(root_session_id)?
-            .sessions
-            .values()
-            .find(|session| session.descriptor.session_id == session_id)
+            .session_for(session_id)
             .and_then(|session| session.host_context.as_ref().map(Arc::clone))
     }
 
@@ -3540,6 +3607,7 @@ impl Registry {
     ) -> std::io::Result<()> {
         let OutputContract { validator, schema } = contract;
         let id = descriptor.id;
+        let child_session_id = descriptor.session_id.clone();
 
         let checkpoint = if self.store_for(&root_session_id).is_some() {
             match agent.checkpoint().await {
@@ -3601,11 +3669,16 @@ impl Registry {
                 settled_revision: None,
                 usage: AgentUsage::default(),
                 in_flight_progress: durable::OmittedProgress::default(),
+                residency_lock: Sequencer::new(),
+                changes: watch::Sender::new(0),
                 announce: false,
                 journal_generation: 0,
             },
         )?;
         drop(state);
+        self.roots.update(|roots| {
+            roots.insert(child_session_id.clone(), root_session_id.clone());
+        });
         self.changed();
         let mut cancellation = self.batch_startup();
         cancellation.track(&root_session_id, id);
@@ -3869,15 +3942,15 @@ impl Registry {
 
     async fn enforce_resident_limit(&self, root_session_id: &str) {
         let locks = self.scope_locks(root_session_id);
-        let _residency_guard = locks.residency.enter().await;
         loop {
-            let _message_guard = locks.message.enter().await;
+            let message_guard = locks.message.enter().await;
             let eviction = self
                 .state
                 .acquire()
                 .await
                 .take_resident_eviction(root_session_id, self.max_resident.load(Ordering::Relaxed));
-            let Some(ResidentEviction { id, harness }) = eviction else {
+            drop(message_guard);
+            let Some(ResidentEviction { id, harness, _lock }) = eviction else {
                 return;
             };
             match harness.snapshot().await {
@@ -4016,19 +4089,220 @@ impl Registry {
         else {
             return;
         };
-        let root_session_id = root_session_id.to_owned();
-        drop(platform::spawn(async move {
-            let Some(parent) = resolver(&root_session_id) else {
-                registry.retry_completion(&root_session_id, id, revision);
-                return;
-            };
-            if let Err(error) = registry
-                .continue_parent(&parent, &root_session_id, id, revision)
-                .await
+        let mut completion = (id, revision);
+        let completions = loop {
+            if let Some(sender) = self
+                .completion_batches
+                .read(|batches| batches.get(root_session_id).cloned())
+                .filter(|sender| !sender.is_closed())
             {
-                tracing::warn!(%error, %id, revision, "subagent completion did not continue its parent");
+                match sender.send(completion) {
+                    Ok(()) => return,
+                    Err(mpsc::error::SendError(returned)) => completion = returned,
+                }
             }
-        }));
+            let (sender, completions) = mpsc::unbounded_channel();
+            let installed =
+                self.completion_batches
+                    .try_update(|batches| match batches.get(root_session_id) {
+                        Some(existing) if !existing.is_closed() => None,
+                        _ => {
+                            batches.insert(root_session_id.to_owned(), sender.clone());
+                            Some(())
+                        }
+                    });
+            if installed.is_some() {
+                let _ = sender.send(completion);
+                break completions;
+            }
+        };
+        drop(platform::spawn(continue_root(
+            registry,
+            resolver,
+            root_session_id.to_owned(),
+            completions,
+        )));
+    }
+
+    async fn continue_parent_batch(
+        self: &Arc<Self>,
+        parent: &Agent,
+        root_session_id: &str,
+        mut completions: Vec<(AgentId, u64)>,
+    ) -> std::io::Result<()> {
+        completions.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
+        completions.dedup_by_key(|(id, _)| *id);
+        if let [(id, revision)] = completions[..] {
+            return self
+                .continue_parent(parent, root_session_id, id, revision)
+                .await
+                .map(drop);
+        }
+        let mut dispatches = Vec::with_capacity(completions.len());
+        for &(id, _) in &completions {
+            let dispatch = self.completion_dispatch.update(|dispatch| {
+                dispatch
+                    .entry((root_session_id.to_owned(), id))
+                    .or_default()
+                    .clone()
+            });
+            dispatches.push(dispatch.enter().await);
+        }
+        let mut ready = Vec::new();
+        let mut parked_any = false;
+        for (id, revision) in completions {
+            let key = (root_session_id.to_owned(), id);
+            if self
+                .completion_routes
+                .read(|routes| routes.get(&key) == Some(&revision))
+            {
+                continue;
+            }
+            let Some((_, _, _, parked)) = self.peek_completion(root_session_id, id, revision).await
+            else {
+                continue;
+            };
+            if parked
+                || self
+                    .park_completion(root_session_id, id, revision, false)
+                    .await
+            {
+                self.watch_root(root_session_id, parent);
+                parked_any |= !parked;
+                continue;
+            }
+            ready.push((id, revision));
+        }
+        if self.store_for(root_session_id).is_some()
+            && (parked_any || !ready.is_empty())
+            && let Err(error) = self.persist_durably(root_session_id).await
+        {
+            for &(id, revision) in &ready {
+                self.retry_completion(root_session_id, id, revision);
+            }
+            return Err(error);
+        }
+        let mut groups = Vec::<(
+            Option<Arc<str>>,
+            Vec<(AgentId, u64, AgentStatus, String, u32)>,
+        )>::new();
+        for (id, revision) in ready {
+            let Some((status, session_id, attempt, _)) =
+                self.peek_completion(root_session_id, id, revision).await
+            else {
+                continue;
+            };
+            let host_context = self.host_context(root_session_id, id).await;
+            match groups
+                .iter_mut()
+                .find(|(context, _)| *context == host_context)
+            {
+                Some((_, group)) => group.push((id, revision, status, session_id, attempt)),
+                None => groups.push((
+                    host_context,
+                    vec![(id, revision, status, session_id, attempt)],
+                )),
+            }
+        }
+        for (_, group) in groups {
+            self.route_completions(parent, root_session_id, group).await;
+        }
+        drop(dispatches);
+        Ok(())
+    }
+
+    async fn route_completions(
+        self: &Arc<Self>,
+        parent: &Agent,
+        root_session_id: &str,
+        group: Vec<(AgentId, u64, AgentStatus, String, u32)>,
+    ) {
+        let Some((_, first_revision, _, first_session, _)) = group.first() else {
+            return;
+        };
+        let request_id = if let [(_, revision, _, session_id, attempt)] = &group[..] {
+            match attempt {
+                0 => format!(
+                    "{}{session_id}:{revision}",
+                    crate::COMPLETION_REQUEST_PREFIX
+                ),
+                attempt => format!(
+                    "{}{session_id}:{revision}:{attempt}",
+                    crate::COMPLETION_REQUEST_PREFIX
+                ),
+            }
+        } else {
+            let members = group
+                .iter()
+                .map(|(_, revision, _, session_id, attempt)| {
+                    format!("{session_id}:{revision}:{attempt}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "{}{first_session}:{first_revision}:batch-{}",
+                crate::COMPLETION_REQUEST_PREFIX,
+                durable::checkpoint_key(&members)
+            )
+        };
+        let prompt = group
+            .iter()
+            .map(|(id, _, status, _, _)| completion_continuation_prompt(*id, status))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let events = parent.subscribe();
+        match parent
+            .route_prompt_request(
+                nanocode_agent_core::PromptRequest::new(prompt.clone())
+                    .request_id(request_id.clone()),
+            )
+            .await
+        {
+            Ok(route) => {
+                for (id, revision, status, _, _) in &group {
+                    let key = (root_session_id.to_owned(), *id);
+                    self.wait_reported.update(|reported| {
+                        reported.insert(key.clone(), wait_mark(status, *revision));
+                    });
+                    self.completion_routes.update(|routes| {
+                        routes.insert(key.clone(), *revision);
+                    });
+                }
+                let registry = Arc::downgrade(self);
+                let parent = parent.downgrade();
+                let root_session_id = root_session_id.to_owned();
+                drop(platform::spawn(async move {
+                    let outcome = match route {
+                        PromptRoute::Started(turn) => {
+                            drop(events);
+                            NoticeOutcome::of_turn(turn.result().await)
+                        }
+                        PromptRoute::Steered => {
+                            NoticeOutcome::of_steer(events, &request_id, prompt, &parent).await
+                        }
+                    };
+                    let Some(registry) = registry.upgrade() else {
+                        return;
+                    };
+                    for (id, revision, _, _, _) in group {
+                        registry
+                            .settle_notice(&root_session_id, id, revision, outcome, &parent)
+                            .await;
+                    }
+                }));
+            }
+            Err(error) => {
+                if !matches!(
+                    error,
+                    NanocodeError::AgentStopped | NanocodeError::TurnStopped
+                ) {
+                    for (id, revision, _, _, _) in group {
+                        self.retry_completion(root_session_id, id, revision);
+                    }
+                }
+                tracing::warn!(%error, "subagent completions did not continue their parent");
+            }
+        }
     }
 
     pub async fn continue_parent(
@@ -4677,8 +4951,8 @@ impl Registry {
         session_id: &str,
         to: AgentId,
         purpose: MessagePurpose,
-    ) -> std::io::Result<()> {
-        let (root, mut missing) = {
+    ) -> std::io::Result<Turn> {
+        let (root, target) = {
             let state = self.state.acquire().await;
             let root = state.root_session_id(session_id).to_owned();
             let scope = state
@@ -4691,49 +4965,100 @@ impl Registry {
             if purpose == MessagePurpose::Delegate {
                 scope.topology.authorize(session_id, to)?;
             }
-            let mut id = to;
-            let mut missing = Vec::new();
-            loop {
-                let session = scope
-                    .sessions
-                    .get(&id)
-                    .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
-                if matches!(
-                    session.status,
-                    AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
-                ) || session.harness().is_some()
-                {
-                    break;
-                }
-                let snapshot = match &session.stored_runtime {
-                    StoredRuntime::Checkpoint(snapshot) => Some(snapshot.clone()),
-                    StoredRuntime::Journaled => None,
-                    StoredRuntime::None => break,
-                };
-                let parent_session = session
-                    .descriptor
-                    .parent
-                    .and_then(|parent| scope.sessions.get(&parent))
-                    .map_or_else(
-                        || root.clone(),
-                        |parent| parent.descriptor.session_id.clone(),
-                    );
-                missing.push((
-                    id,
-                    session.descriptor.parent,
-                    parent_session,
-                    snapshot,
-                    session.host_context.clone(),
-                    session.output_schema.clone(),
-                    session.descriptor.task.clone(),
-                ));
-                match session.descriptor.parent {
-                    Some(parent) => id = parent,
-                    None => break,
-                }
-            }
-            (root, missing)
+            let target = scope
+                .sessions
+                .get(&to)
+                .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?
+                .residency_lock
+                .clone();
+            (root, target)
         };
+        let guard = target.enter().await;
+        let mut ancestors = HashMap::new();
+        let mut missing = loop {
+            let (missing, locks) = {
+                let state = self.state.acquire().await;
+                let scope = state
+                    .scopes
+                    .get(&root)
+                    .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?;
+                let missing = Self::missing_runtimes(scope, &root, to)?;
+                let locks = missing
+                    .iter()
+                    .filter(|(id, ..)| *id != to && !ancestors.contains_key(id))
+                    .filter_map(|(id, ..)| {
+                        Some((*id, scope.sessions.get(id)?.residency_lock.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                (missing, locks)
+            };
+            if locks.is_empty() {
+                break missing;
+            }
+            for (id, lock) in locks {
+                ancestors.insert(id, lock.enter().await);
+            }
+        };
+        self.restore_missing(&root, &mut missing).await?;
+        drop(ancestors);
+        Ok(guard)
+    }
+
+    fn missing_runtimes(
+        scope: &AgentScope,
+        root: &str,
+        to: AgentId,
+    ) -> std::io::Result<Vec<MissingRuntime>> {
+        let mut id = to;
+        let mut missing = Vec::new();
+        loop {
+            let session = scope
+                .sessions
+                .get(&id)
+                .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
+            if matches!(
+                session.status,
+                AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
+            ) || session.harness().is_some()
+            {
+                break;
+            }
+            let snapshot = match &session.stored_runtime {
+                StoredRuntime::Checkpoint(snapshot) => Some(snapshot.clone()),
+                StoredRuntime::Journaled => None,
+                StoredRuntime::None => break,
+            };
+            let parent_session = session
+                .descriptor
+                .parent
+                .and_then(|parent| scope.sessions.get(&parent))
+                .map_or_else(
+                    || root.to_owned(),
+                    |parent| parent.descriptor.session_id.clone(),
+                );
+            missing.push((
+                id,
+                session.descriptor.parent,
+                parent_session,
+                snapshot,
+                session.host_context.clone(),
+                session.output_schema.clone(),
+                session.descriptor.task.clone(),
+            ));
+            match session.descriptor.parent {
+                Some(parent) => id = parent,
+                None => break,
+            }
+        }
+        Ok(missing)
+    }
+
+    async fn restore_missing(
+        self: &Arc<Self>,
+        root: &str,
+        missing: &mut Vec<MissingRuntime>,
+    ) -> std::io::Result<()> {
+        let root = root.to_owned();
         while let Some((id, parent_id, parent_session, snapshot, host_context, schema, task)) =
             missing.pop()
         {
@@ -4845,10 +5170,9 @@ impl Registry {
         body: String,
         user: bool,
     ) -> std::io::Result<MessageReceipt> {
+        let target = self.rehydrate(session_id, to, purpose).await?;
         let locks = self.session_locks(session_id).await;
-        let _residency_guard = locks.residency.enter().await;
-        let _message_guard = locks.message.enter().await;
-        self.rehydrate(session_id, to, purpose).await?;
+        let message_guard = locks.message.enter().await;
         let prepared = self.state.acquire().await.prepare_message(
             session_id,
             to,
@@ -4865,6 +5189,8 @@ impl Registry {
             .acquire()
             .await
             .commit_message(&prepared.root_session_id, prepared.message.clone())?;
+        drop(message_guard);
+        drop(target);
         if self.store_for(&prepared.root_session_id).is_some()
             && let Err(error) = self.persist_durably(&prepared.root_session_id).await
         {
@@ -4949,16 +5275,17 @@ impl Registry {
         root_session_id: &str,
         message: AgentMessage,
     ) -> std::io::Result<MessageDisposition> {
-        let locks = self.session_locks(root_session_id).await;
-        let _residency_guard = locks.residency.enter().await;
-        let _message_guard = locks.message.enter().await;
-        self.rehydrate(root_session_id, message.to, MessagePurpose::Coordinate)
+        let _target = self
+            .rehydrate(root_session_id, message.to, MessagePurpose::Coordinate)
             .await?;
+        let locks = self.session_locks(root_session_id).await;
+        let message_guard = locks.message.enter().await;
         let harness = self
             .state
             .acquire()
             .await
             .harness_in_scope(root_session_id, message.to)?;
+        drop(message_guard);
         harness.redeliver(message).await
     }
 
@@ -5101,7 +5428,19 @@ impl Registry {
         if ids.is_empty() {
             return Err(std::io::Error::other("agent_ids must not be empty"));
         }
-        let mut revision = self.revision.subscribe();
+        let mut changes = {
+            let state = self.state.acquire().await;
+            state
+                .scopes
+                .get(state.root_session_id(session_id))
+                .map(|scope| {
+                    ids.iter()
+                        .filter_map(|id| scope.sessions.get(id))
+                        .map(|session| session.changes.subscribe())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
 
         let deadline = Instant::now().checked_add(duration);
         loop {
@@ -5129,7 +5468,7 @@ impl Registry {
             let all_terminal = terminal.len() == snapshot.len();
             let summaries = snapshot.into_iter().map(|(summary, _)| summary).collect();
 
-            let reported = |reported: &HashMap<(String, AgentId), u64>| {
+            let reported = |reported: &AgentMap<u64>| {
                 terminal
                     .iter()
                     .all(|&(id, mark)| reported.get(&(session_id.to_owned(), id)) == Some(&mark))
@@ -5187,10 +5526,23 @@ impl Registry {
                 return Ok((summaries, delivered, false, None));
             }
             self.forget_idle_wait(session_id);
+            let changed = async {
+                if changes.is_empty() {
+                    return std::future::pending().await;
+                }
+                drop(
+                    futures_util::future::select_all(
+                        changes
+                            .iter_mut()
+                            .map(|changes| Box::pin(changes.changed())),
+                    )
+                    .await,
+                );
+            };
             let timed_out = match deadline {
-                Some(deadline) => timeout_at(deadline, revision.changed()).await.is_err(),
+                Some(deadline) => timeout_at(deadline, changed).await.is_err(),
                 None => {
-                    let _ = revision.changed().await;
+                    changed.await;
                     false
                 }
             };
@@ -5675,6 +6027,8 @@ impl ChildSession {
             settled_revision: None,
             usage: AgentUsage::default(),
             in_flight_progress: durable::OmittedProgress::default(),
+            residency_lock: Sequencer::new(),
+            changes: watch::Sender::new(0),
             announce: true,
             journal_generation: 0,
         }
@@ -5770,7 +6124,11 @@ impl SubagentControl {
         Ok(self
             .registry
             .deferred_resume
-            .read(|deferred| deferred.get(root_session_id).cloned())
+            .read(|deferred| {
+                deferred
+                    .get(root_session_id)
+                    .map(|ids| ids.iter().copied().collect())
+            })
             .unwrap_or_default())
     }
 
@@ -5781,7 +6139,10 @@ impl SubagentControl {
         self.registry.await_restored(root_session_id).await?;
         let mut ids = Vec::new();
         self.registry.deferred_resume.update(|deferred| {
-            ids = deferred.remove(root_session_id).unwrap_or_default();
+            ids = deferred
+                .remove(root_session_id)
+                .map(|ids| ids.into_iter().collect())
+                .unwrap_or_default();
         });
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -5817,6 +6178,42 @@ impl SubagentControl {
     }
 }
 
+async fn continue_root(
+    registry: Arc<Registry>,
+    resolver: ParentResolver,
+    root_session_id: String,
+    mut completions: mpsc::UnboundedReceiver<(AgentId, u64)>,
+) {
+    while let Some(first) = completions.recv().await {
+        let mut batch = vec![first];
+        while let Ok(completion) = completions.try_recv() {
+            batch.push(completion);
+        }
+        match resolver(&root_session_id) {
+            Some(parent) => {
+                if let Err(error) = registry
+                    .continue_parent_batch(&parent, &root_session_id, batch)
+                    .await
+                {
+                    tracing::warn!(%error, "subagent completions did not continue their parent");
+                }
+            }
+            None => {
+                for (id, revision) in batch {
+                    registry.retry_completion(&root_session_id, id, revision);
+                }
+            }
+        }
+        if completions.is_empty() {
+            completions.close();
+            while let Ok((id, revision)) = completions.try_recv() {
+                registry.schedule_parent_continuation(&root_session_id, id, revision);
+            }
+            return;
+        }
+    }
+}
+
 pub(super) fn forward_events(
     root_session_id: String,
     id: AgentId,
@@ -5830,28 +6227,37 @@ pub(super) fn forward_events(
         if start.await.is_err() {
             return;
         }
-        while let Some(event) = events.recv().await {
-            let boundary = matches!(
-                event.kind,
-                AgentEventKind::ModelCallStarted | AgentEventKind::ModelCallCompleted
-            );
-            let progress = boundary || event.kind == AgentEventKind::ToolCall;
-            let completed_tool = event.kind == AgentEventKind::ToolResult;
-            let kind = event.kind;
-            let payload = matches!(kind, AgentEventKind::ToolCall | AgentEventKind::ToolResult)
-                .then(|| event.payload.clone());
-            let _ = send_update(
-                &updates,
-                &root_session_id,
-                AgentUpdate::Event { id, parent, event },
-                false,
-            );
-            if let Some(registry) = registry.upgrade() {
-                registry
-                    .track_in_flight(&root_session_id, id, &kind, &payload)
-                    .await;
+        while let Some(first) = events.recv().await {
+            let mut tracked = Vec::new();
+            let mut progress = false;
+            let mut completed_tool = false;
+            let mut next = Some(first);
+            while let Some(event) = next {
+                let kind = event.kind;
+                let boundary = matches!(
+                    kind,
+                    AgentEventKind::ModelCallStarted | AgentEventKind::ModelCallCompleted
+                );
+                progress |= boundary || kind == AgentEventKind::ToolCall;
+                completed_tool |= kind == AgentEventKind::ToolResult;
                 if boundary {
-                    registry.commit_boundary(&root_session_id, id).await;
+                    tracked.push(TrackedEvent::Boundary);
+                } else if matches!(kind, AgentEventKind::ToolCall | AgentEventKind::ToolResult)
+                    && let Ok(call) = serde_json::from_str::<InFlightEvent>(event.payload.get())
+                {
+                    tracked.push(TrackedEvent::Call(kind, call));
+                }
+                let _ = send_update(
+                    &updates,
+                    &root_session_id,
+                    AgentUpdate::Event { id, parent, event },
+                    false,
+                );
+                next = events.try_recv();
+            }
+            if let Some(registry) = registry.upgrade() {
+                if !tracked.is_empty() {
+                    registry.track_events(&root_session_id, id, tracked).await;
                 }
                 if completed_tool {
                     registry.completed_tools.update(|completed| {

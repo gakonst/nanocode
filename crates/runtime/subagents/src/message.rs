@@ -2,7 +2,7 @@ use super::model::{
     AgentId, AgentMessage, AgentThread, MessageDisposition, MessageId, MessagePriority,
     MessagePurpose, MessageSender, ThreadId,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub(super) const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
@@ -11,7 +11,16 @@ pub(super) struct MessageThreads {
     next_message_id: u64,
     threads: HashMap<ThreadId, AgentThread>,
     thread_by_message: HashMap<MessageId, ThreadId>,
-    pending: HashSet<MessageId>,
+    pending: HashMap<MessageId, AgentId>,
+    pending_recipients: HashMap<AgentId, usize>,
+    log: Vec<MessageId>,
+    log_revision: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct MessageLog {
+    len: usize,
+    revision: u64,
 }
 
 impl MessageThreads {
@@ -20,25 +29,41 @@ impl MessageThreads {
         cache: &super::durable::JournalCache,
     ) -> (
         u64,
-        Vec<(MessageId, super::durable::MessageEntry)>,
+        super::durable::MessagesSnapshot,
+        MessageLog,
         Vec<MessageId>,
     ) {
-        let mut messages = self
-            .threads
-            .values()
-            .flat_map(|thread| &thread.messages)
-            .map(|message| {
-                let entry = match cache.message(message.id) {
-                    Some(key) => super::durable::MessageEntry::Cached(std::sync::Arc::clone(key)),
-                    None => super::durable::MessageEntry::New(message.clone()),
-                };
-                (message.id, entry)
-            })
-            .collect::<Vec<_>>();
-        messages.sort_by_key(|(id, _)| *id);
-        let mut pending = self.pending.iter().copied().collect::<Vec<_>>();
+        let logged = MessageLog {
+            len: self.log.len(),
+            revision: self.log_revision,
+        };
+        let messages = match cache.logged() {
+            Some(saved) if saved.revision == self.log_revision && saved.len <= self.log.len() => {
+                super::durable::MessagesSnapshot::Appended(
+                    self.log[saved.len..]
+                        .iter()
+                        .filter_map(|id| self.message(*id))
+                        .collect(),
+                )
+            }
+            _ => super::durable::MessagesSnapshot::Full(
+                self.log
+                    .iter()
+                    .filter_map(|id| {
+                        let entry = match cache.message(*id) {
+                            Some(key) => {
+                                super::durable::MessageEntry::Cached(std::sync::Arc::clone(key))
+                            }
+                            None => super::durable::MessageEntry::New(self.message(*id)?),
+                        };
+                        Some((*id, entry))
+                    })
+                    .collect(),
+            ),
+        };
+        let mut pending = self.pending.keys().copied().collect::<Vec<_>>();
         pending.sort_unstable();
-        (self.next_message_id, messages, pending)
+        (self.next_message_id, messages, logged, pending)
     }
 
     pub(super) fn restore(
@@ -73,29 +98,46 @@ impl MessageThreads {
             }
             restored.commit(message);
         }
-        if pending
-            .iter()
-            .any(|id| !restored.thread_by_message.contains_key(id))
-        {
-            return Err(std::io::Error::other(
-                "pending message is absent from the persisted thread",
-            ));
+        restored.pending.clear();
+        restored.pending_recipients.clear();
+        for id in pending {
+            let to = restored
+                .message(id)
+                .ok_or_else(|| {
+                    std::io::Error::other("pending message is absent from the persisted thread")
+                })?
+                .to;
+            restored.add_pending(id, to);
         }
-        restored.pending = pending.into_iter().collect();
         Ok(restored)
     }
 
     pub(super) fn has_pending_for(&self, agent_id: AgentId) -> bool {
-        self.pending.iter().any(|id| {
-            self.message(*id)
-                .is_some_and(|message| message.to == agent_id)
-        })
+        self.pending_recipients.contains_key(&agent_id)
+    }
+
+    fn add_pending(&mut self, id: MessageId, to: AgentId) {
+        if self.pending.insert(id, to).is_none() {
+            *self.pending_recipients.entry(to).or_default() += 1;
+        }
+    }
+
+    fn remove_pending(&mut self, id: MessageId) {
+        let Some(to) = self.pending.remove(&id) else {
+            return;
+        };
+        if let Some(count) = self.pending_recipients.get_mut(&to) {
+            *count -= 1;
+            if *count == 0 {
+                self.pending_recipients.remove(&to);
+            }
+        }
     }
 
     pub(super) fn pending_messages(&self) -> Vec<AgentMessage> {
         let mut pending = self
             .pending
-            .iter()
+            .keys()
             .filter_map(|id| self.message(*id))
             .collect::<Vec<_>>();
         pending.sort_by_key(|message| message.id);
@@ -145,20 +187,30 @@ impl MessageThreads {
                 messages: Vec::new(),
             });
         self.thread_by_message.insert(message.id, message.thread_id);
-        self.pending.insert(message.id);
+        let (id, to) = (message.id, message.to);
+        match self.log.last() {
+            Some(last) if *last > id => {
+                let position = self.log.partition_point(|logged| *logged < id);
+                self.log.insert(position, id);
+                self.log_revision += 1;
+            }
+            _ => self.log.push(id),
+        }
         thread.messages.push(message);
-        thread.clone()
+        let thread = thread.clone();
+        self.add_pending(id, to);
+        thread
     }
 
     pub(super) fn mark_admitted(&mut self, id: MessageId, disposition: MessageDisposition) {
         if disposition == MessageDisposition::Queued {
             return;
         }
-        self.pending.remove(&id);
+        self.remove_pending(id);
     }
 
     pub(super) fn mark_terminal(&mut self, id: MessageId) {
-        self.pending.remove(&id);
+        self.remove_pending(id);
     }
 
     pub(super) fn thread_for_message(&self, id: MessageId) -> Option<AgentThread> {
@@ -179,7 +231,7 @@ impl MessageThreads {
     }
 
     pub(super) fn rollback(&mut self, id: MessageId) {
-        self.pending.remove(&id);
+        self.remove_pending(id);
         self.remove_message(id);
     }
 
@@ -226,6 +278,10 @@ impl MessageThreads {
         let Some(thread_id) = self.thread_by_message.remove(&id) else {
             return;
         };
+        if let Ok(position) = self.log.binary_search(&id) {
+            self.log.remove(position);
+            self.log_revision += 1;
+        }
         let remove_thread = self.threads.get_mut(&thread_id).is_some_and(|thread| {
             thread.messages.retain(|message| message.id != id);
             thread.messages.is_empty()

@@ -34,10 +34,8 @@ pub(crate) struct Task<T> {
     abort: AbortHandle,
 }
 
-#[cfg(target_family = "wasm")]
 pub(crate) struct TaskAbortGuard(AbortHandle);
 
-#[cfg(target_family = "wasm")]
 impl Drop for TaskAbortGuard {
     fn drop(&mut self) {
         self.0.abort();
@@ -45,7 +43,6 @@ impl Drop for TaskAbortGuard {
 }
 
 impl<T> Task<T> {
-    #[cfg(target_family = "wasm")]
     pub(crate) fn abort_on_drop(&self) -> TaskAbortGuard {
         TaskAbortGuard(self.abort.clone())
     }

@@ -61,7 +61,11 @@ impl Registry {
         };
         let resuming = self
             .pending_resume
-            .read(|pending| pending.get(root_session_id).cloned())
+            .read(|pending| {
+                pending
+                    .get(root_session_id)
+                    .map(|ids| ids.iter().copied().collect())
+            })
             .unwrap_or_default();
         let checkpoint_captures = self
             .pending_checkpoints

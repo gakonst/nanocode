@@ -1,14 +1,15 @@
 use super::model::AgentId;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 #[derive(Default)]
 pub(super) struct TaskTree {
     next_id: u64,
     nodes: HashMap<AgentId, TaskNode>,
+    sessions: HashMap<String, AgentId>,
+    children: HashMap<Option<AgentId>, BTreeSet<AgentId>>,
 }
 
 struct TaskNode {
-    session_id: String,
     parent: Option<AgentId>,
 }
 
@@ -42,7 +43,7 @@ impl TaskTree {
         if self.nodes.contains_key(&id) {
             return Err(std::io::Error::other(format!("duplicate agent_id {id}")));
         }
-        if self.agent_for_session(&session_id).is_some() {
+        if self.sessions.contains_key(&session_id) {
             return Err(std::io::Error::other(format!(
                 "duplicate subagent session ID {session_id}"
             )));
@@ -55,7 +56,9 @@ impl TaskTree {
             )));
         }
 
-        self.nodes.insert(id, TaskNode { session_id, parent });
+        self.nodes.insert(id, TaskNode { parent });
+        self.sessions.insert(session_id, id);
+        self.children.entry(parent).or_default().insert(id);
         self.next_id = self.next_id.max(id.get());
         Ok(())
     }
@@ -65,9 +68,11 @@ impl TaskTree {
     }
 
     pub(super) fn agent_for_session(&self, session_id: &str) -> Option<AgentId> {
-        self.nodes
-            .iter()
-            .find_map(|(&id, node)| (node.session_id == session_id).then_some(id))
+        self.sessions.get(session_id).copied()
+    }
+
+    pub(super) fn parent(&self, id: AgentId) -> Option<AgentId> {
+        self.nodes.get(&id).and_then(|node| node.parent)
     }
 
     pub(super) fn authorize(&self, session_id: &str, id: AgentId) -> std::io::Result<()> {
@@ -101,40 +106,26 @@ impl TaskTree {
     }
 
     pub(super) fn all_postorder(&self) -> Vec<AgentId> {
-        let mut roots = self
-            .nodes
-            .iter()
-            .filter_map(|(&id, node)| node.parent.is_none().then_some(id))
-            .collect::<Vec<_>>();
-        roots.sort_unstable();
-
         let mut order = Vec::with_capacity(self.nodes.len());
-        for root in roots {
+        for &root in self.children.get(&None).into_iter().flatten() {
             self.append_subtree_postorder(root, &mut order);
         }
         order
     }
 
     pub(super) fn is_descendant(&self, candidate: AgentId, ancestor: AgentId) -> bool {
-        let mut parent = self.nodes.get(&candidate).and_then(|node| node.parent);
+        let mut parent = self.parent(candidate);
         while let Some(id) = parent {
             if id == ancestor {
                 return true;
             }
-            parent = self.nodes.get(&id).and_then(|node| node.parent);
+            parent = self.parent(id);
         }
         false
     }
 
     fn append_subtree_postorder(&self, id: AgentId, order: &mut Vec<AgentId>) {
-        let mut children = self
-            .nodes
-            .iter()
-            .filter_map(|(&child_id, node)| (node.parent == Some(id)).then_some(child_id))
-            .collect::<Vec<_>>();
-        children.sort_unstable();
-
-        for child in children {
+        for &child in self.children.get(&Some(id)).into_iter().flatten() {
             self.append_subtree_postorder(child, order);
         }
         order.push(id);

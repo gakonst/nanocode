@@ -288,11 +288,17 @@ struct DirectoryTask {
     include_completed: bool,
     #[serde(default)]
     include_self: bool,
+    #[serde(default)]
+    after_agent_id: Option<AgentId>,
+    #[serde(default)]
+    limit: Option<std::num::NonZeroUsize>,
 }
 
 #[derive(Serialize)]
 struct AgentDirectory {
     agents: Vec<AgentDirectoryEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_after_agent_id: Option<AgentId>,
 }
 
 #[derive(Deserialize)]
@@ -375,9 +381,9 @@ pub async fn start_agents_observed(
 ) -> AgentToolResult<Vec<AgentStartReport>> {
     registry.register_handle(parent.clone());
 
-    let admission = registry.admit_spawn(session_id).await?;
     let policy_parent = spawn_parent(parent, registry, session_id).await?;
     let prepared = prepare_batch(tasks)?;
+    let admission = registry.admit_spawn(session_id).await?;
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
@@ -632,7 +638,6 @@ async fn start_child(
         return Err("child caller identity must match its native parent handle".into());
     }
     registry.register_handle(parent.clone());
-    let admission = registry.admit_spawn(session_id).await?;
     let policy_parent = spawn_parent(parent, registry, session_id).await?;
     if !fork {
         registry.spawn_policy().admit_reasoning_mode(
@@ -647,6 +652,7 @@ async fn start_child(
         output_schema,
     } = task;
     let contract = OutputContract::compile(&output_schema)?;
+    let admission = registry.admit_spawn(session_id).await?;
     let mut startup = registry.batch_startup();
     let capacity = registry.reserve_turn()?;
     let reservation = registry.reserve(session_id).await?;
@@ -804,18 +810,6 @@ impl Tool for SpawnAgent {
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         let lineage = Arc::clone(&registry);
-        #[cfg(not(target_family = "wasm"))]
-        let report = start_agent_with_host_context(
-            &self.parent,
-            &registry,
-            context.session_id(),
-            task,
-            options,
-            host_context,
-        )
-        .await?;
-
-        #[cfg(target_family = "wasm")]
         let report = {
             let parent = self.parent.clone();
             let session_id = context.session_id().to_owned();
@@ -1159,7 +1153,7 @@ impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             LIST_AGENTS_TOOL,
-            "Lists agents in the same task tree. Pending, running, and recoverable interrupted agents are returned by default. Set include_completed to retrieve terminal statuses and completed results in status.output. After reuse or closure, last_output retains the latest completed result.",
+            "Lists agents in the same task tree in agent_id order. Pending, running, and recoverable interrupted agents are returned by default. Set include_completed to retrieve terminal statuses and completed results in status.output. After reuse or closure, last_output retains the latest completed result. In a large tree, page with limit: the result's next_after_agent_id, present while more agents remain, is the after_agent_id of the next page.",
             schema(
                 r##"{
                 "type": "object",
@@ -1173,6 +1167,16 @@ impl Tool for ListAgents {
                         "type": "boolean",
                         "default": false,
                         "description": "Includes the calling agent for topology inspection. Self-messaging remains unavailable."
+                    },
+                    "after_agent_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Lists only agents whose agent_id is greater than this one."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Lists at most this many agents."
                     }
                 },
                 "additionalProperties": false
@@ -1185,18 +1189,32 @@ impl Tool for ListAgents {
         let DirectoryTask {
             include_completed,
             include_self,
+            after_agent_id,
+            limit,
         } = input.decode_json()?;
         let registry = self
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let agents = registry
+        let mut agents = registry
             .directory(context.session_id(), include_completed, include_self)
             .await?;
+        if let Some(after) = after_agent_id {
+            agents.retain(|agent| agent.agent_id > after);
+        }
+        let next_after_agent_id = limit
+            .filter(|limit| agents.len() > limit.get())
+            .map(|limit| {
+                agents.truncate(limit.get());
+                agents[limit.get() - 1].agent_id
+            });
         let receipt = registry
             .observe_listed(context.session_id(), &agents, context.call_id())
             .await;
-        let output = json_output(&AgentDirectory { agents })?;
+        let output = json_output(&AgentDirectory {
+            agents,
+            next_after_agent_id,
+        })?;
         Ok(match receipt {
             Some(receipt) => output.with_receipt(receipt),
             None => output,

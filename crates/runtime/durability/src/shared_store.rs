@@ -54,6 +54,13 @@ enum Command {
         records: Vec<crate::StoreRecord>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
+    ReplaceLatest {
+        state_id: String,
+        owner: OwnerToken,
+        expected_revision: u64,
+        write: std::sync::Arc<LatestWrite>,
+        result: oneshot::Sender<Result<u64, StoreError>>,
+    },
     Commit {
         state_id: String,
         owner: OwnerToken,
@@ -91,6 +98,54 @@ enum Command {
     Flush {
         result: oneshot::Sender<Result<(), StoreError>>,
     },
+}
+
+#[derive(Clone)]
+enum Latest {
+    Open {
+        payload: std::sync::Arc<str>,
+        records: imbl::Vector<crate::StoreRecord>,
+        keys: imbl::HashSet<String>,
+    },
+    Taken,
+}
+
+pub(crate) struct LatestWrite(nanocode_sync::Atom<Latest>);
+
+impl LatestWrite {
+    pub(crate) fn update(&self, payload: &str, records: &[crate::StoreRecord]) -> bool {
+        let payload: std::sync::Arc<str> = std::sync::Arc::from(payload);
+        self.0
+            .modify(|latest| match latest {
+                Latest::Open {
+                    payload: current,
+                    records: staged,
+                    keys,
+                } => {
+                    *current = std::sync::Arc::clone(&payload);
+                    for record in records {
+                        if keys.insert(record.key.clone()).is_none() {
+                            staged.push_back(record.clone());
+                        }
+                    }
+                    Ok(())
+                }
+                Latest::Taken => Err(()),
+            })
+            .is_ok()
+    }
+
+    fn take(&self) -> (String, Vec<crate::StoreRecord>) {
+        match self
+            .0
+            .update(|latest| std::mem::replace(latest, Latest::Taken))
+        {
+            Latest::Open {
+                payload, records, ..
+            } => (payload.to_string(), records.into_iter().collect()),
+            Latest::Taken => (String::new(), Vec::new()),
+        }
+    }
 }
 
 struct StoreRequest {
@@ -161,24 +216,30 @@ async fn drive_grouped<S: StateStore>(
     let (finished, mut completions) = mpsc::unbounded_channel();
     let mut operations = 0_usize;
     let mut groups = 0_usize;
-    let mut queued = std::collections::VecDeque::new();
+    let mut queued = std::collections::VecDeque::<StoreRequest>::new();
     let mut open = true;
     loop {
         let mut group = Vec::new();
         let mut states = std::collections::HashSet::new();
         let mut rest = std::collections::VecDeque::new();
         let mut barrier = false;
+        let mut ordered = groups == 0;
         while let Some(request) = queued.pop_front() {
             if barrier {
+                rest.push_back(request);
+                continue;
+            }
+            if !ordered && is_write(&request.command) {
                 rest.push_back(request);
                 continue;
             }
             match Grouped::from_request(request) {
                 Ok(grouped) => {
                     let state = grouped.commit.state_id.clone();
-                    if groups == 0 && states.insert(state) {
+                    if ordered && states.insert(state) {
                         group.push(grouped);
                     } else {
+                        ordered = false;
                         rest.push_back(grouped.into_request());
                     }
                 }
@@ -239,6 +300,13 @@ async fn drive_grouped<S: StateStore>(
             },
         }
     }
+}
+
+const fn is_write(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Replace { .. } | Command::ReplaceLatest { .. } | Command::Commit { .. }
+    )
 }
 
 async fn run_grouped<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped>) {
@@ -346,6 +414,27 @@ impl Grouped {
                 },
                 Reply::Replace(result),
             ),
+            Command::ReplaceLatest {
+                state_id,
+                owner,
+                expected_revision,
+                write,
+                result,
+            } => {
+                let (payload, records) = write.take();
+                (
+                    OwnedCommit {
+                        state_id,
+                        owner,
+                        expected_revision,
+                        payload,
+                        records,
+                        events: Vec::new(),
+                        summary: SummaryUpdate::Unchanged,
+                    },
+                    Reply::Replace(result),
+                )
+            }
             Command::Commit {
                 state_id,
                 owner,
@@ -505,6 +594,22 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
                     ),
                 );
             }
+            Command::ReplaceLatest {
+                state_id,
+                owner,
+                expected_revision,
+                write,
+                result,
+            } => {
+                let (payload, new_records) = write.take();
+                drop(
+                    result.send(
+                        store
+                            .replace(&state_id, &owner, expected_revision, &payload, &new_records)
+                            .await,
+                    ),
+                );
+            }
             Command::Commit {
                 state_id,
                 owner,
@@ -590,6 +695,45 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
     }
     .instrument(span)
     .await;
+}
+
+impl SharedStore {
+    pub(crate) fn replace_latest(
+        &self,
+        state_id: &str,
+        owner: &OwnerToken,
+        expected_revision: u64,
+        write: std::sync::Arc<LatestWrite>,
+    ) -> Result<oneshot::Receiver<Result<u64, StoreError>>, StoreError> {
+        let (result, receiver) = oneshot::channel();
+        self.commands
+            .send(StoreRequest {
+                command: Command::ReplaceLatest {
+                    state_id: state_id.to_owned(),
+                    owner: owner.clone(),
+                    expected_revision,
+                    write,
+                    result,
+                },
+                span: tracing::info_span!(
+                    "durability.store",
+                    operation = "replace_latest",
+                    state.id = state_id,
+                    queue.duration_ms = tracing::field::Empty
+                ),
+                queued: Instant::now(),
+            })
+            .map_err(|_| stopped())?;
+        Ok(receiver)
+    }
+}
+
+pub(crate) fn latest_write(payload: String, records: Vec<crate::StoreRecord>) -> LatestWrite {
+    LatestWrite(nanocode_sync::Atom::new(Latest::Open {
+        payload: std::sync::Arc::from(payload),
+        keys: records.iter().map(|record| record.key.clone()).collect(),
+        records: records.into_iter().collect(),
+    }))
 }
 
 impl StateStore for SharedStore {

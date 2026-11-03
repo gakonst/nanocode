@@ -346,6 +346,13 @@ impl Sql for PostgresSql {
             let mut connection = self.client().await;
             let prepare = statements.iter().all(|statement| reusable(statement.sql));
             if prepare {
+                if connection.prepared.is_empty() {
+                    connection
+                        .client
+                        .batch_execute("SET plan_cache_mode = force_custom_plan")
+                        .await
+                        .map_err(backend)?;
+                }
                 let missing = statements
                     .iter()
                     .filter(|statement| !connection.prepared.contains_key(statement.sql))

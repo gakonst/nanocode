@@ -3456,6 +3456,7 @@ version = "0.6.7"
 dependencies = [
  "arc-swap",
  "futures-util",
+ "imbl",
  "nanocode-agent-core",
  "nanocode-durability-core",
  "nanocode-platform",

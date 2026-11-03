@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     EncodedPayload, OperationStatus, OwnedState, OwnerId, OwnerToken, StateStore, StoreError,
-    shared_store::SharedStore,
+    shared_store::{LatestWrite, SharedStore, latest_write},
 };
 
 pub(crate) struct Seed {
@@ -74,6 +74,25 @@ struct Fenced {
     committed: HashSet<String>,
 
     seed: Option<(oneshot::Receiver<OwnedState>, Arc<AtomicBool>)>,
+
+    next: u64,
+
+    inflight: std::collections::VecDeque<InFlight>,
+
+    failure: Option<std::io::Error>,
+
+    retry: Vec<String>,
+
+    pending: Pending,
+}
+
+type Pending = Arc<nanocode_sync::Atom<imbl::HashMap<String, Arc<str>>>>;
+
+struct InFlight {
+    write: Arc<LatestWrite>,
+    done: oneshot::Receiver<Result<u64, StoreError>>,
+    staged: Vec<String>,
+    pending: Vec<String>,
 }
 
 impl Fenced {
@@ -97,6 +116,7 @@ impl Fenced {
                 .await
                 .map_err(std::io::Error::other)?,
         };
+        self.next = owned.state.revision;
         self.owner = Some((owned.owner, owned.state.revision));
         Ok(owned.state.payload)
     }
@@ -108,37 +128,112 @@ impl Fenced {
         payload: String,
         records: Vec<Arc<str>>,
     ) -> std::io::Result<()> {
+        if self.failure.is_some() {
+            self.drain().await;
+            if let Some((_, revision)) = &self.owner {
+                self.next = *revision;
+            }
+            if let Some(error) = self.failure.take() {
+                return Err(error);
+            }
+        }
+        let retry = std::mem::take(&mut self.retry)
+            .into_iter()
+            .filter(|key| !self.committed.contains(key))
+            .filter_map(|key| self.pending.read(|pending| pending.get(&key).cloned()))
+            .collect::<Vec<_>>();
         let mut staged = Vec::new();
-        for json in records {
+        let mut pending = Vec::with_capacity(records.len() + retry.len());
+        for json in records.into_iter().chain(retry) {
             let committed = &self.committed;
-            EncodedPayload::from_json(json)
-                .stage_unless(&mut staged, &|key| committed.contains(key));
+            let mut encoded = EncodedPayload::from_json(Arc::clone(&json));
+            pending.push((encoded.key().to_owned(), json));
+            encoded.stage_unless(&mut staged, &|key| committed.contains(key));
         }
         staged.sort_unstable_by(|a, b| a.key.cmp(&b.key));
         staged.dedup_by(|a, b| a.key == b.key);
         if self.owner.is_none() {
             self.acquire(store, state_id).await?;
         }
-        let (owner, revision) = self
+        let (owner, _) = self
             .owner
             .clone()
             .ok_or_else(|| std::io::Error::other("journal owner was not acquired"))?;
-        let revision = match store
-            .replace(state_id, &owner, revision, &payload, &staged)
-            .await
+        if !pending.is_empty() {
+            self.pending.update(|known| {
+                for (key, json) in &pending {
+                    known.insert(key.clone(), Arc::clone(json));
+                }
+            });
+        }
+        let pending = pending.into_iter().map(|(key, _)| key);
+        let keys = staged.iter().map(|record| record.key.clone());
+        if let Some(last) = self.inflight.back_mut()
+            && last.write.update(&payload, &staged)
         {
-            Ok(revision) => revision,
+            last.staged.extend(keys);
+            last.pending.extend(pending);
+            return Ok(());
+        }
+        let staged_keys = keys.collect();
+        let write = Arc::new(latest_write(payload, staged));
+        let done = store
+            .replace_latest(state_id, &owner, self.next, Arc::clone(&write))
+            .map_err(std::io::Error::other)?;
+        self.next = self.next.saturating_add(1);
+        self.inflight.push_back(InFlight {
+            write,
+            done,
+            staged: staged_keys,
+            pending: pending.collect(),
+        });
+        Ok(())
+    }
+
+    async fn drain(&mut self) {
+        while !self.inflight.is_empty() {
+            let result = settled(&mut self.inflight).await;
+            self.settled(result);
+        }
+    }
+
+    fn settled(&mut self, result: Result<u64, StoreError>) {
+        let Some(entry) = self.inflight.pop_front() else {
+            return;
+        };
+        match result {
+            Ok(revision) => {
+                if let Some((owner, _)) = self.owner.take() {
+                    self.owner = Some((owner, revision));
+                }
+                self.committed.extend(entry.staged);
+                if !entry.pending.is_empty() {
+                    self.pending.update(|known| {
+                        for key in &entry.pending {
+                            known.remove(key);
+                        }
+                    });
+                }
+            }
             Err(error) => {
                 if !matches!(error, StoreError::NotCommitted(_) | StoreError::Fenced) {
                     self.owner = None;
                 }
-                return Err(std::io::Error::other(error));
+                self.retry.extend(entry.pending);
+                self.failure.get_or_insert(std::io::Error::other(error));
             }
-        };
-        self.owner = Some((owner, revision));
-        self.committed
-            .extend(staged.into_iter().map(|record| record.key));
-        Ok(())
+        }
+    }
+}
+
+async fn settled(inflight: &mut std::collections::VecDeque<InFlight>) -> Result<u64, StoreError> {
+    match inflight.front_mut() {
+        Some(entry) => (&mut entry.done).await.unwrap_or_else(|_| {
+            Err(StoreError::Backend(
+                "the durability store stopped".to_owned(),
+            ))
+        }),
+        None => std::future::pending().await,
     }
 }
 
@@ -157,20 +252,28 @@ async fn write_journal(
     mut fenced: Fenced,
     mut writes: mpsc::UnboundedReceiver<Write>,
 ) {
-    while let Some(write) = writes.recv().await {
-        match write {
-            Write::Load(result) => {
-                drop(result.send(fenced.acquire(&mut store, &state_id).await));
-            }
-            Write::Save {
-                payload,
-                records,
-                result,
-            } => {
-                drop(result.send(fenced.save(&mut store, &state_id, payload, records).await));
+    loop {
+        tokio::select! {
+            write = writes.recv() => match write {
+                Some(Write::Load(result)) => {
+                    fenced.drain().await;
+                    drop(result.send(fenced.acquire(&mut store, &state_id).await));
+                }
+                Some(Write::Save {
+                    payload,
+                    records,
+                    result,
+                }) => {
+                    drop(result.send(fenced.save(&mut store, &state_id, payload, records).await));
+                }
+                None => break,
+            },
+            result = settled(&mut fenced.inflight), if !fenced.inflight.is_empty() => {
+                fenced.settled(result);
             }
         }
     }
+    fenced.drain().await;
 }
 
 #[derive(Clone)]
@@ -179,6 +282,7 @@ struct SharedJournal {
     store: SharedStore,
     writes: mpsc::UnboundedSender<Write>,
     manifests: Arc<ArcSwapOption<HashMap<String, String>>>,
+    pending: Pending,
 }
 
 impl SharedJournal {
@@ -271,6 +375,22 @@ impl ChildJournalStore for SharedJournal {
     }
 
     fn load_records(&self, keys: Vec<String>) -> BackendFuture<std::io::Result<Vec<String>>> {
+        if self
+            .pending
+            .read(|pending| keys.iter().any(|key| pending.contains_key(key)))
+        {
+            let loads = keys
+                .into_iter()
+                .map(|key| self.load_record(key))
+                .collect::<Vec<_>>();
+            return Box::pin(async move {
+                let mut records = Vec::with_capacity(loads.len());
+                for load in loads {
+                    records.push(load.await?);
+                }
+                Ok(records)
+            });
+        }
         let mut store = self.store.clone();
         let state_id = Arc::clone(&self.state_id);
         let fallback = keys
@@ -299,6 +419,9 @@ impl ChildJournalStore for SharedJournal {
     }
 
     fn load_record(&self, key: String) -> BackendFuture<std::io::Result<String>> {
+        if let Some(json) = self.pending.read(|pending| pending.get(&key).cloned()) {
+            return Box::pin(async move { Ok(json.to_string()) });
+        }
         let mut store = self.store.clone();
         let state_id = Arc::clone(&self.state_id);
         let manifests = Arc::clone(&self.manifests);
@@ -361,6 +484,7 @@ fn journal(
 ) -> ChildJournal {
     let state_id = Arc::<str>::from(state_id);
     let (writes, received) = mpsc::unbounded_channel();
+    let pending = Pending::default();
     spawn_writer(write_journal(
         Arc::clone(&state_id),
         store.clone(),
@@ -368,6 +492,11 @@ fn journal(
             owner: None,
             committed: HashSet::new(),
             seed,
+            next: 0,
+            inflight: std::collections::VecDeque::new(),
+            failure: None,
+            retry: Vec::new(),
+            pending: Arc::clone(&pending),
         },
         received,
     ));
@@ -376,6 +505,7 @@ fn journal(
         store,
         writes,
         manifests: Arc::default(),
+        pending,
     }))
 }
 

@@ -627,10 +627,9 @@ pub struct ClaudeBuilder {
     max_tokens: Option<u32>,
     effort: Option<crate::Effort>,
     thinking_explicit: bool,
-    thinking_disabled: bool,
+    thinking_mode: ThinkingMode,
     automatic_cache: bool,
     cache_one_hour: bool,
-    adaptive_thinking: bool,
     keep_thinking: bool,
     fast_mode: bool,
     message_diagnostics: bool,
@@ -677,7 +676,10 @@ impl ClaudeBuilder {
 
     pub(crate) fn durable_initial_settings(&self) -> Result<nanocode_durability::InitialSettings> {
         Ok(nanocode_durability::InitialSettings {
-            thinking: if self.thinking_explicit || self.thinking_disabled || self.effort.is_some() {
+            thinking: if self.thinking_explicit
+                || self.thinking_mode.disabled()
+                || self.effort.is_some()
+            {
                 effort_thinking(self.effort)
             } else {
                 claude_selection(&self.claude.model).default_thinking()
@@ -696,10 +698,9 @@ impl ClaudeBuilder {
             max_tokens: None,
             effort: None,
             thinking_explicit: false,
-            thinking_disabled: false,
+            thinking_mode: ThinkingMode::Automatic,
             automatic_cache: true,
             cache_one_hour: false,
-            adaptive_thinking: false,
             keep_thinking: true,
             fast_mode: false,
             message_diagnostics: false,
@@ -803,8 +804,8 @@ impl ClaudeBuilder {
                 )));
             }
             self.effort = snapshot.effort;
-            self.adaptive_thinking = snapshot.effort.is_some();
-            self.thinking_disabled = snapshot.thinking_disabled;
+            self.thinking_mode =
+                ThinkingMode::of(snapshot.effort.is_some(), snapshot.thinking_disabled);
             self.fast_mode = snapshot.fast_mode;
         }
         if let Some(restored) = restored {
@@ -855,8 +856,7 @@ impl ClaudeBuilder {
             .capabilities(ModelTransport::Native)
             .check_thinking(thinking)?;
         self.thinking_explicit = true;
-        self.thinking_disabled = thinking == Thinking::None;
-        self.adaptive_thinking = thinking != Thinking::None;
+        self.thinking_mode = ThinkingMode::selected(thinking);
         self.effort = match thinking {
             Thinking::None => None,
             Thinking::Low => Some(crate::Effort::Low),
@@ -899,8 +899,7 @@ impl ClaudeBuilder {
         self.session_id = Some(session_id);
         self.max_tokens = stored.max_tokens;
         self.effort = stored.effort;
-        self.adaptive_thinking = stored.adaptive_thinking;
-        self.thinking_disabled = stored.thinking_disabled;
+        self.thinking_mode = ThinkingMode::of(stored.adaptive_thinking, stored.thinking_disabled);
         self.automatic_cache |= stored.automatic_cache;
         self.cache_one_hour |= stored.cache_one_hour;
         self.keep_thinking |= stored.keep_thinking;
@@ -942,7 +941,9 @@ impl ClaudeBuilder {
 
     pub const fn effort(mut self, effort: crate::Effort) -> Self {
         self.effort = Some(effort);
-        self.thinking_disabled = false;
+        if self.thinking_mode.disabled() {
+            self.thinking_mode = ThinkingMode::Automatic;
+        }
         self
     }
 
@@ -958,8 +959,7 @@ impl ClaudeBuilder {
     }
 
     pub const fn adaptive_thinking(mut self) -> Self {
-        self.adaptive_thinking = true;
-        self.thinking_disabled = false;
+        self.thinking_mode = ThinkingMode::Adaptive;
         self
     }
 
@@ -1682,8 +1682,7 @@ impl ClaudeBuilder {
             effort: Atom::new(self.effort),
             automatic_cache: self.automatic_cache,
             cache_one_hour: self.cache_one_hour,
-            adaptive_thinking: AtomicBool::new(self.adaptive_thinking),
-            thinking_disabled: AtomicBool::new(self.thinking_disabled),
+            thinking_mode: AtomicThinkingMode::new(self.thinking_mode),
             keep_thinking: self.keep_thinking,
             fast_mode: AtomicBool::new(self.fast_mode),
             message_diagnostics: self.message_diagnostics,
@@ -2917,6 +2916,59 @@ const fn thinking_effort(thinking: Thinking) -> Option<crate::Effort> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum ThinkingMode {
+    Automatic,
+    Adaptive,
+    Disabled,
+}
+
+impl ThinkingMode {
+    const fn of(adaptive: bool, disabled: bool) -> Self {
+        match (adaptive, disabled) {
+            (_, true) => Self::Disabled,
+            (true, false) => Self::Adaptive,
+            (false, false) => Self::Automatic,
+        }
+    }
+
+    const fn selected(thinking: Thinking) -> Self {
+        match thinking {
+            Thinking::None => Self::Disabled,
+            _ => Self::Adaptive,
+        }
+    }
+
+    const fn adaptive(self) -> bool {
+        matches!(self, Self::Adaptive)
+    }
+
+    const fn disabled(self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+}
+
+struct AtomicThinkingMode(AtomicU8);
+
+impl AtomicThinkingMode {
+    const fn new(mode: ThinkingMode) -> Self {
+        Self(AtomicU8::new(mode as u8))
+    }
+
+    fn get(&self) -> ThinkingMode {
+        match self.0.load(Ordering::SeqCst) {
+            0 => ThinkingMode::Automatic,
+            1 => ThinkingMode::Adaptive,
+            _ => ThinkingMode::Disabled,
+        }
+    }
+
+    fn set(&self, mode: ThinkingMode) {
+        self.0.store(mode as u8, Ordering::SeqCst);
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeChildState {
@@ -3000,8 +3052,7 @@ impl AgentFactory for ClaudeNativeFactory {
             snapshot.conversation.lifecycle_started = false;
             recipe.claude.model = state.model();
             recipe.effort = state.effort();
-            recipe.adaptive_thinking = state.adaptive_thinking.load(Ordering::SeqCst);
-            recipe.thinking_disabled = state.thinking_disabled.load(Ordering::SeqCst);
+            recipe.thinking_mode = state.thinking_mode.get();
             recipe.fast_mode = state.fast_mode.load(Ordering::SeqCst);
             let child_id = nanocode_platform::uuid_v7().to_string();
             let lineage = Lineage::child_of(&state.lineage, state.session_id.as_str(), origin);
@@ -3081,8 +3132,7 @@ impl AgentFactory for ClaudeNativeFactory {
                 let mut recipe = recipe;
                 recipe.claude.model = native_model;
                 recipe.effort = state.effort();
-                recipe.adaptive_thinking = state.adaptive_thinking.load(Ordering::SeqCst);
-                recipe.thinking_disabled = state.thinking_disabled.load(Ordering::SeqCst);
+                recipe.thinking_mode = state.thinking_mode.get();
                 recipe.fast_mode = state.fast_mode.load(Ordering::SeqCst);
                 if let Some(thinking) = options.selected_thinking() {
                     recipe = recipe.thinking(thinking)?;
@@ -3253,8 +3303,7 @@ struct State {
     effort: Atom<Option<crate::Effort>>,
     automatic_cache: bool,
     cache_one_hour: bool,
-    adaptive_thinking: AtomicBool,
-    thinking_disabled: AtomicBool,
+    thinking_mode: AtomicThinkingMode,
     keep_thinking: bool,
     fast_mode: AtomicBool,
     message_diagnostics: bool,
@@ -3948,12 +3997,13 @@ const fn effort_thinking(effort: Option<crate::Effort>) -> Thinking {
 
 impl State {
     fn native_policy(&self) -> NativePolicy {
+        let thinking_mode = self.thinking_mode.get();
         NativePolicy {
             model: self.model(),
             max_tokens: self.max_tokens,
             effort: self.effort(),
-            adaptive_thinking: self.adaptive_thinking.load(Ordering::SeqCst),
-            thinking_disabled: self.thinking_disabled.load(Ordering::SeqCst),
+            adaptive_thinking: thinking_mode.adaptive(),
+            thinking_disabled: thinking_mode.disabled(),
             automatic_cache: self.automatic_cache,
             cache_one_hour: self.cache_one_hour,
             keep_thinking: self.keep_thinking,
@@ -4540,17 +4590,18 @@ impl State {
         effort_thinking(self.effort())
     }
     fn selected_thinking(&self, model: &ModelSelection) -> Thinking {
-        if self.effort().is_none() && !self.thinking_disabled.load(Ordering::SeqCst) {
+        if self.effort().is_none() && !self.thinking_mode.get().disabled() {
             model.default_thinking()
         } else {
             self.thinking()
         }
     }
     fn thinking_config(&self) -> Option<Value> {
-        if self.thinking_disabled.load(Ordering::SeqCst) {
+        let thinking_mode = self.thinking_mode.get();
+        if thinking_mode.disabled() {
             return Some(json!({"type":"disabled"}));
         }
-        (self.adaptive_thinking.load(Ordering::SeqCst)
+        (thinking_mode.adaptive()
             || matches!(
                 self.model()
                     .parse::<ModelSelection>()
@@ -7614,12 +7665,7 @@ impl LifecycleBackend for Driver {
                 .capabilities(ModelTransport::Native)
                 .check_thinking(thinking)?;
             state.effort.set(thinking_effort(thinking));
-            state
-                .adaptive_thinking
-                .store(thinking != Thinking::None, Ordering::SeqCst);
-            state
-                .thinking_disabled
-                .store(thinking == Thinking::None, Ordering::SeqCst);
+            state.thinking_mode.set(ThinkingMode::selected(thinking));
             Ok(())
         })
     }
@@ -8063,7 +8109,7 @@ impl nanocode_agent_core::BackendRegistration for ClaudeBuilder {
         self.claude.model.clone()
     }
     fn default_thinking(&self) -> Option<Thinking> {
-        (self.thinking_explicit || self.thinking_disabled || self.effort.is_some())
+        (self.thinking_explicit || self.thinking_mode.disabled() || self.effort.is_some())
             .then(|| effort_thinking(self.effort))
     }
     fn validate_model(&self, model: &str) -> Result<()> {

@@ -380,7 +380,7 @@ impl State {
             lineage: Some(self.lineage.clone()),
             conversation_id: Some(self.conversation_id.clone()),
             effort: self.effort(),
-            thinking_disabled: self.thinking_disabled.load(Ordering::SeqCst),
+            thinking_disabled: self.thinking_mode.get().disabled(),
             fast_mode: self.fast_mode.load(Ordering::SeqCst),
             ..Snapshot::default()
         })

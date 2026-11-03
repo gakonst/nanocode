@@ -28,7 +28,7 @@ use nanocode_tool_contracts::ToolReceipt;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering},
@@ -216,6 +216,10 @@ fn next_generation() -> u64 {
 pub(super) struct Sessions {
     sessions: HashMap<AgentId, ChildSession>,
     changed: HashSet<AgentId>,
+    stale: HashSet<AgentId>,
+    resident: HashSet<AgentId>,
+    idle: BTreeSet<(u64, AgentId)>,
+    idle_at: HashMap<AgentId, u64>,
 }
 
 impl Sessions {
@@ -225,6 +229,7 @@ impl Sessions {
 
     pub(super) fn get_mut(&mut self, id: &AgentId) -> Option<&mut ChildSession> {
         let session = self.sessions.get_mut(id)?;
+        self.stale.insert(*id);
         session.journal_generation = next_generation();
         if session.changes.receiver_count() > 0 {
             session
@@ -238,11 +243,43 @@ impl Sessions {
     fn insert(&mut self, id: AgentId, mut session: ChildSession) {
         session.journal_generation = next_generation();
         self.changed.insert(id);
+        self.stale.insert(id);
         self.sessions.insert(id, session);
     }
 
     fn take_changed(&mut self) -> HashSet<AgentId> {
         std::mem::take(&mut self.changed)
+    }
+
+    fn refresh_residency(&mut self) {
+        for id in std::mem::take(&mut self.stale) {
+            let Some(session) = self.sessions.get(&id) else {
+                continue;
+            };
+            let resident = session.harness().is_some();
+            if resident {
+                self.resident.insert(id);
+            } else {
+                self.resident.remove(&id);
+            }
+            let idle = resident
+                && !session.active
+                && !matches!(session.status, AgentStatus::Pending)
+                && session.status.can_start_turn();
+            let at = idle.then_some(session.last_used);
+            let previous = match at {
+                Some(at) => self.idle_at.insert(id, at),
+                None => self.idle_at.remove(&id),
+            };
+            if previous != at {
+                if let Some(previous) = previous {
+                    self.idle.remove(&(previous, id));
+                }
+                if let Some(at) = at {
+                    self.idle.insert((at, id));
+                }
+            }
+        }
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&AgentId, &ChildSession)> {
@@ -352,6 +389,8 @@ pub struct Registry {
     pending_checkpoints: Atom<HashMap<String, usize>>,
 
     progress_captures: Atom<AgentMap<bool>>,
+
+    captured_once: Atom<imbl::HashSet<(String, AgentId)>>,
 
     completed_tools: Atom<imbl::HashSet<(String, AgentId)>>,
     pending_resume: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
@@ -1691,44 +1730,29 @@ impl RegistryState {
         limit: usize,
     ) -> Option<ResidentEviction> {
         let scope = self.scopes.get_mut(root_session_id)?;
-        let resident = scope
-            .sessions
-            .iter()
-            .filter(|(_, session)| session.harness().is_some())
-            .map(|(id, _)| *id)
-            .collect::<Vec<_>>();
-        if resident.len() <= limit {
+        scope.sessions.refresh_residency();
+        if scope.sessions.resident.len() <= limit {
             return None;
         }
-        let mut holding = HashSet::new();
-        for &id in &resident {
-            let mut parent = scope.topology.parent(id);
-            while let Some(ancestor) = parent
-                && holding.insert(ancestor)
+        let sessions = &scope.sessions;
+        let (candidate, lock) = sessions.idle.iter().find_map(|&(_, id)| {
+            let session = sessions.get(&id)?;
+            let holding = scope
+                .topology
+                .subtree_postorder(id)
+                .ok()?
+                .into_iter()
+                .any(|descendant| descendant != id && sessions.resident.contains(&descendant));
+            if holding
+                || scope.messages.has_pending_for(id)
+                || !session
+                    .harness()
+                    .is_some_and(|harness| !harness.answering_side_questions())
             {
-                parent = scope.topology.parent(ancestor);
+                return None;
             }
-        }
-
-        let mut candidates = resident
-            .iter()
-            .filter(|id| !holding.contains(*id))
-            .filter_map(|id| Some((*id, scope.sessions.get(id)?)))
-            .filter(|(_, session)| {
-                !session.active
-                    && !matches!(session.status, AgentStatus::Pending)
-                    && session.status.can_start_turn()
-                    && session
-                        .harness()
-                        .is_some_and(|harness| !harness.answering_side_questions())
-            })
-            .filter(|(id, _)| !scope.messages.has_pending_for(*id))
-            .map(|(id, session)| (session.last_used, id))
-            .collect::<Vec<_>>();
-        candidates.sort_unstable();
-        let (candidate, lock) = candidates
-            .into_iter()
-            .find_map(|(_, id)| Some((id, scope.sessions.get(&id)?.residency_lock.try_enter()?)))?;
+            Some((id, session.residency_lock.try_enter()?))
+        })?;
         let session = scope.sessions.get_mut(&candidate)?;
         let Residency::Resident(harness) =
             std::mem::replace(&mut session.residency, Residency::Evicted)
@@ -1832,6 +1856,7 @@ impl Registry {
             checkpoint_changes: Atom::default(),
             pending_checkpoints: Atom::default(),
             progress_captures: Atom::default(),
+            captured_once: Atom::default(),
             completed_tools: Atom::default(),
             pending_resume: Atom::default(),
             manual_resume: std::sync::atomic::AtomicBool::new(false),
@@ -1997,6 +2022,15 @@ impl Registry {
 
     pub(crate) async fn admit_spawn(&self, session_id: &str) -> std::io::Result<Option<Turn>> {
         let root = self.root_of(session_id);
+        let restored = self.claims.read(|claims| {
+            claims
+                .restored
+                .get(&root)
+                .is_none_or(|gate| matches!(*gate.borrow(), RestorationState::Ready))
+        });
+        if restored {
+            return Ok(None);
+        }
         let admission = self
             .spawn_admission
             .read(|admission| admission.get(&root).cloned());
@@ -2548,6 +2582,11 @@ impl Registry {
             return;
         }
         let key = (root_session_id.to_owned(), id);
+        if !self.records_sessions(root_session_id)
+            && self.captured_once.read(|captured| captured.contains(&key))
+        {
+            return;
+        }
         let started = self.progress_captures.update(|captures| {
             if let Some(again) = captures.get_mut(&key) {
                 *again = true;
@@ -2573,9 +2612,15 @@ impl Registry {
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
+                    let conversation = snapshot.has_conversation();
                     let recorded = registry
                         .record_checkpoint_off_thread(&key.0, key.1, snapshot)
                         .await;
+                    if recorded && conversation && !registry.records_sessions(&key.0) {
+                        registry.captured_once.update(|captured| {
+                            captured.insert(key.clone());
+                        });
+                    }
                     registry
                         .settle_capture(&key.0, key.1, commits.filter(|_| recorded), progressed)
                         .await;

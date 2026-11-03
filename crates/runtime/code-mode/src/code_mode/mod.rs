@@ -2326,7 +2326,11 @@ async fn run_cell_actor(
     let started_at = Instant::now();
     let host_wait_started_at = Instant::now();
     let (mut host, reused) = {
-        let taken = shared_host.take();
+        let taken = if cfg!(target_family = "wasm") {
+            shared_host.take()
+        } else {
+            None
+        };
         let reused = taken.is_some();
         let host = match taken {
             Some(host) => host,
@@ -2466,7 +2470,9 @@ async fn run_cell_actor(
         }
     }
     if host_healthy {
-        if let Some(mut displaced) = shared_host.put(host) {
+        if cfg!(target_family = "wasm")
+            && let Some(mut displaced) = shared_host.put(host)
+        {
             displaced.worker.terminate().await;
         }
     } else if !terminated {

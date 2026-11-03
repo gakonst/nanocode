@@ -26,10 +26,11 @@ impl SqliteSql {
 
     pub fn from_connection(connection: Connection) -> Result<Self, StoreError> {
         configure(&connection)?;
+        let checkpoints = checkpointer(&connection);
         let (jobs, receiver) = mpsc::channel(JOB_CAPACITY);
         thread::Builder::new()
             .name("nanocode-sqlite-sql".into())
-            .spawn(move || serve(connection, receiver))
+            .spawn(move || serve(connection, receiver, checkpoints))
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         Ok(Self { jobs })
     }
@@ -49,7 +50,8 @@ impl SqliteSql {
                     Err(error) => return drop(opened.send(Err(error))),
                 };
                 drop(opened.send(Ok(())));
-                serve(connection, receiver);
+                let checkpoints = checkpointer(&connection);
+                serve(connection, receiver, checkpoints);
             })
             .map_err(|error| StoreError::Backend(error.to_string()))?;
         ready.await.map_err(|_| stopped())??;
@@ -94,14 +96,44 @@ impl Sql for SqliteSql {
 fn configure(connection: &Connection) -> Result<(), StoreError> {
     connection
         .execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;",
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA mmap_size = 4294967296;",
         )
         .map_err(backend)
 }
 
-fn serve(mut connection: Connection, mut jobs: mpsc::Receiver<Job>) {
+fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<()>> {
+    let path = connection.path().filter(|path| !path.is_empty())?.to_owned();
+    connection
+        .execute_batch("PRAGMA wal_autocheckpoint = 0;")
+        .ok()?;
+    let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("nanocode-sqlite-checkpoint".into())
+        .spawn(move || {
+            let Ok(checkpoints) = Connection::open(&path) else {
+                return;
+            };
+            if checkpoints.execute_batch("PRAGMA busy_timeout = 5000;").is_err() {
+                return;
+            }
+            while woken.recv().is_ok() {
+                let _ = checkpoints.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+            }
+        })
+        .ok()?;
+    Some(wake)
+}
+
+fn serve(
+    mut connection: Connection,
+    mut jobs: mpsc::Receiver<Job>,
+    checkpoints: Option<std::sync::mpsc::SyncSender<()>>,
+) {
     while let Some(job) = jobs.blocking_recv() {
         drop(job.reply.send(run(&mut connection, &job.statements)));
+        if let Some(checkpoints) = &checkpoints {
+            let _ = checkpoints.try_send(());
+        }
     }
     drop(connection.close());
 }

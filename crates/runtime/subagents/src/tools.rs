@@ -16,13 +16,14 @@ use nanocode_agent_core::{
     AgentHandle, ClaudeModel, ForkRequest, HarnessFamily, Model, ModelSelection, ReasoningMode,
     SpawnOptions, Thinking,
 };
+use nanocode_sync::Atom;
 use nanocode_tool_contracts::{
     Tool, ToolCollection, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, LazyLock, Weak},
     time::Duration,
 };
@@ -785,19 +786,20 @@ struct SpawnAgent {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
+        let policy = self
+            .registry
+            .upgrade()
+            .map(|registry| registry.spawn_policy())
+            .unwrap_or_default();
+        memoized(format!("{SPAWN_AGENT_TOOL} {policy:?}"), || {
+            ToolDefinition::function(
             SPAWN_AGENT_TOOL,
             "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.",
-            spawn_agent_parameters_for(
-                &self
-                    .registry
-                    .upgrade()
-                    .map(|registry| registry.spawn_policy())
-                    .unwrap_or_default(),
-            ),
+            spawn_agent_parameters_for(&policy),
         )
         .with_strict_parameters()
         .with_output_schema(SPAWN_AGENT_OUTPUT_SCHEMA.clone())
+        })
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
@@ -834,6 +836,19 @@ impl Tool for SpawnAgent {
             .await;
         json_output(&report)
     }
+}
+
+fn memoized(key: String, build: impl FnOnce() -> ToolDefinition) -> ToolDefinition {
+    static DEFINITIONS: LazyLock<Atom<HashMap<String, ToolDefinition>>> =
+        LazyLock::new(Atom::default);
+    if let Some(definition) = DEFINITIONS.read(|definitions| definitions.get(&key).cloned()) {
+        return definition;
+    }
+    let definition = build();
+    DEFINITIONS.update(|definitions| {
+        definitions.insert(key.clone(), definition.clone());
+    });
+    definition
 }
 
 fn spawn_agent_parameters_for(policy: &SpawnPolicy) -> Value {
@@ -979,7 +994,8 @@ struct SubmitResult {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SubmitResult {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
+        memoized(SUBMIT_RESULT_TOOL.to_owned(), || {
+            ToolDefinition::function(
             SUBMIT_RESULT_TOOL,
             "Submits the current child subagent turn's final JSON output. Supply only output matching the task schema. After an accepted receipt, send a brief final assistant message with no further tool calls; do not finish with an empty response. If superseded, incorporate pending instructions and submit the updated result. Invalid values can be corrected and retried.",
             schema(r##"{
@@ -1011,6 +1027,7 @@ impl Tool for SubmitResult {
             "required": ["accepted", "status"],
             "additionalProperties": false
         }"##))
+        })
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
@@ -1050,12 +1067,13 @@ struct SendAgentMessage {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SendAgentMessage {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            SEND_AGENT_MESSAGE_TOOL,
-            "Sends a bounded directed message to any other agent in the same task tree. Deferred messages start an idle agent or queue behind its active turn. If a send is queued, do not wait for it inside the current turn; finish the turn so queued messages can be delivered. Urgent messages steer a running agent at its next safe model boundary. Delegate messages replace the recipient's assigned task, retain its output schema, and require management authority.",
-            {
-                let mut parameters = schema(
-                    r##"{
+        memoized(SEND_AGENT_MESSAGE_TOOL.to_owned(), || {
+            ToolDefinition::function(
+                SEND_AGENT_MESSAGE_TOOL,
+                "Sends a bounded directed message to any other agent in the same task tree. Deferred messages start an idle agent or queue behind its active turn. If a send is queued, do not wait for it inside the current turn; finish the turn so queued messages can be delivered. Urgent messages steer a running agent at its next safe model boundary. Delegate messages replace the recipient's assigned task, retain its output schema, and require management authority.",
+                {
+                    let mut parameters = schema(
+                        r##"{
                 "type": "object",
                 "properties": {
                     "agent_id": {
@@ -1089,11 +1107,12 @@ impl Tool for SendAgentMessage {
                 "required": ["agent_id", "message"],
                 "additionalProperties": false
             }"##,
-                );
-                parameters["properties"]["message"]["maxLength"] = MAX_MESSAGE_BYTES.into();
-                parameters
-            },
-        )
+                    );
+                    parameters["properties"]["message"]["maxLength"] = MAX_MESSAGE_BYTES.into();
+                    parameters
+                },
+            )
+        })
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
@@ -1151,11 +1170,12 @@ struct ListAgents {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
-        ToolDefinition::function(
-            LIST_AGENTS_TOOL,
-            "Lists agents in the same task tree in agent_id order. Pending, running, and recoverable interrupted agents are returned by default. Set include_completed to retrieve terminal statuses and completed results in status.output. After reuse or closure, last_output retains the latest completed result. In a large tree, page with limit: the result's next_after_agent_id, present while more agents remain, is the after_agent_id of the next page.",
-            schema(
-                r##"{
+        memoized(LIST_AGENTS_TOOL.to_owned(), || {
+            ToolDefinition::function(
+                LIST_AGENTS_TOOL,
+                "Lists agents in the same task tree in agent_id order. Pending, running, and recoverable interrupted agents are returned by default. Set include_completed to retrieve terminal statuses and completed results in status.output. After reuse or closure, last_output retains the latest completed result. In a large tree, page with limit: the result's next_after_agent_id, present while more agents remain, is the after_agent_id of the next page.",
+                schema(
+                    r##"{
                 "type": "object",
                 "properties": {
                     "include_completed": {
@@ -1181,8 +1201,9 @@ impl Tool for ListAgents {
                 },
                 "additionalProperties": false
             }"##,
-            ),
-        )
+                ),
+            )
+        })
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
@@ -1230,15 +1251,20 @@ struct WaitAgent {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for WaitAgent {
     fn definition(&self) -> ToolDefinition {
-        let mut description = "Waits until any requested subagent reaches a terminal status and returns a snapshot of every requested agent. The result includes pending, running, and closing agents; consumers must preserve those nonterminal agents and act only on completed, failed, interrupted, or closed entries. Each entry's status is an object; read its terminal state from status.state. Only results this caller has not yet received end the wait: already-reported terminal agents do not, so waiting again with the same IDs blocks for the next result. When every requested agent is terminal and already reported, the snapshot returns immediately; repeating that identical call errors because nothing is left to wait for. Use one call with multiple IDs instead of polling the workspace. Tasks are abbreviated. A completed entry omits status.output when this caller already received that result from an earlier wait_agent call or a completion notice; list_agents with include_completed=true returns it again.".to_owned();
-        if self
+        let continues = self
             .registry
             .upgrade()
-            .is_some_and(|registry| registry.continues_root())
-        {
-            description.push_str(" Use wait_agent only while other work still needs this turn to stay alive. When the root agent has no other work and is only waiting on running direct children, end the turn instead of blocking on them: the runtime continues the root when any direct child completes, fails, or is interrupted. Subagents are not continued by their children, so a subagent keeps its turn alive until it can submit its result.");
-        }
-        ToolDefinition::function(
+            .is_some_and(|registry| registry.continues_root());
+        memoized(format!("{WAIT_AGENT_TOOL} {continues}"), || {
+            let mut description = "Waits until any requested subagent reaches a terminal status and returns a snapshot of every requested agent. The result includes pending, running, and closing agents; consumers must preserve those nonterminal agents and act only on completed, failed, interrupted, or closed entries. Each entry's status is an object; read its terminal state from status.state. Only results this caller has not yet received end the wait: already-reported terminal agents do not, so waiting again with the same IDs blocks for the next result. When every requested agent is terminal and already reported, the snapshot returns immediately; repeating that identical call errors because nothing is left to wait for. Use one call with multiple IDs instead of polling the workspace. Tasks are abbreviated. A completed entry omits status.output when this caller already received that result from an earlier wait_agent call or a completion notice; list_agents with include_completed=true returns it again.".to_owned();
+            if self
+                .registry
+                .upgrade()
+                .is_some_and(|registry| registry.continues_root())
+            {
+                description.push_str(" Use wait_agent only while other work still needs this turn to stay alive. When the root agent has no other work and is only waiting on running direct children, end the turn instead of blocking on them: the runtime continues the root when any direct child completes, fails, or is interrupted. Subagents are not continued by their children, so a subagent keeps its turn alive until it can submit its result.");
+            }
+            ToolDefinition::function(
             WAIT_AGENT_TOOL,
             description,
             schema(r##"{
@@ -1261,6 +1287,7 @@ impl Tool for WaitAgent {
             }"##),
         )
         .with_output_schema(WAIT_AGENT_OUTPUT_SCHEMA.clone())
+        })
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
@@ -1318,19 +1345,20 @@ impl ChangeAgentLifecycle {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ChangeAgentLifecycle {
     fn definition(&self) -> ToolDefinition {
-        let description = match self.operation {
-            LifecycleOperation::Interrupt => {
-                "Interrupts an agent's active turn and every active descendant, waits for their model and tool resources to stop, and keeps the sessions reusable within the running parent runtime."
-            }
-            LifecycleOperation::Close => {
-                "Closes an agent and its entire descendant subtree, waiting for active model and tool resources to stop before returning. Closed agents remain inspectable within the running parent runtime but are not reusable."
-            }
-        };
-        ToolDefinition::function(
-            self.tool_name(),
-            description,
-            schema(
-                r##"{
+        memoized(self.tool_name().to_owned(), || {
+            let description = match self.operation {
+                LifecycleOperation::Interrupt => {
+                    "Interrupts an agent's active turn and every active descendant, waits for their model and tool resources to stop, and keeps the sessions reusable within the running parent runtime."
+                }
+                LifecycleOperation::Close => {
+                    "Closes an agent and its entire descendant subtree, waiting for active model and tool resources to stop before returning. Closed agents remain inspectable within the running parent runtime but are not reusable."
+                }
+            };
+            ToolDefinition::function(
+                self.tool_name(),
+                description,
+                schema(
+                    r##"{
                 "type": "object",
                 "properties": {
                     "agent_id": {
@@ -1342,8 +1370,9 @@ impl Tool for ChangeAgentLifecycle {
                 "required": ["agent_id"],
                 "additionalProperties": false
             }"##,
-            ),
-        )
+                ),
+            )
+        })
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {

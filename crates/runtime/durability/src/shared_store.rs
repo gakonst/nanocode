@@ -101,7 +101,7 @@ struct StoreRequest {
 
 #[derive(Clone)]
 pub struct SharedStore {
-    commands: mpsc::Sender<StoreRequest>,
+    commands: mpsc::UnboundedSender<StoreRequest>,
     batches_companion_acquisition: bool,
     supports_events: bool,
     supports_summaries: bool,
@@ -109,7 +109,7 @@ pub struct SharedStore {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct WeakSharedStore(mpsc::WeakSender<StoreRequest>);
+pub(crate) struct WeakSharedStore(mpsc::WeakUnboundedSender<StoreRequest>);
 
 impl WeakSharedStore {
     pub(crate) fn is(&self, store: &SharedStore) -> bool {
@@ -138,7 +138,7 @@ impl SharedStore {
         let batches_companion_acquisition = false;
         let supports_events = store.supports_events();
         let supports_summaries = store.supports_summaries();
-        let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        let (commands, receiver) = mpsc::unbounded_channel();
         if store.concurrent_handle().is_some() {
             spawn_driver(drive_concurrently(store, receiver))?;
         } else {
@@ -154,12 +154,15 @@ impl SharedStore {
     }
 }
 
-async fn drive_grouped<S: StateStore>(mut store: S, mut receiver: mpsc::Receiver<StoreRequest>) {
+async fn drive_grouped<S: StateStore>(
+    mut store: S,
+    mut receiver: mpsc::UnboundedReceiver<StoreRequest>,
+) {
     let (finished, mut completions) = mpsc::unbounded_channel();
     let mut in_flight = 0_usize;
-    let mut next = None;
+    let mut queued = std::collections::VecDeque::new();
     loop {
-        let request = match next.take() {
+        let request = match queued.pop_front() {
             Some(request) => request,
             None => tokio::select! {
                 biased;
@@ -194,26 +197,41 @@ async fn drive_grouped<S: StateStore>(mut store: S, mut receiver: mpsc::Receiver
                 continue;
             }
         };
+        let mut states = std::collections::HashSet::from([first.commit.state_id.clone()]);
         let mut group = vec![first];
-        while let Ok(request) = receiver.try_recv() {
+        let mut carried = std::collections::VecDeque::new();
+        loop {
+            let request = match queued.pop_front() {
+                Some(request) => request,
+                None => match receiver.try_recv() {
+                    Ok(request) => request,
+                    Err(_) => break,
+                },
+            };
             match Grouped::from_request(request) {
-                Ok(grouped)
-                    if group
-                        .iter()
-                        .all(|other| other.commit.state_id != grouped.commit.state_id) =>
-                {
+                Ok(grouped) if states.insert(grouped.commit.state_id.clone()) => {
                     group.push(grouped);
                 }
-                Ok(grouped) => {
-                    next = Some(grouped.into_request());
-                    break;
-                }
+                Ok(grouped) => carried.push_back(grouped.into_request()),
                 Err(request) => {
-                    next = Some(request);
+                    if !matches!(request.command, Command::Flush { .. })
+                        && let Some(mut handle) = store.pipeline_handle()
+                    {
+                        in_flight += 1;
+                        let completion = Completion(finished.clone());
+                        spawn_operation(async move {
+                            run(&mut *handle, request).await;
+                            drop(completion);
+                        });
+                        continue;
+                    }
+                    carried.push_back(request);
                     break;
                 }
             }
         }
+        carried.append(&mut queued);
+        queued = carried;
         match group.pop() {
             Some(single) if group.is_empty() => {
                 run(&mut store, single.into_request()).await;
@@ -237,7 +255,7 @@ impl Drop for Completion {
 
 async fn drive_concurrently<S: StateStore>(
     mut store: S,
-    mut receiver: mpsc::Receiver<StoreRequest>,
+    mut receiver: mpsc::UnboundedReceiver<StoreRequest>,
 ) {
     let (finished, mut completions) = mpsc::unbounded_channel();
     let mut in_flight = 0_usize;
@@ -582,7 +600,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -633,7 +650,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -665,7 +681,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -702,7 +717,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -732,7 +746,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -761,7 +774,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -790,7 +802,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -827,7 +838,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -854,7 +864,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -881,7 +890,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -905,7 +913,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -932,7 +939,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -956,7 +962,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })
@@ -980,7 +985,6 @@ impl StateStore for SharedStore {
                     span,
                     queued: Instant::now(),
                 })
-                .await
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
         })

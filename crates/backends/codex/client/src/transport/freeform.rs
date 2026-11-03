@@ -134,8 +134,13 @@ struct StreamedCall {
     output_index: Option<u64>,
     call_id: Value,
     arguments: String,
-    cursor: Option<usize>,
-    closed: bool,
+    input: InputScan,
+}
+
+enum InputScan {
+    Seeking,
+    Reading(usize),
+    Closed,
 }
 
 impl FreeformCalls {
@@ -196,8 +201,7 @@ impl FreeformCalls {
                     output_index,
                     call_id: item.get("call_id").cloned().unwrap_or(Value::Null),
                     arguments: String::new(),
-                    cursor: None,
-                    closed: false,
+                    input: InputScan::Seeking,
                 };
                 let input = call.push(
                     item.get("arguments")
@@ -297,20 +301,19 @@ impl StreamedCall {
     fn push(&mut self, fragment: &str) -> String {
         self.arguments.push_str(fragment);
         let mut decoded = String::new();
-        if self.closed {
-            return decoded;
-        }
-        if self.cursor.is_none() {
-            self.cursor = input_start(&self.arguments);
-        }
-        let Some(mut at) = self.cursor else {
-            return decoded;
+        let mut at = match self.input {
+            InputScan::Closed => return decoded,
+            InputScan::Reading(at) => at,
+            InputScan::Seeking => match input_start(&self.arguments) {
+                Some(at) => at,
+                None => return decoded,
+            },
         };
         while let Some(character) = self.arguments[at..].chars().next() {
             match character {
                 '"' => {
-                    self.closed = true;
-                    break;
+                    self.input = InputScan::Closed;
+                    return decoded;
                 }
                 '\\' => {
                     let Some((text, length)) = escape(&self.arguments[at..]) else {
@@ -325,7 +328,7 @@ impl StreamedCall {
                 }
             }
         }
-        self.cursor = Some(at);
+        self.input = InputScan::Reading(at);
         decoded
     }
 }

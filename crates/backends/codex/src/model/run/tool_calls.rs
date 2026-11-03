@@ -57,6 +57,16 @@ pub(super) struct CompletedToolCall {
     pub(super) response_items: Vec<ResponseItem>,
 }
 
+enum ToolStep {
+    Run {
+        recover: bool,
+    },
+    Recorded {
+        output: CompletedToolCall,
+        persist: bool,
+    },
+}
+
 #[derive(Deserialize)]
 struct CompletedToolCallRecord {
     cell: Option<nanocode_code_mode::code_mode::CodeModeCell>,
@@ -765,68 +775,76 @@ impl ModelRun {
                 async move {
                     let started_at = active.started_at;
                     let step_id = format!("tool-{call_index}-{}", call.call_id);
-                    let mut interrupted = false;
-                    let mut recover = false;
-                    let recovered = if let Some(steps) = &execution_steps {
-                        match steps
+                    let step = match &execution_steps {
+                        Some(steps) => match steps
                             .begin::<_, CompletedToolCall>(&step_id, "tool_call", &call)
                             .await?
                         {
-                            crate::agent::ExecutionStep::Execute => None,
-                            crate::agent::ExecutionStep::Interrupted => {
-                                interrupted = true;
-                                if !matches!(call.kind, CodeCallKind::ToolSearch) {
-                                    recover = true;
-                                    None
-                                } else {
-                                    Some(Self::interrupted_tool_call(
-                                        active.kind,
-                                        &active.call_id,
-                                        &active.name,
-                                    ))
-                                }
+                            crate::agent::ExecutionStep::Execute => {
+                                ToolStep::Run { recover: false }
                             }
-                            crate::agent::ExecutionStep::Replay(output) => Some(output),
-                        }
-                    } else {
-                        None
+                            crate::agent::ExecutionStep::Interrupted
+                                if !matches!(call.kind, CodeCallKind::ToolSearch) =>
+                            {
+                                ToolStep::Run { recover: true }
+                            }
+                            crate::agent::ExecutionStep::Interrupted => ToolStep::Recorded {
+                                output: Self::interrupted_tool_call(
+                                    active.kind,
+                                    &active.call_id,
+                                    &active.name,
+                                ),
+                                persist: true,
+                            },
+                            crate::agent::ExecutionStep::Replay(output) => ToolStep::Recorded {
+                                output,
+                                persist: false,
+                            },
+                        },
+                        None => ToolStep::Run { recover: false },
                     };
-                    let (result, persist_result) = if let Some(mut completed) = recovered {
-                        prepare_output_images(&mut completed.output).await;
-                        nanocode_code_mode::image::prepare_history_images(
-                            &mut completed.response_items,
-                        );
-                        (Ok(completed), interrupted)
-                    } else {
-                        let dispatch = async {
-                            active
-                                .execution_started_at
-                                .store(Some(Arc::new(Instant::now())));
-                            Self::execute_model_tool_call(
-                                tools,
-                                &images,
-                                &events,
-                                &tool_call_indices,
-                                call_index,
-                                call,
-                                history,
-                                &session_id,
-                                &turn_id,
-                                model,
-                                host_context.as_deref(),
-                                instruction_revision,
-                                started_at,
-                                &active.progress,
-                                &active.span,
-                                recover,
-                            )
-                            .await
-                        };
-                        let result = match AssertUnwindSafe(dispatch).catch_unwind().await {
-                            Ok(result) => result,
-                            Err(payload) => Ok(Self::panicked_tool_call(&active, payload)),
-                        };
-                        (result, true)
+                    let (result, persist_result) = match step {
+                        ToolStep::Recorded {
+                            output: mut completed,
+                            persist,
+                        } => {
+                            prepare_output_images(&mut completed.output).await;
+                            nanocode_code_mode::image::prepare_history_images(
+                                &mut completed.response_items,
+                            );
+                            (Ok(completed), persist)
+                        }
+                        ToolStep::Run { recover } => {
+                            let dispatch = async {
+                                active
+                                    .execution_started_at
+                                    .store(Some(Arc::new(Instant::now())));
+                                Self::execute_model_tool_call(
+                                    tools,
+                                    &images,
+                                    &events,
+                                    &tool_call_indices,
+                                    call_index,
+                                    call,
+                                    history,
+                                    &session_id,
+                                    &turn_id,
+                                    model,
+                                    host_context.as_deref(),
+                                    instruction_revision,
+                                    started_at,
+                                    &active.progress,
+                                    &active.span,
+                                    recover,
+                                )
+                                .await
+                            };
+                            let result = match AssertUnwindSafe(dispatch).catch_unwind().await {
+                                Ok(result) => result,
+                                Err(payload) => Ok(Self::panicked_tool_call(&active, payload)),
+                            };
+                            (result, true)
+                        }
                     };
                     match result {
                         Ok(mut completed) => {

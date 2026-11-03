@@ -222,24 +222,30 @@ async fn drive_grouped<S: StateStore>(
         let mut group = Vec::new();
         let mut states = std::collections::HashSet::new();
         let mut rest = std::collections::VecDeque::new();
-        let mut barrier = false;
-        let mut ordered = groups == 0;
+        let mut admits = if groups == 0 {
+            Admits::Writes
+        } else {
+            Admits::Reads
+        };
         while let Some(request) = queued.pop_front() {
-            if barrier {
-                rest.push_back(request);
-                continue;
-            }
-            if !ordered && is_write(&request.command) {
-                rest.push_back(request);
-                continue;
+            match admits {
+                Admits::Nothing => {
+                    rest.push_back(request);
+                    continue;
+                }
+                Admits::Reads if is_write(&request.command) => {
+                    rest.push_back(request);
+                    continue;
+                }
+                Admits::Writes | Admits::Reads => {}
             }
             match Grouped::from_request(request) {
                 Ok(grouped) => {
                     let state = grouped.commit.state_id.clone();
-                    if ordered && states.insert(state) {
+                    if states.insert(state) {
                         group.push(grouped);
                     } else {
-                        ordered = false;
+                        admits = Admits::Reads;
                         rest.push_back(grouped.into_request());
                     }
                 }
@@ -257,7 +263,7 @@ async fn drive_grouped<S: StateStore>(
                         run(&mut store, request).await;
                     } else {
                         rest.push_back(request);
-                        barrier = true;
+                        admits = Admits::Nothing;
                     }
                 }
             }
@@ -300,6 +306,12 @@ async fn drive_grouped<S: StateStore>(
             },
         }
     }
+}
+
+enum Admits {
+    Writes,
+    Reads,
+    Nothing,
 }
 
 const fn is_write(command: &Command) -> bool {

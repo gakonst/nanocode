@@ -878,7 +878,6 @@ impl ModelRun {
             model_call_index,
         } = steering;
 
-        let mut can_drain_steers = false;
         let next_call = self.stats.model_calls + 1;
         let mut pending_steers = retained_steers
             .into_iter()
@@ -895,7 +894,7 @@ impl ModelRun {
         let mut reprompted = false;
         loop {
             let call_index = self.stats.model_calls + 1;
-            if can_drain_steers {
+            if !first_batch {
                 let delivered = self.stats.steers;
                 model_call_index.store(call_index, std::sync::atomic::Ordering::Release);
                 pending_steers.extend(steers.drain());
@@ -969,7 +968,6 @@ impl ModelRun {
                 previous_history.iter(),
                 session.conversation.managed.history(),
             );
-            can_drain_steers = true;
 
             if code_calls.is_empty() {
                 if end_turn == Some(false) {

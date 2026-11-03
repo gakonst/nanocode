@@ -1065,8 +1065,7 @@ async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> 
         weak: launch.weak.clone(),
         notes: launch.notes.clone(),
         live: 0,
-        retiring: false,
-        alive: true,
+        life: Life::Serving,
         exit: None,
     };
     let (kill, killed) = oneshot::channel::<()>();
@@ -1088,7 +1087,7 @@ async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> 
     if owner.exit.is_none() {
         let _ = watcher.await;
     }
-    owner.alive = false;
+    owner.life = Life::Stopped;
     // All the server wrote, such as the start of a command it forked just
     // before it stopped.
     let _ = owner.read(&mut events, &exits, true);
@@ -1483,10 +1482,15 @@ struct Owner {
     weak: mpsc::WeakUnboundedSender<Message>,
     notes: mpsc::WeakUnboundedSender<Note>,
     live: usize,
-    retiring: bool,
-    alive: bool,
+    life: Life,
     /// How the server process ended, once the watcher said.
     exit: Option<String>,
+}
+
+enum Life {
+    Serving,
+    Retiring,
+    Stopped,
 }
 
 impl Owner {
@@ -1499,7 +1503,7 @@ impl Owner {
     ) -> io::Result<Option<oneshot::Sender<()>>> {
         let mut exited = Vec::new();
         loop {
-            if self.retiring && self.live == 0 {
+            if matches!(self.life, Life::Retiring) && self.live == 0 {
                 return Ok(None);
             }
             let event = tokio::select! {
@@ -1517,7 +1521,7 @@ impl Owner {
                     }
                     self.slots.settle(slot);
                 }
-                Event::Message(Some(Message::Retire)) => self.retiring = true,
+                Event::Message(Some(Message::Retire)) => self.life = Life::Retiring,
                 Event::Message(Some(Message::Stop(reply))) => return Ok(Some(reply)),
                 Event::Message(None) => return Ok(None),
                 Event::Readable(ready) => {
@@ -1650,7 +1654,7 @@ impl Owner {
         let release = self
             .weak
             .upgrade()
-            .filter(|_| !self.retiring && self.live < MAX_JOBS);
+            .filter(|_| matches!(self.life, Life::Serving) && self.live < MAX_JOBS);
         let content = release.as_ref().and_then(|_| prefix(&self.ready, &job));
         let started = match (release, content) {
             (Some(release), Some((text, split))) => self.prepare(job, &text, split, release),
@@ -1779,7 +1783,7 @@ impl Owner {
                 self.live = self.live.saturating_sub(1);
                 self.slots.settle(slot);
             }
-            None if self.alive => {
+            None if !matches!(self.life, Life::Stopped) => {
                 busy.stage = Stage::Unreported;
                 self.outbound
                     .extend_from_slice(format!("w{pid}\n").as_bytes());

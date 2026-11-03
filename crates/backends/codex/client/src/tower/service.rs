@@ -42,8 +42,7 @@ use crate::client::{
 };
 
 struct ConnectionState {
-    socket: Option<ResponsesSocket>,
-    connected_at: Option<Instant>,
+    socket: Option<(ResponsesSocket, Instant)>,
 
     turn_state: Option<String>,
     generation: u32,
@@ -74,7 +73,6 @@ impl ConnectionState {
     const fn new() -> Self {
         Self {
             socket: None,
-            connected_at: None,
             turn_state: None,
             generation: 0,
             next_purpose: ConnectionPurpose::Initial,
@@ -89,7 +87,7 @@ impl ConnectionState {
         let turn_state = self
             .socket
             .as_ref()
-            .and_then(ResponsesSocket::turn_state)
+            .and_then(|(socket, _)| socket.turn_state())
             .map(str::to_owned);
         self.observe_turn_state(turn_state.as_deref());
     }
@@ -103,7 +101,6 @@ impl ConnectionState {
     fn invalidate(&mut self, purpose: ConnectionPurpose) {
         self.capture_turn_state();
         self.socket = None;
-        self.connected_at = None;
         self.next_purpose = purpose;
     }
 
@@ -112,11 +109,8 @@ impl ConnectionState {
     }
 
     fn socket_needs_renewal(&self) -> bool {
-        self.socket.as_ref().is_some_and(|socket| {
-            socket.is_closed()
-                || self.connected_at.is_some_and(|connected_at| {
-                    connected_at.elapsed() >= RESPONSES_WEBSOCKET_LIFETIME
-                })
+        self.socket.as_ref().is_some_and(|(socket, connected_at)| {
+            socket.is_closed() || connected_at.elapsed() >= RESPONSES_WEBSOCKET_LIFETIME
         })
     }
 
@@ -126,7 +120,7 @@ impl ConnectionState {
         }
         self.logical_turn = Some(logical_turn);
         self.turn_state = None;
-        if let Some(socket) = &mut self.socket {
+        if let Some((socket, _)) = &mut self.socket {
             socket.reset_turn_state();
         }
     }
@@ -439,13 +433,17 @@ impl ResponsesService {
         let generation = connection.generation;
         let span = tracing::Span::current();
         let credentials = connection.credentials.clone();
-        let socket = connection.socket.as_mut().ok_or_else(|| {
-            ResponsesServiceError::invalid_attempt_state(
-                "request sent without an installed WebSocket",
-                FailurePhase::Send,
-                generation,
-            )
-        })?;
+        let socket = connection
+            .socket
+            .as_mut()
+            .map(|(socket, _)| socket)
+            .ok_or_else(|| {
+                ResponsesServiceError::invalid_attempt_state(
+                    "request sent without an installed WebSocket",
+                    FailurePhase::Send,
+                    generation,
+                )
+            })?;
         let output = match request.kind {
             ResponsesAttemptKind::Warmup => ResponsesOutput::Warmup(
                 receive_warmup(socket, request, &credentials)
@@ -553,13 +551,17 @@ impl ResponsesService {
                     generation,
                 ));
             }
-            let socket = connection.socket.as_mut().ok_or_else(|| {
-                ResponsesServiceError::invalid_attempt_state(
-                    "connection completed without installing a WebSocket",
-                    FailurePhase::Connect,
-                    generation,
-                )
-            })?;
+            let socket = connection
+                .socket
+                .as_mut()
+                .map(|(socket, _)| socket)
+                .ok_or_else(|| {
+                    ResponsesServiceError::invalid_attempt_state(
+                        "connection completed without installing a WebSocket",
+                        FailurePhase::Connect,
+                        generation,
+                    )
+                })?;
             span.record("replay.mode", request.replay_mode());
             span.record("model.input.item_count", request.input_item_count());
             let send_started_at = Instant::now();
@@ -704,8 +706,7 @@ impl ResponsesService {
                 connection_generation: connection.generation,
             },
         )?;
-        connection.socket = Some(socket);
-        connection.connected_at = Some(connected_at);
+        connection.socket = Some((socket, connected_at));
         Ok(duration_ns)
     }
 

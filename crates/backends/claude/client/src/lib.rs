@@ -1792,31 +1792,26 @@ impl ClaudeClient {
         let response = response.bytes_stream();
         let decode_subscription = self.subscription_compatibility;
         Ok(Box::pin(stream::unfold(
-            SseState::new(response, credentials, events),
-            move |mut state| async move {
-                if state.done {
-                    return None;
-                }
+            Some(SseState::new(response, credentials, events)),
+            move |state| async move {
+                let mut state = state?;
                 loop {
                     let frame = match state.pop_frame() {
                         Ok(frame) => frame,
                         Err(error) => {
-                            state.done = true;
-                            return Some((Err(redact_error(error, &state.credentials)), state));
+                            return Some((Err(redact_error(error, &state.credentials)), None));
                         }
                     };
                     if let Some(frame) = frame {
                         let handled = match state.handled_event(&frame) {
                             Ok(handled) => handled,
                             Err(error) => {
-                                state.done = true;
-                                return Some((Err(redact_error(error, &state.credentials)), state));
+                                return Some((Err(redact_error(error, &state.credentials)), None));
                             }
                         };
                         if let Some(handled) = handled {
                             if let Err(error) = handled.await {
-                                state.done = true;
-                                return Some((Err(ClaudeError::Transport(error.into())), state));
+                                return Some((Err(ClaudeError::Transport(error.into())), None));
                             }
                             continue;
                         }
@@ -1831,12 +1826,10 @@ impl ClaudeClient {
                         match event {
                             Ok(StreamEvent::Other | StreamEvent::Ping) => continue,
                             Ok(StreamEvent::MessageStop) => {
-                                state.done = true;
-                                return Some((Ok(StreamEvent::MessageStop), state));
+                                return Some((Ok(StreamEvent::MessageStop), None));
                             }
                             Err(error) => {
-                                state.done = true;
-                                return Some((Err(redact_error(error, &state.credentials)), state));
+                                return Some((Err(redact_error(error, &state.credentials)), None));
                             }
                             Ok(mut event) => {
                                 if decode_subscription {
@@ -1855,7 +1848,7 @@ impl ClaudeClient {
                                         _ => {}
                                     }
                                 }
-                                return Some((Ok(event), state));
+                                return Some((Ok(event), Some(state)));
                             }
                         }
                     }
@@ -1864,12 +1857,10 @@ impl ClaudeClient {
                             state.push(&chunk);
                         }
                         None => {
-                            state.done = true;
-                            return Some((Err(ClaudeError::IncompleteStream), state));
+                            return Some((Err(ClaudeError::IncompleteStream), None));
                         }
                         Some(Err(error)) => {
-                            state.done = true;
-                            return Some((Err(ClaudeError::Transport(error)), state));
+                            return Some((Err(ClaudeError::Transport(error)), None));
                         }
                     }
                 }
@@ -2121,9 +2112,7 @@ struct SseState {
     response: ResponseBytes,
     events: Option<Box<dyn transport::layer::EventHook>>,
     bytes: Vec<u8>,
-    data: Option<std::ops::Range<usize>>,
-    joined: Option<String>,
-    done: bool,
+    data: Option<FrameData>,
     frame_bytes: usize,
     frame_start: usize,
     event_name: Option<std::ops::Range<usize>>,
@@ -2155,8 +2144,6 @@ impl SseState {
             events,
             bytes: Vec::new(),
             data: None,
-            joined: None,
-            done: false,
             frame_bytes: 0,
             frame_start: 0,
             event_name: None,
@@ -2249,10 +2236,8 @@ impl SseState {
                 self.frame_bytes = 0;
                 self.frame_start = self.cursor;
                 let event_name = self.event_name.take();
-                let data = match (self.data.take(), self.joined.take()) {
-                    (_, Some(joined)) => FrameData::Joined(joined),
-                    (Some(range), None) => FrameData::Line(range),
-                    (None, None) => continue,
+                let Some(data) = self.data.take() else {
+                    continue;
                 };
                 return Ok(Some(Frame { event_name, data }));
             }
@@ -2270,23 +2255,24 @@ impl SseState {
             };
             match field {
                 b"event" => self.event_name = (!value.is_empty()).then_some(value),
-                b"data" => match self.data.clone() {
-                    None => self.data = Some(value),
-                    Some(first) => {
-                        let text = |range: std::ops::Range<usize>| {
-                            std::str::from_utf8(&self.bytes[range])
-                                .map_err(|_| ClaudeError::Protocol("invalid UTF-8 SSE line".into()))
-                        };
-                        let value = text(value)?;
-                        match &mut self.joined {
-                            Some(joined) => {
-                                joined.push('\n');
-                                joined.push_str(value);
-                            }
-                            None => self.joined = Some(format!("{}\n{value}", text(first)?)),
+                b"data" => {
+                    let text = |range: std::ops::Range<usize>| {
+                        std::str::from_utf8(&self.bytes[range])
+                            .map_err(|_| ClaudeError::Protocol("invalid UTF-8 SSE line".into()))
+                    };
+                    match &mut self.data {
+                        None => self.data = Some(FrameData::Line(value)),
+                        Some(FrameData::Line(first)) => {
+                            let joined = format!("{}\n{}", text(first.clone())?, text(value)?);
+                            self.data = Some(FrameData::Joined(joined));
+                        }
+                        Some(FrameData::Joined(joined)) => {
+                            let value = text(value)?;
+                            joined.push('\n');
+                            joined.push_str(value);
                         }
                     }
-                },
+                }
                 _ => {}
             }
         }
@@ -2300,7 +2286,11 @@ impl SseState {
             self.scan_start -= shift;
             self.cursor -= shift;
             self.frame_start = 0;
-            for range in [&mut self.data, &mut self.event_name].into_iter().flatten() {
+            let line = match &mut self.data {
+                Some(FrameData::Line(range)) => Some(range),
+                Some(FrameData::Joined(_)) | None => None,
+            };
+            for range in [line, self.event_name.as_mut()].into_iter().flatten() {
                 *range = range.start - shift..range.end - shift;
             }
         }

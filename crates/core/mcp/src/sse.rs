@@ -39,10 +39,13 @@ pub struct Parser {
     line: Vec<u8>,
     retained_size: usize,
     previous_was_cr: bool,
-    started: bool,
-    bom_matched: usize,
-    current: Event,
-    has_fields: bool,
+    start: Start,
+    current: Option<Event>,
+}
+
+enum Start {
+    Bom(usize),
+    Body,
 }
 
 impl Parser {
@@ -53,30 +56,28 @@ impl Parser {
             line: Vec::new(),
             retained_size: 0,
             previous_was_cr: false,
-            started: false,
-            bom_matched: 0,
-            current: Event {
-                event: None,
-                data: None,
-                id: None,
-                retry: None,
-            },
-            has_fields: false,
+            start: Start::Bom(0),
+            current: None,
         }
     }
 
     pub fn feed(&mut self, chunk: &[u8], events: &mut Vec<Event>) -> Result<(), EventTooLarge> {
         let mut offset = 0;
-        while offset < chunk.len() && !self.started {
+        while offset < chunk.len()
+            && let Start::Bom(matched) = self.start
+        {
             let byte = chunk[offset];
             offset += 1;
-            if byte == BOM[self.bom_matched] {
-                self.bom_matched += 1;
-                self.started = self.bom_matched == BOM.len();
+            if byte == BOM[matched] {
+                self.start = if matched + 1 == BOM.len() {
+                    Start::Body
+                } else {
+                    Start::Bom(matched + 1)
+                };
                 continue;
             }
-            self.started = true;
-            for &prefix in &BOM[..self.bom_matched] {
+            self.start = Start::Body;
+            for &prefix in &BOM[..matched] {
                 self.push_byte(prefix, events)?;
             }
             self.push_byte(byte, events)?;
@@ -132,9 +133,9 @@ impl Parser {
     }
 
     pub fn finish(&mut self, events: &mut Vec<Event>) -> Result<(), EventTooLarge> {
-        if !self.started {
-            self.started = true;
-            for &prefix in &BOM[..self.bom_matched] {
+        if let Start::Bom(matched) = self.start {
+            self.start = Start::Body;
+            for &prefix in &BOM[..matched] {
                 self.push_byte(prefix, events)?;
             }
         }
@@ -165,8 +166,8 @@ impl Parser {
     fn process_line(&mut self, line: &[u8], events: &mut Vec<Event>) -> Result<(), EventTooLarge> {
         if line.is_empty() {
             self.retained_size = 0;
-            if std::mem::take(&mut self.has_fields) {
-                events.push(std::mem::take(&mut self.current));
+            if let Some(event) = self.current.take() {
+                events.push(event);
             }
             return Ok(());
         }
@@ -184,28 +185,20 @@ impl Parser {
             None => (line.as_ref(), ""),
         };
         match field {
-            "data" => {
-                self.has_fields = true;
-                match &mut self.current.data {
-                    Some(data) => {
-                        data.push('\n');
-                        data.push_str(value);
-                    }
-                    None => self.current.data = Some(value.to_owned()),
+            "data" => match &mut self.current.get_or_insert_default().data {
+                Some(data) => {
+                    data.push('\n');
+                    data.push_str(value);
                 }
-            }
-            "event" => {
-                self.has_fields = true;
-                self.current.event = Some(value.to_owned());
-            }
+                data @ None => *data = Some(value.to_owned()),
+            },
+            "event" => self.current.get_or_insert_default().event = Some(value.to_owned()),
             "id" if !value.contains('\0') => {
-                self.has_fields = true;
-                self.current.id = Some(value.to_owned());
+                self.current.get_or_insert_default().id = Some(value.to_owned());
             }
             "retry" => {
                 if let Ok(retry) = value.parse::<u64>() {
-                    self.has_fields = true;
-                    self.current.retry = Some(retry);
+                    self.current.get_or_insert_default().retry = Some(retry);
                 }
             }
             _ => {}

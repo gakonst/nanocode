@@ -66,27 +66,31 @@ pub(crate) struct ResponsesHttp {
     gateway: Option<std::sync::Arc<super::ResponsesGateway>>,
 }
 
-pub(crate) struct ResponsesHttpStream {
-    #[cfg(not(target_family = "wasm"))]
-    response: Option<reqwest::Response>,
+pub(crate) enum ResponsesHttpStream {
+    Chat(Box<super::chat::ChatStream>),
+    Sse(SseStream),
+}
 
-    chat: Option<Box<super::chat::ChatStream>>,
+pub(crate) struct SseStream {
+    body: Option<SseBody>,
     #[cfg(not(target_family = "wasm"))]
-    host: Option<Box<dyn HostHttpBody>>,
-    #[cfg(not(target_family = "wasm"))]
-    layered: Option<LayeredBody>,
-    #[cfg(target_family = "wasm")]
-    response: Option<Box<dyn HostHttpBody>>,
+    hook: Option<Hook>,
     decoder: SseDecoder,
-    ended: bool,
     #[cfg(not(target_family = "wasm"))]
     idle: super::idle::IdleTimer,
 }
 
+enum SseBody {
+    #[cfg(not(target_family = "wasm"))]
+    Reqwest(reqwest::Response),
+    #[cfg(not(target_family = "wasm"))]
+    Layered(layer::Body),
+    Host(Box<dyn HostHttpBody>),
+}
+
 #[cfg(not(target_family = "wasm"))]
-struct LayeredBody {
-    body: layer::Body,
-    events: Option<Box<dyn layer::EventHook>>,
+struct Hook {
+    events: Box<dyn layer::EventHook>,
     pending: Option<layer::BoxFuture<'static, Result<(), layer::Error>>>,
 }
 
@@ -241,15 +245,7 @@ impl ResponsesHttp {
                 .map(str::to_owned),
         };
         Ok((
-            ResponsesHttpStream {
-                response: Some(response),
-                chat: None,
-                host: None,
-                layered: None,
-                decoder: SseDecoder::default(),
-                ended: false,
-                idle: super::idle::IdleTimer::default(),
-            },
+            ResponsesHttpStream::Sse(SseStream::new(SseBody::Reqwest(response))),
             metadata,
         ))
     }
@@ -296,19 +292,15 @@ impl ResponsesHttp {
             SseDecoder::default()
         };
         Ok((
-            ResponsesHttpStream {
-                response: None,
-                chat: None,
-                host: None,
-                layered: Some(LayeredBody {
-                    body,
+            ResponsesHttpStream::Sse(SseStream {
+                body: Some(SseBody::Layered(body)),
+                hook: events.map(|events| Hook {
                     events,
                     pending: None,
                 }),
                 decoder,
-                ended: false,
                 idle: super::idle::IdleTimer::default(),
-            },
+            }),
             metadata,
         ))
     }
@@ -336,51 +328,44 @@ fn map_layer_error(error: layer::Error) -> ResponsesError {
 
 impl ResponsesHttpStream {
     pub(crate) fn chat(stream: super::chat::ChatStream) -> Self {
-        Self {
-            response: None,
-            chat: Some(Box::new(stream)),
-            #[cfg(not(target_family = "wasm"))]
-            host: None,
-            #[cfg(not(target_family = "wasm"))]
-            layered: None,
-            decoder: SseDecoder::default(),
-            ended: true,
-            #[cfg(not(target_family = "wasm"))]
-            idle: super::idle::IdleTimer::default(),
-        }
+        Self::Chat(Box::new(stream))
     }
 
     fn host(body: Box<dyn HostHttpBody>) -> Self {
-        #[cfg(not(target_family = "wasm"))]
-        return Self {
-            response: None,
-            chat: None,
-            host: Some(body),
-            layered: None,
-            decoder: SseDecoder::default(),
-            ended: false,
-            idle: super::idle::IdleTimer::default(),
-        };
-        #[cfg(target_family = "wasm")]
-        Self {
-            response: Some(body),
-            chat: None,
-            decoder: SseDecoder::default(),
-            ended: false,
-        }
+        Self::Sse(SseStream::new(SseBody::Host(body)))
     }
 
     pub(crate) async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
-        if let Some(chat) = self.chat.as_mut() {
-            return chat.next_text().await;
+        match self {
+            Self::Chat(chat) => chat.next_text().await,
+            Self::Sse(sse) => sse.next_text().await,
         }
+    }
+
+    pub(crate) fn try_next_text(&mut self) -> Result<Option<ReceivedText>, ResponsesError> {
+        match self {
+            Self::Chat(chat) => Ok(chat.try_next_text()),
+            Self::Sse(sse) => sse.buffered_text(),
+        }
+    }
+}
+
+impl SseStream {
+    fn new(body: SseBody) -> Self {
+        Self {
+            body: Some(body),
+            #[cfg(not(target_family = "wasm"))]
+            hook: None,
+            decoder: SseDecoder::default(),
+            #[cfg(not(target_family = "wasm"))]
+            idle: super::idle::IdleTimer::default(),
+        }
+    }
+
+    async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
         loop {
             #[cfg(not(target_family = "wasm"))]
-            if let Some(pending) = self
-                .layered
-                .as_mut()
-                .and_then(|layered| layered.pending.take())
-            {
+            if let Some(pending) = self.hook.as_mut().and_then(|hook| hook.pending.take()) {
                 idle_within(&mut self.idle, pending)
                     .await?
                     .map_err(map_layer_error)?;
@@ -390,58 +375,48 @@ impl ResponsesHttpStream {
             }
             #[cfg(not(target_family = "wasm"))]
             if self
-                .layered
+                .hook
                 .as_ref()
-                .is_some_and(|layered| layered.pending.is_some())
+                .is_some_and(|hook| hook.pending.is_some())
             {
                 continue;
             }
-            if self.ended {
+            let Some(body) = self.body.as_mut() else {
                 return Err(ResponsesError::UnexpectedEnd);
-            }
-            #[cfg(not(target_family = "wasm"))]
-            let pushed = if let Some(host) = self.host.as_mut() {
-                idle_within(&mut self.idle, host.next())
-                    .await?
-                    .map_err(map_host_error)?
-                    .map(|chunk| self.decoder.push(&chunk))
-            } else if let Some(layered) = self.layered.as_mut() {
-                use futures_util::StreamExt;
-
-                idle_within(&mut self.idle, layered.body.next())
-                    .await?
-                    .transpose()
-                    .map_err(map_layer_error)?
-                    .map(|chunk| self.decoder.push(&chunk))
-            } else if let Some(response) = self.response.as_mut() {
-                idle_within(&mut self.idle, response.chunk())
+            };
+            let pushed = match body {
+                #[cfg(not(target_family = "wasm"))]
+                SseBody::Reqwest(response) => idle_within(&mut self.idle, response.chunk())
                     .await?
                     .map_err(map_http_error)?
-                    .map(|chunk| self.decoder.push(&chunk))
-            } else {
-                None
-            };
-            #[cfg(target_family = "wasm")]
-            let pushed = match self.response.as_mut() {
-                Some(response) => response
+                    .map(|chunk| self.decoder.push(&chunk)),
+                #[cfg(not(target_family = "wasm"))]
+                SseBody::Layered(body) => {
+                    use futures_util::StreamExt;
+
+                    idle_within(&mut self.idle, body.next())
+                        .await?
+                        .transpose()
+                        .map_err(map_layer_error)?
+                        .map(|chunk| self.decoder.push(&chunk))
+                }
+                #[cfg(not(target_family = "wasm"))]
+                SseBody::Host(body) => idle_within(&mut self.idle, body.next())
+                    .await?
+                    .map_err(map_host_error)?
+                    .map(|chunk| self.decoder.push(&chunk)),
+                #[cfg(target_family = "wasm")]
+                SseBody::Host(body) => body
                     .next()
                     .await
                     .map_err(map_host_error)?
                     .map(|chunk| self.decoder.push(&chunk)),
-                None => None,
             };
             if pushed.is_none() {
-                self.ended = true;
+                self.body = None;
                 self.decoder.finish();
             }
         }
-    }
-
-    pub(crate) fn try_next_text(&mut self) -> Result<Option<ReceivedText>, ResponsesError> {
-        if let Some(chat) = self.chat.as_mut() {
-            return Ok(chat.try_next_text());
-        }
-        self.buffered_text()
     }
 
     fn buffered_text(&mut self) -> Result<Option<ReceivedText>, ResponsesError> {
@@ -449,14 +424,13 @@ impl ResponsesHttpStream {
             return Ok(None);
         };
         #[cfg(not(target_family = "wasm"))]
-        if let Some(layered) = self.layered.as_mut()
-            && let Some(events) = layered.events.as_mut()
-            && let Some(pending) = events.event(layer::Event {
+        if let Some(hook) = self.hook.as_mut()
+            && let Some(pending) = hook.events.event(layer::Event {
                 name: self.decoder.event_name(),
                 data: &text,
             })
         {
-            layered.pending = Some(pending);
+            hook.pending = Some(pending);
             return Ok(None);
         }
         let (received_ns, retry_receipt) = self

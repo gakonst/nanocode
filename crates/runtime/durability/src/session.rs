@@ -505,9 +505,7 @@ struct Driver {
     state_id: Arc<str>,
     state: DurableState,
     terminal_receipt_limit: Option<usize>,
-    owner: Option<OwnerToken>,
-    pending_record: Option<crate::catalog::SessionRecord>,
-    create: bool,
+    ownership: Ownership,
     next_agent_generation: u64,
     active_agent_generation: Option<u64>,
     claimed: HashMap<String, Caller>,
@@ -522,6 +520,26 @@ struct Driver {
     next_event: Option<u64>,
     commands: mpsc::Receiver<CommandRequest>,
     releases: mpsc::UnboundedReceiver<ReleaseSignal>,
+}
+
+enum Ownership {
+    Unacquired(Seed),
+    Owned(OwnerToken),
+}
+
+enum Seed {
+    Existing,
+    Described(crate::catalog::SessionRecord),
+    New(crate::catalog::SessionRecord),
+}
+
+impl Seed {
+    const fn record(&self) -> Option<&crate::catalog::SessionRecord> {
+        match self {
+            Self::Existing => None,
+            Self::Described(record) | Self::New(record) => Some(record),
+        }
+    }
 }
 
 const OWNER_ACTIVE: u8 = 0;
@@ -594,7 +612,7 @@ impl Driver {
     }
 
     async fn handle_command(&mut self, command: Command) {
-        if self.owner.is_none()
+        if matches!(self.ownership, Ownership::Unacquired(_))
             && !matches!(
                 command,
                 Command::AcquireAgent { .. } | Command::CurrentOwner { .. }
@@ -719,9 +737,9 @@ impl Driver {
             }
             Command::Acquire { result } => drop(result.send(Ok(()))),
             Command::CurrentOwner { result } => {
-                let outcome = match &self.owner {
-                    None => Ok(true),
-                    Some(owner) => self
+                let outcome = match &self.ownership {
+                    Ownership::Unacquired(_) => Ok(true),
+                    Ownership::Owned(owner) => self
                         .store
                         .owner(&self.state_id)
                         .await
@@ -1221,8 +1239,11 @@ impl Driver {
         checkpoint: Option<EncodedPayload>,
         journal: Option<crate::child_journal::Seed>,
     ) -> Result<bool> {
-        let record = self.pending_record.clone();
-        let create = self.create && record.is_some();
+        let (record, create) = match &self.ownership {
+            Ownership::Unacquired(Seed::Described(record)) => (Some(record.clone()), false),
+            Ownership::Unacquired(Seed::New(record)) => (Some(record.clone()), true),
+            Ownership::Unacquired(Seed::Existing) | Ownership::Owned(_) => (None, false),
+        };
         if create
             && reduce(self.store.peek(&self.state_id).await?)?
                 .session()
@@ -1292,9 +1313,7 @@ impl Driver {
             self.poisoned = true;
             return Err(error);
         }
-        self.owner = Some(acquired.owner);
-        self.pending_record = None;
-        self.create = false;
+        self.ownership = Ownership::Owned(acquired.owner);
         self.state = state;
         self.next_event = None;
         Ok(committed.load(Ordering::Acquire))
@@ -2057,12 +2076,13 @@ impl Driver {
         } else {
             SummaryUpdate::Unchanged
         };
-        let Some(owner) = self.owner.clone() else {
+        let Ownership::Owned(owner) = &self.ownership else {
             return Err(Error::InvalidState(format!(
                 "state {} was persisted before its owner was acquired",
                 self.state_id
             )));
         };
+        let owner = owner.clone();
         let mut retried = false;
         let committed = loop {
             let error = match self
@@ -2481,26 +2501,30 @@ impl DurableSession {
         terminal_receipt_limit: Option<usize>,
         record: Option<crate::SessionRecord>,
     ) -> Result<Self> {
-        Self::prepare(store, state_id, terminal_receipt_limit, record, false)
+        Self::prepare(
+            store,
+            state_id,
+            terminal_receipt_limit,
+            record.map_or(Seed::Existing, Seed::Described),
+        )
     }
 
     pub(crate) fn prepare_new(store: SharedStore, record: crate::SessionRecord) -> Result<Self> {
-        Self::prepare(store, record.session_id.clone(), None, Some(record), true)
+        Self::prepare(store, record.session_id.clone(), None, Seed::New(record))
     }
 
     fn prepare(
         store: SharedStore,
         state_id: String,
         terminal_receipt_limit: Option<usize>,
-        record: Option<crate::SessionRecord>,
-        create: bool,
+        seed: Seed,
     ) -> Result<Self> {
         if state_id.trim().is_empty() {
             return Err(Error::InvalidState(
                 "state identity must not be empty".to_owned(),
             ));
         }
-        if let Some(record) = &record
+        if let Some(record) = seed.record()
             && record.session_id != state_id
         {
             return Err(Error::InvalidState(
@@ -2508,7 +2532,7 @@ impl DurableSession {
             ));
         }
         let terminal_receipt_limit = terminal_receipt_limit.or(store.terminal_receipt_limit);
-        let described = record.clone();
+        let described = seed.record().cloned();
         let state_id = Arc::<str>::from(state_id);
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (releases, release_receiver) = mpsc::unbounded_channel();
@@ -2517,9 +2541,7 @@ impl DurableSession {
             state_id: Arc::clone(&state_id),
             state: DurableState::default(),
             terminal_receipt_limit,
-            owner: None,
-            pending_record: record,
-            create,
+            ownership: Ownership::Unacquired(seed),
             next_agent_generation: 0,
             active_agent_generation: None,
             claimed: HashMap::new(),

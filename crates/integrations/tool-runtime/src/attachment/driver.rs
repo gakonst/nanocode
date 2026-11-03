@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::{
     client_async_tls_with_config,
     tungstenite::{
-        Message,
+        Message, Utf8Bytes,
         client::IntoClientRequest,
         protocol::{CloseFrame, frame::coding::CloseCode},
     },
@@ -520,29 +520,68 @@ impl CallClock {
 
 struct RetainedCall {
     identity: CallIdentity,
-    task: Option<tokio::task::AbortHandle>,
     timing: Arc<Atom<CallClock>>,
-    receipt: Option<String>,
+    progress: Progress,
+}
+
+enum Progress {
+    Running(tokio::task::AbortHandle),
+    Pending,
+    Settled(Utf8Bytes),
 }
 
 impl RetainedCall {
-    fn finish(&mut self, outcome: &Value) -> Result<(), AttachmentError> {
-        if self.receipt.is_none() {
-            self.receipt = Some(encode_result(
-                &self.identity.call_id,
-                outcome,
-                &self.timing,
-            )?);
-            self.task = None;
-            let span = self.timing.read(|clock| clock.span.clone());
-            span.in_scope(|| {
-                tracing::info!(target: "nanocode_code_mode::attachment",
-                stage = "attachment.result_retained",
-                transport_call_id = self.identity.call_id.as_ref(),
-                "attachment terminal receipt retained")
-            });
+    fn finish(&mut self, outcome: &Value) -> Result<Utf8Bytes, AttachmentError> {
+        if let Progress::Settled(receipt) = &self.progress {
+            return Ok(receipt.clone());
         }
-        Ok(())
+        let receipt = Utf8Bytes::from(encode_result(
+            &self.identity.call_id,
+            outcome,
+            &self.timing,
+        )?);
+        self.progress = Progress::Settled(receipt.clone());
+        let span = self.timing.read(|clock| clock.span.clone());
+        span.in_scope(|| {
+            tracing::info!(target: "nanocode_code_mode::attachment",
+            stage = "attachment.result_retained",
+            transport_call_id = self.identity.call_id.as_ref(),
+            "attachment terminal receipt retained")
+        });
+        Ok(receipt)
+    }
+
+    const fn receipt(&self) -> Option<&Utf8Bytes> {
+        match &self.progress {
+            Progress::Settled(receipt) => Some(receipt),
+            Progress::Running(_) | Progress::Pending => None,
+        }
+    }
+
+    const fn running(&self) -> bool {
+        matches!(self.progress, Progress::Running(_))
+    }
+
+    fn take_task(&mut self) -> Option<tokio::task::AbortHandle> {
+        match std::mem::replace(&mut self.progress, Progress::Pending) {
+            Progress::Running(task) => Some(task),
+            progress => {
+                self.progress = progress;
+                None
+            }
+        }
+    }
+}
+
+enum Drain {
+    Attached,
+    Requested,
+    Acknowledged,
+}
+
+impl Drain {
+    const fn detaching(&self) -> bool {
+        !matches!(self, Self::Attached)
     }
 }
 
@@ -934,8 +973,8 @@ where
     }
     for call in journal.values() {
         let replayed = true;
-        if call.receipt.is_some()
-            && let Err(error) = send_retained(&mut socket, call, replayed).await
+        if let Some(receipt) = call.receipt()
+            && let Err(error) = send_retained(&mut socket, call, receipt, replayed).await
         {
             return ConnectionEnd::Failed(error);
         }
@@ -946,24 +985,22 @@ where
     );
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pong_timeout = Box::pin(tokio::time::sleep(PONG_TIMEOUT));
-    let mut awaiting_pong: Option<Vec<u8>> = None;
-    let mut ping_started: Option<Instant> = None;
+    let mut ping: Option<(Vec<u8>, Instant)> = None;
     let mut detach_deadline = Box::pin(tokio::time::sleep(Duration::from_secs(10)));
-    let mut detaching = false;
-    let mut draining = false;
+    let mut drain = Drain::Attached;
 
     let end = loop {
-        if detaching && draining && journal.is_empty() {
+        if matches!(drain, Drain::Acknowledged) && journal.is_empty() {
             break ConnectionEnd::Detached;
         }
         tokio::select! {
-            command = commands.recv(), if !detaching => {
+            command = commands.recv(), if matches!(drain, Drain::Attached) => {
                 match command { Some(Command::Detach) | None => {} }
                 if let Err(error) = send(&mut socket, &RunnerFrame::Drain {}).await {
                     break ConnectionEnd::DetachFailed(error);
                 }
-                tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.drain_requested", pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), reason_code = "detach_requested", "attachment drain requested");
-                detaching = true;
+                tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.drain_requested", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "detach_requested", "attachment drain requested");
+                drain = Drain::Requested;
                 detach_deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(10));
                 shutdown_calls(active).await;
                 while let Ok(completion) = completed_rx.try_recv() {
@@ -972,26 +1009,28 @@ where
                         && let Err(error) = call.finish(&outcome) { return ConnectionEnd::DetachFailed(error); }
                 }
                 for call in journal.values_mut() {
-                    let replayed = call.receipt.is_some();
-                    if call.receipt.is_none()
-                        && let Err(error) = call.finish(&ambiguous("attachment shut down during execution")) { return ConnectionEnd::DetachFailed(error); }
-                    if let Err(error) = send_retained(&mut socket, call, replayed).await { return ConnectionEnd::DetachFailed(error); }
+                    let replayed = call.receipt().is_some();
+                    let receipt = match call.finish(&ambiguous("attachment shut down during execution")) {
+                        Ok(receipt) => receipt,
+                        Err(error) => return ConnectionEnd::DetachFailed(error),
+                    };
+                    if let Err(error) = send_retained(&mut socket, call, &receipt, replayed).await { return ConnectionEnd::DetachFailed(error); }
                 }
             }
-            _ = &mut detach_deadline, if detaching => break ConnectionEnd::Detached,
-            _ = &mut pong_timeout, if awaiting_pong.is_some() => {
-                tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_timeout", pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), reason_code = "heartbeat_timeout", "attachment heartbeat timed out");
+            _ = &mut detach_deadline, if drain.detaching() => break ConnectionEnd::Detached,
+            _ = &mut pong_timeout, if ping.is_some() => {
+                tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_timeout", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "heartbeat_timeout", "attachment heartbeat timed out");
                 break ConnectionEnd::HeartbeatTimeout;
             },
             _ = heartbeat.tick() => {
-                if awaiting_pong.is_some() { break ConnectionEnd::HeartbeatTimeout; }
+                if ping.is_some() { break ConnectionEnd::HeartbeatTimeout; }
                 let nonce = uuid::Uuid::new_v4().as_bytes().to_vec();
-                ping_started = Some(Instant::now());
+                let started = Instant::now();
                 if let Err(error) = socket.send(Message::Ping(nonce.clone().into())).await.map_err(|error| AttachmentError::Transport(error.to_string().into())) {
-                    break if detaching { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
+                    break if drain.detaching() { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
                 }
-                tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_ping", pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), "attachment heartbeat sent");
-                awaiting_pong = Some(nonce);
+                tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_ping", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat sent");
+                ping = Some((nonce, started));
                 pong_timeout.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
             }
             completion = completed_rx.recv() => if let Some(completion) = completion {
@@ -1002,41 +1041,46 @@ where
                     }
                     Completion::Result { call_id, outcome } => {
                         let Some(call) = journal.get_mut(&call_id) else { continue; };
-                        let replayed = call.receipt.is_some();
-                        if let Err(error) = call.finish(&outcome) { break ConnectionEnd::Failed(error); }
-                        send_retained(&mut socket, call, replayed).await
+                        let replayed = call.receipt().is_some();
+                        let receipt = match call.finish(&outcome) {
+                            Ok(receipt) => receipt,
+                            Err(error) => break ConnectionEnd::Failed(error),
+                        };
+                        send_retained(&mut socket, call, &receipt, replayed).await
                     }
                 };
                 if let Err(error) = sent {
-                    break if detaching { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
+                    break if drain.detaching() { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
                 }
             },
             incoming = socket.next() => {
                 if let Some(Ok(Message::Pong(payload))) = &incoming {
-                    if awaiting_pong.as_deref() == Some(payload.as_ref()) {
-                        awaiting_pong = None;
-                        let roundtrip_ms = ping_started.take().expect("pending ping clock").elapsed().as_secs_f64() * 1000.0;
+                    if ping.as_ref().is_some_and(|(nonce, _)| nonce.as_slice() == payload.as_ref())
+                        && let Some((_, started)) = ping.take()
+                    {
+                        let roundtrip_ms = started.elapsed().as_secs_f64() * 1000.0;
                         tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.transport_rtt", connection_id, roundtrip_ms, "established socket heartbeat roundtrip observed");
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_pong", pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), "attachment heartbeat acknowledged");
+                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_pong", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat acknowledged");
                     }
                     continue;
                 }
                 let frame = match incoming_frame(&mut socket, incoming).await {
                     Ok(Some(frame)) => frame,
                     Ok(None) => continue,
-                    Err(ConnectionEnd::Disconnected) if detaching => break ConnectionEnd::DetachFailed(AttachmentError::Transport("websocket closed while draining".into())),
+                    Err(ConnectionEnd::Disconnected) if drain.detaching() => break ConnectionEnd::DetachFailed(AttachmentError::Transport("websocket closed while draining".into())),
                     Err(end) => break end,
                 };
                 match frame {
                     EndpointFrame::Call(AttachmentCall { session_id, turn_id, call_id, model, name, input, output_token_budget, output_byte_budget, deadline_at }) => {
                         let timing = CallClock::received();
-                        if draining { break ConnectionEnd::Rejected("call received after drain barrier".into()); }
+                        if matches!(drain, Drain::Acknowledged) { break ConnectionEnd::Rejected("call received after drain barrier".into()); }
                         let identity = CallIdentity { session_id:session_id.clone().into(), turn_id:turn_id.clone().map(Into::into), call_id:call_id.clone().into(), model:model.clone().into(), name:name.clone().into(), input:input.clone(), output_token_budget, output_byte_budget, deadline_at };
                         if let Some(retained) = journal.get(call_id.as_str()) {
                             if retained.identity != identity { break ConnectionEnd::Rejected("call identity conflicts with retained command".into()); }
-                            let sent = if retained.receipt.is_some() {
-                                send_retained(&mut socket, retained, true).await
-                            } else { send(&mut socket, &RunnerFrame::Status { call_id: call_id.as_str().into(), state: CommandStatus::Running }).await };
+                            let sent = match retained.receipt() {
+                                Some(receipt) => send_retained(&mut socket, retained, receipt, true).await,
+                                None => send(&mut socket, &RunnerFrame::Status { call_id: call_id.as_str().into(), state: CommandStatus::Running }).await,
+                            };
                             if let Err(error) = sent { break ConnectionEnd::Failed(error); }
                             continue;
                         }
@@ -1060,14 +1104,17 @@ where
                         } else { None };
                         if let Some(reason) = reason {
                             call_events.complete(events, AttachmentCallOutcome::Unavailable);
-                            let mut retained = RetainedCall { identity, task: None, timing, receipt: None };
-                            if let Err(error) = retained.finish(&unavailable(reason)) { break ConnectionEnd::Failed(error); }
+                            let mut retained = RetainedCall { identity, timing, progress: Progress::Pending };
+                            let receipt = match retained.finish(&unavailable(reason)) {
+                                Ok(receipt) => receipt,
+                                Err(error) => break ConnectionEnd::Failed(error),
+                            };
                             journal.insert(call_id.clone().into(), retained);
-                            if let Err(error) = send_retained(&mut socket, journal.get(call_id.as_str()).unwrap(), false).await { break ConnectionEnd::Failed(error); }
+                            if let Err(error) = send_retained(&mut socket, &journal[call_id.as_str()], &receipt, false).await { break ConnectionEnd::Failed(error); }
                             continue;
                         }
                         let task = start_call(runtime, active, identity.clone(), Arc::clone(&timing), tool_timeout, call_events, completed_tx.clone(), events);
-                        journal.insert(call_id.into(), RetainedCall { identity, task: Some(task), timing, receipt: None });
+                        journal.insert(call_id.into(), RetainedCall { identity, timing, progress: Progress::Running(task) });
                     }
                     EndpointFrame::TurnEnded { session_id, turn_id, hook_event_name } => {
 
@@ -1077,12 +1124,12 @@ where
                         }
                     }
                     EndpointFrame::Cancel { call_id } => {
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.call.cancel_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), reason_code = "cancel_received", "attachment cancellation received");
+                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.call.cancel_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), reason_code = "cancel_received", "attachment cancellation received");
                         if let Some(call) = journal.get_mut(call_id.as_str()) {
-                            let replayed = call.receipt.is_some();
+                            let replayed = call.receipt().is_some();
 
                             if call.timing.read(|clock| clock.result_queued.is_some()) { continue; }
-                            if let Some(task) = call.task.take() {
+                            if let Some(task) = call.take_task() {
                                 task.abort();
                                 if let Some(index) = active.iter().position(|active| active.task.id() == task.id()) {
                                     let _ = active.swap_remove(index).task.await;
@@ -1091,30 +1138,32 @@ where
                                 if call.timing.read(|clock| clock.result_queued.is_some()) { continue; }
                                 if let Err(error) = call.finish(&ambiguous("tool execution was cancelled after dispatch")) { break ConnectionEnd::Failed(error); }
                             }
-                            if call.receipt.is_some()
-                                && let Err(error) = send_retained(&mut socket, call, replayed).await { break ConnectionEnd::Failed(error); }
+                            if let Some(receipt) = call.receipt()
+                                && let Err(error) = send_retained(&mut socket, call, receipt, replayed).await { break ConnectionEnd::Failed(error); }
                         }
                     }
                     EndpointFrame::Ack { call_id } => {
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.result_ack_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), "attachment receipt acknowledgement received");
-                        if journal.get(call_id.as_str()).is_some_and(|call| call.receipt.is_some()) {
+                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.result_ack_received", transport_call_id = call_id.as_str(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment receipt acknowledgement received");
+                        if journal.get(call_id.as_str()).is_some_and(|call| call.receipt().is_some()) {
                             journal.remove(call_id.as_str());
                         }
                     }
                     EndpointFrame::Recover { call_ids } => {
                         for call_id in call_ids {
                             let sent = match journal.get(call_id.as_str()) {
-                                Some(call) if call.receipt.is_some() => send_retained(&mut socket, call, true).await,
-                                Some(_) => send(&mut socket, &RunnerFrame::Status { call_id: call_id.as_str().into(), state: CommandStatus::Running }).await,
+                                Some(call) => match call.receipt() {
+                                    Some(receipt) => send_retained(&mut socket, call, receipt, true).await,
+                                    None => send(&mut socket, &RunnerFrame::Status { call_id: call_id.as_str().into(), state: CommandStatus::Running }).await,
+                                },
                                 None => send(&mut socket, &RunnerFrame::Status { call_id: call_id.as_str().into(), state: CommandStatus::Missing }).await,
                             };
                             if let Err(error) = sent { return ConnectionEnd::Failed(error); }
                         }
                     }
                     EndpointFrame::Draining {} => {
-                        if !detaching || draining { break ConnectionEnd::Rejected("unexpected draining acknowledgement".into()); }
-                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.draining", pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), "attachment drain barrier acknowledged");
-                        draining = true;
+                        if !matches!(drain, Drain::Requested) { break ConnectionEnd::Rejected("unexpected draining acknowledgement".into()); }
+                        tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.draining", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment drain barrier acknowledged");
+                        drain = Drain::Acknowledged;
                     }
                     EndpointFrame::Ready {} => break ConnectionEnd::Rejected("unexpected ready".into()),
                 }
@@ -1122,12 +1171,12 @@ where
         }
     };
 
-    tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.pending_at_close", reason_code = end.reason_code(), pending_calls = journal.values().filter(|call| call.task.is_some()).count(), pending_receipts = journal.values().filter(|call| call.receipt.is_some()).count(), "attachment socket pending work at close");
+    tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.pending_at_close", reason_code = end.reason_code(), pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment socket pending work at close");
     if matches!(&end, ConnectionEnd::HeartbeatTimeout) {
         close_heartbeat_timeout(&mut socket).await;
     }
 
-    let end = if detaching {
+    let end = if drain.detaching() {
         match end {
             ConnectionEnd::Disconnected => ConnectionEnd::DetachFailed(AttachmentError::Transport(
                 "websocket disconnected while draining".into(),
@@ -1335,6 +1384,7 @@ where
 async fn send_retained<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     call: &RetainedCall,
+    receipt: &Utf8Bytes,
     replayed: bool,
 ) -> Result<(), AttachmentError>
 where
@@ -1348,13 +1398,7 @@ where
         "attachment terminal transmission started");
     send_diagnostics(socket, &call.identity.call_id, &call.timing, true).await?;
     socket
-        .feed(Message::Text(
-            call.receipt
-                .as_ref()
-                .expect("terminal receipt")
-                .clone()
-                .into(),
-        ))
+        .feed(Message::Text(receipt.clone()))
         .await
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
     let flush_started = Instant::now();

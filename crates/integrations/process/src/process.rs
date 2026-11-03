@@ -61,10 +61,14 @@ pub(super) struct SpawnedProcess {
 }
 
 pub(super) struct ProcessChild {
-    wait: Option<JoinHandle<io::Result<i32>>>,
-    completed: Option<io::Result<i32>>,
+    reaping: Reaping,
     process_group: SharedProcessGroup,
     exited: Arc<AtomicBool>,
+}
+
+enum Reaping {
+    Waiting(JoinHandle<io::Result<i32>>),
+    Reaped(io::Result<i32>),
 }
 
 impl ProcessChild {
@@ -139,8 +143,7 @@ impl ProcessChild {
             }
         });
         Self {
-            wait: Some(wait),
-            completed: None,
+            reaping: Reaping::Waiting(wait),
             process_group,
             exited,
         }
@@ -174,8 +177,7 @@ impl ProcessChild {
             result
         });
         Self {
-            wait: Some(wait),
-            completed: None,
+            reaping: Reaping::Waiting(wait),
             process_group,
             exited,
         }
@@ -191,21 +193,22 @@ impl ProcessChild {
     }
 
     pub(super) async fn wait(&mut self) -> io::Result<i32> {
-        if self.completed.is_none() {
-            let result = self
-                .wait
-                .as_mut()
-                .ok_or_else(|| io::Error::other("shell wait result is unavailable"))?
+        fn copy(result: &io::Result<i32>) -> io::Result<i32> {
+            match result {
+                Ok(status) => Ok(*status),
+                Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
+            }
+        }
+        let result = match &mut self.reaping {
+            Reaping::Reaped(result) => return copy(result),
+            Reaping::Waiting(wait) => wait
                 .await
                 .map_err(|error| io::Error::other(format!("shell wait task failed: {error}")))
-                .and_then(|result| result);
-            self.wait = None;
-            self.completed = Some(result);
-        }
-        match self.completed.as_ref().expect("completed wait") {
-            Ok(status) => Ok(*status),
-            Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
-        }
+                .and_then(|result| result),
+        };
+        let reply = copy(&result);
+        self.reaping = Reaping::Reaped(result);
+        reply
     }
 }
 

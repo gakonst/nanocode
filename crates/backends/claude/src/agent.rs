@@ -5991,7 +5991,6 @@ impl State {
             unknown: Vec::new(),
         };
         let mut stopped = false;
-        let mut stopped_unknown = false;
         let outcome = if let Some(reply) = recovered {
             Ok(reply)
         } else if matches!(name, "exec" | "wait") {
@@ -6025,6 +6024,7 @@ impl State {
                 None => {
                     drop(call);
                     stopped = true;
+                    let mut stopped_unknown = false;
                     let stop = self.stop_code_cells(&stopper);
                     drop(stopper);
                     tokio::pin!(stop);

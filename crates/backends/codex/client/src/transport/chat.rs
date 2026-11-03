@@ -285,7 +285,7 @@ impl ChatGateway {
             stream.compaction(&completion)?;
             return Ok((ResponsesHttpStream::chat(stream), chat_metadata()));
         }
-        stream.body = Some(ChatBody::Http(response));
+        stream.phase = ChatPhase::Reading(ChatBody::Http(response));
         stream.created();
         Ok((ResponsesHttpStream::chat(stream), chat_metadata()))
     }
@@ -334,7 +334,7 @@ impl ChatGateway {
             stream.compaction(&completion)?;
             return Ok((ResponsesHttpStream::chat(stream), chat_metadata()));
         }
-        stream.body = Some(ChatBody::Host(body));
+        stream.phase = ChatPhase::Reading(ChatBody::Host(body));
         stream.created();
         Ok((ResponsesHttpStream::chat(stream), chat_metadata()))
     }
@@ -1428,12 +1428,16 @@ enum ChatBody {
     Host(Box<dyn HostHttpBody>),
 }
 
+enum ChatPhase {
+    Reading(ChatBody),
+    Drained,
+    Done,
+}
+
 pub(crate) struct ChatStream {
-    body: Option<ChatBody>,
+    phase: ChatPhase,
     decoder: SseDecoder,
-    ended: bool,
     queue: VecDeque<String>,
-    finished: bool,
     model: Model,
     registry: Registry,
     tool_choice: Option<Value>,
@@ -1452,11 +1456,9 @@ pub(crate) struct ChatStream {
 impl ChatStream {
     fn new(model: Model, registry: Registry, tool_choice: Option<Value>) -> Self {
         Self {
-            body: None,
+            phase: ChatPhase::Done,
             decoder: SseDecoder::default(),
-            ended: false,
             queue: VecDeque::new(),
-            finished: false,
             model,
             registry,
             tool_choice,
@@ -1788,8 +1790,7 @@ impl ChatStream {
             }
             self.emit(&kind, event);
         }
-        self.finished = true;
-        self.body = None;
+        self.phase = ChatPhase::Done;
         Ok(())
     }
 
@@ -1824,8 +1825,7 @@ impl ChatStream {
         for (kind, event) in response_events(&response) {
             self.emit(&kind, event);
         }
-        self.finished = true;
-        self.ended = true;
+        self.phase = ChatPhase::Done;
         Ok(())
     }
 
@@ -1838,7 +1838,7 @@ impl ChatStream {
             if let Some(text) = self.queue.pop_front() {
                 return Ok(received(text));
             }
-            if self.finished {
+            if matches!(self.phase, ChatPhase::Done) {
                 return Err(ResponsesError::UnexpectedEnd);
             }
             if let Some(data) = self.decoder.next()? {
@@ -1847,21 +1847,21 @@ impl ChatStream {
                 self.chunk(&value)?;
                 continue;
             }
-            if self.ended {
-                self.complete()?;
-                continue;
-            }
-            let pushed = match self.body.as_mut() {
-                None => return Err(ResponsesError::UnexpectedEnd),
+            let pushed = match &mut self.phase {
+                ChatPhase::Done => return Err(ResponsesError::UnexpectedEnd),
+                ChatPhase::Drained => {
+                    self.complete()?;
+                    continue;
+                }
                 #[cfg(not(target_family = "wasm"))]
-                Some(ChatBody::Http(response)) => self
+                ChatPhase::Reading(ChatBody::Http(response)) => self
                     .idle
                     .within(self.stall_timeout, response.chunk())
                     .await
                     .ok_or_else(|| stalled(self.stall_timeout))?
                     .map_err(map_http_error)?
                     .map(|chunk| self.decoder.push(&chunk)),
-                Some(ChatBody::Host(body)) => self
+                ChatPhase::Reading(ChatBody::Host(body)) => self
                     .idle
                     .within(self.stall_timeout, body.next())
                     .await
@@ -1870,7 +1870,7 @@ impl ChatStream {
                     .map(|chunk| self.decoder.push(&chunk)),
             };
             if pushed.is_none() {
-                self.ended = true;
+                self.phase = ChatPhase::Drained;
                 self.decoder.finish();
             }
         }

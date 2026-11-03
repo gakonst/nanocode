@@ -94,8 +94,7 @@ impl AgentDriver {
         let mut pending_developer_messages: Vec<(String, super::turn::DeveloperMessageResult)> =
             Vec::new();
         let mut developer_checkpoint_ready = true;
-        let mut commands_open = true;
-        let mut detached = false;
+        let mut intake = Intake::Open;
         let mut shutdown_failures = Vec::new();
         let mut initial_notices = Ok(());
         for text in std::mem::take(&mut self.spawner.initial_developer_messages) {
@@ -273,13 +272,13 @@ impl AgentDriver {
                                         outcome,
                                     )
                                     .await;
-                                if !commands_open
+                                if !intake.is_open()
                                     && let Err(error) = &outcome
                                     && !matches!(error, NanocodeError::TurnCancelled)
                                 {
                                     shutdown_failures.push(error.to_string());
                                 }
-                                if commands_open && outcome_requires_reopen(&outcome) {
+                                if intake.is_open() && outcome_requires_reopen(&outcome) {
                                     begin_shutdown(
                                         &mut self.commands,
                                         &mut queued_turns,
@@ -287,7 +286,7 @@ impl AgentDriver {
                                         default_service_tier,
                                     )
                                     .await;
-                                    commands_open = false;
+                                    intake.close();
                                 }
                                 drop(_guard);
                                 drop(result.send(outcome));
@@ -383,7 +382,7 @@ impl AgentDriver {
                                     default_service_tier,
                                 )
                                 .await;
-                                commands_open = false;
+                                intake.close();
                                 for (_, pending_result) in developer_messages {
                                     pending_result.fail(NanocodeError::AgentStopped);
                                 }
@@ -393,9 +392,9 @@ impl AgentDriver {
                     });
                     delivered.await;
                 }
-                if commands_open {
+                if intake.is_open() {
                     let Some(command) = self.commands.recv().await else {
-                        commands_open = false;
+                        intake.close();
                         continue;
                     };
                     let mut reopen = false;
@@ -417,7 +416,7 @@ impl AgentDriver {
                                 default_service_tier,
                             )
                             .await;
-                            commands_open = false;
+                            intake.close();
                         }
                         continue;
                     };
@@ -429,7 +428,7 @@ impl AgentDriver {
                             default_service_tier,
                         )
                         .await;
-                        commands_open = false;
+                        intake.close();
                         continue;
                     }
                     break command;
@@ -464,7 +463,7 @@ impl AgentDriver {
                             default_service_tier,
                         )
                         .await;
-                        commands_open = false;
+                        intake.close();
                     }
                     continue;
                 };
@@ -588,7 +587,7 @@ impl AgentDriver {
                                 default_service_tier,
                             )
                             .await;
-                            commands_open = false;
+                            intake.close();
                         }
                     });
                     appended.await;
@@ -683,7 +682,7 @@ impl AgentDriver {
                                         default_service_tier,
                                     )
                                     .await;
-                                    commands_open = false;
+                                    intake.close();
                                 }
                                 return;
                             }
@@ -735,7 +734,7 @@ impl AgentDriver {
                                     default_service_tier,
                                 )
                                 .await;
-                                commands_open = false;
+                                intake.close();
                             }
                             return;
                         }
@@ -764,7 +763,7 @@ impl AgentDriver {
                                     .instrument(span.clone()),
                             );
                         let completed = loop {
-                            if !commands_open {
+                            if !intake.is_open() {
                                 break execution.as_mut().await;
                             }
                             tokio::select! {
@@ -798,7 +797,7 @@ impl AgentDriver {
                                             default_service_tier,
                                         )
                                         .await;
-                                        commands_open = false;
+                                        intake.close();
                                         break execution.as_mut().await;
                                     }
                                     match command {
@@ -860,7 +859,7 @@ impl AgentDriver {
                                                         default_service_tier,
                                                     )
                                                     .await;
-                                                    commands_open = false;
+                                                    intake.close();
                                                     break execution.as_mut().await;
                                                 }
                                                 continue;
@@ -945,7 +944,7 @@ impl AgentDriver {
                                                     default_service_tier,
                                                 )
                                                 .await;
-                                                commands_open = false;
+                                                intake.close();
                                                 break execution.as_mut().await;
                                             }
                                         }
@@ -1034,12 +1033,11 @@ impl AgentDriver {
                                                 default_service_tier,
                                             )
                                             .await;
-                                            commands_open = false;
+                                            intake.close();
                                             break execution.as_mut().await;
                                         }
                                         None => {
-                                            commands_open = false;
-                                            detached = true;
+                                            intake = Intake::Detached;
                                             break execution.as_mut().await;
                                         }
                                     }
@@ -1186,7 +1184,7 @@ impl AgentDriver {
                             }
                         }
                         drop(result.send(outcome));
-                        if commands_open && reopen_after_compaction {
+                        if intake.is_open() && reopen_after_compaction {
                             begin_shutdown(
                                 &mut self.commands,
                                 &mut queued_turns,
@@ -1194,7 +1192,7 @@ impl AgentDriver {
                                 default_service_tier,
                             )
                             .await;
-                            commands_open = false;
+                            intake.close();
                         }
                     });
                     compaction.await;
@@ -1328,7 +1326,7 @@ impl AgentDriver {
                             default_service_tier,
                         )
                         .await;
-                        commands_open = false;
+                        intake.close();
                     }
                     continue;
                 }
@@ -1387,7 +1385,7 @@ impl AgentDriver {
                     .instrument(turn_span.clone()),
             );
             let completed = loop {
-                if !commands_open {
+                if !intake.is_open() {
                     break execution.as_mut().await;
                 }
                 tokio::select! {
@@ -1438,7 +1436,7 @@ impl AgentDriver {
                                 default_service_tier,
                             )
                             .await;
-                            commands_open = false;
+                            intake.close();
                             break execution.as_mut().await;
                         }
                         match command {
@@ -1496,7 +1494,7 @@ impl AgentDriver {
                                         default_service_tier,
                                     )
                                     .await;
-                                    commands_open = false;
+                                    intake.close();
                                     break execution.as_mut().await;
                                 }
                             }
@@ -1531,7 +1529,7 @@ impl AgentDriver {
                                 if reopen {
                                     if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
                                     begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_service_tier).await;
-                                    commands_open = false;
+                                    intake.close();
                                     break execution.as_mut().await;
                                 }
                             }
@@ -1553,7 +1551,7 @@ impl AgentDriver {
                                 if reopen {
                                     if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
                                     begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_service_tier).await;
-                                    commands_open = false;
+                                    intake.close();
                                     break execution.as_mut().await;
                                 }
                             }
@@ -1628,7 +1626,7 @@ impl AgentDriver {
                                             default_service_tier,
                                         )
                                         .await;
-                                        commands_open = false;
+                                        intake.close();
                                         break execution.as_mut().await;
                                     }
                                     continue;
@@ -1646,7 +1644,7 @@ impl AgentDriver {
                                         default_service_tier,
                                     )
                                     .await;
-                                    commands_open = false;
+                                    intake.close();
                                     break execution.as_mut().await;
                                 }
                             }
@@ -1705,7 +1703,7 @@ impl AgentDriver {
                                             default_service_tier,
                                         )
                                         .await;
-                                        commands_open = false;
+                                        intake.close();
                                         break execution.as_mut().await;
                                     }
                                     continue;
@@ -1858,11 +1856,10 @@ impl AgentDriver {
                                     default_service_tier,
                                 )
                                 .await;
-                                commands_open = false;
+                                intake.close();
                             }
                             None => {
-                                commands_open = false;
-                                detached = true;
+                                intake = Intake::Detached;
                             }
                         }
                     }
@@ -1918,7 +1915,7 @@ impl AgentDriver {
                         None,
                     )
                 }
-                Ok(ModelTurnOutcome::Cancelled(_)) if !commands_open && !detached => {
+                Ok(ModelTurnOutcome::Cancelled(_)) if matches!(intake, Intake::Closed) => {
                     if let Some(operation_id) = &execution_operation {
                         self.execution.release_claim(operation_id).await;
                     }
@@ -2015,7 +2012,7 @@ impl AgentDriver {
                 }
             };
             let outcome = match outcome {
-                Err(NanocodeError::TurnStopped) if !commands_open => {
+                Err(NanocodeError::TurnStopped) if !intake.is_open() => {
                     Err(NanocodeError::TurnStopped)
                 }
                 outcome => {
@@ -2045,7 +2042,7 @@ impl AgentDriver {
                 }
                 outcome => emitted.and(outcome),
             };
-            if !commands_open
+            if !intake.is_open()
                 && !terminal_failure_committed
                 && let Err(error) = &outcome
                 && !matches!(
@@ -2085,7 +2082,7 @@ impl AgentDriver {
                 if outcome.is_ok() { "OK" } else { "ERROR" },
             );
             let reopen_after_turn = requires_reopen_after_turn(provider_requires_stop, &outcome);
-            if commands_open && reopen_after_turn {
+            if intake.is_open() && reopen_after_turn {
                 begin_shutdown(
                     &mut self.commands,
                     &mut queued_turns,
@@ -2093,7 +2090,7 @@ impl AgentDriver {
                     default_service_tier,
                 )
                 .await;
-                commands_open = false;
+                intake.close();
             }
             drop(result.send(outcome));
             if reopen_after_turn {
@@ -2103,7 +2100,7 @@ impl AgentDriver {
             }
             developer_checkpoint_ready =
                 !reopen_after_turn && (terminal_failure_committed || execution_operation.is_none());
-            if commands_open && reopen_after_turn {
+            if intake.is_open() && reopen_after_turn {
                 begin_shutdown(
                     &mut self.commands,
                     &mut queued_turns,
@@ -2111,7 +2108,7 @@ impl AgentDriver {
                     default_service_tier,
                 )
                 .await;
-                commands_open = false;
+                intake.close();
             }
             if let Some(cancel_result) = cancel_result {
                 let outcome = cancellation_persisted.unwrap_or_else(|| {
@@ -2123,6 +2120,24 @@ impl AgentDriver {
                 });
                 drop(cancel_result.send(outcome));
             }
+        }
+    }
+}
+
+enum Intake {
+    Open,
+    Closed,
+    Detached,
+}
+
+impl Intake {
+    const fn is_open(&self) -> bool {
+        matches!(self, Self::Open)
+    }
+
+    const fn close(&mut self) {
+        if self.is_open() {
+            *self = Self::Closed;
         }
     }
 }

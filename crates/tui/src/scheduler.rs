@@ -4,7 +4,12 @@ use std::time::{Duration, Instant};
 pub struct RenderScheduler {
     frame_interval: Duration,
     last_streamed: Option<Instant>,
-    deadline: Option<Instant>,
+    frame: Option<Frame>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Frame {
+    deadline: Instant,
     streaming: bool,
 }
 
@@ -14,8 +19,10 @@ impl RenderScheduler {
         Self {
             frame_interval,
             last_streamed: None,
-            deadline: Some(now),
-            streaming: false,
+            frame: Some(Frame {
+                deadline: now,
+                streaming: false,
+            }),
         }
     }
 
@@ -23,27 +30,36 @@ impl RenderScheduler {
         let next_frame = self
             .last_streamed
             .map_or(now, |streamed| streamed + self.frame_interval);
-        let deadline = next_frame.max(now);
-        self.streaming = true;
-        self.deadline = Some(
-            self.deadline
-                .map_or(deadline, |current| current.min(deadline)),
-        );
+        self.request(next_frame.max(now), true);
     }
 
     pub fn request_immediate(&mut self, now: Instant) {
-        let deadline = self.deadline.map_or(now, |deadline| deadline.min(now));
-        self.deadline = Some(deadline);
+        self.request(now, false);
     }
 
     pub fn request_at(&mut self, at: Instant) {
-        let deadline = self.deadline.map_or(at, |deadline| deadline.min(at));
-        self.deadline = Some(deadline);
+        self.request(at, false);
+    }
+
+    fn request(&mut self, at: Instant, streaming: bool) {
+        self.frame = Some(match self.frame {
+            Some(frame) => Frame {
+                deadline: frame.deadline.min(at),
+                streaming: frame.streaming || streaming,
+            },
+            None => Frame {
+                deadline: at,
+                streaming,
+            },
+        });
     }
 
     #[must_use]
     pub const fn deadline(&self) -> Option<Instant> {
-        self.deadline
+        match self.frame {
+            Some(frame) => Some(frame.deadline),
+            None => None,
+        }
     }
 
     #[must_use]
@@ -56,13 +72,14 @@ impl RenderScheduler {
 
     #[must_use]
     pub fn is_due(&self, now: Instant) -> bool {
-        self.deadline.is_some_and(|deadline| deadline <= now)
+        self.frame.is_some_and(|frame| frame.deadline <= now)
     }
 
     pub const fn presented(&mut self, now: Instant) {
-        self.deadline = None;
-        if self.streaming {
-            self.streaming = false;
+        if let Some(Frame {
+            streaming: true, ..
+        }) = self.frame.take()
+        {
             self.last_streamed = Some(now);
         }
     }

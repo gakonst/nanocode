@@ -3329,11 +3329,15 @@ dependencies = [
 name = "nanocode-chatgpt-extension"
 version = "0.6.7"
 dependencies = [
+ "async-trait",
  "getrandom 0.4.3",
+ "nanocode-sync",
+ "nanocode-tool-contracts",
  "rustix",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tokio",
  "url",
 ]
 

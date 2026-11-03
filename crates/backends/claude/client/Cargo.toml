@@ -34,6 +34,7 @@ tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 reqwest = { workspace = true, features = ["stream", "gzip", "deflate"] }
+bytes = "1.9"
 tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt-multi-thread"] }
 nanocode-tls.workspace = true
 unicode-normalization = "0.1.25"

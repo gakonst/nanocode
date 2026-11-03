@@ -30,7 +30,7 @@ pub(crate) async fn post(
     client: &HttpClient,
     endpoint: &str,
     mut headers: http::HeaderMap,
-    body: String,
+    body: std::sync::Arc<str>,
     gzip: bool,
     layer: Option<&dyn Layer>,
 ) -> Result<HttpResponse, HttpError> {
@@ -40,7 +40,7 @@ pub(crate) async fn post(
     let span = tracing::Span::current();
     span.record("request.bytes", body.len());
     let body = if gzip {
-        let padded = gzip_padded(body)?;
+        let padded = gzip_padded(&body)?;
         let encoded = tokio::task::spawn_blocking(move || nanocode_http::gzip(&padded, GZIP_LEVEL))
             .await
             .map_err(|error| encode_error(&error))?
@@ -52,7 +52,7 @@ pub(crate) async fn post(
         );
         reqwest::Body::from(encoded)
     } else {
-        reqwest::Body::from(body)
+        reqwest::Body::from(bytes::Bytes::from_owner(SharedBody(body)))
     };
     let request = client
         .post(endpoint)
@@ -136,11 +136,21 @@ impl layer::Sender for ReqwestSender<'_> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn gzip_padded(body: String) -> Result<Vec<u8>, HttpError> {
+struct SharedBody(std::sync::Arc<str>);
+
+#[cfg(not(target_family = "wasm"))]
+impl AsRef<[u8]> for SharedBody {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn gzip_padded(body: &str) -> Result<Vec<u8>, HttpError> {
     let mut random = [0_u8; 2 + GZIP_PADDING_LENGTHS];
     nanocode_platform::fill_random(&mut random).map_err(|error| encode_error(&error))?;
     let length = usize::from(u16::from_le_bytes([random[0], random[1]])) % GZIP_PADDING_LENGTHS;
-    let mut padded = body.into_bytes();
+    let mut padded = body.as_bytes().to_vec();
     padded.push(b' ');
     padded.extend(
         random[2..2 + length]
@@ -182,11 +192,18 @@ pub(crate) async fn post(
     client: &HttpClient,
     endpoint: &str,
     headers: http::HeaderMap,
-    body: String,
+    body: std::sync::Arc<str>,
     _gzip: bool,
     layer: Option<&dyn Layer>,
 ) -> Result<HttpResponse, HttpError> {
-    post_with(client.0.as_ref(), endpoint, headers, body, layer).await
+    post_with(
+        client.0.as_ref(),
+        endpoint,
+        headers,
+        body.to_string(),
+        layer,
+    )
+    .await
 }
 
 pub(crate) async fn post_with(

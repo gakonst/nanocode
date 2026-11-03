@@ -517,7 +517,7 @@ pub struct MessagesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<Value>,
+    pub system: Option<std::sync::Arc<Value>>,
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
@@ -735,7 +735,18 @@ impl MessagesRequest {
         let Some(ttl) = self.cache_control.as_ref().and_then(|control| control.ttl) else {
             return;
         };
-        let Some(Value::Array(blocks)) = self.system.as_mut() else {
+        let Some(Value::Array(blocks)) = self.system.as_deref() else {
+            return;
+        };
+        if blocks
+            .iter()
+            .filter_map(|block| block.get("cache_control"))
+            .filter_map(Value::as_object)
+            .all(|control| control.contains_key("ttl"))
+        {
+            return;
+        }
+        let Some(Value::Array(blocks)) = self.system.as_mut().map(std::sync::Arc::make_mut) else {
             return;
         };
         for control in blocks
@@ -756,7 +767,7 @@ impl MessagesRequest {
     fn validate_cache_with<M: WireMessage>(&self, messages: &[M]) -> Result<(), ClaudeError> {
         validate_cache_layout(
             &self.tools,
-            self.system.as_ref(),
+            self.system.as_deref(),
             messages.iter().map(WireMessage::message),
             self.cache_control.as_ref(),
         )
@@ -778,7 +789,7 @@ impl MessagesRequest {
         let Some(control) = self.cache_control.as_ref() else {
             return Ok(());
         };
-        let mut blocks = match self.system.as_ref() {
+        let mut blocks = match self.system.as_deref() {
             Some(Value::String(text)) if !text.is_empty() => {
                 vec![serde_json::json!({"type":"text","text":text})]
             }
@@ -801,7 +812,9 @@ impl MessagesRequest {
             return Ok(());
         };
         block["cache_control"] = serde_json::to_value(control)?;
-        let previous = self.system.replace(Value::Array(blocks));
+        let previous = self
+            .system
+            .replace(std::sync::Arc::new(Value::Array(blocks)));
         if self.validate_cache_with(messages).is_err() {
             self.system = previous;
         }
@@ -821,7 +834,7 @@ impl MessagesRequest {
                     .entry("cache_control".to_owned())
                     .or_insert(marker);
             }
-            None => mark_system_tail(self.system.as_mut(), marker),
+            None => mark_system_tail(self.system.as_mut().map(std::sync::Arc::make_mut), marker),
         }
         Ok(())
     }
@@ -1425,7 +1438,7 @@ impl ClaudeClient {
             head.validate_cache_with(messages)?;
         }
         Ok(PreparedWire {
-            body: self.wire_body(head, messages, streaming)?,
+            body: self.wire_body(head, messages, streaming)?.into(),
             thread: None,
             subscription: self.subscription_compatibility,
             streaming,
@@ -1452,7 +1465,7 @@ impl ClaudeClient {
         request: &MessagesRequest,
     ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         PreparedWire {
-            body: self.wire_body(request, &request.messages, true)?,
+            body: self.wire_body(request, &request.messages, true)?.into(),
             thread: None,
             subscription: self.subscription_compatibility,
             streaming: true,
@@ -1490,12 +1503,15 @@ impl ClaudeClient {
                 "message threads need the Messages API wire, not the subscription wire".into(),
             ));
         }
-        wire.thread = Some(api_body(
-            head,
-            turn.new_messages(messages),
-            wire.streaming,
-            Some(param),
-        )?);
+        wire.thread = Some(
+            api_body(
+                head,
+                turn.new_messages(messages),
+                wire.streaming,
+                Some(param),
+            )?
+            .into(),
+        );
         Ok(())
     }
 
@@ -1666,27 +1682,19 @@ impl ClaudeClient {
                     }
                 }
             }
-            let body = wire.sent_body();
+            let body = wire.sent_shared();
             let gzip = self.gzip_request_body(body.len());
             let layer = self.http_layer.as_deref();
             let response = match &self.http {
                 HttpConnection::Client(client) => {
-                    transport::post(
-                        client,
-                        &self.endpoint,
-                        headers,
-                        body.to_owned(),
-                        gzip,
-                        layer,
-                    )
-                    .await?
+                    transport::post(client, &self.endpoint, headers, body, gzip, layer).await?
                 }
                 HttpConnection::Transport(transport) => {
                     transport::post_with(
                         transport.as_ref(),
                         &self.endpoint,
                         headers,
-                        body.to_owned(),
+                        body.to_string(),
                         layer,
                     )
                     .await?
@@ -1874,9 +1882,9 @@ impl ClaudeClient {
 #[derive(Clone, Debug)]
 pub struct PreparedWire {
     /// The whole request, which durable inputs record.
-    body: String,
+    body: Arc<str>,
     /// The request as a thread turn sends it, when it uses a thread.
-    thread: Option<String>,
+    thread: Option<Arc<str>>,
     subscription: bool,
     streaming: bool,
     agent: bool,
@@ -1895,6 +1903,10 @@ impl PreparedWire {
     /// The body this request posts: the thread turn's when it has one, else [`Self::body`].
     pub fn sent_body(&self) -> &str {
         self.thread.as_deref().unwrap_or(&self.body)
+    }
+
+    fn sent_shared(&self) -> Arc<str> {
+        Arc::clone(self.thread.as_ref().unwrap_or(&self.body))
     }
 
     pub fn durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
@@ -2027,7 +2039,7 @@ fn api_body<M: WireMessage>(
         thinking: thinking.as_ref(),
         context_management: context_management.as_ref(),
         diagnostics: diagnostics.as_ref(),
-        system: system.as_ref().filter(|_| !continuing),
+        system: system.as_deref().filter(|_| !continuing),
     })?;
     let tail = serde_json::to_string(&Tail {
         container: container.as_deref(),

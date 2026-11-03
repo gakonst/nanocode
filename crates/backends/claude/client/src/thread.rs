@@ -472,7 +472,7 @@ fn fingerprint(head: &MessagesRequest) -> Result<blake3::Hash, ClaudeError> {
         tool_choice: head.tool_choice.as_ref(),
         thinking: head.thinking.as_ref(),
         context_management: head.context_management.as_ref(),
-        system: head.system.as_ref(),
+        system: head.system.as_deref(),
         tools: &head.tools,
     })?;
     Ok(blake3::hash(&fixed))

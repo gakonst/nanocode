@@ -159,7 +159,7 @@ fn prepare_with<M: WireMessage>(
     messages: &[M],
     identity: &SubscriptionIdentity,
 ) {
-    let mut existing = match request.system.take() {
+    let mut existing = match request.system.take().map(std::sync::Arc::unwrap_or_clone) {
         Some(Value::String(s)) => vec![json!({"type":"text","text":s})],
         Some(Value::Array(v)) => v,
         Some(v) => vec![v],
@@ -184,7 +184,7 @@ fn prepare_with<M: WireMessage>(
             .and_then(Value::as_str)
             .is_some_and(|s| s.starts_with(BILLING))
     }) {
-        request.system = Some(Value::Array(existing));
+        request.system = Some(std::sync::Arc::new(Value::Array(existing)));
         return;
     }
 
@@ -224,7 +224,7 @@ fn prepare_with<M: WireMessage>(
         json!({"type":"text","text":IDENTITY,"cache_control":control}),
     ];
     blocks.extend(existing);
-    request.system = Some(Value::Array(blocks));
+    request.system = Some(std::sync::Arc::new(Value::Array(blocks)));
 }
 
 fn stringify(value: &Value, out: &mut Vec<u8>) -> Result<(), ClaudeError> {
@@ -310,7 +310,7 @@ pub(crate) fn wire<M: WireMessage>(
     prepare_with(&mut prepared, messages, identity);
     crate::validate_cache_layout(
         &prepared.tools,
-        prepared.system.as_ref(),
+        prepared.system.as_deref(),
         messages.iter().map(WireMessage::message),
         prepared.cache_control.as_ref(),
     )?;
@@ -326,7 +326,10 @@ pub(crate) fn wire<M: WireMessage>(
                     .or_insert(marker);
                 patched = Some((index, message));
             }
-            None => crate::mark_system_tail(prepared.system.as_mut(), marker),
+            None => crate::mark_system_tail(
+                prepared.system.as_mut().map(std::sync::Arc::make_mut),
+                marker,
+            ),
         }
     }
     let encoded = messages

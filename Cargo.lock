@@ -3205,6 +3205,7 @@ dependencies = [
  "arc-swap",
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "futures-util",
  "http",
  "httpdate",

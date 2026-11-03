@@ -1292,7 +1292,7 @@ fn encode_cursor(cursor: &mut Cursor, paged: bool, paging: &mut Paging) -> Resul
         let system = cursor.template.system.take();
         let tools = std::mem::take(&mut cursor.template.tools);
         let prompt = TemplatePrompt {
-            system: system.as_ref(),
+            system: system.as_deref(),
             tools: &tools,
         };
         let encoded = paged_cursor(cursor, &detached, &pending, &prompt, paging);

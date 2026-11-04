@@ -7107,20 +7107,24 @@ impl SubagentControl {
         Ok(self.registry.resume_interrupted(root_session_id).await)
     }
 
+    /// Close the agents restored as interrupted that the host chose not to
+    /// resume, and keep the root's scope open for new work. Each closure is
+    /// journaled, so the next restore does not bring them back. `close_all`
+    /// is the root's shutdown: it freezes the scope, which refuses spawns and
+    /// later journal writes, so a root whose turn goes on must not use it here.
     pub async fn discard_restored(&self, root_session_id: &str) -> std::io::Result<()> {
         self.registry.await_restored(root_session_id).await?;
-        let deferred = self
-            .registry
-            .deferred_resume
-            .read(|deferred| deferred.get(root_session_id).cloned())
-            .unwrap_or_default();
+        let mut ids = Vec::new();
         self.registry.deferred_resume.update(|deferred| {
-            deferred.remove(root_session_id);
+            ids = deferred
+                .remove(root_session_id)
+                .map(|ids| ids.into_iter().collect())
+                .unwrap_or_default();
         });
-        if deferred.is_empty() {
+        if ids.is_empty() {
             return Ok(());
         }
-        self.close_all(root_session_id).await
+        self.registry.close_batch(root_session_id, ids).await
     }
 
     pub fn runtime_id(&self) -> SubagentRuntimeId {

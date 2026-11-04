@@ -934,6 +934,16 @@ impl Agent {
         self.backend.set_auto_compact_token_limit(limit).await
     }
 
+    /// Sets the reasoning effort the agent's compactions run at, from the next one on, without
+    /// changing its turns' effort; `None` compacts at the conversation's own effort. Codex
+    /// applies it only on models that take `configuration_update` items (Sol, Terra, Astra and
+    /// Daybreak Blue, not through a gateway), so the compaction still reads the cached prefix;
+    /// elsewhere it compacts at the conversation's effort. Not persisted with the agent; other
+    /// backends refuse it.
+    pub async fn set_compaction_thinking(&self, thinking: Option<Thinking>) -> Result<()> {
+        self.backend.set_compaction_thinking(thinking).await
+    }
+
     pub async fn set_fast_mode(&self, enabled: bool) -> Result<()> {
         self.set_service_tier(ServiceTier::from_fast_mode(enabled))
             .await

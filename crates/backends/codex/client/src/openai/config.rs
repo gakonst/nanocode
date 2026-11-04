@@ -44,6 +44,11 @@ pub struct ModelConfig {
     /// default, which only some models have.
     pub auto_compact_token_limit: Option<u64>,
 
+    /// The reasoning effort compactions run at, selected by a `configuration_update` ahead of
+    /// the trigger so the cached prefix stays at the context's baseline; `None` compacts at the
+    /// context's own effort, as do models without effort updates and gateways.
+    pub compaction_thinking: Option<Thinking>,
+
     pub responses_transport: ResponsesTransport,
 
     pub websocket_warmup: bool,
@@ -192,6 +197,7 @@ impl ModelConfig {
             service_tier: ServiceTier::Standard,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             auto_compact_token_limit: None,
+            compaction_thinking: None,
             responses_transport: ResponsesTransport::default(),
             websocket_warmup: false,
             raw_api_events: false,

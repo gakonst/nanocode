@@ -94,6 +94,19 @@ pub(super) enum CompactionPhase {
     MidTurn,
 }
 
+/// The reasoning effort of a compaction request.
+#[derive(Clone, Copy)]
+pub(super) struct CompactionEffort {
+    /// The request-level `reasoning.effort`: the context's baseline, which its cached prefix was
+    /// written at.
+    pub(super) request: Thinking,
+    /// The effort the compaction runs at: the host's `compaction_thinking`, else the context's.
+    pub(super) effort: Thinking,
+    /// Whether `effort` differs from the context's, so a `configuration_update` ahead of the
+    /// trigger selects it.
+    pub(super) update: bool,
+}
+
 pub(super) struct CompactionContext<'a> {
     pub(super) snapshot: Option<&'a ContextSnapshot>,
     pub(super) phase: CompactionPhase,
@@ -108,6 +121,28 @@ impl ModelRun {
             .auto_compact_token_limit
             .map(|limit| limit.min(window))
             .or_else(|| compaction::auto_compact_token_limit(self.model.as_str(), window))
+    }
+
+    /// The effort a compaction of a context with `reasoning` runs at. The host's
+    /// `compaction_thinking` applies only where effort updates keep the cached prefix: changing
+    /// the request-level effort instead would make the compaction read its whole context
+    /// uncached.
+    pub(super) fn compaction_effort(
+        &self,
+        reasoning: &crate::reasoning::ReasoningState,
+    ) -> CompactionEffort {
+        let supported = self.config.supports_reasoning_effort_updates(self.model);
+        let request = reasoning.request_effort(self.model, self.thinking, supported);
+        let current = reasoning.effective_effort(self.model, self.thinking, supported);
+        let effort = self
+            .compaction_thinking
+            .filter(|effort| supported && self.model.supports_thinking(*effort))
+            .unwrap_or(current);
+        CompactionEffort {
+            request,
+            effort,
+            update: effort != current,
+        }
     }
 
     pub(super) async fn maybe_compact(
@@ -132,11 +167,7 @@ impl ModelRun {
                 active_context_tokens,
                 auto_compact_token_limit,
                 factory,
-                conversation.reasoning.request_effort(
-                    self.model,
-                    self.thinking,
-                    self.config.supports_reasoning_effort_updates(self.model),
-                ),
+                self.compaction_effort(&conversation.reasoning),
             )
             .await?;
         conversation.observe_server_reasoning(server_reasoning_included);
@@ -375,7 +406,7 @@ impl ModelRun {
         active_context_tokens: u64,
         auto_compact_token_limit: u64,
         factory: &ResponsesAttemptFactory,
-        request_effort: Thinking,
+        effort: CompactionEffort,
     ) -> Result<(ResponseItem, Option<Usage>, bool)> {
         let step_id = format!("compaction-{after_model_call_index}");
         let model = self.model;
@@ -433,6 +464,11 @@ impl ModelRun {
             factory.profile().prefix(),
             self.config.context_window_tokens,
         );
+        if effort.update {
+            // Only this request carries it: the conversation keeps its own items, and installing
+            // the compaction replays the next request in full at the context's selection.
+            history.push(ResponseItem::configuration_update(effort.effort));
+        }
         let history = evict_images(&self.images, &history);
         let started_at = Instant::now();
         self.stats.compactions += 1;
@@ -451,11 +487,15 @@ impl ModelRun {
                 history,
                 compaction::trigger(),
                 model,
-                request_effort,
+                effort.request,
                 service_tier,
             )
         };
-        let span = compaction_span(after_model_call_index, build(&history).input_item_count());
+        let span = compaction_span(
+            after_model_call_index,
+            build(&history).input_item_count(),
+            effort.effort,
+        );
         let trace = trace_content_enabled().then(|| span.clone());
         let images = self.images.clone();
         let mut lifecycle = CompactionLifecycle {

@@ -509,6 +509,12 @@ impl AgentDriver {
                     drop(result.send(Ok(())));
                     continue;
                 }
+                if let Command::SetCompactionThinking { thinking, result } = command {
+                    let outcome =
+                        set_compaction_thinking(&mut self.spawner.config, thread_model, thinking);
+                    drop(result.send(outcome));
+                    continue;
+                }
                 if let Command::SetServiceTier {
                     service_tier,
                     result,
@@ -749,6 +755,7 @@ impl AgentDriver {
                         let mut compact_replaced = false;
                         let (cancel_compaction, mut cancel_compaction_rx) = oneshot::channel();
                         let mut cancel_compaction = Some(cancel_compaction);
+                        model.set_compaction_thinking(self.spawner.config.compaction_thinking);
                         let mut execution: ExecutionFuture<'_, Result<ModelCompactOutcome>> =
                             Box::pin(
                                 model
@@ -1001,6 +1008,10 @@ impl AgentDriver {
                                         Some(Command::SetAutoCompactTokenLimit { limit, result }) => {
                                             Arc::make_mut(&mut self.spawner.config).auto_compact_token_limit = limit;
                                             drop(result.send(Ok(())));
+                                        }
+                                        Some(Command::SetCompactionThinking { thinking, result }) => {
+                                            let outcome = set_compaction_thinking(&mut self.spawner.config, thread_model, thinking);
+                                            drop(result.send(outcome));
                                         }
                                         Some(Command::SetServiceTier { service_tier, result }) => {
                                             let outcome = crate::ModelSelection::Codex(thread_model)
@@ -1363,6 +1374,7 @@ impl AgentDriver {
             let mut cancel_result = None;
             let input_events = events.clone();
             model.set_events(events);
+            model.set_compaction_thinking(self.spawner.config.compaction_thinking);
             let mut execution: ExecutionFuture<'_, Result<ModelTurnOutcome>> = Box::pin(
                 model
                     .execute(
@@ -1803,6 +1815,10 @@ impl AgentDriver {
                             Some(Command::SetAutoCompactTokenLimit { limit, result }) => {
                                 Arc::make_mut(&mut self.spawner.config).auto_compact_token_limit = limit;
                                 drop(result.send(Ok(())));
+                            }
+                            Some(Command::SetCompactionThinking { thinking, result }) => {
+                                let outcome = set_compaction_thinking(&mut self.spawner.config, thread_model, thinking);
+                                drop(result.send(outcome));
                             }
                             Some(Command::SetServiceTier { service_tier, result }) => {
                                 let outcome = crate::ModelSelection::Codex(thread_model)
@@ -2757,6 +2773,21 @@ pub(super) fn agent_session_context(
         workspace,
         checkpoint.map_or_else(Vec::new, |checkpoint| checkpoint.model().snapshot_history()),
     ))
+}
+
+/// Sets the effort the agent's compactions run at, which its model must accept.
+fn set_compaction_thinking(
+    config: &mut Arc<ModelConfig>,
+    model: Model,
+    thinking: Option<Thinking>,
+) -> Result<()> {
+    if let Some(thinking) = thinking {
+        validate_model_thinking(model, thinking)?;
+    }
+    if config.compaction_thinking != thinking {
+        Arc::make_mut(config).compaction_thinking = thinking;
+    }
+    Ok(())
 }
 
 use crate::ErrorExt as _;

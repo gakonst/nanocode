@@ -98,6 +98,29 @@ impl ReasoningState {
         selected
     }
 
+    /// The effort the context's next response runs at without a new update: its latest
+    /// authored update, else its baseline, else the selection.
+    pub(crate) fn effective_effort(
+        &self,
+        model: crate::client::Model,
+        selected: Thinking,
+        supported: bool,
+    ) -> Thinking {
+        if supported
+            && let ReasoningPin::Active {
+                model: pinned_model,
+                effort,
+            } = &self.pin
+            && pinned_model == model.as_str()
+        {
+            return self
+                .latest_override
+                .as_ref()
+                .map_or(*effort, |authored| authored.effort);
+        }
+        selected
+    }
+
     pub(crate) fn pin(
         &mut self,
         model: crate::client::Model,

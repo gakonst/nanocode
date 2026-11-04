@@ -345,6 +345,17 @@ impl LifecycleBackend for LocalLifecycle {
         })
     }
 
+    fn set_compaction_thinking(&self, thinking: Option<Thinking>) -> BackendFuture<Result<()>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| {
+                Command::SetCompactionThinking { thinking, result }
+            })
+            .await
+        })
+    }
+
     fn set_fast_mode(&self, enabled: bool) -> BackendFuture<Result<()>> {
         self.set_service_tier(ServiceTier::from_fast_mode(enabled))
     }

@@ -480,6 +480,7 @@ pub(super) fn warmup_span(config: &ModelConfig, model: Model) -> tracing::Span {
 pub(super) fn compaction_span(
     after_model_call_index: u32,
     input_item_count: usize,
+    effort: Thinking,
 ) -> tracing::Span {
     info_span!(
         target: "nanocode",
@@ -487,6 +488,7 @@ pub(super) fn compaction_span(
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
         after_model_call_index,
+        reasoning.effort = effort.as_str(),
         model.input.item_count = input_item_count,
         model.input.bytes = tracing::field::Empty,
         model.response.id = tracing::field::Empty,

@@ -382,6 +382,12 @@ pub trait LifecycleBackend: Send + Sync + 'static {
         unsupported("auto_compact_token_limit")
     }
 
+    /// Sets the reasoning effort the agent's compactions run at, from the next one on; `None`
+    /// compacts at the conversation's own effort.
+    fn set_compaction_thinking(&self, _thinking: Option<Thinking>) -> BackendFuture<Result<()>> {
+        unsupported("compaction_thinking")
+    }
+
     fn set_service_tier(&self, service_tier: ServiceTier) -> BackendFuture<Result<()>> {
         match service_tier {
             ServiceTier::Standard => self.set_fast_mode(false),

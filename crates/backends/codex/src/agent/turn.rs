@@ -87,6 +87,10 @@ pub(super) enum Command {
         limit: Option<u64>,
         result: oneshot::Sender<Result<()>>,
     },
+    SetCompactionThinking {
+        thinking: Option<Thinking>,
+        result: oneshot::Sender<Result<()>>,
+    },
     SetServiceTier {
         service_tier: ServiceTier,
         result: oneshot::Sender<Result<()>>,

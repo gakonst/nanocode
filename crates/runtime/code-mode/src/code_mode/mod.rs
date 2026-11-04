@@ -86,16 +86,21 @@ pub struct CodeModeRuntime {
     prelude: Option<Arc<str>>,
     journals: Option<CellJournals>,
     nested_limit: usize,
-    catalog: Atom<Option<NestedCatalog>>,
+    catalog: Atom<Option<Arc<NestedCatalog>>>,
 }
 
 /// The nested tools the last cell offered, encoded as its QuickJS bootstrap
 /// reads them. A catalog of many tools takes longer to encode than a short
 /// cell takes to run, and a session's cells mostly offer the same tools.
-#[derive(Clone)]
 struct NestedCatalog {
     metadata: Arc<[Value]>,
     encoded: Arc<CellTools>,
+}
+
+impl NestedCatalog {
+    fn encodes(&self, metadata: &Arc<[Value]>) -> bool {
+        Arc::ptr_eq(&self.metadata, metadata) || *self.metadata == **metadata
+    }
 }
 
 #[derive(Clone)]
@@ -386,22 +391,39 @@ impl CodeModeRuntime {
     }
 
     fn cell_tools(&self, metadata: &Arc<[Value]>) -> Result<Arc<CellTools>, String> {
+        static LIVE: std::sync::LazyLock<Atom<Vec<std::sync::Weak<NestedCatalog>>>> =
+            std::sync::LazyLock::new(Atom::default);
         let cached = self.catalog.read(|catalog| {
             catalog
                 .as_ref()
-                .filter(|catalog| {
-                    Arc::ptr_eq(&catalog.metadata, metadata) || *catalog.metadata == **metadata
-                })
+                .filter(|catalog| catalog.encodes(metadata))
                 .map(|catalog| Arc::clone(&catalog.encoded))
         });
         if let Some(encoded) = cached {
             return Ok(encoded);
         }
-        let encoded = Arc::new(CellTools::encode(metadata)?);
-        self.catalog.set(Some(NestedCatalog {
-            metadata: Arc::clone(metadata),
-            encoded: Arc::clone(&encoded),
-        }));
+        let live = LIVE.read(|live| {
+            live.iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .find(|catalog| catalog.encodes(metadata))
+        });
+        let catalog = match live {
+            Some(catalog) => catalog,
+            None => {
+                let catalog = Arc::new(NestedCatalog {
+                    metadata: Arc::clone(metadata),
+                    encoded: Arc::new(CellTools::encode(metadata)?),
+                });
+                let weak = Arc::downgrade(&catalog);
+                LIVE.update(|live| {
+                    live.retain(|catalog| catalog.strong_count() > 0);
+                    live.push(std::sync::Weak::clone(&weak));
+                });
+                catalog
+            }
+        };
+        let encoded = Arc::clone(&catalog.encoded);
+        self.catalog.set(Some(catalog));
         Ok(encoded)
     }
 

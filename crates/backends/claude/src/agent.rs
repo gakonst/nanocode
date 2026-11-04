@@ -5574,6 +5574,40 @@ impl State {
         cursor: &Cursor,
         step: &str,
     ) -> Result<Usage> {
+        let span = telemetry::compaction_span(&telemetry::CompactionLabels {
+            session_id: &self.session_id,
+            model: &cursor.template.model,
+            trigger: match mode {
+                CompactionMode::Automatic => "auto",
+                CompactionMode::ContextRecovery => "context_recovery",
+                CompactionMode::Manual => "manual",
+            },
+            step,
+            active_context_tokens: context.active_context_tokens,
+            threshold: cursor.threshold,
+        });
+        let started = Instant::now();
+        let result = self
+            .summarize_locked(context, cancel, mode, cursor, step)
+            .instrument(span.clone())
+            .await;
+        if let Ok(usage) = &result {
+            telemetry::record_compaction(&span, usage, context.active_context_tokens);
+            if let Some(id) = &context.previous_message_id {
+                span.record("model.response.id", id.as_str());
+            }
+        }
+        telemetry::finish_compaction(&span, telemetry::elapsed_ns(started), result.as_ref().err());
+        result
+    }
+    async fn summarize_locked(
+        &self,
+        context: &mut Conversation,
+        cancel: &Cancellation,
+        mode: CompactionMode,
+        cursor: &Cursor,
+        step: &str,
+    ) -> Result<Usage> {
         let summarized_notices = context.recovery_notices.len();
         let mut messages = context.packed_messages();
         if messages.is_empty() {

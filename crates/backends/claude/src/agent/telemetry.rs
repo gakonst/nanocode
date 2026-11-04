@@ -271,6 +271,67 @@ pub(super) fn finish_model_call(span: &Span, duration_ns: u64, error: Option<&Na
     finish(span, error, "model call failed");
 }
 
+pub(super) struct CompactionLabels<'a> {
+    pub(super) session_id: &'a str,
+    pub(super) model: &'a str,
+    pub(super) trigger: &'a str,
+    pub(super) step: &'a str,
+    pub(super) active_context_tokens: u64,
+    pub(super) threshold: u64,
+}
+
+/// A compaction's summary request, named as Codex names its own, so one query
+/// finds both providers' compactions: it is no model call of the turn, so
+/// without it only its `messages.attempt` shows, and its tokens only in the
+/// turn's.
+pub(super) fn compaction_span(labels: &CompactionLabels<'_>) -> Span {
+    info_span!(
+        target: "nanocode",
+        "model.compaction",
+        otel.kind = "internal",
+        otel.status_code = Empty,
+        session.id = labels.session_id,
+        model = labels.model,
+        compaction.trigger = labels.trigger,
+        compaction.step = labels.step,
+        active_context_tokens = labels.active_context_tokens,
+        auto_compact_token_limit = labels.threshold,
+        compacted_context_tokens = Empty,
+        model.response.id = Empty,
+        status = Empty,
+        duration_ns = Empty,
+        input_tokens = Empty,
+        cached_input_tokens = Empty,
+        cache_write_input_tokens = Empty,
+        output_tokens = Empty,
+        total_tokens = Empty,
+    )
+}
+
+pub(super) fn record_compaction(span: &Span, usage: &crate::Usage, compacted_context_tokens: u64) {
+    let input_tokens = usage
+        .input_tokens
+        .saturating_add(usage.cache_read_input_tokens)
+        .saturating_add(usage.cache_creation_input_tokens);
+    span.record("compacted_context_tokens", compacted_context_tokens);
+    span.record("input_tokens", input_tokens);
+    span.record("cached_input_tokens", usage.cache_read_input_tokens);
+    span.record(
+        "cache_write_input_tokens",
+        usage.cache_creation_input_tokens,
+    );
+    span.record("output_tokens", usage.output_tokens);
+    span.record(
+        "total_tokens",
+        input_tokens.saturating_add(usage.output_tokens),
+    );
+}
+
+pub(super) fn finish_compaction(span: &Span, duration_ns: u64, error: Option<&NanocodeError>) {
+    span.record("duration_ns", duration_ns);
+    finish(span, error, "compaction failed");
+}
+
 pub(super) fn attempt_span(call_index: u32, attempt: u32, max_attempts: u32) -> Span {
     info_span!(
         target: "nanocode_claude",

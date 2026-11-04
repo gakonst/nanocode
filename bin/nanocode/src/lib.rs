@@ -582,7 +582,7 @@ async fn hand(args: HandArgs) -> Result<()> {
     eprintln!("nanocode hand {name} in {}", directory.display());
     let run = hand.run(|event| match event {
         HandEvent::Connecting { endpoint } => eprintln!("hand: connecting {endpoint}"),
-        HandEvent::Connected { endpoint } => eprintln!("hand: connected to {endpoint}"),
+        HandEvent::Connected { endpoint, .. } => eprintln!("hand: connected to {endpoint}"),
         HandEvent::Listening { endpoint } => eprintln!("hand: listening {endpoint}"),
         HandEvent::BrainConnected { peer } => eprintln!("hand: brain connected from {peer}"),
         HandEvent::Disconnected { reason } => eprintln!("hand: disconnected ({reason})"),

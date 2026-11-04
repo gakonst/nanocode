@@ -870,31 +870,37 @@ async fn journal_writer(
                 attempt => platform::sleep(completion_retry_delay(attempt)).await,
             }
         };
-        let taken = async {
-            match slot.as_mut() {
-                Some(open) => open.await.ok(),
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            changed = revision.changed() => {
-                if changed.is_err() {
-                    return;
+        tokio::pin!(retry);
+        loop {
+            let taken = async {
+                match slot.as_mut() {
+                    Some(open) => open.await.ok(),
+                    None => std::future::pending().await,
                 }
-            }
-            request = requests.recv() => match request {
-                Some(request) => pending.push(request),
-                None => return,
-            },
-            fill = taken => {
-                slot = None;
-                if let (Some(fill), Some(live)) = (fill, registry.upgrade()) {
-                    live.fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
-                        .await;
+            };
+            tokio::select! {
+                changed = revision.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break;
                 }
-                continue;
+                request = requests.recv() => match request {
+                    Some(request) => {
+                        pending.push(request);
+                        break;
+                    }
+                    None => return,
+                },
+                fill = taken => {
+                    slot = None;
+                    if let (Some(fill), Some(live)) = (fill, registry.upgrade()) {
+                        live.fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
+                            .await;
+                    }
+                }
+                () = &mut retry => break,
             }
-            () = retry => {}
         }
     }
 }

@@ -409,38 +409,48 @@ impl<'a> IntoIterator for &'a ResponseHistory {
 }
 
 pub struct ResponseHistoryIter<'a> {
-    segments: Vec<&'a HistorySegment>,
+    history: &'a ResponseHistory,
+    start: usize,
+    segments: Option<Vec<&'a HistorySegment>>,
     segment_index: usize,
     item_index: usize,
     tail: std::slice::Iter<'a, ResponseItem>,
+    remaining: usize,
 }
 
 impl<'a> ResponseHistoryIter<'a> {
     fn new(history: &'a ResponseHistory, start: usize) -> Self {
-        let mut segments = Vec::new();
         let committed_len = history.head.as_ref().map_or(0, |segment| segment.len);
         let start = start.min(history.len());
-        let mut item_index = 0;
-        if start < committed_len {
-            let mut current = history.head.as_deref();
+        let tail_start = start.saturating_sub(committed_len);
+        Self {
+            history,
+            start,
+            segments: (start >= committed_len).then(Vec::new),
+            segment_index: 0,
+            item_index: 0,
+            tail: history.tail[tail_start..].iter(),
+            remaining: history.len() - start,
+        }
+    }
+
+    fn segments(&mut self) -> &[&'a HistorySegment] {
+        if self.segments.is_none() {
+            let mut segments = Vec::new();
+            let mut current = self.history.head.as_deref();
             while let Some(segment) = current {
                 let previous_len = segment.previous.as_ref().map_or(0, |previous| previous.len);
                 segments.push(segment);
-                if start >= previous_len {
-                    item_index = start - previous_len;
+                if self.start >= previous_len {
+                    self.item_index = self.start - previous_len;
                     break;
                 }
                 current = segment.previous.as_deref();
             }
             segments.reverse();
+            self.segments = Some(segments);
         }
-        let tail_start = start.saturating_sub(committed_len);
-        Self {
-            segments,
-            segment_index: 0,
-            item_index,
-            tail: history.tail[tail_start..].iter(),
-        }
+        self.segments.as_deref().unwrap_or_default()
     }
 }
 
@@ -448,33 +458,26 @@ impl<'a> Iterator for ResponseHistoryIter<'a> {
     type Item = &'a ResponseItem;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(segment) = self.segments.get(self.segment_index) {
+        loop {
+            let index = self.segment_index;
+            let Some(&segment) = self.segments().get(index) else {
+                break;
+            };
             if let Some(item) = segment.items.get(self.item_index) {
                 self.item_index += 1;
+                self.remaining -= 1;
                 return Some(item);
             }
             self.segment_index += 1;
             self.item_index = 0;
         }
-        self.tail.next()
+        let item = self.tail.next()?;
+        self.remaining -= 1;
+        Some(item)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .segments
-            .iter()
-            .enumerate()
-            .skip(self.segment_index)
-            .map(|(index, segment)| {
-                if index == self.segment_index {
-                    segment.items.len().saturating_sub(self.item_index)
-                } else {
-                    segment.items.len()
-                }
-            })
-            .sum::<usize>()
-            + self.tail.len();
-        (remaining, Some(remaining))
+        (self.remaining, Some(self.remaining))
     }
 }
 

@@ -8,7 +8,9 @@ use std::{
 };
 
 use arc_swap::ArcSwapOption;
-use nanocode_agent_core::backend::{BackendFuture, ChildJournal, ChildJournalStore};
+use nanocode_agent_core::backend::{
+    BackendFuture, ChildJournal, ChildJournalStore, DeferredJournal, JournalFill,
+};
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -88,8 +90,11 @@ struct Fenced {
 
 type Pending = Arc<nanocode_sync::Atom<imbl::HashMap<String, Arc<str>>>>;
 
+type DeferredKeys = Arc<nanocode_sync::Slot<(Vec<String>, Vec<String>)>>;
+
 struct InFlight {
-    write: Arc<LatestWrite>,
+    write: Option<Arc<LatestWrite>>,
+    deferred: Option<DeferredKeys>,
     done: oneshot::Receiver<Result<u64, StoreError>>,
     staged: Vec<String>,
     pending: Vec<String>,
@@ -169,7 +174,10 @@ impl Fenced {
         let pending = pending.into_iter().map(|(key, _)| key);
         let keys = staged.iter().map(|record| record.key.clone());
         if let Some(last) = self.inflight.back_mut()
-            && last.write.update(&payload, &staged)
+            && last
+                .write
+                .as_ref()
+                .is_some_and(|write| write.update(&payload, &staged))
         {
             last.staged.extend(keys);
             last.pending.extend(pending);
@@ -182,12 +190,85 @@ impl Fenced {
             .map_err(std::io::Error::other)?;
         self.next = self.next.saturating_add(1);
         self.inflight.push_back(InFlight {
-            write,
+            write: Some(write),
+            deferred: None,
             done,
             staged: staged_keys,
             pending: pending.collect(),
         });
         Ok(())
+    }
+
+    async fn save_deferred(
+        &mut self,
+        store: &mut SharedStore,
+        state_id: &str,
+    ) -> std::io::Result<DeferredJournal> {
+        if self.failure.is_some() {
+            self.drain().await;
+            if let Some((_, revision)) = &self.owner {
+                self.next = *revision;
+            }
+            if let Some(error) = self.failure.take() {
+                return Err(error);
+            }
+        }
+        if self.owner.is_none() {
+            self.acquire(store, state_id).await?;
+        }
+        let (owner, _) = self
+            .owner
+            .clone()
+            .ok_or_else(|| std::io::Error::other("journal owner was not acquired"))?;
+        let retry = std::mem::take(&mut self.retry)
+            .into_iter()
+            .filter(|key| !self.committed.contains(key))
+            .filter_map(|key| self.pending.read(|pending| pending.get(&key).cloned()))
+            .collect::<Vec<_>>();
+        let (deliver, fill) = oneshot::channel::<JournalFill>();
+        let keys = Arc::new(nanocode_sync::Slot::default());
+        let filled = Arc::clone(&keys);
+        let pending = Arc::clone(&self.pending);
+        let content: crate::shared_store::DeferredContent = Box::pin(async move {
+            let stopped =
+                || StoreError::NotCommitted("the subagent journal writer stopped".to_owned());
+            let (send, receive) = oneshot::channel();
+            deliver.send(send).map_err(|_| stopped())?;
+            let (payload, records) = receive.await.map_err(|_| stopped())?;
+            let mut staged = Vec::new();
+            let mut known = Vec::with_capacity(records.len() + retry.len());
+            for json in records.into_iter().chain(retry) {
+                let mut encoded = EncodedPayload::from_json(Arc::clone(&json));
+                known.push((encoded.key().to_owned(), json));
+                encoded.stage(&mut staged);
+            }
+            staged.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+            staged.dedup_by(|a, b| a.key == b.key);
+            if !known.is_empty() {
+                pending.update(|overlay| {
+                    for (key, json) in &known {
+                        overlay.insert(key.clone(), Arc::clone(json));
+                    }
+                });
+            }
+            filled.put((
+                staged.iter().map(|record| record.key.clone()).collect(),
+                known.into_iter().map(|(key, _)| key).collect(),
+            ));
+            Ok((payload, staged))
+        });
+        let done = store
+            .replace_deferred(state_id, &owner, self.next, content)
+            .map_err(std::io::Error::other)?;
+        self.next = self.next.saturating_add(1);
+        self.inflight.push_back(InFlight {
+            write: None,
+            deferred: Some(keys),
+            done,
+            staged: Vec::new(),
+            pending: Vec::new(),
+        });
+        Ok(fill)
     }
 
     async fn drain(&mut self) {
@@ -198,9 +279,13 @@ impl Fenced {
     }
 
     fn settled(&mut self, result: Result<u64, StoreError>) {
-        let Some(entry) = self.inflight.pop_front() else {
+        let Some(mut entry) = self.inflight.pop_front() else {
             return;
         };
+        if let Some((staged, pending)) = entry.deferred.take().and_then(|keys| keys.take()) {
+            entry.staged.extend(staged);
+            entry.pending.extend(pending);
+        }
         match result {
             Ok(revision) => {
                 if let Some((owner, _)) = self.owner.take() {
@@ -244,6 +329,7 @@ enum Write {
         records: Vec<Arc<str>>,
         result: oneshot::Sender<std::io::Result<()>>,
     },
+    Defer(oneshot::Sender<std::io::Result<DeferredJournal>>),
 }
 
 async fn write_journal(
@@ -265,6 +351,9 @@ async fn write_journal(
                     result,
                 }) => {
                     drop(result.send(fenced.save(&mut store, &state_id, payload, records).await));
+                }
+                Some(Write::Defer(result)) => {
+                    drop(result.send(fenced.save_deferred(&mut store, &state_id).await));
                 }
                 None => break,
             },
@@ -372,6 +461,11 @@ impl ChildJournalStore for SharedJournal {
 
     fn records_children(&self) -> bool {
         false
+    }
+
+    fn save_deferred(&self) -> BackendFuture<std::io::Result<Option<DeferredJournal>>> {
+        let journal = self.clone();
+        Box::pin(async move { journal.write(Write::Defer).await.map(Some) })
     }
 
     fn load_records(&self, keys: Vec<String>) -> BackendFuture<std::io::Result<Vec<String>>> {

@@ -103,6 +103,10 @@ pub trait BuilderBackend {
 #[cfg(not(target_family = "wasm"))]
 pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
+pub type JournalFill = tokio::sync::oneshot::Sender<(String, Vec<Arc<str>>)>;
+
+pub type DeferredJournal = tokio::sync::oneshot::Receiver<JournalFill>;
+
 #[cfg(target_family = "wasm")]
 pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;
 
@@ -157,6 +161,10 @@ pub trait ChildJournalStore: Send + Sync + 'static {
     fn load(&self) -> BackendFuture<std::io::Result<Option<String>>>;
 
     fn save(&self, payload: String, records: Vec<Arc<str>>) -> BackendFuture<std::io::Result<()>>;
+
+    fn save_deferred(&self) -> BackendFuture<std::io::Result<Option<DeferredJournal>>> {
+        Box::pin(async { Ok(None) })
+    }
 
     fn load_record(&self, key: String) -> BackendFuture<std::io::Result<String>>;
 

@@ -61,6 +61,13 @@ enum Command {
         write: std::sync::Arc<LatestWrite>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
+    ReplaceDeferred {
+        state_id: String,
+        owner: OwnerToken,
+        expected_revision: u64,
+        content: DeferredContent,
+        result: oneshot::Sender<Result<u64, StoreError>>,
+    },
     Commit {
         state_id: String,
         owner: OwnerToken,
@@ -217,71 +224,53 @@ async fn drive_grouped<S: StateStore>(
     let mut operations = 0_usize;
     let mut groups = 0_usize;
     let mut queued = std::collections::VecDeque::<StoreRequest>::new();
+    let mut barriers = 0_usize;
     let mut open = true;
     loop {
-        let mut group = Vec::new();
-        let mut states = std::collections::HashSet::new();
-        let mut rest = std::collections::VecDeque::new();
-        let mut admits = if groups == 0 {
-            Admits::Writes
-        } else {
-            Admits::Reads
-        };
-        while let Some(request) = queued.pop_front() {
-            match admits {
-                Admits::Nothing => {
-                    rest.push_back(request);
-                    continue;
-                }
-                Admits::Reads if is_write(&request.command) => {
-                    rest.push_back(request);
-                    continue;
-                }
-                Admits::Writes | Admits::Reads => {}
-            }
-            match Grouped::from_request(request) {
-                Ok(grouped) => {
-                    let state = grouped.commit.state_id.clone();
-                    if states.insert(state) {
+        if groups == 0 {
+            let mut group = Vec::new();
+            let mut states = std::collections::HashSet::new();
+            while queued.front().is_some_and(|request| {
+                command_state(&request.command).is_some_and(|state| !states.contains(state))
+            }) {
+                let Some(request) = queued.pop_front() else {
+                    break;
+                };
+                match Grouped::from_request(request) {
+                    Ok(grouped) => {
+                        states.insert(grouped.commit.state_id.clone());
                         group.push(grouped);
-                    } else {
-                        admits = Admits::Reads;
-                        rest.push_back(grouped.into_request());
+                    }
+                    Err(request) => {
+                        queued.push_front(request);
+                        break;
                     }
                 }
-                Err(request) => {
-                    if !matches!(request.command, Command::Flush { .. })
-                        && let Some(mut handle) = store.pipeline_handle()
-                    {
-                        operations += 1;
-                        let completion = Completion(finished.clone(), Vec::new());
+            }
+            if !group.is_empty() {
+                match store.pipeline_handle() {
+                    Some(mut handle) => {
+                        groups += 1;
+                        let completion = Completion(finished.clone(), states.into_iter().collect());
                         spawn_operation(async move {
-                            run(&mut *handle, request).await;
+                            run_grouped(&mut *handle, group).await;
                             drop(completion);
                         });
-                    } else if operations == 0 && groups == 0 && group.is_empty() {
-                        run(&mut store, request).await;
-                    } else {
-                        rest.push_back(request);
-                        admits = Admits::Nothing;
                     }
+                    None => run_grouped(&mut store, group).await,
                 }
+                continue;
             }
-        }
-        queued = rest;
-        if !group.is_empty() {
-            match store.pipeline_handle() {
-                Some(mut handle) => {
-                    groups += 1;
-                    let completion = Completion(finished.clone(), states.into_iter().collect());
-                    spawn_operation(async move {
-                        run_grouped(&mut *handle, group).await;
-                        drop(completion);
-                    });
-                }
-                None => run_grouped(&mut store, group).await,
+            if operations == 0
+                && queued
+                    .front()
+                    .is_some_and(|request| command_state(&request.command).is_none())
+                && let Some(request) = queued.pop_front()
+            {
+                barriers -= 1;
+                run(&mut store, request).await;
+                continue;
             }
-            continue;
         }
         if !open && operations == 0 && groups == 0 && queued.is_empty() {
             break;
@@ -297,9 +286,29 @@ async fn drive_grouped<S: StateStore>(
             }
             request = receiver.recv(), if open => match request {
                 Some(request) => {
-                    queued.push_back(request);
-                    while let Ok(request) = receiver.try_recv() {
-                        queued.push_back(request);
+                    let mut next = Some(request);
+                    while let Some(request) = next.take() {
+                        let write = command_state(&request.command).is_some();
+                        let pipelined = !write
+                            && barriers == 0
+                            && !matches!(request.command, Command::Flush { .. });
+                        match pipelined.then(|| store.pipeline_handle()).flatten() {
+                            Some(mut handle) => {
+                                operations += 1;
+                                let completion = Completion(finished.clone(), Vec::new());
+                                spawn_operation(async move {
+                                    run(&mut *handle, request).await;
+                                    drop(completion);
+                                });
+                            }
+                            None => {
+                                if !write {
+                                    barriers += 1;
+                                }
+                                queued.push_back(request);
+                            }
+                        }
+                        next = receiver.try_recv().ok();
                     }
                 }
                 None => open = false,
@@ -308,17 +317,14 @@ async fn drive_grouped<S: StateStore>(
     }
 }
 
-enum Admits {
-    Writes,
-    Reads,
-    Nothing,
-}
-
-const fn is_write(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Replace { .. } | Command::ReplaceLatest { .. } | Command::Commit { .. }
-    )
+fn command_state(command: &Command) -> Option<&str> {
+    match command {
+        Command::Replace { state_id, .. }
+        | Command::ReplaceLatest { state_id, .. }
+        | Command::ReplaceDeferred { state_id, .. }
+        | Command::Commit { state_id, .. } => Some(state_id),
+        _ => None,
+    }
 }
 
 async fn run_grouped<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped>) {
@@ -392,9 +398,14 @@ impl Reply {
     }
 }
 
+pub(crate) type DeferredContent = std::pin::Pin<
+    Box<dyn Future<Output = Result<(String, Vec<crate::StoreRecord>), StoreError>> + Send>,
+>;
+
 struct Grouped {
     commit: OwnedCommit,
     reply: Reply,
+    content: Option<DeferredContent>,
     span: tracing::Span,
     queued: Instant,
 }
@@ -406,7 +417,29 @@ impl Grouped {
             span,
             queued,
         } = request;
+        let mut content = None;
         let (commit, reply) = match command {
+            Command::ReplaceDeferred {
+                state_id,
+                owner,
+                expected_revision,
+                content: deferred,
+                result,
+            } => {
+                content = Some(deferred);
+                (
+                    OwnedCommit {
+                        state_id,
+                        owner,
+                        expected_revision,
+                        payload: String::new(),
+                        records: Vec::new(),
+                        events: Vec::new(),
+                        summary: SummaryUpdate::Unchanged,
+                    },
+                    Reply::Replace(result),
+                )
+            }
             Command::Replace {
                 state_id,
                 owner,
@@ -479,6 +512,7 @@ impl Grouped {
         Ok(Self {
             commit,
             reply,
+            content,
             span,
             queued,
         })
@@ -495,6 +529,13 @@ impl Grouped {
             summary,
         } = self.commit;
         let command = match self.reply {
+            Reply::Replace(result) if self.content.is_some() => Command::ReplaceDeferred {
+                state_id,
+                owner,
+                expected_revision,
+                content: self.content.expect("deferred content"),
+                result,
+            },
             Reply::Replace(result) => Command::Replace {
                 state_id,
                 owner,
@@ -522,17 +563,45 @@ impl Grouped {
     }
 }
 
-async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
-    let count = group.len();
-    let mut commits = Vec::with_capacity(count);
-    let mut replies = Vec::with_capacity(count);
-    for grouped in group {
+async fn run_group<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped>) {
+    let contents = futures_util::future::join_all(
+        group
+            .iter_mut()
+            .map(|grouped| grouped.content.take())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|content| async move {
+                match content {
+                    Some(content) => Some(content.await),
+                    None => None,
+                }
+            }),
+    )
+    .await;
+    let mut commits = Vec::with_capacity(group.len());
+    let mut replies = Vec::with_capacity(group.len());
+    for (mut grouped, content) in group.into_iter().zip(contents) {
         grouped.span.record(
             "queue.duration_ms",
             grouped.queued.elapsed().as_secs_f64() * 1_000.0,
         );
+        match content {
+            Some(Ok((payload, records))) => {
+                grouped.commit.payload = payload;
+                grouped.commit.records = records;
+            }
+            Some(Err(error)) => {
+                grouped.reply.send(Err(error));
+                continue;
+            }
+            None => {}
+        }
         commits.push(grouped.commit);
         replies.push(grouped.reply);
+    }
+    let count = commits.len();
+    if count == 0 {
+        return;
     }
     let results = store
         .commit_many(commits)
@@ -621,6 +690,23 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
                             .await,
                     ),
                 );
+            }
+            Command::ReplaceDeferred {
+                state_id,
+                owner,
+                expected_revision,
+                content,
+                result,
+            } => {
+                let replaced = match content.await {
+                    Ok((payload, new_records)) => {
+                        store
+                            .replace(&state_id, &owner, expected_revision, &payload, &new_records)
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                drop(result.send(replaced));
             }
             Command::Commit {
                 state_id,
@@ -730,6 +816,37 @@ impl SharedStore {
                 span: tracing::info_span!(
                     "durability.store",
                     operation = "replace_latest",
+                    state.id = state_id,
+                    queue.duration_ms = tracing::field::Empty
+                ),
+                queued: Instant::now(),
+            })
+            .map_err(|_| stopped())?;
+        Ok(receiver)
+    }
+}
+
+impl SharedStore {
+    pub(crate) fn replace_deferred(
+        &self,
+        state_id: &str,
+        owner: &OwnerToken,
+        expected_revision: u64,
+        content: DeferredContent,
+    ) -> Result<oneshot::Receiver<Result<u64, StoreError>>, StoreError> {
+        let (result, receiver) = oneshot::channel();
+        self.commands
+            .send(StoreRequest {
+                command: Command::ReplaceDeferred {
+                    state_id: state_id.to_owned(),
+                    owner: owner.clone(),
+                    expected_revision,
+                    content,
+                    result,
+                },
+                span: tracing::info_span!(
+                    "durability.store",
+                    operation = "replace_deferred",
                     state.id = state_id,
                     queue.duration_ms = tracing::field::Empty
                 ),

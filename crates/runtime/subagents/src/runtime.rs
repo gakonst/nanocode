@@ -55,6 +55,7 @@ type MissingRuntime = (
     Option<Arc<str>>,
     Value,
     String,
+    bool,
 );
 
 pub(super) enum Residency {
@@ -201,6 +202,8 @@ pub(super) struct ChildSession {
     announce: bool,
 
     journal_generation: u64,
+
+    pub(super) conversation: bool,
 }
 
 pub(super) struct ActiveTurn {
@@ -790,6 +793,8 @@ async fn journal_writer(
     let mut pending = Vec::new();
     let mut failures = 0_u32;
     let mut fenced = false;
+    let mut slot: Option<nanocode_agent_core::backend::DeferredJournal> = None;
+    let mut deferrable = true;
     loop {
         for _ in 0..requests.len() {
             if let Ok(request) = requests.try_recv() {
@@ -807,6 +812,8 @@ async fn journal_writer(
                 &mut recorded,
                 &mut cache,
                 fenced,
+                &mut slot,
+                &mut deferrable,
             )
             .await;
         match save {
@@ -830,6 +837,16 @@ async fn journal_writer(
                 pending.push(request);
             }
             if pending.is_empty() {
+                if let Some(open) = slot.take() {
+                    live.fill_journal(
+                        &root_session_id,
+                        open,
+                        &mut saved,
+                        &mut recorded,
+                        &mut cache,
+                    )
+                    .await;
+                }
                 requests.close();
                 live.journal_writers.update(|writers| {
                     if writers
@@ -853,6 +870,12 @@ async fn journal_writer(
                 attempt => platform::sleep(completion_retry_delay(attempt)).await,
             }
         };
+        let taken = async {
+            match slot.as_mut() {
+                Some(open) => open.await.ok(),
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             changed = revision.changed() => {
                 if changed.is_err() {
@@ -863,6 +886,14 @@ async fn journal_writer(
                 Some(request) => pending.push(request),
                 None => return,
             },
+            fill = taken => {
+                slot = None;
+                if let (Some(fill), Some(live)) = (fill, registry.upgrade()) {
+                    live.fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
+                        .await;
+                }
+                continue;
+            }
             () = retry => {}
         }
     }
@@ -2314,6 +2345,7 @@ impl Registry {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn write_journal(
         &self,
         root_session_id: &str,
@@ -2322,6 +2354,8 @@ impl Registry {
         recorded: &mut HashMap<String, Arc<str>>,
         cache: &mut durable::JournalCache,
         fenced: bool,
+        slot: &mut Option<nanocode_agent_core::backend::DeferredJournal>,
+        deferrable: &mut bool,
     ) -> (bool, JournalSave) {
         let (restoring, background) = {
             let gate = self.claims.read(|claims| {
@@ -2371,7 +2405,8 @@ impl Registry {
         };
         let root = root_session_id.to_owned();
         let mut owned_cache = std::mem::take(cache);
-        let (snapshot, finished, returned_waiters, returned_cache) = self
+        let defer = *deferrable;
+        let (snapshot, finished, returned_waiters, returned_cache, wanted) = self
             .state
             .call(move |state| {
                 let root_session_id = root.as_str();
@@ -2381,6 +2416,7 @@ impl Registry {
                     session.root_id = root_session_id
                 )
                 .entered();
+                let mut wanted = false;
                 let (snapshot, finished) = match state.scopes.get_mut(root_session_id) {
                     None => {
                         for (scope, done) in waiters.drain(..) {
@@ -2398,8 +2434,9 @@ impl Registry {
                             }
                         }
                         let write = !waiters.is_empty() || (background && !scope.life.frozen());
+                        wanted = write;
                         (
-                            write.then(|| {
+                            (write && !defer).then(|| {
                                 cache.track(
                                     registry
                                         .checkpoint_changes
@@ -2415,11 +2452,87 @@ impl Registry {
                         )
                     }
                 };
-                (snapshot, finished, waiters, owned_cache)
+                (snapshot, finished, waiters, owned_cache, wanted)
             })
             .await;
         let waiters = returned_waiters;
         *cache = returned_cache;
+        if defer && wanted {
+            let deferred = match slot {
+                Some(_) => Ok(true),
+                None => match store.save_deferred(root_session_id).await {
+                    Ok(Some(open)) => {
+                        *slot = Some(open);
+                        Ok(true)
+                    }
+                    Ok(None) => Ok(false),
+                    Err(error) => Err(error),
+                },
+            };
+            match deferred {
+                Ok(true) => {
+                    for (_, done) in waiters {
+                        let _ = done.send(Ok(()));
+                    }
+                    let closed = !finals.is_empty();
+                    if closed && let Some(open) = slot.take() {
+                        self.fill_journal(root_session_id, open, saved, recorded, cache)
+                            .await;
+                    }
+                    for (write, done) in finals {
+                        *saved = None;
+                        let _ = done.send(
+                            self.save_write(root_session_id, store.as_ref(), write)
+                                .await,
+                        );
+                    }
+                    return (finished || closed, JournalSave::Saved);
+                }
+                Ok(false) => {
+                    *deferrable = false;
+                    let mut requeued = waiters
+                        .into_iter()
+                        .map(|(scope, done)| JournalRequest::Persist { scope, done })
+                        .collect::<Vec<_>>();
+                    requeued.extend(
+                        finals
+                            .into_iter()
+                            .map(|(write, done)| JournalRequest::Final { write, done }),
+                    );
+                    return Box::pin(self.write_journal(
+                        root_session_id,
+                        requeued,
+                        saved,
+                        recorded,
+                        cache,
+                        fenced,
+                        slot,
+                        deferrable,
+                    ))
+                    .await;
+                }
+                Err(error) => {
+                    let save = if is_fenced(&error) {
+                        JournalSave::Fenced
+                    } else {
+                        tracing::warn!(%error, %root_session_id, "could not save subagent journal");
+                        JournalSave::Failed
+                    };
+                    for (_, done) in waiters {
+                        let _ = done.send(Err(copy_error(&error)));
+                    }
+                    let closed = !finals.is_empty();
+                    for (write, done) in finals {
+                        *saved = None;
+                        let _ = done.send(
+                            self.save_write(root_session_id, store.as_ref(), write)
+                                .await,
+                        );
+                    }
+                    return (finished || closed, save);
+                }
+            }
+        }
         let encoded = snapshot.map(|snapshot| {
             snapshot.and_then(|snapshot| {
                 let _encode = tracing::info_span!(
@@ -2490,6 +2603,10 @@ impl Registry {
             Err(_) => JournalSave::Failed,
         };
         let closed = !finals.is_empty();
+        if closed && let Some(open) = slot.take() {
+            self.fill_journal(root_session_id, open, saved, recorded, cache)
+                .await;
+        }
         for (write, done) in finals {
             *saved = None;
             let _ = done.send(
@@ -2498,6 +2615,88 @@ impl Registry {
             );
         }
         (finished || closed, save)
+    }
+
+    async fn fill_journal(
+        &self,
+        root_session_id: &str,
+        open: nanocode_agent_core::backend::DeferredJournal,
+        saved: &mut Option<String>,
+        recorded: &mut HashMap<String, Arc<str>>,
+        cache: &mut durable::JournalCache,
+    ) {
+        if let Ok(fill) = open.await {
+            self.fill_with(root_session_id, fill, saved, recorded, cache)
+                .await;
+        }
+    }
+
+    async fn fill_with(
+        &self,
+        root_session_id: &str,
+        fill: nanocode_agent_core::backend::JournalFill,
+        saved: &mut Option<String>,
+        recorded: &mut HashMap<String, Arc<str>>,
+        cache: &mut durable::JournalCache,
+    ) {
+        let (Some(store), Some(registry)) = (self.store_for(root_session_id), self.shared()) else {
+            return;
+        };
+        let root = root_session_id.to_owned();
+        let mut owned_cache = std::mem::take(cache);
+        let (snapshot, returned_cache) = self
+            .state
+            .call(move |state| {
+                let root_session_id = root.as_str();
+                let cache = &mut owned_cache;
+                let snapshot = state.scopes.get_mut(root_session_id).map(|scope| {
+                    cache.track(
+                        registry
+                            .checkpoint_changes
+                            .update(|changes| changes.remove(root_session_id))
+                            .into_iter()
+                            .flatten(),
+                    );
+                    cache.track(scope.sessions.take_changed());
+                    let checkpoints = registry.checkpoints.get();
+                    scope.journal_snapshot(root_session_id, &checkpoints, cache)
+                });
+                (snapshot, owned_cache)
+            })
+            .await;
+        *cache = returned_cache;
+        let encoded = snapshot.map(|snapshot| {
+            snapshot.and_then(|snapshot| {
+                let _encode = tracing::info_span!(
+                    "subagent.journal.encode",
+                    session.root_id = root_session_id
+                )
+                .entered();
+                snapshot.encode(cache)
+            })
+        });
+        let Some(Ok(encoded)) = encoded else {
+            if let Some(Err(error)) = encoded {
+                tracing::warn!(%error, %root_session_id, "could not encode subagent journal");
+            }
+            return;
+        };
+        let contents = encoded
+            .records
+            .iter()
+            .map(|(_, json)| Arc::clone(json))
+            .collect();
+        let payload = encoded.payload.clone();
+        if fill.send((payload.clone(), contents)).is_err() {
+            return;
+        }
+        self.acknowledge(root_session_id, &encoded.acknowledged);
+        cache.committed(encoded);
+        if store.records_sessions() {
+            self.record_children(root_session_id, store.as_ref(), recorded)
+                .await;
+        }
+        *saved = Some(payload);
     }
 
     async fn record_children(
@@ -2751,6 +2950,38 @@ impl Registry {
         }
         let key = (root_session_id.to_owned(), id);
         if self.journal_holds_conversation(root_session_id, id) {
+            return;
+        }
+        if !self.records_sessions(root_session_id) {
+            let registry = Arc::clone(self);
+            drop(platform::spawn(async move {
+                let progressed = registry
+                    .completed_tools
+                    .update(|completed| completed.remove(&key).is_some());
+                let (harness, commits) = registry.capture_target(&key.0, key.1).await;
+                if harness.is_none() {
+                    return;
+                }
+                let root = key.0.clone();
+                let id = key.1;
+                registry
+                    .state
+                    .call(move |state| {
+                        if let Some(session) = state
+                            .scopes
+                            .get_mut(&root)
+                            .and_then(|scope| scope.sessions.get_mut(&id))
+                        {
+                            session.conversation = true;
+                        }
+                    })
+                    .await;
+                registry.recorded_conversation(&key.0, key.1, true);
+                registry
+                    .settle_capture(&key.0, key.1, commits, progressed)
+                    .await;
+                registry.changed();
+            }));
             return;
         }
         let started = self.progress_captures.update(|captures| {
@@ -3186,6 +3417,11 @@ impl Registry {
                     let id = agent.descriptor.id;
                     let checkpoint = agent.snapshot(&lineage)?;
                     let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
+                    if session.conversation
+                        && let Some(registry) = &registry
+                    {
+                        registry.recorded_conversation(root_session_id, id, true);
+                    }
                     if session.completion.revision().is_some()
                         && session.status.wakes_parent()
                         && !resume
@@ -3965,6 +4201,7 @@ impl Registry {
                         changes: watch::Sender::new(0),
                         announce: false,
                         journal_generation: 0,
+                        conversation: false,
                     },
                 )
             })
@@ -5424,6 +5661,7 @@ impl Registry {
                 session.host_context.clone(),
                 session.output_schema.clone(),
                 session.descriptor.task.clone(),
+                session.conversation,
             ));
             match session.descriptor.parent {
                 Some(parent) => id = parent,
@@ -5439,8 +5677,16 @@ impl Registry {
         missing: &mut Vec<MissingRuntime>,
     ) -> std::io::Result<()> {
         let root = root.to_owned();
-        while let Some((id, parent_id, parent_session, snapshot, host_context, schema, task)) =
-            missing.pop()
+        while let Some((
+            id,
+            parent_id,
+            parent_session,
+            snapshot,
+            host_context,
+            schema,
+            task,
+            conversation,
+        )) = missing.pop()
         {
             let snapshot = match snapshot {
                 Some(snapshot) => snapshot,
@@ -5453,7 +5699,7 @@ impl Registry {
                     std::io::Error::other("subagent parent runtime is unavailable for rehydration")
                 })?;
             let contract = OutputContract::compile(&schema)?;
-            let needs_assignment = !snapshot.has_conversation();
+            let needs_assignment = !snapshot.has_conversation() && !conversation;
             let context = super::model::AgentContext {
                 model: snapshot.model(),
                 thinking: snapshot.thinking(),
@@ -6462,6 +6708,7 @@ impl ChildSession {
             changes: watch::Sender::new(0),
             announce: true,
             journal_generation: 0,
+            conversation: false,
         }
     }
 

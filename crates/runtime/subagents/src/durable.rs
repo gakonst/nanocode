@@ -44,6 +44,16 @@ pub trait SubagentStore: Send + Sync {
         records: Vec<Arc<str>>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>>;
 
+    fn save_deferred<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+    ) -> SubagentStoreFuture<
+        'a,
+        std::io::Result<Option<nanocode_agent_core::backend::DeferredJournal>>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
     fn record_session<'a>(
         &'a self,
         _root_session_id: &'a str,
@@ -565,6 +575,8 @@ struct AgentRecord {
     completion_parked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cancelled_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    conversation: bool,
 }
 
 fn encode_agent(
@@ -597,6 +609,7 @@ fn encode_agent(
         completion_attempt: agent.completion_attempt,
         completion_parked: agent.completion_parked,
         cancelled_revision: agent.cancelled_revision,
+        conversation: agent.conversation,
     })?;
     records.push((Arc::clone(&key), json));
     Ok(key)
@@ -704,6 +717,7 @@ fn agent_from(
         completion_attempt: record.completion_attempt,
         completion_parked: record.completion_parked,
         cancelled_revision: record.cancelled_revision,
+        conversation: record.conversation,
     };
     agent.expand();
     Ok(agent)
@@ -924,6 +938,9 @@ pub(super) struct PersistedAgent {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) completion_parked: bool,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) conversation: bool,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) cancelled_revision: Option<u64>,
@@ -1273,6 +1290,16 @@ impl SubagentStore for JournalStore {
         self.0.save(payload, records)
     }
 
+    fn save_deferred<'a>(
+        &'a self,
+        _root_session_id: &'a str,
+    ) -> SubagentStoreFuture<
+        'a,
+        std::io::Result<Option<nanocode_agent_core::backend::DeferredJournal>>,
+    > {
+        self.0.save_deferred()
+    }
+
     fn load_record<'a>(
         &'a self,
         _root_session_id: &'a str,
@@ -1372,6 +1399,7 @@ pub(super) fn persist_agent(
         completion_attempt: session.completion.attempt(),
         completion_parked: session.completion.parked(),
         cancelled_revision: session.cancelled_revision,
+        conversation: session.conversation,
     })
 }
 
@@ -1546,6 +1574,7 @@ pub(super) fn restored_session(
     }
     session.resume_attempts = resume_attempts;
     session.usage = usage;
+    session.conversation = agent.conversation;
 
     let accepted_revision = accepted_revision.unwrap_or(agent.next_instruction_revision);
     session.settled_revision = if completed_by_acceptance {

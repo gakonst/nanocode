@@ -7,6 +7,8 @@ use nanocode_durability_core::{Sql, SqlRow, SqlStatement, StoreError, StoreFutur
 
 const JOB_CAPACITY: usize = 1;
 
+const STATEMENT_CACHE: usize = 64;
+
 type Rows = Result<Vec<Vec<SqlRow>>, StoreError>;
 
 struct Job {
@@ -16,6 +18,8 @@ struct Job {
 
 pub struct SqliteSql {
     jobs: mpsc::Sender<Job>,
+    readers: Vec<mpsc::Sender<Job>>,
+    next_reader: std::sync::atomic::AtomicUsize,
 }
 
 impl SqliteSql {
@@ -27,12 +31,24 @@ impl SqliteSql {
     pub fn from_connection(connection: Connection) -> Result<Self, StoreError> {
         configure(&connection)?;
         let checkpoints = checkpointer(&connection);
+        let readers = readers(&connection);
         let (jobs, receiver) = mpsc::channel(JOB_CAPACITY);
         thread::Builder::new()
             .name("nanocode-sqlite-sql".into())
-            .spawn(move || serve(connection, receiver, checkpoints))
+            .spawn(move || {
+                serve(
+                    connection,
+                    receiver,
+                    checkpoints,
+                    TransactionBehavior::Immediate,
+                )
+            })
             .map_err(|error| StoreError::Backend(error.to_string()))?;
-        Ok(Self { jobs })
+        Ok(Self {
+            jobs,
+            readers,
+            next_reader: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 
     pub async fn open_async(path: impl AsRef<Path>) -> Result<Self, StoreError> {
@@ -49,13 +65,22 @@ impl SqliteSql {
                     Ok(connection) => connection,
                     Err(error) => return drop(opened.send(Err(error))),
                 };
-                drop(opened.send(Ok(())));
                 let checkpoints = checkpointer(&connection);
-                serve(connection, receiver, checkpoints);
+                drop(opened.send(Ok(readers(&connection))));
+                serve(
+                    connection,
+                    receiver,
+                    checkpoints,
+                    TransactionBehavior::Immediate,
+                );
             })
             .map_err(|error| StoreError::Backend(error.to_string()))?;
-        ready.await.map_err(|_| stopped())??;
-        Ok(Self { jobs })
+        let readers = ready.await.map_err(|_| stopped())??;
+        Ok(Self {
+            jobs,
+            readers,
+            next_reader: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 }
 
@@ -65,7 +90,7 @@ impl Sql for SqliteSql {
         _operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Rows> {
-        let statements = statements
+        let statements: Vec<(&'static str, Vec<String>)> = statements
             .iter()
             .map(|statement| {
                 (
@@ -78,9 +103,19 @@ impl Sql for SqliteSql {
                 )
             })
             .collect();
+        let reads =
+            !self.readers.is_empty() && statements.iter().all(|(sql, _)| sql.starts_with("SELECT"));
+        let worker = if reads {
+            let next = self
+                .next_reader
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            &self.readers[next % self.readers.len()]
+        } else {
+            &self.jobs
+        };
         Box::pin(async move {
             let (reply, result) = oneshot::channel();
-            self.jobs
+            worker
                 .send(Job { statements, reply })
                 .await
                 .map_err(|_| stopped())?;
@@ -94,11 +129,43 @@ impl Sql for SqliteSql {
 }
 
 fn configure(connection: &Connection) -> Result<(), StoreError> {
+    connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     connection
         .execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA mmap_size = 4294967296;",
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA mmap_size = 4294967296; PRAGMA temp_store = MEMORY;",
         )
         .map_err(backend)
+}
+
+fn readers(connection: &Connection) -> Vec<mpsc::Sender<Job>> {
+    let Some(path) = connection
+        .path()
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+    else {
+        return Vec::new();
+    };
+    let count = thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    (0..count)
+        .map_while(|_| {
+            let reader = Connection::open_with_flags(
+                &path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .ok()?;
+            reader.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
+            reader
+                .execute_batch("PRAGMA busy_timeout = 5000; PRAGMA mmap_size = 4294967296;")
+                .ok()?;
+            let (jobs, receiver) = mpsc::channel(JOB_CAPACITY);
+            thread::Builder::new()
+                .name("nanocode-sqlite-read".into())
+                .spawn(move || serve(reader, receiver, None, TransactionBehavior::Deferred))
+                .ok()?;
+            Some(jobs)
+        })
+        .collect()
 }
 
 fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<()>> {
@@ -134,9 +201,13 @@ fn serve(
     mut connection: Connection,
     mut jobs: mpsc::Receiver<Job>,
     checkpoints: Option<std::sync::mpsc::SyncSender<()>>,
+    behavior: TransactionBehavior,
 ) {
     while let Some(job) = jobs.blocking_recv() {
-        drop(job.reply.send(run(&mut connection, &job.statements)));
+        drop(
+            job.reply
+                .send(run(&mut connection, &job.statements, behavior)),
+        );
         if let Some(checkpoints) = &checkpoints {
             let _ = checkpoints.try_send(());
         }
@@ -144,9 +215,13 @@ fn serve(
     drop(connection.close());
 }
 
-fn run(connection: &mut Connection, statements: &[(&'static str, Vec<String>)]) -> Rows {
+fn run(
+    connection: &mut Connection,
+    statements: &[(&'static str, Vec<String>)],
+    behavior: TransactionBehavior,
+) -> Rows {
     let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .transaction_with_behavior(behavior)
         .map_err(not_committed)?;
     let mut results = Vec::with_capacity(statements.len());
     for (sql, params) in statements {

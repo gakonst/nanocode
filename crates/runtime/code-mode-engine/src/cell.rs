@@ -16,7 +16,7 @@ use rquickjs::{
     loader::{ImportAttributes, Resolver, bundle::Bundle},
     promise::PromiseState,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, value::RawValue};
 use tokio::sync::mpsc;
 
@@ -492,7 +492,7 @@ pub(crate) fn start_execution<'js>(
     state: &Rc<RefCell<ExecutionState>>,
     run_cell: &Function<'js>,
     source: String,
-    tools: Vec<Value>,
+    tools: &CellTools,
     prelude: bool,
 ) -> Result<Promise<'js>, String> {
     let prelude = if prelude {
@@ -562,34 +562,77 @@ pub(crate) fn run_execution<'js>(
     state: &Rc<RefCell<ExecutionState>>,
     run_cell: &Function<'js>,
     source: String,
-    tools: Vec<Value>,
+    tools: &CellTools,
     prelude: rquickjs::Value<'js>,
 ) -> Result<Promise<'js>, String> {
-    let (tools, schemas) = split_schemas(tools);
-    let tools = serde_json::to_string(&tools)
-        .map_err(|error| format!("failed to encode QuickJS tool metadata: {error}"))?;
-    let schemas = serde_json::to_string(&schemas)
-        .map_err(|error| format!("failed to encode QuickJS tool schemas: {error}"))?;
     let promise = run_cell
-        .call::<_, Promise<'js>>((source, tools, schemas, prelude))
+        .call::<_, Promise<'js>>((
+            source,
+            tools.definitions.as_str(),
+            tools.descriptions.as_str(),
+            tools.schemas.as_str(),
+            prelude,
+        ))
         .catch(ctx)
         .map_err(|error| format!("embedded QuickJS execution failed to start: {error}"))?;
     drain_jobs(ctx, state);
     Ok(promise)
 }
 
-pub(crate) fn split_schemas(mut tools: Vec<Value>) -> (Vec<Value>, Vec<[Value; 2]>) {
-    let schemas = tools
-        .iter_mut()
-        .map(|tool| match tool {
-            Value::Object(fields) => [
-                fields.remove("input_schema").unwrap_or(Value::Null),
-                fields.remove("output_schema").unwrap_or(Value::Null),
-            ],
-            _ => [Value::Null, Value::Null],
+/// A cell's nested tools as the bootstrap reads them: each tool's names and
+/// kind, which every cell parses, and their descriptions and schemas, which
+/// only a cell that reads `ALL_TOOLS` or calls `toolSchema` parses.
+/// Encoding a catalog of many tools costs more than the rest of a short cell,
+/// so a host encodes it once and passes the same `CellTools` to every cell
+/// that offers those tools.
+pub struct CellTools {
+    definitions: String,
+    descriptions: String,
+    schemas: String,
+}
+
+const DESCRIPTION_FIELD: &str = "description";
+const SCHEMA_FIELDS: [&str; 2] = ["input_schema", "output_schema"];
+
+impl CellTools {
+    pub fn encode(tools: &[Value]) -> Result<Self, String> {
+        struct Definition<'a>(&'a Value);
+
+        impl Serialize for Definition<'_> {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self.0 {
+                    Value::Object(fields) => {
+                        serializer.collect_map(fields.iter().filter(|(key, _)| {
+                            *key != DESCRIPTION_FIELD && !SCHEMA_FIELDS.contains(&key.as_str())
+                        }))
+                    }
+                    other => other.serialize(serializer),
+                }
+            }
+        }
+
+        let definitions = serde_json::to_string(&tools.iter().map(Definition).collect::<Vec<_>>())
+            .map_err(|error| format!("failed to encode QuickJS tool metadata: {error}"))?;
+        let descriptions = serde_json::to_string(
+            &tools
+                .iter()
+                .map(|tool| tool.get(DESCRIPTION_FIELD).unwrap_or(&Value::Null))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| format!("failed to encode QuickJS tool descriptions: {error}"))?;
+        let schemas = serde_json::to_string(
+            &tools
+                .iter()
+                .map(|tool| SCHEMA_FIELDS.map(|field| tool.get(field).unwrap_or(&Value::Null)))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| format!("failed to encode QuickJS tool schemas: {error}"))?;
+        Ok(Self {
+            definitions,
+            descriptions,
+            schemas,
         })
-        .collect();
-    (tools, schemas)
+    }
 }
 
 #[allow(clippy::too_many_lines)]

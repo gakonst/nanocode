@@ -357,7 +357,7 @@ pub(super) struct CellRecord {
     pub(super) session_id: String,
     pub(super) origin_call_id: String,
     pub(super) script: String,
-    pub(super) tools: Vec<Value>,
+    pub(super) tools: Arc<[Value]>,
     pub(super) stored: HashMap<String, Arc<RawValue>>,
     pub(super) prelude: bool,
     pub(super) yield_time_ms: u64,
@@ -562,7 +562,7 @@ impl CellRecord {
             version: CELL_JOURNAL_VERSION,
             origin_call_id: self.origin_call_id.clone(),
             script: self.script.clone(),
-            tools: self.tools.clone(),
+            tools: self.tools.to_vec(),
             stored: self.stored_json(),
             prelude: self.prelude,
             yield_time_ms: self.yield_time_ms,
@@ -633,7 +633,7 @@ impl CellRecord {
             origin_call_id: self.origin_call_id.clone(),
             observer_call_id: status.observer_call_id.clone(),
             script: self.script.clone(),
-            tools: self.tools.clone(),
+            tools: self.tools.to_vec(),
             stored: self
                 .stored
                 .iter()

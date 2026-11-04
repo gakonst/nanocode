@@ -47,9 +47,9 @@ pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
 pub use nanocode_code_mode_engine::JournalEntry;
 pub use nanocode_code_mode_engine::bytes;
+use nanocode_code_mode_engine::{CellTools, EmbeddedHost as ExecutionWorker, RuntimeEvent};
 #[cfg(target_family = "wasm")]
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
-use nanocode_code_mode_engine::{EmbeddedHost as ExecutionWorker, RuntimeEvent};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use replay::{
     CELL_JOURNAL_VERSION, CellJournal, CellJournalHeader, CellJournalSink, CellJournalState,
@@ -86,6 +86,16 @@ pub struct CodeModeRuntime {
     prelude: Option<Arc<str>>,
     journals: Option<CellJournals>,
     nested_limit: usize,
+    catalog: Atom<Option<NestedCatalog>>,
+}
+
+/// The nested tools the last cell offered, encoded as its QuickJS bootstrap
+/// reads them. A catalog of many tools takes longer to encode than a short
+/// cell takes to run, and a session's cells mostly offer the same tools.
+#[derive(Clone)]
+struct NestedCatalog {
+    metadata: Arc<[Value]>,
+    encoded: Arc<CellTools>,
 }
 
 #[derive(Clone)]
@@ -371,7 +381,28 @@ impl CodeModeRuntime {
             prelude: None,
             journals: None,
             nested_limit: usize::MAX,
+            catalog: Atom::new(None),
         }
+    }
+
+    fn cell_tools(&self, metadata: &Arc<[Value]>) -> Result<Arc<CellTools>, String> {
+        let cached = self.catalog.read(|catalog| {
+            catalog
+                .as_ref()
+                .filter(|catalog| {
+                    Arc::ptr_eq(&catalog.metadata, metadata) || *catalog.metadata == **metadata
+                })
+                .map(|catalog| Arc::clone(&catalog.encoded))
+        });
+        if let Some(encoded) = cached {
+            return Ok(encoded);
+        }
+        let encoded = Arc::new(CellTools::encode(metadata)?);
+        self.catalog.set(Some(NestedCatalog {
+            metadata: Arc::clone(metadata),
+            encoded: Arc::clone(&encoded),
+        }));
+        Ok(encoded)
     }
 
     pub const fn set_nested_call_limit(&mut self, limit: usize) {
@@ -429,12 +460,25 @@ impl CodeModeRuntime {
                 host_context: context.host_context.clone(),
             };
             let stored = journal.stored_values();
+            let metadata: Arc<[Value]> = journal.tools.into();
+            let catalog = match self.cell_tools(&metadata) {
+                Ok(catalog) => catalog,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "nanocode_code_mode",
+                        cell_id,
+                        %error,
+                        "skipped a Code Mode cell journal whose tools cannot be encoded"
+                    );
+                    continue;
+                }
+            };
             let record = Arc::new(CellRecord {
                 cell_id,
                 session_id: journal.session_id.clone(),
                 origin_call_id: journal.origin_call_id.clone(),
                 script: journal.script.clone(),
-                tools: journal.tools.clone(),
+                tools: metadata,
                 stored: stored.clone(),
                 prelude: journal.prelude,
                 yield_time_ms: journal.yield_time_ms,
@@ -456,13 +500,12 @@ impl CodeModeRuntime {
                 outcomes: restored.outcomes.clone(),
                 content_returned: journal.content_returned,
             };
-            let metadata = journal.tools;
             let cell = Arc::new(LiveCell::spawn(
                 cell_id,
                 turn,
                 journal.script,
                 Arc::clone(&tools),
-                metadata,
+                catalog,
                 cell_context,
                 stored,
                 Arc::clone(&self.stored),
@@ -642,17 +685,21 @@ impl CodeModeRuntime {
             );
         }
         let stored = HashMap::clone(&self.stored.get());
+        let metadata = tools.shared_nested_tool_metadata();
+        let catalog = match self.cell_tools(&metadata) {
+            Ok(catalog) => catalog,
+            Err(message) => return failed_execution(started_at, &message, Vec::new()),
+        };
         let cell = {
             let cell_id = self.cells.update(CellRegistry::allocate_cell_id);
             tracing::Span::current().record("cell.id", cell_id);
-            let metadata = tools.nested_tool_metadata();
             let record = self.journals.as_ref().map(|journals| {
                 let record = Arc::new(CellRecord {
                     cell_id,
                     session_id: context.session_id.clone(),
                     origin_call_id: context.call_id.clone(),
                     script: source.code.clone(),
-                    tools: metadata.clone(),
+                    tools: metadata,
                     stored: stored.clone(),
                     prelude: self.prelude.is_some(),
                     yield_time_ms: source.yield_time_ms.unwrap_or(default_wait_yield_time_ms()),
@@ -672,7 +719,7 @@ impl CodeModeRuntime {
                 self.current_turn.load(Ordering::Acquire),
                 source.code,
                 tools,
-                metadata,
+                catalog,
                 context,
                 stored,
                 Arc::clone(&self.stored),
@@ -1127,7 +1174,7 @@ impl LiveCell {
         turn_id: u64,
         source: String,
         tools: Arc<dyn CodeModeToolset>,
-        metadata: Vec<Value>,
+        catalog: Arc<CellTools>,
         context: OwnedToolContext,
         stored: HashMap<String, Arc<RawValue>>,
         shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
@@ -1177,7 +1224,7 @@ impl LiveCell {
                 prelude,
                 nested_limit,
                 Arc::clone(&tools),
-                metadata,
+                catalog,
                 context,
                 stored,
                 shared_stored,
@@ -2367,7 +2414,7 @@ async fn run_cell_actor(
     prelude: Option<Arc<str>>,
     nested_limit: usize,
     tools: Arc<dyn CodeModeToolset>,
-    metadata: Vec<Value>,
+    catalog: Arc<CellTools>,
     context: OwnedToolContext,
     stored: HashMap<String, Arc<RawValue>>,
     shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
@@ -2429,7 +2476,7 @@ async fn run_cell_actor(
                 cell_id,
                 &source,
                 stored,
-                metadata,
+                catalog,
                 prelude,
                 engine_journaling,
             )

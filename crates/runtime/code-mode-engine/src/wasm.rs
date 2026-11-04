@@ -8,14 +8,14 @@ use std::{
 
 use nanocode_platform::Instant;
 use rquickjs::{CatchResultExt, Context, Function, Persistent, Promise, Runtime};
-use serde_json::{Value, value::RawValue};
+use serde_json::value::RawValue;
 use tokio::sync::mpsc::{self, error::TryRecvError};
 
 use crate::cell::{
-    ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending, completed_terminal,
-    drain_jobs, import_prelude, install_bootstrap, install_prelude, invoke_timeout, new_state,
-    next_due_timeout, next_timeout_wait, prepare_execution, replay_inputs, resolve_tool,
-    run_execution, send_terminal, track_rejections,
+    CellTools, ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
+    completed_terminal, drain_jobs, import_prelude, install_bootstrap, install_prelude,
+    invoke_timeout, new_state, next_due_timeout, next_timeout_wait, prepare_execution,
+    replay_inputs, resolve_tool, run_execution, send_terminal, track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
@@ -186,7 +186,7 @@ impl EmbeddedHost {
         execution_id: u64,
         source: &str,
         stored: HashMap<String, Arc<RawValue>>,
-        tools: Vec<Value>,
+        tools: Arc<CellTools>,
         prelude: Option<Arc<str>>,
         journaling: Option<crate::journal::CellJournaling>,
     ) -> Result<(), String> {
@@ -233,7 +233,7 @@ impl EmbeddedHost {
                     None => rquickjs::Value::new_undefined(ctx.clone()),
                 };
                 let promise =
-                    run_execution(&ctx, &state, &run_cell, source.to_owned(), tools, prelude)?;
+                    run_execution(&ctx, &state, &run_cell, source.to_owned(), &tools, prelude)?;
                 if let Some(inputs) = replayed {
                     let checks = INTERRUPT_CHECKS.get();
                     engine.budget.set(

@@ -7,7 +7,7 @@ mod native;
 #[cfg(target_family = "wasm")]
 mod wasm;
 
-pub use cell::RuntimeEvent;
+pub use cell::{CellTools, RuntimeEvent};
 pub use journal::{CellJournaling, JOURNAL_LIMIT_BYTES, JournalEntry, SharedJournal};
 #[cfg(not(target_family = "wasm"))]
 pub use native::EmbeddedHost;

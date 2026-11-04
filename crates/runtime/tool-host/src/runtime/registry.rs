@@ -4,6 +4,7 @@ use super::execution::{
 use super::*;
 use crate::attachment::{ProcessRouteStore, RemoteRoute, RunnerRouting};
 use nanocode_code_mode::embedded::{declares_hand, take_hand};
+use nanocode_sync::Atom;
 
 pub struct RoutingCatalog<'a> {
     registry: &'a mut ToolRegistry,
@@ -64,6 +65,17 @@ pub(crate) struct ToolRegistry {
     pub(super) hand_calls: Option<Arc<dyn crate::embedded::HandCalls>>,
     nested_gate: Arc<super::admission::AdmissionGate>,
     pub(super) excluded_code_tools: HashSet<String>,
+    nested_metadata: Arc<Atom<Option<NestedMetadata>>>,
+}
+
+/// The Code Mode catalog last built, with the definitions it was built from.
+/// Building it copies every nested tool's description and schemas, which
+/// costs a cell of a large catalog more than the rest of its start, so cells
+/// that offer the same definitions share it.
+#[derive(Clone)]
+struct NestedMetadata {
+    definitions: Vec<ToolDefinition>,
+    metadata: Arc<[Value]>,
 }
 
 impl ToolRegistry {
@@ -364,6 +376,36 @@ impl ToolRegistry {
             .map(|definition| definition_metadata(definition.name(), &definition))
             .collect()
     }
+
+    pub(crate) fn shared_nested_tool_metadata(&self) -> Arc<[Value]> {
+        let definitions = self.code_mode_definitions();
+        let cached = self.nested_metadata.read(|cached| {
+            cached
+                .as_ref()
+                .filter(|cached| {
+                    cached.definitions.len() == definitions.len()
+                        && cached
+                            .definitions
+                            .iter()
+                            .zip(&definitions)
+                            .all(|(built, current)| same_metadata(built, current))
+                })
+                .map(|cached| Arc::clone(&cached.metadata))
+        });
+        if let Some(metadata) = cached {
+            return metadata;
+        }
+        let metadata: Arc<[Value]> = definitions
+            .iter()
+            .map(|definition| definition_metadata(definition.name(), definition))
+            .collect();
+        self.nested_metadata.set(Some(NestedMetadata {
+            definitions,
+            metadata: Arc::clone(&metadata),
+        }));
+        metadata
+    }
+
     pub(super) fn from_ordered(ordered: Vec<Arc<dyn Tool>>) -> Self {
         let definitions = ordered
             .iter()
@@ -384,6 +426,7 @@ impl ToolRegistry {
             hand_calls: None,
             nested_gate: Arc::default(),
             excluded_code_tools: HashSet::new(),
+            nested_metadata: Arc::default(),
         }
     }
 
@@ -575,6 +618,29 @@ fn definition_metadata(name: &str, definition: &ToolDefinition) -> Value {
     })
 }
 
+/// Whether `definition_metadata` describes both definitions alike. Definitions
+/// share their description and schemas, so most comparisons end at a pointer.
+fn same_metadata(built: &ToolDefinition, current: &ToolDefinition) -> bool {
+    fn same<T: PartialEq + ?Sized>(built: Option<&T>, current: Option<&T>) -> bool {
+        match (built, current) {
+            (Some(built), Some(current)) => std::ptr::eq(built, current) || built == current,
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    std::mem::discriminant(built) == std::mem::discriminant(current)
+        && built.name() == current.name()
+        && same(Some(built.description()), Some(current.description()))
+        && same(
+            built.parameters().map(|schema| schema.as_value()),
+            current.parameters().map(|schema| schema.as_value()),
+        )
+        && same(
+            built.output_schema().map(|schema| schema.as_value()),
+            current.output_schema().map(|schema| schema.as_value()),
+        )
+}
+
 fn nested_definition(definition: ToolDefinition) -> ToolDefinition {
     match definition {
         ToolDefinition::ToolSearch {
@@ -597,6 +663,10 @@ fn freeform(input: &Value) -> Option<&str> {
 impl nanocode_code_mode::CodeModeToolset for ToolRegistry {
     fn nested_tool_metadata(&self) -> Vec<Value> {
         Self::nested_tool_metadata(self)
+    }
+
+    fn shared_nested_tool_metadata(&self) -> Arc<[Value]> {
+        Self::shared_nested_tool_metadata(self)
     }
 
     fn execute_nested<'a>(

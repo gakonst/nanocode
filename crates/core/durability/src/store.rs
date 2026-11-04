@@ -346,6 +346,17 @@ async fn commit_replaced<S: StateStore + ?Sized>(
     })
 }
 
+async fn acquire_each<S: StateStore + ?Sized>(
+    store: &mut S,
+    acquisitions: Vec<(String, OwnerId)>,
+) -> Vec<Result<OwnedState, StoreError>> {
+    let mut results = Vec::with_capacity(acquisitions.len());
+    for (state_id, owner_id) in acquisitions {
+        results.push(store.acquire(&state_id, owner_id).await);
+    }
+    results
+}
+
 async fn commit_each<S: StateStore + ?Sized>(
     store: &mut S,
     commits: Vec<OwnedCommit>,
@@ -466,6 +477,13 @@ pub trait StateStore: Send {
         state_id: &'a str,
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>>;
+
+    fn acquire_many(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> StoreFuture<'_, Vec<Result<OwnedState, StoreError>>> {
+        Box::pin(acquire_each(self, acquisitions))
+    }
 
     fn acquire_with<'a>(
         &'a mut self,
@@ -638,6 +656,13 @@ pub trait StateStore {
         state_id: &'a str,
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>>;
+
+    fn acquire_many(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> StoreFuture<'_, Vec<Result<OwnedState, StoreError>>> {
+        Box::pin(acquire_each(self, acquisitions))
+    }
 
     fn acquire_with<'a>(
         &'a mut self,

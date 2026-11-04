@@ -244,6 +244,14 @@ const ACQUIRE: Dialects = [
     "INSERT INTO owners VALUES (?1, ?2, '1') ON CONFLICT (id) DO UPDATE SET owner = excluded.owner, fence = CAST(CAST(fence AS INTEGER) + 1 AS TEXT) WHERE CAST(fence AS INTEGER) < 9223372036854775807 RETURNING fence",
     "INSERT INTO owners (id, owner, fence) VALUES ($1::text, $2::text, '1') ON CONFLICT (id) DO UPDATE SET owner = excluded.owner, fence = CAST(CAST(owners.fence AS BIGINT) + 1 AS TEXT) WHERE CAST(owners.fence AS BIGINT) < 9223372036854775807 RETURNING fence",
 ];
+const ACQUIRE_MANY: Dialects = [
+    "INSERT INTO owners (id, owner, fence) SELECT value ->> 0, value ->> 1, '1' FROM json_each(?1) WHERE true ON CONFLICT (id) DO UPDATE SET owner = excluded.owner, fence = CAST(CAST(fence AS INTEGER) + 1 AS TEXT) WHERE CAST(fence AS INTEGER) < 9223372036854775807 RETURNING id, fence",
+    "INSERT INTO owners (id, owner, fence) SELECT wanted.value ->> 0, wanted.value ->> 1, '1' FROM json_array_elements($1::text::json) AS wanted (value) ON CONFLICT (id) DO UPDATE SET owner = excluded.owner, fence = CAST(CAST(owners.fence AS BIGINT) + 1 AS TEXT) WHERE CAST(owners.fence AS BIGINT) < 9223372036854775807 RETURNING id, fence",
+];
+const PEEK_MANY: Dialects = [
+    "SELECT states.id, states.revision, states.payload FROM json_each(?1) AS wanted JOIN states ON states.id = wanted.value",
+    "SELECT states.id, states.revision, states.payload FROM json_array_elements_text($1::text::json) AS wanted (id) JOIN states ON states.id = wanted.id",
+];
 const INSERT_RECORD: &str = "INSERT INTO records (key, value) SELECT ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 ON CONFLICT (key) DO NOTHING";
 const INSERT_RECORDS: &str = "WITH stored AS (INSERT INTO records (key, value) SELECT staged.value ->> 0, staged.value ->> 1 FROM json_array_elements($5::text::json) AS staged (value) WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ORDER BY 1 ON CONFLICT (key) DO UPDATE SET key = excluded.key RETURNING id) INSERT INTO state_records (record, state_id) SELECT id, $1::text FROM stored ON CONFLICT DO NOTHING";
 const HOLD: Dialects = [
@@ -689,6 +697,79 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         })
     }
 
+    async fn acquire_owners(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> Vec<Result<OwnedState, StoreError>> {
+        let mut order = acquisitions.iter().collect::<Vec<_>>();
+        order.sort_unstable_by_key(|(state_id, _)| state_id.as_str());
+        order.dedup_by_key(|(state_id, _)| state_id.as_str());
+        if order.len() != acquisitions.len() || acquisitions.len() == 1 {
+            let mut results = Vec::with_capacity(acquisitions.len());
+            for (state_id, owner_id) in acquisitions {
+                results.push(self.acquire_owner(&state_id, owner_id).await);
+            }
+            return results;
+        }
+        let dialect = self.host.dialect();
+        let documents = serde_json::to_string(
+            &order
+                .iter()
+                .map(|(state_id, owner_id)| [state_id.as_str(), owner_id.as_str()])
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|error| StoreError::NotCommitted(format!("owners: {error}")))
+        .and_then(|owners| Ok((owners, keys_json(order.iter().map(|(state_id, _)| state_id))?)));
+        let acquired = match documents {
+            Ok((owners, ids)) => {
+                self.transaction(
+                    "acquire_many",
+                    vec![
+                        statement(dialect, &ACQUIRE_MANY, vec![&owners]),
+                        statement(dialect, &PEEK_MANY, vec![&ids]),
+                    ],
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
+        .and_then(|results| {
+            let fences = results[0]
+                .iter()
+                .map(|row| Ok((text(row, 0)?.to_owned(), counter(row, 1)?)))
+                .collect::<Result<std::collections::HashMap<_, _>, StoreError>>()?;
+            let heads = results[1]
+                .iter()
+                .map(|row| {
+                    Ok((
+                        text(row, 0)?.to_owned(),
+                        StoredState {
+                            revision: counter(row, 1)?,
+                            payload: Some(text(row, 2)?.to_owned()),
+                        },
+                    ))
+                })
+                .collect::<Result<std::collections::HashMap<_, _>, StoreError>>()?;
+            Ok((fences, heads))
+        });
+        let (fences, mut heads) = match acquired {
+            Ok(acquired) => acquired,
+            Err(error) => return acquisitions.iter().map(|_| Err(error.clone())).collect(),
+        };
+        acquisitions
+            .into_iter()
+            .map(|(state_id, owner_id)| match fences.get(&state_id) {
+                Some(fence) => Ok(OwnedState {
+                    owner: OwnerToken::new(owner_id, *fence),
+                    state: heads.remove(&state_id).unwrap_or_default(),
+                }),
+                None => Err(StoreError::NotCommitted(
+                    "SQL durability owner fence overflow".to_owned(),
+                )),
+            })
+            .collect()
+    }
+
     async fn replace_state(&mut self, replacement: Replacement<'_>) -> Result<u64, StoreError> {
         let counters = replacement.counters()?;
         let mut statements = Vec::with_capacity(replacement.records.len() + 2);
@@ -1061,6 +1142,13 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
         Box::pin(self.acquire_owner(state_id, owner_id))
+    }
+
+    fn acquire_many(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> StoreFuture<'_, Vec<Result<OwnedState, StoreError>>> {
+        Box::pin(self.acquire_owners(acquisitions))
     }
 
     fn replace<'a>(

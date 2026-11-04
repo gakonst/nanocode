@@ -224,6 +224,13 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         self.base.acquire(state_id, owner_id)
     }
 
+    fn acquire_many(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> StoreFuture<'_, Vec<Result<OwnedState, StoreError>>> {
+        self.base.acquire_many(acquisitions)
+    }
+
     fn acquire_with<'a>(
         &'a mut self,
         state_id: &'a str,

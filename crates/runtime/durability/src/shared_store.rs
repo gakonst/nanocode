@@ -238,7 +238,7 @@ async fn drive_grouped<S: StateStore>(
                 };
                 match Grouped::from_request(request) {
                     Ok(grouped) => {
-                        states.insert(grouped.commit.state_id.clone());
+                        states.insert(grouped.state_id().to_owned());
                         group.push(grouped);
                     }
                     Err(request) => {
@@ -322,7 +322,10 @@ fn command_state(command: &Command) -> Option<&str> {
         Command::Replace { state_id, .. }
         | Command::ReplaceLatest { state_id, .. }
         | Command::ReplaceDeferred { state_id, .. }
-        | Command::Commit { state_id, .. } => Some(state_id),
+        | Command::Commit { state_id, .. }
+        | Command::Acquire { state_id, .. } => Some(state_id),
+        #[cfg(not(target_family = "wasm"))]
+        Command::AcquireWith { state_id, .. } => Some(state_id),
         _ => None,
     }
 }
@@ -403,14 +406,74 @@ pub(crate) type DeferredContent = std::pin::Pin<
 >;
 
 struct Grouped {
-    commit: OwnedCommit,
-    reply: Reply,
-    content: Option<DeferredContent>,
+    work: Work,
     span: tracing::Span,
     queued: Instant,
 }
 
+enum Work {
+    Commit {
+        commit: OwnedCommit,
+        reply: Reply,
+        content: Option<DeferredContent>,
+    },
+    Acquire {
+        state_id: String,
+        owner_id: OwnerId,
+        #[cfg(not(target_family = "wasm"))]
+        update: Option<StoreUpdate>,
+        result: oneshot::Sender<Result<OwnedState, StoreError>>,
+    },
+}
+
+enum Answer {
+    Write(Reply),
+    #[cfg(not(target_family = "wasm"))]
+    Acquired {
+        result: oneshot::Sender<Result<OwnedState, StoreError>>,
+        owned: OwnedState,
+        payload: String,
+    },
+}
+
+impl Answer {
+    fn send(self, result: Result<Committed, StoreError>) {
+        match self {
+            Self::Write(reply) => reply.send(result),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Acquired {
+                result: sender,
+                mut owned,
+                payload,
+            } => drop(sender.send(match result {
+                Ok(committed) => {
+                    owned.state = StoredState {
+                        revision: committed.revision,
+                        payload: Some(payload),
+                    };
+                    Ok(owned)
+                }
+                Err(error) => Err(updated_after_acquiring(error)),
+            })),
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn updated_after_acquiring(error: StoreError) -> StoreError {
+    StoreError::Backend(format!(
+        "state update failed after acquiring its owner: {error}"
+    ))
+}
+
 impl Grouped {
+    fn state_id(&self) -> &str {
+        match &self.work {
+            Work::Commit { commit, .. } => &commit.state_id,
+            Work::Acquire { state_id, .. } => state_id,
+        }
+    }
+
     fn from_request(request: StoreRequest) -> Result<Self, StoreRequest> {
         let StoreRequest {
             command,
@@ -419,6 +482,41 @@ impl Grouped {
         } = request;
         let mut content = None;
         let (commit, reply) = match command {
+            Command::Acquire {
+                state_id,
+                owner_id,
+                result,
+            } => {
+                return Ok(Self {
+                    work: Work::Acquire {
+                        state_id,
+                        owner_id,
+                        #[cfg(not(target_family = "wasm"))]
+                        update: None,
+                        result,
+                    },
+                    span,
+                    queued,
+                });
+            }
+            #[cfg(not(target_family = "wasm"))]
+            Command::AcquireWith {
+                state_id,
+                owner_id,
+                update,
+                result,
+            } => {
+                return Ok(Self {
+                    work: Work::Acquire {
+                        state_id,
+                        owner_id,
+                        update: Some(update),
+                        result,
+                    },
+                    span,
+                    queued,
+                });
+            }
             Command::ReplaceDeferred {
                 state_id,
                 owner,
@@ -510,49 +608,79 @@ impl Grouped {
             }
         };
         Ok(Self {
-            commit,
-            reply,
-            content,
+            work: Work::Commit {
+                commit,
+                reply,
+                content,
+            },
             span,
             queued,
         })
     }
 
     fn into_request(self) -> StoreRequest {
-        let OwnedCommit {
-            state_id,
-            owner,
-            expected_revision,
-            payload,
-            records,
-            events,
-            summary,
-        } = self.commit;
-        let command = match self.reply {
-            Reply::Replace(result) if self.content.is_some() => Command::ReplaceDeferred {
+        let command = match self.work {
+            #[cfg(not(target_family = "wasm"))]
+            Work::Acquire {
                 state_id,
-                owner,
-                expected_revision,
-                content: self.content.expect("deferred content"),
+                owner_id,
+                update: Some(update),
+                result,
+            } => Command::AcquireWith {
+                state_id,
+                owner_id,
+                update,
                 result,
             },
-            Reply::Replace(result) => Command::Replace {
+            Work::Acquire {
                 state_id,
-                owner,
-                expected_revision,
-                payload,
-                records,
+                owner_id,
+                result,
+                ..
+            } => Command::Acquire {
+                state_id,
+                owner_id,
                 result,
             },
-            Reply::Commit(result) => Command::Commit {
-                state_id,
-                owner,
-                expected_revision,
-                payload,
-                records,
-                events,
-                summary,
-                result,
+            Work::Commit {
+                commit:
+                    OwnedCommit {
+                        state_id,
+                        owner,
+                        expected_revision,
+                        payload,
+                        records,
+                        events,
+                        summary,
+                    },
+                reply,
+                content,
+            } => match (reply, content) {
+                (Reply::Replace(result), Some(content)) => Command::ReplaceDeferred {
+                    state_id,
+                    owner,
+                    expected_revision,
+                    content,
+                    result,
+                },
+                (Reply::Replace(result), None) => Command::Replace {
+                    state_id,
+                    owner,
+                    expected_revision,
+                    payload,
+                    records,
+                    result,
+                },
+                (Reply::Commit(result), _) => Command::Commit {
+                    state_id,
+                    owner,
+                    expected_revision,
+                    payload,
+                    records,
+                    events,
+                    summary,
+                    result,
+                },
             },
         };
         StoreRequest {
@@ -563,11 +691,51 @@ impl Grouped {
     }
 }
 
-async fn run_group<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped>) {
+struct Acquisition {
+    #[cfg(not(target_family = "wasm"))]
+    state_id: String,
+    #[cfg(not(target_family = "wasm"))]
+    update: Option<StoreUpdate>,
+    result: oneshot::Sender<Result<OwnedState, StoreError>>,
+}
+
+async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
+    let mut writes = Vec::with_capacity(group.len());
+    let mut acquisitions = Vec::new();
+    let mut owners = Vec::new();
+    for grouped in group {
+        grouped.span.record(
+            "queue.duration_ms",
+            grouped.queued.elapsed().as_secs_f64() * 1_000.0,
+        );
+        match grouped.work {
+            Work::Commit {
+                commit,
+                reply,
+                content,
+            } => writes.push((commit, reply, content)),
+            Work::Acquire {
+                state_id,
+                owner_id,
+                #[cfg(not(target_family = "wasm"))]
+                update,
+                result,
+            } => {
+                acquisitions.push(Acquisition {
+                    #[cfg(not(target_family = "wasm"))]
+                    state_id: state_id.clone(),
+                    #[cfg(not(target_family = "wasm"))]
+                    update,
+                    result,
+                });
+                owners.push((state_id, owner_id));
+            }
+        }
+    }
     let contents = futures_util::future::join_all(
-        group
+        writes
             .iter_mut()
-            .map(|grouped| grouped.content.take())
+            .map(|(_, _, content)| content.take())
             .collect::<Vec<_>>()
             .into_iter()
             .map(|content| async move {
@@ -576,28 +744,78 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped
                     None => None,
                 }
             }),
-    )
-    .await;
-    let mut commits = Vec::with_capacity(group.len());
-    let mut replies = Vec::with_capacity(group.len());
-    for (mut grouped, content) in group.into_iter().zip(contents) {
-        grouped.span.record(
-            "queue.duration_ms",
-            grouped.queued.elapsed().as_secs_f64() * 1_000.0,
-        );
+    );
+    let count = owners.len();
+    let acquired = async {
+        if owners.is_empty() {
+            return Vec::new();
+        }
+        store
+            .acquire_many(owners)
+            .instrument(tracing::info_span!(
+                "durability.store.acquire_group",
+                acquire.count = count
+            ))
+            .await
+    };
+    let (contents, mut acquired) = futures_util::future::join(contents, acquired).await;
+    if acquired.len() != count {
+        let error = StoreError::Backend(format!(
+            "durability store answered {} of {count} grouped acquisitions",
+            acquired.len()
+        ));
+        acquired = (0..count).map(|_| Err(error.clone())).collect();
+    }
+    let mut commits = Vec::with_capacity(writes.len());
+    let mut answers = Vec::with_capacity(writes.len());
+    for ((mut commit, reply, _), content) in writes.into_iter().zip(contents) {
         match content {
             Some(Ok((payload, records))) => {
-                grouped.commit.payload = payload;
-                grouped.commit.records = records;
+                commit.payload = payload;
+                commit.records = records;
             }
             Some(Err(error)) => {
-                grouped.reply.send(Err(error));
+                reply.send(Err(error));
                 continue;
             }
             None => {}
         }
-        commits.push(grouped.commit);
-        replies.push(grouped.reply);
+        commits.push(commit);
+        answers.push(Answer::Write(reply));
+    }
+    for (acquisition, owned) in acquisitions.into_iter().zip(acquired) {
+        let owned = match owned {
+            Ok(owned) => owned,
+            Err(error) => {
+                drop(acquisition.result.send(Err(error)));
+                continue;
+            }
+        };
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(update) = acquisition.update {
+            match update(&owned.state) {
+                Ok(Some(replacement)) => {
+                    commits.push(OwnedCommit {
+                        state_id: acquisition.state_id,
+                        owner: owned.owner.clone(),
+                        expected_revision: owned.state.revision,
+                        payload: replacement.payload.clone(),
+                        records: replacement.records,
+                        events: Vec::new(),
+                        summary: SummaryUpdate::Unchanged,
+                    });
+                    answers.push(Answer::Acquired {
+                        result: acquisition.result,
+                        owned,
+                        payload: replacement.payload,
+                    });
+                }
+                Ok(None) => drop(acquisition.result.send(Ok(owned))),
+                Err(error) => drop(acquisition.result.send(Err(updated_after_acquiring(error)))),
+            }
+            continue;
+        }
+        drop(acquisition.result.send(Ok(owned)));
     }
     let count = commits.len();
     if count == 0 {
@@ -615,13 +833,13 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, mut group: Vec<Grouped
             "durability store answered {} of {count} grouped commits",
             results.len()
         ));
-        for reply in replies {
-            reply.send(Err(error.clone()));
+        for answer in answers {
+            answer.send(Err(error.clone()));
         }
         return;
     }
-    for (reply, result) in replies.into_iter().zip(results) {
-        reply.send(result);
+    for (answer, result) in answers.into_iter().zip(results) {
+        answer.send(result);
     }
 }
 

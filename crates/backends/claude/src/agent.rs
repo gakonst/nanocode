@@ -1264,6 +1264,7 @@ impl ClaudeBuilder {
                 input_schema: upstream.input_schema.clone(),
                 strict: None,
                 defer_loading: deferred,
+                cache_control: None,
             },
             move |input| {
                 let client = client.clone();
@@ -1294,6 +1295,7 @@ impl ClaudeBuilder {
             .into(),
             strict: None,
             defer_loading: deferred,
+            cache_control: None,
         };
         self = self.tool(definition, move |input| {
             let client = client.clone();
@@ -1513,7 +1515,7 @@ impl ClaudeBuilder {
                 name: "ToolSearch".into(),
                 description: "Find deferred tools by name or purpose; use select:ToolName for an exact match.".into(),
                 input_schema: json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","minimum":1}},"required":["query"],"additionalProperties":false}).into(),
-                strict: None, defer_loading: false,
+                strict: None, defer_loading: false, cache_control: None,
             });
             definitions.push(ToolDefinition {
                 name: "DeferredToolPlaceholder".into(),
@@ -1521,6 +1523,7 @@ impl ClaudeBuilder {
                 input_schema: json!({"type":"object","properties":{}}).into(),
                 strict: None,
                 defer_loading: false,
+                cache_control: None,
             });
         }
         for hooks in self.tool_hooks.iter().rev() {

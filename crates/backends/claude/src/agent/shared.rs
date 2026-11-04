@@ -31,6 +31,7 @@ pub(super) fn bridge_shared(tool: Arc<dyn Tool>) -> Result<(ToolDefinition, Hand
         input_schema: parameters.shared(),
         strict: None,
         defer_loading: false,
+        cache_control: None,
     };
     let handler: Handler = Arc::new(move |input, invocation| {
         let tool = Arc::clone(&tool);

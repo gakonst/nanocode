@@ -366,6 +366,10 @@ pub struct ToolDefinition {
     pub strict: Option<bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub defer_loading: bool,
+    /// A cache breakpoint on this tool, which ends the tools' part of the prompt
+    /// ([`MessagesRequest::cache_system_prefix_with`] sets it on the last one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -564,7 +568,7 @@ impl CacheLayout {
         Ok(())
     }
 
-    fn validate(mut self, automatic: Option<&CacheControl>) -> Result<(), ClaudeError> {
+    fn validate(mut self, automatic: Option<&CacheControl>) -> Result<usize, ClaudeError> {
         if let (Some(automatic), Some(last)) = (automatic, self.last_eligible) {
             let ttl = automatic.effective_ttl();
             if let Some(explicit) = last {
@@ -577,7 +581,8 @@ impl CacheLayout {
                 self.explicit.push(ttl);
             }
         }
-        if self.explicit.len() > 4 {
+        let breakpoints = self.explicit.len();
+        if breakpoints > 4 {
             return Err(ClaudeError::Protocol(
                 "at most four cache breakpoints are allowed".into(),
             ));
@@ -594,7 +599,7 @@ impl CacheLayout {
                 CacheTtl::OneHour => {}
             }
         }
-        Ok(())
+        Ok(breakpoints)
     }
 }
 
@@ -642,12 +647,20 @@ fn validate_cache_layout<'a>(
     system: Option<&Value>,
     messages: impl Iterator<Item = &'a Message>,
     automatic: Option<&CacheControl>,
-) -> Result<(), ClaudeError> {
+) -> Result<usize, ClaudeError> {
     let mut layout = CacheLayout::default();
     for tool in tools {
+        let client = match tool {
+            ClaudeToolSpec::Client(tool) => tool
+                .cache_control
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+            ClaudeToolSpec::Server(_) => None,
+        };
         let control = match tool {
             ClaudeToolSpec::Server(tool) => tool.options.get("cache_control"),
-            ClaudeToolSpec::Client(_) => None,
+            ClaudeToolSpec::Client(_) => client.as_ref(),
         };
         layout.block(control, true)?;
     }
@@ -774,6 +787,10 @@ impl MessagesRequest {
     }
 
     fn validate_cache_with<M: WireMessage>(&self, messages: &[M]) -> Result<(), ClaudeError> {
+        self.cache_breakpoints_with(messages).map(drop)
+    }
+
+    fn cache_breakpoints_with<M: WireMessage>(&self, messages: &[M]) -> Result<usize, ClaudeError> {
         validate_cache_layout(
             &self.tools,
             self.system.as_deref(),
@@ -789,8 +806,62 @@ impl MessagesRequest {
         result
     }
 
+    /// Puts cache breakpoints at the end of the system prompt and of the tools, under the
+    /// request's automatic one (the end of the conversation), unless the host placed its own.
     #[doc(hidden)]
     pub fn cache_system_prefix_with<M: WireMessage>(
+        &mut self,
+        messages: &[M],
+    ) -> Result<(), ClaudeError> {
+        self.cache_system_tail_with(messages)?;
+        self.cache_tools_tail_with(messages)
+    }
+
+    /// Marks the last tool the prompt carries (not a deferred one) with the request's cache
+    /// control, when the request still has room for it and for the subscription wire's own
+    /// breakpoint. The tools come first in the cached prefix and depend only on the host's tool
+    /// catalog, while the system prompt after them often differs between sessions (a member's
+    /// memory, a project's instructions): with this breakpoint a session whose system prompt no
+    /// session sent before still reads the tools another session with the same catalog wrote.
+    fn cache_tools_tail_with<M: WireMessage>(&mut self, messages: &[M]) -> Result<(), ClaudeError> {
+        let Some(control) = self.cache_control.clone() else {
+            return Ok(());
+        };
+        if self.tools.iter().any(|tool| match tool {
+            ClaudeToolSpec::Client(tool) => tool.cache_control.is_some(),
+            ClaudeToolSpec::Server(tool) => tool.options.contains_key("cache_control"),
+        }) {
+            return Ok(());
+        }
+        let Some(at) = self
+            .tools
+            .iter()
+            .rposition(|tool| !matches!(tool, ClaudeToolSpec::Client(tool) if tool.defer_loading))
+        else {
+            return Ok(());
+        };
+        let marker = serde_json::to_value(&control)?;
+        match &mut self.tools[at] {
+            ClaudeToolSpec::Client(tool) => tool.cache_control = Some(control),
+            ClaudeToolSpec::Server(tool) => {
+                tool.options.insert("cache_control".to_owned(), marker);
+            }
+        }
+        if !self
+            .cache_breakpoints_with(messages)
+            .is_ok_and(|count| count <= 3)
+        {
+            match &mut self.tools[at] {
+                ClaudeToolSpec::Client(tool) => tool.cache_control = None,
+                ClaudeToolSpec::Server(tool) => {
+                    tool.options.remove("cache_control");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cache_system_tail_with<M: WireMessage>(
         &mut self,
         messages: &[M],
     ) -> Result<(), ClaudeError> {

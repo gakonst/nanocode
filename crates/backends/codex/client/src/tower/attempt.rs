@@ -160,7 +160,7 @@ pub struct ResponsesAttempt {
     incremental_history: ResponseHistory,
     incremental_start: usize,
     tail: Option<ResponseItem>,
-    previous_response_id: Option<String>,
+    replay: Replay,
     model: Model,
     thinking: Thinking,
     service_tier: ServiceTier,
@@ -168,12 +168,26 @@ pub struct ResponsesAttempt {
     pub(crate) observer: ResponsesObserver,
     pub(crate) attempt: u32,
     pub(crate) max_attempts: u32,
-    full_replay: bool,
     pub(crate) logical_turn: u64,
     session_transport: Arc<SessionTransport>,
     pub(crate) model_call_started_at: Option<Instant>,
     input_trace: Option<InputTrace>,
     pub(crate) origin: nanocode_http::layer::origin::Origin,
+}
+
+#[derive(Clone)]
+enum Replay {
+    Incremental(Option<String>),
+    Full,
+}
+
+impl Replay {
+    fn after(previous_response_id: Option<&str>) -> Self {
+        match previous_response_id {
+            Some(previous) => Self::Incremental(Some(previous.to_owned())),
+            None => Self::Full,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -199,7 +213,7 @@ impl ResponsesAttempt {
             incremental_history: ResponseHistory::default(),
             incremental_start: 0,
             tail: None,
-            previous_response_id: None,
+            replay: Replay::Incremental(None),
             model,
             thinking,
             service_tier,
@@ -207,7 +221,6 @@ impl ResponsesAttempt {
             observer,
             attempt: 1,
             max_attempts: 1,
-            full_replay: false,
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
@@ -237,7 +250,7 @@ impl ResponsesAttempt {
             incremental_history,
             incremental_start,
             tail: None,
-            previous_response_id: previous_response_id.map(str::to_owned),
+            replay: Replay::after(previous_response_id),
             model,
             thinking,
             service_tier,
@@ -245,7 +258,6 @@ impl ResponsesAttempt {
             observer,
             attempt: 1,
             max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
-            full_replay: previous_response_id.is_none(),
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
@@ -276,7 +288,7 @@ impl ResponsesAttempt {
             incremental_history,
             incremental_start,
             tail: Some(trigger),
-            previous_response_id: previous_response_id.map(str::to_owned),
+            replay: Replay::after(previous_response_id),
             model,
             thinking,
             service_tier,
@@ -284,7 +296,6 @@ impl ResponsesAttempt {
             observer,
             attempt: 1,
             max_attempts: COMPACTION_MAX_ATTEMPTS,
-            full_replay: previous_response_id.is_none(),
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
@@ -304,7 +315,7 @@ impl ResponsesAttempt {
     pub fn with_input_trace(mut self, span: Option<tracing::Span>) -> Self {
         self.input_trace = span.map(|span| InputTrace {
             span,
-            full_replay: self.full_replay,
+            full_replay: self.is_full_replay(),
             traced: Arc::default(),
         });
         self
@@ -317,7 +328,7 @@ impl ResponsesAttempt {
         if trace.traced.swap(true, Ordering::Relaxed) {
             return;
         }
-        let input = if trace.full_replay == self.full_replay {
+        let input = if trace.full_replay == self.is_full_replay() {
             encoded_input(request).map(Cow::Borrowed)
         } else {
             serde_json::to_string(&ResponsesInput::history_suffix(
@@ -350,7 +361,7 @@ impl ResponsesAttempt {
         ) {
             return ResponsesInput::new(self.profile.prefix(), &[], None);
         }
-        if self.full_replay {
+        if self.is_full_replay() {
             ResponsesInput::history(
                 self.profile.prefix(),
                 &self.full_history,
@@ -431,36 +442,37 @@ impl ResponsesAttempt {
 
     #[must_use]
     pub fn previous_response_id(&self) -> Option<&str> {
-        (!self.full_replay)
-            .then_some(self.previous_response_id.as_deref())
-            .flatten()
+        match &self.replay {
+            Replay::Incremental(previous) => previous.as_deref(),
+            Replay::Full => None,
+        }
     }
 
     #[must_use]
     pub const fn is_full_replay(&self) -> bool {
-        self.full_replay
+        matches!(self.replay, Replay::Full)
     }
 
     pub(crate) const fn replay_mode(&self) -> &'static str {
-        if self.full_replay {
+        if self.is_full_replay() {
             "full_history"
         } else {
             "incremental"
         }
     }
 
-    pub(crate) const fn prepare_retry(&mut self) -> bool {
+    pub(crate) fn prepare_retry(&mut self) -> bool {
         if self.attempt >= self.max_attempts {
             return false;
         }
         self.attempt += 1;
-        self.full_replay = true;
+        self.replay = Replay::Full;
         true
     }
 
-    pub(crate) const fn prepare_transport_fallback(&mut self) {
+    pub(crate) fn prepare_transport_fallback(&mut self) {
         self.attempt = 1;
-        self.full_replay = true;
+        self.replay = Replay::Full;
     }
 
     pub(crate) fn effective_transport(&self, preferred: ResponsesTransport) -> ResponsesTransport {
@@ -475,8 +487,8 @@ impl ResponsesAttempt {
         self.max_attempts = self.max_attempts.min(max_attempts.get());
     }
 
-    pub(crate) const fn force_full_replay(&mut self) {
-        self.full_replay = true;
+    pub(crate) fn force_full_replay(&mut self) {
+        self.replay = Replay::Full;
     }
 }
 

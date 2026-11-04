@@ -206,7 +206,6 @@ impl Pool {
                 notes: notes.downgrade(),
                 probe: None,
                 watch: None,
-                direct: None,
                 probed: None,
             };
             tokio::spawn(dispatcher.run(inbox));
@@ -258,10 +257,14 @@ struct Dispatcher {
     servers: Vec<Handle>,
     blocked: Option<Fingerprint>,
     notes: mpsc::WeakUnboundedSender<Note>,
-    probe: Option<Probe>,
+    probe: Option<Probed>,
     watch: Option<Watch>,
-    direct: Option<Arc<direct::Direct>>,
     probed: Option<Fingerprint>,
+}
+
+struct Probed {
+    probe: Probe,
+    direct: Option<Arc<direct::Direct>>,
 }
 
 impl Dispatcher {
@@ -286,7 +289,7 @@ impl Dispatcher {
     }
 
     fn check(&mut self) {
-        let Some(probe) = self.probe.as_ref() else {
+        let Some(Probed { probe, .. }) = self.probe.as_ref() else {
             return;
         };
         if self.watch.as_mut().is_some_and(|watch| !watch.changed())
@@ -296,7 +299,6 @@ impl Dispatcher {
         }
         let stale = probe.fingerprint.clone();
         self.probe = None;
-        self.direct = None;
         self.servers.retain(|server| {
             let retired = server.fingerprint.as_ref() == Some(&stale);
             if retired {
@@ -310,7 +312,10 @@ impl Dispatcher {
         match note {
             Note::Job(mut job) => {
                 if let Some(offer) = job.direct.take()
-                    && let Some(direct) = &self.direct
+                    && let Some(Probed {
+                        direct: Some(direct),
+                        ..
+                    }) = &self.probe
                 {
                     let _ = offer.send(Arc::clone(direct));
                     return;
@@ -331,7 +336,12 @@ impl Dispatcher {
                     server.fingerprint = Some(probe.fingerprint.clone());
                     server.credit = DEPTH;
                     let origin = Arc::clone(&server.origin);
-                    if self.direct.is_none() && self.probed.as_ref() != Some(&probe.fingerprint) {
+                    if self
+                        .probe
+                        .as_ref()
+                        .is_none_or(|known| known.direct.is_none())
+                        && self.probed.as_ref() != Some(&probe.fingerprint)
+                    {
                         self.probed = Some(probe.fingerprint.clone());
                         tokio::spawn(direct::probe(
                             self.notes.clone(),
@@ -344,7 +354,7 @@ impl Dispatcher {
                     if self
                         .probe
                         .as_ref()
-                        .is_none_or(|known| known.files != probe.files)
+                        .is_none_or(|known| known.probe.files != probe.files)
                     {
                         self.watch = Watch::new(&probe.files);
                     }
@@ -355,16 +365,21 @@ impl Dispatcher {
                     {
                         watch.missed();
                     }
-                    self.probe = Some(probe);
+                    let direct = self
+                        .probe
+                        .take()
+                        .filter(|known| known.probe.fingerprint == probe.fingerprint)
+                        .and_then(|known| known.direct);
+                    self.probe = Some(Probed { probe, direct });
                 }
             }
             Note::Direct(fingerprint, direct) => {
-                if self
+                if let Some(known) = self
                     .probe
-                    .as_ref()
-                    .is_some_and(|probe| probe.fingerprint == fingerprint)
+                    .as_mut()
+                    .filter(|known| known.probe.fingerprint == fingerprint)
                 {
-                    self.direct = direct;
+                    known.direct = direct;
                 }
             }
             Note::Credit(id) => {
@@ -392,7 +407,6 @@ impl Dispatcher {
                     let _ = job.reply.send(None);
                 }
                 self.probe = None;
-                self.direct = None;
                 for server in self.servers.drain(..) {
                     let (stopped, done) = oneshot::channel();
                     if server.messages.send(Message::Stop(stopped)).is_ok() {

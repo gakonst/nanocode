@@ -18,11 +18,7 @@ pub(super) fn build_agent(
     let session_id_text = session_id.to_string();
     let context_source =
         tracing::info_span!("codex.session.context").in_scope(|| codex.context.build());
-    let PromptCacheConfig {
-        key,
-        per_session,
-        shared,
-    } = prompt_cache;
+    let PromptCacheConfig { key, shared } = prompt_cache;
 
     let is_resume = resume.is_some()
         || lineage
@@ -40,7 +36,7 @@ pub(super) fn build_agent(
             Arc::make_mut(&mut config).context_window_tokens = model.max_context_window_tokens();
         }
         if key
-            .as_deref()
+            .explicit()
             .is_some_and(|key| key != restored_cache_key.as_ref())
         {
             return Err(NanocodeError::InvalidCheckpoint(
@@ -52,8 +48,11 @@ pub(super) fn build_agent(
     } else {
         (
             Arc::<str>::from(session_id_text.as_str()),
-            key.map(Arc::from)
-                .or_else(|| per_session.then(|| Arc::from(session_id_text.as_str()))),
+            match key {
+                PromptCacheKey::Explicit(key) => Some(Arc::from(key)),
+                PromptCacheKey::PerSession => Some(Arc::from(session_id_text.as_str())),
+                PromptCacheKey::Prefix => None,
+            },
             None,
         )
     };

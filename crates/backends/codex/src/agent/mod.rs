@@ -155,7 +155,7 @@ pub use nanocode_agent_core::{
 
 use backend::{BackendRuntime, LocalLifecycle};
 
-use builder::{CodexCompatibility, PromptCacheConfig};
+use builder::{CodexCompatibility, PromptCacheConfig, PromptCacheKey};
 
 use checkpoint::{CheckpointSource, ChildState, is_stateless_http};
 

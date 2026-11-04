@@ -46,9 +46,25 @@ where
 
 #[derive(Clone, Default)]
 pub(super) struct PromptCacheConfig {
-    pub(super) key: Option<String>,
-    pub(super) per_session: bool,
+    pub(super) key: PromptCacheKey,
     pub(super) shared: Option<SharedPromptCache>,
+}
+
+#[derive(Clone, Default)]
+pub(super) enum PromptCacheKey {
+    #[default]
+    Prefix,
+    PerSession,
+    Explicit(String),
+}
+
+impl PromptCacheKey {
+    pub(super) fn explicit(&self) -> Option<&str> {
+        match self {
+            Self::Explicit(key) => Some(key),
+            Self::Prefix | Self::PerSession => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -268,21 +284,23 @@ impl<F> CodexBuilder<F> {
 
     #[must_use]
     pub fn prompt_cache_key(mut self, prompt_cache_key: impl Into<String>) -> Self {
-        self.prompt_cache.key = Some(prompt_cache_key.into());
+        self.prompt_cache.key = PromptCacheKey::Explicit(prompt_cache_key.into());
         self
     }
 
     #[must_use]
-    pub const fn per_session_prompt_cache_key(mut self) -> Self {
-        self.prompt_cache.per_session = true;
+    pub fn per_session_prompt_cache_key(mut self) -> Self {
+        if matches!(self.prompt_cache.key, PromptCacheKey::Prefix) {
+            self.prompt_cache.key = PromptCacheKey::PerSession;
+        }
         self
     }
 
     #[doc(hidden)]
     #[must_use]
     pub fn default_prompt_cache_key(mut self, prompt_cache_key: impl Into<String>) -> Self {
-        if self.prompt_cache.per_session && self.prompt_cache.key.is_none() {
-            self.prompt_cache.key = Some(prompt_cache_key.into());
+        if matches!(self.prompt_cache.key, PromptCacheKey::PerSession) {
+            self.prompt_cache.key = PromptCacheKey::Explicit(prompt_cache_key.into());
         }
         self
     }
@@ -429,7 +447,7 @@ where
                 .check_service_tier(builder.config.service_tier)?;
         }
     }
-    validate(&builder.config, builder.prompt_cache.key.as_deref())?;
+    validate(&builder.config, builder.prompt_cache.key.explicit())?;
     validate_execution_environment(builder.codex.context.execution_environment())?;
     let config = Arc::new(builder.config);
     let factory = builder.factory;

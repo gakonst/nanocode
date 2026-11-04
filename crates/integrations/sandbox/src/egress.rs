@@ -710,48 +710,59 @@ impl<R: AsyncRead + Unpin> Buffered<R> {
 
 struct Response {
     status: u16,
-    chunked: bool,
-    length: Option<u64>,
+    framing: Framing,
     encoded: bool,
+}
+
+enum Framing {
+    Chunked,
+    Length(u64),
+    UntilClose,
 }
 
 fn parse_response(head: &[u8]) -> Option<Response> {
     let text = std::str::from_utf8(head).ok()?;
     let mut lines = text.split("\r\n");
     let status = lines.next()?.split(' ').nth(1)?.parse().ok()?;
-    let mut response = Response {
-        status,
-        chunked: false,
-        length: None,
-        encoded: false,
-    };
+    let mut chunked = false;
+    let mut length = None;
+    let mut encoded = false;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
         let (name, value) = (name.trim(), value.trim());
         if name.eq_ignore_ascii_case("content-encoding") {
-            response.encoded |= value
+            encoded |= value
                 .split(',')
                 .map(str::trim)
                 .any(|coding| !coding.is_empty() && !coding.eq_ignore_ascii_case("identity"));
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            response.chunked = value
+            chunked = value
                 .rsplit(',')
                 .next()
                 .is_some_and(|coding| coding.trim().eq_ignore_ascii_case("chunked"));
-            response.encoded |= value.split(',').map(str::trim).any(|coding| {
+            encoded |= value.split(',').map(str::trim).any(|coding| {
                 !coding.eq_ignore_ascii_case("chunked") && !coding.eq_ignore_ascii_case("identity")
             });
         } else if name.eq_ignore_ascii_case("content-length") {
-            let length = value.parse().ok()?;
-            if response.length.is_some_and(|seen| seen != length) {
+            let declared = value.parse().ok()?;
+            if length.is_some_and(|seen| seen != declared) {
                 return None;
             }
-            response.length = Some(length);
+            length = Some(declared);
         }
     }
-    Some(response)
+    let framing = match (chunked, length) {
+        (true, _) => Framing::Chunked,
+        (false, Some(length)) => Framing::Length(length),
+        (false, None) => Framing::UntilClose,
+    };
+    Some(Response {
+        status,
+        framing,
+        encoded,
+    })
 }
 
 async fn write_chunk<W: AsyncWrite + Unpin>(client: &mut W, data: &[u8]) -> io::Result<()> {
@@ -803,59 +814,65 @@ where
             break;
         }
         let mut masker = Masker::new(forms);
-        if response.chunked {
-            loop {
-                let line = upstream.until(b"\r\n", MAX_CHUNK_LINE).await?;
-                let size = std::str::from_utf8(&line)
-                    .ok()
-                    .and_then(|line| line.trim().split(';').next())
-                    .and_then(|size| u64::from_str_radix(size.trim(), 16).ok())
-                    .ok_or_else(|| other("malformed chunk size"))?;
-                if size == 0 {
-                    break;
+        match response.framing {
+            Framing::Chunked => {
+                loop {
+                    let line = upstream.until(b"\r\n", MAX_CHUNK_LINE).await?;
+                    let size = std::str::from_utf8(&line)
+                        .ok()
+                        .and_then(|line| line.trim().split(';').next())
+                        .and_then(|size| u64::from_str_radix(size.trim(), 16).ok())
+                        .ok_or_else(|| other("malformed chunk size"))?;
+                    if size == 0 {
+                        break;
+                    }
+                    let mut left = size;
+                    while left > 0 {
+                        let data = upstream.some(left).await?;
+                        if data.is_empty() {
+                            return Err(io::ErrorKind::UnexpectedEof.into());
+                        }
+                        left -= data.len() as u64;
+                        write_chunk(client, &masker.push(&data)).await?;
+                    }
+                    upstream.until(b"\r\n", 0).await?;
                 }
-                let mut left = size;
+                write_chunk(client, &masker.finish()).await?;
+                let mut trailers = b"0\r\n".to_vec();
+                loop {
+                    let line = upstream.until(b"\r\n", MAX_RESPONSE_HEAD).await?;
+                    let end = line == b"\r\n";
+                    trailers.extend_from_slice(&line);
+                    if end || trailers.len() > MAX_RESPONSE_HEAD {
+                        break;
+                    }
+                }
+                mask(&mut trailers, forms);
+                client.write_all(&trailers).await?;
+            }
+            Framing::Length(length) => {
+                let mut left = length;
                 while left > 0 {
                     let data = upstream.some(left).await?;
                     if data.is_empty() {
-                        return Err(io::ErrorKind::UnexpectedEof.into());
+                        break;
                     }
                     left -= data.len() as u64;
-                    write_chunk(client, &masker.push(&data)).await?;
+                    client.write_all(&masker.push(&data)).await?;
                 }
-                upstream.until(b"\r\n", 0).await?;
+                client.write_all(&masker.finish()).await?;
             }
-            write_chunk(client, &masker.finish()).await?;
-            let mut trailers = b"0\r\n".to_vec();
-            loop {
-                let line = upstream.until(b"\r\n", MAX_RESPONSE_HEAD).await?;
-                let end = line == b"\r\n";
-                trailers.extend_from_slice(&line);
-                if end || trailers.len() > MAX_RESPONSE_HEAD {
-                    break;
+            Framing::UntilClose => {
+                loop {
+                    match upstream.some(u64::MAX).await {
+                        Ok(data) if !data.is_empty() => {
+                            client.write_all(&masker.push(&data)).await?
+                        }
+                        _ => break,
+                    }
                 }
+                client.write_all(&masker.finish()).await?;
             }
-            mask(&mut trailers, forms);
-            client.write_all(&trailers).await?;
-        } else if let Some(length) = response.length {
-            let mut left = length;
-            while left > 0 {
-                let data = upstream.some(left).await?;
-                if data.is_empty() {
-                    break;
-                }
-                left -= data.len() as u64;
-                client.write_all(&masker.push(&data)).await?;
-            }
-            client.write_all(&masker.finish()).await?;
-        } else {
-            loop {
-                match upstream.some(u64::MAX).await {
-                    Ok(data) if !data.is_empty() => client.write_all(&masker.push(&data)).await?,
-                    _ => break,
-                }
-            }
-            client.write_all(&masker.finish()).await?;
         }
         break;
     }

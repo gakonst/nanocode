@@ -230,14 +230,20 @@ async fn drive_grouped<S: StateStore>(
     let mut forming = Vec::new();
     let mut states = std::collections::HashSet::new();
     let mut in_flight = std::collections::HashSet::<String>::new();
-    let mut blocked = 0_usize;
+    let mut scanned = 0_usize;
+    let mut skipped = std::collections::HashSet::<String>::new();
+    let mut held = std::collections::HashMap::<String, Grouped>::new();
     loop {
-        while queued.front().is_some_and(|request| {
-            command_state(&request.command).is_some_and(|state| {
-                !states.contains(state) && (groups >= writers || !in_flight.contains(state))
-            })
-        }) {
-            let Some(request) = queued.pop_front() else {
+        while let Some(request) = queued.get(scanned) {
+            let Some(state) = command_state(&request.command) else {
+                break;
+            };
+            if states.contains(state) || held.contains_key(state) || skipped.contains(state) {
+                skipped.insert(state.to_owned());
+                scanned += 1;
+                continue;
+            }
+            let Some(request) = queued.remove(scanned) else {
                 break;
             };
             match Grouped::from_request(request) {
@@ -246,18 +252,19 @@ async fn drive_grouped<S: StateStore>(
                         grouped.prefetch();
                     }
                     if in_flight.contains(grouped.state_id()) {
-                        blocked += 1;
+                        held.insert(grouped.state_id().to_owned(), grouped);
+                    } else {
+                        states.insert(grouped.state_id().to_owned());
+                        forming.push(grouped);
                     }
-                    states.insert(grouped.state_id().to_owned());
-                    forming.push(grouped);
                 }
                 Err(request) => {
-                    queued.push_front(request);
+                    queued.insert(scanned, request);
                     break;
                 }
             }
         }
-        if groups < writers && blocked == 0 && !forming.is_empty() {
+        if groups < writers && !forming.is_empty() {
             let take = forming.len().div_ceil(writers);
             let group: Vec<Grouped> = forming.drain(..take).collect();
             let group_states: Vec<String> = group
@@ -290,10 +297,18 @@ async fn drive_grouped<S: StateStore>(
             && let Some(request) = queued.pop_front()
         {
             barriers -= 1;
+            scanned = 0;
+            skipped.clear();
             run(&mut store, request).await;
             continue;
         }
-        if !open && operations == 0 && groups == 0 && queued.is_empty() && forming.is_empty() {
+        if !open
+            && operations == 0
+            && groups == 0
+            && queued.is_empty()
+            && forming.is_empty()
+            && held.is_empty()
+        {
             break;
         }
         tokio::select! {
@@ -305,10 +320,13 @@ async fn drive_grouped<S: StateStore>(
                     groups -= 1;
                     for state in completed {
                         in_flight.remove(&state);
-                        if states.contains(&state) {
-                            blocked -= 1;
+                        if let Some(grouped) = held.remove(&state) {
+                            states.insert(state);
+                            forming.push(grouped);
                         }
                     }
+                    scanned = 0;
+                    skipped.clear();
                 }
             }
             request = receiver.recv(), if open => match request {

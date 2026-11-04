@@ -178,6 +178,7 @@ pub(super) fn install(
             input_schema,
             strict,
             defer_loading: false,
+            cache_control: None,
         };
         let runtime = Arc::clone(&runtime);
         native = native.tool_with_context(definition, move |input, invocation| {

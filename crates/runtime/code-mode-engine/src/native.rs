@@ -12,12 +12,12 @@ use std::{
 
 use nanocode_platform::Instant;
 use rquickjs::{CatchResultExt, Context, Ctx, Function, Persistent, Promise, Runtime};
-use serde_json::{Value, value::RawValue};
+use serde_json::value::RawValue;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     cell::{
-        ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
+        CellTools, ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
         completed_terminal, drain_jobs, install_bootstrap, install_prelude, invoke_timeout,
         new_state, next_due_timeout, next_timeout_wait, prepare_execution, replay_inputs,
         resolve_tool, send_terminal, start_execution, track_rejections,
@@ -120,7 +120,7 @@ struct Execution {
 struct StartExecution {
     execution_id: u64,
     source: String,
-    tools: Vec<Value>,
+    tools: Arc<CellTools>,
     stored: HashMap<String, Arc<RawValue>>,
     prelude: Option<Arc<str>>,
     journaling: Option<CellJournaling>,
@@ -305,7 +305,7 @@ impl EmbeddedHost {
         execution_id: u64,
         source: &str,
         stored: HashMap<String, Arc<RawValue>>,
-        tools: Vec<Value>,
+        tools: Arc<CellTools>,
         prelude: Option<Arc<str>>,
         journaling: Option<CellJournaling>,
     ) -> Result<(), String> {
@@ -693,7 +693,7 @@ impl Worker {
                 state,
                 &run_cell,
                 start.source,
-                start.tools,
+                &start.tools,
                 start.prelude.is_some(),
             )?;
             if let Some(reason) = replay_inputs(&ctx, state, &promise)? {

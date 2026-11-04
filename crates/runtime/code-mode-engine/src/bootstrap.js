@@ -365,8 +365,9 @@
     }, delay);
   }
 
-  const runCell = async function (source, definitionsJson, schemasJson, preludeSource) {
+  const runCell = async function (source, definitionsJson, descriptionsJson, schemasJson, preludeSource) {
     const definitions = jsonParse(definitionsJson);
+    let descriptions;
     let schemas;
     const stored = new Map();
     const storedWrites = new Map();
@@ -446,11 +447,12 @@
 
     function exit() { throw EXIT; }
 
-    const allTools = Object.freeze(definitions.map((tool) => {
-      return Object.freeze({
-        name: tool.name,
-        description: tool.description,
-      });
+    const describe = (index) => (descriptions ??= jsonParse(descriptionsJson))[index];
+    const allTools = Object.freeze(definitions.map((tool, index) => {
+      return Object.freeze(Object.defineProperty({ name: tool.name }, "description", {
+        enumerable: true,
+        get: () => describe(index),
+      }));
     }));
     function toolSchema(name) {
       if (typeof name !== "string" || !name) {

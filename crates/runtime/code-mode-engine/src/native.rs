@@ -193,9 +193,7 @@ const SPARE_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 fn pool() -> Result<&'static Pool, String> {
     static POOL: OnceLock<Result<Pool, String>> = OnceLock::new();
-    POOL.get_or_init(start_pool)
-        .as_ref()
-        .map_err(Clone::clone)
+    POOL.get_or_init(start_pool).as_ref().map_err(Clone::clone)
 }
 
 fn start_pool() -> Result<Pool, String> {
@@ -401,7 +399,8 @@ struct Worker {
     hosts: HashMap<u64, Host>,
     deadlines: BTreeSet<(Instant, u64)>,
     spares: Vec<Engine>,
-    peak: usize,
+    opened: usize,
+    demand: usize,
     window: Instant,
     idle_events: mpsc::UnboundedSender<RuntimeEvent>,
 }
@@ -413,7 +412,8 @@ impl Worker {
             hosts: HashMap::new(),
             deadlines: BTreeSet::new(),
             spares: Vec::new(),
-            peak: 0,
+            opened: 0,
+            demand: 0,
             window: Instant::now(),
             idle_events: mpsc::unbounded_channel().0,
         }
@@ -458,7 +458,7 @@ impl Worker {
                 events,
                 interrupted,
             } => {
-                self.peak = self.peak.max(self.hosts.len() + 1);
+                self.opened += 1;
                 let engine = match self.spares.pop() {
                     Some(engine) => {
                         if !claimed {
@@ -520,7 +520,7 @@ impl Worker {
         let Some(mut engine) = engine else {
             return;
         };
-        if !idle || self.spares.len() >= self.peak.max(1) {
+        if !idle || self.spares.len() >= self.demand.max(self.opened).max(1) {
             return;
         }
         *engine.interrupted.borrow_mut() = Arc::new(AtomicBool::new(false));
@@ -543,13 +543,15 @@ impl Worker {
         if self.window.elapsed() < SPARE_WINDOW {
             return;
         }
-        let keep = self.peak.max(1);
+        self.demand = self.opened;
+        self.opened = 0;
+        let keep = self.demand.max(1);
         let dropped = self.spares.len().saturating_sub(keep);
         self.spares.truncate(keep);
-        self.load
-            .spares
-            .fetch_sub(isize::try_from(dropped).unwrap_or(isize::MAX), Ordering::AcqRel);
-        self.peak = self.hosts.len();
+        self.load.spares.fetch_sub(
+            isize::try_from(dropped).unwrap_or(isize::MAX),
+            Ordering::AcqRel,
+        );
         self.window = Instant::now();
     }
 
@@ -745,11 +747,10 @@ impl Worker {
             return Ok(Step::Finished);
         };
         execution.prepared.context.with(|ctx| {
-            let promise = execution
-                .promise
-                .clone()
-                .restore(&ctx)
-                .map_err(|error| format!("failed to restore the QuickJS cell promise: {error}"))?;
+            let promise =
+                execution.promise.clone().restore(&ctx).map_err(|error| {
+                    format!("failed to restore the QuickJS cell promise: {error}")
+                })?;
             run(&ctx, &execution.prepared.state, &promise)
         })
     }

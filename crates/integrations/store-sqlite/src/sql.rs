@@ -159,6 +159,10 @@ impl Sql for SqliteSql {
     fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {
         Some(self)
     }
+
+    fn readers(&self) -> usize {
+        self.readers.len().max(1)
+    }
 }
 
 fn configure(connection: &Connection, options: SqliteOptions) -> Result<(), StoreError> {

@@ -476,6 +476,10 @@ impl Sql for PostgresSql {
     fn writers(&self) -> usize {
         self.clients.len()
     }
+
+    fn readers(&self) -> usize {
+        self.clients.len()
+    }
 }
 
 async fn validate_schema(transaction: &tokio_postgres::Transaction<'_>) -> Result<(), StoreError> {

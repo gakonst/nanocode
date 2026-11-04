@@ -59,6 +59,10 @@ pub trait Sql: Send + Sync {
     fn writers(&self) -> usize {
         1
     }
+
+    fn readers(&self) -> usize {
+        1
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -78,6 +82,10 @@ pub trait Sql {
     }
 
     fn writers(&self) -> usize {
+        1
+    }
+
+    fn readers(&self) -> usize {
         1
     }
 }
@@ -653,8 +661,34 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let encoded = keys_json(keys.iter())?;
-        let rows = self.query("read_records", &RECORDS, vec![&encoded]).await?;
+        let parts = self.host.readers().clamp(1, keys.len());
+        let rows = if parts == 1 {
+            let encoded = keys_json(keys.iter())?;
+            self.query("read_records", &RECORDS, vec![&encoded]).await?
+        } else {
+            if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
+                self.migrate().await?;
+            }
+            let dialect = self.host.dialect();
+            let encoded = keys
+                .chunks(keys.len().div_ceil(parts))
+                .map(|chunk| keys_json(chunk.iter()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let statements = encoded
+                .iter()
+                .map(|encoded| [statement(dialect, &RECORDS, vec![encoded])])
+                .collect::<Vec<_>>();
+            let host = &*self.host;
+            futures_util::future::try_join_all(
+                statements
+                    .iter()
+                    .map(|statement| run_checked(host, "read_records", statement)),
+            )
+            .await?
+            .into_iter()
+            .flat_map(|mut results| results.pop().unwrap_or_default())
+            .collect()
+        };
         if rows.len() != keys.len() {
             return Err(StoreError::Backend(format!(
                 "SQL host answered {} of {} record reads",

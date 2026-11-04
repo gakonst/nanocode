@@ -162,7 +162,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
             }
             Some(Command::Exec(args)) => on_worker(exec(args.or(cli.session), clients)).await,
             Some(Command::Models) => {
-                print_models();
+                print_models(&clients);
                 Ok(())
             }
             Some(Command::Resume { id }) => {
@@ -214,7 +214,7 @@ async fn prepare(
     }
     let model = match (&args.model, args.harness) {
         (Some(model), harness) => {
-            let model = host::parse_model(model)?;
+            let model = clients.parse_model(model)?;
             if let Some(harness) = harness
                 && family(harness) != model.family()
             {
@@ -522,8 +522,8 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_models() {
-    for (family, models) in models::catalog() {
+fn print_models(clients: &ModelClients) {
+    for (family, models) in models::catalog(clients) {
         println!("{}", app::family_label(&family));
         for model in models {
             let capabilities = model.capabilities(nanocode::ModelTransport::Native);

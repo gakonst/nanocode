@@ -2406,23 +2406,31 @@ impl App {
             "model" | "m" if argument.is_empty() => {
                 self.overlay = Some(Overlay::Picker(
                     PickerPurpose::Model,
-                    models::model_picker(&self.model, self.host.config.gateway.as_ref()),
+                    models::model_picker(
+                        &self.model,
+                        self.host.config.gateway.as_ref(),
+                        &self.host.config.clients,
+                    ),
                 ));
             }
-            "model" | "m" => match crate::host::parse_model(argument).and_then(|model| match &self
-                .host
-                .config
-                .gateway
-            {
-                Some(gateway) => gateway.check(&model).map(|()| model),
-                None => Ok(model),
-            }) {
-                Ok(model) => {
-                    let picker = models::thinking_picker(&model, self.thinking);
-                    self.overlay = Some(Overlay::Picker(PickerPurpose::Thinking(model), picker));
+            "model" | "m" => {
+                match self
+                    .host
+                    .config
+                    .clients
+                    .parse_model(argument)
+                    .and_then(|model| match &self.host.config.gateway {
+                        Some(gateway) => gateway.check(&model).map(|()| model),
+                        None => Ok(model),
+                    }) {
+                    Ok(model) => {
+                        let picker = models::thinking_picker(&model, self.thinking);
+                        self.overlay =
+                            Some(Overlay::Picker(PickerPurpose::Thinking(model), picker));
+                    }
+                    Err(error) => self.notice(NoticeLevel::Error, error.to_string()),
                 }
-                Err(error) => self.notice(NoticeLevel::Error, error.to_string()),
-            },
+            }
             "thinking" | "effort" | "reasoning" if argument.is_empty() => {
                 let model = self.model.clone();
                 self.open_dial(model, self.thinking, false);
@@ -2832,7 +2840,7 @@ impl App {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "picked", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match purpose {
             PickerPurpose::Model => {
-                let Some(model) = models::model_at(picker, index) else {
+                let Some(model) = models::model_at(picker, index, &self.host.config.clients) else {
                     return;
                 };
                 let thinking = if model.supports_thinking(self.thinking) {

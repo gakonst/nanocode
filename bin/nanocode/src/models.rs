@@ -5,11 +5,16 @@ use nanocode_tui::{
     theme::Theme,
 };
 
-pub fn catalog() -> Vec<(HarnessFamily, Vec<ModelSelection>)> {
+pub fn catalog(clients: &crate::host::ModelClients) -> Vec<(HarnessFamily, Vec<ModelSelection>)> {
     HarnessFamily::builtin()
         .into_iter()
         .map(|family| {
-            let models = family.models().collect();
+            let models = match clients.codex_models() {
+                Some(served) if family == HarnessFamily::Codex => {
+                    served.iter().copied().map(ModelSelection::Codex).collect()
+                }
+                _ => family.models().collect(),
+            };
             (family, models)
         })
         .collect()
@@ -35,9 +40,13 @@ pub fn features(model: &ModelSelection) -> String {
     features.join(" · ")
 }
 
-pub fn model_picker(current: &ModelSelection, gateway: Option<&crate::host::Gateway>) -> Picker {
+pub fn model_picker(
+    current: &ModelSelection,
+    gateway: Option<&crate::host::Gateway>,
+    clients: &crate::host::ModelClients,
+) -> Picker {
     let mut items = Vec::new();
-    for (family, models) in catalog() {
+    for (family, models) in catalog(clients) {
         items.push(PickerItem::header(harness_title(&family)));
         for model in models {
             if gateway.is_some_and(|gateway| !gateway.serves(&model)) {
@@ -64,9 +73,13 @@ pub fn model_picker(current: &ModelSelection, gateway: Option<&crate::host::Gate
         .footer("type to filter · enter select · esc cancel")
 }
 
-pub fn model_at(picker: &Picker, index: usize) -> Option<ModelSelection> {
+pub fn model_at(
+    picker: &Picker,
+    index: usize,
+    clients: &crate::host::ModelClients,
+) -> Option<ModelSelection> {
     let item = picker.items().get(index)?;
-    (item.kind == ItemKind::Choice).then(|| crate::host::parse_model(&item.label).ok())?
+    (item.kind == ItemKind::Choice).then(|| clients.parse_model(&item.label).ok())?
 }
 
 pub fn thinking_picker(model: &ModelSelection, current: Thinking) -> Picker {

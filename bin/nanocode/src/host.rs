@@ -26,6 +26,7 @@ pub struct ModelClients {
     panel: Option<PanelSource>,
     tool_environment: Vec<(String, String)>,
     mcp_servers: Vec<(String, nanocode::tools::mcp::McpServer)>,
+    models: Option<std::sync::Arc<[Model]>>,
 }
 
 #[derive(Clone)]
@@ -194,6 +195,33 @@ impl ModelClients {
     ) -> Self {
         self.mcp_servers.push((name.into(), server));
         self
+    }
+
+    #[must_use]
+    pub fn models(mut self, models: impl IntoIterator<Item = Model>) -> Self {
+        self.models = Some(models.into_iter().collect());
+        self
+    }
+
+    pub(crate) fn codex_models(&self) -> Option<&[Model]> {
+        self.models.as_deref()
+    }
+
+    pub fn parse_model(&self, value: &str) -> Result<ModelSelection> {
+        let Some(served) = &self.models else {
+            return parse_model(value);
+        };
+        let value = value.trim();
+        if let Some(model) = served
+            .iter()
+            .find(|model| model.as_str() == value || Model::known(value) == Some(**model))
+        {
+            return Ok(ModelSelection::Codex(*model));
+        }
+        if let Ok(model) = value.parse::<ClaudeModel>() {
+            return Ok(ModelSelection::Claude(model));
+        }
+        Err(unknown_model(value, self))
     }
 
     pub(crate) fn panel_command(&self) -> Option<(&'static str, &'static str)> {
@@ -593,12 +621,17 @@ pub fn parse_model(value: &str) -> Result<ModelSelection> {
     if let Ok(model) = value.parse::<ClaudeModel>() {
         return Ok(ModelSelection::Claude(model));
     }
-    let known = ModelSelection::for_family(nanocode::HarnessFamily::Codex)
-        .chain(ModelSelection::for_family(nanocode::HarnessFamily::Claude))
+    Err(unknown_model(value, &ModelClients::default()))
+}
+
+fn unknown_model(value: &str, clients: &ModelClients) -> Error {
+    let known = crate::models::catalog(clients)
+        .into_iter()
+        .flat_map(|(_, models)| models)
         .map(|model| model.to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    Err(format!("unknown model {value:?}; known models: {known}").into())
+    format!("unknown model {value:?}; known models: {known}").into()
 }
 
 pub fn parse_thinking(value: &str) -> Result<Thinking> {

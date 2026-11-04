@@ -132,7 +132,7 @@ fn configure(connection: &Connection) -> Result<(), StoreError> {
     connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     connection
         .execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA mmap_size = 4294967296; PRAGMA temp_store = MEMORY;",
+            "PRAGMA page_size = 16384; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA mmap_size = 4294967296; PRAGMA temp_store = MEMORY;",
         )
         .map_err(backend)
 }
@@ -168,7 +168,40 @@ fn readers(connection: &Connection) -> Vec<mpsc::Sender<Job>> {
         .collect()
 }
 
-fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<()>> {
+struct Checkpoints {
+    wake: std::sync::mpsc::SyncSender<()>,
+    draining: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    log: std::path::PathBuf,
+    database: std::path::PathBuf,
+}
+
+impl Checkpoints {
+    fn committed(&self, connection: &Connection) {
+        let oversized = || {
+            matches!(
+                (std::fs::metadata(&self.log), std::fs::metadata(&self.database)),
+                (Ok(log), Ok(database)) if log.len() > database.len()
+            )
+        };
+        if !self.draining.load(std::sync::atomic::Ordering::Acquire) && !oversized() {
+            let _ = self.wake.try_send(());
+            return;
+        }
+        self.draining
+            .store(true, std::sync::atomic::Ordering::Release);
+        let truncated = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .is_ok_and(|busy| busy == 0);
+        if truncated {
+            self.draining
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+fn checkpointer(connection: &Connection) -> Option<Checkpoints> {
     let path = connection
         .path()
         .filter(|path| !path.is_empty())?
@@ -177,6 +210,10 @@ fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<(
         .execute_batch("PRAGMA wal_autocheckpoint = 0;")
         .ok()?;
     let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    let draining = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let drained = std::sync::Arc::clone(&draining);
+    let database = std::path::PathBuf::from(&path);
+    let log = std::path::PathBuf::from(format!("{path}-wal"));
     thread::Builder::new()
         .name("nanocode-sqlite-checkpoint".into())
         .spawn(move || {
@@ -190,17 +227,24 @@ fn checkpointer(connection: &Connection) -> Option<std::sync::mpsc::SyncSender<(
                 return;
             }
             while woken.recv().is_ok() {
-                let _ = checkpoints.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+                if !drained.load(std::sync::atomic::Ordering::Acquire) {
+                    let _ = checkpoints.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+                }
             }
         })
         .ok()?;
-    Some(wake)
+    Some(Checkpoints {
+        wake,
+        draining,
+        log,
+        database,
+    })
 }
 
 fn serve(
     mut connection: Connection,
     mut jobs: mpsc::Receiver<Job>,
-    checkpoints: Option<std::sync::mpsc::SyncSender<()>>,
+    checkpoints: Option<Checkpoints>,
     behavior: TransactionBehavior,
 ) {
     while let Some(job) = jobs.blocking_recv() {
@@ -209,7 +253,7 @@ fn serve(
                 .send(run(&mut connection, &job.statements, behavior)),
         );
         if let Some(checkpoints) = &checkpoints {
-            let _ = checkpoints.try_send(());
+            checkpoints.committed(&connection);
         }
     }
     drop(connection.close());

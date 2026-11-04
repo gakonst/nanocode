@@ -76,6 +76,17 @@ pub enum ClaudeError {
 
 impl ClaudeError {
     #[doc(hidden)]
+    pub fn is_throttled(&self) -> bool {
+        match self {
+            Self::Http { status, .. } => matches!(status, 429 | 529),
+            Self::StreamError { kind, .. } => {
+                matches!(kind.as_str(), "rate_limit_error" | "overloaded_error")
+            }
+            _ => false,
+        }
+    }
+
+    #[doc(hidden)]
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Http {

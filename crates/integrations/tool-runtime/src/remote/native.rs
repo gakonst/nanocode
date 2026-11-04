@@ -1196,11 +1196,13 @@ async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     served.result
 }
 
-/// How a served connection ended: its result and the code of the peer's
-/// close frame, if one arrived.
+/// How a served connection ended: its result, the code of the peer's close
+/// frame, if one arrived, and whether the peer served it (sent a frame or a
+/// ping), even when that frame and the close were read together.
 pub(super) struct Served {
     pub(super) result: Result<(), CodeModeHostError>,
     pub(super) close_code: Option<u16>,
+    pub(super) heard: bool,
 }
 
 /// Whether a served connection carries the runtime's replies from the start,
@@ -1233,6 +1235,7 @@ pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     Served {
         result,
         close_code: liveness.close_code(),
+        heard: liveness.heard.is_fired(),
     }
 }
 

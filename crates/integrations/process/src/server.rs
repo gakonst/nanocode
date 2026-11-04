@@ -540,7 +540,7 @@ pub(super) struct Served {
 impl Served {
     pub(super) fn drains(
         self,
-        chunks: &mpsc::UnboundedSender<Vec<u8>>,
+        chunks: &output::Sender,
         activity: &Arc<nanocode_process_contracts::LastActivity>,
     ) -> Vec<tokio::task::JoinHandle<()>> {
         (0..2)
@@ -575,7 +575,7 @@ async fn drain(
     lease: Arc<Lease>,
     stream: usize,
     ended: Arc<Signal>,
-    chunks: mpsc::UnboundedSender<Vec<u8>>,
+    chunks: output::Sender,
     activity: Arc<nanocode_process_contracts::LastActivity>,
 ) {
     let Some(pipe) = lease.pipes[stream].take() else {
@@ -589,7 +589,7 @@ async fn drain(
 async fn read_all(
     pipe: Output,
     ended: &Signal,
-    chunks: &mpsc::UnboundedSender<Vec<u8>>,
+    chunks: &output::Sender,
     activity: &nanocode_process_contracts::LastActivity,
 ) -> Option<Output> {
     // On the heap: in the future itself, every spawn copied it.
@@ -640,12 +640,14 @@ async fn read_all(
             Ok(0) => return Some(pipe),
             Ok(length) => {
                 activity.touch();
-                if chunks.send(buffer[..length].to_vec()).is_err() {
+                if chunks.send(buffer[..length].to_vec()).await.is_err() {
                     return None;
                 }
             }
             Err(error) => {
-                let _ = chunks.send(format!("failed to read command output: {error}").into_bytes());
+                let _ = chunks
+                    .send(format!("failed to read command output: {error}").into_bytes())
+                    .await;
                 return None;
             }
         }

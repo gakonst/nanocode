@@ -32,11 +32,7 @@ use std::{
 };
 
 use nanocode_sync::{Actor, Atom};
-use tokio::{
-    sync::{Notify, mpsc},
-    task::JoinHandle,
-    time::timeout,
-};
+use tokio::{sync::Notify, task::JoinHandle, time::timeout};
 
 pub use nanocode_process_contracts::{
     DEFAULT_EXEC_YIELD_MS, DEFAULT_POLL_YIELD_MS, DEFAULT_WRITE_YIELD_MS, MAX_EXEC_YIELD_MS,
@@ -76,6 +72,7 @@ pub(crate) fn redact(bytes: &[u8], redactor: &nanocode_process_contracts::Redact
 
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 const MAX_SESSIONS: usize = 64;
+pub const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
 const PROTECTED_SESSIONS: usize = 8;
 
 pub use nanocode_process_contracts::{
@@ -251,6 +248,7 @@ pub struct ShellSessions {
     per_caller: bool,
     origin: Instant,
     busy_at: AtomicU64,
+    output_limit: usize,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     servers: server::Servers,
 }
@@ -276,6 +274,7 @@ impl ShellSessions {
             per_caller: false,
             origin: Instant::now(),
             busy_at: AtomicU64::new(0),
+            output_limit: DEFAULT_OUTPUT_LIMIT_BYTES,
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             servers: server::Servers::default(),
         }
@@ -284,6 +283,12 @@ impl ShellSessions {
     #[must_use]
     pub const fn per_caller(mut self) -> Self {
         self.per_caller = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn output_limit(mut self, bytes: usize) -> Self {
+        self.output_limit = bytes;
         self
     }
 
@@ -433,16 +438,22 @@ impl ShellSessions {
                 started_at: SystemTime::now(),
                 caller: command.caller,
             };
-            let session =
-                match Session::new(session_id, spawned, secrets, launch, &self.sessions.exits) {
-                    Ok(session) => session,
-                    Err(error) => {
-                        return ExecCommandResult::failed(
-                            started_at.elapsed(),
-                            format!("exec_command failed for `{}`: {error}", command.script),
-                        );
-                    }
-                };
+            let session = match Session::new(
+                session_id,
+                spawned,
+                secrets,
+                launch,
+                &self.sessions.exits,
+                self.output_limit,
+            ) {
+                Ok(session) => session,
+                Err(error) => {
+                    return ExecCommandResult::failed(
+                        started_at.elapsed(),
+                        format!("exec_command failed for `{}`: {error}", command.script),
+                    );
+                }
+            };
             let mut cancellation = CancelExecution {
                 session: Some(Arc::clone(&session)),
                 sessions: Arc::clone(&self.sessions),
@@ -682,8 +693,7 @@ struct SessionState {
     stdin: Option<process::ProcessStdin>,
     process_group: process::SharedProcessGroup,
     drains: Option<Vec<JoinHandle<()>>>,
-    output: mpsc::UnboundedReceiver<Vec<u8>>,
-    captured: CapturedOutput,
+    output: output::Capture,
     secrets: nanocode_process_contracts::Redactor,
 }
 
@@ -694,9 +704,11 @@ impl Session {
         secrets: nanocode_process_contracts::Redactor,
         launch: Launch,
         exits: &Arc<Notify>,
+        output_limit: usize,
     ) -> std::io::Result<Arc<Self>> {
         let tty = matches!(spawned.stdin.as_ref(), Some(process::ProcessStdin::Pty(_)));
-        let (chunks, output) = mpsc::unbounded_channel();
+        let output = output::Capture::new(output_limit)?;
+        let chunks = output::Sender::Captured(output.clone());
         let activity = Arc::new(LastActivity::new());
         let drains = match spawned.output {
             process::ProcessOutput::Pipes { stdout, stderr } => vec![
@@ -724,7 +736,6 @@ impl Session {
             process_group: process_group.clone(),
             drains: Some(drains),
             output,
-            captured: CapturedOutput::default(),
             secrets,
         })?;
         Ok(Arc::new(Self {
@@ -795,13 +806,17 @@ impl SessionState {
             Ok(Err(error)) => {
                 self.process_group.terminate_and_disarm();
                 let message = format!("failed to wait for shell command: {error}");
-                self.collect();
-                self.captured.push(message.as_bytes(), usize::MAX);
+                let _ = self.output.push(message.into_bytes()).await;
                 Some(1)
             }
             Err(_) => None,
         };
-        let (output, original_token_count) = self.take_output(max_output_tokens);
+        let (output, original_token_count) = match self.take_output(max_output_tokens).await {
+            Ok(output) => output,
+            Err(error) => {
+                return ExecCommandResult::failed(started_at.elapsed(), error.to_string());
+            }
+        };
         ExecCommandResult {
             error: None,
             chunk_id: Some(generate_chunk_id()),
@@ -829,20 +844,17 @@ impl SessionState {
         }
     }
 
-    fn collect(&mut self) {
-        while let Ok(chunk) = self.output.try_recv() {
-            self.captured.push(&chunk, usize::MAX);
-        }
-    }
-
-    fn take_output(&mut self, max_output_tokens: Option<usize>) -> (String, Option<usize>) {
-        self.collect();
-        let captured = self.captured.take();
+    async fn take_output(
+        &mut self,
+        max_output_tokens: Option<usize>,
+    ) -> Result<(String, Option<usize>), nanocode_sync::Stopped> {
+        let mut captured = self.output.take().await?;
+        captured.trim_truncated_secrets(&self.secrets);
         let mut raw = String::from_utf8_lossy(&captured.with_omission_marker()).into_owned();
         self.secrets.text(&mut raw);
         let limit = output::effective_token_limit(max_output_tokens);
         let (output, _) = output::redact_and_limit(raw, &[], limit);
-        (output, Some(captured.total_bytes.saturating_add(3) / 4))
+        Ok((output, Some(captured.total_bytes.saturating_add(3) / 4)))
     }
 }
 
@@ -877,12 +889,16 @@ impl CapturedOutput {
             self.tail.clear();
             self.tail.extend(&tail_bytes[kept_from..]);
         } else {
-            self.tail.extend(tail_bytes);
-            let excess = self.tail.len().saturating_sub(tail_budget);
+            let excess = self
+                .tail
+                .len()
+                .saturating_add(tail_bytes.len())
+                .saturating_sub(tail_budget);
             if excess > 0 {
                 drop(self.tail.drain(..excess));
                 self.omitted_bytes = self.omitted_bytes.saturating_add(excess);
             }
+            self.tail.extend(tail_bytes);
         }
     }
 
@@ -910,6 +926,43 @@ struct CapturedChunk {
 }
 
 impl CapturedChunk {
+    fn trim_truncated_secrets(&mut self, secrets: &nanocode_process_contracts::Redactor) {
+        if self.omitted_bytes == 0 || secrets.forms().next().is_none() {
+            return;
+        }
+        self.head = redact(&self.head, secrets);
+        self.tail = redact(self.tail.make_contiguous(), secrets).into();
+        let head_cut = secrets
+            .forms()
+            .filter_map(|(secret, _)| {
+                (1..=self.head.len().min(secret.len().saturating_sub(1)))
+                    .rev()
+                    .find(|&length| self.head.ends_with(&secret.as_bytes()[..length]))
+            })
+            .max()
+            .unwrap_or(0);
+        let tail_cut = secrets
+            .forms()
+            .filter_map(|(secret, _)| {
+                (1..=self.tail.len().min(secret.len().saturating_sub(1)))
+                    .rev()
+                    .find(|&length| {
+                        self.tail
+                            .iter()
+                            .take(length)
+                            .eq(secret.as_bytes()[secret.len() - length..].iter())
+                    })
+            })
+            .max()
+            .unwrap_or(0);
+        self.head.truncate(self.head.len() - head_cut);
+        drop(self.tail.drain(..tail_cut));
+        self.omitted_bytes = self
+            .omitted_bytes
+            .saturating_add(head_cut)
+            .saturating_add(tail_cut);
+    }
+
     fn with_omission_marker(&self) -> Vec<u8> {
         let marker = (self.omitted_bytes > 0)
             .then(|| format!("... {} bytes omitted ...", self.omitted_bytes));

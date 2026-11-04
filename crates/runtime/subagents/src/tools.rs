@@ -1022,6 +1022,7 @@ impl Tool for SubmitResult {
                 "status": { "type": "string", "enum": ["accepted", "superseded"] },
                 "durable": { "type": "boolean" },
                 "note": { "type": "string" },
+                "next": { "type": "string" },
                 "decoded_json_text": { "type": "boolean", "const": true }
             },
             "required": ["accepted", "status"],
@@ -1041,8 +1042,12 @@ impl Tool for SubmitResult {
             .await?;
         let output = match outcome {
             SubmissionOutcome::Accepted { decoded_json_text } => {
-                let mut receipt =
-                    json!({ "accepted": true, "status": "accepted", "durable": durable });
+                let mut receipt = json!({
+                    "accepted": true,
+                    "status": "accepted",
+                    "durable": durable,
+                    "next": "Your parent receives this result, not your final message. End the turn now with one short sentence and no tool calls.",
+                });
                 if !durable {
                     receipt["note"] = json!(
                         "Accepted in memory; not yet durable across a restart. Do not submit again."

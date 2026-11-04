@@ -182,6 +182,63 @@ struct HistorySegment {
     items: Arc<Vec<ResponseItem>>,
     len: usize,
     encoded: EncodedItems,
+    totals: std::sync::OnceLock<HistoryTotals>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct HistoryTotals {
+    reasoning_tokens: u64,
+    images: usize,
+    first_image: Option<usize>,
+}
+
+impl HistoryTotals {
+    fn add(mut self, items: &[ResponseItem], offset: usize) -> Self {
+        for (index, item) in items.iter().enumerate() {
+            if matches!(
+                item,
+                ResponseItem::Reasoning {
+                    encrypted_content: Some(_),
+                    ..
+                }
+            ) {
+                self.reasoning_tokens = self
+                    .reasoning_tokens
+                    .saturating_add(crate::session::compaction::estimate_item_tokens(item));
+            }
+            let images = image_count(item);
+            if images > 0 {
+                self.images += images;
+                self.first_image.get_or_insert(offset + index);
+            }
+        }
+        self
+    }
+}
+
+impl HistorySegment {
+    fn totals(&self) -> HistoryTotals {
+        if let Some(totals) = self.totals.get() {
+            return *totals;
+        }
+        let mut pending = Vec::new();
+        let mut base = HistoryTotals::default();
+        let mut current = Some(self);
+        while let Some(segment) = current {
+            if let Some(totals) = segment.totals.get() {
+                base = *totals;
+                break;
+            }
+            pending.push(segment);
+            current = segment.previous.as_deref();
+        }
+        for segment in pending.into_iter().rev() {
+            let offset = segment.previous.as_ref().map_or(0, |previous| previous.len);
+            base = base.add(&segment.items, offset);
+            let _ = segment.totals.set(base);
+        }
+        base
+    }
 }
 
 impl ResponseHistory {
@@ -232,7 +289,45 @@ impl ResponseHistory {
             len: previous_len + items.len(),
             items,
             encoded: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            totals: std::sync::OnceLock::new(),
         }));
+    }
+
+    fn totals_before(&self, end: usize) -> HistoryTotals {
+        let committed_len = self.head.as_ref().map_or(0, |segment| segment.len);
+        if end >= committed_len {
+            let base = self
+                .head
+                .as_deref()
+                .map(HistorySegment::totals)
+                .unwrap_or_default();
+            let tail = &self.tail[..(end - committed_len).min(self.tail.len())];
+            return base.add(tail, committed_len);
+        }
+        let mut current = self.head.as_deref();
+        while let Some(segment) = current {
+            let previous_len = segment.previous.as_ref().map_or(0, |previous| previous.len);
+            if previous_len <= end {
+                let base = segment
+                    .previous
+                    .as_deref()
+                    .map(HistorySegment::totals)
+                    .unwrap_or_default();
+                return base.add(&segment.items[..end - previous_len], previous_len);
+            }
+            current = segment.previous.as_deref();
+        }
+        HistoryTotals::default()
+    }
+
+    #[must_use]
+    pub fn images_before(&self, end: usize) -> (usize, Option<usize>) {
+        let totals = self.totals_before(end);
+        (totals.images, totals.first_image)
+    }
+
+    pub(crate) fn reasoning_tokens_before(&self, end: usize) -> u64 {
+        self.totals_before(end).reasoning_tokens
     }
 
     pub fn replace(&mut self, items: Vec<ResponseItem>) {
@@ -677,6 +772,38 @@ impl Serialize for RequestResponseItem<'_> {
         } else {
             source.serialize(serializer)
         }
+    }
+}
+
+fn image_count(item: &ResponseItem) -> usize {
+    match item {
+        ResponseItem::Message { content, .. } => content
+            .iter()
+            .filter(|part| {
+                matches!(
+                    part,
+                    ContentItem::InputImage { .. } | ContentItem::InputImageFile { .. }
+                )
+            })
+            .count(),
+        ResponseItem::FunctionCallOutput {
+            output: FunctionOutputBody::Content(content),
+            ..
+        }
+        | ResponseItem::CustomToolCallOutput {
+            output: FunctionOutputBody::Content(content),
+            ..
+        } => content
+            .iter()
+            .filter(|part| {
+                matches!(
+                    part,
+                    FunctionOutputContent::InputImage { .. }
+                        | FunctionOutputContent::InputImageFile { .. }
+                )
+            })
+            .count(),
+        _ => 0,
     }
 }
 

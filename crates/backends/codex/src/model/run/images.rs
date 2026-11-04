@@ -90,19 +90,8 @@ fn rewrite(item: &mut ResponseItem, mut replace: impl FnMut(&str) -> Option<Rewr
 
 pub(super) fn evict_images(limit: &ImageHistory, history: &RequestHistory) -> RequestHistory {
     let full = history.full();
-    let mut total = 0;
-    let mut sent_before = 0;
-    let mut start = None;
-    for (index, item) in full.iter().enumerate() {
-        let count = images(item).len();
-        if count > 0 && start.is_none() {
-            start = Some(index);
-        }
-        if index < history.incremental_start() {
-            sent_before += count;
-        }
-        total += count;
-    }
+    let (total, start) = full.images_before(full.len());
+    let (sent_before, _) = full.images_before(history.incremental_start());
     let evicted = limit.evicted(total);
     let Some(start) = start.filter(|_| evicted > 0) else {
         return history.clone();
@@ -129,9 +118,13 @@ pub(super) async fn inline_images(
     history: RequestHistory,
 ) -> Result<RequestHistory> {
     let full = history.full();
+    let (_, Some(first)) = full.images_before(full.len()) else {
+        return Ok(history);
+    };
     let mut start = None;
     let mut loaded = HashMap::new();
-    for (index, item) in full.iter().enumerate() {
+    for (index, item) in full.iter_from(first).enumerate() {
+        let index = first + index;
         for url in images(item) {
             if loaded.contains_key(url) {
                 continue;

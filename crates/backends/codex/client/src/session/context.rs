@@ -365,35 +365,22 @@ impl ContextManager {
     }
 
     fn items_after_last_model_generated_tokens(&self) -> u64 {
-        let mut tokens = None::<u64>;
-        for item in &self.items {
+        let mut tokens = 0_u64;
+        for item in self.items.iter_rev() {
             if is_model_generated_item(item) {
-                tokens = Some(0);
-            } else if let Some(tokens) = &mut tokens {
-                *tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
+                return tokens;
             }
+            tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
         }
-        tokens.unwrap_or_default()
+        0
     }
 
     fn non_last_reasoning_tokens(&self) -> u64 {
-        let mut reasoning = 0_u64;
-        let mut before_last_user = None;
-        for item in &self.items {
-            if is_user_turn_boundary(item) {
-                before_last_user = Some(reasoning);
-            }
-            if matches!(
-                item,
-                ResponseItem::Reasoning {
-                    encrypted_content: Some(_),
-                    ..
-                }
-            ) {
-                reasoning = reasoning.saturating_add(compaction::estimate_item_tokens(item));
-            }
-        }
-        before_last_user.unwrap_or_default()
+        let Some(after) = self.items.iter_rev().position(is_user_turn_boundary) else {
+            return 0;
+        };
+        self.items
+            .reasoning_tokens_before(self.items.len() - 1 - after)
     }
 }
 

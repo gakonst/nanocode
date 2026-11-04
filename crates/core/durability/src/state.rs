@@ -338,7 +338,7 @@ impl serde::Serialize for PageOperations<'_> {
 
 #[derive(Clone, Debug, Default)]
 struct Archive {
-    operations: BTreeMap<String, OperationState>,
+    operations: imbl::OrdMap<String, OperationState>,
     first: Option<(u64, String)>,
 }
 

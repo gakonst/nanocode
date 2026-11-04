@@ -62,6 +62,10 @@ const TOOL_RESULT_TOKEN_LIMIT: u64 = 12_000;
 const RETRY_BASE_MS: u64 = 500;
 const RETRY_CAP_MS: u64 = 32_000;
 const RETRY_JITTER_PERCENT: u64 = 25;
+// A rate limit or overload passes in minutes, not seconds: such a call gets
+// more attempts, within a bound on its total wait.
+const THROTTLED_ATTEMPTS: u32 = 10;
+const THROTTLED_WAIT: Duration = Duration::from_secs(180);
 
 fn truncate_middle(text: &str, max_tokens: u64) -> String {
     let total = estimate_text_tokens(text);
@@ -4979,6 +4983,7 @@ impl State {
             .filter(|_| context.threaded && !client.uses_subscription());
         let max_attempts = if context.disable_tools { 3 } else { 5 };
         let mut attempt = 0;
+        let mut waited = Duration::ZERO;
         let mut dispatched: Option<u64> = None;
         loop {
             if cancel.is_cancelled() {
@@ -5297,12 +5302,19 @@ impl State {
                 (RETRY_BASE_MS * 2_u64.pow(attempt - 1)).min(RETRY_CAP_MS) * jitter / 100,
             );
             let delay = retry_after.map_or(backoff, |delay| delay.max(backoff));
+            let throttled = error.is_throttled() && !context.disable_tools;
+            let attempts = if throttled {
+                THROTTLED_ATTEMPTS
+            } else {
+                max_attempts
+            };
 
-            if attempt >= max_attempts
+            if attempt >= attempts
                 || !error.is_transient()
                 || published_text
                 || (uncertain && recovery.is_some())
                 || delay > Duration::from_secs(60)
+                || (throttled && waited + delay > THROTTLED_WAIT)
             {
                 telemetry::fail_attempt(&attempt_span, &error, None, retry_after.is_some());
                 return Err(ResponseFailure {
@@ -5327,13 +5339,15 @@ impl State {
                         "model_call_index": index,
                         "attempt": attempt,
                         "next_attempt": attempt + 1,
-                        "max_attempts": max_attempts,
+                        "max_attempts": attempts,
                         "delay_ns": delay_ns,
                         "server_requested_delay": retry_after.is_some(),
+                        "throttled": throttled,
                         "error": error.to_string(),
                     }),
                 );
             }
+            waited += delay;
 
             tokio::select! {
                 () = cancel.cancelled() => {}

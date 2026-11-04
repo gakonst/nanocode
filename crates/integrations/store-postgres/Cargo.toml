@@ -16,7 +16,7 @@ description = "Postgres state store for Nanocode durability"
 futures-util.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-sync.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 tokio-postgres.workspace = true
 
 [lints]

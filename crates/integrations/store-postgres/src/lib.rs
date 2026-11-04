@@ -324,6 +324,50 @@ impl PostgresSql {
         }
     }
 
+    pub async fn connect(config: &str, connections: usize) -> Result<Self, StoreError> {
+        if connections == 0 {
+            return Err(StoreError::Backend(
+                "a Postgres pool needs a connection".to_owned(),
+            ));
+        }
+        static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Handle>> =
+            std::sync::OnceLock::new();
+        let runtime = RUNTIME
+            .get_or_init(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                let handle = runtime.handle().clone();
+                std::thread::Builder::new()
+                    .name("nanocode-postgres".into())
+                    .spawn(move || runtime.block_on(std::future::pending::<()>()))
+                    .ok()?;
+                Some(handle)
+            })
+            .as_ref()
+            .ok_or_else(|| {
+                StoreError::Backend("could not start the Postgres connection thread".to_owned())
+            })?;
+        let config = config.to_owned();
+        let clients = runtime
+            .spawn(async move {
+                let mut clients = Vec::with_capacity(connections);
+                for _ in 0..connections {
+                    let (client, connection) =
+                        tokio_postgres::connect(&config, tokio_postgres::NoTls)
+                            .await
+                            .map_err(backend)?;
+                    drop(tokio::spawn(connection));
+                    clients.push(client);
+                }
+                Ok::<_, StoreError>(clients)
+            })
+            .await
+            .map_err(|error| StoreError::Backend(error.to_string()))??;
+        Ok(Self::pool(clients))
+    }
+
     async fn client(&self) -> nanocode_sync::Held<'_, Connection> {
         let start = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let count = self.clients.len();

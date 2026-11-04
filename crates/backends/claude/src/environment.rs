@@ -200,12 +200,12 @@ const fn host_lines() -> Vec<String> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn current_date() -> String {
+pub(crate) fn current_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 #[cfg(target_family = "wasm")]
-fn current_date() -> String {
+pub(crate) fn current_date() -> String {
     use chrono::Datelike;
     let date = chrono::DateTime::<chrono::Utc>::from(nanocode_platform::system_time()).date_naive();
     format!("{:04}-{:02}-{:02}", date.year(), date.month(), date.day())

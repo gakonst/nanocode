@@ -3142,6 +3142,7 @@ impl AgentFactory for ClaudeNativeFactory {
                     recipe = recipe.thinking(thinking)?;
                 }
                 state.initialize_child_workspace(&mut recipe)?;
+                state.share_system_context(&mut recipe);
                 return Agent::persist_created(recipe.host_context(host_context).build()).await;
             }
 
@@ -3168,6 +3169,7 @@ impl AgentFactory for ClaudeNativeFactory {
             recipe.fast_mode =
                 state.fast_mode.load(Ordering::SeqCst) && selected.supports_fast_mode();
             state.initialize_child_workspace(&mut recipe)?;
+            state.share_system_context(&mut recipe);
             let child = recipe
                 .thinking(options.selected_thinking().expect("resolved thinking"))?
                 .host_context(host_context)
@@ -3194,6 +3196,7 @@ impl AgentFactory for ClaudeNativeFactory {
                 state.durable_child(&mut recipe, &child_id, &lineage, "restore", journal_backed)?;
             }
             state.initialize_child_workspace(&mut recipe)?;
+            state.share_system_context(&mut recipe);
             Agent::persist_created(recipe.host_context(host_context).build()).await
         })
     }
@@ -4356,7 +4359,10 @@ impl State {
         };
         if workspace == self.workspace() {
             let (environment, instructions) = self.system_context();
-            recipe.system_context = Some((environment.to_owned(), instructions.map(str::to_owned)));
+            if environment.ends_with(&crate::environment::current_date()) {
+                recipe.system_context =
+                    Some((environment.to_owned(), instructions.map(str::to_owned)));
+            }
         }
     }
     fn current_system(&self) -> Option<Arc<Value>> {

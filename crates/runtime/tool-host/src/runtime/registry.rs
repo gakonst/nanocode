@@ -65,17 +65,27 @@ pub(crate) struct ToolRegistry {
     pub(super) hand_calls: Option<Arc<dyn crate::embedded::HandCalls>>,
     nested_gate: Arc<super::admission::AdmissionGate>,
     pub(super) excluded_code_tools: HashSet<String>,
-    nested_metadata: Arc<Atom<Option<NestedMetadata>>>,
+    nested_metadata: Arc<Atom<Option<Arc<NestedMetadata>>>>,
 }
 
 /// The Code Mode catalog last built, with the definitions it was built from.
 /// Building it copies every nested tool's description and schemas, which
 /// costs a cell of a large catalog more than the rest of its start, so cells
 /// that offer the same definitions share it.
-#[derive(Clone)]
 struct NestedMetadata {
     definitions: Vec<ToolDefinition>,
     metadata: Arc<[Value]>,
+}
+
+impl NestedMetadata {
+    fn offers(&self, definitions: &[ToolDefinition]) -> bool {
+        self.definitions.len() == definitions.len()
+            && self
+                .definitions
+                .iter()
+                .zip(definitions)
+                .all(|(built, current)| same_metadata(built, current))
+    }
 }
 
 impl ToolRegistry {
@@ -379,30 +389,43 @@ impl ToolRegistry {
 
     pub(crate) fn shared_nested_tool_metadata(&self) -> Arc<[Value]> {
         let definitions = self.code_mode_definitions();
+        static LIVE: std::sync::LazyLock<Atom<Vec<std::sync::Weak<NestedMetadata>>>> =
+            std::sync::LazyLock::new(Atom::default);
         let cached = self.nested_metadata.read(|cached| {
             cached
                 .as_ref()
-                .filter(|cached| {
-                    cached.definitions.len() == definitions.len()
-                        && cached
-                            .definitions
-                            .iter()
-                            .zip(&definitions)
-                            .all(|(built, current)| same_metadata(built, current))
-                })
+                .filter(|cached| cached.offers(&definitions))
                 .map(|cached| Arc::clone(&cached.metadata))
         });
         if let Some(metadata) = cached {
             return metadata;
         }
-        let metadata: Arc<[Value]> = definitions
-            .iter()
-            .map(|definition| definition_metadata(definition.name(), definition))
-            .collect();
-        self.nested_metadata.set(Some(NestedMetadata {
-            definitions,
-            metadata: Arc::clone(&metadata),
-        }));
+        let live = LIVE.read(|live| {
+            live.iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .find(|entry| entry.offers(&definitions))
+        });
+        let entry = match live {
+            Some(entry) => entry,
+            None => {
+                let metadata = definitions
+                    .iter()
+                    .map(|definition| definition_metadata(definition.name(), definition))
+                    .collect();
+                let entry = Arc::new(NestedMetadata {
+                    definitions,
+                    metadata,
+                });
+                let weak = Arc::downgrade(&entry);
+                LIVE.update(|live| {
+                    live.retain(|entry| entry.strong_count() > 0);
+                    live.push(std::sync::Weak::clone(&weak));
+                });
+                entry
+            }
+        };
+        let metadata = Arc::clone(&entry.metadata);
+        self.nested_metadata.set(Some(entry));
         metadata
     }
 

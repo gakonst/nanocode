@@ -6,7 +6,9 @@ use serde_json::value::{RawValue, to_raw_value};
 use super::{ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem};
 use crate::client::{ModelConfig, Thinking, pricing::ServiceTier, responses::StrictJsonSchema};
 
-type EncodedPrefix = Arc<[std::sync::OnceLock<Option<Box<[Box<RawValue>]>>>; 8]>;
+type EncodedItems = [std::sync::OnceLock<Option<Box<[Box<RawValue>]>>>; 8];
+
+type EncodedPrefix = Arc<EncodedItems>;
 
 fn encoded_prefix() -> EncodedPrefix {
     Arc::new(std::array::from_fn(|_| std::sync::OnceLock::new()))
@@ -100,24 +102,8 @@ impl RequestProfile {
         if !std::ptr::eq(input.input.first, &*self.prefix) {
             return None;
         }
-        let index = usize::from(input.strip_image_detail)
-            | (usize::from(input.custom_tools_as_functions) << 1)
-            | (usize::from(input.reasoning_effort_updates) << 2);
-        self.encoded_prefix[index]
-            .get_or_init(|| {
-                self.prefix
-                    .iter()
-                    .filter(|item| input.supports(item))
-                    .map(|item| {
-                        to_raw_value(&RequestResponseItem {
-                            item,
-                            strip_image_detail: input.strip_image_detail,
-                            custom_tools_as_functions: input.custom_tools_as_functions,
-                        })
-                        .ok()
-                    })
-                    .collect()
-            })
+        self.encoded_prefix[input.flags()]
+            .get_or_init(|| input.encode(&self.prefix))
             .as_deref()
     }
 
@@ -195,6 +181,7 @@ struct HistorySegment {
     previous: Option<Arc<Self>>,
     items: Arc<Vec<ResponseItem>>,
     len: usize,
+    encoded: EncodedItems,
 }
 
 impl ResponseHistory {
@@ -244,6 +231,7 @@ impl ResponseHistory {
             previous: self.head.take(),
             len: previous_len + items.len(),
             items,
+            encoded: std::array::from_fn(|_| std::sync::OnceLock::new()),
         }));
     }
 
@@ -563,6 +551,73 @@ impl RequestInput<'_> {
     const fn supports(&self, item: &ResponseItem) -> bool {
         self.reasoning_effort_updates || !matches!(item, ResponseItem::ConfigurationUpdate { .. })
     }
+
+    fn flags(&self) -> usize {
+        usize::from(self.strip_image_detail)
+            | (usize::from(self.custom_tools_as_functions) << 1)
+            | (usize::from(self.reasoning_effort_updates) << 2)
+    }
+
+    fn encode(&self, items: &[ResponseItem]) -> Option<Box<[Box<RawValue>]>> {
+        items
+            .iter()
+            .filter(|item| self.supports(item))
+            .map(|item| to_raw_value(&self.element(item)).ok())
+            .collect()
+    }
+
+    const fn element<'b>(&self, item: &'b ResponseItem) -> RequestResponseItem<'b> {
+        RequestResponseItem {
+            item,
+            strip_image_detail: self.strip_image_detail,
+            custom_tools_as_functions: self.custom_tools_as_functions,
+        }
+    }
+
+    fn items<S: SerializeSeq>(&self, sequence: &mut S, items: &[ResponseItem]) -> Result<(), S::Error> {
+        for item in items.iter().filter(|item| self.supports(item)) {
+            sequence.serialize_element(&self.element(item))?;
+        }
+        Ok(())
+    }
+
+    fn history<S: SerializeSeq>(
+        &self,
+        sequence: &mut S,
+        history: &ResponseHistory,
+        start: usize,
+    ) -> Result<(), S::Error> {
+        let committed_len = history.head.as_ref().map_or(0, |segment| segment.len);
+        let start = start.min(history.len());
+        let mut segments = Vec::new();
+        let mut offset = 0;
+        let mut current = history.head.as_deref().filter(|_| start < committed_len);
+        while let Some(segment) = current {
+            let previous_len = segment.previous.as_ref().map_or(0, |previous| previous.len);
+            segments.push(segment);
+            if start >= previous_len {
+                offset = start - previous_len;
+                break;
+            }
+            current = segment.previous.as_deref();
+        }
+        for (index, segment) in segments.iter().rev().enumerate() {
+            let skip = if index == 0 { offset } else { 0 };
+            match segment.encoded[self.flags()]
+                .get_or_init(|| self.encode(&segment.items))
+                .as_deref()
+                .filter(|_| skip == 0)
+            {
+                Some(encoded) => {
+                    for item in encoded {
+                        sequence.serialize_element(item)?;
+                    }
+                }
+                None => self.items(sequence, &segment.items[skip..])?,
+            }
+        }
+        self.items(sequence, &history.tail[start.saturating_sub(committed_len)..])
+    }
 }
 
 impl Serialize for RequestInput<'_> {
@@ -570,24 +625,23 @@ impl Serialize for RequestInput<'_> {
     where
         S: serde::Serializer,
     {
-        let skipped = self.prefix.map_or(0, |_| self.input.first.len());
-        let rest = || {
-            self.input
-                .iter()
-                .skip(skipped)
-                .filter(|item| self.supports(item))
-        };
-        let prefix = self.prefix.unwrap_or_default();
-        let mut sequence = serializer.serialize_seq(Some(prefix.len() + rest().count()))?;
-        for item in prefix {
-            sequence.serialize_element(item)?;
+        let mut sequence = serializer.serialize_seq(None)?;
+        match self.prefix {
+            Some(prefix) => {
+                for item in prefix {
+                    sequence.serialize_element(item)?;
+                }
+            }
+            None => self.items(&mut sequence, self.input.first)?,
         }
-        for item in rest() {
-            sequence.serialize_element(&RequestResponseItem {
-                item,
-                strip_image_detail: self.strip_image_detail,
-                custom_tools_as_functions: self.custom_tools_as_functions,
-            })?;
+        self.items(&mut sequence, self.input.second)?;
+        if let Some(history) = self.input.history {
+            self.history(&mut sequence, history, self.input.history_start)?;
+        }
+        if let Some(item) = self.input.tail
+            && self.supports(item)
+        {
+            sequence.serialize_element(&self.element(item))?;
         }
         sequence.end()
     }

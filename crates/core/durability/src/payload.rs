@@ -474,6 +474,25 @@ impl EncodedPayload {
         if values.is_empty() {
             return Ok(Vec::new());
         }
+        if values.iter().any(|value| value.content.is_some()) {
+            let missing: Vec<Self> = values
+                .iter()
+                .filter(|value| value.content.is_none())
+                .cloned()
+                .collect();
+            let mut loaded = Box::pin(Self::read_many(&missing, reader, state_id))
+                .await?
+                .into_iter();
+            return values
+                .iter()
+                .map(|value| match value.content {
+                    Some(_) => Ok(value.clone()),
+                    None => loaded.next().ok_or_else(|| {
+                        Error::InvalidState("record batch length mismatch".into())
+                    }),
+                })
+                .collect();
+        }
         let keys: Vec<_> = values.iter().map(|value| value.key.to_string()).collect();
         let records = reader.read_records(state_id, &keys).await?;
         if records.len() != values.len() {
@@ -507,6 +526,26 @@ impl EncodedPayload {
     ) -> Result<Vec<Self>> {
         if values.is_empty() {
             return Ok(Vec::new());
+        }
+        if values.iter().any(|value| value.content.is_some()) {
+            let missing: Vec<Self> = values
+                .iter()
+                .filter(|value| value.content.is_none())
+                .cloned()
+                .collect();
+            let mut loaded =
+                Box::pin(Self::load_many_noting(&missing, store, state_id, read))
+                    .await?
+                    .into_iter();
+            return values
+                .iter()
+                .map(|value| match value.content {
+                    Some(_) => Ok(value.clone()),
+                    None => loaded.next().ok_or_else(|| {
+                        Error::InvalidState("record batch length mismatch".into())
+                    }),
+                })
+                .collect();
         }
         let keys: Vec<_> = values.iter().map(|value| value.key.to_string()).collect();
         let mut source = Noting { store, read };

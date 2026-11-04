@@ -13,6 +13,8 @@ const INLINE_STATE_FORMAT: u8 = 6;
 
 const HEAD_STATE_FORMAT: u8 = 7;
 
+const RECEIPT_STATE_FORMAT: u8 = 8;
+
 const RECEIPT_PAGE: usize = 16;
 
 const RECEIPT_LEAF: usize = 1;
@@ -116,6 +118,7 @@ pub enum OperationStatus {
     Completed {
         checkpoint: EncodedPayload,
 
+        #[serde(with = "crate::payload::step")]
         output: EncodedPayload,
     },
 
@@ -202,6 +205,7 @@ pub struct OperationState {
 
     pub retired_steers: u32,
 
+    #[serde(with = "crate::payload::step")]
     pub input: EncodedPayload,
 
     pub status: OperationStatus,
@@ -226,14 +230,14 @@ impl OperationState {
     }
 
     fn stage_unless(&mut self, records: &mut Vec<StoreRecord>, known: &dyn Fn(&str) -> bool) {
-        self.input.stage_unless(records, known);
+        self.input.stage_step_unless(records, known);
         if let Some(value) = &mut self.continuation {
             value.stage_head_unless(records, known);
         }
         match &mut self.status {
             OperationStatus::Completed { checkpoint, output } => {
                 checkpoint.stage_unless(records, known);
-                output.stage_unless(records, known);
+                output.stage_step_unless(records, known);
             }
             OperationStatus::Failed { checkpoint, .. } => {
                 checkpoint.stage_unless(records, known);
@@ -668,6 +672,14 @@ impl JournalState {
         })
     }
 
+    fn inlines_receipts(&self) -> bool {
+        !self.sealed.is_empty()
+            || self.operations.values().any(|operation| {
+                operation.input.is_step_inline()
+                    || matches!(&operation.status, OperationStatus::Completed { output, .. } if output.is_step_inline())
+            })
+    }
+
     fn inlines_steps(&self) -> bool {
         self.operations.values().any(|operation| {
             operation.steps.values().any(|step| {
@@ -680,14 +692,14 @@ impl JournalState {
     pub fn checkpoint_payload<R: serde::Serialize>(&self, session: Option<&R>) -> Result<String> {
         serde_json::to_string(&RetainedCheckpointRef {
             nanocode_durable_state: DurableCheckpointRef {
-                format: if self.inlines_continuations() {
+                format: if self.inlines_receipts() {
+                    RECEIPT_STATE_FORMAT
+                } else if self.inlines_continuations() {
                     HEAD_STATE_FORMAT
                 } else if self.inlines_steps() {
                     INLINE_STATE_FORMAT
-                } else if self.sealed.is_empty() {
-                    STATE_FORMAT
                 } else {
-                    SEALED_STATE_FORMAT
+                    STATE_FORMAT
                 },
                 operations: &self.operations,
                 latest_checkpoint: self.latest_checkpoint(),
@@ -746,7 +758,8 @@ impl JournalState {
         if !(checkpoint.format == STATE_FORMAT && sealed.is_empty()
             || checkpoint.format == SEALED_STATE_FORMAT
             || checkpoint.format == INLINE_STATE_FORMAT
-            || checkpoint.format == HEAD_STATE_FORMAT)
+            || checkpoint.format == HEAD_STATE_FORMAT
+            || checkpoint.format == RECEIPT_STATE_FORMAT)
         {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",

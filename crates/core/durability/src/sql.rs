@@ -234,6 +234,16 @@ const SHARED: [&[&str]; 2] = [
         "DROP TABLE blobs",
     ],
 ];
+const HOLDERS: [&[&str]; 2] = [
+    &[
+        "ALTER TABLE records ADD COLUMN holder TEXT",
+        "CREATE INDEX records_holder ON records (holder) WHERE holder IS NOT NULL",
+    ],
+    &[
+        "ALTER TABLE records ADD COLUMN IF NOT EXISTS holder TEXT",
+        "CREATE INDEX IF NOT EXISTS records_holder ON records (holder) WHERE holder IS NOT NULL",
+    ],
+];
 const PEEK: Dialects = [
     "SELECT revision, payload FROM states WHERE id = ?1",
     "SELECT revision, payload FROM states WHERE id = $1::text",
@@ -255,8 +265,8 @@ const STATES: Dialects = [
     "SELECT id FROM states ORDER BY ord DESC LIMIT CAST($1::text AS BIGINT)",
 ];
 const RECORD_KEYS: Dialects = [
-    "SELECT records.key FROM state_records JOIN records ON records.id = state_records.record WHERE state_records.state_id = ?1",
-    "SELECT records.key FROM state_records JOIN records ON records.id = state_records.record WHERE state_records.state_id = $1::text",
+    "SELECT key FROM records WHERE holder = ?1 UNION SELECT records.key FROM state_records JOIN records ON records.id = state_records.record WHERE state_records.state_id = ?1",
+    "SELECT key FROM records WHERE holder = $1::text UNION SELECT records.key FROM state_records JOIN records ON records.id = state_records.record WHERE state_records.state_id = $1::text",
 ];
 const ACQUIRE: Dialects = [
     "INSERT INTO owners VALUES (?1, ?2, '1') ON CONFLICT (id) DO UPDATE SET owner = excluded.owner, fence = CAST(CAST(fence AS INTEGER) + 1 AS TEXT) WHERE CAST(fence AS INTEGER) < 9223372036854775807 RETURNING fence",
@@ -270,24 +280,24 @@ const PEEK_MANY: Dialects = [
     "SELECT states.id, states.revision, states.payload FROM json_each(?1) AS wanted JOIN states ON states.id = wanted.value",
     "SELECT states.id, states.revision, states.payload FROM json_array_elements_text($1::text::json) AS wanted (id) JOIN states ON states.id = wanted.id",
 ];
-const INSERT_RECORD: &str = "INSERT INTO records (key, value) SELECT ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 ON CONFLICT (key) DO NOTHING";
-const INSERT_RECORDS: &str = "WITH stored AS (INSERT INTO records (key, value) SELECT staged.key, staged.value FROM json_to_recordset($5::text::json) AS staged (key text, value text) WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ORDER BY 1 ON CONFLICT (key) DO UPDATE SET key = excluded.key RETURNING id) INSERT INTO state_records (record, state_id) SELECT id, $1::text FROM stored ON CONFLICT DO NOTHING";
+const INSERT_RECORD: &str = "INSERT INTO records (key, value, holder) SELECT ?2, ?3, ?1 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 ON CONFLICT (key) DO NOTHING";
+const INSERT_RECORDS: &str = "WITH stored AS (INSERT INTO records (key, value, holder) SELECT staged.key, staged.value, $1::text FROM json_to_recordset($5::text::json) AS staged (key text, value text) WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ORDER BY 1 ON CONFLICT (key) DO UPDATE SET key = excluded.key RETURNING id, holder) INSERT INTO state_records (record, state_id) SELECT id, $1::text FROM stored WHERE holder IS DISTINCT FROM $1::text ON CONFLICT DO NOTHING";
 const HOLD: Dialects = [
-    "INSERT INTO state_records (record, state_id) SELECT records.id, ?1 FROM json_each(?5) AS staged JOIN records ON records.key = staged.value WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?2 AND fence = ?3) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?4 ON CONFLICT DO NOTHING",
-    "INSERT INTO state_records (record, state_id) SELECT records.id, $1::text FROM jsonb_array_elements_text($5::text::jsonb) AS staged (key) JOIN records ON records.key = staged.key WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ON CONFLICT DO NOTHING",
+    "INSERT INTO state_records (record, state_id) SELECT records.id, ?1 FROM json_each(?5) AS staged JOIN records ON records.key = staged.value WHERE records.holder IS NOT ?1 AND EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?2 AND fence = ?3) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?4 ON CONFLICT DO NOTHING",
+    "INSERT INTO state_records (record, state_id) SELECT records.id, $1::text FROM jsonb_array_elements_text($5::text::jsonb) AS staged (key) JOIN records ON records.key = staged.key WHERE records.holder IS DISTINCT FROM $1::text AND EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ON CONFLICT DO NOTHING",
 ];
 const GROUP_REPLACE_ONE: &str = "INSERT INTO states (id, revision, payload) SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload RETURNING id, revision";
 const GROUP_LOCK_RECORDS_PG: &str = "SELECT CAST(count(*) AS TEXT) FROM (SELECT 1 FROM records WHERE records.key IN (SELECT staged.key FROM json_array_elements_text($1::text::json) AS staged (key)) ORDER BY records.key FOR KEY SHARE) AS locked";
-const GROUP_RECORDS_PG: &str = "INSERT INTO records (key, value) SELECT staged.key, staged.value FROM json_to_recordset($1::text::json) AS staged (key text, value text) ON CONFLICT (key) DO NOTHING";
-const GROUP_HOLDS_PG: &str = "INSERT INTO state_records (record, state_id) SELECT records.id, commits.state FROM json_to_recordset($1::text::json) AS commits (state text, owner text, fence text, expected text, keys json) CROSS JOIN LATERAL json_array_elements_text(commits.keys) AS staged (key) JOIN records ON records.key = staged.key WHERE EXISTS (SELECT 1 FROM owners WHERE owners.id = commits.state AND owners.owner = commits.owner AND owners.fence = commits.fence FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE states.id = commits.state), '0') = commits.expected ON CONFLICT DO NOTHING";
+const GROUP_RECORDS_PG: &str = "INSERT INTO records (key, value, holder) SELECT staged.key, staged.value, staged.holder FROM json_to_recordset($1::text::json) AS staged (key text, value text, holder text) ON CONFLICT (key) DO NOTHING";
+const GROUP_HOLDS_PG: &str = "INSERT INTO state_records (record, state_id) SELECT records.id, commits.state FROM json_to_recordset($1::text::json) AS commits (state text, owner text, fence text, expected text, keys json) CROSS JOIN LATERAL json_array_elements_text(commits.keys) AS staged (key) JOIN records ON records.key = staged.key WHERE records.holder IS DISTINCT FROM commits.state AND EXISTS (SELECT 1 FROM owners WHERE owners.id = commits.state AND owners.owner = commits.owner AND owners.fence = commits.fence FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE states.id = commits.state), '0') = commits.expected ON CONFLICT DO NOTHING";
 const GROUP_REPLACE_PG: &str = "INSERT INTO states (id, revision, payload) SELECT commits.state, commits.revision, commits.payload FROM json_to_recordset($1::text::json) AS commits (state text, owner text, fence text, expected text, revision text, payload text) WHERE EXISTS (SELECT 1 FROM owners WHERE owners.id = commits.state AND owners.owner = commits.owner AND owners.fence = commits.fence FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE states.id = commits.state), '0') = commits.expected ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload WHERE CAST(states.revision AS BIGINT) + 1 = CAST(excluded.revision AS BIGINT) RETURNING id, revision";
 const PUT_RECORD: &str =
-    "INSERT INTO records (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO NOTHING";
-const PUT_RECORDS: &str = "WITH stored AS (INSERT INTO records (key, value) SELECT staged.key, staged.value FROM json_to_recordset($2::text::json) AS staged (key text, value text) ORDER BY 1 ON CONFLICT (key) DO UPDATE SET key = excluded.key RETURNING id) INSERT INTO state_records (record, state_id) SELECT id, $1::text FROM stored ON CONFLICT DO NOTHING";
-const PUT_HOLDS: &str = "INSERT INTO state_records (record, state_id) SELECT records.id, ?1 FROM json_each(?2) AS staged JOIN records ON records.key = staged.value WHERE true ON CONFLICT DO NOTHING";
+    "INSERT INTO records (key, value, holder) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO NOTHING";
+const PUT_RECORDS: &str = "WITH stored AS (INSERT INTO records (key, value, holder) SELECT staged.key, staged.value, $1::text FROM json_to_recordset($2::text::json) AS staged (key text, value text) ORDER BY 1 ON CONFLICT (key) DO UPDATE SET key = excluded.key RETURNING id, holder) INSERT INTO state_records (record, state_id) SELECT id, $1::text FROM stored WHERE holder IS DISTINCT FROM $1::text ON CONFLICT DO NOTHING";
+const PUT_HOLDS: &str = "INSERT INTO state_records (record, state_id) SELECT records.id, ?1 FROM json_each(?2) AS staged JOIN records ON records.key = staged.value WHERE records.holder IS NOT ?1 ON CONFLICT DO NOTHING";
 const REPLACE: Dialects = [
-    "INSERT INTO states SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 AND NOT EXISTS (SELECT 1 FROM json_each(?7) AS staged LEFT JOIN records ON records.key = staged.value LEFT JOIN state_records ON state_records.state_id = ?1 AND state_records.record = records.id WHERE state_records.record IS NULL) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload RETURNING revision",
-    "INSERT INTO states (id, revision, payload) SELECT $1::text, $2::text, $3::text WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $4::text AND fence = $5::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $6::text AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text($7::text::jsonb) AS staged (key) LEFT JOIN records ON records.key = staged.key LEFT JOIN state_records ON state_records.state_id = $1::text AND state_records.record = records.id WHERE state_records.record IS NULL) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload WHERE states.revision = $6::text RETURNING revision",
+    "INSERT INTO states SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 AND NOT EXISTS (SELECT 1 FROM json_each(?7) AS staged LEFT JOIN records ON records.key = staged.value WHERE records.holder IS NOT ?1 AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.state_id = ?1 AND state_records.record = records.id)) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload RETURNING revision",
+    "INSERT INTO states (id, revision, payload) SELECT $1::text, $2::text, $3::text WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $4::text AND fence = $5::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $6::text AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text($7::text::jsonb) AS staged (key) LEFT JOIN records ON records.key = staged.key WHERE records.holder IS DISTINCT FROM $1::text AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.state_id = $1::text AND state_records.record = records.id)) ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload WHERE states.revision = $6::text RETURNING revision",
 ];
 const HOLD_OWNER: Dialects = [
     "INSERT INTO owners (id, owner, fence) VALUES (?1, '', '0') ON CONFLICT (id) DO UPDATE SET fence = owners.fence",
@@ -298,6 +308,10 @@ const RELEASE: Dialects = [
     "DELETE FROM state_records WHERE state_id = ?1 AND record IN (SELECT records.id FROM json_each(?3) AS dead JOIN records ON records.key = dead.value) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?2 AND (SELECT CAST(fence AS INTEGER) FROM owners WHERE id = ?1) < 9223372036854775807 RETURNING record",
     "DELETE FROM state_records USING jsonb_array_elements_text($3::text::jsonb) AS dead (key), records WHERE records.key = dead.key AND state_records.state_id = $1::text AND state_records.record = records.id AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $2::text AND (SELECT CAST(fence AS BIGINT) FROM owners WHERE id = $1::text) < 9223372036854775807 RETURNING CAST(state_records.record AS TEXT)",
 ];
+const UNHOLD: Dialects = [
+    "UPDATE records SET holder = NULL WHERE holder = ?1 AND key IN (SELECT value FROM json_each(?3)) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?2 AND (SELECT CAST(fence AS INTEGER) FROM owners WHERE id = ?1) < 9223372036854775807 RETURNING id",
+    "UPDATE records SET holder = NULL FROM jsonb_array_elements_text($3::text::jsonb) AS dead (key) WHERE records.key = dead.key AND records.holder = $1::text AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $2::text AND (SELECT CAST(fence AS BIGINT) FROM owners WHERE id = $1::text) < 9223372036854775807 RETURNING CAST(records.id AS TEXT)",
+];
 const FENCE: Dialects = [
     "UPDATE owners SET fence = CAST(CAST(fence AS INTEGER) + 1 AS TEXT) WHERE id = ?1 AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?2 AND CAST(fence AS INTEGER) < 9223372036854775807 RETURNING fence",
     "UPDATE owners SET fence = CAST(CAST(fence AS BIGINT) + 1 AS TEXT) WHERE id = $1::text AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $2::text AND CAST(fence AS BIGINT) < 9223372036854775807 RETURNING fence",
@@ -307,8 +321,8 @@ const RELEASE_OWNER: Dialects = [
     "DELETE FROM owners WHERE id = $1::text AND owner = '' AND fence = '0'",
 ];
 const DROP_RECORDS: Dialects = [
-    "DELETE FROM records WHERE key IN (SELECT value FROM json_each(?1)) AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING id",
-    "DELETE FROM records USING jsonb_array_elements_text($1::text::jsonb) AS dead (key) WHERE records.key = dead.key AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING CAST(records.id AS TEXT)",
+    "DELETE FROM records WHERE key IN (SELECT value FROM json_each(?1)) AND holder IS NULL AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING id",
+    "DELETE FROM records USING jsonb_array_elements_text($1::text::jsonb) AS dead (key) WHERE records.key = dead.key AND records.holder IS NULL AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING CAST(records.id AS TEXT)",
 ];
 
 struct Text<T>(T);
@@ -336,13 +350,15 @@ fn keys_json(keys: impl Iterator<Item = impl AsRef<str>>) -> Result<String, Stor
 struct GroupRecord<'a> {
     key: &'a str,
     value: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holder: Option<&'a str>,
 }
 
 fn records_json<'a>(
-    records: impl Iterator<Item = (&'a str, &'a str)>,
+    records: impl Iterator<Item = (&'a str, &'a str, Option<&'a str>)>,
 ) -> Result<String, StoreError> {
     serde_json::to_string(&Each(std::cell::Cell::new(Some(
-        records.map(|(key, value)| GroupRecord { key, value }),
+        records.map(|(key, value, holder)| GroupRecord { key, value, holder }),
     ))))
     .map_err(|error| StoreError::NotCommitted(format!("records: {error}")))
 }
@@ -353,7 +369,8 @@ fn values_json(records: &[StoreRecord]) -> Result<String, StoreError> {
             .iter()
             .map(|record| (record.key.as_str(), record.value.as_str()))
             .collect::<std::collections::BTreeMap<_, _>>()
-            .into_iter(),
+            .into_iter()
+            .map(|(key, value)| (key, value, None)),
     )
 }
 
@@ -579,13 +596,17 @@ impl Replacement<'_> {
     }
 }
 
-const MIGRATIONS: [Migration; 2] = [
+const MIGRATIONS: [Migration; 3] = [
     Migration {
         statements: SCHEMA,
         adopt: None,
     },
     Migration {
         statements: SHARED,
+        adopt: None,
+    },
+    Migration {
+        statements: HOLDERS,
         adopt: None,
     },
 ];
@@ -880,7 +901,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
                 .iter()
                 .map(|record| SqlStatement {
                     sql: PUT_RECORD,
-                    params: vec![&record.key, &record.value],
+                    params: vec![&record.key, &record.value, state_id],
                 })
                 .chain([SqlStatement {
                     sql: PUT_HOLDS,
@@ -963,18 +984,19 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         }
         statements.extend([
             statement(dialect, &RELEASE, vec![state_id, &revision, &dead]),
+            statement(dialect, &UNHOLD, vec![state_id, &revision, &dead]),
             statement(dialect, &FENCE, vec![state_id, &revision]),
             statement(dialect, &RELEASE_OWNER, vec![state_id]),
             statement(dialect, &DROP_RECORDS, vec![&dead]),
         ]);
-        let released = statements.len() - 4;
+        let released = statements.len() - 5;
         let results = self.transaction("collect", statements).await?;
-        if results[released + 1].is_empty() {
+        if results[released + 2].is_empty() {
             return Ok(None);
         }
         Ok(Some(Collected {
-            released: results[released].len() as u64,
-            deleted: results[released + 3].len() as u64,
+            released: (results[released].len() + results[released + 1].len()) as u64,
+            deleted: results[released + 4].len() as u64,
         }))
     }
 
@@ -1035,7 +1057,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
             for record in replacement.records {
                 unique
                     .entry(record.key.as_str())
-                    .or_insert(record.value.as_str());
+                    .or_insert((record.value.as_str(), replacement.state_id));
             }
         }
         self.commit_grouped(dialect, &prepared, &unique).await
@@ -1045,7 +1067,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         &mut self,
         dialect: SqlDialect,
         prepared: &[Result<(Replacement<'_>, Counters), StoreError>],
-        unique: &std::collections::BTreeMap<&str, &str>,
+        unique: &std::collections::BTreeMap<&str, (&str, &str)>,
     ) -> Vec<Result<Committed, StoreError>> {
         let mut committing = prepared.iter().flatten().collect::<Vec<_>>();
         committing.sort_unstable_by_key(|(replacement, _)| replacement.state_id);
@@ -1082,9 +1104,9 @@ impl<H: Sql + ?Sized> SqlStore<H> {
                 }
             }
             None => {
-                statements.extend(unique.iter().map(|(key, value)| SqlStatement {
+                statements.extend(unique.iter().map(|(key, (value, holder))| SqlStatement {
                     sql: PUT_RECORD,
-                    params: vec![*key, *value],
+                    params: vec![*key, *value, *holder],
                 }));
                 for (replacement, counters) in &committing {
                     replacement.hold(counters, &mut statements);
@@ -1138,7 +1160,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
 
     fn group_documents(
         committing: &[&(Replacement<'_>, Counters)],
-        unique: &std::collections::BTreeMap<&str, &str>,
+        unique: &std::collections::BTreeMap<&str, (&str, &str)>,
     ) -> Result<(String, String, String, String), StoreError> {
         let holds = committing
             .iter()
@@ -1170,7 +1192,11 @@ impl<H: Sql + ?Sized> SqlStore<H> {
             |error: serde_json::Error| StoreError::NotCommitted(format!("records: {error}"));
         Ok((
             keys_json(unique.keys())?,
-            records_json(unique.iter().map(|(key, value)| (*key, *value)))?,
+            records_json(
+                unique
+                    .iter()
+                    .map(|(key, (value, holder))| (*key, *value, Some(*holder))),
+            )?,
             serde_json::to_string(&holds).map_err(encode)?,
             serde_json::to_string(&heads).map_err(encode)?,
         ))

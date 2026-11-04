@@ -616,6 +616,42 @@ pub trait WireMessage {
     ) -> Result<std::borrow::Cow<'a, str>, ClaudeError> {
         encode(self.message()).map(std::borrow::Cow::Owned)
     }
+
+    fn digests(
+        &self,
+        encode: &dyn Fn(&Message) -> Result<String, ClaudeError>,
+    ) -> Result<MessageDigests, ClaudeError> {
+        Ok(MessageDigests::of(&self.encoded(false, encode)?))
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct MessageDigests {
+    sent: blake3::Hash,
+    read: blake3::Hash,
+}
+
+impl MessageDigests {
+    #[must_use]
+    pub fn of(json: &str) -> Self {
+        let sent = blake3::hash(json.as_bytes());
+        let mut read = blake3::Hasher::new();
+        let mut rest = json;
+        let mut marked = false;
+        while let Some((kept, after)) = cache_marker(rest) {
+            read.update(kept.as_bytes());
+            rest = after;
+            marked = true;
+        }
+        let read = if marked {
+            read.update(rest.as_bytes());
+            read.finalize()
+        } else {
+            sent
+        };
+        Self { sent, read }
+    }
 }
 
 impl WireMessage for Message {
@@ -635,6 +671,13 @@ impl<T: WireMessage + ?Sized> WireMessage for &T {
         encode: &dyn Fn(&Message) -> Result<String, ClaudeError>,
     ) -> Result<std::borrow::Cow<'a, str>, ClaudeError> {
         (**self).encoded(subscription, encode)
+    }
+
+    fn digests(
+        &self,
+        encode: &dyn Fn(&Message) -> Result<String, ClaudeError>,
+    ) -> Result<MessageDigests, ClaudeError> {
+        (**self).digests(encode)
     }
 }
 
@@ -1507,6 +1550,7 @@ impl ClaudeClient {
                 messages,
                 system: None,
                 tools: None,
+                digests: None,
             })
         } else {
             api_body(head, messages, streaming, None, cache)
@@ -1545,10 +1589,11 @@ impl ClaudeClient {
         }
         let wire = self.wire_body(head, messages, streaming, cache)?;
         Ok(PreparedWire {
-            body: wire.body.into(),
+            body: Arc::new(wire.body),
             messages: wire.messages,
             system: wire.system,
             tools: wire.tools,
+            digests: wire.digests,
             thread: None,
             subscription: self.subscription_compatibility,
             streaming,
@@ -1576,10 +1621,11 @@ impl ClaudeClient {
     ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         let wire = self.wire_body(request, &request.messages, true, None)?;
         PreparedWire {
-            body: wire.body.into(),
+            body: Arc::new(wire.body),
             messages: wire.messages,
             system: wire.system,
             tools: wire.tools,
+            digests: wire.digests,
             thread: None,
             subscription: self.subscription_compatibility,
             streaming: true,
@@ -1989,14 +2035,15 @@ impl ClaudeClient {
 #[derive(Clone, Debug)]
 pub struct PreparedWire {
     /// The whole request, which durable inputs record.
-    body: Arc<str>,
+    body: Arc<String>,
     /// Where the conversation's messages are in [`Self::body`]: between the
     /// brackets of its `messages` array.
     messages: std::ops::Range<usize>,
     system: Option<Encoding>,
     tools: Option<Encoding>,
+    digests: Option<(blake3::Hash, blake3::Hash)>,
     /// The request as a thread turn sends it, when it uses a thread.
-    thread: Option<Arc<str>>,
+    thread: Option<Arc<String>>,
     subscription: bool,
     streaming: bool,
     agent: bool,
@@ -2017,7 +2064,7 @@ impl PreparedWire {
         self.thread.as_deref().unwrap_or(&self.body)
     }
 
-    fn sent_shared(&self) -> Arc<str> {
+    fn sent_shared(&self) -> Arc<String> {
         Arc::clone(self.thread.as_ref().unwrap_or(&self.body))
     }
 
@@ -2033,13 +2080,13 @@ impl PreparedWire {
             conversation: String,
             prefix: String,
         }
-        let (conversation, markers) = self.conversation_digests();
+        let (conversation, sent) = self.digests.unwrap_or_else(|| self.stream_digests());
         let prefix = self.prefix_digest();
         let mut whole = blake3::Hasher::new();
         whole
             .update(prefix.as_bytes())
             .update(conversation.as_bytes())
-            .update(markers.as_bytes());
+            .update(sent.as_bytes());
         Ok(serde_json::value::to_raw_value(&Digest {
             wire: self.wire_name(),
             digest: whole.finalize().to_hex().to_string(),
@@ -2080,6 +2127,31 @@ impl PreparedWire {
         prefix.finalize()
     }
 
+    pub fn stream_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
+        #[derive(Serialize)]
+        struct Digest<'a> {
+            wire: &'a str,
+            digest: String,
+            bytes: usize,
+            conversation: String,
+            prefix: String,
+        }
+        let (conversation, markers) = self.stream_digests();
+        let prefix = self.prefix_digest();
+        let mut whole = blake3::Hasher::new();
+        whole
+            .update(prefix.as_bytes())
+            .update(conversation.as_bytes())
+            .update(markers.as_bytes());
+        Ok(serde_json::value::to_raw_value(&Digest {
+            wire: self.wire_name(),
+            digest: whole.finalize().to_hex().to_string(),
+            bytes: self.body.len(),
+            conversation: conversation.to_hex().to_string(),
+            prefix: prefix.to_hex().to_string(),
+        })?)
+    }
+
     pub fn body_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         #[derive(Serialize)]
         struct Digest<'a> {
@@ -2099,7 +2171,7 @@ impl PreparedWire {
             wire: self.wire_name(),
             blake3: blake3::hash(self.body.as_bytes()).to_hex().to_string(),
             bytes: self.body.len(),
-            conversation: self.conversation_digest(),
+            conversation: self.stream_digests().0.to_hex().to_string(),
             prefix: prefix.finalize().to_hex().to_string(),
         })?)
     }
@@ -2134,18 +2206,18 @@ impl PreparedWire {
         }
         serde_json::from_str::<Digest>(recorded).is_ok_and(|digest| {
             digest.wire == self.wire_name()
-                && digest.conversation.as_deref() == Some(self.conversation_digest().as_str())
+                && digest.conversation.is_some_and(|recorded| {
+                    self.digests.is_some_and(|(conversation, _)| {
+                        recorded == conversation.to_hex().as_str()
+                    }) || recorded == self.stream_digests().0.to_hex().as_str()
+                })
         })
     }
 
     /// The blake3 of the messages as sent, without their `cache_control`
     /// markers: where a host puts its cache breakpoints, and their TTL, don't
     /// change what the model reads.
-    fn conversation_digest(&self) -> String {
-        self.conversation_digests().0.to_hex().to_string()
-    }
-
-    fn conversation_digests(&self) -> (blake3::Hash, blake3::Hash) {
+    fn stream_digests(&self) -> (blake3::Hash, blake3::Hash) {
         let mut hasher = blake3::Hasher::new();
         let mut markers = blake3::Hasher::new();
         let mut kept_bytes = 0_u64;
@@ -2217,6 +2289,7 @@ struct WireBody {
     messages: std::ops::Range<usize>,
     system: Option<Encoding>,
     tools: Option<Encoding>,
+    digests: Option<(blake3::Hash, blake3::Hash)>,
 }
 
 #[derive(Clone, Debug)]
@@ -2318,6 +2391,13 @@ fn api_body<M: WireMessage>(
         .iter()
         .map(|message| message.encoded(false, &encode))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut read = Vec::with_capacity(messages.len() * blake3::OUT_LEN);
+    let mut sent = Vec::with_capacity(messages.len() * blake3::OUT_LEN);
+    for message in messages {
+        let digests = message.digests(&encode)?;
+        read.extend_from_slice(digests.read.as_bytes());
+        sent.extend_from_slice(digests.sent.as_bytes());
+    }
     let head = serde_json::to_string(&Head {
         model,
         max_tokens: *max_tokens,
@@ -2378,6 +2458,7 @@ fn api_body<M: WireMessage>(
         messages: start..end,
         system,
         tools,
+        digests: Some((blake3::hash(&read), blake3::hash(&sent))),
     })
 }
 

@@ -30,7 +30,7 @@ pub(crate) async fn post(
     client: &HttpClient,
     endpoint: &str,
     mut headers: http::HeaderMap,
-    body: std::sync::Arc<str>,
+    body: std::sync::Arc<String>,
     gzip: bool,
     layer: Option<&dyn Layer>,
 ) -> Result<HttpResponse, HttpError> {
@@ -136,7 +136,7 @@ impl layer::Sender for ReqwestSender<'_> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-struct SharedBody(std::sync::Arc<str>);
+struct SharedBody(std::sync::Arc<String>);
 
 #[cfg(not(target_family = "wasm"))]
 impl AsRef<[u8]> for SharedBody {
@@ -192,7 +192,7 @@ pub(crate) async fn post(
     client: &HttpClient,
     endpoint: &str,
     headers: http::HeaderMap,
-    body: std::sync::Arc<str>,
+    body: std::sync::Arc<String>,
     _gzip: bool,
     layer: Option<&dyn Layer>,
 ) -> Result<HttpResponse, HttpError> {

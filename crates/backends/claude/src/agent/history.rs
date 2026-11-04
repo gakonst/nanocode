@@ -1,4 +1,4 @@
-use crate::{ClaudeError, ContentBlock, Message, WireMessage};
+use crate::{ClaudeError, ContentBlock, Message, MessageDigests, WireMessage};
 use nanocode_durability::EncodedPayload;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -19,6 +19,7 @@ struct Entry {
     message: Message,
     wire: OnceLock<Box<str>>,
     json: OnceLock<Arc<str>>,
+    digests: OnceLock<MessageDigests>,
     record: OnceLock<EncodedPayload>,
 }
 
@@ -28,6 +29,7 @@ impl Clone for Entry {
             message: self.message.clone(),
             wire: OnceLock::new(),
             json: OnceLock::new(),
+            digests: OnceLock::new(),
             record: OnceLock::new(),
         }
     }
@@ -38,6 +40,7 @@ impl HistoryMessage {
         let entry = Arc::make_mut(&mut self.0);
         entry.wire = OnceLock::new();
         entry.json = OnceLock::new();
+        entry.digests = OnceLock::new();
         entry.record = OnceLock::new();
         &mut entry.message
     }
@@ -77,6 +80,7 @@ impl From<Message> for HistoryMessage {
             message,
             wire: OnceLock::new(),
             json: OnceLock::new(),
+            digests: OnceLock::new(),
             record: OnceLock::new(),
         }))
     }
@@ -141,6 +145,17 @@ impl WireMessage for HistoryMessage {
             }
         };
         Ok(Cow::Borrowed(json))
+    }
+
+    fn digests(
+        &self,
+        encode: &dyn Fn(&Message) -> Result<String, ClaudeError>,
+    ) -> Result<MessageDigests, ClaudeError> {
+        if let Some(digests) = self.0.digests.get() {
+            return Ok(*digests);
+        }
+        let digests = MessageDigests::of(&self.encoded(false, encode)?);
+        Ok(*self.0.digests.get_or_init(|| digests))
     }
 }
 

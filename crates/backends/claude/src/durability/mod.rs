@@ -1091,6 +1091,7 @@ impl ClaudeExecution {
         step: &StepState,
     ) -> AgentResult<Option<Box<RawValue>>> {
         for earlier in [
+            PreparedWire::stream_durable_input,
             PreparedWire::body_durable_input,
             PreparedWire::blake3_durable_input,
             PreparedWire::sha256_durable_input,

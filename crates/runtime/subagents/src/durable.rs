@@ -1,4 +1,5 @@
 use super::{
+    message::MAX_MESSAGE_BYTES,
     model::{AgentDescriptor, AgentId, AgentStatus},
     runtime::{ChildSession, Completion, OutputContract, StoredRuntime},
 };
@@ -1115,6 +1116,98 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     ))
 }
 
+/// The most of one call's arguments a resume message quotes: enough to tell
+/// which call it was (a command, a path), not a whole file it wrote.
+const RESUME_ARGUMENT_BYTES: usize = 2 * 1024;
+
+/// What closes a delegated task cut to fit its resume message.
+const CUT_TASK: &str = "\n\n[The task is cut here to fit this message; your history begins with \
+                        it whole.]";
+
+/// The most of its delegated task a resume message that doesn't fit whole
+/// quotes before it drops evidence.
+const RESUME_TASK_BYTES: usize = 16 * 1024;
+
+/// The message that resumes an agent restored mid-turn: [`RESUME_MESSAGE`],
+/// the evidence of its in-flight calls and its delegated task, kept within
+/// [`MAX_MESSAGE_BYTES`] so delivering it never fails. When it doesn't fit
+/// whole, each call quotes at most [`RESUME_ARGUMENT_BYTES`] of its arguments
+/// and the task at most [`RESUME_TASK_BYTES`], since the agent's history
+/// begins with it whole; then the oldest calls are counted as omitted, and
+/// last the task is cut to what is left. Uncapped, one in-flight call that
+/// wrote a large file was enough to exceed the limit, and the agent was lost.
+pub(super) fn resume_message(calls: &[InFlightCall], omitted: u32, task: Option<&str>) -> String {
+    let compose = |calls: &[InFlightCall], omitted: u32, task: Option<&str>| {
+        let mut message = RESUME_MESSAGE.to_owned();
+        if let Some(evidence) = in_flight_evidence(calls, omitted) {
+            message.push_str("\n\n");
+            message.push_str(&evidence);
+        }
+        if let Some(task) = task {
+            message.push_str("\n\nDelegated task:\n");
+            message.push_str(task);
+        }
+        message
+    };
+    let whole = compose(calls, omitted, task);
+    if whole.len() <= MAX_MESSAGE_BYTES {
+        return whole;
+    }
+    let quoted = calls
+        .iter()
+        .map(|call| InFlightCall {
+            arguments: clip(&call.arguments, RESUME_ARGUMENT_BYTES),
+            ..call.clone()
+        })
+        .collect::<Vec<_>>();
+    let short = task.map(|task| cut_task(task, RESUME_TASK_BYTES));
+    for dropped in 0..=quoted.len() {
+        let more = u32::try_from(dropped).unwrap_or(u32::MAX);
+        let message = compose(
+            &quoted[dropped..],
+            omitted.saturating_add(more),
+            short.as_deref(),
+        );
+        if message.len() <= MAX_MESSAGE_BYTES {
+            return message;
+        }
+    }
+    let more = u32::try_from(quoted.len()).unwrap_or(u32::MAX);
+    let head = compose(&[], omitted.saturating_add(more), Some(""));
+    let room = MAX_MESSAGE_BYTES.saturating_sub(head.len());
+    format!("{head}{}", cut_task(task.unwrap_or_default(), room))
+}
+
+/// `task` whole when it is at most `max` bytes, else cut so that it and
+/// [`CUT_TASK`] take at most `max`.
+fn cut_task(task: &str, max: usize) -> String {
+    if task.len() <= max {
+        return task.to_owned();
+    }
+    let mut end = max.saturating_sub(CUT_TASK.len());
+    while !task.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{CUT_TASK}", &task[..end])
+}
+
+/// `text` cut to at most about `max` bytes at a character boundary, saying
+/// how much it left out.
+fn clip(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}… ({} more bytes not shown)",
+        &text[..end],
+        text.len() - end
+    )
+}
+
 pub(super) enum JournaledCheckpoint {
     Current(SessionCheckpoint),
 
@@ -1608,4 +1701,60 @@ pub(super) fn restored_session(
         session.in_flight_omitted = agent.in_flight_omitted;
     }
     Ok((session, resume, !recoverable && !terminal))
+}
+
+#[cfg(test)]
+mod resume_message_tests {
+    use super::*;
+
+    fn call(id: usize, arguments: String) -> InFlightCall {
+        InFlightCall::new(
+            &format!("call-{id}"),
+            "exec",
+            Some(&Value::String(arguments)),
+            None,
+        )
+    }
+
+    #[test]
+    fn a_small_resume_is_unchanged() {
+        let calls = [call(1, "ls".into())];
+        let message = resume_message(&calls, 0, Some("Fix the build."));
+        assert_eq!(
+            message,
+            format!(
+                "{RESUME_MESSAGE}\n\n{}\n\nDelegated task:\nFix the build.",
+                in_flight_evidence(&calls, 0).unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn large_calls_and_tasks_fit_the_message_limit() {
+        let big = "é".repeat(MAX_MESSAGE_BYTES);
+        let calls = (0..100).map(|id| call(id, big.clone())).collect::<Vec<_>>();
+        let message = resume_message(&calls, 3, Some(&big));
+        assert!(
+            message.len() <= MAX_MESSAGE_BYTES,
+            "{} bytes",
+            message.len()
+        );
+        assert!(message.contains("more bytes not shown"));
+        assert!(message.contains("call-99"), "keeps the latest calls");
+        assert!(
+            !message.contains("call_id call-0;"),
+            "drops the oldest calls"
+        );
+        assert!(message.contains("additional observed call(s) omitted"));
+        assert!(message.ends_with(CUT_TASK));
+    }
+
+    #[test]
+    fn a_large_task_alone_is_cut() {
+        let task = "x".repeat(MAX_MESSAGE_BYTES * 2);
+        let message = resume_message(&[], 0, Some(&task));
+        assert!(message.len() <= MAX_MESSAGE_BYTES);
+        assert!(message.starts_with(RESUME_MESSAGE));
+        assert!(message.ends_with(CUT_TASK));
+    }
 }

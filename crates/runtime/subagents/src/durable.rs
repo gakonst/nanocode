@@ -496,6 +496,7 @@ struct CachedAgent {
     generation: u64,
     checkpoint: Option<Arc<str>>,
     key: Arc<str>,
+    profile: Arc<str>,
 }
 
 pub(super) enum AgentEntry {
@@ -581,15 +582,19 @@ struct AgentRecord {
 
 fn encode_agent(
     agent: PersistedAgent,
+    stored: Option<&CachedAgent>,
     records: &mut Vec<(Arc<str>, Arc<str>)>,
-) -> std::io::Result<Arc<str>> {
+) -> std::io::Result<(Arc<str>, Arc<str>)> {
     let (profile, json) = encoded(&AgentProfile {
         descriptor: agent.descriptor,
         binding_task: agent.binding_task,
         output_schema: agent.output_schema,
         host_context: agent.host_context,
     })?;
-    records.push((Arc::clone(&profile), json));
+    if stored.map(|cached| &cached.profile) != Some(&profile) {
+        records.push((Arc::clone(&profile), json));
+    }
+    let profile_key = Arc::clone(&profile);
     let (key, json) = encoded(&AgentRecord {
         profile,
         status: agent.status,
@@ -611,8 +616,10 @@ fn encode_agent(
         cancelled_revision: agent.cancelled_revision,
         conversation: agent.conversation,
     })?;
-    records.push((Arc::clone(&key), json));
-    Ok(key)
+    if stored.map(|cached| &cached.key) != Some(&key) {
+        records.push((Arc::clone(&key), json));
+    }
+    Ok((key, profile_key))
 }
 
 pub(super) async fn load_agents(
@@ -790,13 +797,18 @@ impl JournalSnapshot {
                     checkpoint,
                     agent,
                 } => {
-                    let key = encode_agent(*agent, &mut records)?;
+                    let (key, profile) = encode_agent(
+                        *agent,
+                        update.agents.get(&id),
+                        &mut records,
+                    )?;
                     update.agents.insert(
                         id,
                         CachedAgent {
                             generation,
                             checkpoint,
                             key: Arc::clone(&key),
+                            profile,
                         },
                     );
                     key

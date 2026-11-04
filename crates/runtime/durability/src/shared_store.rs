@@ -1666,7 +1666,23 @@ fn stopped() -> StoreError {
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Result<()> {
-    let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
+    static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Handle>> =
+        std::sync::OnceLock::new();
+    let runtime = RUNTIME
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            let handle = runtime.handle().clone();
+            std::thread::Builder::new()
+                .name("nanocode-durability-store".into())
+                .spawn(move || runtime.block_on(std::future::pending::<()>()))
+                .ok()?;
+            Some(handle)
+        })
+        .as_ref()
+        .ok_or(Error::RuntimeUnavailable)?;
     drop(runtime.spawn(driver));
     Ok(())
 }

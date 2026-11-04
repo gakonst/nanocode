@@ -110,6 +110,9 @@ struct Ids {
 }
 
 #[derive(Deserialize)]
+struct Empty {}
+
+#[derive(Deserialize)]
 struct Pending {
     pending: Vec<u64>,
 }
@@ -126,6 +129,7 @@ const TYPES: &[&str] = &[
     "callback_result",
     "ack",
     "resume",
+    "move",
 ];
 
 fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D::Error> {
@@ -252,6 +256,10 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
         "resume" => RemoteFrame::Resume {
             pending: Pending::deserialize(body)?.pending,
         },
+        "move" => {
+            Empty::deserialize(body)?;
+            RemoteFrame::Move
+        }
         other => return Err(de::Error::unknown_variant(other, TYPES)),
     })
 }

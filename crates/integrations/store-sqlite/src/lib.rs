@@ -14,7 +14,7 @@ use nanocode_durability_core::{
 
 mod sql;
 
-pub use sql::SqliteSql;
+pub use sql::{SqliteOptions, SqliteSql};
 
 const MAX_SQL_REVISION: u64 = i64::MAX as u64;
 const JOB_CAPACITY: usize = 1;

@@ -22,14 +22,40 @@ pub struct SqliteSql {
     next_reader: std::sync::atomic::AtomicUsize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SqliteOptions {
+    pub cache_bytes: u64,
+}
+
+impl Default for SqliteOptions {
+    fn default() -> Self {
+        Self {
+            cache_bytes: DEFAULT_CACHE_BYTES,
+        }
+    }
+}
+
+const DEFAULT_CACHE_BYTES: u64 = 256 << 20;
+
 impl SqliteSql {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_with(path, SqliteOptions::default())
+    }
+
+    pub fn open_with(path: impl AsRef<Path>, options: SqliteOptions) -> Result<Self, StoreError> {
         let connection = Connection::open(path).map_err(backend)?;
-        Self::from_connection(connection)
+        Self::from_connection_with(connection, options)
     }
 
     pub fn from_connection(connection: Connection) -> Result<Self, StoreError> {
-        configure(&connection)?;
+        Self::from_connection_with(connection, SqliteOptions::default())
+    }
+
+    pub fn from_connection_with(
+        connection: Connection,
+        options: SqliteOptions,
+    ) -> Result<Self, StoreError> {
+        configure(&connection, options)?;
         let checkpoints = checkpointer(&connection);
         let readers = readers(&connection);
         let (jobs, receiver) = mpsc::channel(JOB_CAPACITY);
@@ -52,6 +78,13 @@ impl SqliteSql {
     }
 
     pub async fn open_async(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        Self::open_async_with(path, SqliteOptions::default()).await
+    }
+
+    pub async fn open_async_with(
+        path: impl AsRef<Path>,
+        options: SqliteOptions,
+    ) -> Result<Self, StoreError> {
         let path = path.as_ref().to_owned();
         let (opened, ready) = oneshot::channel();
         let (jobs, receiver) = mpsc::channel(JOB_CAPACITY);
@@ -60,7 +93,7 @@ impl SqliteSql {
             .spawn(move || {
                 let connection = match Connection::open(&path)
                     .map_err(backend)
-                    .and_then(|connection| configure(&connection).map(|()| connection))
+                    .and_then(|connection| configure(&connection, options).map(|()| connection))
                 {
                     Ok(connection) => connection,
                     Err(error) => return drop(opened.send(Err(error))),
@@ -128,12 +161,13 @@ impl Sql for SqliteSql {
     }
 }
 
-fn configure(connection: &Connection) -> Result<(), StoreError> {
+fn configure(connection: &Connection, options: SqliteOptions) -> Result<(), StoreError> {
     connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE);
     connection
-        .execute_batch(
-            "PRAGMA page_size = 16384; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -262144; PRAGMA mmap_size = 4294967296; PRAGMA temp_store = MEMORY;",
-        )
+        .execute_batch(&format!(
+            "PRAGMA page_size = 16384; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000; PRAGMA cache_size = -{}; PRAGMA mmap_size = 4294967296; PRAGMA temp_store = MEMORY;",
+            options.cache_bytes.div_ceil(1024)
+        ))
         .map_err(backend)
 }
 

@@ -9,6 +9,7 @@ mod hand;
 mod native;
 #[cfg(not(target_family = "wasm"))]
 mod pricing;
+mod read;
 #[cfg(not(target_family = "wasm"))]
 pub use hand::{Hand, HandEndpoint, HandEvent};
 #[cfg(not(target_family = "wasm"))]
@@ -20,3 +21,4 @@ pub use native::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use pricing::{HandPricing, PricedOperation};
+pub use read::{ReadError, read_whole};

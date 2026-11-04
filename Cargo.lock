@@ -3834,6 +3834,7 @@ name = "nanocode-tool-runtime"
 version = "0.6.7"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "getrandom 0.4.3",
  "http",

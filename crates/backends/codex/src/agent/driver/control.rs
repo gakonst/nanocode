@@ -304,6 +304,7 @@ pub(super) async fn begin_shutdown(
             | Command::SetModel { result, .. }
             | Command::SetThinking { result, .. }
             | Command::SetAutoCompactTokenLimit { result, .. }
+            | Command::SetCompactionThinking { result, .. }
             | Command::SetServiceTier { result, .. }
             | Command::Preconnect { result }
             | Command::Compact { result, .. } => {
@@ -525,6 +526,7 @@ pub(super) fn handle_idle_command(
         }
         Command::SetThinking { result, .. }
         | Command::SetAutoCompactTokenLimit { result, .. }
+        | Command::SetCompactionThinking { result, .. }
         | Command::SetServiceTier { result, .. }
         | Command::Preconnect { result } => {
             drop(result.send(Ok(())));

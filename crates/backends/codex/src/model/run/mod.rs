@@ -107,6 +107,7 @@ pub(crate) struct ModelRun {
     execution_steps: Option<ExecutionSteps>,
     before_compaction: Option<Arc<dyn crate::execution::BeforeCompaction>>,
     images: ImageHistory,
+    compaction_thinking: Option<Thinking>,
 }
 
 pub(crate) struct TurnSteering {
@@ -314,6 +315,7 @@ impl ModelRun {
             execution_steps: None,
             before_compaction: None,
             images: ImageHistory::default(),
+            compaction_thinking: None,
         }
     }
 
@@ -405,6 +407,7 @@ impl ModelRun {
             execution_steps: None,
             before_compaction: None,
             images: ImageHistory::default(),
+            compaction_thinking: None,
         }
     }
 
@@ -417,6 +420,11 @@ impl ModelRun {
 
     pub(crate) fn set_images(&mut self, images: ImageHistory) {
         self.images = images;
+    }
+
+    /// Sets the effort the run's compactions run at (`ModelConfig::compaction_thinking`).
+    pub(crate) const fn set_compaction_thinking(&mut self, thinking: Option<Thinking>) {
+        self.compaction_thinking = thinking;
     }
 
     pub(crate) fn set_host_context(&mut self, host_context: Option<Arc<str>>) {

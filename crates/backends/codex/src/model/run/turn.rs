@@ -96,11 +96,7 @@ impl ModelRun {
                 active_context_tokens,
                 auto_compact_token_limit,
                 &session.factory,
-                session.conversation.reasoning.request_effort(
-                    self.model,
-                    self.thinking,
-                    self.config.supports_reasoning_effort_updates(self.model),
-                ),
+                self.compaction_effort(&session.conversation.reasoning),
             );
             tokio::pin!(compaction);
             tokio::select! {

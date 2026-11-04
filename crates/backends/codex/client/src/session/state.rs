@@ -402,6 +402,12 @@ impl RequestHistory {
         self.incremental_start
     }
 
+    /// Appends `item` after the history, still continuing from the previous response.
+    pub fn push(&mut self, item: ResponseItem) {
+        self.full.push(item.clone());
+        self.incremental.push(item);
+    }
+
     pub fn replace_from(&mut self, start: usize, items: Vec<ResponseItem>, continued: bool) {
         self.full.replace_suffix(start, items);
         self.incremental = self.full.clone();

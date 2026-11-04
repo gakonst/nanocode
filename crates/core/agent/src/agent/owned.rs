@@ -443,6 +443,9 @@ impl LifecycleBackend for Owned {
     fn set_auto_compact_token_limit(&self, limit: Option<u64>) -> BackendFuture<Result<()>> {
         self.0.backend().set_auto_compact_token_limit(limit)
     }
+    fn set_compaction_thinking(&self, thinking: Option<Thinking>) -> BackendFuture<Result<()>> {
+        self.0.backend().set_compaction_thinking(thinking)
+    }
     fn set_service_tier(&self, service_tier: ServiceTier) -> BackendFuture<Result<()>> {
         self.0.backend().set_service_tier(service_tier)
     }

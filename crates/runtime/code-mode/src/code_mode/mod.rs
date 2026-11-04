@@ -85,6 +85,7 @@ pub struct CodeModeRuntime {
     preempt_consumed: Arc<AtomicU64>,
     prelude: Option<Arc<str>>,
     journals: Option<CellJournals>,
+    nested_limit: usize,
 }
 
 #[derive(Clone)]
@@ -369,7 +370,12 @@ impl CodeModeRuntime {
             preempt_consumed: Arc::new(AtomicU64::new(0)),
             prelude: None,
             journals: None,
+            nested_limit: usize::MAX,
         }
+    }
+
+    pub const fn set_nested_call_limit(&mut self, limit: usize) {
+        self.nested_limit = limit;
     }
 
     #[must_use]
@@ -462,6 +468,7 @@ impl CodeModeRuntime {
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
                 self.prelude.clone(),
+                self.nested_limit,
                 Some((record, Some(plan))),
             ));
             self.cells.update(|registry| {
@@ -671,6 +678,7 @@ impl CodeModeRuntime {
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
                 self.prelude.clone(),
+                self.nested_limit,
                 record,
             ));
             self.cells.update(|registry| {
@@ -1125,6 +1133,7 @@ impl LiveCell {
         shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
         host: Arc<Slot<EmbeddedHost>>,
         prelude: Option<Arc<str>>,
+        nested_limit: usize,
         journaling: Option<(Arc<CellRecord>, Option<ReplayPlan>)>,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
@@ -1166,6 +1175,7 @@ impl LiveCell {
                 id,
                 source,
                 prelude,
+                nested_limit,
                 Arc::clone(&tools),
                 metadata,
                 context,
@@ -1862,6 +1872,8 @@ struct CellCalls<'a, 'b> {
     pending_calls: &'b mut FuturesUnordered<CallFuture<'a>>,
     pending_receipts: &'b mut PendingCallReceipts,
     unlogged: &'b mut UnloggedCalls,
+    deferred: &'b mut std::collections::VecDeque<(u64, String, Box<str>, bool)>,
+    limit: usize,
     updates: &'b mpsc::UnboundedSender<CellUpdate>,
     record: Option<&'b CellRecord>,
     journal: Option<Arc<CellRecord>>,
@@ -1872,7 +1884,24 @@ struct CellCalls<'a, 'b> {
 
 impl CellCalls<'_, '_> {
     fn dispatch(&mut self, id: u64, name: String, input: Value, host: bool) {
+        if self.pending_calls.len() >= self.limit {
+            let text = input.to_string().into_boxed_str();
+            if self.record.is_some() {
+                self.queue(id, name.clone(), input, host);
+            }
+            self.deferred.push_back((id, name, text, host));
+            return;
+        }
         self.start(id, name, input, host, false);
+    }
+
+    fn resume_deferred(&mut self) {
+        while self.pending_calls.len() < self.limit
+            && let Some((id, name, text, host)) = self.deferred.pop_front()
+        {
+            let input = serde_json::from_str(&text).expect("a JSON value's text parses");
+            self.start(id, name, input, host, false);
+        }
     }
 
     fn recover(&mut self, call: &JournaledCall) {
@@ -2050,8 +2079,10 @@ impl EmbeddedHost {
         record: Option<Arc<CellRecord>>,
         mut plan: Option<ReplayPlan>,
         mut hold: Option<watch::Receiver<bool>>,
+        limit: usize,
     ) -> Result<CellTerminal, HostFailure> {
         let mut pending_calls: FuturesUnordered<CallFuture<'_>> = FuturesUnordered::new();
+        let mut deferred = std::collections::VecDeque::new();
         let mut unlogged = UnloggedCalls {
             parent_call_id: parent_call_id.to_owned(),
             counts: HashMap::new(),
@@ -2093,10 +2124,13 @@ impl EmbeddedHost {
                     } else if !wanted && held && !replaying {
                         held = false;
                         if let Some(record) = record.as_deref() {
+                            deferred.clear();
                             let mut calls = CellCalls {
                                 pending_calls: &mut pending_calls,
                                 pending_receipts: &mut pending_receipts,
                                 unlogged: &mut unlogged,
+                                deferred: &mut deferred,
+                                limit,
                                 updates,
                                 record: Some(record),
                                 journal: journal.clone(),
@@ -2120,6 +2154,22 @@ impl EmbeddedHost {
                         record.as_deref(),
                         held,
                     )?;
+                    if !held && !deferred.is_empty() {
+                        let mut calls = CellCalls {
+                            pending_calls: &mut pending_calls,
+                            pending_receipts: &mut pending_receipts,
+                            unlogged: &mut unlogged,
+                            deferred: &mut deferred,
+                            limit,
+                            updates,
+                            record: record.as_deref(),
+                            journal: journal.clone(),
+                            tools,
+                            context,
+                            actor_started_at,
+                        };
+                        calls.resume_deferred();
+                    }
                 }
                 event = self.worker.read_event() => {
                     let event = event.map_err(HostFailure::new)?;
@@ -2141,6 +2191,8 @@ impl EmbeddedHost {
                         pending_calls: &mut pending_calls,
                         pending_receipts: &mut pending_receipts,
                         unlogged: &mut unlogged,
+                        deferred: &mut deferred,
+                        limit,
                         updates,
                         record: record.as_deref(),
                         journal: journal.clone(),
@@ -2313,6 +2365,7 @@ async fn run_cell_actor(
     cell_id: u64,
     source: String,
     prelude: Option<Arc<str>>,
+    nested_limit: usize,
     tools: Arc<dyn CodeModeToolset>,
     metadata: Vec<Value>,
     context: OwnedToolContext,
@@ -2391,6 +2444,7 @@ async fn run_cell_actor(
             record.clone(),
             plan,
             hold,
+            nested_limit,
         )
         .await
     };

@@ -90,7 +90,7 @@ struct Fenced {
 
 type Pending = Arc<nanocode_sync::Atom<imbl::HashMap<String, Arc<str>>>>;
 
-type DeferredKeys = Arc<nanocode_sync::Slot<(Vec<String>, Vec<String>)>>;
+type DeferredKeys = Arc<nanocode_sync::Slot<Vec<String>>>;
 
 struct InFlight {
     write: Option<Arc<LatestWrite>>,
@@ -251,10 +251,7 @@ impl Fenced {
                     }
                 });
             }
-            filled.put((
-                staged.iter().map(|record| record.key.clone()).collect(),
-                known.into_iter().map(|(key, _)| key).collect(),
-            ));
+            filled.put(known.into_iter().map(|(key, _)| key).collect());
             Ok((payload, staged))
         });
         let done = store
@@ -282,8 +279,7 @@ impl Fenced {
         let Some(mut entry) = self.inflight.pop_front() else {
             return;
         };
-        if let Some((staged, pending)) = entry.deferred.take().and_then(|keys| keys.take()) {
-            entry.staged.extend(staged);
+        if let Some(pending) = entry.deferred.take().and_then(|keys| keys.take()) {
             entry.pending.extend(pending);
         }
         match result {

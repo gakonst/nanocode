@@ -53,7 +53,7 @@ type MissingRuntime = (
     String,
     Option<SessionCheckpoint>,
     Option<Arc<str>>,
-    Value,
+    Arc<Value>,
     String,
     bool,
 );
@@ -67,7 +67,7 @@ pub(super) enum Residency {
 #[derive(Clone)]
 pub(super) enum StoredRuntime {
     None,
-    Checkpoint(SessionCheckpoint),
+    Checkpoint(Box<SessionCheckpoint>),
     Journaled,
 }
 
@@ -169,7 +169,7 @@ pub(super) struct ChildSession {
     pub(super) status: AgentStatus,
     pub(super) turn: Option<ActiveTurn>,
     pub(super) output_validator: Arc<Validator>,
-    pub(super) output_schema: Value,
+    pub(super) output_schema: Arc<Value>,
     pub(super) stored_runtime: StoredRuntime,
     pub(super) next_instruction_revision: u64,
     pub(super) last_output: Option<Value>,
@@ -197,7 +197,7 @@ pub(super) struct ChildSession {
 
     residency_lock: Sequencer,
 
-    changes: watch::Sender<u64>,
+    changes: Option<watch::Sender<u64>>,
 
     announce: bool,
 
@@ -225,7 +225,7 @@ fn next_generation() -> u64 {
 
 #[derive(Default)]
 pub(super) struct Sessions {
-    sessions: HashMap<AgentId, ChildSession>,
+    sessions: HashMap<AgentId, Box<ChildSession>>,
     changed: HashSet<AgentId>,
     stale: HashSet<AgentId>,
     resident: HashSet<AgentId>,
@@ -235,27 +235,39 @@ pub(super) struct Sessions {
 
 impl Sessions {
     pub(super) fn get(&self, id: &AgentId) -> Option<&ChildSession> {
-        self.sessions.get(id)
+        self.sessions.get(id).map(Box::as_ref)
     }
 
     pub(super) fn get_mut(&mut self, id: &AgentId) -> Option<&mut ChildSession> {
         let session = self.sessions.get_mut(id)?;
         self.stale.insert(*id);
         session.journal_generation = next_generation();
-        if session.changes.receiver_count() > 0 {
-            session
-                .changes
-                .send_modify(|version| *version = version.wrapping_add(1));
+        if let Some(changes) = &session.changes {
+            if changes.receiver_count() > 0 {
+                changes.send_modify(|version| *version = version.wrapping_add(1));
+            } else {
+                session.changes = None;
+            }
         }
         self.changed.insert(*id);
         Some(session)
+    }
+
+    fn subscribe(&mut self, id: &AgentId) -> Option<watch::Receiver<u64>> {
+        let session = self.sessions.get_mut(id)?;
+        Some(
+            session
+                .changes
+                .get_or_insert_with(|| watch::Sender::new(0))
+                .subscribe(),
+        )
     }
 
     fn insert(&mut self, id: AgentId, mut session: ChildSession) {
         session.journal_generation = next_generation();
         self.changed.insert(id);
         self.stale.insert(id);
-        self.sessions.insert(id, session);
+        self.sessions.insert(id, Box::new(session));
     }
 
     fn take_changed(&mut self) -> HashSet<AgentId> {
@@ -294,7 +306,9 @@ impl Sessions {
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&AgentId, &ChildSession)> {
-        self.sessions.iter()
+        self.sessions
+            .iter()
+            .map(|(id, session)| (id, session.as_ref()))
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &AgentId> {
@@ -302,7 +316,7 @@ impl Sessions {
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &ChildSession> {
-        self.sessions.values()
+        self.sessions.values().map(Box::as_ref)
     }
 
     fn is_empty(&self) -> bool {
@@ -321,34 +335,46 @@ impl std::ops::Index<&AgentId> for Sessions {
 pub(super) struct OutputContract {
     validator: Arc<Validator>,
     schema: String,
+    value: Arc<Value>,
 }
+
+type CompiledContract = (std::sync::Weak<Validator>, std::sync::Weak<Value>);
 
 impl OutputContract {
     pub(super) fn compile(schema: &Value) -> std::io::Result<Self> {
-        static COMPILED: std::sync::OnceLock<Atom<HashMap<String, std::sync::Weak<Validator>>>> =
+        static COMPILED: std::sync::OnceLock<Atom<HashMap<String, CompiledContract>>> =
             std::sync::OnceLock::new();
         let rendered = serde_json::to_string(schema)
             .map_err(|error| std::io::Error::other(format!("could not render schema: {error}")))?;
         let compiled = COMPILED.get_or_init(Atom::default);
-        if let Some(validator) =
-            compiled.read(|compiled| compiled.get(&rendered).and_then(std::sync::Weak::upgrade))
-        {
+        if let Some((validator, value)) = compiled.read(|compiled| {
+            let (validator, value) = compiled.get(&rendered)?;
+            Some((validator.upgrade()?, value.upgrade()?))
+        }) {
             return Ok(Self {
                 validator,
                 schema: rendered,
+                value,
             });
         }
         let validator =
             Arc::new(nanocode_schema::validator_for(schema).map_err(|error| {
                 std::io::Error::other(format!("invalid output_schema: {error}"))
             })?);
+        let value = Arc::new(schema.clone());
         compiled.update(|compiled| {
-            compiled.retain(|_, validator| validator.strong_count() > 0);
-            compiled.insert(rendered.clone(), Arc::downgrade(&validator));
+            compiled.retain(|_, (validator, value)| {
+                validator.strong_count() > 0 && value.strong_count() > 0
+            });
+            compiled.insert(
+                rendered.clone(),
+                (Arc::downgrade(&validator), Arc::downgrade(&value)),
+            );
         });
         Ok(Self {
             validator,
             schema: rendered,
+            value,
         })
     }
 }
@@ -463,6 +489,8 @@ pub struct Registry {
 
     parent_resolver: Atom<Option<ParentResolver>>,
 
+    session_released: Atom<Option<SessionReleased>>,
+
     pub(super) spawn_policy: Atom<crate::SpawnPolicy>,
 }
 
@@ -473,6 +501,8 @@ struct JournalClaims {
 }
 
 pub type ParentResolver = Arc<dyn Fn(&str) -> Option<Agent> + Send + Sync>;
+
+pub type SessionReleased = Arc<dyn Fn(&str) + Send + Sync>;
 
 pub fn completion_continuation_prompt(id: AgentId, status: &AgentStatus) -> String {
     match status {
@@ -718,6 +748,8 @@ struct CommittedCalls {
     call_ids: Vec<String>,
     omitted: u32,
 }
+
+const RETIRED_QUEUE: usize = usize::MAX;
 
 struct StatusQueue {
     jobs: mpsc::UnboundedSender<Box<OrderedJob>>,
@@ -2011,12 +2043,17 @@ impl Registry {
             root_watches: Atom::default(),
             running_roots: Atom::default(),
             parent_resolver: Atom::default(),
+            session_released: Atom::default(),
             spawn_policy: Atom::default(),
         }
     }
 
     pub fn set_parent_resolver(&self, resolver: ParentResolver) {
         self.parent_resolver.set(Some(resolver));
+    }
+
+    pub fn set_session_released(&self, released: SessionReleased) {
+        self.session_released.set(Some(released));
     }
 
     pub(crate) fn continues_root(&self) -> bool {
@@ -3672,7 +3709,7 @@ impl Registry {
             }
             session.status = AgentStatus::Failed { error };
             session.resume_attempts = 0;
-            session.in_flight_calls.clear();
+            session.in_flight_calls = Vec::new();
             session.in_flight_omitted = 0;
             session.in_flight_progress = durable::OmittedProgress::default();
             let settled = session.next_instruction_revision;
@@ -3925,30 +3962,46 @@ impl Registry {
             return;
         };
         let key = (root_session_id.to_owned(), id);
-        let queue = self
-            .status_queues
-            .read(|queues| queues.get(&key).cloned())
-            .unwrap_or_else(|| {
-                let (jobs, receiver) = mpsc::unbounded_channel();
-                let created = Arc::new(StatusQueue {
-                    jobs,
-                    receiver: nanocode_sync::Slot::new(Some(receiver)),
-                    queued: AtomicUsize::new(0),
+        let (queue, first) = loop {
+            let queue = self
+                .status_queues
+                .read(|queues| queues.get(&key).cloned())
+                .unwrap_or_else(|| {
+                    let (jobs, receiver) = mpsc::unbounded_channel();
+                    let created = Arc::new(StatusQueue {
+                        jobs,
+                        receiver: nanocode_sync::Slot::new(Some(receiver)),
+                        queued: AtomicUsize::new(0),
+                    });
+                    self.status_queues.update(|queues| {
+                        Arc::clone(
+                            queues
+                                .entry(key.clone())
+                                .or_insert_with(|| Arc::clone(&created)),
+                        )
+                    })
                 });
-                self.status_queues.update(|queues| {
-                    Arc::clone(
-                        queues
-                            .entry(key.clone())
-                            .or_insert_with(|| Arc::clone(&created)),
-                    )
-                })
-            });
-        if queue.jobs.send(Box::new(job)).is_err()
-            || queue
-                .queued
-                .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-                != 0
-        {
+            let mut current = queue.queued.load(Ordering::Acquire);
+            let admitted = loop {
+                if current == RETIRED_QUEUE {
+                    break false;
+                }
+                match queue.queued.compare_exchange_weak(
+                    current,
+                    current + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break true,
+                    Err(observed) => current = observed,
+                }
+            };
+            if admitted {
+                break (queue, current == 0);
+            }
+            self.retire_status_queue(&key, &queue);
+        };
+        if queue.jobs.send(Box::new(job)).is_err() || !first {
             return;
         }
         drop(platform::spawn(async move {
@@ -3956,27 +4009,47 @@ impl Registry {
                 return;
             };
             loop {
-                let Ok(job) = receiver.try_recv() else {
+                let Some(job) = receiver.recv().await else {
                     return;
                 };
                 let Some(registry) = registry.upgrade() else {
                     return;
                 };
                 registry.run_ordered(&key.0, key.1, *job).await;
-                drop(queue.receiver.put(receiver));
-                if queue
-                    .queued
-                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
-                    == 1
-                {
+                let mut current = queue.queued.load(Ordering::Acquire);
+                loop {
+                    let next = if current == 1 {
+                        RETIRED_QUEUE
+                    } else {
+                        current - 1
+                    };
+                    match queue.queued.compare_exchange_weak(
+                        current,
+                        next,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(observed) => current = observed,
+                    }
+                }
+                if current == 1 {
+                    registry.retire_status_queue(&key, &queue);
                     return;
                 }
-                let Some(next) = queue.receiver.take() else {
-                    return;
-                };
-                receiver = next;
             }
         }));
+    }
+
+    fn retire_status_queue(&self, key: &(String, AgentId), queue: &Arc<StatusQueue>) {
+        self.status_queues.update(|queues| {
+            if queues
+                .get(key)
+                .is_some_and(|current| Arc::ptr_eq(current, queue))
+            {
+                queues.remove(key);
+            }
+        });
     }
 
     async fn run_ordered(self: &Arc<Self>, root_session_id: &str, id: AgentId, job: OrderedJob) {
@@ -4191,7 +4264,11 @@ impl Registry {
         event_task: Task<()>,
         contract: OutputContract,
     ) -> std::io::Result<()> {
-        let OutputContract { validator, schema } = contract;
+        let OutputContract {
+            validator,
+            schema,
+            value,
+        } = contract;
         let id = descriptor.id;
         let child_session_id = descriptor.session_id.clone();
 
@@ -4240,8 +4317,7 @@ impl Registry {
                         status: AgentStatus::Pending,
                         turn: None,
                         output_validator: validator,
-                        output_schema: serde_json::from_str(&schema)
-                            .expect("compiled schema is JSON"),
+                        output_schema: value,
                         stored_runtime: StoredRuntime::None,
                         next_instruction_revision: 0,
                         last_output: None,
@@ -4258,7 +4334,7 @@ impl Registry {
                         usage: AgentUsage::default(),
                         in_flight_progress: durable::OmittedProgress::default(),
                         residency_lock: Sequencer::new(),
-                        changes: watch::Sender::new(0),
+                        changes: None,
                         announce: false,
                         journal_generation: 0,
                         conversation: false,
@@ -4369,7 +4445,7 @@ impl Registry {
                         .flatten();
                     }
                     if !matches!(session.status, AgentStatus::Interrupted) {
-                        session.in_flight_calls.clear();
+                        session.in_flight_calls = Vec::new();
                         session.in_flight_omitted = 0;
                         session.in_flight_progress = durable::OmittedProgress::default();
                     }
@@ -4472,7 +4548,7 @@ impl Registry {
                 }
 
                 session.resume_attempts = 0;
-                session.in_flight_calls.clear();
+                session.in_flight_calls = Vec::new();
                 session.in_flight_omitted = 0;
                 session.in_flight_progress = durable::OmittedProgress::default();
                 if let Ok(TurnResult {
@@ -4615,7 +4691,9 @@ impl Registry {
                                 .and_then(|scope| scope.sessions.get_mut(&id))
                             {
                                 session.stored_runtime = stored
-                                    .map_or(StoredRuntime::Journaled, StoredRuntime::Checkpoint);
+                                    .map_or(StoredRuntime::Journaled, |stored| {
+                                        StoredRuntime::Checkpoint(Box::new(stored))
+                                    });
                             }
                         })
                         .await;
@@ -4699,6 +4777,9 @@ impl Registry {
         self.session_handles.update(|handles| {
             handles.remove(&session_id);
         });
+        if let Some(released) = Option::clone(&self.session_released.get()) {
+            released(&session_id);
+        }
         if let Some(status) = status_update {
             let _ = send_update(
                 &self.updates,
@@ -4781,6 +4862,31 @@ impl Registry {
     }
 
     async fn continue_parent_batch(
+        self: &Arc<Self>,
+        parent: &Agent,
+        root_session_id: &str,
+        completions: Vec<(AgentId, u64)>,
+    ) -> std::io::Result<()> {
+        let ids = completions.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        let result = self
+            .dispatch_parent_batch(parent, root_session_id, completions)
+            .await;
+        self.release_dispatch(root_session_id, &ids);
+        result
+    }
+
+    fn release_dispatch(&self, root_session_id: &str, ids: &[AgentId]) {
+        self.completion_dispatch.update(|dispatch| {
+            for &id in ids {
+                let key = (root_session_id.to_owned(), id);
+                if dispatch.get(&key).is_some_and(Sequencer::is_unshared) {
+                    dispatch.remove(&key);
+                }
+            }
+        });
+    }
+
+    async fn dispatch_parent_batch(
         self: &Arc<Self>,
         parent: &Agent,
         root_session_id: &str,
@@ -4962,6 +5068,20 @@ impl Registry {
     }
 
     pub async fn continue_parent(
+        self: &Arc<Self>,
+        parent: &Agent,
+        root_session_id: &str,
+        id: AgentId,
+        revision: u64,
+    ) -> std::io::Result<bool> {
+        let result = self
+            .dispatch_parent(parent, root_session_id, id, revision)
+            .await;
+        self.release_dispatch(root_session_id, &[id]);
+        result
+    }
+
+    async fn dispatch_parent(
         self: &Arc<Self>,
         parent: &Agent,
         root_session_id: &str,
@@ -5736,7 +5856,7 @@ impl Registry {
                 break;
             }
             let snapshot = match &session.stored_runtime {
-                StoredRuntime::Checkpoint(snapshot) => Some(snapshot.clone()),
+                StoredRuntime::Checkpoint(snapshot) => Some(SessionCheckpoint::clone(snapshot)),
                 StoredRuntime::Journaled => None,
                 StoredRuntime::None => break,
             };
@@ -6163,14 +6283,14 @@ impl Registry {
         let mut changes = self
             .state
             .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
                 state
                     .scopes
-                    .get(state.root_session_id(&session))
+                    .get_mut(&root)
                     .map(|scope| {
                         wanted
                             .iter()
-                            .filter_map(|id| scope.sessions.get(id))
-                            .map(|session| session.changes.subscribe())
+                            .filter_map(|id| scope.sessions.subscribe(id))
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default()
@@ -6768,7 +6888,6 @@ impl ChildSession {
         host_context: Option<Arc<str>>,
         status: AgentStatus,
         contract: OutputContract,
-        output_schema: Value,
         stored_runtime: StoredRuntime,
         next_instruction_revision: u64,
         last_output: Option<Value>,
@@ -6783,7 +6902,7 @@ impl ChildSession {
             status,
             turn: None,
             output_validator: contract.validator,
-            output_schema,
+            output_schema: contract.value,
             stored_runtime,
             next_instruction_revision,
             last_output,
@@ -6800,7 +6919,7 @@ impl ChildSession {
             usage: AgentUsage::default(),
             in_flight_progress: durable::OmittedProgress::default(),
             residency_lock: Sequencer::new(),
-            changes: watch::Sender::new(0),
+            changes: None,
             announce: true,
             journal_generation: 0,
             conversation: false,

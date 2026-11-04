@@ -105,6 +105,8 @@ pub struct Tools {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) cell_journals: Option<nanocode_code_mode::code_mode::CellJournals>,
     #[cfg(not(target_family = "wasm"))]
+    pub(crate) nested_call_limit: Option<usize>,
+    #[cfg(not(target_family = "wasm"))]
     pub(super) deferred_tools_guidance_enabled: bool,
 
     pub(crate) embedded_host: Option<Arc<dyn crate::embedded::CodeModeHost>>,
@@ -159,6 +161,8 @@ impl Default for Tools {
             hand_calls: None,
             #[cfg(not(target_family = "wasm"))]
             cell_journals: None,
+            #[cfg(not(target_family = "wasm"))]
+            nested_call_limit: None,
             #[cfg(not(target_family = "wasm"))]
             deferred_tools_guidance_enabled: false,
 
@@ -571,6 +575,13 @@ impl ToolsBuilder {
     #[must_use]
     pub fn cell_journals(mut self, journals: nanocode_code_mode::code_mode::CellJournals) -> Self {
         self.tools.cell_journals = Some(journals);
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub const fn nested_call_limit(mut self, limit: usize) -> Self {
+        self.tools.nested_call_limit = Some(limit);
         self
     }
 

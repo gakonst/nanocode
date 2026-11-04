@@ -424,6 +424,11 @@ impl Sequencer {
         Self::default()
     }
 
+    #[must_use]
+    pub fn is_unshared(&self) -> bool {
+        Arc::strong_count(&self.0) == 1
+    }
+
     fn ticket(&self) -> u64 {
         self.0
             .tickets

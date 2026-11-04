@@ -534,7 +534,7 @@ struct AgentProfile {
     descriptor: AgentDescriptor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     binding_task: Option<String>,
-    output_schema: Value,
+    output_schema: Arc<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     host_context: Option<String>,
 }
@@ -896,7 +896,7 @@ pub(super) struct PersistedAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) binding_task: Option<String>,
     pub(super) status: AgentStatus,
-    pub(super) output_schema: Value,
+    pub(super) output_schema: Arc<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) host_context: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1569,9 +1569,8 @@ pub(super) fn restored_session(
         agent.host_context.map(Arc::from),
         status,
         contract,
-        agent.output_schema,
         match snapshot {
-            Some(snapshot) => StoredRuntime::Checkpoint(snapshot),
+            Some(snapshot) => StoredRuntime::Checkpoint(Box::new(snapshot)),
             None if journaled => StoredRuntime::Journaled,
             None => StoredRuntime::None,
         },

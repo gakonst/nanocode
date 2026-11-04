@@ -529,6 +529,9 @@ impl NativeToolRuntime {
         if let Some(journals) = &tools.cell_journals {
             self.code_mode.set_journals(journals.clone());
         }
+        if let Some(limit) = tools.nested_call_limit {
+            self.code_mode.set_nested_call_limit(limit);
+        }
         registry.hand_calls = tools.hand_calls.clone().or_else(|| {
             tools
                 .code_mode_executors

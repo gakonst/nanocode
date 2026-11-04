@@ -408,6 +408,12 @@ fn assemble(
                 owners.upgrade()?.agent(session_id)
             }));
         }
+        let released = Arc::downgrade(&services);
+        registry.set_session_released(Arc::new(move |session_id: &str| {
+            if let Some(services) = released.upgrade() {
+                services.unregister(session_id);
+            }
+        }));
         (Some(registry), Some(control), Some(updates))
     };
     let subagent_updates: UpdateSlot =

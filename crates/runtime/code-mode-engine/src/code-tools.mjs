@@ -1,15 +1,15 @@
 
 
-
+const ignore = () => {};
 export function createCodeTools(names, invoke) {
   const helpers = {
 
     observe(promise) {
-      promise.catch(() => {});
+      promise.catch(ignore);
       return promise;
     },
-    async dispatch(name, input) {
-      return invoke(name, input);
+    dispatch(name, input) {
+      try { return invoke(name, input); } catch (error) { return Promise.reject(error); }
     },
     async unavailable(name) {
       const error = new Error(`TOOL_NOT_AVAILABLE: Tool "${name}" is not available in this Code Mode execution. Check ALL_TOOLS for callable names. A tool exposed directly by the host may need to be called through its direct tool entry instead.`);

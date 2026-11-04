@@ -416,6 +416,7 @@ struct NativeToolRuntime {
     working_directory: Arc<str>,
     executors: Option<CodeModeExecutors>,
     sessions: Arc<Atom<HashSet<Arc<str>>>>,
+    text_pins: Option<Arc<dyn crate::TextPins>>,
 }
 
 #[doc(hidden)]
@@ -476,11 +477,13 @@ impl NativeToolRuntime {
             working_directory,
             executors: None,
             sessions: Arc::default(),
+            text_pins: None,
         }
     }
 
     fn with_tools(mut self, tools: &Tools) -> Self {
         tools.start_providers();
+        self.text_pins.clone_from(&tools.text_pins);
         let registry = Arc::make_mut(&mut self.registry);
         registry
             .excluded_code_tools
@@ -678,6 +681,18 @@ impl NativeToolRuntime {
             ),
             code_mode::wait_spec(),
         ];
+        if let Some(pins) = &self.text_pins {
+            crate::pins::pin_code_mode(
+                pins.as_ref(),
+                &mut native,
+                &(
+                    &nested,
+                    &provider_summaries,
+                    self.deferred_tools_guidance_enabled,
+                    self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
+                ),
+            );
+        }
         if self.is_code_only() {
             return native;
         }

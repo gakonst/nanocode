@@ -120,6 +120,8 @@ pub struct Tools {
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
 
     pub(crate) brief_code_tools: Arc<[String]>,
+
+    pub(crate) text_pins: Option<Arc<dyn crate::TextPins>>,
 }
 
 impl Default for Tools {
@@ -175,6 +177,7 @@ impl Default for Tools {
             excluded_code_tools: HashSet::new(),
             recovery: None,
             brief_code_tools: Arc::from([]),
+            text_pins: None,
         }
     }
 }
@@ -466,6 +469,15 @@ impl Tools {
         self
     }
 
+    /// Has the host keep its earlier wording of what the runtime itself
+    /// writes for the model ([`crate::TextPins`]): the tools added after
+    /// this (`add_shared_tool`) and Code Mode's `exec` and `wait`.
+    #[must_use]
+    pub fn with_text_pins(mut self, pins: Arc<dyn crate::TextPins>) -> Self {
+        self.text_pins = Some(pins);
+        self
+    }
+
     #[must_use]
     pub fn for_session(mut self, session: &crate::SessionEnvironment) -> Self {
         self.embedded_session_id = Some(Arc::from(session.session_id()));
@@ -540,9 +552,9 @@ impl Tools {
     }
 }
 
-struct Described {
-    inner: Arc<dyn Tool>,
-    description: Arc<str>,
+pub(crate) struct Described {
+    pub(crate) inner: Arc<dyn Tool>,
+    pub(crate) description: Arc<str>,
 }
 
 impl Tool for Described {
@@ -608,6 +620,12 @@ impl ToolsBuilder {
     #[must_use]
     pub fn with_descriptions(mut self, descriptions: &HashMap<String, String>) -> Self {
         self.tools = self.tools.with_descriptions(descriptions);
+        self
+    }
+
+    #[must_use]
+    pub fn text_pins(mut self, pins: Arc<dyn crate::TextPins>) -> Self {
+        self.tools = self.tools.with_text_pins(pins);
         self
     }
 
@@ -1112,6 +1130,10 @@ impl nanocode_tools::ToolCollection for Tools {
     type Error = ToolsBuildError;
 
     fn add_shared_tool(self, tool: Arc<dyn Tool>) -> Result<Self, Self::Error> {
+        let tool = match &self.text_pins {
+            Some(pins) => crate::pins::pin_tool(pins.as_ref(), tool),
+            None => tool,
+        };
         let mut builder = self.into_builder();
         builder.tools.registered.push(RegisteredTool {
             handler: tool,
@@ -1153,7 +1175,8 @@ mod tests {
     }
 
     fn exec_description(tools: &Tools) -> String {
-        let runtime = crate::runtime::ToolRuntime::new_with_tools(std::env::temp_dir(), Vec::new(), tools);
+        let runtime =
+            crate::runtime::ToolRuntime::new_with_tools(std::env::temp_dir(), Vec::new(), tools);
         let (specs, _) = runtime.model_contract("session");
         specs
             .iter()
@@ -1163,7 +1186,8 @@ mod tests {
     }
 
     #[test]
-    fn replaced_descriptions_reach_exec_and_keep_schemas_and_order() -> Result<(), ToolsBuildError> {
+    fn replaced_descriptions_reach_exec_and_keep_schemas_and_order() -> Result<(), ToolsBuildError>
+    {
         let tools = Tools::builder()
             .without_defaults()
             .tool(Echo("first", "Says the first thing, reworded."))
@@ -1174,8 +1198,14 @@ mod tests {
             ("missing".to_owned(), "Not registered.".to_owned()),
         ]);
         let replaced = tools.clone().with_descriptions(&pinned);
-        let before: Vec<ToolDefinition> = tools.registered_tools().map(|tool| tool.definition()).collect();
-        let after: Vec<ToolDefinition> = replaced.registered_tools().map(|tool| tool.definition()).collect();
+        let before: Vec<ToolDefinition> = tools
+            .registered_tools()
+            .map(|tool| tool.definition())
+            .collect();
+        let after: Vec<ToolDefinition> = replaced
+            .registered_tools()
+            .map(|tool| tool.definition())
+            .collect();
         assert_eq!(
             before.iter().map(ToolDefinition::name).collect::<Vec<_>>(),
             after.iter().map(ToolDefinition::name).collect::<Vec<_>>()
@@ -1197,6 +1227,105 @@ mod tests {
             .tool(Echo("second", "Says the second thing."))
             .build()?;
         assert_eq!(exec, exec_description(&original));
+        Ok(())
+    }
+    /// Keeps the texts it was given for a key and contract, and records
+    /// what the runtime asked.
+    #[derive(Default)]
+    struct Kept {
+        texts: HashMap<(String, String), Arc<str>>,
+        asked: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl crate::TextPins for Kept {
+        fn pin(&self, key: &str, contract: &str, _text: &str) -> Option<Arc<str>> {
+            self.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((key.to_owned(), contract.to_owned()));
+            self.texts
+                .get(&(key.to_owned(), contract.to_owned()))
+                .cloned()
+        }
+    }
+
+    fn exec_contract(pins: &Kept) -> String {
+        pins.asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .rev()
+            .find(|(key, _)| key == "exec")
+            .map(|(_, contract)| contract.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn text_pins_keep_a_tool_added_later_and_exec_for_the_same_contract()
+    -> Result<(), ToolsBuildError> {
+        use nanocode_tools::ToolCollection as _;
+        let host = || {
+            Tools::builder()
+                .without_defaults()
+                .tool(Echo("first", "Says the first thing."))
+                .build()
+        };
+        // The running code's wording, and the contracts it reports.
+        let seen = Arc::new(Kept::default());
+        let tools = host()?
+            .with_text_pins(seen.clone())
+            .add_shared_tool(Arc::new(Echo("spawn_agent", "Starts an agent, reworded.")))?;
+        let fresh = exec_description(&tools);
+        let contract = exec_contract(&seen);
+        let spawn = seen
+            .asked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(key, _)| key == "tool:spawn_agent")
+            .map(|(_, contract)| contract.clone())
+            .unwrap_or_default();
+        assert!(fresh.contains("Starts an agent, reworded."), "{fresh}");
+
+        // A host keeping the earlier wording of both.
+        let kept = Arc::new(Kept {
+            texts: HashMap::from([
+                (
+                    ("tool:spawn_agent".to_owned(), spawn),
+                    Arc::from("Starts an agent."),
+                ),
+                (
+                    ("exec".to_owned(), contract),
+                    Arc::from("The earlier exec."),
+                ),
+            ]),
+            ..Kept::default()
+        });
+        let tools = host()?
+            .with_text_pins(kept)
+            .add_shared_tool(Arc::new(Echo("spawn_agent", "Starts an agent, reworded.")))?;
+        let spawned = tools
+            .registered_tools()
+            .map(|tool| tool.definition())
+            .find(|definition| definition.name() == "spawn_agent")
+            .map(|definition| definition.description().to_owned());
+        assert_eq!(spawned.as_deref(), Some("Starts an agent."));
+        // exec's inputs now hold the kept spawn_agent text, so its contract
+        // differs from the running code's: exec is rendered afresh.
+        assert_ne!(exec_description(&tools), "The earlier exec.");
+
+        // Same inputs, same contract: the earlier exec text is kept.
+        let same = Arc::new(Kept {
+            texts: HashMap::from([(
+                ("exec".to_owned(), exec_contract(&seen)),
+                Arc::from("The earlier exec."),
+            )]),
+            ..Kept::default()
+        });
+        let tools = host()?
+            .with_text_pins(same)
+            .add_shared_tool(Arc::new(Echo("spawn_agent", "Starts an agent, reworded.")))?;
+        assert_eq!(exec_description(&tools), "The earlier exec.");
         Ok(())
     }
 }

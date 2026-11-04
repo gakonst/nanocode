@@ -226,62 +226,82 @@ async fn drive_grouped<S: StateStore>(
     let mut queued = std::collections::VecDeque::<StoreRequest>::new();
     let mut barriers = 0_usize;
     let mut open = true;
+    let writers = store.group_writers().max(1);
+    let mut forming = Vec::new();
+    let mut states = std::collections::HashSet::new();
+    let mut in_flight = std::collections::HashSet::<String>::new();
+    let mut blocked = 0_usize;
     loop {
-        if groups == 0 {
-            let mut group = Vec::new();
-            let mut states = std::collections::HashSet::new();
-            while queued.front().is_some_and(|request| {
-                command_state(&request.command).is_some_and(|state| !states.contains(state))
-            }) {
-                let Some(request) = queued.pop_front() else {
+        while queued.front().is_some_and(|request| {
+            command_state(&request.command).is_some_and(|state| {
+                !states.contains(state) && (groups >= writers || !in_flight.contains(state))
+            })
+        }) {
+            let Some(request) = queued.pop_front() else {
+                break;
+            };
+            match Grouped::from_request(request) {
+                Ok(mut grouped) => {
+                    if groups > 0 {
+                        grouped.prefetch();
+                    }
+                    if in_flight.contains(grouped.state_id()) {
+                        blocked += 1;
+                    }
+                    states.insert(grouped.state_id().to_owned());
+                    forming.push(grouped);
+                }
+                Err(request) => {
+                    queued.push_front(request);
                     break;
-                };
-                match Grouped::from_request(request) {
-                    Ok(grouped) => {
-                        states.insert(grouped.state_id().to_owned());
-                        group.push(grouped);
-                    }
-                    Err(request) => {
-                        queued.push_front(request);
-                        break;
-                    }
                 }
-            }
-            if !group.is_empty() {
-                match store.pipeline_handle() {
-                    Some(mut handle) => {
-                        groups += 1;
-                        let completion = Completion(finished.clone(), states.into_iter().collect());
-                        spawn_operation(async move {
-                            run_grouped(&mut *handle, group).await;
-                            drop(completion);
-                        });
-                    }
-                    None => run_grouped(&mut store, group).await,
-                }
-                continue;
-            }
-            if operations == 0
-                && queued
-                    .front()
-                    .is_some_and(|request| command_state(&request.command).is_none())
-                && let Some(request) = queued.pop_front()
-            {
-                barriers -= 1;
-                run(&mut store, request).await;
-                continue;
             }
         }
-        if !open && operations == 0 && groups == 0 && queued.is_empty() {
+        if groups < writers && blocked == 0 && !forming.is_empty() {
+            let group = std::mem::take(&mut forming);
+            let states = std::mem::take(&mut states);
+            match store.pipeline_handle() {
+                Some(mut handle) => {
+                    groups += 1;
+                    in_flight.extend(states.iter().cloned());
+                    let completion = Completion(finished.clone(), states.into_iter().collect());
+                    spawn_operation(async move {
+                        run_grouped(&mut *handle, group).await;
+                        drop(completion);
+                    });
+                }
+                None => run_grouped(&mut store, group).await,
+            }
+            continue;
+        }
+        if groups == 0
+            && forming.is_empty()
+            && operations == 0
+            && queued
+                .front()
+                .is_some_and(|request| command_state(&request.command).is_none())
+            && let Some(request) = queued.pop_front()
+        {
+            barriers -= 1;
+            run(&mut store, request).await;
+            continue;
+        }
+        if !open && operations == 0 && groups == 0 && queued.is_empty() && forming.is_empty() {
             break;
         }
         tokio::select! {
             biased;
-            Some(states) = completions.recv(), if operations + groups > 0 => {
-                if states.is_empty() {
+            Some(completed) = completions.recv(), if operations + groups > 0 => {
+                if completed.is_empty() {
                     operations -= 1;
                 } else {
                     groups -= 1;
+                    for state in completed {
+                        in_flight.remove(&state);
+                        if states.contains(&state) {
+                            blocked -= 1;
+                        }
+                    }
                 }
             }
             request = receiver.recv(), if open => match request {
@@ -467,6 +487,20 @@ fn updated_after_acquiring(error: StoreError) -> StoreError {
 }
 
 impl Grouped {
+    fn prefetch(&mut self) {
+        if let Work::Commit { content, .. } = &mut self.work
+            && let Some(deferred) = content.take()
+        {
+            let (sender, receiver) = oneshot::channel();
+            spawn_operation(async move {
+                drop(sender.send(deferred.await));
+            });
+            *content = Some(Box::pin(
+                async move { receiver.await.map_err(|_| stopped())? },
+            ));
+        }
+    }
+
     fn state_id(&self) -> &str {
         match &self.work {
             Work::Commit { commit, .. } => &commit.state_id,

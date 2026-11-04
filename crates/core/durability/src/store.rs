@@ -587,6 +587,10 @@ pub trait StateStore: Send {
     fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
         None
     }
+
+    fn group_writers(&self) -> usize {
+        1
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -765,6 +769,10 @@ pub trait StateStore {
 
     fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
         None
+    }
+
+    fn group_writers(&self) -> usize {
+        1
     }
 }
 

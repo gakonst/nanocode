@@ -428,6 +428,10 @@ impl Sql for PostgresSql {
     fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {
         Some(self)
     }
+
+    fn writers(&self) -> usize {
+        self.clients.len()
+    }
 }
 
 async fn validate_schema(transaction: &tokio_postgres::Transaction<'_>) -> Result<(), StoreError> {

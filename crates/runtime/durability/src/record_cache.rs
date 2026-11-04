@@ -374,6 +374,10 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         })
     }
 
+    fn group_writers(&self) -> usize {
+        self.base.group_writers()
+    }
+
     fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
         self.base.pipeline_handle().map(|base| {
             Box::new(CachedStore {

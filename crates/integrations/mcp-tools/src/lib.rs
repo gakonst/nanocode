@@ -280,6 +280,21 @@ impl Mcp {
 }
 
 impl Mcp {
+    /// Each connected server's `instructions` from its `initialize` result
+    /// (MCP's guidance on how to use the server), by server name. Servers that
+    /// gave none, or haven't connected, are left out.
+    pub fn server_instructions(&self) -> McpFuture<'_, BTreeMap<String, String>> {
+        Box::pin(async move {
+            self.start_servers();
+            self.state.wait_for_startup().await;
+            self.state
+                .native_clients()
+                .into_iter()
+                .filter_map(|(server, client)| client.instructions().map(|text| (server, text)))
+                .collect()
+        })
+    }
+
     pub fn prepared_servers(
         &self,
         max_timeout: Duration,

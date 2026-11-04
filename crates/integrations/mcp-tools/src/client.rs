@@ -61,6 +61,11 @@ const MCP_PAYMENT_REQUIRED_META_KEY: &str = "org.paymentauth/payment-required";
 const MCP_RECEIPT_META_KEY: &str = "org.paymentauth/receipt";
 
 impl ClientInner {
+    /// What the server's `initialize` result said about how to use it, if anything.
+    pub(crate) fn instructions(&self) -> Option<String> {
+        self.session.server().and_then(|result| result.instructions)
+    }
+
     pub(crate) async fn call_tool(
         &self,
         params: CallToolParams,

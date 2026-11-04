@@ -275,7 +275,8 @@ const HOLD: Dialects = [
     "INSERT INTO state_records (record, state_id) SELECT records.id, $1::text FROM jsonb_array_elements_text($5::text::jsonb) AS staged (key) JOIN records ON records.key = staged.key WHERE EXISTS (SELECT 1 FROM owners WHERE id = $1::text AND owner = $2::text AND fence = $3::text FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $4::text ON CONFLICT DO NOTHING",
 ];
 const GROUP_REPLACE_ONE: &str = "INSERT INTO states (id, revision, payload) SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM owners WHERE id = ?1 AND owner = ?4 AND fence = ?5) AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?6 ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload RETURNING id, revision";
-const GROUP_RECORDS_PG: &str = "INSERT INTO records (key, value) SELECT staged.key, staged.value FROM json_to_recordset($1::text::json) AS staged (key text, value text) ON CONFLICT (key) DO UPDATE SET key = excluded.key WHERE false";
+const GROUP_LOCK_RECORDS_PG: &str = "SELECT CAST(count(*) AS TEXT) FROM (SELECT 1 FROM records WHERE records.key IN (SELECT staged.key FROM json_array_elements_text($1::text::json) AS staged (key)) ORDER BY records.key FOR KEY SHARE) AS locked";
+const GROUP_RECORDS_PG: &str = "INSERT INTO records (key, value) SELECT staged.key, staged.value FROM json_to_recordset($1::text::json) AS staged (key text, value text) ON CONFLICT (key) DO NOTHING";
 const GROUP_HOLDS_PG: &str = "INSERT INTO state_records (record, state_id) SELECT records.id, commits.state FROM json_to_recordset($1::text::json) AS commits (state text, owner text, fence text, expected text, keys json) CROSS JOIN LATERAL json_array_elements_text(commits.keys) AS staged (key) JOIN records ON records.key = staged.key WHERE EXISTS (SELECT 1 FROM owners WHERE owners.id = commits.state AND owners.owner = commits.owner AND owners.fence = commits.fence FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE states.id = commits.state), '0') = commits.expected ON CONFLICT DO NOTHING";
 const GROUP_REPLACE_PG: &str = "INSERT INTO states (id, revision, payload) SELECT commits.state, commits.revision, commits.payload FROM json_to_recordset($1::text::json) AS commits (state text, owner text, fence text, expected text, revision text, payload text) WHERE EXISTS (SELECT 1 FROM owners WHERE owners.id = commits.state AND owners.owner = commits.owner AND owners.fence = commits.fence FOR SHARE) AND COALESCE((SELECT revision FROM states WHERE states.id = commits.state), '0') = commits.expected ON CONFLICT (id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload WHERE CAST(states.revision AS BIGINT) + 1 = CAST(excluded.revision AS BIGINT) RETURNING id, revision";
 const PUT_RECORD: &str =
@@ -1053,8 +1054,12 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         };
         let mut statements = Vec::new();
         match &documents {
-            Some((values, holds, heads)) => {
+            Some((keys, values, holds, heads)) => {
                 if !unique.is_empty() {
+                    statements.push(SqlStatement {
+                        sql: GROUP_LOCK_RECORDS_PG,
+                        params: vec![keys],
+                    });
                     statements.push(SqlStatement {
                         sql: GROUP_RECORDS_PG,
                         params: vec![values],
@@ -1129,7 +1134,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
     fn group_documents(
         committing: &[&(Replacement<'_>, Counters)],
         unique: &std::collections::BTreeMap<&str, &str>,
-    ) -> Result<(String, String, String), StoreError> {
+    ) -> Result<(String, String, String, String), StoreError> {
         let holds = committing
             .iter()
             .filter(|(replacement, _)| !replacement.records.is_empty())
@@ -1159,6 +1164,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         let encode =
             |error: serde_json::Error| StoreError::NotCommitted(format!("records: {error}"));
         Ok((
+            keys_json(unique.keys())?,
             records_json(unique.iter().map(|(key, value)| (*key, *value)))?,
             serde_json::to_string(&holds).map_err(encode)?,
             serde_json::to_string(&heads).map_err(encode)?,

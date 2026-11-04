@@ -231,6 +231,10 @@ pub(super) struct Sessions {
     resident: HashSet<AgentId>,
     idle: BTreeSet<(u64, AgentId)>,
     idle_at: HashMap<AgentId, u64>,
+    parked: HashSet<AgentId>,
+    active_direct: HashSet<AgentId>,
+    spawning: HashSet<AgentId>,
+    by_context: HashMap<Arc<str>, Vec<AgentId>>,
 }
 
 impl Sessions {
@@ -267,6 +271,14 @@ impl Sessions {
         session.journal_generation = next_generation();
         self.changed.insert(id);
         self.stale.insert(id);
+        if session.descriptor.parent.is_none()
+            && let Some(context) = &session.host_context
+        {
+            let children = self.by_context.entry(Arc::clone(context)).or_default();
+            if !children.contains(&id) {
+                children.push(id);
+            }
+        }
         self.sessions.insert(id, Box::new(session));
     }
 
@@ -274,11 +286,26 @@ impl Sessions {
         std::mem::take(&mut self.changed)
     }
 
-    fn refresh_residency(&mut self) {
+    fn refresh(&mut self) {
         for id in std::mem::take(&mut self.stale) {
             let Some(session) = self.sessions.get(&id) else {
                 continue;
             };
+            if session.completion.parked() {
+                self.parked.insert(id);
+            } else {
+                self.parked.remove(&id);
+            }
+            if session.descriptor.parent.is_none() && session.status.is_active() {
+                self.active_direct.insert(id);
+            } else {
+                self.active_direct.remove(&id);
+            }
+            if session.descriptor.parent.is_none() && session.in_spawning_turn {
+                self.spawning.insert(id);
+            } else {
+                self.spawning.remove(&id);
+            }
             let resident = session.harness().is_some();
             if resident {
                 self.resident.insert(id);
@@ -305,18 +332,32 @@ impl Sessions {
         }
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&AgentId, &ChildSession)> {
-        self.sessions
-            .iter()
-            .map(|(id, session)| (id, session.as_ref()))
+    fn any_parked(&mut self) -> bool {
+        self.refresh();
+        !self.parked.is_empty()
+    }
+
+    fn parked_ids(&mut self) -> Vec<AgentId> {
+        self.refresh();
+        self.parked.iter().copied().collect()
+    }
+
+    fn spawned_in(&mut self, contexts: &[&str]) -> Vec<AgentId> {
+        self.refresh();
+        let mut ids = self.spawning.iter().copied().collect::<HashSet<_>>();
+        for context in contexts {
+            ids.extend(self.by_context.get(*context).into_iter().flatten().copied());
+        }
+        ids.into_iter().collect()
+    }
+
+    fn holds_root_watch(&mut self) -> bool {
+        self.refresh();
+        !self.parked.is_empty() || !self.active_direct.is_empty()
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &AgentId> {
         self.sessions.keys()
-    }
-
-    pub(super) fn values(&self) -> impl Iterator<Item = &ChildSession> {
-        self.sessions.values().map(Box::as_ref)
     }
 
     fn is_empty(&self) -> bool {
@@ -1891,7 +1932,7 @@ impl RegistryState {
         limit: usize,
     ) -> Option<ResidentEviction> {
         let scope = self.scopes.get_mut(root_session_id)?;
-        scope.sessions.refresh_residency();
+        scope.sessions.refresh();
         if scope.sessions.resident.len() <= limit {
             return None;
         }
@@ -5309,11 +5350,7 @@ impl Registry {
                 let Some(scope) = state.scopes.get_mut(&root) else {
                     return false;
                 };
-                let lineage = held
-                    || scope
-                        .sessions
-                        .values()
-                        .any(|session| session.completion.parked());
+                let lineage = held || scope.sessions.any_parked();
                 let pending = scope
                     .sessions
                     .get(&id)
@@ -5430,12 +5467,10 @@ impl Registry {
         let root = root_session_id.to_owned();
         self.state
             .call(move |state| {
-                state.scopes.get(&root).is_some_and(|scope| {
-                    scope.sessions.values().any(|session| {
-                        session.completion.parked()
-                            || (session.descriptor.parent.is_none() && session.status.is_active())
-                    })
-                })
+                state
+                    .scopes
+                    .get_mut(&root)
+                    .is_some_and(|scope| scope.sessions.holds_root_watch())
             })
             .await
     }
@@ -5487,18 +5522,10 @@ impl Registry {
                 let Some(scope) = state.scopes.get_mut(&root) else {
                     return false;
                 };
-                let spawned = scope
-                    .sessions
-                    .iter()
-                    .filter(|(_, session)| {
-                        session.descriptor.parent.is_none()
-                            && (session.in_spawning_turn
-                                || session.host_context.as_deref().is_some_and(|context| {
-                                    context == turn_id || Some(context) == request_id
-                                }))
-                    })
-                    .map(|(id, _)| *id)
+                let contexts = std::iter::once(turn_id)
+                    .chain(request_id)
                     .collect::<Vec<_>>();
+                let spawned = scope.sessions.spawned_in(&contexts);
                 let mut marked = false;
                 for id in spawned {
                     let Some(session) = scope.sessions.get_mut(&id) else {
@@ -5534,12 +5561,7 @@ impl Registry {
                 let Some(scope) = state.scopes.get_mut(&root) else {
                     return Vec::new();
                 };
-                let ids = scope
-                    .sessions
-                    .iter()
-                    .filter(|(_, session)| session.completion.parked())
-                    .map(|(id, _)| *id)
-                    .collect::<Vec<_>>();
+                let ids = scope.sessions.parked_ids();
                 ids.into_iter()
                     .filter_map(|id| {
                         let revision = scope.sessions.get_mut(&id)?.completion.unpark()?;

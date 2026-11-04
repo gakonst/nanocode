@@ -4832,6 +4832,12 @@ impl State {
         request
             .cache_system_prefix_with(&sent)
             .map_err(provider_error)?;
+        telemetry::record_prompt(
+            &tracing::Span::current(),
+            &request,
+            &sent,
+            client.uses_subscription(),
+        );
         if cancel.is_cancelled() && context.effect.is_none() {
             return Err(NanocodeError::TurnCancelled.into());
         }

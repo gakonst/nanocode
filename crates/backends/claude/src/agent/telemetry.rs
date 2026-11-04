@@ -1,5 +1,5 @@
 use super::{ClaudeError, ContentBlock, Lineage, NanocodeError, Result, StopReason, TurnResult};
-use crate::MessageResponse;
+use crate::{CacheTtl, MessageResponse, MessagesRequest, Speed, WireMessage};
 use serde::Serialize;
 use tracing::{Span, field::Empty, info_span};
 
@@ -121,7 +121,63 @@ pub(super) fn model_call_span(
         time_to_first_event_ns = Empty,
         time_to_first_output_ns = Empty,
         time_to_dispatch_ns = Empty,
+        prompt.tools = Empty,
+        prompt.system = Empty,
+        prompt.first_message = Empty,
+        request.speed = Empty,
+        request.cache_ttl = Empty,
+        request.wire = Empty,
     )
+}
+
+/// Records what decides whether the provider's prompt cache serves a call:
+/// fingerprints of its tools, system prompt and first message, in the order
+/// the cache reads them (a change in one rewrites everything after it), its
+/// speed (each speed has its own cache), the cache TTL it asks for, and
+/// whether it goes on a member's subscription, whose cache is not the API
+/// key's.
+pub(super) fn record_prompt<M: WireMessage>(
+    span: &Span,
+    request: &MessagesRequest,
+    messages: &[M],
+    subscription: bool,
+) {
+    if span.is_disabled() {
+        return;
+    }
+    span.record(
+        "request.wire",
+        if subscription { "subscription" } else { "api" },
+    );
+    span.record("prompt.tools", crate::fingerprint(&request.tools).as_str());
+    span.record(
+        "prompt.system",
+        crate::fingerprint(&request.system).as_str(),
+    );
+    if let Some(first) = messages.first() {
+        span.record(
+            "prompt.first_message",
+            crate::fingerprint(first.message()).as_str(),
+        );
+    }
+    if let Some(speed) = request.speed {
+        span.record(
+            "request.speed",
+            match speed {
+                Speed::Standard => "standard",
+                Speed::Fast => "fast",
+            },
+        );
+    }
+    if let Some(control) = &request.cache_control {
+        span.record(
+            "request.cache_ttl",
+            match control.ttl {
+                Some(CacheTtl::OneHour) => "1h",
+                Some(CacheTtl::FiveMinutes) | None => "5m",
+            },
+        );
+    }
 }
 
 pub(super) struct ModelCallTiming {

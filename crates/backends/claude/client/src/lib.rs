@@ -669,6 +669,15 @@ fn validate_cache_layout<'a>(
     layout.validate(automatic)
 }
 
+/// A short fingerprint of `value` as JSON (its xxh64, in hex). Model call
+/// spans carry one for each part of a request a prompt cache reads in order,
+/// so a call that wrote its whole prompt to the cache again can be told apart
+/// by which part changed since the session's previous call. Never the text.
+pub fn fingerprint(value: &impl Serialize) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    format!("{:016x}", xxhash_rust::xxh64::xxh64(&bytes, 0))
+}
+
 #[doc(hidden)]
 pub fn cache_tail<M: WireMessage>(messages: &[M]) -> Option<(usize, usize)> {
     messages

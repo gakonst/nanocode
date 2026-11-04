@@ -19,7 +19,7 @@ use tokio::{
 };
 
 use super::{Fingerprint, Job, Note, Output, UNDIFFED, fifo};
-use crate::process;
+use crate::{output, process};
 
 const ATTRIBUTES: &str = "umask; ulimit -a; ulimit -H -a";
 
@@ -52,7 +52,7 @@ pub(crate) struct Fifos {
 impl Fifos {
     pub(crate) fn drains(
         self,
-        chunks: &mpsc::UnboundedSender<Vec<u8>>,
+        chunks: &output::Sender,
         activity: &Arc<nanocode_process_contracts::LastActivity>,
     ) -> Vec<JoinHandle<()>> {
         self.pipes
@@ -319,6 +319,8 @@ async fn collect(pipes: [Output; 2], ended: &Signal) -> (Vec<u8>, [Option<Output
     let [stdout, stderr] = pipes;
     let (chunks, mut received) = mpsc::unbounded_channel();
     let (ignored, _discarded) = mpsc::unbounded_channel();
+    let chunks = output::Sender::Unbounded(chunks);
+    let ignored = output::Sender::Unbounded(ignored);
     let pipes = tokio::join!(
         super::read_all(stdout, ended, &chunks, &activity),
         super::read_all(stderr, ended, &ignored, &activity)

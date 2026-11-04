@@ -81,7 +81,11 @@ pub enum ServerEvent {
         delta: String,
     },
     #[serde(rename = "response.reasoning_summary_text.delta")]
-    ReasoningSummaryTextDelta { delta: String, summary_index: i64 },
+    ReasoningSummaryTextDelta {
+        delta: String,
+        #[serde(default)]
+        summary_index: i64,
+    },
     #[serde(rename = "response.reasoning_summary.delta")]
     ReasoningSummaryDelta {
         delta: String,

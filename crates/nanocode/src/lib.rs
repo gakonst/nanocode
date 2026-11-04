@@ -25,7 +25,7 @@ pub type HarnessBuilder = nanocode_agent::HarnessBuilder<Defaults>;
 pub use nanocode_agent_host as runners;
 pub use nanocode_backend_codex::CodexBuilder;
 
-pub use nanocode_agent::{Model, ReasoningMode, Thinking};
+pub use nanocode_agent::{CustomModel, Model, ReasoningMode, Thinking};
 pub use nanocode_backend_claude::{Claude, ClaudeClient};
 #[cfg(not(target_family = "wasm"))]
 pub use runners::{

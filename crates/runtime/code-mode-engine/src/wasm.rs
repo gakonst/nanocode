@@ -15,7 +15,7 @@ use crate::cell::{
     CellTools, ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
     completed_terminal, drain_jobs, import_prelude, install_bootstrap, install_prelude,
     invoke_timeout, new_state, next_due_timeout, next_timeout_wait, prepare_execution,
-    replay_inputs, resolve_tool, run_execution, send_terminal, track_rejections,
+    replay_inputs, resolve_tool, run_execution, send_terminal, send_waiting, track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
@@ -283,7 +283,15 @@ impl EmbeddedHost {
                 drain_jobs(&ctx, &execution.state);
                 Ok(())
             })
+        })?;
+        self.with_engine(|engine| {
+            engine
+                .execution
+                .as_ref()
+                .filter(|execution| execution.id == execution_id)
+                .map_or(Ok(()), |execution| send_waiting(&execution.state))
         })
+        .unwrap_or(Ok(()))
     }
 
     pub async fn read_event(&mut self) -> Result<RuntimeEvent, String> {

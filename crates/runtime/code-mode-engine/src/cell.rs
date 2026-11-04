@@ -55,6 +55,9 @@ pub enum RuntimeEvent {
     Held {
         cell_id: u64,
     },
+    Waiting {
+        cell_id: u64,
+    },
     Replayed {
         cell_id: u64,
     },
@@ -74,6 +77,7 @@ impl RuntimeEvent {
             | Self::Done { cell_id, .. }
             | Self::Error { cell_id, .. }
             | Self::Held { cell_id }
+            | Self::Waiting { cell_id }
             | Self::Replayed { cell_id }
             | Self::Diverged { cell_id, .. } => *cell_id,
         }
@@ -1045,6 +1049,18 @@ pub(crate) fn shared_values(
         .into_iter()
         .map(|(key, value)| (key, Arc::from(value)))
         .collect()
+}
+
+pub(crate) fn send_waiting(state: &Rc<RefCell<ExecutionState>>) -> Result<(), String> {
+    let state = state.borrow();
+    if state.journal.is_none() {
+        return Ok(());
+    }
+    state
+        .send(RuntimeEvent::Waiting {
+            cell_id: state.execution_id,
+        })
+        .map_err(|_| "embedded QuickJS execution observer closed".to_owned())
 }
 
 pub(crate) fn resolve_tool(

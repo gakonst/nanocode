@@ -211,8 +211,22 @@ pub(super) struct Persistence {
 
 enum Saving {
     Unsaved,
-    Saved { persisted: usize, next_seq: u64 },
+    Saved {
+        persisted: usize,
+        next_seq: u64,
+        calls: BTreeMap<u64, u8>,
+        observer_call_id: Option<String>,
+        content_returned: u64,
+    },
     Stopped,
+}
+
+const fn call_mark(state: &JournaledCallState) -> u8 {
+    match state {
+        JournaledCallState::Queued => 0,
+        JournaledCallState::Running => 1,
+        JournaledCallState::Completed { .. } => 2,
+    }
 }
 
 #[derive(Clone)]
@@ -536,13 +550,14 @@ impl CellRecord {
             return;
         };
         let mut saving = persistence.saving.acquire().await;
-        let (from, seq) = match *saving {
+        let (from, seq) = match &*saving {
             Saving::Stopped => return,
             Saving::Unsaved => (0, 0),
             Saving::Saved {
                 persisted,
                 next_seq,
-            } => (persisted, next_seq),
+                ..
+            } => (*persisted, *next_seq),
         };
         if self.status(|status| status.life.replaying()) {
             return;
@@ -558,6 +573,27 @@ impl CellRecord {
         };
         let (observer_call_id, content_returned) =
             self.status(|status| (status.observer_call_id.clone(), status.content_returned));
+        let mut marks = match &*saving {
+            Saving::Saved {
+                calls: saved,
+                observer_call_id: saved_observer,
+                content_returned: saved_content,
+                ..
+            } => {
+                if entries.is_empty()
+                    && *saved_observer == observer_call_id
+                    && *saved_content == content_returned
+                    && calls
+                        .iter()
+                        .all(|call| saved.get(&call.id) == Some(&call_mark(&call.state)))
+                {
+                    return;
+                }
+                saved.clone()
+            }
+            _ => BTreeMap::new(),
+        };
+        marks.extend(calls.iter().map(|call| (call.id, call_mark(&call.state))));
         let header = matches!(*saving, Saving::Unsaved).then(|| CellJournalHeader {
             version: CELL_JOURNAL_VERSION,
             origin_call_id: self.origin_call_id.clone(),
@@ -577,7 +613,7 @@ impl CellRecord {
             entries_from: from,
             entries,
             calls,
-            observer_call_id,
+            observer_call_id: observer_call_id.clone(),
             content_returned,
         };
         match persistence.sink.save(update).await {
@@ -585,6 +621,9 @@ impl CellRecord {
                 *saving = Saving::Saved {
                     persisted,
                     next_seq: seq + 1,
+                    calls: marks,
+                    observer_call_id,
+                    content_returned,
                 };
             }
             Err(error) => {
@@ -601,6 +640,17 @@ impl CellRecord {
                     .await;
             }
         }
+    }
+
+    pub(super) async fn flush(&self) {
+        let calls = self.status(|status| {
+            status
+                .calls
+                .values()
+                .map(|call| JournaledCall::clone(call))
+                .collect()
+        });
+        self.persist(calls).await;
     }
 
     pub(super) fn forget(self: &Arc<Self>) {

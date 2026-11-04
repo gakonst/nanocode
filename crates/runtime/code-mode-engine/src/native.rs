@@ -20,7 +20,7 @@ use crate::{
         CellTools, ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
         completed_terminal, drain_jobs, install_bootstrap, install_prelude, invoke_timeout,
         new_state, next_due_timeout, next_timeout_wait, prepare_execution, replay_inputs,
-        resolve_tool, send_terminal, start_execution, track_rejections,
+        resolve_tool, send_terminal, send_waiting, start_execution, track_rejections,
     },
     journal::CellJournaling,
 };
@@ -601,7 +601,7 @@ impl Worker {
                 self.step(id, |ctx, state, promise| {
                     resolve_tool(ctx, state, call, encoded, success)?;
                     drain_jobs(ctx, state);
-                    settle(ctx, state, promise)
+                    waiting(state, settle(ctx, state, promise)?)
                 })
             }
             HostCommand::Hold { execution_id } if current == Some(execution_id) => {
@@ -642,7 +642,7 @@ impl Worker {
                         resolve_tool(ctx, state, call, encoded, success)?;
                         drain_jobs(ctx, state);
                     }
-                    settle(ctx, state, promise)
+                    waiting(state, settle(ctx, state, promise)?)
                 })
             }
             HostCommand::ToolResult { .. }
@@ -843,6 +843,13 @@ impl Worker {
             self.after(id, outcome);
         }
     }
+}
+
+fn waiting(state: &Rc<RefCell<ExecutionState>>, step: Step) -> Result<Step, String> {
+    if matches!(step, Step::Pending) {
+        send_waiting(state)?;
+    }
+    Ok(step)
 }
 
 fn settle(

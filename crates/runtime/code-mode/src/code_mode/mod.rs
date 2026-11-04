@@ -19,6 +19,26 @@ use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 type CallFuture<'a> = futures_util::future::BoxFuture<'a, CompletedNestedCall>;
 #[cfg(target_family = "wasm")]
 type CallFuture<'a> = futures_util::future::LocalBoxFuture<'a, CompletedNestedCall>;
+#[cfg(not(target_family = "wasm"))]
+type FlushFuture = futures_util::future::BoxFuture<'static, ()>;
+#[cfg(target_family = "wasm")]
+type FlushFuture = futures_util::future::LocalBoxFuture<'static, ()>;
+
+fn request_flush(
+    record: Option<&Arc<CellRecord>>,
+    flushing: &mut Option<FlushFuture>,
+    again: &mut bool,
+) {
+    let Some(record) = record.filter(|record| record.persistence.is_some()) else {
+        return;
+    };
+    if flushing.is_some() {
+        *again = true;
+        return;
+    }
+    let record = Arc::clone(record);
+    *flushing = Some(Box::pin(async move { record.flush().await }));
+}
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) {
@@ -2165,6 +2185,8 @@ impl EmbeddedHost {
         let mut replaying = plan.is_some();
         let mut suppressed = plan.as_ref().map_or(0, |plan| plan.content_returned);
         let mut held = false;
+        let mut flushing: Option<FlushFuture> = None;
+        let mut flush_again = false;
         let journal = record.clone();
         if let Some(receiver) = hold.as_mut()
             && *receiver.borrow_and_update()
@@ -2216,13 +2238,15 @@ impl EmbeddedHost {
                         continue;
                     };
 
-                    self.send_completed_call(
+                    if self.send_completed_call(
                         cell_id,
                         completed,
                         &mut pending_receipts,
                         record.as_deref(),
                         held,
-                    )?;
+                    )? {
+                        request_flush(record.as_ref(), &mut flushing, &mut flush_again);
+                    }
                     if !held && !deferred.is_empty() {
                         let mut calls = CellCalls {
                             pending_calls: &mut pending_calls,
@@ -2238,6 +2262,17 @@ impl EmbeddedHost {
                             actor_started_at,
                         };
                         calls.resume_deferred();
+                    }
+                }
+                () = async {
+                    match flushing.as_mut() {
+                        Some(flush) => flush.await,
+                        None => std::future::pending().await,
+                    }
+                }, if flushing.is_some() => {
+                    flushing = None;
+                    if std::mem::take(&mut flush_again) {
+                        request_flush(record.as_ref(), &mut flushing, &mut flush_again);
                     }
                 }
                 event = self.worker.read_event() => {
@@ -2297,6 +2332,11 @@ impl EmbeddedHost {
                         RuntimeEvent::Yielded { .. } => {
                             if !replaying {
                                 let _ = updates.send(CellUpdate::Yielded);
+                            }
+                        }
+                        RuntimeEvent::Waiting { .. } => {
+                            if !replaying {
+                                request_flush(record.as_ref(), &mut flushing, &mut flush_again);
                             }
                         }
                         RuntimeEvent::Held { .. } => {
@@ -2364,7 +2404,7 @@ impl EmbeddedHost {
         pending_receipts: &mut PendingCallReceipts,
         record: Option<&CellRecord>,
         held: bool,
-    ) -> Result<(), HostFailure> {
+    ) -> Result<bool, HostFailure> {
         let CompletedNestedCall {
             id,
             input,
@@ -2413,12 +2453,13 @@ impl EmbeddedHost {
                 true
             });
             if kept {
-                return Ok(());
+                return Ok(true);
             }
         }
         self.worker
             .send_tool_result(cell_id, id, encoded, success)
-            .map_err(HostFailure::new)
+            .map_err(HostFailure::new)?;
+        Ok(false)
     }
 }
 
@@ -2628,23 +2669,15 @@ fn ordered_calls(mut calls: Vec<ObservedNestedCall>) -> Vec<NestedToolCall> {
 
 async fn journaled_call(
     journal: Option<Arc<CellRecord>>,
-    mut call: JournaledCall,
+    call: JournaledCall,
     execution: impl std::future::Future<Output = CompletedNestedCall>,
 ) -> CompletedNestedCall {
     let Some(journal) = journal.filter(|record| record.persistence.is_some()) else {
         return execution.await;
     };
-    journal.persist(vec![call.clone()]).await;
+    journal.persist(vec![call]).await;
     let mut completed = execution.await;
-    let encoded = serde_json::to_string(&completed.call.structured_result).ok();
-    if let Some(encoded) = &encoded {
-        call.state = JournaledCallState::Completed {
-            encoded: encoded.clone(),
-            success: completed.call.success,
-        };
-        journal.persist(vec![call]).await;
-    }
-    completed.encoded = encoded;
+    completed.encoded = serde_json::to_string(&completed.call.structured_result).ok();
     completed
 }
 

@@ -214,6 +214,19 @@ impl ToolDefinition {
         }
     }
 
+    /// The same definition with `text` as its description: its name,
+    /// schema and the rest stay as they are.
+    #[must_use]
+    pub fn with_description(mut self, text: impl Into<std::sync::Arc<str>>) -> Self {
+        match &mut self {
+            Self::Function { description, .. }
+            | Self::Namespace { description, .. }
+            | Self::Custom { description, .. }
+            | Self::ToolSearch { description, .. } => *description = text.into(),
+        }
+        self
+    }
+
     #[must_use]
     pub const fn parameters(&self) -> Option<&JsonSchema> {
         match self {

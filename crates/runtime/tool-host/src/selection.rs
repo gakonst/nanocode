@@ -445,6 +445,27 @@ impl Tools {
         self
     }
 
+    /// Gives each registered tool that `descriptions` names the description
+    /// it maps that name to, keeping the tool's schema, exposure, place in the
+    /// catalog and handler. Code Mode's `exec` renders a nested tool's
+    /// replaced description too. A host pins a warm session's tool prose this
+    /// way, so a reworded description does not change its cached prompt.
+    #[must_use]
+    pub fn with_descriptions(mut self, descriptions: &HashMap<String, String>) -> Self {
+        for registered in &mut self.registered {
+            let definition = registered.handler.definition();
+            if let Some(description) = descriptions.get(definition.name())
+                && description.as_str() != definition.description()
+            {
+                registered.handler = Arc::new(Described {
+                    inner: Arc::clone(&registered.handler),
+                    description: Arc::from(description.as_str()),
+                });
+            }
+        }
+        self
+    }
+
     #[must_use]
     pub fn for_session(mut self, session: &crate::SessionEnvironment) -> Self {
         self.embedded_session_id = Some(Arc::from(session.session_id()));
@@ -519,6 +540,56 @@ impl Tools {
     }
 }
 
+struct Described {
+    inner: Arc<dyn Tool>,
+    description: Arc<str>,
+}
+
+impl Tool for Described {
+    fn definition(&self) -> ToolDefinition {
+        self.inner
+            .definition()
+            .with_description(Arc::clone(&self.description))
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.inner.supports_parallel_tool_calls()
+    }
+
+    fn running_tasks(&self) -> Vec<nanocode_tools::RunningTask> {
+        self.inner.running_tasks()
+    }
+
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        hook_event_name: &'life3 str,
+    ) -> crate::embedded::HostFuture<'async_trait, Result<(), nanocode_tools::ToolError>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.inner.end_turn(session_id, turn_id, hook_event_name)
+    }
+
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: crate::ToolInput,
+        context: crate::ToolContext<'life1>,
+    ) -> crate::embedded::HostFuture<'async_trait, crate::ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.inner.execute(input, context)
+    }
+}
+
 #[derive(Default)]
 pub struct ToolsBuilder {
     tools: Tools,
@@ -531,6 +602,12 @@ impl ToolsBuilder {
     #[must_use]
     pub fn brief_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.tools = self.tools.brief_code_tools(names);
+        self
+    }
+
+    #[must_use]
+    pub fn with_descriptions(mut self, descriptions: &HashMap<String, String>) -> Self {
+        self.tools = self.tools.with_descriptions(descriptions);
         self
     }
 
@@ -1042,5 +1119,84 @@ impl nanocode_tools::ToolCollection for Tools {
             exposure: None,
         });
         builder.build()
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+    use crate::{ToolContext, ToolInput, ToolOutput, ToolResult, embedded::HostFuture};
+
+    struct Echo(&'static str, &'static str);
+
+    impl Tool for Echo {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition::function(
+                self.0,
+                self.1,
+                serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
+            )
+        }
+
+        fn execute<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _input: ToolInput,
+            _context: ToolContext<'life1>,
+        ) -> HostFuture<'async_trait, ToolResult>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(ToolOutput::text("echo")) })
+        }
+    }
+
+    fn exec_description(tools: &Tools) -> String {
+        let runtime = crate::runtime::ToolRuntime::new_with_tools(std::env::temp_dir(), Vec::new(), tools);
+        let (specs, _) = runtime.model_contract("session");
+        specs
+            .iter()
+            .find(|spec| spec.name() == "exec")
+            .map(|spec| spec.description().to_owned())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn replaced_descriptions_reach_exec_and_keep_schemas_and_order() -> Result<(), ToolsBuildError> {
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(Echo("first", "Says the first thing, reworded."))
+            .tool(Echo("second", "Says the second thing."))
+            .build()?;
+        let pinned = HashMap::from([
+            ("first".to_owned(), "Says the first thing.".to_owned()),
+            ("missing".to_owned(), "Not registered.".to_owned()),
+        ]);
+        let replaced = tools.clone().with_descriptions(&pinned);
+        let before: Vec<ToolDefinition> = tools.registered_tools().map(|tool| tool.definition()).collect();
+        let after: Vec<ToolDefinition> = replaced.registered_tools().map(|tool| tool.definition()).collect();
+        assert_eq!(
+            before.iter().map(ToolDefinition::name).collect::<Vec<_>>(),
+            after.iter().map(ToolDefinition::name).collect::<Vec<_>>()
+        );
+        assert_eq!(after[0].description(), "Says the first thing.");
+        assert_eq!(after[1].description(), "Says the second thing.");
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(before.parameters(), after.parameters());
+        }
+        let exec = exec_description(&replaced);
+        assert!(exec.contains("Says the first thing."), "{exec}");
+        assert!(!exec.contains("reworded"), "{exec}");
+        assert!(exec.contains("Says the second thing."), "{exec}");
+        assert!(!exec.contains("Not registered"), "{exec}");
+        // The text the replacement restores renders as the original did.
+        let original = Tools::builder()
+            .without_defaults()
+            .tool(Echo("first", "Says the first thing."))
+            .tool(Echo("second", "Says the second thing."))
+            .build()?;
+        assert_eq!(exec, exec_description(&original));
+        Ok(())
     }
 }

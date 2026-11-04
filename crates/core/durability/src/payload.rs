@@ -370,16 +370,22 @@ impl EncodedPayload {
         });
     }
 
-    fn step_inline(&self) -> Option<&str> {
+    fn inline_within(&self, limit: usize) -> Option<&str> {
         self.content.as_deref().filter(|content| {
-            content.len() < STEP_INLINE_BYTES
-                && self.layout.is_none()
-                && self.key.starts_with(KEY_PREFIX)
+            content.len() < limit && self.layout.is_none() && self.key.starts_with(KEY_PREFIX)
         })
+    }
+
+    fn step_inline(&self) -> Option<&str> {
+        self.inline_within(STEP_INLINE_BYTES)
     }
 
     pub(crate) fn is_step_inline(&self) -> bool {
         self.step_inline().is_some()
+    }
+
+    pub(crate) fn is_head_inline(&self) -> bool {
+        self.inline_within(INLINE_BYTES).is_some()
     }
 
     pub(crate) fn stage_step_unless(
@@ -387,7 +393,24 @@ impl EncodedPayload {
         records: &mut Vec<crate::StoreRecord>,
         known: &dyn Fn(&str) -> bool,
     ) {
-        if self.step_inline().is_none() {
+        self.stage_inline_unless(STEP_INLINE_BYTES, records, known);
+    }
+
+    pub(crate) fn stage_head_unless(
+        &mut self,
+        records: &mut Vec<crate::StoreRecord>,
+        known: &dyn Fn(&str) -> bool,
+    ) {
+        self.stage_inline_unless(INLINE_BYTES, records, known);
+    }
+
+    fn stage_inline_unless(
+        &mut self,
+        limit: usize,
+        records: &mut Vec<crate::StoreRecord>,
+        known: &dyn Fn(&str) -> bool,
+    ) {
+        if self.inline_within(limit).is_none() {
             self.stage_unless(records, known);
             return;
         }
@@ -833,8 +856,35 @@ impl PartialEq for EncodedPayload {
 }
 impl Eq for EncodedPayload {}
 
+fn serialize_within<S: serde::Serializer>(
+    payload: &EncodedPayload,
+    limit: usize,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match payload.inline_within(limit) {
+        Some(content) => serializer.collect_str(&format_args!("={content}")),
+        None => serializer.serialize_str(&payload.key),
+    }
+}
+
+fn deserialize_within<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    limit: usize,
+) -> std::result::Result<EncodedPayload, D::Error> {
+    let value = <std::borrow::Cow<'_, str> as serde::Deserialize>::deserialize(deserializer)?;
+    let Some(content) = value.strip_prefix('=') else {
+        return Ok(EncodedPayload::by_key(&value));
+    };
+    if content.len() >= limit {
+        return Err(serde::de::Error::custom(
+            "an inline payload exceeds its size limit",
+        ));
+    }
+    Ok(EncodedPayload::from_json(content.into()))
+}
+
 pub(crate) mod step {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::{Deserializer, Serializer};
 
     use super::{EncodedPayload, STEP_INLINE_BYTES};
 
@@ -842,24 +892,41 @@ pub(crate) mod step {
         payload: &EncodedPayload,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        match payload.step_inline() {
-            Some(content) => serializer.collect_str(&format_args!("={content}")),
-            None => serializer.serialize_str(&payload.key),
-        }
+        super::serialize_within(payload, STEP_INLINE_BYTES, serializer)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<EncodedPayload, D::Error> {
-        let value = std::borrow::Cow::<str>::deserialize(deserializer)?;
-        let Some(content) = value.strip_prefix('=') else {
-            return Ok(EncodedPayload::by_key(&value));
-        };
-        if content.len() >= STEP_INLINE_BYTES {
-            return Err(serde::de::Error::custom(
-                "an inline step payload exceeds its size limit",
-            ));
+        super::deserialize_within(deserializer, STEP_INLINE_BYTES)
+    }
+}
+
+pub(crate) mod head {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::{EncodedPayload, INLINE_BYTES};
+
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: Serializer>(
+        payload: &Option<EncodedPayload>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match payload {
+            Some(payload) => super::serialize_within(payload, INLINE_BYTES, serializer),
+            None => serializer.serialize_none(),
         }
-        Ok(EncodedPayload::from_json(content.into()))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<EncodedPayload>, D::Error> {
+        struct Within(EncodedPayload);
+        impl<'de> Deserialize<'de> for Within {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                super::deserialize_within(deserializer, INLINE_BYTES).map(Self)
+            }
+        }
+        Ok(Option::<Within>::deserialize(deserializer)?.map(|within| within.0))
     }
 }

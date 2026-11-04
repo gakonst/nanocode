@@ -11,6 +11,8 @@ const SEALED_STATE_FORMAT: u8 = 5;
 
 const INLINE_STATE_FORMAT: u8 = 6;
 
+const HEAD_STATE_FORMAT: u8 = 7;
+
 const RECEIPT_PAGE: usize = 16;
 
 const RECEIPT_LEAF: usize = 1;
@@ -188,7 +190,11 @@ pub struct OperationState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub steer_receipts: BTreeMap<String, IdentifiedSteerReceipt>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::payload::head"
+    )]
     pub continuation: Option<EncodedPayload>,
 
     #[serde(default)]
@@ -222,7 +228,7 @@ impl OperationState {
     fn stage_unless(&mut self, records: &mut Vec<StoreRecord>, known: &dyn Fn(&str) -> bool) {
         self.input.stage_unless(records, known);
         if let Some(value) = &mut self.continuation {
-            value.stage_unless(records, known);
+            value.stage_head_unless(records, known);
         }
         match &mut self.status {
             OperationStatus::Completed { checkpoint, output } => {
@@ -653,6 +659,15 @@ impl JournalState {
             .map(|(_, checkpoint)| checkpoint)
     }
 
+    fn inlines_continuations(&self) -> bool {
+        self.operations.values().any(|operation| {
+            operation
+                .continuation
+                .as_ref()
+                .is_some_and(EncodedPayload::is_head_inline)
+        })
+    }
+
     fn inlines_steps(&self) -> bool {
         self.operations.values().any(|operation| {
             operation.steps.values().any(|step| {
@@ -665,7 +680,9 @@ impl JournalState {
     pub fn checkpoint_payload<R: serde::Serialize>(&self, session: Option<&R>) -> Result<String> {
         serde_json::to_string(&RetainedCheckpointRef {
             nanocode_durable_state: DurableCheckpointRef {
-                format: if self.inlines_steps() {
+                format: if self.inlines_continuations() {
+                    HEAD_STATE_FORMAT
+                } else if self.inlines_steps() {
                     INLINE_STATE_FORMAT
                 } else if self.sealed.is_empty() {
                     STATE_FORMAT
@@ -728,7 +745,8 @@ impl JournalState {
         let sealed = checkpoint.sealed;
         if !(checkpoint.format == STATE_FORMAT && sealed.is_empty()
             || checkpoint.format == SEALED_STATE_FORMAT
-            || checkpoint.format == INLINE_STATE_FORMAT)
+            || checkpoint.format == INLINE_STATE_FORMAT
+            || checkpoint.format == HEAD_STATE_FORMAT)
         {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",

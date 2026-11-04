@@ -6,12 +6,19 @@ use serde_json::value::{RawValue, to_raw_value};
 use super::{ContentItem, FunctionOutputBody, FunctionOutputContent, ResponseItem};
 use crate::client::{ModelConfig, Thinking, pricing::ServiceTier, responses::StrictJsonSchema};
 
+type EncodedPrefix = Arc<[std::sync::OnceLock<Option<Box<[Box<RawValue>]>>>; 8]>;
+
+fn encoded_prefix() -> EncodedPrefix {
+    Arc::new(std::array::from_fn(|_| std::sync::OnceLock::new()))
+}
+
 #[derive(Clone)]
 pub struct RequestProfile {
     session_id: String,
     thread_id: String,
     prompt_cache_key: String,
     prefix: Arc<[ResponseItem]>,
+    encoded_prefix: EncodedPrefix,
     code_mode_tool_names: Arc<BTreeMap<String, CodeModeToolName>>,
     tool_namespaces_info: Arc<RawValue>,
     logical_turn: u64,
@@ -40,6 +47,7 @@ impl RequestProfile {
             prompt_cache_key: prompt_cache_key.into(),
             tool_namespaces_info: tool_namespaces_info(&prefix, &code_mode_tool_names),
             prefix,
+            encoded_prefix: encoded_prefix(),
             code_mode_tool_names,
             logical_turn: 0,
             retained_config: None,
@@ -88,6 +96,31 @@ impl RequestProfile {
         Arc::clone(&self.prefix)
     }
 
+    fn encoded_prefix(&self, input: &RequestInput<'_>) -> Option<&[Box<RawValue>]> {
+        if !std::ptr::eq(input.input.first, &*self.prefix) {
+            return None;
+        }
+        let index = usize::from(input.strip_image_detail)
+            | (usize::from(input.custom_tools_as_functions) << 1)
+            | (usize::from(input.reasoning_effort_updates) << 2);
+        self.encoded_prefix[index]
+            .get_or_init(|| {
+                self.prefix
+                    .iter()
+                    .filter(|item| input.supports(item))
+                    .map(|item| {
+                        to_raw_value(&RequestResponseItem {
+                            item,
+                            strip_image_detail: input.strip_image_detail,
+                            custom_tools_as_functions: input.custom_tools_as_functions,
+                        })
+                        .ok()
+                    })
+                    .collect()
+            })
+            .as_deref()
+    }
+
     pub(crate) fn with_request_content(
         mut self,
         prompt_cache_key: String,
@@ -99,6 +132,7 @@ impl RequestProfile {
         self.prompt_cache_key = prompt_cache_key;
         self.tool_namespaces_info = tool_namespaces_info(&prefix, &self.code_mode_tool_names);
         self.prefix = prefix;
+        self.encoded_prefix = encoded_prefix();
         self.retained_config = Some(RetainedRequestConfig {
             model_id_prefix,
             reasoning_mode,
@@ -522,6 +556,13 @@ struct RequestInput<'a> {
     strip_image_detail: bool,
     reasoning_effort_updates: bool,
     custom_tools_as_functions: bool,
+    prefix: Option<&'a [Box<RawValue>]>,
+}
+
+impl RequestInput<'_> {
+    const fn supports(&self, item: &ResponseItem) -> bool {
+        self.reasoning_effort_updates || !matches!(item, ResponseItem::ConfigurationUpdate { .. })
+    }
 }
 
 impl Serialize for RequestInput<'_> {
@@ -529,13 +570,19 @@ impl Serialize for RequestInput<'_> {
     where
         S: serde::Serializer,
     {
-        let supported = |item: &&ResponseItem| {
-            self.reasoning_effort_updates
-                || !matches!(item, ResponseItem::ConfigurationUpdate { .. })
+        let skipped = self.prefix.map_or(0, |_| self.input.first.len());
+        let rest = || {
+            self.input
+                .iter()
+                .skip(skipped)
+                .filter(|item| self.supports(item))
         };
-        let mut sequence =
-            serializer.serialize_seq(Some(self.input.iter().filter(supported).count()))?;
-        for item in self.input.iter().filter(supported) {
+        let prefix = self.prefix.unwrap_or_default();
+        let mut sequence = serializer.serialize_seq(Some(prefix.len() + rest().count()))?;
+        for item in prefix {
+            sequence.serialize_element(item)?;
+        }
+        for item in rest() {
             sequence.serialize_element(&RequestResponseItem {
                 item,
                 strip_image_detail: self.strip_image_detail,
@@ -715,29 +762,32 @@ impl<'a> ResponseCreate<'a> {
             retained.map_or(config.reasoning_mode, |retained| retained.reasoning_mode);
         let store_responses =
             retained.map_or(config.store_responses, |retained| retained.store_responses);
+        let mut request_input = RequestInput {
+            input,
+            reasoning_effort_updates: policy.model.supports_reasoning_effort_updates()
+                && retained.map_or(config.model_id_prefix.is_none(), |retained| {
+                    retained.model_id_prefix.is_none()
+                }),
+            custom_tools_as_functions: config
+                .responses_gateway
+                .as_deref()
+                .is_some_and(|gateway| gateway.sends_custom_tools_as_functions(policy.model)),
+            strip_image_detail: matches!(
+                policy.model,
+                crate::client::Model::Sol
+                    | crate::client::Model::Terra
+                    | crate::client::Model::Luna
+                    | crate::client::Model::Astra
+                    | crate::client::Model::DaybreakBlue
+            ),
+            prefix: None,
+        };
+        request_input.prefix = profile.encoded_prefix(&request_input);
         Self {
             kind: websocket.then_some("response.create"),
             model,
             previous_response_id,
-            input: RequestInput {
-                input,
-                reasoning_effort_updates: policy.model.supports_reasoning_effort_updates()
-                    && retained.map_or(config.model_id_prefix.is_none(), |retained| {
-                        retained.model_id_prefix.is_none()
-                    }),
-                custom_tools_as_functions: config
-                    .responses_gateway
-                    .as_deref()
-                    .is_some_and(|gateway| gateway.sends_custom_tools_as_functions(policy.model)),
-                strip_image_detail: matches!(
-                    policy.model,
-                    crate::client::Model::Sol
-                        | crate::client::Model::Terra
-                        | crate::client::Model::Luna
-                        | crate::client::Model::Astra
-                        | crate::client::Model::DaybreakBlue
-                ),
-            },
+            input: request_input,
             tool_choice: "auto",
 
             parallel_tool_calls: false,

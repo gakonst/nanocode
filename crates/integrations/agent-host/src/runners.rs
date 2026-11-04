@@ -311,6 +311,9 @@ impl RunnerAgents {
                 agent.session_id().to_owned(),
                 (weak.clone(), notices.clone()),
             );
+            if agents.len().is_power_of_two() {
+                agents.retain(|_, (agent, notices)| agent.is_live() && !notices.is_closed());
+            }
             Some(())
         });
         if claimed.is_none() {

@@ -797,11 +797,8 @@ impl JournalSnapshot {
                     checkpoint,
                     agent,
                 } => {
-                    let (key, profile) = encode_agent(
-                        *agent,
-                        update.agents.get(&id),
-                        &mut records,
-                    )?;
+                    let (key, profile) =
+                        encode_agent(*agent, update.agents.get(&id), &mut records)?;
                     update.agents.insert(
                         id,
                         CachedAgent {

@@ -1,4 +1,5 @@
 use super::{
+    capacity::TurnCapacity,
     message::MAX_MESSAGE_BYTES,
     model::{
         AgentDescriptor, AgentId, AgentStatus, AgentUpdate, MessageId, MessagePriority,
@@ -384,9 +385,9 @@ pub async fn start_agents_observed(
 
     let policy_parent = spawn_parent(parent, registry, session_id).await?;
     let prepared = prepare_batch(tasks)?;
+    let capacities = registry.reserve_turns(prepared.len()).await?;
     let admission = registry.admit_spawn(session_id).await?;
     let mut startup = registry.batch_startup();
-    let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
     drop(admission);
     let host_context = registry.host_context_for_session(session_id).await;
@@ -602,6 +603,7 @@ pub async fn start_fork_agent(
         SpawnOptions::new(),
         host_context,
         true,
+        None,
     )
     .await
 }
@@ -622,10 +624,12 @@ async fn start_agent_with_host_context(
         options,
         host_context,
         false,
+        None,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_child(
     parent: &AgentHandle,
     registry: &Arc<Registry>,
@@ -634,6 +638,7 @@ async fn start_child(
     options: SpawnOptions,
     host_context: Option<Arc<str>>,
     fork: bool,
+    capacity: Option<TurnCapacity>,
 ) -> AgentToolResult<AgentStartReport> {
     if fork && parent.session_id() != session_id {
         return Err("child caller identity must match its native parent handle".into());
@@ -653,9 +658,12 @@ async fn start_child(
         output_schema,
     } = task;
     let contract = OutputContract::compile(&output_schema)?;
+    let capacity = match capacity {
+        Some(capacity) => capacity,
+        None => registry.reserve_turn().await?,
+    };
     let admission = registry.admit_spawn(session_id).await?;
     let mut startup = registry.batch_startup();
-    let capacity = registry.reserve_turn()?;
     let reservation = registry.reserve(session_id).await?;
     drop(admission);
     let id = reservation.id;
@@ -812,17 +820,20 @@ impl Tool for SpawnAgent {
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         let lineage = Arc::clone(&registry);
+        let capacity = registry.reserve_turn().await?;
         let report = {
             let parent = self.parent.clone();
             let session_id = context.session_id().to_owned();
             let pending = super::platform::spawn(async move {
-                start_agent_with_host_context(
+                start_child(
                     &parent,
                     &registry,
                     &session_id,
                     task,
                     options,
                     host_context,
+                    false,
+                    Some(capacity),
                 )
                 .await
             });

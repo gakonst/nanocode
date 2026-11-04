@@ -1,7 +1,7 @@
 use super::diagnostics::{CompletionError, CompletionErrorCode};
 use super::durable::{self, RestoreReport, SubagentStore};
 use super::{
-    capacity::{Capacity, TurnCapacity},
+    capacity::{Capacity, TurnCapacity, Waiter},
     harness::{self, HarnessHandle},
     message::MessageThreads,
     model::{
@@ -31,7 +31,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     sync::{
         Arc, Weak,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -168,7 +168,7 @@ pub(super) struct ChildSession {
     pub(super) harness_task: Option<Task<()>>,
     pub(super) status: AgentStatus,
     pub(super) turn: Option<ActiveTurn>,
-    pub(super) output_validator: Validator,
+    pub(super) output_validator: Arc<Validator>,
     pub(super) output_schema: Value,
     pub(super) stored_runtime: StoredRuntime,
     pub(super) next_instruction_revision: u64,
@@ -319,17 +319,37 @@ impl std::ops::Index<&AgentId> for Sessions {
 }
 
 pub(super) struct OutputContract {
-    validator: Validator,
+    validator: Arc<Validator>,
     schema: String,
 }
 
 impl OutputContract {
     pub(super) fn compile(schema: &Value) -> std::io::Result<Self> {
-        let validator = nanocode_schema::validator_for(schema)
-            .map_err(|error| std::io::Error::other(format!("invalid output_schema: {error}")))?;
-        let schema = serde_json::to_string(schema)
+        static COMPILED: std::sync::OnceLock<Atom<HashMap<String, std::sync::Weak<Validator>>>> =
+            std::sync::OnceLock::new();
+        let rendered = serde_json::to_string(schema)
             .map_err(|error| std::io::Error::other(format!("could not render schema: {error}")))?;
-        Ok(Self { validator, schema })
+        let compiled = COMPILED.get_or_init(Atom::default);
+        if let Some(validator) =
+            compiled.read(|compiled| compiled.get(&rendered).and_then(std::sync::Weak::upgrade))
+        {
+            return Ok(Self {
+                validator,
+                schema: rendered,
+            });
+        }
+        let validator =
+            Arc::new(nanocode_schema::validator_for(schema).map_err(|error| {
+                std::io::Error::other(format!("invalid output_schema: {error}"))
+            })?);
+        compiled.update(|compiled| {
+            compiled.retain(|_, validator| validator.strong_count() > 0);
+            compiled.insert(rendered.clone(), Arc::downgrade(&validator));
+        });
+        Ok(Self {
+            validator,
+            schema: rendered,
+        })
     }
 }
 
@@ -391,6 +411,7 @@ pub struct Registry {
     pub(super) updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
     revision: watch::Sender<u64>,
     capacity: Capacity,
+    queue_spawns: AtomicBool,
     max_resident: AtomicUsize,
 
     max_resident_explicit: std::sync::atomic::AtomicBool,
@@ -1956,6 +1977,7 @@ impl Registry {
             updates,
             revision,
             capacity: Capacity::new(max_concurrency),
+            queue_spawns: AtomicBool::new(false),
             session_handles: Atom::default(),
             roots: Atom::default(),
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
@@ -3676,7 +3698,10 @@ impl Registry {
         self.changed();
     }
 
-    pub(super) fn reserve_turn(&self) -> std::io::Result<TurnCapacity> {
+    pub(super) async fn reserve_turn(&self) -> std::io::Result<TurnCapacity> {
+        if self.queue_spawns.load(Ordering::Relaxed) {
+            return Ok(self.capacity.acquire(Waiter::Spawn).await);
+        }
         self.capacity.reserve()
     }
 
@@ -3687,7 +3712,14 @@ impl Registry {
         }
     }
 
-    pub(super) fn reserve_turns(&self, count: usize) -> std::io::Result<Vec<TurnCapacity>> {
+    pub(super) async fn reserve_turns(&self, count: usize) -> std::io::Result<Vec<TurnCapacity>> {
+        if self.queue_spawns.load(Ordering::Relaxed) {
+            let mut turns = Vec::with_capacity(count);
+            for _ in 0..count {
+                turns.push(self.capacity.acquire(Waiter::Spawn).await);
+            }
+            return Ok(turns);
+        }
         self.capacity.reserve_many(count)
     }
 
@@ -3701,6 +3733,10 @@ impl Registry {
 
     pub fn set_max_concurrency(&self, limit: usize) {
         self.capacity.set_limit(limit);
+    }
+
+    pub fn set_queued_spawns(&self, queued: bool) {
+        self.queue_spawns.store(queued, Ordering::Relaxed);
     }
 
     pub fn set_max_resident(&self, limit: usize) {
@@ -4512,18 +4548,19 @@ impl Registry {
         drop(platform::spawn(async move {
             loop {
                 registry.enforce_resident_limit(&root_session_id).await;
-                let finished = registry.evicting.update(|evicting| {
-                    match evicting.get_mut(&root_session_id) {
-                        Some(again) if *again => {
-                            *again = false;
-                            false
-                        }
-                        _ => {
-                            evicting.remove(&root_session_id);
-                            true
-                        }
-                    }
-                });
+                let finished =
+                    registry
+                        .evicting
+                        .update(|evicting| match evicting.get_mut(&root_session_id) {
+                            Some(again) if *again => {
+                                *again = false;
+                                false
+                            }
+                            _ => {
+                                evicting.remove(&root_session_id);
+                                true
+                            }
+                        });
                 if finished {
                     break;
                 }
@@ -4653,12 +4690,15 @@ impl Registry {
                         Some(AgentStatus::Closed)
                     }
                 };
-                Some((status, detach))
+                Some((status, detach, session.descriptor.session_id.clone()))
             })
             .await;
-        let Some((status_update, detach)) = closed else {
+        let Some((status_update, detach, session_id)) = closed else {
             return;
         };
+        self.session_handles.update(|handles| {
+            handles.remove(&session_id);
+        });
         if let Some(status) = status_update {
             let _ = send_update(
                 &self.updates,
@@ -6850,6 +6890,10 @@ impl SubagentControl {
 
     pub fn set_max_concurrency(&self, limit: usize) {
         self.registry.set_max_concurrency(limit);
+    }
+
+    pub fn set_queued_spawns(&self, queued: bool) {
+        self.registry.set_queued_spawns(queued);
     }
 
     pub fn set_max_resident(&self, limit: usize) {

@@ -1,11 +1,29 @@
-use nanocode_sync::Atom;
-use std::sync::Arc;
-use tokio::sync::watch;
+use nanocode_sync::{Atom, Mailbox};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
+use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub(super) struct Capacity {
     state: Arc<Atom<CapacityState>>,
-    revision: watch::Sender<u64>,
+    waiting: Mailbox<Waiting>,
+}
+
+#[derive(Default)]
+struct Waiting {
+    resident: VecDeque<oneshot::Sender<()>>,
+    spawns: VecDeque<oneshot::Sender<()>>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Waiter {
+    Resident,
+    Spawn,
 }
 
 #[derive(Clone, Copy)]
@@ -15,8 +33,12 @@ struct CapacityState {
 }
 
 pub(super) struct TurnCapacity {
-    state: Arc<Atom<CapacityState>>,
-    revision: watch::Sender<u64>,
+    capacity: Capacity,
+}
+
+pub(super) struct Acquire {
+    capacity: Capacity,
+    granted: Option<oneshot::Receiver<()>>,
 }
 
 fn exhausted(limit: usize) -> std::io::Error {
@@ -25,68 +47,120 @@ fn exhausted(limit: usize) -> std::io::Error {
     ))
 }
 
+impl CapacityState {
+    fn take(&mut self, count: usize) -> std::io::Result<()> {
+        if self.limit != usize::MAX && count > self.limit.saturating_sub(self.active) {
+            return Err(exhausted(self.limit));
+        }
+        self.active += count;
+        Ok(())
+    }
+}
+
 impl Capacity {
     pub(super) fn new(limit: usize) -> Self {
-        let (revision, _) = watch::channel(0);
         Self {
             state: Arc::new(Atom::new(CapacityState { active: 0, limit })),
-            revision,
+            waiting: Mailbox::new(Waiting::default()),
+        }
+    }
+
+    fn turn(&self) -> TurnCapacity {
+        TurnCapacity {
+            capacity: self.clone(),
         }
     }
 
     pub(super) fn reserve(&self) -> std::io::Result<TurnCapacity> {
-        self.state.modify(|state| {
-            if state.limit != usize::MAX && state.active >= state.limit {
-                return Err(exhausted(state.limit));
-            }
-            state.active += 1;
-            Ok(())
-        })?;
-
-        Ok(TurnCapacity {
-            state: Arc::clone(&self.state),
-            revision: self.revision.clone(),
-        })
+        self.state.modify(|state| state.take(1))?;
+        Ok(self.turn())
     }
 
     pub(super) fn reserve_many(&self, count: usize) -> std::io::Result<Vec<TurnCapacity>> {
-        self.state.modify(|state| {
-            if state.limit != usize::MAX && count > state.limit.saturating_sub(state.active) {
-                return Err(exhausted(state.limit));
-            }
-            state.active += count;
-            Ok(())
-        })?;
+        self.state.modify(|state| state.take(count))?;
+        Ok((0..count).map(|_| self.turn()).collect())
+    }
 
-        Ok((0..count)
-            .map(|_| TurnCapacity {
-                state: Arc::clone(&self.state),
-                revision: self.revision.clone(),
-            })
-            .collect())
+    pub(super) fn acquire(&self, waiter: Waiter) -> Acquire {
+        let (grant, granted) = oneshot::channel();
+        let state = Arc::clone(&self.state);
+        self.waiting.send(move |queue| {
+            if state.modify(|state| state.take(1)).is_err() {
+                match waiter {
+                    Waiter::Resident => queue.resident.push_back(grant),
+                    Waiter::Spawn => queue.spawns.push_back(grant),
+                }
+            } else if grant.send(()).is_err() {
+                hand_over(&state, queue);
+            }
+        });
+        Acquire {
+            capacity: self.clone(),
+            granted: Some(granted),
+        }
     }
 
     pub(super) fn set_limit(&self, limit: usize) {
-        self.state.update(|state| state.limit = limit);
-        self.changed();
-    }
-
-    pub(super) fn subscribe(&self) -> watch::Receiver<u64> {
-        self.revision.subscribe()
-    }
-
-    fn changed(&self) {
-        self.revision.send_modify(|revision| {
-            *revision = revision.wrapping_add(1);
+        let state = Arc::clone(&self.state);
+        self.waiting.send(move |queue| {
+            state.update(|state| state.limit = limit);
+            while !(queue.resident.is_empty() && queue.spawns.is_empty())
+                && state.modify(|state| state.take(1)).is_ok()
+            {
+                hand_over(&state, queue);
+            }
         });
+    }
+
+    fn release(&self) {
+        let state = Arc::clone(&self.state);
+        self.waiting.send(move |queue| hand_over(&state, queue));
+    }
+}
+
+fn hand_over(state: &Atom<CapacityState>, queue: &mut Waiting) {
+    while let Some(waiter) = queue
+        .resident
+        .pop_front()
+        .or_else(|| queue.spawns.pop_front())
+    {
+        if waiter.send(()).is_ok() {
+            return;
+        }
+    }
+    state.update(|state| state.active -= 1);
+}
+
+impl Future for Acquire {
+    type Output = TurnCapacity;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<TurnCapacity> {
+        let Some(granted) = self.granted.as_mut() else {
+            return Poll::Ready(self.capacity.turn());
+        };
+        match Pin::new(granted).poll(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(_) => {
+                self.granted = None;
+                Poll::Ready(self.capacity.turn())
+            }
+        }
     }
 }
 
 impl Drop for TurnCapacity {
     fn drop(&mut self) {
-        self.state.update(|state| state.active -= 1);
-        self.revision.send_modify(|revision| {
-            *revision = revision.wrapping_add(1);
-        });
+        self.capacity.release();
+    }
+}
+
+impl Drop for Acquire {
+    fn drop(&mut self) {
+        if let Some(mut granted) = self.granted.take() {
+            granted.close();
+            if granted.try_recv().is_ok() {
+                self.capacity.release();
+            }
+        }
     }
 }

@@ -1,5 +1,5 @@
 use super::{
-    capacity::{Capacity, TurnCapacity},
+    capacity::{Acquire, Capacity, TurnCapacity, Waiter},
     model::{
         AgentContext, AgentId, AgentMessage, MessageDisposition, MessageId, MessagePriority,
         MessagePurpose, MessageSender,
@@ -21,7 +21,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
 
 const COMMAND_CAPACITY: usize = 8;
@@ -108,7 +108,7 @@ struct Harness {
     output_schema: String,
     contract: Contract,
     capacity: Capacity,
-    capacity_revision: watch::Receiver<u64>,
+    waiting: Option<Acquire>,
     registry: Weak<Registry>,
 }
 
@@ -127,7 +127,7 @@ enum HarnessEvent {
     Command(Option<Box<HarnessCommand>>),
     Deferred(Option<Box<DeliveryCommand>>),
     Urgent(Option<Box<DeliveryCommand>>),
-    CapacityChanged,
+    CapacityAcquired(TurnCapacity),
     TurnFinished(Result<AgentResult<TurnResult>, TaskError>),
 }
 
@@ -265,7 +265,6 @@ pub(super) fn spawn(
         urgent,
         side_questions: Arc::new(AtomicUsize::new(0)),
     };
-    let capacity_revision = capacity.subscribe();
     let span = tracing::info_span!(
         "subagent.harness",
         session.root_id = root_session_id.as_str(),
@@ -288,7 +287,7 @@ pub(super) fn spawn(
                 assignment: rehydrated_assignment,
             },
             capacity,
-            capacity_revision,
+            waiting: None,
             registry,
         }
         .run()
@@ -320,7 +319,10 @@ impl Harness {
                         .await;
                 }
                 HarnessEvent::Deferred(None) | HarnessEvent::Urgent(None) => {}
-                HarnessEvent::CapacityChanged => self.start_pending().await,
+                HarnessEvent::CapacityAcquired(capacity) => {
+                    self.waiting = None;
+                    self.start_pending(Some(capacity)).await;
+                }
                 HarnessEvent::TurnFinished(result) => self.turn_finished(result).await,
             }
         }
@@ -336,12 +338,15 @@ impl Harness {
                     deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
                 };
             }
+            let waiting = self
+                .waiting
+                .get_or_insert_with(|| self.capacity.acquire(Waiter::Resident));
             return tokio::select! {
                 biased;
                 command = self.commands.recv() => HarnessEvent::Command(command),
                 urgent = self.urgent.recv() => HarnessEvent::Urgent(urgent),
                 deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
-                _ = self.capacity_revision.changed() => HarnessEvent::CapacityChanged,
+                capacity = waiting => HarnessEvent::CapacityAcquired(capacity),
             };
         };
         tokio::select! {
@@ -497,14 +502,19 @@ impl Harness {
             .await;
     }
 
-    async fn start_pending(&mut self) {
+    async fn start_pending(&mut self, mut granted: Option<TurnCapacity>) {
         while self.active.is_none() {
             if self.pending_urgent.is_empty() && self.pending_deferred.is_empty() {
                 return;
             }
-            let Ok(capacity) = self.capacity.reserve() else {
-                return;
+            let capacity = match granted.take() {
+                Some(capacity) => capacity,
+                None => match self.capacity.reserve() {
+                    Ok(capacity) => capacity,
+                    Err(_) => return,
+                },
             };
+            self.waiting = None;
             let batch = self.take_pending_batch();
             let delegation = self.begin_delegation(batch[0].id).await;
             let prompt = batch
@@ -789,7 +799,7 @@ impl Harness {
         self.active = None;
         self.publish_turn_result(result).await;
 
-        self.start_pending().await;
+        self.start_pending(None).await;
     }
 
     async fn publish_turn_result(&self, result: Result<AgentResult<TurnResult>, TaskError>) {

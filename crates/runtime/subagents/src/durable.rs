@@ -192,13 +192,20 @@ impl SubagentStore for MemorySubagentStore {
     }
 }
 
-pub(super) const JOURNAL_VERSION: u32 = 5;
+pub(super) const JOURNAL_VERSION: u32 = 6;
 
 pub(super) const LAZY_CHECKPOINT_VERSION: u32 = 3;
 
-const PAGE_MESSAGES: usize = 64;
+pub(super) const PAGE_MESSAGES: usize = 64;
 
 const PAGE_AGENT_BITS: u32 = PAGE_MESSAGES.trailing_zeros();
+
+const LEAF_AGENT_BITS: u32 = 4;
+
+pub(super) fn leaf_agents(leaf: u64) -> impl Iterator<Item = AgentId> {
+    let first = leaf << LEAF_AGENT_BITS;
+    (first..=first | ((1 << LEAF_AGENT_BITS) - 1)).map(AgentId::new)
+}
 
 pub(super) const MIN_JOURNAL_VERSION: u32 = 1;
 
@@ -234,9 +241,9 @@ impl JournalCheckpoint {
         })
     }
 
-    pub(super) fn stored(key: String, checkpoint: Option<SessionCheckpoint>) -> Self {
+    pub(super) fn stored(key: Arc<str>, checkpoint: Option<SessionCheckpoint>) -> Self {
         Self {
-            key: key.into(),
+            key,
             pending: None,
             checkpoint: checkpoint.map(Arc::new),
         }
@@ -295,6 +302,8 @@ pub(super) struct PersistedScope {
     pub(super) agent_records: Vec<(AgentId, Arc<str>)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent_pages: Option<AgentPages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) agent_leaves: Option<AgentPages>,
     #[serde(default)]
     pub(super) messages: PersistedMessages,
 }
@@ -318,6 +327,19 @@ impl AgentPages {
         store: &dyn SubagentStore,
         root_session_id: &str,
     ) -> std::io::Result<Vec<(AgentId, Arc<str>)>> {
+        Ok(self
+            .entries(store, root_session_id)
+            .await?
+            .into_iter()
+            .map(|(id, key)| (AgentId::new(id), key))
+            .collect())
+    }
+
+    async fn entries(
+        self,
+        store: &dyn SubagentStore,
+        root_session_id: &str,
+    ) -> std::io::Result<Vec<(u64, Arc<str>)>> {
         let mut entries = self.pages;
         for _ in 0..self.height {
             let keys = entries.iter().map(|(_, key)| key.to_string()).collect();
@@ -330,10 +352,7 @@ impl AgentPages {
                 entries.extend(page.entries);
             }
         }
-        Ok(entries
-            .into_iter()
-            .map(|(id, key)| (AgentId::new(id), key))
-            .collect())
+        Ok(entries)
     }
 }
 
@@ -349,6 +368,34 @@ struct AgentTree {
 }
 
 impl AgentTree {
+    fn get(&self, level: usize, index: u64) -> Option<&Arc<str>> {
+        self.levels
+            .get(level)?
+            .get(&(index >> PAGE_AGENT_BITS))?
+            .entries
+            .get(&index)
+    }
+
+    fn truncate(&mut self, mut keep: u64) {
+        for pages in &mut self.levels {
+            let kept = keep.div_ceil(1 << PAGE_AGENT_BITS);
+            *pages = std::mem::take(pages).split(&kept).0;
+            if let Some(last) = kept.checked_sub(1)
+                && let Some(page) = pages.get_mut(&last)
+            {
+                let before = page.entries.len();
+                page.entries = std::mem::take(&mut page.entries).split(&keep).0;
+                if page.entries.len() != before {
+                    page.key = None;
+                }
+            }
+            keep = kept;
+        }
+        while self.levels.last().is_some_and(imbl::OrdMap::is_empty) {
+            self.levels.pop();
+        }
+    }
+
     fn set(&mut self, level: usize, index: u64, key: Arc<str>) {
         if self.levels.len() <= level {
             self.levels.resize_with(level + 1, imbl::OrdMap::new);
@@ -430,6 +477,8 @@ pub(super) struct PersistedMessages {
     pub(super) records: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tail: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) leaves: Option<AgentPages>,
     pub(super) pending: Vec<super::model::MessageId>,
 }
 
@@ -440,12 +489,52 @@ struct MessagePage {
     messages: Vec<Arc<str>>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageLeaf {
+    messages: Vec<super::model::AgentMessage>,
+}
+
+fn message_leaf(messages: &imbl::Vector<Arc<str>>) -> (Arc<str>, Arc<str>) {
+    let mut json = String::with_capacity(
+        16 + messages
+            .iter()
+            .map(|message| message.len() + 1)
+            .sum::<usize>(),
+    );
+    json.push_str("{\"messages\":[");
+    for (index, message) in messages.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(message);
+    }
+    json.push_str("]}");
+    let json: Arc<str> = json.into();
+    (record_key(Arc::clone(&json)), json)
+}
+
 impl PersistedMessages {
     pub(super) async fn hydrate(
         self,
         store: &dyn SubagentStore,
         root_session_id: &str,
     ) -> std::io::Result<super::message::MessageThreads> {
+        let mut restored = Vec::new();
+        if let Some(leaves) = self.leaves {
+            let keys = leaves
+                .entries(store, root_session_id)
+                .await?
+                .into_iter()
+                .map(|(_, key)| key.to_string())
+                .collect();
+            for json in verified(store, root_session_id, keys).await? {
+                let leaf: MessageLeaf = serde_json::from_str(&json).map_err(|error| {
+                    std::io::Error::other(format!("invalid subagent message leaf: {error}"))
+                })?;
+                restored.extend(leaf.messages);
+            }
+        }
         let mut keys = self.records;
         let mut pages = Vec::new();
         let mut next = self.tail;
@@ -456,12 +545,10 @@ impl PersistedMessages {
             pages.push(page.messages);
         }
         keys.extend(pages.into_iter().rev().flatten().map(|key| key.to_string()));
-        let messages = verified(store, root_session_id, keys)
-            .await?
-            .iter()
-            .map(|json| serde_json::from_str(json).map_err(std::io::Error::other))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        super::message::MessageThreads::restore(self.next_message_id, messages, self.pending)
+        for json in verified(store, root_session_id, keys).await? {
+            restored.push(serde_json::from_str(&json).map_err(std::io::Error::other)?);
+        }
+        super::message::MessageThreads::restore(self.next_message_id, restored, self.pending)
     }
 }
 
@@ -471,9 +558,9 @@ pub(super) struct JournalCache {
     dirty: std::collections::BTreeSet<AgentId>,
     agents: imbl::HashMap<AgentId, CachedAgent>,
     tree: AgentTree,
-    messages: imbl::HashMap<super::model::MessageId, Arc<str>>,
-    pages: imbl::Vector<Arc<str>>,
-    paged: imbl::Vector<Arc<str>>,
+    messages: AgentTree,
+    logged_ids: imbl::Vector<super::model::MessageId>,
+    message_tail: imbl::Vector<Arc<str>>,
     logged: Option<super::message::MessageLog>,
 }
 
@@ -484,43 +571,36 @@ impl Default for JournalCache {
             dirty: std::collections::BTreeSet::new(),
             agents: imbl::HashMap::new(),
             tree: AgentTree::default(),
-            messages: imbl::HashMap::new(),
-            pages: imbl::Vector::new(),
-            paged: imbl::Vector::new(),
+            messages: AgentTree::default(),
+            logged_ids: imbl::Vector::new(),
+            message_tail: imbl::Vector::new(),
             logged: None,
         }
     }
 }
 
 #[derive(Clone)]
-struct CachedAgent {
+pub(super) struct CachedAgent {
     generation: u64,
     checkpoint: Option<Arc<str>>,
-    key: Arc<str>,
+    pub(super) checkpoint_ref: Option<Arc<str>>,
     profile: Arc<str>,
 }
 
-pub(super) enum AgentEntry {
-    Cached(Arc<str>),
-    Changed {
-        generation: u64,
-        checkpoint: Option<Arc<str>>,
-        agent: Box<PersistedAgent>,
-    },
+pub(super) struct AgentEntry {
+    pub(super) generation: u64,
+    pub(super) checkpoint: Option<Arc<str>>,
+    pub(super) unchanged: bool,
+    pub(super) agent: PersistedAgent,
 }
 
-pub(super) enum MessageEntry {
-    Cached(Arc<str>),
-    New(super::model::AgentMessage),
-}
-
-pub(super) enum MessagesSnapshot {
-    Full(Vec<(super::model::MessageId, MessageEntry)>),
-    Appended(Vec<super::model::AgentMessage>),
+pub(super) struct MessagesSnapshot {
+    pub(super) kept: Option<usize>,
+    pub(super) messages: Vec<super::model::AgentMessage>,
 }
 
 pub(super) struct JournalSnapshot {
-    pub(super) agents: Vec<(AgentId, AgentEntry)>,
+    pub(super) agents: Vec<(u64, Vec<(AgentId, AgentEntry)>)>,
     pub(super) messages: MessagesSnapshot,
     pub(super) logged: super::message::MessageLog,
     pub(super) next_message_id: u64,
@@ -542,6 +622,12 @@ struct AgentProfile {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AgentLeaf {
+    agents: Vec<(u64, AgentRecord)>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AgentRecord {
     profile: Arc<str>,
     status: AgentStatus,
@@ -556,7 +642,7 @@ struct AgentRecord {
     #[serde(default, skip_serializing_if = "is_zero")]
     resume_attempts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    checkpoint_ref: Option<String>,
+    checkpoint_ref: Option<Arc<str>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     in_flight_calls: Vec<InFlightCall>,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -581,22 +667,28 @@ struct AgentRecord {
     conversation: bool,
 }
 
-fn encode_agent(
+fn agent_record(
     agent: PersistedAgent,
-    stored: Option<&CachedAgent>,
+    stored: Option<Arc<str>>,
+    unchanged: bool,
     records: &mut Vec<(Arc<str>, Arc<str>)>,
-) -> std::io::Result<(Arc<str>, Arc<str>)> {
-    let (profile, json) = encoded(&AgentProfile {
-        descriptor: agent.descriptor,
-        binding_task: agent.binding_task,
-        output_schema: agent.output_schema,
-        host_context: agent.host_context,
-    })?;
-    if stored.map(|cached| &cached.profile) != Some(&profile) {
-        records.push((Arc::clone(&profile), json));
-    }
-    let profile_key = Arc::clone(&profile);
-    let (key, json) = encoded(&AgentRecord {
+) -> std::io::Result<AgentRecord> {
+    let profile = match stored {
+        Some(profile) if unchanged => profile,
+        stored => {
+            let (profile, json) = encoded(&AgentProfile {
+                descriptor: agent.descriptor,
+                binding_task: agent.binding_task,
+                output_schema: agent.output_schema,
+                host_context: agent.host_context,
+            })?;
+            if stored.as_ref() != Some(&profile) {
+                records.push((Arc::clone(&profile), json));
+            }
+            profile
+        }
+    };
+    Ok(AgentRecord {
         profile,
         status: agent.status,
         last_output: agent.last_output,
@@ -616,11 +708,7 @@ fn encode_agent(
         completion_parked: agent.completion_parked,
         cancelled_revision: agent.cancelled_revision,
         conversation: agent.conversation,
-    })?;
-    if stored.map(|cached| &cached.key) != Some(&key) {
-        records.push((Arc::clone(&key), json));
-    }
-    Ok((key, profile_key))
+    })
 }
 
 pub(super) async fn load_agents(
@@ -634,28 +722,68 @@ pub(super) async fn load_agents(
         .collect::<Vec<_>>();
     let records = verified(store, root_session_id, keys).await?;
     let records = agents
-        .iter()
+        .into_iter()
         .zip(&records)
-        .map(|((_, key), json)| {
-            serde_json::from_str::<AgentRecord>(json).map_err(|error| {
-                std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
-            })
-        })
+        .map(
+            |((id, key), json)| match serde_json::from_str::<AgentRecord>(json) {
+                Ok(record) => Ok((id, key, record)),
+                Err(error) => Err(std::io::Error::other(format!(
+                    "invalid subagent journal record {key}: {error}"
+                ))),
+            },
+        )
         .collect::<std::io::Result<Vec<_>>>()?;
+    with_profiles(store, root_session_id, records).await
+}
+
+pub(super) async fn load_leaves(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    leaves: AgentPages,
+) -> std::io::Result<Vec<PersistedAgent>> {
+    let leaves = leaves.entries(store, root_session_id).await?;
+    let keys = leaves
+        .iter()
+        .map(|(_, key)| key.to_string())
+        .collect::<Vec<_>>();
+    let mut records = Vec::new();
+    for ((index, key), json) in leaves
+        .into_iter()
+        .zip(verified(store, root_session_id, keys).await?)
+    {
+        let leaf: AgentLeaf = serde_json::from_str(&json).map_err(|error| {
+            std::io::Error::other(format!("invalid subagent journal leaf {key}: {error}"))
+        })?;
+        for (id, record) in leaf.agents {
+            if id >> LEAF_AGENT_BITS != index {
+                return Err(std::io::Error::other(format!(
+                    "subagent journal leaf {key} holds agent {id} of another leaf"
+                )));
+            }
+            records.push((AgentId::new(id), Arc::clone(&key), record));
+        }
+    }
+    with_profiles(store, root_session_id, records).await
+}
+
+async fn with_profiles(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    records: Vec<(AgentId, Arc<str>, AgentRecord)>,
+) -> std::io::Result<Vec<PersistedAgent>> {
     let profiles = verified(
         store,
         root_session_id,
         records
             .iter()
-            .map(|record| record.profile.to_string())
+            .map(|(_, _, record)| record.profile.to_string())
             .collect(),
     )
     .await?;
-    agents
+    records
         .into_iter()
-        .zip(records)
         .zip(profiles)
-        .map(|(((id, key), record), profile)| {
+        .map(|((id, key, record), profile)| {
             let profile = serde_json::from_str(&profile).map_err(|error| {
                 std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
             })?;
@@ -744,17 +872,18 @@ impl JournalCache {
         id: AgentId,
         generation: u64,
         checkpoint: Option<&Arc<str>>,
-    ) -> Option<&Arc<str>> {
-        self.agents
-            .get(&id)
-            .filter(|cached| {
-                cached.generation == generation && cached.checkpoint.as_ref() == checkpoint
-            })
-            .map(|cached| &cached.key)
+    ) -> Option<&CachedAgent> {
+        self.agents.get(&id).filter(|cached| {
+            cached.generation == generation && cached.checkpoint.as_ref() == checkpoint
+        })
     }
 
-    pub(super) fn message(&self, id: super::model::MessageId) -> Option<&Arc<str>> {
-        self.messages.get(&id)
+    pub(super) const fn logged_ids(&self) -> &imbl::Vector<super::model::MessageId> {
+        &self.logged_ids
+    }
+
+    pub(super) fn sealed_messages(&self) -> usize {
+        self.logged_ids.len() - self.message_tail.len()
     }
 
     pub(super) const fn logged(&self) -> Option<super::message::MessageLog> {
@@ -767,12 +896,18 @@ impl JournalCache {
         }
     }
 
-    pub(super) fn tracked(&self, all: impl FnOnce() -> Vec<AgentId>) -> Vec<AgentId> {
-        if self.full {
+    pub(super) fn tracked_leaves(&self, all: impl FnOnce() -> Vec<AgentId>) -> Vec<u64> {
+        let ids = if self.full {
             all()
         } else {
             self.dirty.iter().copied().collect()
-        }
+        };
+        let mut leaves = ids
+            .into_iter()
+            .map(|id| id.get() >> LEAF_AGENT_BITS)
+            .collect::<Vec<_>>();
+        leaves.dedup();
+        leaves
     }
 
     pub(super) fn committed(&mut self, encoded: EncodedJournal) {
@@ -790,94 +925,68 @@ impl JournalSnapshot {
         }
         update.full = false;
         update.dirty.clear();
-        for (id, entry) in self.agents {
-            let key = match entry {
-                AgentEntry::Cached(key) => key,
-                AgentEntry::Changed {
-                    generation,
-                    checkpoint,
-                    agent,
-                } => {
-                    let (key, profile) =
-                        encode_agent(*agent, update.agents.get(&id), &mut records)?;
-                    update.agents.insert(
-                        id,
-                        CachedAgent {
-                            generation,
-                            checkpoint,
-                            key: Arc::clone(&key),
-                            profile,
-                        },
-                    );
-                    key
-                }
-            };
-            update.tree.set(0, id.get(), key);
-        }
-        let agent_pages = update.tree.encode(&mut records)?;
-        let (mut keys, shared) = match self.messages {
-            MessagesSnapshot::Full(messages) => {
-                update.messages = imbl::HashMap::new();
-                let mut keys = imbl::Vector::new();
-                for (id, entry) in messages {
-                    let key = match entry {
-                        MessageEntry::Cached(key) => key,
-                        MessageEntry::New(message) => {
-                            let (key, json) = encoded(&message)?;
-                            records.push((Arc::clone(&key), json));
-                            key
-                        }
-                    };
-                    update.messages.insert(id, Arc::clone(&key));
-                    keys.push_back(key);
-                }
-                let shared = keys
-                    .iter()
-                    .zip(&cache.paged)
-                    .take_while(|(current, cached)| current == cached)
-                    .count();
-                (keys, shared)
+        for (leaf, agents) in self.agents {
+            let mut entries = Vec::with_capacity(agents.len());
+            for (id, entry) in agents {
+                let stored = update.agents.get(&id).map(|cached| Arc::clone(&cached.profile));
+                let record = agent_record(entry.agent, stored, entry.unchanged, &mut records)?;
+                update.agents.insert(
+                    id,
+                    CachedAgent {
+                        generation: entry.generation,
+                        checkpoint: entry.checkpoint,
+                        checkpoint_ref: record.checkpoint_ref.clone(),
+                        profile: Arc::clone(&record.profile),
+                    },
+                );
+                entries.push((id.get(), record));
             }
-            MessagesSnapshot::Appended(messages) => {
-                let mut keys = cache.paged.clone();
-                for message in messages {
-                    let id = message.id;
-                    let (key, json) = encoded(&message)?;
-                    records.push((Arc::clone(&key), json));
-                    update.messages.insert(id, Arc::clone(&key));
-                    keys.push_back(key);
-                }
-                (keys, cache.paged.len())
+            if entries.is_empty() {
+                continue;
             }
-        };
-        let reused = (shared / PAGE_MESSAGES).min(cache.pages.len());
-        update.pages = cache.pages.take(reused);
-        let unpaged = keys.split_off(reused * PAGE_MESSAGES);
-        let mut chunk = Vec::with_capacity(PAGE_MESSAGES);
-        let mut unpaged = unpaged.into_iter().peekable();
-        while unpaged.peek().is_some() {
-            chunk.clear();
-            chunk.extend(unpaged.by_ref().take(PAGE_MESSAGES));
-            let (key, json) = encoded(&MessagePage {
-                previous: update.pages.last().cloned(),
-                messages: chunk.clone(),
-            })?;
-            records.push((Arc::clone(&key), json));
-            update.pages.push_back(key);
-            keys.extend(chunk.iter().cloned());
+            let (key, json) = encoded(&AgentLeaf { agents: entries })?;
+            if update.tree.get(0, leaf) != Some(&key) {
+                records.push((Arc::clone(&key), json));
+                update.tree.set(0, leaf, key);
+            }
         }
-        let tail = update.pages.last().cloned();
-        update.paged = keys;
+        let agent_leaves = update.tree.encode(&mut records)?;
+        let MessagesSnapshot { kept, messages } = self.messages;
+        if let Some(kept) = kept {
+            update.logged_ids = update.logged_ids.take(kept * PAGE_MESSAGES);
+            update.message_tail = imbl::Vector::new();
+            update
+                .messages
+                .truncate(u64::try_from(kept).map_err(std::io::Error::other)?);
+        }
+        let appended = !messages.is_empty();
+        for message in messages {
+            let json: Arc<str> = serde_json::to_string(&message)
+                .map_err(std::io::Error::other)?
+                .into();
+            update.logged_ids.push_back(message.id);
+            update.message_tail.push_back(json);
+            if update.message_tail.len() == PAGE_MESSAGES {
+                update.write_message_leaf(&mut records)?;
+                update.message_tail = imbl::Vector::new();
+            }
+        }
+        if appended && !update.message_tail.is_empty() {
+            update.write_message_leaf(&mut records)?;
+        }
+        let message_leaves = update.messages.encode(&mut records)?;
         update.logged = Some(self.logged);
         let payload = serde_json::to_string(&PersistedScope {
             version: JOURNAL_VERSION,
             agents: Vec::new(),
             agent_records: Vec::new(),
-            agent_pages,
+            agent_pages: None,
+            agent_leaves,
             messages: PersistedMessages {
                 next_message_id: self.next_message_id,
                 records: Vec::new(),
-                tail,
+                tail: None,
+                leaves: message_leaves,
                 pending: self.pending,
             },
         })
@@ -888,6 +997,22 @@ impl JournalSnapshot {
             acknowledged: self.acknowledged,
             update,
         })
+    }
+}
+
+impl JournalCache {
+    fn write_message_leaf(
+        &mut self,
+        records: &mut Vec<(Arc<str>, Arc<str>)>,
+    ) -> std::io::Result<()> {
+        let leaf = u64::try_from(self.sealed_messages() / PAGE_MESSAGES)
+            .map_err(std::io::Error::other)?;
+        let (key, json) = message_leaf(&self.message_tail);
+        if self.messages.get(0, leaf) != Some(&key) {
+            records.push((Arc::clone(&key), json));
+            self.messages.set(0, leaf, key);
+        }
+        Ok(())
     }
 }
 
@@ -920,7 +1045,7 @@ pub(super) struct PersistedAgent {
     pub(super) native_checkpoint: Option<PersistedNative>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) checkpoint_ref: Option<String>,
+    pub(super) checkpoint_ref: Option<Arc<str>>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) in_flight_calls: Vec<InFlightCall>,
@@ -1449,30 +1574,36 @@ shown and may or may not have taken effect. Inspect the current workspace state 
 matters, do not repeat side effects that already happened, and continue your delegated task \
 from where your history ends. Submit a result only once the whole delegated task is complete.";
 
-pub(super) fn persist_agent(
+pub(super) fn checkpoint_ref(
     session: &ChildSession,
     checkpoint: Option<&JournalCheckpoint>,
     records: &mut Vec<(Arc<str>, Arc<str>)>,
-) -> std::io::Result<PersistedAgent> {
-    let checkpoint_ref = match (checkpoint, session.stored_runtime.checkpoint()) {
+) -> std::io::Result<Option<Arc<str>>> {
+    Ok(match (checkpoint, session.stored_runtime.checkpoint()) {
         (Some(checkpoint), _) => {
             if let Some(json) = &checkpoint.pending {
                 records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
             }
-            Some(checkpoint.key.to_string())
+            Some(Arc::clone(&checkpoint.key))
         }
         (None, Some(snapshot)) => {
             let (key, json) = encoded(snapshot)?;
             records.push((Arc::clone(&key), json));
-            Some(key.to_string())
+            Some(key)
         }
         (None, None) => None,
-    };
+    })
+}
+
+pub(super) fn persist_agent(
+    session: &ChildSession,
+    checkpoint_ref: Option<Arc<str>>,
+) -> PersistedAgent {
     let output_in_status = matches!(
         &session.status,
         AgentStatus::Completed { output } if session.last_output.as_ref() == Some(output)
     );
-    Ok(PersistedAgent {
+    PersistedAgent {
         descriptor: session.descriptor.clone(),
         binding_task: (session.binding_task != session.descriptor.task)
             .then(|| session.binding_task.clone()),
@@ -1502,7 +1633,7 @@ pub(super) fn persist_agent(
         completion_parked: session.completion.parked(),
         cancelled_revision: session.cancelled_revision,
         conversation: session.conversation,
-    })
+    }
 }
 
 impl PersistedAgent {

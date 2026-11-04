@@ -1020,41 +1020,51 @@ impl AgentScope {
         checkpoints: &AgentMap<durable::JournalCheckpoint>,
         cache: &durable::JournalCache,
     ) -> std::io::Result<durable::JournalSnapshot> {
-        let ids = cache.tracked(|| {
+        let leaves = cache.tracked_leaves(|| {
             let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
             ids.sort_unstable();
             ids
         });
         let mut records = Vec::new();
         let mut acknowledged = Vec::new();
-        let mut agents = Vec::with_capacity(ids.len());
-        for id in ids {
-            let Some(session) = self.sessions.get(&id) else {
-                continue;
-            };
-            let checkpoint = checkpoints.get(&(root_session_id.to_owned(), id));
-            if let Some(checkpoint) = checkpoint
-                && checkpoint.pending.is_some()
-            {
-                acknowledged.push((id, Arc::clone(&checkpoint.key)));
-            }
-            let checkpoint_key = checkpoint.map(|checkpoint| &checkpoint.key);
-            let entry = match cache.agent(id, session.journal_generation, checkpoint_key) {
-                Some(key) => {
-                    if let Some(checkpoint) = checkpoint
-                        && let Some(json) = &checkpoint.pending
-                    {
-                        records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
-                    }
-                    durable::AgentEntry::Cached(Arc::clone(key))
+        let mut agents = Vec::with_capacity(leaves.len());
+        let root = root_session_id.to_owned();
+        for leaf in leaves {
+            let mut entries = Vec::new();
+            for id in durable::leaf_agents(leaf) {
+                let Some(session) = self.sessions.get(&id) else {
+                    continue;
+                };
+                let checkpoint = checkpoints.get(&(root.clone(), id));
+                if let Some(checkpoint) = checkpoint
+                    && checkpoint.pending.is_some()
+                {
+                    acknowledged.push((id, Arc::clone(&checkpoint.key)));
                 }
-                None => durable::AgentEntry::Changed {
-                    generation: session.journal_generation,
-                    checkpoint: checkpoint_key.cloned(),
-                    agent: Box::new(durable::persist_agent(session, checkpoint, &mut records)?),
-                },
-            };
-            agents.push((id, entry));
+                let checkpoint_key = checkpoint.map(|checkpoint| &checkpoint.key);
+                let cached = cache.agent(id, session.journal_generation, checkpoint_key);
+                let checkpoint_ref = match cached {
+                    Some(cached) => {
+                        if let Some(checkpoint) = checkpoint
+                            && let Some(json) = &checkpoint.pending
+                        {
+                            records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
+                        }
+                        cached.checkpoint_ref.clone()
+                    }
+                    None => durable::checkpoint_ref(session, checkpoint, &mut records)?,
+                };
+                entries.push((
+                    id,
+                    durable::AgentEntry {
+                        generation: session.journal_generation,
+                        checkpoint: checkpoint_key.cloned(),
+                        unchanged: cached.is_some(),
+                        agent: durable::persist_agent(session, checkpoint_ref),
+                    },
+                ));
+            }
+            agents.push((leaf, entries));
         }
         let (next_message_id, messages, logged, pending) = self.messages.snapshot(cache);
         Ok(durable::JournalSnapshot {
@@ -3478,6 +3488,9 @@ impl Registry {
         }
         let mut agents = journal.agents;
         agents.extend(durable::load_agents(store.as_ref(), root_session_id, records).await?);
+        if let Some(leaves) = journal.agent_leaves {
+            agents.extend(durable::load_leaves(store.as_ref(), root_session_id, leaves).await?);
+        }
         agents.sort_by_key(|agent| agent.descriptor.id);
         let spawning_turns = agents
             .iter()

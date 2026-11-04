@@ -37,29 +37,28 @@ impl MessageThreads {
             len: self.log.len(),
             revision: self.log_revision,
         };
-        let messages = match cache.logged() {
+        let (kept, from) = match cache.logged() {
             Some(saved) if saved.revision == self.log_revision && saved.len <= self.log.len() => {
-                super::durable::MessagesSnapshot::Appended(
-                    self.log[saved.len..]
-                        .iter()
-                        .filter_map(|id| self.message(*id))
-                        .collect(),
-                )
+                (None, saved.len)
             }
-            _ => super::durable::MessagesSnapshot::Full(
-                self.log
+            _ => {
+                let shared = self
+                    .log
                     .iter()
-                    .filter_map(|id| {
-                        let entry = match cache.message(*id) {
-                            Some(key) => {
-                                super::durable::MessageEntry::Cached(std::sync::Arc::clone(key))
-                            }
-                            None => super::durable::MessageEntry::New(self.message(*id)?),
-                        };
-                        Some((*id, entry))
-                    })
-                    .collect(),
-            ),
+                    .zip(cache.logged_ids())
+                    .take_while(|(id, logged)| id == logged)
+                    .count()
+                    .min(cache.sealed_messages());
+                let kept = shared / super::durable::PAGE_MESSAGES;
+                (Some(kept), kept * super::durable::PAGE_MESSAGES)
+            }
+        };
+        let messages = super::durable::MessagesSnapshot {
+            kept,
+            messages: self.log[from..]
+                .iter()
+                .filter_map(|id| self.message(*id))
+                .collect(),
         };
         let mut pending = self.pending.keys().copied().collect::<Vec<_>>();
         pending.sort_unstable();

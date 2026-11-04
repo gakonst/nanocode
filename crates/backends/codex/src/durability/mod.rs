@@ -181,6 +181,7 @@ struct DurableExecution {
     branches: Option<Branches>,
     context_records: ArcSwap<HashSet<String>>,
     continuation_cache: Slot<context::ContinuationCache>,
+    unsaved_tool_result: AtomicBool,
 }
 
 impl DurableExecution {
@@ -191,6 +192,7 @@ impl DurableExecution {
             branches,
             context_records: ArcSwap::default(),
             continuation_cache: Slot::default(),
+            unsaved_tool_result: AtomicBool::new(false),
         }
     }
 
@@ -599,6 +601,10 @@ impl ExecutionPolicy for DurableExecution {
                 }
             };
             let mut writes = vec![OwnerWrite::Advance { continuation }];
+            let defer = next_step
+                .as_ref()
+                .is_some_and(|(_, kind, _)| kind == "model_call")
+                && !self.unsaved_tool_result.load(Ordering::Acquire);
             let kind = match next_step {
                 Some((step_id, kind, input_json)) => {
                     writes.push(OwnerWrite::BeginStep {
@@ -610,10 +616,18 @@ impl ExecutionPolicy for DurableExecution {
                 }
                 None => None,
             };
-            let outcomes = self.owner.commit_writes(operation_id, writes).await;
-            if outcomes.is_ok() {
-                cache.committed();
-            }
+            let outcomes = if defer {
+                self.owner
+                    .commit_writes_deferred(operation_id, writes)
+                    .await
+            } else {
+                let outcomes = self.owner.commit_writes(operation_id, writes).await;
+                if outcomes.is_ok() {
+                    cache.committed();
+                    self.unsaved_tool_result.store(false, Ordering::Release);
+                }
+                outcomes
+            };
             drop(self.continuation_cache.put(cache));
             let outcomes = outcomes.map_err(agent_error)?;
             let Some(kind) = kind else {
@@ -668,6 +682,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let output = raw(output_json)?;
+            self.unsaved_tool_result.store(true, Ordering::Release);
             self.owner
                 .complete_step_deferred(operation_id, step_id, &output)
                 .await

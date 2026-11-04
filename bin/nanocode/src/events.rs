@@ -51,23 +51,27 @@ pub fn subagent_prompt_display(text: &str) -> String {
     let Some(rest) = text.strip_prefix("A directed message from ") else {
         return text.to_owned();
     };
-    let (Some((sender, _)), Some((_, body))) = (
-        rest.split_once(" was delivered by the sub-agent runtime."),
-        rest.split_once("\n\nMessage body:\n"),
-    ) else {
-        return text.to_owned();
-    };
-    let body = body
+    let rest = rest
         .split_once(&format!(
             "\n\n{}",
             nanocode::subagents::COMPLETION_INSTRUCTIONS_LEAD
         ))
-        .map_or(body, |(body, _)| body);
-    if sender == "the user" {
-        body.to_owned()
-    } else {
-        format!("from {sender}: {body}")
+        .map_or(rest, |(messages, _)| messages);
+    let mut shown = Vec::new();
+    for message in rest.split("\n\nA directed message from ") {
+        let (Some((sender, _)), Some((_, body))) = (
+            message.split_once(" was delivered by the sub-agent runtime."),
+            message.split_once("\n\nMessage body:\n"),
+        ) else {
+            return text.to_owned();
+        };
+        shown.push(if sender == "the user" {
+            body.to_owned()
+        } else {
+            format!("from {sender}: {body}")
+        });
     }
+    shown.join("\n\n")
 }
 
 #[derive(Clone, Copy, Default)]

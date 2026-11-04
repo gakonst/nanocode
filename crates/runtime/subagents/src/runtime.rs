@@ -354,6 +354,18 @@ pub(super) fn completion_reminder() -> String {
     )
 }
 
+pub(super) fn follow_up_reminder() -> String {
+    format!(
+        "{COMPLETION_INSTRUCTIONS_LEAD} again only if this changes your result; otherwise your \
+         accepted result stands, so finish with a brief final assistant message."
+    )
+}
+
+pub(super) struct StartedTurn {
+    pub(super) revision: u64,
+    pub(super) keeps_result: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum SubmissionOutcome {
     Accepted { decoded_json_text: bool },
@@ -4280,10 +4292,10 @@ impl Registry {
         id: AgentId,
         recovering: bool,
         context: Option<&AgentContext>,
-    ) -> Option<u64> {
+    ) -> Option<StartedTurn> {
         let root = root_session_id.to_owned();
         let context = context.cloned();
-        let (revision, descriptor) = self
+        let (started, descriptor) = self
             .state
             .call(move |state| {
                 let mut descriptor = None;
@@ -4295,7 +4307,7 @@ impl Registry {
                 else {
                     return (None, None);
                 };
-                let revision = if !session.status.can_start_turn() || session.active() {
+                let started = if !session.status.can_start_turn() || session.active() {
                     None
                 } else {
                     let revision = if recovering {
@@ -4336,12 +4348,15 @@ impl Registry {
                         updated.task = session.binding_task.clone();
                         descriptor = Some(updated);
                     }
-                    Some(revision)
+                    Some(StartedTurn {
+                        revision,
+                        keeps_result: session.follow_up_output.is_some(),
+                    })
                 };
-                (revision, descriptor)
+                (started, descriptor)
             })
             .await;
-        if revision.is_some() {
+        if started.is_some() {
             if let Some(descriptor) = descriptor {
                 self.send(root_session_id, AgentUpdate::Added(descriptor));
             }
@@ -4354,7 +4369,7 @@ impl Registry {
             );
             self.changed();
         }
-        revision
+        started
     }
 
     pub(super) async fn harness_turn_start_failed(

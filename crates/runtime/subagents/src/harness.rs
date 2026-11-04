@@ -1,8 +1,14 @@
 use super::{
     capacity::{Capacity, TurnCapacity},
-    model::{AgentContext, AgentId, AgentMessage, MessageDisposition, MessageId, MessagePriority},
+    model::{
+        AgentContext, AgentId, AgentMessage, MessageDisposition, MessageId, MessagePriority,
+        MessagePurpose, MessageSender,
+    },
     platform::{self, Task, TaskError},
-    runtime::{DelegationChange, Registry, completion_instructions, completion_reminder},
+    runtime::{
+        DelegationChange, Registry, completion_instructions, completion_reminder,
+        follow_up_reminder,
+    },
 };
 use nanocode_agent_core::input::Prompt;
 use nanocode_agent_core::{
@@ -370,7 +376,7 @@ impl Harness {
                 capacity,
                 response,
             } => {
-                let _ = response.send(self.start_turn(prompt, capacity).await);
+                let _ = response.send(self.start_turn(prompt, capacity, false).await);
                 false
             }
             HarnessCommand::Interrupt { response } => {
@@ -459,7 +465,11 @@ impl Harness {
             && let Ok(capacity) = self.capacity.reserve()
         {
             let delegation = self.begin_delegation(command.message.id).await;
-            if let Err(error) = self.start_turn(command.message.prompt(), capacity).await {
+            let from_peers = from_peers(std::slice::from_ref(&command.message));
+            if let Err(error) = self
+                .start_turn(command.message.prompt(), capacity, from_peers)
+                .await
+            {
                 self.rollback_delegation(delegation).await;
                 self.reject(command, error.to_string()).await;
                 return;
@@ -489,42 +499,67 @@ impl Harness {
 
     async fn start_pending(&mut self) {
         while self.active.is_none() {
-            let Some(message) = self
-                .pending_urgent
-                .front()
-                .or_else(|| self.pending_deferred.front())
-            else {
+            if self.pending_urgent.is_empty() && self.pending_deferred.is_empty() {
                 return;
-            };
+            }
             let Ok(capacity) = self.capacity.reserve() else {
                 return;
             };
-            let id = message.id;
-            let message = if self.pending_urgent.front().is_some() {
-                self.pending_urgent.pop_front()
-            } else {
-                self.pending_deferred.pop_front()
-            }
-            .expect("a pending message should still exist");
-            let delegation = self.begin_delegation(id).await;
-            match self.start_turn(message.prompt(), capacity).await {
+            let batch = self.take_pending_batch();
+            let delegation = self.begin_delegation(batch[0].id).await;
+            let prompt = batch
+                .iter()
+                .map(AgentMessage::prompt)
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            match self.start_turn(prompt, capacity, from_peers(&batch)).await {
                 Ok(()) => {
                     if let Some(registry) = self.registry.upgrade() {
-                        registry
-                            .message_delivered(
-                                &self.root_session_id,
-                                id,
-                                MessageDisposition::Started,
-                            )
-                            .await;
+                        for message in &batch {
+                            registry
+                                .message_delivered(
+                                    &self.root_session_id,
+                                    message.id,
+                                    MessageDisposition::Started,
+                                )
+                                .await;
+                        }
                     }
                 }
                 Err(error) => {
                     self.rollback_delegation(delegation).await;
-                    self.publish_message_failure(id, error.to_string()).await;
+                    for message in &batch {
+                        self.publish_message_failure(message.id, error.to_string())
+                            .await;
+                    }
                 }
             }
         }
+    }
+
+    fn take_pending_batch(&mut self) -> Vec<AgentMessage> {
+        let mut batch = Vec::new();
+        while let Some(message) = self
+            .pending_urgent
+            .front()
+            .or_else(|| self.pending_deferred.front())
+        {
+            let delegates = message.purpose == MessagePurpose::Delegate;
+            if delegates && !batch.is_empty() {
+                break;
+            }
+            let message = if self.pending_urgent.is_empty() {
+                self.pending_deferred.pop_front()
+            } else {
+                self.pending_urgent.pop_front()
+            }
+            .expect("a pending message should still exist");
+            batch.push(message);
+            if delegates {
+                break;
+            }
+        }
+        batch
     }
 
     async fn fail_pending(&mut self, reason: &str) {
@@ -604,7 +639,12 @@ impl Harness {
             .await;
     }
 
-    async fn start_turn(&mut self, prompt: String, capacity: TurnCapacity) -> std::io::Result<()> {
+    async fn start_turn(
+        &mut self,
+        prompt: String,
+        capacity: TurnCapacity,
+        from_peers: bool,
+    ) -> std::io::Result<()> {
         if self.active.is_some() {
             return Err(std::io::Error::other(format!(
                 "agent {} is not idle",
@@ -632,7 +672,7 @@ impl Harness {
                 reasoning_mode: checkpoint.reasoning_mode(),
             });
         }
-        let Some(instruction_revision) = registry
+        let Some(started) = registry
             .harness_turn_started(
                 &self.root_session_id,
                 self.id,
@@ -650,6 +690,7 @@ impl Harness {
                 self.id
             )));
         };
+        let instruction_revision = started.revision;
 
         let (prompt, contract) = match &self.contract {
             Contract::Pending {
@@ -660,6 +701,9 @@ impl Harness {
             ),
             Contract::Pending { assignment: None } => {
                 (prompt, completion_instructions(&self.output_schema))
+            }
+            Contract::Delivered if from_peers && started.keeps_result => {
+                (prompt, follow_up_reminder())
             }
             Contract::Delivered => (prompt, completion_reminder()),
         };
@@ -776,4 +820,11 @@ impl Harness {
         }
         shutdown_result
     }
+}
+
+fn from_peers(messages: &[AgentMessage]) -> bool {
+    messages.iter().all(|message| {
+        matches!(message.from, MessageSender::Agent { .. })
+            && message.purpose != MessagePurpose::Delegate
+    })
 }

@@ -95,6 +95,12 @@ impl TaskTree {
         self.nodes.keys().copied().collect()
     }
 
+    pub(super) fn has_children(&self, id: AgentId) -> bool {
+        self.children
+            .get(&Some(id))
+            .is_some_and(|children| !children.is_empty())
+    }
+
     pub(super) fn subtree_postorder(&self, id: AgentId) -> std::io::Result<Vec<AgentId>> {
         if !self.contains(id) {
             return Err(std::io::Error::other(format!("unknown agent_id {id}")));

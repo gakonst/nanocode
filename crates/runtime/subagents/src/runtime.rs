@@ -430,6 +430,8 @@ pub struct Registry {
 
     status_queues: Atom<AgentMap<Arc<StatusQueue>>>,
 
+    evicting: Atom<HashMap<String, bool>>,
+
     completion_retries: Atom<AgentMap<(u32, bool)>>,
     completion_dispatch: Atom<AgentMap<Sequencer>>,
     completion_batches: Atom<imbl::HashMap<String, mpsc::UnboundedSender<(AgentId, u64)>>>,
@@ -1843,18 +1845,21 @@ impl RegistryState {
         let sessions = &scope.sessions;
         let (candidate, lock) = sessions.idle.iter().find_map(|&(_, id)| {
             let session = sessions.get(&id)?;
-            let holding = scope
-                .topology
-                .subtree_postorder(id)
-                .ok()?
-                .into_iter()
-                .any(|descendant| descendant != id && sessions.resident.contains(&descendant));
-            if holding
-                || scope.messages.has_pending_for(id)
+            if scope.messages.has_pending_for(id)
                 || !session
                     .harness()
                     .is_some_and(|harness| !harness.answering_side_questions())
             {
+                return None;
+            }
+            let holding = scope.topology.has_children(id)
+                && scope
+                    .topology
+                    .subtree_postorder(id)
+                    .ok()?
+                    .into_iter()
+                    .any(|descendant| descendant != id && sessions.resident.contains(&descendant));
+            if holding {
                 return None;
             }
             Some((id, session.residency_lock.try_enter()?))
@@ -1975,6 +1980,7 @@ impl Registry {
             idle_waits: Atom::default(),
             this: std::sync::OnceLock::new(),
             status_queues: Atom::default(),
+            evicting: Atom::default(),
             completion_retries: Atom::default(),
             completion_dispatch: Atom::default(),
             completion_batches: Atom::default(),
@@ -4492,8 +4498,36 @@ impl Registry {
         }
         let registry = Arc::clone(self);
         let root_session_id = root_session_id.to_owned();
+        let started = registry.evicting.update(|evicting| {
+            if let Some(again) = evicting.get_mut(&root_session_id) {
+                *again = true;
+                return false;
+            }
+            evicting.insert(root_session_id.clone(), false);
+            true
+        });
+        if !started {
+            return;
+        }
         drop(platform::spawn(async move {
-            registry.enforce_resident_limit(&root_session_id).await;
+            loop {
+                registry.enforce_resident_limit(&root_session_id).await;
+                let finished = registry.evicting.update(|evicting| {
+                    match evicting.get_mut(&root_session_id) {
+                        Some(again) if *again => {
+                            *again = false;
+                            false
+                        }
+                        _ => {
+                            evicting.remove(&root_session_id);
+                            true
+                        }
+                    }
+                });
+                if finished {
+                    break;
+                }
+            }
         }));
     }
 

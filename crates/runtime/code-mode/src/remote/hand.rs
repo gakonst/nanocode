@@ -63,6 +63,9 @@ pub struct ExecutorOptions {
     pub device: Option<Arc<dyn HandCapabilities>>,
     pub tools_only: bool,
     pub environment: Option<HandEnvironment>,
+    /// Lists [`super::MOVE_CAPABILITY`] in the catalog: the connection loop
+    /// serves a second connection of this runtime when the brain asks it to move.
+    pub moves: bool,
 }
 
 pub trait HandHost: Send + Sync + 'static {
@@ -1255,10 +1258,11 @@ enum Event {
         reply: oneshot::Sender<Result<String, CodeModeHostError>>,
     },
     Connect {
+        link: Link,
+        standby: bool,
+    },
+    Promote {
         connection: u64,
-        wire: mpsc::UnboundedSender<String>,
-        max_frame_bytes: usize,
-        ended: oneshot::Sender<CodeModeHostError>,
     },
     Frame {
         connection: u64,
@@ -1273,9 +1277,19 @@ enum Event {
     },
 }
 
+struct Link {
+    connection: u64,
+    wire: mpsc::UnboundedSender<String>,
+    max_frame_bytes: usize,
+    ended: oneshot::Sender<CodeModeHostError>,
+    moved: oneshot::Sender<()>,
+}
+
 pub struct HandConnection {
     pub id: u64,
     pub failed: oneshot::Receiver<CodeModeHostError>,
+    /// Fires when the brain asks the Hand to move ([`super::RemoteFrame::Move`]).
+    pub moved: oneshot::Receiver<()>,
 }
 
 #[derive(Clone)]
@@ -1312,24 +1326,58 @@ impl HandCore {
         answer.await.map_err(|_| error("the hand stopped"))?
     }
 
+    /// Makes `wire` the connection replies go on, from now.
     #[must_use]
     pub fn connect(
         &self,
         wire: mpsc::UnboundedSender<String>,
         max_frame_bytes: usize,
     ) -> HandConnection {
+        self.link(wire, max_frame_bytes, false)
+    }
+
+    /// A second connection of this runtime, dialed while the current one
+    /// still serves: it takes over at its first frame from the brain or at
+    /// [`Self::promote`], once the brain served it. Until then the current
+    /// connection serves on, and a standby that closes leaves it be.
+    #[must_use]
+    pub fn standby(
+        &self,
+        wire: mpsc::UnboundedSender<String>,
+        max_frame_bytes: usize,
+    ) -> HandConnection {
+        self.link(wire, max_frame_bytes, true)
+    }
+
+    fn link(
+        &self,
+        wire: mpsc::UnboundedSender<String>,
+        max_frame_bytes: usize,
+        standby: bool,
+    ) -> HandConnection {
         let connection = self.connections.fetch_add(1, Ordering::Relaxed) + 1;
         let (ended, failed) = oneshot::channel();
+        let (moved, moving) = oneshot::channel();
         let _ = self.events.send(Event::Connect {
-            connection,
-            wire,
-            max_frame_bytes,
-            ended,
+            link: Link {
+                connection,
+                wire,
+                max_frame_bytes,
+                ended,
+                moved,
+            },
+            standby,
         });
         HandConnection {
             id: connection,
             failed,
+            moved: moving,
         }
+    }
+
+    /// The brain served standby `connection`: replies go on it from now.
+    pub fn promote(&self, connection: u64) {
+        let _ = self.events.send(Event::Promote { connection });
     }
 
     pub fn receive(&self, connection: u64, frame: Frame) {
@@ -1400,6 +1448,8 @@ struct State {
     earlier_brain_tools: HashMap<String, Vec<ToolDefinition>>,
     connection: u64,
     ended: Option<oneshot::Sender<CodeModeHostError>>,
+    moving: Option<oneshot::Sender<()>>,
+    standby: Option<Link>,
     resumable: bool,
     activity: HandActivity,
     board: Arc<Board>,
@@ -1449,6 +1499,8 @@ impl State {
             earlier_brain_tools: HashMap::new(),
             connection: 0,
             ended: None,
+            moving: None,
+            standby: None,
             resumable: false,
             activity,
             board,
@@ -1469,22 +1521,18 @@ impl State {
             } => {
                 let _ = reply.send(self.catalog(max_frame_bytes).await);
             }
-            Event::Connect {
-                connection,
-                wire,
-                max_frame_bytes,
-                ended,
-            } => {
-                self.connection = connection;
-                self.ended = Some(ended);
-                self.outgoing
-                    .limit
-                    .store(max_frame_bytes, Ordering::Relaxed);
-                self.outgoing.connect(wire);
-                self.earlier_brain_tools = std::mem::take(&mut self.brain_tools);
+            Event::Connect { link, standby } => {
+                if standby {
+                    self.standby = Some(link);
+                } else {
+                    self.attach(link);
+                }
+            }
+            Event::Promote { connection } => {
+                self.promote(connection);
             }
             Event::Frame { connection, frame } => {
-                if connection != self.connection {
+                if connection != self.connection && !self.promote(connection) {
                     return;
                 }
                 if let Err(issue) = self.frame(frame).await
@@ -1495,7 +1543,13 @@ impl State {
                 }
             }
             Event::Closed { connection, reply } => {
-                if connection == self.connection {
+                if self
+                    .standby
+                    .as_ref()
+                    .is_some_and(|link| link.connection == connection)
+                {
+                    self.standby = None;
+                } else if connection == self.connection {
                     self.ended = None;
                     self.disconnected();
                     if !self.resumable {
@@ -1512,7 +1566,37 @@ impl State {
         }
     }
 
+    fn attach(&mut self, link: Link) {
+        self.connection = link.connection;
+        self.ended = Some(link.ended);
+        self.moving = Some(link.moved);
+        self.outgoing
+            .limit
+            .store(link.max_frame_bytes, Ordering::Relaxed);
+        self.outgoing.connect(link.wire);
+        self.earlier_brain_tools = std::mem::take(&mut self.brain_tools);
+    }
+
+    /// Make standby `connection` current, as a reconnect would: the brain
+    /// resumes every call on it, and the connection it replaces, no longer
+    /// current, sees its `failed` sender dropped. Whether it was the standby.
+    fn promote(&mut self, connection: u64) -> bool {
+        let Some(link) = self.standby.take_if(|link| link.connection == connection) else {
+            return false;
+        };
+        if self.ended.take().is_some() {
+            self.disconnected();
+        }
+        self.attach(link);
+        self.publish();
+        true
+    }
+
     async fn catalog(&mut self, max_frame_bytes: usize) -> Result<String, CodeModeHostError> {
+        let mut capabilities = self.capability_list().await;
+        if self.options.moves {
+            capabilities.push(super::move_capability());
+        }
         Frame::Catalog {
             definitions: self.definitions().await,
             name: self.options.name.clone(),
@@ -1528,7 +1612,7 @@ impl State {
                 .environment
                 .clone()
                 .or_else(|| self.host.environment()),
-            capabilities: self.capability_list().await,
+            capabilities,
             tools_only: self.tools_only(),
         }
         .encode(max_frame_bytes)
@@ -1848,6 +1932,11 @@ impl State {
                 }
             }
             Frame::Resume { pending } => self.resume(&pending)?,
+            Frame::Move => {
+                if let Some(moving) = self.moving.take() {
+                    let _ = moving.send(());
+                }
+            }
             Frame::Request {
                 id,
                 operation,

@@ -7,12 +7,14 @@ use std::{
 use tokio::net::TcpListener;
 
 use super::native::{
-    Dial, SocketPolicy, dial, error, hand_core, request_headers, serve, serve_tracked_stream,
-    serving, validate_policy,
+    Dial, DialStages, Role, Served, SocketPolicy, dial_staged, error, hand_core, request_headers,
+    serve, serve_tracked_stream, serving, validate_policy,
 };
 use super::pricing::{HandPricing, Meter, Priced};
 use super::{ExecutorOptions, HandActivity};
 use crate::embedded::CodeModeHostError;
+use nanocode_code_mode::remote::HandCore;
+use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub enum HandEndpoint {
@@ -26,7 +28,14 @@ pub enum HandEvent {
     Connecting {
         endpoint: String,
     },
+    /// The brain served the connection; `dialed` times its dial's stages.
     Connected {
+        endpoint: String,
+        dialed: DialStages,
+    },
+    /// The brain asked the Hand to move: it dials again with the same
+    /// runtime while the current connection serves on, and stays online.
+    Moving {
         endpoint: String,
     },
     Listening {
@@ -221,6 +230,7 @@ impl Hand {
                 device,
                 tools_only: self.tools_only,
                 environment: self.environment.clone(),
+                moves: false,
             };
             let policy = self.policy;
             match self.endpoint {
@@ -229,30 +239,106 @@ impl Hand {
                         .map_err(error)?;
                     let headers = request_headers(&self.headers)?;
                     let mut backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
-                    let mut core = hand_core(
-                        directory.clone(),
-                        self.tools.clone(),
-                        options.clone(),
-                        self.activity.clone(),
-                    );
+                    // This loop serves a second connection of the runtime when
+                    // the brain asks it to move.
+                    options.moves = true;
+                    let renew = |options: &ExecutorOptions| {
+                        hand_core(
+                            directory.clone(),
+                            self.tools.clone(),
+                            options.clone(),
+                            self.activity.clone(),
+                        )
+                    };
+                    let mut core = renew(&options);
+                    // The connection the brain asked to move from: it serves on
+                    // until the next one is served, then closes.
+                    let mut leaving: Option<Serving> = None;
                     loop {
                         let endpoint = target.endpoint().to_string();
-                        events(HandEvent::Connecting {
-                            endpoint: endpoint.clone(),
+                        events(if leaving.is_some() {
+                            HandEvent::Moving {
+                                endpoint: endpoint.clone(),
+                            }
+                        } else {
+                            HandEvent::Connecting {
+                                endpoint: endpoint.clone(),
+                            }
                         });
+                        let dialing = dial_staged(&target, &headers, policy);
+                        tokio::pin!(dialing);
+                        let dialed = loop {
+                            tokio::select! {
+                                dialed = &mut dialing => break dialed,
+                                served = left(&mut leaving) => {
+                                    leaving = None;
+                                    if let Next::Stop = settle(served, Settled::Left, &mut core, &mut options, &renew, &mut events).await {
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        };
                         // Redial at once, not after the backoff.
                         let mut fresh = false;
-                        match dial(&target, &headers, policy).await {
-                            Ok(socket) => {
+                        match dialed {
+                            Ok((socket, dialed)) => {
                                 let started = Instant::now();
+                                let role = if leaving.is_some() {
+                                    Role::Standby
+                                } else {
+                                    Role::Current
+                                };
+                                let mut link =
+                                    Serving::spawn(socket, &core, policy, meter.clone(), role);
                                 let mut heard = false;
-                                // Connected only once the brain serves the socket: it may
-                                // still refuse this runtime after the upgrade.
-                                let served = serve(socket, &core, policy, meter.clone(), || {
-                                    heard = true;
-                                    events(HandEvent::Connected { endpoint });
-                                })
-                                .await;
+                                let ended = loop {
+                                    tokio::select! {
+                                        served = ended(&mut link.task) => break Phase::Ended(served),
+                                        Some(note) = link.notes.recv() => match note {
+                                            // Connected only once the brain serves the socket: it
+                                            // may still refuse this runtime after the upgrade. A
+                                            // connection this one moves from closes on its own.
+                                            Note::Heard => {
+                                                heard = true;
+                                                events(HandEvent::Connected {
+                                                    endpoint: endpoint.clone(),
+                                                    dialed,
+                                                });
+                                            }
+                                            Note::Moved => break Phase::Moved,
+                                        },
+                                        served = left(&mut leaving) => {
+                                            leaving = None;
+                                            match settle(served, Settled::Left, &mut core, &mut options, &renew, &mut events).await {
+                                                Next::Stop => return Ok(()),
+                                                Next::Redial { fenced: true } => break Phase::Fenced,
+                                                Next::Redial { fenced: false } => {}
+                                            }
+                                        }
+                                    }
+                                };
+                                let served = match ended {
+                                    Phase::Ended(served) => served,
+                                    // Asked to move: dial the next brain at once, this
+                                    // connection serving on meanwhile. One it moved from
+                                    // before has been taken over already.
+                                    Phase::Moved => {
+                                        leaving = Some(link);
+                                        continue;
+                                    }
+                                    // The runtime this connection serves is gone: dial
+                                    // again as the new one, after the cap.
+                                    Phase::Fenced => {
+                                        drop(link);
+                                        backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
+                                        let delay =
+                                            crate::attachment::reconnect_delay(&mut backoff);
+                                        events(HandEvent::Retrying { delay });
+                                        tokio::time::sleep(delay).await;
+                                        continue;
+                                    }
+                                };
+                                drop(link);
                                 // A brain that served this socket and closed it with 1012
                                 // moves the Hand to another brain (a deploy), and a
                                 // connection that lasted was no failure: either way the
@@ -263,54 +349,28 @@ impl Hand {
                                 if fresh {
                                     backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
                                 }
-                                let mut fenced = false;
-                                match served.result {
-                                    Err(issue)
-                                        if issue.message()
-                                            == nanocode_tool_host::attachment::ATTACHMENT_REVOKED_REASON =>
-                                    {
-                                        core.reset().await;
-                                        events(HandEvent::Revoked);
-                                        return Ok(());
+                                match settle(
+                                    served,
+                                    Settled::Current,
+                                    &mut core,
+                                    &mut options,
+                                    &renew,
+                                    &mut events,
+                                )
+                                .await
+                                {
+                                    Next::Stop => return Ok(()),
+                                    Next::Redial { fenced: true } => {
+                                        // A move in progress served the fenced runtime too.
+                                        leaving = None;
+                                        fresh = false;
+                                        backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
                                     }
-                                    Err(issue) if issue.message() == super::HAND_REPLACED => {
-                                        core.reset().await;
-                                        events(HandEvent::Replaced);
-                                        return Ok(());
-                                    }
-                                    result if served.close_code == Some(POLICY_CLOSE) => {
-                                        core.reset().await;
-                                        options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
-                                        core = hand_core(
-                                            directory.clone(),
-                                            self.tools.clone(),
-                                            options.clone(),
-                                            self.activity.clone(),
-                                        );
-                                        fenced = true;
-                                        let reason = result.err().map_or_else(
-                                            || "no reason".to_owned(),
-                                            |issue| issue.message().to_owned(),
-                                        );
-                                        events(HandEvent::Disconnected {
-                                            reason: format!(
-                                                "the brain fenced this runtime with a policy close (1008): {reason}; reconnecting as a new runtime"
-                                            ),
-                                        });
-                                    }
-                                    Ok(()) => events(HandEvent::Disconnected {
-                                        reason: "the brain closed the connection".into(),
-                                    }),
-                                    Err(issue) => events(HandEvent::Disconnected {
-                                        reason: issue.to_string(),
-                                    }),
-                                }
-                                if fenced {
-                                    fresh = false;
-                                    backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
+                                    Next::Redial { fenced: false } => {}
                                 }
                             }
                             Err(Dial::Rejected(issue, status)) => {
+                                drop(leaving.take());
                                 core.reset().await;
                                 if let Some(status) = status {
                                     events(HandEvent::Rejected { status });
@@ -373,6 +433,148 @@ impl Hand {
                 }
             }
         })
+    }
+}
+
+/// One served connection, in a task of its own so that the next can be
+/// dialed and served while it still serves. Dropping it drops the connection.
+struct Serving {
+    task: tokio::task::JoinHandle<Served>,
+    notes: mpsc::UnboundedReceiver<Note>,
+}
+
+enum Note {
+    /// The brain served the connection.
+    Heard,
+    /// The brain asked the Hand to move.
+    Moved,
+}
+
+impl Serving {
+    fn spawn(
+        socket: super::native::DialedSocket,
+        core: &HandCore,
+        policy: SocketPolicy,
+        meter: Option<std::sync::Arc<Meter>>,
+        role: Role,
+    ) -> Self {
+        let (notify, notes) = mpsc::unbounded_channel();
+        let core = core.clone();
+        let task = tokio::spawn(async move {
+            let moved = notify.clone();
+            serve(
+                socket,
+                &core,
+                policy,
+                meter,
+                role,
+                move || drop(notify.send(Note::Heard)),
+                move || drop(moved.send(Note::Moved)),
+            )
+            .await
+        });
+        Self { task, notes }
+    }
+}
+
+async fn ended(task: &mut tokio::task::JoinHandle<Served>) -> Served {
+    task.await.unwrap_or_else(|issue| Served {
+        result: Err(error(issue)),
+        close_code: None,
+    })
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The end of the connection the brain asked to move from, if there is one.
+async fn left(leaving: &mut Option<Serving>) -> Served {
+    match leaving {
+        Some(serving) => ended(&mut serving.task).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// How serving a connection ended.
+enum Phase {
+    Ended(Served),
+    /// The brain asked the Hand to move, and the connection serves on.
+    Moved,
+    /// The brain fenced the runtime on the connection the Hand moved from.
+    Fenced,
+}
+
+/// Which connection ended: the current one, or one the Hand moved from,
+/// whose ordinary end (taken over, or closed by its brain) is expected.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Settled {
+    Current,
+    Left,
+}
+
+enum Next {
+    Stop,
+    /// `fenced`: the brain fenced the runtime, and a new one replaces it.
+    Redial {
+        fenced: bool,
+    },
+}
+
+/// Act on a connection's end: stop for good when the brain revoked or
+/// replaced the Hand, start a new runtime when it fenced this one, else dial
+/// again.
+async fn settle<F: FnMut(HandEvent)>(
+    served: Served,
+    settled: Settled,
+    core: &mut HandCore,
+    options: &mut ExecutorOptions,
+    renew: &impl Fn(&ExecutorOptions) -> HandCore,
+    events: &mut F,
+) -> Next {
+    match served.result {
+        Err(issue)
+            if issue.message() == nanocode_tool_host::attachment::ATTACHMENT_REVOKED_REASON =>
+        {
+            core.reset().await;
+            events(HandEvent::Revoked);
+            Next::Stop
+        }
+        Err(issue) if issue.message() == super::HAND_REPLACED => {
+            core.reset().await;
+            events(HandEvent::Replaced);
+            Next::Stop
+        }
+        result if served.close_code == Some(POLICY_CLOSE) => {
+            core.reset().await;
+            options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+            *core = renew(options);
+            let reason = result.err().map_or_else(
+                || "no reason".to_owned(),
+                |issue| issue.message().to_owned(),
+            );
+            events(HandEvent::Disconnected {
+                reason: format!(
+                    "the brain fenced this runtime with a policy close (1008): {reason}; reconnecting as a new runtime"
+                ),
+            });
+            Next::Redial { fenced: true }
+        }
+        _ if settled == Settled::Left => Next::Redial { fenced: false },
+        Ok(()) => {
+            events(HandEvent::Disconnected {
+                reason: "the brain closed the connection".into(),
+            });
+            Next::Redial { fenced: false }
+        }
+        Err(issue) => {
+            events(HandEvent::Disconnected {
+                reason: issue.to_string(),
+            });
+            Next::Redial { fenced: false }
+        }
     }
 }
 

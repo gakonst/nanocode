@@ -207,7 +207,7 @@ fn config(policy: SocketPolicy) -> tungstenite::protocol::WebSocketConfig {
         .max_frame_size(Some(policy.max_frame_bytes))
 }
 
-type DialedSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+pub(super) type DialedSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 pub(super) enum Dial {
     Rejected(CodeModeHostError, Option<u16>),
@@ -251,11 +251,43 @@ pub(super) fn request_headers(
     Ok(headers)
 }
 
+/// How long each stage of a dial took: loading the TLS trust configuration
+/// (the platform verifier, cached after the first), resolving the host,
+/// connecting, the TLS handshake (with the chain's trust evaluation) and the
+/// WebSocket upgrade (the brain's authorization and registration of the
+/// upgrade, not of the runtime).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DialStages {
+    pub trust: Duration,
+    pub dns: Duration,
+    pub tcp: Duration,
+    pub tls: Duration,
+    pub upgrade: Duration,
+}
+
+impl DialStages {
+    #[must_use]
+    pub fn total(&self) -> Duration {
+        self.trust + self.dns + self.tcp + self.tls + self.upgrade
+    }
+}
+
 pub(super) async fn dial(
     target: &crate::attachment::AttachmentTarget,
     headers: &http::HeaderMap,
     policy: SocketPolicy,
 ) -> Result<DialedSocket, Dial> {
+    dial_staged(target, headers, policy)
+        .await
+        .map(|(socket, _)| socket)
+}
+
+/// Dials in stages, each timed, so a slow (re)connect can be attributed.
+pub(super) async fn dial_staged(
+    target: &crate::attachment::AttachmentTarget,
+    headers: &http::HeaderMap,
+    policy: SocketPolicy,
+) -> Result<(DialedSocket, DialStages), Dial> {
     validate_policy(policy).map_err(|issue| Dial::Rejected(issue, None))?;
     nanocode_tls::install_default_rustls_crypto_provider();
     let mut request = target
@@ -272,28 +304,82 @@ pub(super) async fn dial(
     request
         .headers_mut()
         .insert(http::header::AUTHORIZATION, bearer);
-    let connector = if request.uri().scheme_str() == Some("wss") {
-        Some(tokio_tungstenite::Connector::Rustls(
+    let mut stages = DialStages::default();
+    let mut stage = tokio::time::Instant::now();
+    let mut lap = |at: &mut Duration| {
+        let now = tokio::time::Instant::now();
+        *at = now - stage;
+        stage = now;
+    };
+    let secure = request.uri().scheme_str() == Some("wss");
+    let tls = if secure {
+        Some(
             nanocode_tls::native_client_config()
                 .await
                 .map_err(|issue| Dial::Failed(error(issue)))?,
-        ))
+        )
     } else {
         None
     };
-    tokio::time::timeout(
-        policy.request_timeout,
-        tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            Some(config(policy)),
-            true,
-            connector,
-        ),
-    )
+    lap(&mut stages.trust);
+    let uri = request.uri().clone();
+    let host = uri
+        .host()
+        .ok_or_else(|| Dial::Rejected(error("the brain URL has no host"), None))?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_owned();
+    let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+    let socket = tokio::time::timeout(policy.request_timeout, async {
+        let addresses = tokio::net::lookup_host((host.as_str(), port))
+            .await
+            .map_err(|issue| Dial::Failed(error(format!("resolving {host}: {issue}"))))?
+            .collect::<Vec<_>>();
+        lap(&mut stages.dns);
+        let tcp = TcpStream::connect(addresses.as_slice())
+            .await
+            .map_err(|issue| {
+                Dial::Failed(error(format!("connecting to {host}:{port}: {issue}")))
+            })?;
+        tcp.set_nodelay(true)
+            .map_err(|issue| Dial::Failed(error(issue)))?;
+        lap(&mut stages.tcp);
+        let stream = match tls {
+            Some(tls) => {
+                let name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.clone())
+                    .map_err(|issue| Dial::Rejected(error(issue), None))?;
+                let stream = tokio_rustls::TlsConnector::from(tls)
+                    .connect(name, tcp)
+                    .await
+                    .map_err(|issue| Dial::Failed(error(format!("TLS with {host}: {issue}"))))?;
+                tokio_tungstenite::MaybeTlsStream::Rustls(stream)
+            }
+            None => tokio_tungstenite::MaybeTlsStream::Plain(tcp),
+        };
+        lap(&mut stages.tls);
+        let upgraded =
+            tokio_tungstenite::client_async_with_config(request, stream, Some(config(policy)))
+                .await
+                .map(|(socket, _)| socket)
+                .map_err(rejection)?;
+        lap(&mut stages.upgrade);
+        Ok(upgraded)
+    })
     .await
-    .map_err(|issue| Dial::Failed(error(issue)))?
-    .map(|(socket, _)| socket)
-    .map_err(|issue| match issue {
+    .map_err(|issue| Dial::Failed(error(issue)))??;
+    tracing::debug!(
+        trust_ms = stages.trust.as_millis(),
+        dns_ms = stages.dns.as_millis(),
+        tcp_ms = stages.tcp.as_millis(),
+        tls_ms = stages.tls.as_millis(),
+        upgrade_ms = stages.upgrade.as_millis(),
+        "dialed the brain"
+    );
+    Ok((socket, stages))
+}
+
+fn rejection(issue: tungstenite::Error) -> Dial {
+    match issue {
         tungstenite::Error::Http(response)
             if matches!(response.status().as_u16(), 401 | 403 | 410 | 426) =>
         {
@@ -306,7 +392,7 @@ pub(super) async fn dial(
             )
         }
         issue => Dial::Failed(error(issue)),
-    })
+    }
 }
 
 async fn accept(
@@ -1008,6 +1094,7 @@ const fn policy_options(policy: SocketPolicy) -> ExecutorOptions {
         device: None,
         tools_only: false,
         environment: None,
+        moves: false,
     }
 }
 pub async fn serve_connect(
@@ -1104,7 +1191,7 @@ async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     meter: Option<Arc<Meter>>,
 ) -> Result<(), CodeModeHostError> {
     let core = hand_core(workspace.to_owned(), tools, options, activity);
-    let served = serve(socket, &core, policy, meter, || {}).await;
+    let served = serve(socket, &core, policy, meter, Role::Current, || {}, || {}).await;
     core.reset().await;
     served.result
 }
@@ -1116,32 +1203,54 @@ pub(super) struct Served {
     pub(super) close_code: Option<u16>,
 }
 
+/// Whether a served connection carries the runtime's replies from the start,
+/// or only once the brain served it, the current one serving meanwhile.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Role {
+    Current,
+    Standby,
+}
+
+/// How long a connection a newer one took over waits for its close frame to
+/// be written.
+const LEAVE_CLOSE: Duration = Duration::from_secs(2);
+
 /// Serves one connection. `heard` runs once the peer first sends a frame or
-/// a ping, which a brain does only after it took the connection.
+/// a ping, which a brain does only after it took the connection, and `moved`
+/// when the brain asks the Hand to move ([`RemoteFrame::Move`]). A connection
+/// asked to move closes once a newer connection of the runtime took over.
 pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     socket: WebSocketStream<S>,
     core: &HandCore,
     policy: SocketPolicy,
     meter: Option<Arc<Meter>>,
+    role: Role,
     heard: impl FnOnce() + Send,
+    moved: impl FnOnce() + Send,
 ) -> Served {
     let liveness = Liveness::new();
-    let result = serve_link(socket, core, policy, meter, &liveness, heard).await;
+    let result = serve_link(socket, core, policy, meter, &liveness, role, heard, moved).await;
     Served {
         result,
         close_code: liveness.close_code(),
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "one connection's state")]
 async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut socket: WebSocketStream<S>,
     core: &HandCore,
     policy: SocketPolicy,
     meter: Option<Arc<Meter>>,
     liveness: &Arc<Liveness>,
+    role: Role,
     heard: impl FnOnce() + Send,
+    moved: impl FnOnce() + Send,
 ) -> Result<(), CodeModeHostError> {
     let mut heard = Some(heard);
+    let mut moved = Some(moved);
+    // Asked to move: once a newer connection took over, this one closes.
+    let mut moving = false;
     let catalog = core.catalog(policy.max_frame_bytes).await?;
     let catalog = match &meter {
         Some(meter) => meter.catalog(catalog),
@@ -1168,23 +1277,37 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         }
         None => wire,
     };
-    let mut connection = core.connect(wire, policy.max_frame_bytes);
+    let mut connection = match role {
+        Role::Current => core.connect(wire, policy.max_frame_bytes),
+        Role::Standby => core.standby(wire, policy.max_frame_bytes),
+    };
     let mut open = true;
     let result = async {
         loop {
             tokio::select! {
-                result = &mut writer.0 => return result.map_err(error)?,
+                result = &mut writer.0 => return result.map_err(error)?.map(|()| false),
                 () = liveness.heard.wait(), if heard.is_some() => {
+                    if role == Role::Standby {
+                        core.promote(connection.id);
+                    }
                     if let Some(heard) = heard.take() {
                         heard();
                     }
                 },
+                hint = &mut connection.moved, if moved.is_some() => {
+                    if let (Ok(()), Some(moved)) = (hint, moved.take()) {
+                        moving = true;
+                        moved();
+                    }
+                },
                 failed = &mut connection.failed, if open => match failed {
                     Ok(issue) => return Err(issue),
+                    // A newer connection took over: this one has served.
+                    Err(_) if moving => return Ok(true),
                     Err(_) => open = false,
                 },
                 text = read_live(&mut socket, liveness, watchdog.as_mut()) => {
-                    let Some(text) = text? else { return Ok(()); };
+                    let Some(text) = text? else { return Ok(false); };
                     if let Some(meter) = &meter
                         && let Screened::Answer(answer) = meter.screen(&text)
                     {
@@ -1198,5 +1321,12 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     }
     .await;
     core.closed(connection.id).await;
-    result
+    let left = result?;
+    if left {
+        // The writer closes the socket once its last sender is gone: the
+        // core dropped its own when the newer connection took over.
+        drop(answers);
+        let _ = tokio::time::timeout(LEAVE_CLOSE, &mut writer.0).await;
+    }
+    Ok(())
 }

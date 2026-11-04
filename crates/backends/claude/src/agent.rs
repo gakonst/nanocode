@@ -2814,17 +2814,19 @@ fn wire_messages(messages: &[HistoryMessage], suffix: &[HistoryMessage]) -> Vec<
 
 fn separated_result_companions(message: &HistoryMessage) -> HistoryMessage {
     let mut message = message.clone();
-    if message.content.iter().any(|block| {
-        matches!(
-            block,
-            ContentBlock::ToolResult {
-                content: ToolResultContent::Blocks(blocks),
-                is_error,
-                ..
-            } if blocks.iter().any(|block| {
-                block["type"] == "tool_reference" || (*is_error && block["type"] != "text")
-            })
-        )
+    if message.has_companions(|message| {
+        message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolResult {
+                    content: ToolResultContent::Blocks(blocks),
+                    is_error,
+                    ..
+                } if blocks.iter().any(|block| {
+                    block["type"] == "tool_reference" || (*is_error && block["type"] != "text")
+                })
+            )
+        })
     }) {
         separate_result_companions(std::slice::from_mut(message.make_mut()));
     }
@@ -3385,8 +3387,8 @@ struct State {
 
 #[derive(Clone, Default)]
 struct LiveNestedStarts {
-    open: HashSet<String>,
-    order: std::collections::VecDeque<String>,
+    open: imbl::HashSet<Arc<str>>,
+    order: imbl::Vector<Arc<str>>,
 }
 impl LiveNestedStarts {
     const LIMIT: usize = 4096;
@@ -3404,12 +3406,13 @@ impl LiveNestedStarts {
             let open = &self.open;
             self.order.retain(|id| open.contains(id));
         }
-        self.open.insert(call_id.to_owned());
-        self.order.push_back(call_id.to_owned());
+        let call_id: Arc<str> = Arc::from(call_id);
+        self.open.insert(Arc::clone(&call_id));
+        self.order.push_back(call_id);
         true
     }
     fn remove(&mut self, call_id: &str) -> bool {
-        self.open.remove(call_id)
+        self.open.remove(call_id).is_some()
     }
 }
 

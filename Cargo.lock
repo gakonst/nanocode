@@ -3173,6 +3173,7 @@ dependencies = [
  "futures-util",
  "http",
  "image",
+ "imbl",
  "libc",
  "nanocode-agent-config",
  "nanocode-agent-core",

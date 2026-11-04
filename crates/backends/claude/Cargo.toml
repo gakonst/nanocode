@@ -30,6 +30,7 @@ chrono.workspace = true
 url.workspace = true
 futures-util.workspace = true
 image.workspace = true
+imbl.workspace = true
 nanocode-code-mode = { path = "../../runtime/code-mode", version = "0.6.7"   }
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 http.workspace = true

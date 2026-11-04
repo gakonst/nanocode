@@ -20,6 +20,8 @@ struct Entry {
     wire: OnceLock<Box<str>>,
     json: OnceLock<Arc<str>>,
     digests: OnceLock<MessageDigests>,
+    images: OnceLock<usize>,
+    companions: OnceLock<bool>,
     record: OnceLock<EncodedPayload>,
 }
 
@@ -30,6 +32,8 @@ impl Clone for Entry {
             wire: OnceLock::new(),
             json: OnceLock::new(),
             digests: OnceLock::new(),
+            images: OnceLock::new(),
+            companions: OnceLock::new(),
             record: OnceLock::new(),
         }
     }
@@ -41,8 +45,22 @@ impl HistoryMessage {
         entry.wire = OnceLock::new();
         entry.json = OnceLock::new();
         entry.digests = OnceLock::new();
+        entry.images = OnceLock::new();
+        entry.companions = OnceLock::new();
         entry.record = OnceLock::new();
         &mut entry.message
+    }
+
+    pub(super) fn image_count(&self, count: impl FnOnce(&Self) -> usize) -> usize {
+        if let Some(images) = self.0.images.get() {
+            return *images;
+        }
+        let images = count(self);
+        *self.0.images.get_or_init(|| images)
+    }
+
+    pub(super) fn has_companions(&self, check: impl FnOnce(&Message) -> bool) -> bool {
+        *self.0.companions.get_or_init(|| check(&self.0.message))
     }
 
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
@@ -81,6 +99,8 @@ impl From<Message> for HistoryMessage {
             wire: OnceLock::new(),
             json: OnceLock::new(),
             digests: OnceLock::new(),
+            images: OnceLock::new(),
+            companions: OnceLock::new(),
             record: OnceLock::new(),
         }))
     }

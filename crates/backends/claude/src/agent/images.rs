@@ -131,7 +131,7 @@ pub(super) fn evict_images(
 ) -> Vec<HistoryMessage> {
     let total = messages
         .iter()
-        .map(|message| image_sources(message).count())
+        .map(|message| message.image_count(|message| image_sources(message).count()))
         .sum();
     let evicted = images.evicted(total);
     let mut ordinal = 0;
@@ -152,7 +152,11 @@ pub(super) async fn inline_images(
     messages: &[HistoryMessage],
 ) -> Result<Option<Vec<HistoryMessage>>, NanocodeError> {
     let mut loaded = HashMap::new();
-    for source in messages.iter().flat_map(image_sources) {
+    for source in messages
+        .iter()
+        .filter(|message| message.image_count(|message| image_sources(message).count()) > 0)
+        .flat_map(image_sources)
+    {
         let Some(url) = source["url"].as_str().filter(|_| is_blob(source)) else {
             continue;
         };

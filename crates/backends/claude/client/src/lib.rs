@@ -1476,14 +1476,16 @@ impl ClaudeClient {
         streaming: bool,
     ) -> Result<String, ClaudeError> {
         self.wire_body(request, &request.messages, streaming)
+            .map(|(body, _)| body)
     }
 
+    /// The request's body and where its messages are in it.
     fn wire_body<M: WireMessage>(
         &self,
         head: &MessagesRequest,
         messages: &[M],
         streaming: bool,
-    ) -> Result<String, ClaudeError> {
+    ) -> Result<(String, std::ops::Range<usize>), ClaudeError> {
         if self.subscription_compatibility {
             subscription_wire::wire(
                 head,
@@ -1517,8 +1519,10 @@ impl ClaudeClient {
         if !self.subscription_compatibility {
             head.validate_cache_with(messages)?;
         }
+        let (body, messages_at) = self.wire_body(head, messages, streaming)?;
         Ok(PreparedWire {
-            body: self.wire_body(head, messages, streaming)?.into(),
+            body: body.into(),
+            messages: messages_at,
             thread: None,
             subscription: self.subscription_compatibility,
             streaming,
@@ -1544,8 +1548,10 @@ impl ClaudeClient {
         &self,
         request: &MessagesRequest,
     ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
+        let (body, messages) = self.wire_body(request, &request.messages, true)?;
         PreparedWire {
-            body: self.wire_body(request, &request.messages, true)?.into(),
+            body: body.into(),
+            messages,
             thread: None,
             subscription: self.subscription_compatibility,
             streaming: true,
@@ -1590,6 +1596,7 @@ impl ClaudeClient {
                 wire.streaming,
                 Some(param),
             )?
+            .0
             .into(),
         );
         Ok(())
@@ -1954,6 +1961,9 @@ impl ClaudeClient {
 pub struct PreparedWire {
     /// The whole request, which durable inputs record.
     body: Arc<str>,
+    /// Where the conversation's messages are in [`Self::body`]: between the
+    /// brackets of its `messages` array.
+    messages: std::ops::Range<usize>,
     /// The request as a thread turn sends it, when it uses a thread.
     thread: Option<Arc<str>>,
     subscription: bool,
@@ -1980,7 +1990,36 @@ impl PreparedWire {
         Arc::clone(self.thread.as_ref().unwrap_or(&self.body))
     }
 
+    /// The request's durable identity: a digest of the whole body, and
+    /// separate ones of its conversation and of the host prefix around it
+    /// ([`Self::same_conversation`]).
     pub fn durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
+        #[derive(Serialize)]
+        struct Digest<'a> {
+            wire: &'a str,
+            blake3: String,
+            bytes: usize,
+            conversation: String,
+            prefix: String,
+        }
+        let (before, after) = (
+            &self.body[..self.messages.start],
+            &self.body[self.messages.end..],
+        );
+        let mut prefix = blake3::Hasher::new();
+        prefix.update(before.as_bytes()).update(after.as_bytes());
+        Ok(serde_json::value::to_raw_value(&Digest {
+            wire: self.wire_name(),
+            blake3: blake3::hash(self.body.as_bytes()).to_hex().to_string(),
+            bytes: self.body.len(),
+            conversation: self.conversation_digest(),
+            prefix: prefix.finalize().to_hex().to_string(),
+        })?)
+    }
+
+    /// The durable input of builds before the conversation had its own
+    /// digest: the whole body's alone.
+    pub fn blake3_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         #[derive(Serialize)]
         struct Digest<'a> {
             wire: &'a str,
@@ -1992,6 +2031,38 @@ impl PreparedWire {
             blake3: blake3::hash(self.body.as_bytes()).to_hex().to_string(),
             bytes: self.body.len(),
         })?)
+    }
+
+    /// Whether `recorded`, the durable input of a step another build began,
+    /// names this request's conversation on the same wire: the same messages,
+    /// whatever tools, system prompt, settings or cache breakpoints the hosts
+    /// around them sent. An input without a conversation digest, recorded
+    /// before it had one, names none.
+    #[must_use]
+    pub fn same_conversation(&self, recorded: &str) -> bool {
+        #[derive(Deserialize)]
+        struct Digest {
+            wire: String,
+            conversation: Option<String>,
+        }
+        serde_json::from_str::<Digest>(recorded).is_ok_and(|digest| {
+            digest.wire == self.wire_name()
+                && digest.conversation.as_deref() == Some(self.conversation_digest().as_str())
+        })
+    }
+
+    /// The blake3 of the messages as sent, without their `cache_control`
+    /// markers: where a host puts its cache breakpoints, and their TTL, don't
+    /// change what the model reads.
+    fn conversation_digest(&self) -> String {
+        let mut hasher = blake3::Hasher::new();
+        let mut rest = &self.body[self.messages.clone()];
+        while let Some((kept, after)) = cache_marker(rest) {
+            hasher.update(kept.as_bytes());
+            rest = after;
+        }
+        hasher.update(rest.as_bytes());
+        hasher.finalize().to_hex().to_string()
     }
 
     pub fn sha256_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
@@ -2041,12 +2112,13 @@ impl PreparedWire {
     }
 }
 
+/// The Messages API body of `head` with `messages`, and where those are in it.
 fn api_body<M: WireMessage>(
     head: &MessagesRequest,
     messages: &[M],
     streaming: bool,
     thread: Option<&ThreadParam>,
-) -> Result<String, ClaudeError> {
+) -> Result<(String, std::ops::Range<usize>), ClaudeError> {
     // A continue request must leave out `system` and `tools`: the thread keeps them.
     let continuing = matches!(thread, Some(ThreadParam::Continue { .. }));
     let MessagesRequest {
@@ -2129,15 +2201,39 @@ fn api_body<M: WireMessage>(
     );
     body.push_str(&head[..head.len() - 1]);
     body.push_str(",\"messages\":[");
+    let start = body.len();
     for (index, message) in encoded.iter().enumerate() {
         if index > 0 {
             body.push(',');
         }
         body.push_str(message);
     }
+    let end = body.len();
     body.push_str("],");
     body.push_str(&tail[1..]);
-    Ok(body)
+    Ok((body, start..end))
+}
+
+/// The first `cache_control` member in `json`, encoded messages: the text
+/// before it and after it, without the comma between it and a neighbor. Only
+/// a key follows `{` or `,` with a quote, since a string escapes its quotes,
+/// and its value is a flat object ([`CacheControl`]).
+fn cache_marker(json: &str) -> Option<(&str, &str)> {
+    const KEY: &str = "\"cache_control\":{";
+    let mut from = 0;
+    loop {
+        let at = from + memchr::memmem::find(&json.as_bytes()[from..], KEY.as_bytes())?;
+        let value = at + KEY.len();
+        let end = value + json[value..].find('}')? + 1;
+        match json.as_bytes()[..at].last() {
+            Some(b',') => return Some((&json[..at - 1], &json[end..])),
+            Some(b'{') => {
+                let after = &json[end..];
+                return Some((&json[..at], after.strip_prefix(',').unwrap_or(after)));
+            }
+            _ => from = value,
+        }
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]

@@ -13,13 +13,13 @@ use nanocode_agent_core::{
 use nanocode_durability::{
     Admission, BeginStep, Branches, CheckpointFormat, DurableAgentExt, DurableBackendRegistration,
     DurableOwner, DurableSession, EncodedPayload, InitialAcquisition, InitialSettings,
-    JournalClaim, JournalSeed, OwnerWrite, PayloadReader, SessionRecord, SharedStore, WriteOutcome,
-    agent_error,
+    JournalClaim, JournalSeed, OwnerWrite, PayloadReader, SessionRecord, SharedStore, StepState,
+    StepStatus, WriteOutcome, agent_error,
 };
 use serde_json::{Value, value::RawValue};
 
 use crate::{
-    Claude, ClaudeBuilder,
+    Claude, ClaudeBuilder, PreparedWire,
     execution::{
         Admission as ClaudeAdmission, BeginRequest, ClaudeExecutionPolicy, ClaudeSteer,
         EncodedState, JournalWrite, PolicyFuture, Settlement, Step,
@@ -858,27 +858,11 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                             message,
                         )));
                     };
-                    let digest = wire
-                        .sha256_durable_input()
-                        .map_err(crate::agent::provider_error)?;
-                    let earlier = if EncodedPayload::encode(&*digest)
-                        .map_err(agent_error)?
-                        .matches_key(step.input.key())
-                    {
-                        digest
-                    } else {
-                        let legacy = wire
-                            .legacy_durable_input()
-                            .map_err(crate::agent::provider_error)?;
-                        if !EncodedPayload::encode(&*legacy)
-                            .map_err(agent_error)?
-                            .matches_key(step.input.key())
-                        {
-                            return Err(agent_error(nanocode_durability::Error::InvalidState(
-                                message,
-                            )));
-                        }
-                        legacy
+                    let Some(earlier) = self.earlier_input(wire, &begin.step_id, step).await?
+                    else {
+                        return Err(agent_error(nanocode_durability::Error::InvalidState(
+                            message,
+                        )));
                     };
                     self.owner
                         .begin_step(id, begin.step_id, begin.kind.clone(), &*earlier)
@@ -1090,6 +1074,62 @@ fn owner_write(write: &JournalWrite) -> OwnerWrite {
 }
 
 impl ClaudeExecution {
+    /// The input another build recorded for model step `step_id`, if this
+    /// build's request `wire` for it is the same one: that request's input in
+    /// an earlier build's format (the whole body's blake3, its sha256, or the
+    /// body itself), or, once the step completed, any input that names the
+    /// same conversation ([`PreparedWire::same_conversation`]). The
+    /// latter replays the step's response although a Nanocodex bump changed
+    /// the tools, system prompt or cache breakpoints the hosts send around
+    /// the messages, which would otherwise end a turn handed off across that
+    /// bump. A step whose effect is still pending stays strict: running it
+    /// again sends this build's request.
+    async fn earlier_input(
+        &self,
+        wire: &PreparedWire,
+        step_id: &str,
+        step: &StepState,
+    ) -> AgentResult<Option<Box<RawValue>>> {
+        for earlier in [
+            PreparedWire::blake3_durable_input,
+            PreparedWire::sha256_durable_input,
+            PreparedWire::legacy_durable_input,
+        ] {
+            let earlier = earlier(wire).map_err(crate::agent::provider_error)?;
+            if EncodedPayload::encode(&*earlier)
+                .map_err(agent_error)?
+                .matches_key(step.input.key())
+            {
+                return Ok(Some(earlier));
+            }
+        }
+        if !matches!(step.status, StepStatus::Completed(_)) {
+            return Ok(None);
+        }
+        let recorded = self
+            .owner
+            .load_payload(step.input.clone())
+            .await
+            .map_err(agent_error)?;
+        let recorded = recorded.json().map_err(agent_error)?;
+        if !wire.same_conversation(recorded) {
+            return Ok(None);
+        }
+        tracing::warn!(
+            target: "nanocode_claude",
+            step_id,
+            "replaying a completed model step whose tools or system prompt changed since it was recorded"
+        );
+        tracing::event!(
+            target: "nc_metrics",
+            tracing::Level::INFO,
+            { monotonic_counter.nc.claude.steps_replayed_across_prefix = 1_u64 }
+        );
+        RawValue::from_string(recorded.to_owned())
+            .map(Some)
+            .map_err(|error| agent_error(nanocode_durability::Error::InvalidPayload(error)))
+    }
+
     async fn admitted(
         &self,
         begun: nanocode_durability::Result<BeginStep>,

@@ -295,8 +295,10 @@ pub fn body(
         session,
         explicit_cache_tail,
     )
+    .map(|(body, _)| body)
 }
 
+/// The subscription wire's body, and where its messages are in it.
 pub(crate) fn wire<M: WireMessage>(
     head: &MessagesRequest,
     messages: &[M],
@@ -304,7 +306,7 @@ pub(crate) fn wire<M: WireMessage>(
     identity: &SubscriptionIdentity,
     session: &str,
     explicit_cache_tail: bool,
-) -> Result<String, ClaudeError> {
+) -> Result<(String, std::ops::Range<usize>), ClaudeError> {
     identity.validate()?;
     let mut prepared = head.head();
     prepare_with(&mut prepared, messages, identity);
@@ -375,12 +377,14 @@ pub(crate) fn wire<M: WireMessage>(
     );
     bytes.extend_from_slice(&head[..at]);
     bytes.push(b'[');
+    let messages_at = bytes.len();
     for (index, message) in encoded.iter().enumerate() {
         if index > 0 {
             bytes.push(b',');
         }
         bytes.extend_from_slice(message.as_bytes());
     }
+    let messages_at = messages_at..bytes.len();
     bytes.push(b']');
     bytes.extend_from_slice(&head[at..]);
     if let Some(marker) = memchr::memmem::find(&bytes, MARKER) {
@@ -395,5 +399,6 @@ pub(crate) fn wire<M: WireMessage>(
         }
     }
     String::from_utf8(bytes)
+        .map(|body| (body, messages_at))
         .map_err(|_| ClaudeError::Protocol("invalid subscription wire bytes".into()))
 }

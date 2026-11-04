@@ -1,10 +1,25 @@
 use crate::{EDGE_EXTENSION_ID, EXTENSION_ID};
+use nanocode_sync::Atom;
 use serde_json::Value;
 use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::LazyLock,
+    time::SystemTime,
 };
+
+const LAUNCH_SERVICES: &str =
+    "Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist";
+
+struct DefaultBrowser {
+    plist: PathBuf,
+    len: u64,
+    modified: SystemTime,
+    browser: Option<&'static str>,
+}
+
+static DEFAULT_BROWSER: LazyLock<Atom<Option<DefaultBrowser>>> = LazyLock::new(Atom::default);
 
 pub fn config_base(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
@@ -178,8 +193,7 @@ pub fn default_from_handlers(value: &Value) -> Option<&'static str> {
 }
 
 pub fn default_browser(home: &Path) -> Option<&'static str> {
-    let plist = home
-        .join("Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist");
+    let plist = home.join(LAUNCH_SERVICES);
     let output = Command::new("/usr/bin/plutil")
         .args(["-convert", "json", "-o", "-"])
         .arg(plist)
@@ -190,4 +204,25 @@ pub fn default_browser(home: &Path) -> Option<&'static str> {
         return None;
     }
     default_from_handlers(&serde_json::from_slice(&output.stdout).ok()?)
+}
+
+pub fn cached_default_browser(home: &Path) -> Option<&'static str> {
+    let plist = home.join(LAUNCH_SERVICES);
+    let meta = fs::metadata(&plist).ok()?;
+    let (len, modified) = (meta.len(), meta.modified().ok()?);
+    if let Some(cached) = DEFAULT_BROWSER.get().as_ref()
+        && cached.plist == plist
+        && cached.len == len
+        && cached.modified == modified
+    {
+        return cached.browser;
+    }
+    let browser = default_browser(home);
+    DEFAULT_BROWSER.set(Some(DefaultBrowser {
+        plist,
+        len,
+        modified,
+        browser,
+    }));
+    browser
 }

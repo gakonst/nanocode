@@ -739,6 +739,13 @@ impl App {
                         return Err(error.into());
                     }
                     dirty = false;
+                    if self
+                        .status
+                        .as_ref()
+                        .is_some_and(|(_, shown)| *shown + view::STATUS_VISIBLE <= now)
+                    {
+                        self.status = None;
+                    }
                     let at = self
                         .clock_deadline
                         .map_or(now + LABEL_TICK, |at| at.min(now + LABEL_TICK));

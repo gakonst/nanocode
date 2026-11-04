@@ -290,7 +290,6 @@ impl Hand {
                                 };
                                 let mut link =
                                     Serving::spawn(socket, &core, policy, meter.clone(), role);
-                                let mut heard = false;
                                 let ended = loop {
                                     tokio::select! {
                                         served = ended(&mut link.task) => break Phase::Ended(served),
@@ -299,7 +298,6 @@ impl Hand {
                                             // may still refuse this runtime after the upgrade. A
                                             // connection this one moves from closes on its own.
                                             Note::Heard => {
-                                                heard = true;
                                                 events(HandEvent::Connected {
                                                     endpoint: endpoint.clone(),
                                                     dialed,
@@ -344,7 +342,7 @@ impl Hand {
                                 // connection that lasted was no failure: either way the
                                 // next dial is a fresh start. Only quick failures in a
                                 // row back off.
-                                fresh = (heard && served.close_code == Some(RESTART_CLOSE))
+                                fresh = (served.heard && served.close_code == Some(RESTART_CLOSE))
                                     || started.elapsed() >= FRESH_CONNECTION;
                                 if fresh {
                                     backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
@@ -481,6 +479,7 @@ async fn ended(task: &mut tokio::task::JoinHandle<Served>) -> Served {
     task.await.unwrap_or_else(|issue| Served {
         result: Err(error(issue)),
         close_code: None,
+        heard: false,
     })
 }
 

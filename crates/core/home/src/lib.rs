@@ -2,6 +2,8 @@ mod fs_util;
 mod instructions;
 mod project;
 mod scoped;
+#[cfg(unix)]
+pub mod service;
 mod session_environment;
 #[cfg(not(target_family = "wasm"))]
 pub mod shell;

@@ -3686,7 +3686,7 @@ impl Registry {
         };
         for id in ids {
             let root = root_session_id.to_owned();
-            let (task, evidence) = self
+            let message = self
                 .state
                 .call(move |state| {
                     state
@@ -3694,24 +3694,15 @@ impl Registry {
                         .get(&root)
                         .and_then(|scope| scope.sessions.get(&id))
                         .map(|session| {
-                            (
-                                Some(session.descriptor.task.clone()),
-                                durable::in_flight_evidence(
-                                    &session.in_flight_calls,
-                                    session.in_flight_omitted,
-                                ),
+                            durable::resume_message(
+                                &session.in_flight_calls,
+                                session.in_flight_omitted,
+                                Some(&session.descriptor.task),
                             )
                         })
-                        .unwrap_or_default()
+                        .unwrap_or_else(|| durable::RESUME_MESSAGE.to_owned())
                 })
                 .await;
-            let mut message = durable::RESUME_MESSAGE.to_owned();
-            if let Some(evidence) = evidence {
-                message = format!("{message}\n\n{evidence}");
-            }
-            if let Some(task) = task {
-                message = format!("{message}\n\nDelegated task:\n{task}");
-            }
             let result = self
                 .send_message_restored(
                     root_session_id,

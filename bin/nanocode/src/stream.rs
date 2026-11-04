@@ -45,6 +45,7 @@ impl Payload<'_> {
 
 pub struct Printer<O> {
     answers: O,
+    notices: Vec<u8>,
     block: Option<Block>,
     open: bool,
     streamed: HashSet<String>,
@@ -54,10 +55,21 @@ impl<O: Write> Printer<O> {
     pub fn new(answers: O) -> Self {
         Self {
             answers,
+            notices: Vec::new(),
             block: None,
             open: false,
             streamed: HashSet::new(),
         }
+    }
+
+    pub fn flush(&mut self) -> io::Result<()> {
+        if !self.notices.is_empty() {
+            let mut stderr = io::stderr().lock();
+            stderr.write_all(&self.notices)?;
+            stderr.flush()?;
+            self.notices.clear();
+        }
+        self.answers.flush()
     }
 
     pub fn event(&mut self, event: &AgentEvent) -> io::Result<()> {
@@ -107,7 +119,7 @@ impl<O: Write> Printer<O> {
         if self.streamed.is_empty() {
             writeln!(self.answers, "{final_message}")?;
         }
-        self.answers.flush()
+        self.flush()
     }
 
     fn answer(&mut self, key: &str, text: &str) -> io::Result<()> {
@@ -116,7 +128,6 @@ impl<O: Write> Printer<O> {
         }
         if matches!(&self.block, Some(Block::Answer(current)) if current == key) {
             self.answers.write_all(text.as_bytes())?;
-            self.answers.flush()?;
             self.open = !text.ends_with('\n');
             return Ok(());
         }
@@ -132,12 +143,9 @@ impl<O: Write> Printer<O> {
             self.close()?;
         }
         if matches!(block, Block::Reasoning(_)) {
-            let mut stderr = io::stderr().lock();
-            stderr.write_all(text.as_bytes())?;
-            stderr.flush()?;
+            self.notices.extend_from_slice(text.as_bytes());
         } else {
             self.answers.write_all(text.as_bytes())?;
-            self.answers.flush()?;
         }
         self.block = Some(block);
         self.open = !text.ends_with('\n');
@@ -147,29 +155,24 @@ impl<O: Write> Printer<O> {
     fn notice(&mut self, line: &str) -> io::Result<()> {
         self.close()?;
         self.block = Some(Block::Notice);
-        let mut stderr = io::stderr().lock();
-        writeln!(stderr, "{line}")?;
-        stderr.flush()
+        writeln!(self.notices, "{line}")
     }
 
     fn close(&mut self) -> io::Result<()> {
         match self.block {
             Some(Block::Reasoning(_)) => {
-                let mut stderr = io::stderr().lock();
                 if self.open {
-                    stderr.write_all(b"\n")?;
+                    self.notices.push(b'\n');
                 }
-                stderr.write_all(b"\n")?;
-                stderr.flush()?;
+                self.notices.push(b'\n');
             }
             Some(Block::Answer(_)) if self.open => {
                 self.answers.write_all(b"\n")?;
-                self.answers.flush()?;
             }
             _ => {}
         }
         self.block = None;
         self.open = false;
-        Ok(())
+        self.flush()
     }
 }

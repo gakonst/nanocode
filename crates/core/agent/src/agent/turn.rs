@@ -54,6 +54,10 @@ impl Turn {
         self.control.cancel().await
     }
 
+    pub fn try_next(&mut self) -> Option<AgentEvent> {
+        self.events.try_recv()
+    }
+
     pub async fn result(self) -> Result<TurnResult> {
         let Self { events, result, .. } = self;
         drop(events);

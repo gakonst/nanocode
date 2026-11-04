@@ -1124,6 +1124,11 @@ impl AgentRuntime {
         self.inner.services.close();
         let host_result = self.inner.services.shutdown().await;
         let ownership_result = self.inner.ownership.shutdown().await;
+        // The registry holds its roots' handles, whose tools hold the
+        // registry: let them go, or the runtime's sessions are never freed.
+        if let Some(subagents) = &self.inner.subagents {
+            subagents.release_sessions();
+        }
         let store_result = match &self.inner.durability {
             Some(store) => store.flush().await.map_err(catalog_error),
             None => Ok(()),

@@ -7009,6 +7009,16 @@ pub struct SubagentControl {
 }
 
 impl SubagentControl {
+    /// Forget the handle of every session the registry holds, as the runtime
+    /// that owns it shuts down. A root's handle stays until `close_all` for
+    /// it, and the handle's subagent tools hold this registry, so a runtime
+    /// shut down without it kept every root session, its tools and whatever
+    /// they hold alive for good. Writes nothing to the journals, so a host
+    /// that moves running subagents to another process keeps them.
+    pub fn release_sessions(&self) {
+        self.registry.session_handles.update(|handles| handles.clear());
+    }
+
     pub async fn completion_origin(&self, request_id: &str) -> Option<Arc<str>> {
         let (session_id, _) = request_id
             .strip_prefix(crate::COMPLETION_REQUEST_PREFIX)?

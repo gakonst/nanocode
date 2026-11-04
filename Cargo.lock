@@ -3794,6 +3794,7 @@ version = "0.6.7"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "blake3",
  "futures-util",
  "nanocode-code-mode",
  "nanocode-home",

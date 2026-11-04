@@ -21,9 +21,11 @@ pub trait ToolRecovery: Send + Sync + 'static {
 }
 
 pub use function_tool::{Failure, FunctionHandler, FunctionTool, MaybeSend, TypedHandler};
+mod pins;
 mod policy;
 mod selection;
 pub use nanocode_code_mode::CodeModeToolObservation;
+pub use pins::TextPins;
 pub use policy::{CodeModeToolPolicy, WorkspaceToolRouting};
 #[cfg(not(target_family = "wasm"))]
 pub use selection::{AttachTarget, RemoteRunnerTools};

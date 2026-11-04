@@ -12,6 +12,7 @@ description = "Portable tool selection and host execution contracts"
 
 [dependencies]
 arc-swap.workspace = true
+blake3.workspace = true
 nanocode-code-mode.workspace = true
 nanocode-home.workspace = true
 nanocode-media.workspace = true

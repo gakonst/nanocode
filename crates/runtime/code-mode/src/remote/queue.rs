@@ -182,6 +182,7 @@ pub async fn serve_queue<Q: CommandQueue>(
     let mut checked = Instant::now();
     let mut polled = Some(first);
     let mut next = Instant::now();
+    let mut due = false;
     let result = loop {
         if let Some(polled) = polled.take() {
             let calls = polled.calls.len();
@@ -288,6 +289,15 @@ pub async fn serve_queue<Q: CommandQueue>(
                     options.poll
                 };
         }
+        if std::mem::take(&mut due) {
+            match queue.poll().await {
+                Ok(next) => {
+                    polled = Some(next);
+                    continue;
+                }
+                Err(error) => break Err(error),
+            }
+        }
         let wakeup = if awake {
             Either::Left(wakeups.next())
         } else {
@@ -297,13 +307,13 @@ pub async fn serve_queue<Q: CommandQueue>(
             reason = &mut driver => break Ok(reason.unwrap_or_else(|issue| issue.to_string())),
             error = &mut failed => break Err(error),
             woken = wakeup => match woken {
-                Some(()) => next = Instant::now(),
+                Some(()) => due = true,
                 None => awake = false,
             },
             Some(release) = released.recv() => {
                 let commands = match release {
                     Released::Retry(commands) => {
-                        next = Instant::now();
+                        due = true;
                         commands
                     }
                     Released::Settled(commands) | Released::Refused(commands) => commands,

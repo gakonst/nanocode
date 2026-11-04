@@ -927,3 +927,123 @@ fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
     nanocode_platform::spawn_local(async move { deliver(&room, hand_off::<S>) });
     true
 }
+
+#[cfg(not(target_family = "wasm"))]
+type RecentRead<V, E> = Shared<futures_util::future::BoxFuture<'static, Result<V, Arc<E>>>>;
+
+#[cfg(not(target_family = "wasm"))]
+type RecentReads<V, E> =
+    std::collections::HashMap<Arc<str>, (std::time::Instant, RecentRead<V, E>)>;
+
+#[cfg(not(target_family = "wasm"))]
+pub struct Recent<V, E> {
+    reads: Atom<RecentReads<V, E>>,
+    ttl: std::time::Duration,
+    kept: usize,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<V, E> Recent<V, E>
+where
+    V: Clone + Send + Sync + 'static,
+    E: Send + Sync + 'static,
+{
+    pub fn new(ttl: std::time::Duration, kept: usize) -> Self {
+        Self {
+            reads: Atom::new(std::collections::HashMap::new()),
+            ttl,
+            kept,
+        }
+    }
+
+    pub fn peek(&self, key: &str) -> Option<V> {
+        let now = std::time::Instant::now();
+        self.reads.read(|reads| {
+            let (at, read) = reads.get(key)?;
+            (now.duration_since(*at) < self.ttl).then(|| read.peek()?.as_ref().ok().cloned())?
+        })
+    }
+
+    pub fn keep(&self, key: &str, value: V) {
+        let read: RecentRead<V, E> = futures_util::future::ready(Ok(value)).boxed().shared();
+        let _ = read.clone().now_or_never();
+        self.reads
+            .update(|reads| self.insert(reads, key, std::time::Instant::now(), read.clone()));
+    }
+
+    pub fn forget(&self, key: &str) {
+        self.reads.update(|reads| {
+            reads.remove(key);
+        });
+    }
+
+    pub async fn get<F>(&self, key: &str, read: impl FnOnce() -> F) -> Result<V, Arc<E>>
+    where
+        F: Future<Output = Result<V, E>> + Send + 'static,
+    {
+        self.get_if(key, |_| true, read).await
+    }
+
+    pub async fn get_if<F>(
+        &self,
+        key: &str,
+        keep: impl Fn(&V) -> bool,
+        read: impl FnOnce() -> F,
+    ) -> Result<V, Arc<E>>
+    where
+        F: Future<Output = Result<V, E>> + Send + 'static,
+    {
+        let now = std::time::Instant::now();
+        let fresh =
+            |(at, _): &(std::time::Instant, RecentRead<V, E>)| now.duration_since(*at) < self.ttl;
+        let shared = match self.reads.read(|reads| {
+            reads
+                .get(key)
+                .filter(|entry| fresh(entry))
+                .map(|(_, read)| read.clone())
+        }) {
+            Some(shared) => shared,
+            None => {
+                let started: RecentRead<V, E> =
+                    read().map(|read| read.map_err(Arc::new)).boxed().shared();
+                self.reads.update(|reads| {
+                    if let Some((_, existing)) = reads.get(key).filter(|entry| fresh(entry)) {
+                        return existing.clone();
+                    }
+                    self.insert(reads, key, now, started.clone());
+                    started.clone()
+                })
+            }
+        };
+        let value = shared.clone().await;
+        if value.as_ref().map_or(true, |value| !keep(value)) {
+            self.reads.update(|reads| {
+                if reads.get(key).is_some_and(|(_, held)| held.ptr_eq(&shared)) {
+                    reads.remove(key);
+                }
+            });
+        }
+        value
+    }
+
+    fn insert(
+        &self,
+        reads: &mut RecentReads<V, E>,
+        key: &str,
+        now: std::time::Instant,
+        read: RecentRead<V, E>,
+    ) {
+        if reads.len() >= self.kept {
+            reads.retain(|_, (at, _)| now.duration_since(*at) < self.ttl);
+        }
+        if reads.len() >= self.kept
+            && let Some(oldest) = reads
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(key, _)| key.clone())
+        {
+            reads.remove(&oldest);
+        }
+        reads.insert(key.into(), (now, read));
+    }
+}

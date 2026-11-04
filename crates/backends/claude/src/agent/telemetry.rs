@@ -141,6 +141,7 @@ pub(super) fn record_prompt<M: WireMessage>(
     request: &MessagesRequest,
     messages: &[M],
     subscription: bool,
+    cache: &crate::WireCache,
 ) {
     if span.is_disabled() {
         return;
@@ -149,16 +150,22 @@ pub(super) fn record_prompt<M: WireMessage>(
         "request.wire",
         if subscription { "subscription" } else { "api" },
     );
-    span.record("prompt.tools", crate::fingerprint(&request.tools).as_str());
-    span.record(
-        "prompt.system",
-        crate::fingerprint(&request.system).as_str(),
-    );
+    if let Ok(tools) = cache.tools_fingerprint(&request.tools) {
+        span.record("prompt.tools", tools.as_str());
+    }
+    if let Ok(system) = cache.system_fingerprint(request.system.as_deref()) {
+        span.record("prompt.system", system.as_str());
+    }
     if let Some(first) = messages.first() {
-        span.record(
-            "prompt.first_message",
-            crate::fingerprint(first.message()).as_str(),
-        );
+        let encode = |message: &crate::Message| {
+            serde_json::to_string(message).map_err(crate::ClaudeError::from)
+        };
+        if let Ok(encoded) = first.encoded(false, &encode) {
+            span.record(
+                "prompt.first_message",
+                crate::fingerprint_bytes(encoded.as_bytes()).as_str(),
+            );
+        }
     }
     if let Some(speed) = request.speed {
         span.record(

@@ -1691,6 +1691,7 @@ impl ClaudeBuilder {
             message_diagnostics: self.message_diagnostics,
             tool_input_deltas: self.tool_input_deltas,
             message_thread: self.message_threads.then(Atom::default),
+            wire_cache: crate::WireCache::default(),
             context_window_tokens: self.context_window_tokens,
             auto_compact_window_tokens: self.auto_compact_window_tokens,
             auto_compact_token_limit: Atom::default(),
@@ -3313,6 +3314,7 @@ struct State {
     tool_input_deltas: bool,
     /// The conversation's message thread, when the builder enabled threads.
     message_thread: Option<Atom<crate::MessageThread>>,
+    wire_cache: crate::WireCache,
     context_window_tokens: u64,
     auto_compact_window_tokens: Option<u64>,
     /// A host's override of the compaction threshold, which the next turn's cursor takes.
@@ -4840,12 +4842,13 @@ impl State {
             &request,
             &sent,
             client.uses_subscription(),
+            &self.wire_cache,
         );
         if cancel.is_cancelled() && context.effect.is_none() {
             return Err(NanocodeError::TurnCancelled.into());
         }
         let mut wire = client
-            .prepare_wire(&request, &sent, true)
+            .prepare_cached_wire(&request, &sent, true, Some(&self.wire_cache))
             .map_err(provider_error)?;
         let needs_upgrade = self.code_only && !durable::is_code_only_catalog(&request.tools);
 
@@ -4923,7 +4926,7 @@ impl State {
             suffix.push(Message::text(Role::User, &upgrade.notice).into());
             sent = images::evict_images(&self.images, wire_messages(messages, &suffix));
             wire = client
-                .prepare_wire(&request, &sent, true)
+                .prepare_cached_wire(&request, &sent, true, Some(&self.wire_cache))
                 .map_err(provider_error)?;
 
             recovery = Some(ServerRecovery {
@@ -4957,7 +4960,7 @@ impl State {
         let inlined = images::inline_images(&self.images, &sent).await?;
         if let Some(inlined) = &inlined {
             wire = client
-                .prepare_wire(&request, inlined, true)
+                .prepare_cached_wire(&request, inlined, true, Some(&self.wire_cache))
                 .map_err(provider_error)?;
         }
         let outgoing = inlined.as_deref().unwrap_or(&sent);

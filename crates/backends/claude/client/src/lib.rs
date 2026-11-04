@@ -24,6 +24,8 @@ pub use subscription_wire::SubscriptionIdentity;
 use transport::{HttpClient, HttpError, HttpResponse, layer::retry};
 pub mod subscription;
 pub mod thread;
+mod wire_cache;
+pub use wire_cache::WireCache;
 pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
@@ -687,8 +689,12 @@ fn validate_cache_layout<'a>(
 /// so a call that wrote its whole prompt to the cache again can be told apart
 /// by which part changed since the session's previous call. Never the text.
 pub fn fingerprint(value: &impl Serialize) -> String {
-    let bytes = serde_json::to_vec(value).unwrap_or_default();
-    format!("{:016x}", xxhash_rust::xxh64::xxh64(&bytes, 0))
+    fingerprint_bytes(&serde_json::to_vec(value).unwrap_or_default())
+}
+
+#[doc(hidden)]
+pub fn fingerprint_bytes(bytes: &[u8]) -> String {
+    format!("{:016x}", xxhash_rust::xxh64::xxh64(bytes, 0))
 }
 
 #[doc(hidden)]
@@ -1475,8 +1481,8 @@ impl ClaudeClient {
         request: &MessagesRequest,
         streaming: bool,
     ) -> Result<String, ClaudeError> {
-        self.wire_body(request, &request.messages, streaming)
-            .map(|(body, _)| body)
+        self.wire_body(request, &request.messages, streaming, None)
+            .map(|wire| wire.body)
     }
 
     /// The request's body and where its messages are in it.
@@ -1485,18 +1491,25 @@ impl ClaudeClient {
         head: &MessagesRequest,
         messages: &[M],
         streaming: bool,
-    ) -> Result<(String, std::ops::Range<usize>), ClaudeError> {
+        cache: Option<&WireCache>,
+    ) -> Result<WireBody, ClaudeError> {
         if self.subscription_compatibility {
-            subscription_wire::wire(
+            let (body, messages) = subscription_wire::wire(
                 head,
                 messages,
                 streaming,
                 &self.subscription_identity,
                 &self.subscription_session,
                 self.subscription_cache_tail,
-            )
+            )?;
+            Ok(WireBody {
+                body,
+                messages,
+                system: None,
+                tools: None,
+            })
         } else {
-            api_body(head, messages, streaming, None)
+            api_body(head, messages, streaming, None, cache)
         }
     }
 
@@ -1516,13 +1529,26 @@ impl ClaudeClient {
         messages: &[M],
         streaming: bool,
     ) -> Result<PreparedWire, ClaudeError> {
+        self.prepare_cached_wire(head, messages, streaming, None)
+    }
+
+    #[doc(hidden)]
+    pub fn prepare_cached_wire<M: WireMessage>(
+        &self,
+        head: &MessagesRequest,
+        messages: &[M],
+        streaming: bool,
+        cache: Option<&WireCache>,
+    ) -> Result<PreparedWire, ClaudeError> {
         if !self.subscription_compatibility {
             head.validate_cache_with(messages)?;
         }
-        let (body, messages_at) = self.wire_body(head, messages, streaming)?;
+        let wire = self.wire_body(head, messages, streaming, cache)?;
         Ok(PreparedWire {
-            body: body.into(),
-            messages: messages_at,
+            body: wire.body.into(),
+            messages: wire.messages,
+            system: wire.system,
+            tools: wire.tools,
             thread: None,
             subscription: self.subscription_compatibility,
             streaming,
@@ -1548,10 +1574,12 @@ impl ClaudeClient {
         &self,
         request: &MessagesRequest,
     ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
-        let (body, messages) = self.wire_body(request, &request.messages, true)?;
+        let wire = self.wire_body(request, &request.messages, true, None)?;
         PreparedWire {
-            body: body.into(),
-            messages,
+            body: wire.body.into(),
+            messages: wire.messages,
+            system: wire.system,
+            tools: wire.tools,
             thread: None,
             subscription: self.subscription_compatibility,
             streaming: true,
@@ -1595,8 +1623,9 @@ impl ClaudeClient {
                 turn.new_messages(messages),
                 wire.streaming,
                 Some(param),
+                None,
             )?
-            .0
+            .body
             .into(),
         );
         Ok(())
@@ -1964,6 +1993,8 @@ pub struct PreparedWire {
     /// Where the conversation's messages are in [`Self::body`]: between the
     /// brackets of its `messages` array.
     messages: std::ops::Range<usize>,
+    system: Option<Encoding>,
+    tools: Option<Encoding>,
     /// The request as a thread turn sends it, when it uses a thread.
     thread: Option<Arc<str>>,
     subscription: bool,
@@ -1994,6 +2025,62 @@ impl PreparedWire {
     /// separate ones of its conversation and of the host prefix around it
     /// ([`Self::same_conversation`]).
     pub fn durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
+        #[derive(Serialize)]
+        struct Digest<'a> {
+            wire: &'a str,
+            digest: String,
+            bytes: usize,
+            conversation: String,
+            prefix: String,
+        }
+        let (conversation, markers) = self.conversation_digests();
+        let prefix = self.prefix_digest();
+        let mut whole = blake3::Hasher::new();
+        whole
+            .update(prefix.as_bytes())
+            .update(conversation.as_bytes())
+            .update(markers.as_bytes());
+        Ok(serde_json::value::to_raw_value(&Digest {
+            wire: self.wire_name(),
+            digest: whole.finalize().to_hex().to_string(),
+            bytes: self.body.len(),
+            conversation: conversation.to_hex().to_string(),
+            prefix: prefix.to_hex().to_string(),
+        })?)
+    }
+
+    fn prefix_digest(&self) -> blake3::Hash {
+        let mut cuts = vec![(self.messages.clone(), None)];
+        cuts.extend(
+            [&self.system, &self.tools]
+                .into_iter()
+                .flatten()
+                .map(|span| (span.range.clone(), Some(span))),
+        );
+        cuts.sort_by_key(|(range, _)| range.start);
+        let bytes = self.body.as_bytes();
+        let mut literal = blake3::Hasher::new();
+        let mut parts = blake3::Hasher::new();
+        let (mut from, mut at) = (0, 0_u64);
+        for (range, span) in cuts {
+            literal.update(&bytes[from..range.start]);
+            at += (range.start - from) as u64;
+            if let Some(span) = span {
+                parts
+                    .update(&at.to_le_bytes())
+                    .update(span.digest(&self.body).as_bytes());
+            }
+            from = range.end;
+        }
+        literal.update(&bytes[from..]);
+        let mut prefix = blake3::Hasher::new();
+        prefix
+            .update(literal.finalize().as_bytes())
+            .update(parts.finalize().as_bytes());
+        prefix.finalize()
+    }
+
+    pub fn body_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         #[derive(Serialize)]
         struct Digest<'a> {
             wire: &'a str,
@@ -2055,14 +2142,26 @@ impl PreparedWire {
     /// markers: where a host puts its cache breakpoints, and their TTL, don't
     /// change what the model reads.
     fn conversation_digest(&self) -> String {
+        self.conversation_digests().0.to_hex().to_string()
+    }
+
+    fn conversation_digests(&self) -> (blake3::Hash, blake3::Hash) {
         let mut hasher = blake3::Hasher::new();
+        let mut markers = blake3::Hasher::new();
+        let mut kept_bytes = 0_u64;
         let mut rest = &self.body[self.messages.clone()];
         while let Some((kept, after)) = cache_marker(rest) {
             hasher.update(kept.as_bytes());
+            kept_bytes += kept.len() as u64;
+            let marker = &rest[kept.len()..rest.len() - after.len()];
+            markers
+                .update(&kept_bytes.to_le_bytes())
+                .update(&(marker.len() as u64).to_le_bytes())
+                .update(marker.as_bytes());
             rest = after;
         }
         hasher.update(rest.as_bytes());
-        hasher.finalize().to_hex().to_string()
+        (hasher.finalize(), markers.finalize())
     }
 
     pub fn sha256_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
@@ -2113,12 +2212,33 @@ impl PreparedWire {
 }
 
 /// The Messages API body of `head` with `messages`, and where those are in it.
+struct WireBody {
+    body: String,
+    messages: std::ops::Range<usize>,
+    system: Option<Encoding>,
+    tools: Option<Encoding>,
+}
+
+#[derive(Clone, Debug)]
+struct Encoding {
+    range: std::ops::Range<usize>,
+    digest: Option<blake3::Hash>,
+}
+
+impl Encoding {
+    fn digest(&self, body: &str) -> blake3::Hash {
+        self.digest
+            .unwrap_or_else(|| blake3::hash(&body.as_bytes()[self.range.clone()]))
+    }
+}
+
 fn api_body<M: WireMessage>(
     head: &MessagesRequest,
     messages: &[M],
     streaming: bool,
     thread: Option<&ThreadParam>,
-) -> Result<(String, std::ops::Range<usize>), ClaudeError> {
+    cache: Option<&WireCache>,
+) -> Result<WireBody, ClaudeError> {
     // A continue request must leave out `system` and `tools`: the thread keeps them.
     let continuing = matches!(thread, Some(ThreadParam::Continue { .. }));
     let MessagesRequest {
@@ -2155,18 +2275,44 @@ fn api_body<M: WireMessage>(
         #[serde(skip_serializing_if = "Option::is_none")]
         diagnostics: Option<&'a Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        system: Option<&'a Value>,
+        system: Option<&'a serde_json::value::RawValue>,
     }
     #[derive(Serialize)]
     struct Tail<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         container: Option<&'a str>,
-        #[serde(skip_serializing_if = "<[_]>::is_empty")]
-        tools: &'a [ClaudeToolSpec],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tools: Option<&'a serde_json::value::RawValue>,
         #[serde(skip_serializing_if = "Option::is_none")]
         thread: Option<&'a ThreadParam>,
         stream: bool,
     }
+    let system = system.as_deref().filter(|_| !continuing);
+    let tools: &[ClaudeToolSpec] = if continuing { &[] } else { tools };
+    let cached_system = match (cache, system) {
+        (Some(cache), Some(system)) => Some(cache.system(system)?),
+        _ => None,
+    };
+    let cached_tools = match cache {
+        Some(cache) if !tools.is_empty() => Some(cache.tools(tools)?),
+        _ => None,
+    };
+    let owned_system = match (&cached_system, system) {
+        (None, Some(system)) => Some(serde_json::value::to_raw_value(system)?),
+        _ => None,
+    };
+    let owned_tools = match &cached_tools {
+        None if !tools.is_empty() => Some(serde_json::value::to_raw_value(tools)?),
+        _ => None,
+    };
+    let system_raw = cached_system
+        .as_ref()
+        .map(|encoded| &*encoded.raw)
+        .or(owned_system.as_deref());
+    let tools_raw = cached_tools
+        .as_ref()
+        .map(|encoded| &*encoded.raw)
+        .or(owned_tools.as_deref());
     let encode = |message: &Message| serde_json::to_string(message).map_err(ClaudeError::from);
     let encoded = messages
         .iter()
@@ -2182,11 +2328,11 @@ fn api_body<M: WireMessage>(
         thinking: thinking.as_ref(),
         context_management: context_management.as_ref(),
         diagnostics: diagnostics.as_ref(),
-        system: system.as_deref().filter(|_| !continuing),
+        system: system_raw,
     })?;
     let tail = serde_json::to_string(&Tail {
         container: container.as_deref(),
-        tools: if continuing { &[] } else { tools },
+        tools: tools_raw,
         thread,
         stream: streaming,
     })?;
@@ -2210,8 +2356,29 @@ fn api_body<M: WireMessage>(
     }
     let end = body.len();
     body.push_str("],");
+    let base = body.len() - 1;
     body.push_str(&tail[1..]);
-    Ok((body, start..end))
+    let system = system_raw.map(|raw| {
+        let at = head.len() - 1 - raw.get().len();
+        Encoding {
+            range: at..at + raw.get().len(),
+            digest: cached_system.as_ref().map(|encoded| encoded.digest),
+        }
+    });
+    let tools = tools_raw.and_then(|raw| {
+        const KEY: &str = "\"tools\":";
+        let at = base + tail.find(KEY)? + KEY.len();
+        Some(Encoding {
+            range: at..at + raw.get().len(),
+            digest: cached_tools.as_ref().map(|encoded| encoded.digest),
+        })
+    });
+    Ok(WireBody {
+        body,
+        messages: start..end,
+        system,
+        tools,
+    })
 }
 
 /// The first `cache_control` member in `json`, encoded messages: the text

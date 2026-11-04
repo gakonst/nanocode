@@ -6,6 +6,7 @@ mod cli;
 mod commands;
 #[cfg(unix)]
 mod cua;
+mod custom_endpoint;
 mod events;
 mod extras;
 mod focus;
@@ -100,6 +101,13 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     let entered = std::time::Instant::now();
     let cli = Cli::parse();
     let parsed = entered.elapsed();
+    let clients = match custom_endpoint::apply(clients) {
+        Ok(clients) => clients,
+        Err(error) => {
+            eprintln!("nanocode: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let home = match cli_home(&cli) {
         Ok(home) => home,
         Err(error) => {
@@ -226,13 +234,27 @@ async fn prepare(
             }
             model
         }
-        (None, Some(harness)) => family(harness).default_model(),
-        (None, None) => nanocode::HarnessFamily::Claude.default_model(),
+        (None, harness) => {
+            let requested = harness.map(family);
+            match clients.codex_models().and_then(<[_]>::first) {
+                Some(model)
+                    if requested
+                        .as_ref()
+                        .is_none_or(|family| *family == nanocode::HarnessFamily::Codex) =>
+                {
+                    nanocode::ModelSelection::Codex(*model)
+                }
+                _ => requested
+                    .unwrap_or(nanocode::HarnessFamily::Claude)
+                    .default_model(),
+            }
+        }
     };
     if let Some(gateway) = &gateway {
         gateway.check(&model)?;
     }
-    let defaulted = args.model.is_none() && args.harness.is_none();
+    let defaulted =
+        args.model.is_none() && args.harness.is_none() && clients.codex_models().is_none();
     let capabilities = model.capabilities(nanocode::ModelTransport::Native);
     let thinking = match &args.thinking {
         Some(value) => host::parse_thinking(value)?,

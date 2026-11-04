@@ -16,7 +16,7 @@ pub use harness::{
     ClaudeModel, HarnessFamily, ModelCapabilities, ModelInfo, ModelSelection, ModelTransport,
     model_catalog,
 };
-pub use nanocode_types::{Model, ReasoningMode, Thinking, events::AgentEvents};
+pub use nanocode_types::{CustomModel, Model, ReasoningMode, Thinking, events::AgentEvents};
 pub use session::{
     Capabilities, ForkPoint, ForkRequest, Lineage, Mutability, Origin, Persistence,
     SessionCheckpoint, SessionInfo,

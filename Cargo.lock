@@ -3357,6 +3357,7 @@ dependencies = [
  "nanocode-tui",
  "nix 0.31.3",
  "opentelemetry",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

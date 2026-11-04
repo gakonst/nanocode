@@ -436,7 +436,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
         }
         "response.reasoning_summary_text.delta" => {
             let delta = required::<Text<'_>>(event.delta, "delta")?.0;
-            let summary_index = required(event.summary_index, "summary_index")?;
+            let summary_index = optional(event.summary_index)?.unwrap_or(0);
             let response = responses.then(|| ResponseEvent::ReasoningSummaryDelta {
                 delta: delta.clone().into_owned(),
                 summary_index,
@@ -456,7 +456,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
         }
         "response.reasoning_text.delta" => {
             let delta = required::<Text<'_>>(event.delta, "delta")?.0;
-            let content_index = required(event.content_index, "content_index")?;
+            let content_index = optional(event.content_index)?.unwrap_or(0);
             let response = responses.then(|| ResponseEvent::ReasoningContentDelta {
                 delta: delta.clone().into_owned(),
                 content_index,
@@ -529,7 +529,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
         "response.reasoning_summary_text.done" => {
             let item_id = required::<String>(event.item_id, "item_id")?;
             let text = required::<Text<'_>>(event.text, "text")?.0;
-            let summary_index = required(event.summary_index, "summary_index")?;
+            let summary_index = optional(event.summary_index)?.unwrap_or(0);
             let response = responses.then(|| ResponseEvent::ReasoningSummaryDone {
                 item_id,
                 text: text.into_owned(),
@@ -538,7 +538,7 @@ fn decode_wire_event(raw: &str, responses: bool) -> Result<DecodedEvent<'_>, ser
             (StreamEvent::Other, response)
         }
         "response.reasoning_summary_part.added" => {
-            let summary_index = required(event.summary_index, "summary_index")?;
+            let summary_index = optional(event.summary_index)?.unwrap_or(0);
             let response =
                 responses.then_some(ResponseEvent::ReasoningSummaryPartAdded { summary_index });
             (StreamEvent::Other, response)

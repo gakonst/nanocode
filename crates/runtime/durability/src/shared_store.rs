@@ -258,13 +258,20 @@ async fn drive_grouped<S: StateStore>(
             }
         }
         if groups < writers && blocked == 0 && !forming.is_empty() {
-            let group = std::mem::take(&mut forming);
-            let states = std::mem::take(&mut states);
+            let take = forming.len().div_ceil(writers);
+            let group: Vec<Grouped> = forming.drain(..take).collect();
+            let group_states: Vec<String> = group
+                .iter()
+                .map(|grouped| grouped.state_id().to_owned())
+                .collect();
+            for state in &group_states {
+                states.remove(state);
+            }
             match store.pipeline_handle() {
                 Some(mut handle) => {
                     groups += 1;
-                    in_flight.extend(states.iter().cloned());
-                    let completion = Completion(finished.clone(), states.into_iter().collect());
+                    in_flight.extend(group_states.iter().cloned());
+                    let completion = Completion(finished.clone(), group_states);
                     spawn_operation(async move {
                         run_grouped(&mut *handle, group).await;
                         drop(completion);

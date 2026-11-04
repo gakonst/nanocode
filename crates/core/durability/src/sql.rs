@@ -92,6 +92,8 @@ pub trait Sql {
 
 type Dialects = [&'static str; 2];
 
+const READ_PART_KEYS: usize = 1024;
+
 #[derive(Clone, Copy, Debug)]
 pub struct MissingColumn {
     pub probe: Dialects,
@@ -662,7 +664,10 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let parts = self.host.readers().clamp(1, keys.len());
+        let parts = self
+            .host
+            .readers()
+            .clamp(1, keys.len().div_ceil(READ_PART_KEYS).max(1));
         let rows = if parts == 1 {
             let encoded = keys_json(keys.iter())?;
             self.query("read_records", &RECORDS, vec![&encoded]).await?

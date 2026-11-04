@@ -387,6 +387,9 @@ impl Sql for PostgresSql {
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
         Box::pin(async move {
+            let reads = statements
+                .iter()
+                .all(|statement| statement.sql.starts_with("SELECT"));
             let mut connection = self.client().await;
             let prepare = statements.iter().all(|statement| reusable(statement.sql));
             if prepare {
@@ -418,48 +421,18 @@ impl Sql for PostgresSql {
                 connection.prepared.extend(prepared);
             }
             let Connection { client, prepared } = &mut *connection;
-            let transaction = client.transaction().await.map_err(backend)?;
-            let params = statements
-                .iter()
-                .map(|statement| {
-                    statement
-                        .params
-                        .iter()
-                        .map(|param| (param as &(dyn ToSql + Sync), Type::TEXT))
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-            let replies = futures_util::future::try_join_all(statements.iter().zip(&params).map(
-                |(statement, params)| {
-                    let transaction = &transaction;
-                    let prepared = prepare.then(|| prepared.get(statement.sql)).flatten();
-                    async move {
-                        match prepared {
-                            Some(prepared) => {
-                                let values =
-                                    params.iter().map(|(value, _)| *value).collect::<Vec<_>>();
-                                transaction.query(prepared, &values).await
-                            }
-                            None => transaction.query_typed(statement.sql, params).await,
-                        }
-                    }
-                },
-            ))
-            .await
-            .map_err(backend)?;
-            let mut results = Vec::with_capacity(replies.len());
-            for rows in replies {
-                results.push(
-                    rows.iter()
-                        .map(|row| {
-                            (0..row.len())
-                                .map(|column| row.try_get::<_, Option<String>>(column))
-                                .collect::<Result<SqlRow, _>>()
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(backend)?,
-                );
+            let prepared = prepare.then_some(&*prepared);
+            if reads {
+                let replies = run_statements(&*client, statements, prepared)
+                    .await
+                    .map_err(backend)?;
+                return text_rows(&replies);
             }
+            let transaction = client.transaction().await.map_err(backend)?;
+            let replies = run_statements(&transaction, statements, prepared)
+                .await
+                .map_err(backend)?;
+            let results = text_rows(&replies)?;
             transaction.commit().await.map_err(backend)?;
             Ok(results)
         })
@@ -480,6 +453,52 @@ impl Sql for PostgresSql {
     fn readers(&self) -> usize {
         self.clients.len()
     }
+}
+
+async fn run_statements<C: tokio_postgres::GenericClient>(
+    client: &C,
+    statements: &[SqlStatement<'_>],
+    prepared: Option<&std::collections::HashMap<&'static str, tokio_postgres::Statement>>,
+) -> Result<Vec<Vec<tokio_postgres::Row>>, tokio_postgres::Error> {
+    let params = statements
+        .iter()
+        .map(|statement| {
+            statement
+                .params
+                .iter()
+                .map(|param| (param as &(dyn ToSql + Sync), Type::TEXT))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    futures_util::future::try_join_all(statements.iter().zip(&params).map(|(statement, params)| {
+        let prepared = prepared.and_then(|prepared| prepared.get(statement.sql));
+        async move {
+            match prepared {
+                Some(prepared) => {
+                    let values = params.iter().map(|(value, _)| *value).collect::<Vec<_>>();
+                    client.query(prepared, &values).await
+                }
+                None => client.query_typed(statement.sql, params).await,
+            }
+        }
+    }))
+    .await
+}
+
+fn text_rows(replies: &[Vec<tokio_postgres::Row>]) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+    replies
+        .iter()
+        .map(|rows| {
+            rows.iter()
+                .map(|row| {
+                    (0..row.len())
+                        .map(|column| row.try_get::<_, Option<String>>(column))
+                        .collect::<Result<SqlRow, _>>()
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(backend)
+        })
+        .collect()
 }
 
 async fn validate_schema(transaction: &tokio_postgres::Transaction<'_>) -> Result<(), StoreError> {

@@ -145,7 +145,6 @@ enum HostCommand {
 enum Message {
     Open {
         host: u64,
-        claimed: bool,
         events: mpsc::UnboundedSender<RuntimeEvent>,
         interrupted: Arc<AtomicBool>,
     },
@@ -219,35 +218,27 @@ fn start_pool() -> Result<Pool, String> {
 }
 
 impl Pool {
-    fn pick(&self) -> (&WorkerHandle, bool) {
+    fn pick(&self) -> &WorkerHandle {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let start = NEXT.fetch_add(1, Ordering::Relaxed);
         let count = self.workers.len();
         for offset in 0..count {
             let worker = &self.workers[(start + offset) % count];
             if !worker.load.busy.load(Ordering::Relaxed)
-                && worker
-                    .load
-                    .spares
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |spares| {
-                        (spares > 0).then(|| spares - 1)
-                    })
-                    .is_ok()
+                && worker.load.spares.load(Ordering::Acquire) > 0
             {
-                return (worker, true);
+                return worker;
             }
         }
-        let worker = self
-            .workers
-            .iter()
+        (0..count)
+            .map(|offset| &self.workers[(start + offset) % count])
             .min_by_key(|worker| {
                 (
                     worker.load.busy.load(Ordering::Relaxed),
                     worker.load.live.load(Ordering::Relaxed),
                 )
             })
-            .expect("the QuickJS pool has at least one worker");
-        (worker, false)
+            .expect("the QuickJS pool has at least one worker")
     }
 }
 
@@ -261,7 +252,7 @@ pub struct EmbeddedHost {
 
 impl EmbeddedHost {
     pub fn spawn() -> Result<Self, String> {
-        let (worker, claimed) = pool()?.pick();
+        let worker = pool()?.pick();
         let (event_tx, events) = mpsc::unbounded_channel();
         let interrupted = Arc::new(AtomicBool::new(false));
         let host = NEXT_HOST.fetch_add(1, Ordering::Relaxed);
@@ -270,7 +261,6 @@ impl EmbeddedHost {
             .sender
             .send(Message::Open {
                 host,
-                claimed,
                 events: event_tx,
                 interrupted: Arc::clone(&interrupted),
             })
@@ -399,7 +389,8 @@ struct Worker {
     hosts: HashMap<u64, Host>,
     deadlines: BTreeSet<(Instant, u64)>,
     spares: Vec<Engine>,
-    opened: usize,
+    engaged: usize,
+    peak: usize,
     demand: usize,
     window: Instant,
     idle_events: mpsc::UnboundedSender<RuntimeEvent>,
@@ -412,7 +403,8 @@ impl Worker {
             hosts: HashMap::new(),
             deadlines: BTreeSet::new(),
             spares: Vec::new(),
-            opened: 0,
+            engaged: 0,
+            peak: 0,
             demand: 0,
             window: Instant::now(),
             idle_events: mpsc::unbounded_channel().0,
@@ -454,42 +446,15 @@ impl Worker {
         match message {
             Message::Open {
                 host,
-                claimed,
                 events,
                 interrupted,
             } => {
-                self.opened += 1;
-                let engine = match self.spares.pop() {
-                    Some(engine) => {
-                        if !claimed {
-                            self.load.spares.fetch_sub(1, Ordering::AcqRel);
-                        }
-                        *engine.interrupted.borrow_mut() = Arc::clone(&interrupted);
-                        Some(engine)
-                    }
-                    None => match Engine::new(&interrupted) {
-                        Ok(engine) => Some(engine),
-                        Err(error) => {
-                            tracing::error!(
-                                target: "nanocode_code_mode",
-                                %error,
-                                "failed to start an embedded QuickJS runtime"
-                            );
-                            None
-                        }
-                    },
-                };
-                let events = if engine.is_some() {
-                    events
-                } else {
-                    mpsc::unbounded_channel().0
-                };
                 self.hosts.insert(
                     host,
                     Host {
                         events,
                         interrupted,
-                        engine,
+                        engine: None,
                         execution: None,
                         deadline: None,
                     },
@@ -513,23 +478,58 @@ impl Worker {
         if let Some(deadline) = host.deadline.take() {
             self.deadlines.remove(&(deadline, id));
         }
-        let idle = host.execution.is_none();
         drop(host.execution.take());
-        let engine = host.engine.take();
-        drop(host);
-        let Some(mut engine) = engine else {
+        if host.engine.take().is_some() {
+            self.engaged -= 1;
+        }
+    }
+
+    fn engage(&mut self, id: u64) -> Result<(), String> {
+        let Some(host) = self.hosts.get_mut(&id) else {
+            return Ok(());
+        };
+        if host.engine.is_some() {
+            return Ok(());
+        }
+        let engine = match self.spares.pop() {
+            Some(engine) => {
+                self.load.spares.fetch_sub(1, Ordering::AcqRel);
+                *engine.interrupted.borrow_mut() = Arc::clone(&host.interrupted);
+                engine
+            }
+            None => Engine::new(&host.interrupted).inspect_err(|error| {
+                tracing::error!(
+                    target: "nanocode_code_mode",
+                    %error,
+                    "failed to start an embedded QuickJS runtime"
+                );
+            })?,
+        };
+        host.engine = Some(engine);
+        self.engaged += 1;
+        self.peak = self.peak.max(self.engaged);
+        Ok(())
+    }
+
+    fn release(&mut self, id: u64, bytes: bool) {
+        let Some(mut engine) = self
+            .hosts
+            .get_mut(&id)
+            .and_then(|host| host.engine.take())
+        else {
             return;
         };
-        if !idle || self.spares.len() >= self.demand.max(self.opened).max(1) {
+        self.engaged -= 1;
+        if self.engaged + self.spares.len() >= self.demand.max(self.peak).max(1) {
             return;
         }
         *engine.interrupted.borrow_mut() = Arc::new(AtomicBool::new(false));
-        if engine.prepared.is_none() {
+        if self.spares.is_empty() && engine.prepared.is_none() {
             match Prepared::new(
                 &engine.runtime,
                 &self.idle_events,
                 &engine.rejections,
-                false,
+                bytes,
             ) {
                 Ok(prepared) => engine.prepared = Some(prepared),
                 Err(_) => return,
@@ -543,9 +543,9 @@ impl Worker {
         if self.window.elapsed() < SPARE_WINDOW {
             return;
         }
-        self.demand = self.opened;
-        self.opened = 0;
-        let keep = self.demand.max(1);
+        self.demand = self.peak;
+        self.peak = self.engaged;
+        let keep = self.demand.saturating_sub(self.engaged).max(1);
         let dropped = self.spares.len().saturating_sub(keep);
         self.spares.truncate(keep);
         self.load.spares.fetch_sub(
@@ -563,7 +563,9 @@ impl Worker {
             self.deadlines.remove(&(deadline, id));
         }
         drop(host.execution.take());
-        drop(host.engine.take());
+        if host.engine.take().is_some() {
+            self.engaged -= 1;
+        }
         host.events = mpsc::unbounded_channel().0;
     }
 
@@ -651,6 +653,16 @@ impl Worker {
     }
 
     fn start(&mut self, id: u64, start: StartExecution) -> Result<Step, String> {
+        self.engage(id)?;
+        let bytes = start.prelude.is_some();
+        let step = self.run_start(id, start);
+        if matches!(step, Ok(Step::Finished)) {
+            self.release(id, bytes);
+        }
+        step
+    }
+
+    fn run_start(&mut self, id: u64, start: StartExecution) -> Result<Step, String> {
         let Some(host) = self.hosts.get_mut(&id) else {
             return Ok(Step::Finished);
         };
@@ -770,16 +782,19 @@ impl Worker {
         if let Some(deadline) = host.deadline.take() {
             self.deadlines.remove(&(deadline, id));
         }
-        if let Some(execution) = host.execution.take() {
-            let Execution {
-                promise, prepared, ..
-            } = execution;
-            drop(promise);
-            drop(prepared);
-            if let Some(engine) = host.engine.as_ref() {
-                engine.runtime.run_gc();
-            }
+        let Some(execution) = host.execution.take() else {
+            return;
+        };
+        let Execution {
+            promise, prepared, ..
+        } = execution;
+        let bytes = prepared.bytes;
+        drop(promise);
+        drop(prepared);
+        if let Some(engine) = host.engine.as_ref() {
+            engine.runtime.run_gc();
         }
+        self.release(id, bytes);
     }
 
     fn schedule(&mut self, id: u64) {

@@ -204,6 +204,7 @@ impl Effect<'_> {
             .to_owned(),
             input: wire.durable_input().map_err(provider_error)?,
             wire: Some(wire),
+            recovery: nanocode_durability::StepRecovery::Rerun,
         };
         self.admit(writes, request).await
     }
@@ -217,6 +218,7 @@ impl Effect<'_> {
             kind: "tool".to_owned(),
             input,
             wire: None,
+            recovery: nanocode_durability::StepRecovery::AtMostOnce,
         };
         self.admit(writes, request).await
     }
@@ -699,7 +701,7 @@ impl State {
         call: (&str, &str, &Value),
         handler: Option<&Handler>,
         events: &AgentEventPublisher,
-        journal: (Vec<JournalWrite>, bool),
+        journal: (Vec<JournalWrite>, nanocode_durability::ResultTiming),
     ) -> Result<(ContentBlock, Option<JournalWrite>)> {
         #[derive(Serialize)]
         struct Call<'a> {
@@ -715,7 +717,7 @@ impl State {
         }
         let (cursor, cancel) = control;
         let (id, name, input) = call;
-        let (writes, defer) = journal;
+        let (writes, timing) = journal;
         let index = cursor.index;
         let step = format!("tool-{index}-{id}");
         let effect = cursor.effect(self, &step);
@@ -846,10 +848,11 @@ impl State {
                 tasks: self.task_snapshot()?,
                 discovered: &self.discovered.get(),
             })?;
-            if defer {
-                deferred = Some(completion);
-            } else {
-                self.policy_writes(effect, vec![completion]).await?;
+            match timing {
+                nanocode_durability::ResultTiming::NextCommit => deferred = Some(completion),
+                nanocode_durability::ResultTiming::Now => {
+                    self.policy_writes(effect, vec![completion]).await?;
+                }
             }
         }
         if interrupted {

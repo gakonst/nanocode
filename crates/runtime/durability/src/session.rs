@@ -152,6 +152,31 @@ pub enum WriteOutcome {
     Completed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepRecovery {
+    Rerun,
+
+    AtMostOnce,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultTiming {
+    Now,
+
+    NextCommit,
+}
+
+impl ResultTiming {
+    #[must_use]
+    pub const fn of_batch(calls: usize) -> Self {
+        if calls == 1 {
+            Self::NextCommit
+        } else {
+            Self::Now
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StoredSteer {
     pub index: u32,
@@ -3547,6 +3572,47 @@ impl DurableOwner {
     ) -> Result<()> {
         self.send_completion(operation_id, step_id, output, true)
             .await
+    }
+
+    pub async fn complete_step_at(
+        &self,
+        operation_id: String,
+        step_id: String,
+        output: EncodedPayload,
+        timing: ResultTiming,
+    ) -> Result<()> {
+        self.send_completion(
+            operation_id,
+            step_id,
+            output,
+            timing == ResultTiming::NextCommit,
+        )
+        .await
+    }
+
+    pub async fn admit_step(
+        &self,
+        operation_id: String,
+        mut writes: Vec<OwnerWrite>,
+        step_id: String,
+        kind: String,
+        input: EncodedPayload,
+        recovery: StepRecovery,
+    ) -> Result<BeginStep> {
+        writes.push(OwnerWrite::BeginStep {
+            step_id,
+            kind,
+            input,
+        });
+        let outcomes = self
+            .send_writes(operation_id, writes, recovery == StepRecovery::Rerun)
+            .await?;
+        match outcomes.into_iter().last() {
+            Some(WriteOutcome::Began(step)) => Ok(step),
+            _ => Err(Error::InvalidState(
+                "a step admission reported no begun step".to_owned(),
+            )),
+        }
     }
 
     async fn send_completion(

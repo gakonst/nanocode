@@ -15,7 +15,7 @@ use nanocode_agent_core::{
 use nanocode_durability::{
     Admission, BeginStep, Branches, DurableAgentExt, DurableOwner, DurableSession, EncodedPayload,
     InitialAcquisition, InitialSettings, JournalClaim, JournalSeed, OperationStatus, OwnerWrite,
-    SessionRecord, SharedStore, WriteOutcome, agent_error,
+    SessionRecord, SharedStore, StepRecovery, agent_error,
 };
 use serde_json::{Value, value::RawValue};
 
@@ -181,7 +181,14 @@ struct DurableExecution {
     branches: Option<Branches>,
     context_records: ArcSwap<HashSet<String>>,
     continuation_cache: Slot<context::ContinuationCache>,
-    unsaved_tool_result: AtomicBool,
+}
+
+fn recovery(kind: &str) -> StepRecovery {
+    if kind == "model_call" {
+        StepRecovery::Rerun
+    } else {
+        StepRecovery::AtMostOnce
+    }
 }
 
 impl DurableExecution {
@@ -192,7 +199,6 @@ impl DurableExecution {
             branches,
             context_records: ArcSwap::default(),
             continuation_cache: Slot::default(),
-            unsaved_tool_result: AtomicBool::new(false),
         }
     }
 
@@ -571,10 +577,17 @@ impl ExecutionPolicy for DurableExecution {
         input_json: String,
     ) -> ExecutionFuture<'a, AgentResult<ExecutionStepAdmission>> {
         Box::pin(async move {
-            let input = raw(input_json)?;
+            let input = EncodedPayload::encode(&raw(input_json)?).map_err(agent_error)?;
             let step = self
                 .owner
-                .begin_step(operation_id, step_id, kind.clone(), &input)
+                .admit_step(
+                    operation_id,
+                    Vec::new(),
+                    step_id,
+                    kind.clone(),
+                    input,
+                    recovery(&kind),
+                )
                 .await
                 .map_err(agent_error)?;
             step_admission(&self.owner, &kind, step).await
@@ -600,47 +613,36 @@ impl ExecutionPolicy for DurableExecution {
                     return Err(agent_error(error));
                 }
             };
-            let mut writes = vec![OwnerWrite::Advance { continuation }];
-            let defer = next_step
-                .as_ref()
-                .is_some_and(|(_, kind, _)| kind == "model_call")
-                && !self.unsaved_tool_result.load(Ordering::Acquire);
-            let kind = match next_step {
-                Some((step_id, kind, input_json)) => {
-                    writes.push(OwnerWrite::BeginStep {
-                        step_id,
-                        kind: kind.clone(),
-                        input: EncodedPayload::encode(&raw(input_json)?).map_err(agent_error)?,
-                    });
-                    Some(kind)
-                }
-                None => None,
-            };
-            let outcomes = if defer {
-                self.owner
-                    .commit_writes_deferred(operation_id, writes)
-                    .await
-            } else {
-                let outcomes = self.owner.commit_writes(operation_id, writes).await;
-                if outcomes.is_ok() {
+            let writes = vec![OwnerWrite::Advance { continuation }];
+            let Some((step_id, kind, input_json)) = next_step else {
+                let committed = self.owner.commit_writes(operation_id, writes).await;
+                if committed.is_ok() {
                     cache.committed();
-                    self.unsaved_tool_result.store(false, Ordering::Release);
                 }
-                outcomes
-            };
-            drop(self.continuation_cache.put(cache));
-            let outcomes = outcomes.map_err(agent_error)?;
-            let Some(kind) = kind else {
+                drop(self.continuation_cache.put(cache));
+                committed.map_err(agent_error)?;
                 return Ok(None);
             };
-            match outcomes.into_iter().last() {
-                Some(WriteOutcome::Began(step)) => {
-                    step_admission(&self.owner, &kind, step).await.map(Some)
+            let input = match raw(input_json)
+                .and_then(|input| EncodedPayload::encode(&input).map_err(agent_error))
+            {
+                Ok(input) => input,
+                Err(error) => {
+                    drop(self.continuation_cache.put(cache));
+                    return Err(error);
                 }
-                _ => Err(NanocodeError::InvalidExecutionPolicy(
-                    "fused durable write did not report the begun step".into(),
-                )),
+            };
+            let recovery = recovery(&kind);
+            let admitted = self
+                .owner
+                .admit_step(operation_id, writes, step_id, kind.clone(), input, recovery)
+                .await;
+            if admitted.is_ok() && recovery == StepRecovery::AtMostOnce {
+                cache.committed();
             }
+            drop(self.continuation_cache.put(cache));
+            let step = admitted.map_err(agent_error)?;
+            step_admission(&self.owner, &kind, step).await.map(Some)
         })
     }
 
@@ -682,7 +684,6 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let output = raw(output_json)?;
-            self.unsaved_tool_result.store(true, Ordering::Release);
             self.owner
                 .complete_step_deferred(operation_id, step_id, &output)
                 .await

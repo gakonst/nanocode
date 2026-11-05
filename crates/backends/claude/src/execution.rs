@@ -66,6 +66,8 @@ pub struct BeginRequest<'a> {
     pub input: Box<RawValue>,
 
     pub wire: Option<&'a crate::PreparedWire>,
+
+    pub recovery: nanocode_durability::StepRecovery,
 }
 
 pub struct ClaudeSteer {

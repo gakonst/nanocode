@@ -6921,9 +6921,8 @@ impl State {
                 &self.parallel_safe_tools,
             );
             if self.policy.is_some() {
-                let last = batches.len().saturating_sub(1);
-                for (number, batch) in batches.into_iter().enumerate() {
-                    let defer = number == last && batch.len() == 1;
+                for batch in batches {
+                    let timing = nanocode_durability::ResultTiming::of_batch(batch.len());
                     let mut writes = journal.take();
                     let mut calls = futures_util::stream::FuturesUnordered::new();
                     for position in batch {
@@ -6938,7 +6937,7 @@ impl State {
                                     (id, name, input),
                                     *handler,
                                     &request.events,
-                                    (writes, defer),
+                                    (writes, timing),
                                 )
                                 .await,
                             )
@@ -6974,7 +6973,7 @@ impl State {
                                         (id, name, input),
                                         *handler,
                                         &request.events,
-                                        (Vec::new(), false),
+                                        (Vec::new(), nanocode_durability::ResultTiming::Now),
                                     )
                                     .await
                                     .map(|(result, _)| result),

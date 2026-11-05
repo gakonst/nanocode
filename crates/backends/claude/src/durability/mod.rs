@@ -14,7 +14,7 @@ use nanocode_durability::{
     Admission, BeginStep, Branches, CheckpointFormat, DurableAgentExt, DurableBackendRegistration,
     DurableOwner, DurableSession, EncodedPayload, InitialAcquisition, InitialSettings,
     JournalClaim, JournalSeed, OwnerWrite, PayloadReader, SessionRecord, SharedStore, StepState,
-    StepStatus, WriteOutcome, agent_error,
+    StepStatus, agent_error,
 };
 use serde_json::{Value, value::RawValue};
 
@@ -811,7 +811,7 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
         begin: Option<BeginRequest<'a>>,
     ) -> PolicyFuture<'a, Option<Step>> {
         Box::pin(async move {
-            let mut fused = writes.iter().map(owner_write).collect::<Vec<_>>();
+            let fused = writes.iter().map(owner_write).collect::<Vec<_>>();
             let Some(begin) = begin else {
                 if !fused.is_empty() {
                     self.owner
@@ -821,24 +821,19 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                 }
                 return Ok(None);
             };
-            fused.push(OwnerWrite::BeginStep {
-                step_id: begin.step_id.clone(),
-                kind: begin.kind.clone(),
-                input: EncodedPayload::from_json(Arc::from(begin.input.get())),
-            });
-            let model = matches!(begin.kind.as_str(), "model" | "model_call");
-            let committed = if model {
-                self.owner.commit_writes_deferred(id.clone(), fused).await
-            } else {
-                self.owner.commit_writes(id.clone(), fused).await
-            };
+            let committed = self
+                .owner
+                .admit_step(
+                    id.clone(),
+                    fused,
+                    begin.step_id.clone(),
+                    begin.kind.clone(),
+                    EncodedPayload::from_json(Arc::from(begin.input.get())),
+                    begin.recovery,
+                )
+                .await;
             let begun = match committed {
-                Ok(mut outcomes) => match outcomes.pop() {
-                    Some(WriteOutcome::Began(begun)) => Ok(begun),
-                    _ => Err(nanocode_durability::Error::InvalidState(
-                        "a fused step admission returned no step outcome".to_owned(),
-                    )),
-                },
+                Ok(begun) => Ok(begun),
                 Err(nanocode_durability::Error::InvalidState(message))
                     if let Some(wire) = begin.wire =>
                 {

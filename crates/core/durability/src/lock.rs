@@ -17,29 +17,29 @@ impl LockKey {
             shared,
         }
     }
-}
 
-#[must_use]
-pub fn keys(requested: impl IntoIterator<Item = LockKey>) -> Vec<LockKey> {
-    let mut keys: Vec<LockKey> = requested.into_iter().collect();
-    keys.sort_unstable();
-    keys.dedup_by(|later, earlier| {
-        let same = (later.class, later.id) == (earlier.class, earlier.id);
-        if same {
-            earlier.shared &= later.shared;
-        }
-        same
-    });
-    keys
+    #[must_use]
+    pub fn merged(requested: impl IntoIterator<Item = Self>) -> Vec<Self> {
+        let mut keys: Vec<Self> = requested.into_iter().collect();
+        keys.sort_unstable();
+        keys.dedup_by(|later, earlier| {
+            let same = (later.class, later.id) == (earlier.class, earlier.id);
+            if same {
+                earlier.shared &= later.shared;
+            }
+            same
+        });
+        keys
+    }
 }
 
 #[derive(Clone, Debug)]
-pub enum Holds {
+pub enum LocksHeld {
     Exclusive,
     Keys(Vec<LockKey>),
 }
 
-impl Holds {
+impl LocksHeld {
     #[must_use]
     pub fn covers(&self, key: LockKey) -> bool {
         match self {

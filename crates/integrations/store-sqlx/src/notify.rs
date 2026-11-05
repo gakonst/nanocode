@@ -1,11 +1,12 @@
 use futures_util::future::BoxFuture;
-use nanocode_database::{Hub, Observe, Outbox, Wake};
+use nanocode_sync::{Wake, WakeHub, WakeOutbox};
 use sqlx::{
     Connection as _, PgConnection,
     postgres::{PgConnectOptions, PgListener, PgPoolOptions},
     query_scalar,
 };
 use std::{
+    fmt::Display,
     mem,
     sync::{
         Arc,
@@ -15,18 +16,25 @@ use std::{
 };
 use tokio::{spawn, time::sleep};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trouble {
+    Listening,
+    Connecting,
+    Sending,
+}
+
 #[derive(Clone)]
 pub struct Forwarding {
     pub wake_all: &'static str,
     pub forwarder: Arc<AtomicU32>,
     pub batch: usize,
     pub retry: Duration,
-    pub observe: Arc<dyn Observe>,
+    pub trouble: fn(Trouble, &dyn Display),
 }
 
 pub async fn listen(
     options: &PgConnectOptions,
-    hub: Hub,
+    hub: WakeHub,
     forwarding: &Forwarding,
 ) -> Result<(), sqlx::Error> {
     let pool = PgPoolOptions::new()
@@ -41,7 +49,7 @@ pub async fn listen(
         wake_all,
         forwarder,
         retry,
-        observe,
+        trouble,
         ..
     } = forwarding.clone();
     spawn(async move {
@@ -55,7 +63,7 @@ pub async fn listen(
                 }
                 Ok(_) => (None, "".into()),
                 Err(error) => {
-                    observe.listen_failed(&error);
+                    trouble(Trouble::Listening, &error);
                     sleep(retry).await;
                     (None, "".into())
                 }
@@ -68,7 +76,7 @@ pub async fn listen(
 
 pub async fn forward<S>(
     options: PgConnectOptions,
-    mut outbox: Outbox,
+    mut outbox: WakeOutbox,
     forwarding: Forwarding,
     send: S,
 ) where
@@ -79,7 +87,7 @@ pub async fn forward<S>(
         forwarder,
         batch: limit,
         retry,
-        observe,
+        trouble,
     } = forwarding;
     let mut conn: Option<PgConnection> = None;
     let mut batch = Vec::new();
@@ -102,7 +110,7 @@ pub async fn forward<S>(
                     if let Ok(pid) = query_scalar::<_, i32>("SELECT pg_backend_pid()")
                         .fetch_one(&mut connected)
                         .await
-                        .inspect_err(|error| observe.forward_unavailable(error))
+                        .inspect_err(|error| trouble(Trouble::Connecting, error))
                     {
                         forwarder.store(pid.cast_unsigned(), Ordering::Relaxed);
                         conn = Some(connected);
@@ -111,7 +119,7 @@ pub async fn forward<S>(
                         }
                     }
                 }
-                Err(error) => observe.forward_unavailable(&error),
+                Err(error) => trouble(Trouble::Connecting, &error),
             }
         }
         let Some(connected) = conn.as_mut() else {
@@ -125,7 +133,7 @@ pub async fn forward<S>(
         match send(connected, &batch).await {
             Ok(()) => batch.clear(),
             Err(error) => {
-                observe.forward_failed(&error);
+                trouble(Trouble::Sending, &error);
                 conn = None;
                 sleep(retry).await;
             }

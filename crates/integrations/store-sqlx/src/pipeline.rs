@@ -1,5 +1,5 @@
 use futures_util::future::{try_join, try_join_all, try_join3};
-use nanocode_database::{LockKey, Observe};
+use nanocode_durability_core::LockKey;
 use nanocode_sync::Atom;
 use percent_encoding::percent_decode_str;
 use rustls::{
@@ -49,7 +49,7 @@ impl Display for Unavailable {
 impl std::error::Error for Unavailable {}
 
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum PipelineError {
     #[error(transparent)]
     Unavailable(#[from] Unavailable),
     #[error(transparent)]
@@ -102,7 +102,6 @@ pub struct Pipelines {
     idle: Atom<Vec<Arc<Lane>>>,
     permits: Semaphore,
     failed: Atom<Option<Instant>>,
-    observe: Arc<dyn Observe>,
 }
 
 pub struct Locked {
@@ -115,8 +114,7 @@ impl Pipelines {
         options: &PgConnectOptions,
         size: u32,
         pipelined: Pipelined,
-        observe: Arc<dyn Observe>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, PipelineError> {
         let url = options.to_url_lossy();
         let query = |key: &str| {
             url.query_pairs()
@@ -164,7 +162,9 @@ impl Pipelines {
             key: query("sslkey"),
         };
         if tls.cert.is_some() != tls.key.is_some() {
-            return Err(Error::Said("sslcert and sslkey must be given together"));
+            return Err(PipelineError::Said(
+                "sslcert and sslkey must be given together",
+            ));
         }
         Ok(Self {
             config,
@@ -173,11 +173,10 @@ impl Pipelines {
             idle: Atom::default(),
             permits: Semaphore::new(size.max(1) as usize),
             failed: Atom::new(None),
-            observe,
         })
     }
 
-    pub async fn probe(&self) -> Result<(), Error> {
+    pub async fn probe(&self) -> Result<(), PipelineError> {
         let opened = async {
             let client = self.open().await?;
             client.simple_query("").await?;
@@ -185,13 +184,13 @@ impl Pipelines {
         };
         timeout(self.pipelined.deadline, opened)
             .await
-            .unwrap_or(Err(Error::Said("connecting timed out")))
+            .unwrap_or(Err(PipelineError::Said("connecting timed out")))
     }
 
-    async fn tls(&self) -> Result<Option<MakeRustlsConnect>, Error> {
-        let data = async |input: &str| -> Result<Vec<u8>, Error> {
+    async fn tls(&self) -> Result<Option<MakeRustlsConnect>, PipelineError> {
+        let data = async |input: &str| -> Result<Vec<u8>, PipelineError> {
             Ok(match input.strip_prefix("file: ") {
-                Some(path) => read(path).await.map_err(|source| Error::Read {
+                Some(path) => read(path).await.map_err(|source| PipelineError::Read {
                     path: path.to_owned(),
                     source,
                 })?,
@@ -214,7 +213,7 @@ impl Pipelines {
             let mut store = RootCertStore::from_iter(TLS_SERVER_ROOTS.iter().cloned());
             if let Some(root) = root {
                 for cert in CertificateDer::pem_slice_iter(&data(root).await?) {
-                    store.add(cert.map_err(|source| Error::Certificate {
+                    store.add(cert.map_err(|source| PipelineError::Certificate {
                         root: root.clone(),
                         source,
                     })?)?;
@@ -264,10 +263,10 @@ impl Pipelines {
             .is_none_or(|at| at.elapsed() >= self.pipelined.backoff)
     }
 
-    async fn connect(&self) -> Result<Lane, Error> {
+    async fn connect(&self) -> Result<Lane, PipelineError> {
         let connected = timeout(self.pipelined.deadline, self.dial())
             .await
-            .unwrap_or(Err(Error::Said("connecting timed out")));
+            .unwrap_or(Err(PipelineError::Said("connecting timed out")));
         match connected {
             Ok(lane) => {
                 self.failed.set(None);
@@ -275,14 +274,12 @@ impl Pipelines {
             }
             Err(error) => {
                 self.failed.set(Some(Instant::now()));
-                let said = chain(&error);
-                self.observe.pipeline_failed(&said);
-                Err(Unavailable(said).into())
+                Err(Unavailable(chain(&error)).into())
             }
         }
     }
 
-    async fn open(&self) -> Result<Client, Error> {
+    async fn open(&self) -> Result<Client, PipelineError> {
         let client = match self.tls().await? {
             None => {
                 let (client, connection) = self.config.connect(NoTls).await?;
@@ -298,7 +295,7 @@ impl Pipelines {
         Ok(client)
     }
 
-    async fn dial(&self) -> Result<Lane, Error> {
+    async fn dial(&self) -> Result<Lane, PipelineError> {
         let client = self.open().await?;
         if let Some(Alive {
             statement,
@@ -309,10 +306,10 @@ impl Pipelines {
             let row = client.query_one(statement, &[]).await?;
             let (alive, replica): (Option<bool>, bool) = (row.try_get(0)?, row.try_get(1)?);
             if replica {
-                return Err(Error::Said(standby));
+                return Err(PipelineError::Said(standby));
             }
             if alive != Some(true) {
-                return Err(Error::Said(lapsed));
+                return Err(PipelineError::Said(lapsed));
             }
         }
         Ok(Lane {
@@ -334,7 +331,7 @@ impl Pipelines {
             .is_ok_and(|pinged| pinged.is_ok())
     }
 
-    async fn prepare(lane: &Lane, sql: &str) -> Result<Statement, Error> {
+    async fn prepare(lane: &Lane, sql: &str) -> Result<Statement, PipelineError> {
         if let Some(statement) = lane.prepared.read(|prepared| prepared.get(sql).cloned()) {
             return Ok(statement);
         }
@@ -344,7 +341,7 @@ impl Pipelines {
         Ok(statement)
     }
 
-    async fn lane(&self) -> Result<Arc<Lane>, Error> {
+    async fn lane(&self) -> Result<Arc<Lane>, PipelineError> {
         match self.idle.update(|idle| idle.pop()) {
             Some(lane) if self.fresh(&lane).await => Ok(lane),
             _ => Ok(Arc::new(self.connect().await?)),
@@ -356,7 +353,7 @@ impl Pipelines {
         sql: &str,
         params: &[&(dyn ToSql + Sync)],
         lent: impl FnOnce() -> G,
-    ) -> Result<Vec<Row>, Error> {
+    ) -> Result<Vec<Row>, PipelineError> {
         let _permit = self.permits.acquire().await?;
         let lane = self.lane().await?;
         let _lent = lent();
@@ -367,7 +364,7 @@ impl Pipelines {
         )
         .await;
         let Ok(ran) = ran else {
-            return Err(Error::Said("pipelined statement timed out"));
+            return Err(PipelineError::Said("pipelined statement timed out"));
         };
         if !lane.client.is_closed() {
             lane.used.set(Instant::now());
@@ -381,7 +378,7 @@ impl Pipelines {
         keys: &[LockKey],
         statements: &[(&str, &[&(dyn ToSql + Sync)])],
         lent: impl FnOnce() -> G,
-    ) -> Result<Locked, Error> {
+    ) -> Result<Locked, PipelineError> {
         let _permit = self.permits.acquire().await?;
         let lane = self.lane().await?;
         let _lent = lent();
@@ -427,7 +424,7 @@ impl Pipelines {
         .await;
         let Ok(ran) = ran else {
             drop(lane);
-            return Err(Error::Said("pipelined locked write timed out"));
+            return Err(PipelineError::Said("pipelined locked write timed out"));
         };
         if !client.is_closed() {
             lane.used.set(Instant::now());
@@ -440,6 +437,13 @@ impl Pipelines {
             collected: collected.unwrap_or_default(),
         })
     }
+}
+
+pub fn collected_wakes(collected: &str) -> impl Iterator<Item = (&str, &str)> {
+    collected
+        .split('\u{1e}')
+        .filter(|wake| !wake.is_empty())
+        .map(|wake| wake.split_once('\u{1f}').unwrap_or((wake, "")))
 }
 
 fn chain(error: &(dyn std::error::Error + 'static)) -> String {

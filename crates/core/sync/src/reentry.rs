@@ -1,4 +1,4 @@
-use nanocode_sync::Atom;
+use crate::Atom;
 use std::{
     collections::HashMap,
     sync::{
@@ -15,14 +15,21 @@ use tokio::{
     time::timeout_at,
 };
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-#[error("this task asked for a connection it already holds")]
+#[derive(Clone, Copy, Debug)]
 pub struct Reentrant;
 
-#[derive(Clone, Default)]
-pub struct Holder(Arc<Claims>);
+impl std::fmt::Display for Reentrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("this task already holds a claim it waited to see released")
+    }
+}
 
-impl Holder {
+impl std::error::Error for Reentrant {}
+
+#[derive(Clone, Default)]
+pub struct Reentry(Arc<Claims>);
+
+impl Reentry {
     #[must_use]
     pub fn held_here(&self) -> Option<u64> {
         let owner = owner();
@@ -31,7 +38,7 @@ impl Holder {
             .read(|owners| owners.get(&owner).map(|held| held.claim))
     }
 
-    pub async fn unheld(&self, wait: Duration) -> Result<Option<Duration>, Reentrant> {
+    pub async fn unclaimed(&self, wait: Duration) -> Result<Option<Duration>, Reentrant> {
         let owner = owner();
         let started = Instant::now();
         let mut deadline = started + wait;
@@ -65,7 +72,7 @@ impl Holder {
     }
 
     #[must_use]
-    pub fn claim(&self) -> Holding {
+    pub fn claim(&self) -> Claim {
         let owner = owner();
         let claim = self.0.next.fetch_add(1, Ordering::Relaxed) + 1;
         let wake = self.0.owners.update(|owners| {
@@ -81,13 +88,13 @@ impl Holder {
         if let Some(wake) = wake {
             wake.notify_waiters();
         }
-        Holding(self.clone(), owner)
+        Claim(self.clone(), owner)
     }
 }
 
-pub struct Holding(Holder, Owner);
+pub struct Claim(Reentry, Owner);
 
-impl Drop for Holding {
+impl Drop for Claim {
     fn drop(&mut self) {
         let Self(holder, owner) = self;
         let released = holder.0.owners.update(|owners| {

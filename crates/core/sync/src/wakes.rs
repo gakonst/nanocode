@@ -1,5 +1,4 @@
-use crate::Observe;
-use nanocode_sync::Atom;
+use crate::Atom;
 use std::{
     collections::{HashMap, HashSet},
     hash::{BuildHasher, RandomState},
@@ -20,22 +19,22 @@ type Waiting = HashMap<Arc<str>, Vec<(u64, Arc<Notify>)>>;
 pub struct Wake {
     pub channel: String,
     pub payload: String,
-    pub recorded: bool,
+    pub collected: bool,
 }
 
 impl Wake {
     #[must_use]
-    pub fn new(channel: &str, payload: &str, recorded: bool) -> Self {
+    pub fn new(channel: &str, payload: &str, collected: bool) -> Self {
         Self {
             channel: channel.to_owned(),
             payload: payload.to_owned(),
-            recorded,
+            collected,
         }
     }
 }
 
 pub struct Wakeup {
-    hub: Hub,
+    hub: WakeHub,
     lane: &'static str,
     key: Arc<str>,
     id: u64,
@@ -64,9 +63,9 @@ impl Drop for Wakeup {
 }
 
 #[derive(Clone)]
-pub struct Hub(Arc<Inner>);
+pub struct WakeHub(Arc<Inner>);
 
-impl Hub {
+impl WakeHub {
     #[must_use]
     pub fn new(
         channels: impl IntoIterator<Item = &'static str>,
@@ -149,12 +148,12 @@ impl Hub {
     }
 }
 
-pub struct Outbox {
+pub struct WakeOutbox {
     wakes: mpsc::Receiver<Wake>,
     overflow: Arc<AtomicBool>,
 }
 
-impl Outbox {
+impl WakeOutbox {
     pub async fn recv_many(&mut self, batch: &mut Vec<Wake>, limit: usize) -> usize {
         self.wakes.recv_many(batch, limit).await
     }
@@ -166,18 +165,18 @@ impl Outbox {
 }
 
 pub struct Wakes {
-    hub: Hub,
+    hub: WakeHub,
     others: mpsc::Sender<Wake>,
     overflow: Arc<AtomicBool>,
-    observe: Arc<dyn Observe>,
+    overflowed: fn(),
 }
 
 impl Wakes {
     #[must_use]
-    pub fn new(hub: Hub, queue: usize, observe: Arc<dyn Observe>) -> (Self, Outbox) {
+    pub fn new(hub: WakeHub, queue: usize, overflowed: fn()) -> (Self, WakeOutbox) {
         let (others, wakes) = mpsc::channel(queue);
         let overflow = Arc::new(AtomicBool::new(false));
-        let outbox = Outbox {
+        let outbox = WakeOutbox {
             wakes,
             overflow: Arc::clone(&overflow),
         };
@@ -186,35 +185,27 @@ impl Wakes {
                 hub,
                 others,
                 overflow,
-                observe,
+                overflowed,
             },
             outbox,
         )
     }
 
-    pub fn deliver(&self, collected: &str, woken: &[(&'static str, Arc<str>)]) {
+    pub fn deliver<'a>(&self, wakes: impl IntoIterator<Item = (&'a str, &'a str, bool)>) {
         let mut seen = HashSet::new();
-        let mut send = |channel, payload, recorded| {
+        for (channel, payload, collected) in wakes {
             if seen.insert((channel, payload)) {
                 self.hub.wake(Some(channel), &Arc::from(payload));
                 if self
                     .others
-                    .try_send(Wake::new(channel, payload, recorded))
+                    .try_send(Wake::new(channel, payload, collected))
                     .is_err()
                 {
-                    self.observe.wakes_overflowed();
+                    (self.overflowed)();
                     self.overflow.store(true, Ordering::Relaxed);
                 }
             }
-        };
-        collected
-            .split('\u{1e}')
-            .filter(|wake| !wake.is_empty())
-            .map(|wake| wake.split_once('\u{1f}').unwrap_or((wake, "")))
-            .for_each(|(channel, payload)| send(channel, payload, true));
-        woken
-            .iter()
-            .for_each(|(channel, key)| send(*channel, &**key, false));
+        }
     }
 }
 
@@ -257,7 +248,7 @@ struct Inner {
     hooks: Atom<Vec<Hook>>,
 }
 
-pub async fn changed(wakeups: &mut Wakeups, key: &str) {
+pub async fn woken(wakeups: &mut Wakeups, key: &str) {
     loop {
         match wakeups.recv().await {
             Ok(id) if id.is_empty() || *id == *key => return,

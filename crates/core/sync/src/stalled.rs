@@ -1,4 +1,3 @@
-use crate::Observe;
 use std::{
     future::Future,
     pin::{Pin, pin},
@@ -10,11 +9,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub struct Watch {
+pub struct StalledWaits {
     epoch: Instant,
     slots: Box<[Wait]>,
     next: AtomicUsize,
-    observe: Arc<dyn Observe>,
+    unwatched: fn(),
 }
 
 #[derive(Default)]
@@ -25,14 +24,14 @@ struct Wait {
     polled: AtomicU64,
 }
 
-impl Watch {
+impl StalledWaits {
     #[must_use]
-    pub fn new(slots: usize, observe: Arc<dyn Observe>) -> Self {
+    pub fn new(slots: usize, unwatched: fn()) -> Self {
         Self {
             epoch: Instant::now(),
             slots: (0..slots).map(|_| Wait::default()).collect(),
             next: AtomicUsize::new(0),
-            observe,
+            unwatched,
         }
     }
 
@@ -52,7 +51,7 @@ impl Watch {
                     .is_ok()
             });
         let Some(slot) = slot else {
-            self.observe.wait_unwatched();
+            (self.unwatched)();
             return work.await;
         };
         let _freed = Freed(slot);
@@ -93,7 +92,7 @@ fn micros(duration: Duration) -> u64 {
 
 struct Relay {
     waker: Waker,
-    watch: &'static Watch,
+    watch: &'static StalledWaits,
     slot: &'static Wait,
     generation: u64,
 }
@@ -113,7 +112,7 @@ impl Wake for Relay {
 
 struct Watched<'a, F> {
     work: Pin<&'a mut F>,
-    watch: &'static Watch,
+    watch: &'static StalledWaits,
     slot: &'static Wait,
     generation: u64,
     relay: Option<(Waker, Waker)>,

@@ -1,6 +1,16 @@
 #![cfg(not(target_family = "wasm"))]
 
+mod lock;
+mod notify;
+mod pipeline;
+
 use std::ops::DerefMut;
+
+pub use lock::{begin, begin_exclusive, held};
+pub use notify::{Forwarding, Trouble, forward, listen};
+pub use pipeline::{
+    Alive, Locked, PipelineError, Pipelined, Pipelines, Unavailable, collected_wakes,
+};
 
 pub use nanocode_durability_core::{Collected, Unreachable};
 use nanocode_durability_core::{

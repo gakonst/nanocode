@@ -1,5 +1,6 @@
 mod blob;
 mod kv;
+mod lock;
 mod payload;
 mod row;
 mod sql;
@@ -9,6 +10,7 @@ mod store;
 
 pub use blob::{BlobKey, BlobStore, BlobUrl, SharedBlobStore, base64_data_url, get_blob};
 pub use kv::{KeyValue, KeyValueStore, Versioned};
+pub use lock::{LockKey, LocksHeld};
 pub use payload::EncodedPayload;
 pub use row::RowStore;
 pub use sql::{

@@ -3484,33 +3484,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanocode-database"
-version = "0.6.7"
-dependencies = [
- "futures-util",
- "nanocode-sync",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "nanocode-database-postgres"
-version = "0.6.7"
-dependencies = [
- "futures-util",
- "nanocode-database",
- "nanocode-sync",
- "percent-encoding",
- "rustls",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "webpki-roots",
-]
-
-[[package]]
 name = "nanocode-decisions"
 version = "0.6.7"
 dependencies = [
@@ -3802,9 +3775,17 @@ dependencies = [
 name = "nanocode-store-sqlx"
 version = "0.6.7"
 dependencies = [
+ "futures-util",
  "nanocode-durability-core",
  "nanocode-sync",
+ "percent-encoding",
+ "rustls",
  "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "webpki-roots",
 ]
 
 [[package]]

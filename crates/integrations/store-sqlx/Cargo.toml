@@ -10,12 +10,20 @@ authors.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Postgres durability over a host's sqlx pool or transaction"
+description = "Postgres durability over a host's sqlx pool or transaction, lock-taking BEGINs, pipelined locked writes, LISTEN and forwarded NOTIFY"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+futures-util.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-sync.workspace = true
+percent-encoding = "2"
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 sqlx.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "rt", "sync", "time"] }
+tokio-postgres.workspace = true
+tokio-postgres-rustls = "0.13"
+webpki-roots = "1"
 
 [lints]
 workspace = true

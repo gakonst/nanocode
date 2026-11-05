@@ -5,7 +5,6 @@ members = [
     "crates/runtime/agent-config",
     "crates/core/agent",
     "crates/core/agent-types",
-    "crates/core/database",
     "crates/core/durability",
     "crates/core/types-core",
     "crates/core/process",
@@ -45,7 +44,6 @@ members = [
     "crates/integrations/sandbox",
     "crates/integrations/decisions",
     "crates/integrations/observability",
-    "crates/integrations/database-postgres",
     "crates/integrations/store-postgres",
     "crates/integrations/store-sqlx",
     "crates/integrations/store-sqlite",
@@ -80,8 +78,6 @@ core-foundation-sys = "0.8.7"
 cursor-overlay = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92" }
 nanocode-backend-claude-tools = { version = "0.6.7", path = "crates/backends/claude/tools" }
 nanocode-agent-types = { version = "0.6.7", path = "crates/core/agent-types" }
-nanocode-database = { version = "0.6.7", path = "crates/core/database" }
-nanocode-database-postgres = { version = "0.6.7", path = "crates/integrations/database-postgres" }
 nanocode-durability-core = { version = "0.6.7", path = "crates/core/durability" }
 nanocode-types-core = { version = "0.6.7", path = "crates/core/types-core" }
 nanocode-agent-config = { version = "0.6.7", path = "crates/runtime/agent-config" }

@@ -1,4 +1,4 @@
-use nanocode_database::LockKey;
+use nanocode_durability_core::LockKey;
 use sqlx::{PgConnection, query_scalar};
 
 #[must_use]

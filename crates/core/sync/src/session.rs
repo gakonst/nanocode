@@ -1,6 +1,5 @@
-use crate::Observe;
+use crate::{Lines, Owned, Turn};
 use futures_util::future::BoxFuture;
-use nanocode_sync::{Lines, Owned, Turn};
 use std::{
     fmt::{Debug, Display},
     sync::{
@@ -44,20 +43,50 @@ pub trait Locker: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<(), Self::Error>>;
 
     fn discard(&self, connection: &mut Self::Connection);
+
+    fn state(&self, _kind: &'static str, _state: &'static str, _change: f64) {}
+
+    fn late(&self, _kind: &'static str, _waited: Duration) {}
+
+    fn waited(&self, _kind: &'static str, _waited: Duration) {}
+
+    fn starved(&self, _kind: &'static str) {}
+
+    fn lost(&self, _kind: &'static str, _error: &Self::Error) {}
+
+    fn unreleased(&self, _kind: &'static str, _error: &Self::Error) {}
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum SessionLockError<E> {
-    #[error("waiting for the {kind} session lock passed its {deadline:?} deadline")]
     Late {
         kind: &'static str,
         deadline: Duration,
     },
-    #[error("no session lock connection came free for {kind} within {wait:?}")]
-    Starved { kind: &'static str, wait: Duration },
-    #[error("{0}")]
+    Starved {
+        kind: &'static str,
+        wait: Duration,
+    },
     Backend(E),
 }
+
+impl<E: Display> Display for SessionLockError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Late { kind, deadline } => write!(
+                formatter,
+                "waiting for the {kind} session lock passed its {deadline:?} deadline"
+            ),
+            Self::Starved { kind, wait } => write!(
+                formatter,
+                "no session lock connection came free for {kind} within {wait:?}"
+            ),
+            Self::Backend(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: Debug + Display> std::error::Error for SessionLockError<E> {}
 
 pub struct SessionLocks<L> {
     locker: Arc<L>,
@@ -65,23 +94,17 @@ pub struct SessionLocks<L> {
     poll: Duration,
     keepalive: Duration,
     try_wait: Duration,
-    observe: Arc<dyn Observe>,
 }
 
 impl<L: Locker> SessionLocks<L> {
     #[must_use]
-    pub fn new(
-        locker: L,
-        (poll, keepalive, try_wait): (Duration, Duration, Duration),
-        observe: Arc<dyn Observe>,
-    ) -> Self {
+    pub fn new(locker: L, (poll, keepalive, try_wait): (Duration, Duration, Duration)) -> Self {
         Self {
             locker: Arc::new(locker),
             lines: Lines::default(),
             poll,
             keepalive,
             try_wait,
-            observe,
         }
     }
 
@@ -93,10 +116,10 @@ impl<L: Locker> SessionLocks<L> {
     ) -> Result<SessionLock<L>, SessionLockError<L::Error>> {
         let asked = Instant::now();
         let until = tokio::time::Instant::from_std(asked + deadline);
-        let waiting = Gauge::new(&self.observe, kind, "waiting");
+        let waiting = Gauge::new(&self.locker, kind, "waiting");
         let keys = sorted(keys);
         let late = || {
-            self.observe.session_lock_late(kind, asked.elapsed());
+            self.locker.late(kind, asked.elapsed());
             SessionLockError::Late { kind, deadline }
         };
         let mut queued = Vec::with_capacity(keys.len());
@@ -114,7 +137,7 @@ impl<L: Locker> SessionLocks<L> {
                 .map_err(SessionLockError::Backend)?;
             if let Some(lock) = self.taken(connection, kind, &keys, &mut queued).await? {
                 drop(waiting);
-                self.observe.session_lock_waited(kind, asked.elapsed());
+                self.locker.waited(kind, asked.elapsed());
                 return Ok(lock);
             }
             let now = tokio::time::Instant::now();
@@ -141,7 +164,7 @@ impl<L: Locker> SessionLocks<L> {
         let connection = timeout(self.try_wait, self.locker.connect())
             .await
             .map_err(|_| {
-                self.observe.session_lock_starved(kind);
+                self.locker.starved(kind);
                 SessionLockError::Starved {
                     kind,
                     wait: self.try_wait,
@@ -170,17 +193,13 @@ impl<L: Locker> SessionLocks<L> {
         let lost = Arc::new(AtomicBool::new(false));
         let keepalive = {
             let (connection, lost) = (Arc::clone(&connection), Arc::clone(&lost));
-            let (locker, observe, every) = (
-                Arc::clone(&self.locker),
-                Arc::clone(&self.observe),
-                self.keepalive,
-            );
+            let (locker, every) = (Arc::clone(&self.locker), self.keepalive);
             spawn(async move {
                 loop {
                     sleep(every).await;
                     let pinged = locker.ping(&mut *connection.acquire().await).await;
                     if let Err(error) = pinged {
-                        observe.session_lock_lost(kind, &error);
+                        locker.lost(kind, &error);
                         lost.store(true, Ordering::SeqCst);
                         return;
                     }
@@ -195,8 +214,7 @@ impl<L: Locker> SessionLocks<L> {
             lost,
             keepalive,
             queued: std::mem::take(queued),
-            observe: Arc::clone(&self.observe),
-            _held: Gauge::new(&self.observe, kind, "held"),
+            _held: Gauge::new(&self.locker, kind, "held"),
         }))
     }
 }
@@ -209,8 +227,7 @@ pub struct SessionLock<L: Locker> {
     lost: Arc<AtomicBool>,
     keepalive: JoinHandle<()>,
     queued: Vec<Turn>,
-    observe: Arc<dyn Observe>,
-    _held: Gauge,
+    _held: Gauge<L>,
 }
 
 impl<L: Locker> SessionLock<L> {
@@ -231,11 +248,11 @@ impl<L: Locker> Drop for SessionLock<L> {
             Arc::clone(&self.connection),
             std::mem::take(&mut self.queued),
         );
-        let (kind, observe) = (self.kind, Arc::clone(&self.observe));
+        let kind = self.kind;
         spawn(async move {
             let mut connection = connection.acquire().await;
             if let Err(error) = locker.release(&mut connection).await {
-                observe.session_lock_unreleased(kind, &error);
+                locker.unreleased(kind, &error);
                 locker.discard(&mut connection);
             }
             drop(queued);
@@ -243,18 +260,18 @@ impl<L: Locker> Drop for SessionLock<L> {
     }
 }
 
-struct Gauge(Arc<dyn Observe>, &'static str, &'static str);
+struct Gauge<L: Locker>(Arc<L>, &'static str, &'static str);
 
-impl Gauge {
-    fn new(observe: &Arc<dyn Observe>, kind: &'static str, state: &'static str) -> Self {
-        observe.session_lock_state(kind, state, 1.0);
-        Self(Arc::clone(observe), kind, state)
+impl<L: Locker> Gauge<L> {
+    fn new(locker: &Arc<L>, kind: &'static str, state: &'static str) -> Self {
+        locker.state(kind, state, 1.0);
+        Self(Arc::clone(locker), kind, state)
     }
 }
 
-impl Drop for Gauge {
+impl<L: Locker> Drop for Gauge<L> {
     fn drop(&mut self) {
-        self.0.session_lock_state(self.1, self.2, -1.0);
+        self.0.state(self.1, self.2, -1.0);
     }
 }
 

@@ -11,9 +11,16 @@ const KEPT: usize = 1024;
 
 type Commit<T> = Arc<dyn Fn(String, Vec<T>) -> BoxFuture<'static, ()> + Send + Sync>;
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-#[error("not committed")]
+#[derive(Clone, Copy, Debug)]
 pub struct NotCommitted;
+
+impl std::fmt::Display for NotCommitted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("not committed")
+    }
+}
+
+impl std::error::Error for NotCommitted {}
 
 pub struct Lanes<T> {
     queue: OnceLock<Sender<(String, T)>>,

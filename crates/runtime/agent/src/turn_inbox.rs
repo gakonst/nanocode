@@ -33,6 +33,10 @@ pub trait InboxHost: Send + Sync + 'static {
         false
     }
 
+    fn live_progress(&self) -> bool {
+        false
+    }
+
     fn publish_live(&self, _events: Vec<LoggedEvent>) -> HostFuture<'_, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
@@ -180,6 +184,7 @@ enum Role {
     Delta(Streamed, String, String),
     Final(Streamed, String),
     Boundary { ends_run: bool },
+    Progress,
     Other,
 }
 
@@ -208,6 +213,9 @@ fn role(event: &SessionEvent) -> Role {
         | AgentEventKind::ModelCallFailed
         | AgentEventKind::ModelAttemptFailed
         | AgentEventKind::ModelAttemptRetrying => return Role::Boundary { ends_run: false },
+        AgentEventKind::ModelCallStarted | AgentEventKind::ModelAttemptStarted => {
+            return Role::Progress;
+        }
         _ => return Role::Other,
     };
     let fields: StreamFields = serde_json::from_str(event.payload.get()).unwrap_or_default();
@@ -496,6 +504,8 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
     fn route(
         streams: &mut Vec<Stream>,
         events: Vec<SessionEvent>,
+        deltas: bool,
+        progress: bool,
     ) -> Result<Vec<(bool, Vec<SessionEvent>)>, String> {
         let encode = |error: serde_json::Error| format!("encode agent event: {error}");
         let mut segments: Vec<(bool, Vec<SessionEvent>)> = Vec::new();
@@ -505,12 +515,13 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
         };
         for event in events {
             match role(&event) {
-                Role::Delta(kind, key, text) => {
+                Role::Delta(kind, key, text) if deltas => {
                     push(
                         true,
                         stream(streams, kind, key, &text, event).map_err(encode)?,
                     );
                 }
+                Role::Progress if progress => push(true, event),
                 Role::Final(kind, key) => {
                     streams.retain(|entry| entry.kind != kind || entry.key != key);
                     push(false, event);
@@ -521,7 +532,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
                     }
                     push(false, event);
                 }
-                Role::Other => push(false, event),
+                Role::Delta(..) | Role::Progress | Role::Other => push(false, event),
             }
         }
         Ok(segments)
@@ -531,10 +542,16 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
 impl<H: Sql + Send + Sync + ?Sized + 'static> EventSink for LogSink<H> {
     fn deliver(&self, events: Vec<SessionEvent>) -> HostFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            if !self.0.host.live_deltas() {
+            let (deltas, progress) = (self.0.host.live_deltas(), self.0.host.live_progress());
+            if !deltas && !progress {
                 return self.persist(events).await;
             }
-            let segments = Self::route(&mut *self.0.streams.acquire().await, events)?;
+            let segments = Self::route(
+                &mut *self.0.streams.acquire().await,
+                events,
+                deltas,
+                progress,
+            )?;
             for (live, events) in segments {
                 if live {
                     self.publish_live(events).await?;

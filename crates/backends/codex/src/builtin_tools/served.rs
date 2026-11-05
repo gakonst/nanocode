@@ -1,4 +1,6 @@
 use std::{
+    cmp::Reverse,
+    collections::BTreeMap,
     fmt::Display,
     fs::{self, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom},
@@ -15,14 +17,29 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use nanocode_sync::Atom;
 use nanocode_tools::ToolDefinition;
 use serde::Deserialize;
-use serde_json::{Value, json, value::to_raw_value};
+use serde_json::{
+    Value, json,
+    value::{RawValue, to_raw_value},
+};
 
 use super::{
-    StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult,
-    workspace_runtime::WorkspaceToolRuntime,
+    StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolOutputBody, ToolOutputContent,
+    ToolResult, workspace_runtime::WorkspaceToolRuntime,
 };
 
 pub type ServedReport = fn(&'static str, &dyn Display);
+
+pub type Redactions = Arc<dyn Fn() -> Vec<(String, String)> + Send + Sync>;
+
+const PROXY_VARIABLES: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
+const MIN_PROXY_PASSWORD: usize = 8;
 
 pub struct ServedDirectories {
     file: PathBuf,
@@ -144,6 +161,7 @@ pub struct ServedTools {
     runtime: Arc<WorkspaceToolRuntime>,
     read_file: ToolDefinition,
     chunk: u64,
+    redactions: Option<Redactions>,
 }
 
 impl ServedTools {
@@ -159,7 +177,14 @@ impl ServedTools {
             runtime,
             read_file,
             chunk,
+            redactions: None,
         }
+    }
+
+    #[must_use]
+    pub fn redacting(mut self, redactions: Redactions) -> Self {
+        self.redactions = Some(redactions);
+        self
     }
 }
 
@@ -174,6 +199,7 @@ impl nanocode_tool_host::ToolSource for ServedTools {
                 kind,
                 directories: Arc::clone(&self.directories),
                 runtime: Arc::clone(&self.runtime),
+                redactions: self.redactions.clone(),
             });
         }
         builder.add(ReadFile {
@@ -188,6 +214,7 @@ struct ServedShell {
     kind: StandardTool,
     directories: Arc<ServedDirectories>,
     runtime: Arc<WorkspaceToolRuntime>,
+    redactions: Option<Redactions>,
 }
 
 #[async_trait::async_trait]
@@ -214,15 +241,145 @@ impl Tool for ServedShell {
                 object.remove(field);
             }
         }
-        Ok(self
+        let output = self
             .runtime
             .execute_tool(
                 self.kind.name(),
                 ToolInput::Function(to_raw_value(&args)?),
                 context,
             )
-            .await)
+            .await;
+        Ok(match &self.redactions {
+            Some(redactions) => redact(output, &redactions()),
+            None => output,
+        })
     }
+}
+
+#[must_use]
+pub fn proxy_redactions(secrets: Option<PathBuf>) -> Redactions {
+    Arc::new(move || {
+        let stored: BTreeMap<String, String> = secrets
+            .as_ref()
+            .and_then(|file| fs::read(file).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut forms = Vec::new();
+        for name in PROXY_VARIABLES {
+            let values = std::env::var(name)
+                .ok()
+                .into_iter()
+                .chain(stored.get(name).cloned());
+            for url in values {
+                credential_forms(name, &url, &mut forms);
+            }
+        }
+        forms.sort_by_key(|(form, _)| Reverse(form.len()));
+        forms.dedup_by(|a, b| a.0 == b.0);
+        forms
+    })
+}
+
+fn credential_forms(name: &str, url: &str, forms: &mut Vec<(String, String)>) {
+    let Some((_, rest)) = url.split_once("://") else {
+        return;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let Some((user, password)) = authority
+        .rsplit_once('@')
+        .and_then(|(userinfo, _)| userinfo.split_once(':'))
+    else {
+        return;
+    };
+    if password.len() < MIN_PROXY_PASSWORD {
+        return;
+    }
+    let placeholder = format!("[secret {name}]");
+    let (decoded_user, decoded_password) = (percent_decode(user), percent_decode(password));
+    for form in [
+        password.to_owned(),
+        decoded_password.clone(),
+        BASE64.encode(format!("{user}:{password}")),
+        BASE64.encode(format!("{decoded_user}:{decoded_password}")),
+    ] {
+        forms.push((form, placeholder.clone()));
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        let hex = bytes
+            .get(index + 1..index + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (byte, hex) {
+            (b'%', Some(decoded)) => {
+                out.push(decoded);
+                index += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn scrub(text: &mut String, forms: &[(String, String)]) -> bool {
+    let mut found = false;
+    for (form, placeholder) in forms {
+        if text.contains(form.as_str()) {
+            *text = text.replace(form.as_str(), placeholder);
+            found = true;
+        }
+    }
+    found
+}
+
+fn scrub_json(value: &mut Value, forms: &[(String, String)]) -> bool {
+    match value {
+        Value::String(text) => scrub(text, forms),
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |found, item| scrub_json(item, forms) | found),
+        Value::Object(fields) => fields
+            .values_mut()
+            .fold(false, |found, item| scrub_json(item, forms) | found),
+        _ => false,
+    }
+}
+
+fn redact(mut output: ToolOutput, forms: &[(String, String)]) -> ToolOutput {
+    if forms.is_empty() {
+        return output;
+    }
+    match &mut output.output {
+        ToolOutputBody::Text(text) => {
+            scrub(text, forms);
+        }
+        ToolOutputBody::Content(items) => {
+            for item in items {
+                if let ToolOutputContent::InputText { text } = item {
+                    scrub(text, forms);
+                }
+            }
+        }
+    }
+    if let Some(metadata) = &output.metadata {
+        let mut text = metadata.get().to_owned();
+        if scrub(&mut text, forms) {
+            output.metadata = RawValue::from_string(text).ok();
+        }
+    }
+    let mut structured = output.structured_result();
+    if scrub_json(&mut structured, forms) {
+        output = output.with_structured_result(structured);
+    }
+    output
 }
 
 struct ReadFile {

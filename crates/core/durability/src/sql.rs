@@ -119,7 +119,7 @@ const WRITE_FORMAT: Dialects = [
     "INSERT INTO nanocode_formats (component, version) VALUES ($1::text, CAST($2::text AS BIGINT)) ON CONFLICT (component) DO UPDATE SET version = excluded.version",
 ];
 
-async fn run_checked<H: Sql + ?Sized>(
+pub(crate) async fn run_checked<H: Sql + ?Sized>(
     host: &H,
     operation: &'static str,
     statements: &[SqlStatement<'_>],
@@ -341,7 +341,7 @@ impl<I: Iterator<Item = T>, T: serde::Serialize> serde::Serialize for Each<I> {
     }
 }
 
-fn keys_json(keys: impl Iterator<Item = impl AsRef<str>>) -> Result<String, StoreError> {
+pub(crate) fn keys_json(keys: impl Iterator<Item = impl AsRef<str>>) -> Result<String, StoreError> {
     serde_json::to_string(&Each(std::cell::Cell::new(Some(keys.map(Text)))))
         .map_err(|error| StoreError::NotCommitted(format!("record keys: {error}")))
 }
@@ -374,7 +374,7 @@ fn values_json(records: &[StoreRecord]) -> Result<String, StoreError> {
     )
 }
 
-const fn statement<'a>(
+pub(crate) const fn statement<'a>(
     dialect: SqlDialect,
     sql: &Dialects,
     params: Vec<&'a str>,
@@ -385,24 +385,24 @@ const fn statement<'a>(
     }
 }
 
-fn invalid(detail: impl std::fmt::Display) -> StoreError {
+pub(crate) fn invalid(detail: impl std::fmt::Display) -> StoreError {
     StoreError::Backend(format!("SQL host answered an invalid row: {detail}"))
 }
 
-fn text(row: &SqlRow, column: usize) -> Result<&str, StoreError> {
+pub(crate) fn text(row: &SqlRow, column: usize) -> Result<&str, StoreError> {
     row.get(column)
         .and_then(Option::as_deref)
         .ok_or_else(|| invalid(format!("column {column} is missing")))
 }
 
-fn counter(row: &SqlRow, column: usize) -> Result<u64, StoreError> {
+pub(crate) fn counter(row: &SqlRow, column: usize) -> Result<u64, StoreError> {
     let value = text(row, column)?;
     value
         .parse()
         .map_err(|error| invalid(format!("counter `{value}`: {error}")))
 }
 
-fn single(rows: &[SqlRow]) -> Result<Option<&SqlRow>, StoreError> {
+pub(crate) fn single(rows: &[SqlRow]) -> Result<Option<&SqlRow>, StoreError> {
     match rows {
         [] => Ok(None),
         [row] => Ok(Some(row)),

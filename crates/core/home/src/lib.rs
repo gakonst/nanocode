@@ -1,5 +1,9 @@
+#[cfg(unix)]
+pub mod account;
 mod fs_util;
 mod instructions;
+#[cfg(not(target_family = "wasm"))]
+pub mod machine;
 #[cfg(unix)]
 pub mod private;
 mod project;

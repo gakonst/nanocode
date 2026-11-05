@@ -2,6 +2,8 @@ pub use nanocode_tool_host::*;
 
 #[cfg(not(target_family = "wasm"))]
 pub mod attachment;
+#[cfg(unix)]
+pub mod control;
 #[cfg(not(target_family = "wasm"))]
 pub mod mcp;
 #[cfg(target_family = "wasm")]

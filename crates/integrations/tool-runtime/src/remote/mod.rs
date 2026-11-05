@@ -11,7 +11,7 @@ mod native;
 mod pricing;
 mod read;
 #[cfg(not(target_family = "wasm"))]
-pub use hand::{Hand, HandEndpoint, HandEvent};
+pub use hand::{ConfirmRefusal, Hand, HandEndpoint, HandEvent};
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use native::SocketShutdown;
 #[cfg(not(target_family = "wasm"))]

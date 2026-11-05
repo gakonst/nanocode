@@ -45,10 +45,13 @@ uuid = { workspace = true, features = ["v4"] }
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["hostname"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
 
 [lib]
-test = false
+test = true
 doctest = false
 bench = false

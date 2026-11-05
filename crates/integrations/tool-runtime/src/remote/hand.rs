@@ -52,7 +52,20 @@ pub enum HandEvent {
     Rejected {
         status: u16,
     },
+    /// An upgrade refused with 401 or 403 that the host's
+    /// [`Hand::confirm_refusals`] hook did not confirm, such as a proxy's or an
+    /// access gateway's in front of the brain: the hand dials again as a new
+    /// runtime after `retry`.
+    Unconfirmed {
+        status: u16,
+        retry: Duration,
+    },
 }
+
+/// Answers whether the brain itself refuses the hand's credential, given the
+/// HTTP status of a refused upgrade.
+pub type ConfirmRefusal =
+    std::sync::Arc<dyn Fn(u16) -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>;
 
 pub struct Hand {
     endpoint: HandEndpoint,
@@ -68,6 +81,7 @@ pub struct Hand {
     tools_only: bool,
     environment: Option<nanocode_code_mode::remote::HandEnvironment>,
     pricing: Option<HandPricing>,
+    confirm: Option<(ConfirmRefusal, Duration)>,
 }
 
 impl Hand {
@@ -94,7 +108,19 @@ impl Hand {
             tools_only: false,
             environment: None,
             pricing: None,
+            confirm: None,
         }
+    }
+
+    /// Asks `confirm` before stopping for an upgrade refused with 401 or 403.
+    /// A refusal the brain confirms stops the hand as without the hook; one it
+    /// doesn't (the credential is fine and something in front of the brain
+    /// refused it) emits [`HandEvent::Unconfirmed`] and dials again, as a new
+    /// runtime, after `retry`. 410 and 426 always stop the hand.
+    #[must_use]
+    pub fn confirm_refusals(mut self, confirm: ConfirmRefusal, retry: Duration) -> Self {
+        self.confirm = Some((confirm, retry));
+        self
     }
 
     #[must_use]
@@ -345,6 +371,19 @@ impl Hand {
                             Err(Dial::Rejected(issue, status)) => {
                                 drop(leaving.take());
                                 core.reset().await;
+                                if let (Some(status @ (401 | 403)), Some((confirm, retry))) =
+                                    (status, &self.confirm)
+                                    && !confirm(status).await
+                                {
+                                    options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+                                    core = renew(&options);
+                                    events(HandEvent::Unconfirmed {
+                                        status,
+                                        retry: *retry,
+                                    });
+                                    tokio::time::sleep(*retry).await;
+                                    continue;
+                                }
                                 if let Some(status) = status {
                                     events(HandEvent::Rejected { status });
                                 }
@@ -552,4 +591,94 @@ fn host_name() -> Result<String, CodeModeHostError> {
 #[cfg(windows)]
 fn host_name() -> Result<String, CodeModeHostError> {
     std::env::var("COMPUTERNAME").map_err(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// A brain that refuses every upgrade with `status`, counting the dials.
+    async fn refusing(status: u16) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/attach", listener.local_addr().unwrap());
+        let dials = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&dials);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 {status} Refused\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (url, dials)
+    }
+
+    fn hand(url: &str, directory: &std::path::Path) -> Hand {
+        let tools = crate::Tools::builder().without_defaults().build().unwrap();
+        Hand::connect(url, "token", tools)
+            .name("test-hand")
+            .directory(directory)
+    }
+
+    #[tokio::test]
+    async fn a_refusal_the_brain_does_not_confirm_dials_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let (url, dials) = refusing(403).await;
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let confirm: ConfirmRefusal = Arc::new(move |status| {
+            let asked = counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { status == 403 && asked >= 1 })
+        });
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events = Arc::clone(&heard);
+        let run = hand(&url, directory.path())
+            .confirm_refusals(confirm, Duration::from_millis(20))
+            .run(move |event| events.lock().unwrap().push(event));
+        let result = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(dials.load(Ordering::SeqCst), 2);
+        let heard = heard.lock().unwrap();
+        assert!(matches!(
+            heard.iter().find(|event| matches!(event, HandEvent::Unconfirmed { .. })),
+            Some(HandEvent::Unconfirmed { status: 403, retry }) if *retry == Duration::from_millis(20)
+        ));
+        assert!(matches!(
+            heard.last(),
+            Some(HandEvent::Rejected { status: 403 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_revoked_hand_stops_without_asking() {
+        let directory = tempfile::tempdir().unwrap();
+        let (url, dials) = refusing(410).await;
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let confirm: ConfirmRefusal = Arc::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { false })
+        });
+        let run = hand(&url, directory.path())
+            .confirm_refusals(confirm, Duration::from_millis(20))
+            .run(|_| {});
+        let result = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
+    }
 }

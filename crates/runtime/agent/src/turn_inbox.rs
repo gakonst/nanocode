@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    pin::pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -8,6 +9,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::{Either, select};
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
 use nanocode_sync::{Atom, Owned};
 use nanocode_tool_host::embedded::HostFuture;
@@ -15,15 +17,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
-    Agent, AgentRuntime, DurableOutcome, EventSink, NanocodeError, PromptRequest, SessionEvent,
-    SessionEvents, SteerReceiptStatus,
-    durability::{SessionRecord, SessionStore, Sql, StoreError},
+    Agent, AgentEvents, AgentRuntime, DurableOutcome, EventSink, NanocodeError, PromptRequest,
+    SessionEvent, SessionEvents, SteerReceiptStatus, SubagentUpdates, TurnControl, TurnResult,
+    durability::{SessionRecord, SessionStore, StoreError},
     events::{
         AGENT_EVENT_PROTOCOL_VERSION, AcceptedInput, AgentEvent, AgentEventKind, AgentEventTiming,
     },
     input::{Prompt, PromptInput},
-    session_log::{LogEntry, LoggedEvent, SessionLog, Started, TurnRecord, TurnState, now},
+    session_log::{LoggedEvent, Started, TurnRecord, TurnState, now},
     stored_event::Stored,
+    turn_log::{EventLog, Recording, TurnLog},
 };
 
 pub trait InboxHost: Send + Sync + 'static {
@@ -53,6 +56,145 @@ pub trait InboxHost: Send + Sync + 'static {
 
     fn idle(&self) -> bool {
         true
+    }
+
+    fn coalesce_deltas(&self) -> bool {
+        true
+    }
+
+    fn inputs<'a>(&'a self, _request_id: &'a str) -> HostFuture<'a, Result<Vec<String>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn input<'a>(
+        &'a self,
+        _request_id: &'a str,
+        _id: &'a str,
+    ) -> HostFuture<'a, Result<Prompt, String>> {
+        Box::pin(async { Err("this host gives a turn no inputs".to_owned()) })
+    }
+
+    fn wake<'a>(&'a self, _request_id: &'a str) -> HostFuture<'a, Wake> {
+        Box::pin(std::future::pending())
+    }
+
+    fn check<'a>(&'a self, _request_id: &'a str, _wake: Wake) -> HostFuture<'a, Option<Halt>> {
+        Box::pin(async { None })
+    }
+
+    fn passing<'a>(
+        &'a self,
+        _request_id: &'a str,
+        _pass: Option<&'a str>,
+    ) -> HostFuture<'a, Option<Prompt>> {
+        Box::pin(async { None })
+    }
+
+    fn next<'a>(
+        &'a self,
+        _request_id: &'a str,
+        _end: PassEnd,
+        _delivery: &'a Delivery,
+    ) -> HostFuture<'a, Next> {
+        Box::pin(async { Next::Done })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Wake {
+    Inputs,
+    Changed,
+    Tick,
+}
+
+pub enum Halt {
+    Stop(String),
+    Leave,
+}
+
+pub enum PassEnd {
+    Refused(NanocodeError),
+    Completed(TurnResult),
+    Failed(NanocodeError),
+    Stopped {
+        reason: String,
+        control: TurnControl,
+    },
+    Left {
+        control: TurnControl,
+    },
+}
+
+pub enum Next {
+    Pass {
+        request: PromptRequest,
+        read: Vec<String>,
+    },
+    Done,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Delivered {
+    Ungiven,
+    Accepted,
+    Read,
+}
+
+impl Delivered {
+    const fn next(self, to: Self) -> bool {
+        matches!(
+            (self, to),
+            (Self::Ungiven, Self::Accepted | Self::Read)
+                | (Self::Accepted, Self::Read | Self::Ungiven)
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Delivery(HashMap<String, Delivered>);
+
+impl Delivery {
+    fn of(&self, id: &str) -> Delivered {
+        self.0.get(id).copied().unwrap_or(Delivered::Ungiven)
+    }
+
+    fn mark(&mut self, id: &str, to: Delivered) -> bool {
+        let moved = self.of(id).next(to);
+        if moved {
+            self.0.insert(id.to_owned(), to);
+        }
+        moved
+    }
+
+    fn ended(&mut self) {
+        for delivered in self.0.values_mut() {
+            if *delivered == Delivered::Accepted {
+                *delivered = Delivered::Ungiven;
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_read(&self, id: &str) -> bool {
+        self.of(id) == Delivered::Read
+    }
+
+    #[must_use]
+    pub fn read(&self) -> Vec<String> {
+        self.with(|delivered| delivered == Delivered::Read)
+    }
+
+    #[must_use]
+    pub fn given(&self) -> Vec<String> {
+        self.with(|delivered| delivered != Delivered::Ungiven)
+    }
+
+    fn with(&self, keep: impl Fn(Delivered) -> bool) -> Vec<String> {
+        self.0
+            .iter()
+            .filter(|(_, delivered)| keep(**delivered))
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 }
 
@@ -156,12 +298,14 @@ impl Requests {
     }
 }
 
-struct Shared<H: ?Sized> {
-    log: Arc<SessionLog<H>>,
+struct Shared<L: ?Sized> {
+    log: Arc<L>,
     host: Arc<dyn InboxHost>,
     state: Atom<Requests>,
     session_id: String,
     streams: Owned<Vec<Stream>>,
+    delivery: Atom<Delivery>,
+    recording: AtomicBool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -341,11 +485,11 @@ struct Identifiers {
 }
 
 #[derive(Serialize)]
-struct Envelope<'a> {
+pub(crate) struct Envelope<'a> {
     #[serde(flatten)]
-    event: &'a SessionEvent,
+    pub(crate) event: &'a SessionEvent,
     #[serde(flatten)]
-    annotation: &'a Map<String, Value>,
+    pub(crate) annotation: &'a Map<String, Value>,
 }
 
 pub(crate) fn accepted_bytes(
@@ -388,7 +532,7 @@ pub(crate) fn accepted_bytes(
     Ok(stored.get().len() - serde_json::to_vec(&empty)?.len() + serde_json::to_vec(input)?.len())
 }
 
-impl<H: ?Sized> Shared<H> {
+impl<L: ?Sized> Shared<L> {
     fn boundary(&self, event: &SessionEvent, request_id: Option<&str>) -> bool {
         let SessionEvent::Agent { event, .. } = event else {
             return false;
@@ -446,64 +590,42 @@ impl<H: ?Sized> Shared<H> {
     }
 }
 
-struct LogSink<H: ?Sized>(Arc<Shared<H>>);
+struct LogSink<L: ?Sized>(Arc<Shared<L>>);
 
-impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
+impl<L: EventLog + ?Sized> LogSink<L> {
     async fn persist(&self, events: Vec<SessionEvent>) -> Result<(), String> {
         if events.is_empty() {
             return Ok(());
         }
+        if !self.0.recording.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let annotation = self.0.host.annotate();
-        let unannotated = Map::new();
-        let compact = self.0.log.compact.then_some(&*self.0.session_id);
         let mut boundary = false;
-        let (entries, live): (Vec<_>, Vec<_>) = events
+        let request_ids: Vec<_> = events
             .iter()
             .map(|event| {
                 let request_id = self.0.attribute(event);
                 boundary |= self.0.boundary(event, request_id.as_deref());
-                let mut body = serde_json::value::to_raw_value(&Envelope {
-                    event,
-                    annotation: &annotation,
-                })?;
-                if !annotation.is_empty()
-                    && !self.0.log.event_fits(request_id.as_deref(), body.get())
-                {
-                    body = serde_json::value::to_raw_value(&Envelope {
-                        event,
-                        annotation: &unannotated,
-                    })?;
-                }
-                let stored = serde_json::value::to_raw_value(&Stored { event, compact })?;
-                Ok((
-                    LogEntry {
-                        request_id,
-                        event: stored,
-                    },
-                    body,
-                ))
-            })
-            .collect::<Result<Vec<_>, serde_json::Error>>()
-            .map_err(|error| format!("encode agent event: {error}"))?
-            .into_iter()
-            .unzip();
-        let logged = self
-            .0
-            .log
-            .stage(&entries)
-            .await
-            .map_err(|error| error.to_string())?;
-        let published = logged
-            .into_iter()
-            .zip(&entries)
-            .zip(live)
-            .map(|((mut logged, entry), live)| {
-                if logged.event.get() == entry.event.get() {
-                    logged.event = live;
-                }
-                logged
+                request_id
             })
             .collect();
+        let read = |id: &str| {
+            self.0
+                .delivery
+                .update(|delivery| delivery.mark(id, Delivered::Read))
+        };
+        let published = self
+            .0
+            .log
+            .record(Recording {
+                session_id: &self.0.session_id,
+                annotation: &annotation,
+                events: &events,
+                request_ids: &request_ids,
+                read: &read,
+            })
+            .await?;
         self.0.host.publish(published).await?;
         if boundary {
             self.0
@@ -577,7 +699,24 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
     }
 }
 
-impl<H: Sql + Send + Sync + ?Sized + 'static> EventSink for LogSink<H> {
+impl<L: EventLog + ?Sized> EventSink for LogSink<L> {
+    fn coalesces(&self) -> bool {
+        self.0.host.coalesce_deltas()
+    }
+
+    fn tick(&self) -> Option<Duration> {
+        self.0.log.tick()
+    }
+
+    fn ticked(&self) -> HostFuture<'_, Result<(), String>> {
+        Box::pin(async {
+            if !self.0.recording.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            self.0.log.flush().await.map_err(|error| error.to_string())
+        })
+    }
+
     fn deliver(&self, events: Vec<SessionEvent>) -> HostFuture<'_, Result<(), String>> {
         Box::pin(async move {
             let (deltas, progress) = (self.0.host.live_deltas(), self.0.host.live_progress());
@@ -602,9 +741,9 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> EventSink for LogSink<H> {
     }
 }
 
-struct Claim<'a, H: ?Sized>(&'a Shared<H>, &'a str);
+struct Claim<'a, L: ?Sized>(&'a Shared<L>, &'a str);
 
-impl<H: ?Sized> Drop for Claim<'_, H> {
+impl<L: ?Sized> Drop for Claim<'_, L> {
     fn drop(&mut self) {
         self.0.state.update(|state| {
             if let Some(request) = state.requests.get_mut(self.1) {
@@ -637,8 +776,16 @@ fn fields(value: Value) -> Map<String, Value> {
     }
 }
 
-pub struct TurnInbox<H: ?Sized> {
-    shared: Arc<Shared<H>>,
+pub struct Attach {
+    pub runtime: AgentRuntime,
+    pub agent: Agent,
+    pub events: AgentEvents,
+    pub subagents: Option<SubagentUpdates>,
+    pub model: String,
+}
+
+pub struct TurnInbox<L: ?Sized> {
+    shared: Arc<Shared<L>>,
     runtime: AgentRuntime,
     agent: Agent,
     events: SessionEvents,
@@ -646,44 +793,42 @@ pub struct TurnInbox<H: ?Sized> {
     busy: AtomicBool,
 }
 
-impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
-    pub async fn open(
-        runtime: AgentRuntime,
-        store: &SessionStore,
-        record: SessionRecord,
-        log: Arc<SessionLog<H>>,
+impl<L: EventLog + ?Sized> TurnInbox<L> {
+    pub fn attach(
+        attach: Attach,
+        log: Arc<L>,
         host: Arc<dyn InboxHost>,
         window: Duration,
-    ) -> Result<(Self, HostFuture<'static, ()>), InboxError> {
-        let session_id = record.session_id.clone();
-        let catalog = |error| InboxError::Agent(crate::runtime::catalog_error(error));
-        if store.summary(&session_id).await.map_err(catalog)?.is_none() {
-            store.session(record).await.map_err(catalog)?;
-        }
-        let subagents = runtime.take_subagent_updates();
-        let stored = store.load(&session_id).await.map_err(catalog)?;
-        let (agent, stream) = runtime.open_loaded(store, &stored).await?;
-        agent.leave_interrupted_turns_to_host();
+    ) -> (Self, HostFuture<'static, ()>) {
+        let Attach {
+            runtime,
+            agent,
+            events,
+            subagents,
+            model,
+        } = attach;
         let shared = Arc::new(Shared {
             log,
             host,
             state: Atom::default(),
-            session_id,
+            session_id: agent.session_id().to_owned(),
             streams: Owned::new(Vec::new()),
+            delivery: Atom::default(),
+            recording: AtomicBool::new(true),
         });
         let (events, pump) =
-            SessionEvents::start(stream, subagents, window, LogSink(Arc::clone(&shared)));
-        Ok((
+            SessionEvents::start(events, subagents, window, LogSink(Arc::clone(&shared)));
+        (
             Self {
                 shared,
                 runtime,
                 agent,
                 events,
-                model: stored.summary.record.model.as_str().to_owned(),
+                model,
                 busy: AtomicBool::new(false),
             },
             pump,
-        ))
+        )
     }
 
     #[must_use]
@@ -692,7 +837,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
     }
 
     #[must_use]
-    pub fn log(&self) -> &Arc<SessionLog<H>> {
+    pub fn log(&self) -> &Arc<L> {
         &self.shared.log
     }
 
@@ -712,6 +857,205 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
                 .deliver_completions(&self.agent, self.agent.session_id())
                 .await;
         }
+    }
+
+    pub async fn steer(
+        &self,
+        target: Option<&str>,
+        id: &str,
+        prompt: Prompt,
+    ) -> Result<bool, InboxError> {
+        for (request_id, control) in self.agent.turn_controls() {
+            if target.is_some_and(|target| target != request_id)
+                || self.shared.state.read(|state| state.cancelled(&request_id))
+            {
+                continue;
+            }
+            match control.steer_with_id(id.to_owned(), prompt.clone()).await {
+                Ok(()) => return Ok(true),
+                Err(NanocodeError::TurnNotSteerable | NanocodeError::TurnStopped) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(false)
+    }
+
+    pub async fn settle(&self) -> Result<bool, InboxError> {
+        self.events.drained().await.map_err(InboxError::Events)?;
+        self.shared.log.flush().await?;
+        if !self.idle() {
+            return Ok(false);
+        }
+        Ok(self.runtime.settle(self.session_id()).await? && self.idle())
+    }
+
+    pub async fn shutdown(&self) -> Result<(), InboxError> {
+        let shutdown = self.runtime.shutdown().await;
+        let delivered = self.events.drained().await;
+        let flushed = self.shared.log.flush().await;
+        shutdown?;
+        delivered.map_err(InboxError::Events)?;
+        flushed.map_err(InboxError::Store)
+    }
+
+    pub async fn turn(&self, request_id: &str, mut request: PromptRequest, read: Vec<String>) {
+        self.shared.delivery.set(Delivery(
+            read.into_iter().map(|id| (id, Delivered::Read)).collect(),
+        ));
+        loop {
+            let end = self.pass(request_id, request).await;
+            let delivery = self.shared.delivery.get();
+            match self.shared.host.next(request_id, end, &delivery).await {
+                Next::Pass {
+                    request: next,
+                    read,
+                } => {
+                    self.shared.delivery.update(|delivery| {
+                        for id in &read {
+                            delivery.mark(id, Delivered::Read);
+                        }
+                    });
+                    request = next;
+                }
+                Next::Done => return,
+            }
+        }
+    }
+
+    async fn pass(&self, request_id: &str, request: PromptRequest) -> PassEnd {
+        self.shared.recording.store(true, Ordering::Release);
+        let turn = match self.agent.prompt(request).await {
+            Ok(turn) => turn,
+            Err(error) => return PassEnd::Refused(error),
+        };
+        let control = turn.control();
+        if let Some(note) = self
+            .shared
+            .host
+            .passing(request_id, turn.request_id())
+            .await
+        {
+            drop(control.steer(note).await);
+        }
+        let mut result = pin!(turn.result());
+        let steering = || Halt::Stop("steering failed".to_owned());
+        let mut halt = self
+            .deliver(request_id, &control)
+            .await
+            .err()
+            .map(|()| steering());
+        while halt.is_none() {
+            match select(result.as_mut(), self.shared.host.wake(request_id)).await {
+                Either::Left((value, waking)) => {
+                    drop(waking);
+                    return self.passed(value, control).await;
+                }
+                Either::Right((wake, _)) => {
+                    if wake == Wake::Inputs && self.deliver(request_id, &control).await.is_err() {
+                        halt = Some(steering());
+                    }
+                    halt = halt.or(self.shared.host.check(request_id, wake).await);
+                }
+            }
+        }
+        self.stop_recording().await;
+        match halt {
+            Some(Halt::Stop(reason)) => PassEnd::Stopped { reason, control },
+            _ => PassEnd::Left { control },
+        }
+    }
+
+    async fn passed(
+        &self,
+        value: Result<TurnResult, NanocodeError>,
+        control: TurnControl,
+    ) -> PassEnd {
+        if let Err(reason) = self.events.flushed().await {
+            self.stop_recording().await;
+            return PassEnd::Stopped { reason, control };
+        }
+        self.shared.delivery.update(Delivery::ended);
+        match value {
+            Ok(result) => PassEnd::Completed(result),
+            Err(error) => PassEnd::Failed(error),
+        }
+    }
+
+    async fn stop_recording(&self) {
+        self.shared.recording.store(false, Ordering::Release);
+        drop(self.events.drained().await);
+    }
+
+    async fn deliver(&self, request_id: &str, control: &TurnControl) -> Result<(), ()> {
+        let inputs = self.shared.host.inputs(request_id).await.map_err(drop)?;
+        for id in inputs {
+            if self
+                .shared
+                .delivery
+                .read(|delivery| delivery.of(&id) != Delivered::Ungiven)
+            {
+                continue;
+            }
+            let prompt = self
+                .shared
+                .host
+                .input(request_id, &id)
+                .await
+                .map_err(drop)?;
+            if control.steer_with_id(id.clone(), prompt).await.is_err() {
+                break;
+            }
+            self.shared
+                .delivery
+                .update(|delivery| delivery.mark(&id, Delivered::Accepted));
+        }
+        Ok(())
+    }
+
+    fn idle(&self) -> bool {
+        self.shared.state.read(Requests::idle) && self.shared.host.idle()
+    }
+
+    async fn publish(&self, event: LoggedEvent) -> Result<(), InboxError> {
+        self.shared
+            .host
+            .publish(vec![event])
+            .await
+            .map_err(InboxError::Events)
+    }
+}
+
+impl<L: TurnLog + ?Sized> TurnInbox<L> {
+    pub async fn open(
+        runtime: AgentRuntime,
+        store: &SessionStore,
+        record: SessionRecord,
+        log: Arc<L>,
+        host: Arc<dyn InboxHost>,
+        window: Duration,
+    ) -> Result<(Self, HostFuture<'static, ()>), InboxError> {
+        let session_id = record.session_id.clone();
+        let catalog = |error| InboxError::Agent(crate::runtime::catalog_error(error));
+        if store.summary(&session_id).await.map_err(catalog)?.is_none() {
+            store.session(record).await.map_err(catalog)?;
+        }
+        let subagents = runtime.take_subagent_updates();
+        let stored = store.load(&session_id).await.map_err(catalog)?;
+        let (agent, events) = runtime.open_loaded(store, &stored).await?;
+        agent.leave_interrupted_turns_to_host();
+        let model = stored.summary.record.model.as_str().to_owned();
+        Ok(Self::attach(
+            Attach {
+                runtime,
+                agent,
+                events,
+                subagents,
+                model,
+            },
+            log,
+            host,
+            window,
+        ))
     }
 
     pub async fn drive(&self, next: Option<&str>) -> Result<Driven, InboxError> {
@@ -784,27 +1128,6 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
         Ok(Some((record, dequeued)))
     }
 
-    pub async fn steer(
-        &self,
-        target: Option<&str>,
-        id: &str,
-        prompt: Prompt,
-    ) -> Result<bool, InboxError> {
-        for (request_id, control) in self.agent.turn_controls() {
-            if target.is_some_and(|target| target != request_id)
-                || self.shared.state.read(|state| state.cancelled(&request_id))
-            {
-                continue;
-            }
-            match control.steer_with_id(id.to_owned(), prompt.clone()).await {
-                Ok(()) => return Ok(true),
-                Err(NanocodeError::TurnNotSteerable | NanocodeError::TurnStopped) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(false)
-    }
-
     pub async fn move_queued(
         &self,
         queued_id: &str,
@@ -843,36 +1166,6 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
         }
         self.withdraw_steered(&queued).await?;
         Ok(MovedQueued::Moved)
-    }
-
-    pub async fn settle(&self) -> Result<bool, InboxError> {
-        self.events.drained().await.map_err(InboxError::Events)?;
-        self.shared.log.flush().await?;
-        if !self.idle() {
-            return Ok(false);
-        }
-        Ok(self.runtime.settle(self.session_id()).await? && self.idle())
-    }
-
-    pub async fn shutdown(&self) -> Result<(), InboxError> {
-        let shutdown = self.runtime.shutdown().await;
-        let delivered = self.events.drained().await;
-        let flushed = self.shared.log.flush().await;
-        shutdown?;
-        delivered.map_err(InboxError::Events)?;
-        flushed.map_err(InboxError::Store)
-    }
-
-    fn idle(&self) -> bool {
-        self.shared.state.read(Requests::idle) && self.shared.host.idle()
-    }
-
-    async fn publish(&self, event: LoggedEvent) -> Result<(), InboxError> {
-        self.shared
-            .host
-            .publish(vec![event])
-            .await
-            .map_err(InboxError::Events)
     }
 
     async fn withdraw_steered(

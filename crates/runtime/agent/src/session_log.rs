@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -15,7 +15,7 @@ use serde_json::{Map, Value, value::RawValue};
 use crate::{
     durability::{
         BlobKey, BlobUrl, EncodedPayload, Migration, MissingColumn, SharedBlobStore, Sql, SqlRow,
-        SqlStatement, StoreError, get_blob, migrate_format,
+        SqlStatement, StoreError, get_blob, migrate_format, migrate_format_then,
     },
     input::{Prompt, PromptInput, UserInput},
     turn_inbox::accepted_bytes,
@@ -117,8 +117,16 @@ const HOLDER: Dialects = [
     "SELECT request_id, CAST(tail_last AS TEXT), CAST(octet_length(tail) AS TEXT), CAST(octet_length(digest) + COALESCE(octet_length(prompt), 0) + COALESCE(octet_length(hand), 0) + octet_length(metadata) + COALESCE(octet_length(note), 0) + COALESCE(octet_length(retry), 0) + COALESCE(octet_length(edits), 0) + COALESCE(octet_length(result), 0) AS TEXT) FROM log_turns WHERE scope = $1::text AND tail_last IS NOT NULL ORDER BY log_turns.tail_last DESC LIMIT 1",
 ];
 const NEW_TURN: Dialects = [
-    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT ?1, ?2, ?3, 'queued', ?4, json_extract(?5, '$'), ?6, 0, CAST(?7 AS INTEGER), CAST(?8 AS INTEGER), CAST(?9 AS INTEGER), ?10 WHERE NOT EXISTS (SELECT 1 FROM log_turns WHERE scope = ?1 AND request_id = ?2) ON CONFLICT DO NOTHING RETURNING request_id",
-    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT $1::text, $2::text, $3::text, 'queued', $4::text, CAST($5::text AS json) #>> '{}', $6::text, 0, CAST($7::text AS BIGINT), CAST($8::text AS BIGINT), CAST($9::text AS BIGINT), $10::text WHERE NOT EXISTS (SELECT 1 FROM log_turns WHERE scope = $1::text AND request_id = $2::text) ON CONFLICT DO NOTHING RETURNING request_id",
+    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT ?1, ?2, ?3, 'queued', ?4, json_extract(?5, '$'), ?6, 0, CAST(?7 AS INTEGER), CAST(?8 AS INTEGER), CAST(?9 AS INTEGER), ?10 RETURNING request_id",
+    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT $1::text, $2::text, $3::text, 'queued', $4::text, CAST($5::text AS json) #>> '{}', $6::text, 0, CAST($7::text AS BIGINT), CAST($8::text AS BIGINT), CAST($9::text AS BIGINT), $10::text RETURNING request_id",
+];
+const CHECK_TAIL: Dialects = [
+    "SELECT json(CASE WHEN EXISTS (SELECT 1 FROM log_turns WHERE scope = ?1 AND request_id = ?2 AND tail_last = CAST(?3 AS INTEGER)) THEN 'true' ELSE 'the session log changed outside its writer' END)",
+    "SELECT CAST(1 / (SELECT COUNT(*) FROM log_turns WHERE scope = $1::text AND request_id = $2::text AND tail_last = CAST($3::text AS BIGINT)) AS TEXT)",
+];
+const CHECK_TURN: Dialects = [
+    "SELECT json(CASE WHEN EXISTS (SELECT 1 FROM log_turns WHERE scope = ?1 AND request_id = ?2 AND status = ?3 AND digest = ?4 AND COALESCE(tail_last, -1) = CAST(?5 AS INTEGER)) THEN 'true' ELSE 'the session log changed outside its writer' END)",
+    "SELECT CAST(1 / (SELECT COUNT(*) FROM log_turns WHERE scope = $1::text AND request_id = $2::text AND status = $3::text AND digest = $4::text AND COALESCE(tail_last, -1) = CAST($5::text AS BIGINT)) AS TEXT)",
 ];
 const UPDATE_TURN: Dialects = [
     "UPDATE log_turns SET status = ?3, digest = ?4, prompt = CASE ?5 WHEN 's' THEN ?6 WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST(?7 AS INTEGER), note = CASE ?8 WHEN 's' THEN ?9 WHEN 'n' THEN NULL ELSE note END, retry = CASE ?10 WHEN 's' THEN ?11 WHEN 'n' THEN NULL ELSE retry END, edits = CASE ?12 WHEN 's' THEN ?13 WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF(?14, '') AS INTEGER), last_seq), result = CASE ?15 WHEN 's' THEN ?16 WHEN 'n' THEN NULL ELSE result END, tail_first = COALESCE(tail_first, CAST(NULLIF(?17, '') AS INTEGER)), tail_last = COALESCE(CAST(NULLIF(?18, '') AS INTEGER), tail_last), tail = CASE WHEN ?17 = '' THEN tail ELSE COALESCE(tail, '') || ?19 END WHERE scope = ?1 AND request_id = ?2 AND status = ?20 AND digest = ?21 AND COALESCE(tail_last, -1) = CAST(?22 AS INTEGER) RETURNING request_id",
@@ -437,6 +445,8 @@ struct Writer {
     buffered: usize,
     holder: Option<Holder>,
     started: HashSet<String>,
+    rows: HashMap<String, Row>,
+    stale: bool,
 }
 
 impl Writer {
@@ -454,6 +464,7 @@ impl Writer {
     }
 }
 
+#[derive(Clone)]
 struct Row {
     status: TurnState,
     record: TurnRecord,
@@ -470,6 +481,7 @@ struct Own<'a> {
     request_id: &'a str,
     fresh: bool,
     other: usize,
+    guard: Option<Guard<'a>>,
 }
 
 struct Placed {
@@ -478,6 +490,14 @@ struct Placed {
     holder: Option<Holder>,
     last: u64,
     started: Option<String>,
+    guard: Option<(String, u64)>,
+}
+
+struct Guard<'a> {
+    request_id: &'a str,
+    status: TurnState,
+    digest: &'a str,
+    tail_last: Option<u64>,
 }
 
 struct Change {
@@ -1005,30 +1025,40 @@ impl<H: Sql + ?Sized> SessionLog<H> {
 
     async fn writer(&self) -> Result<Held<'_, Writer>, StoreError> {
         let mut writer = self.writer.acquire().await;
-        if writer.ready {
+        if writer.ready && !writer.stale {
             return Ok(writer);
         }
         let scope = self.scope.to_string();
-        let results = self
-            .execute(
-                "log_open",
-                &[
-                    Stmt {
-                        sql: &SEQ_HIGH,
-                        params: vec![scope.clone()],
-                    },
-                    Stmt {
-                        sql: &LAST_CHUNK,
-                        params: vec![scope.clone()],
-                    },
-                    Stmt {
-                        sql: &HOLDER,
-                        params: vec![scope],
-                    },
-                ],
-                &Spill::default(),
-            )
-            .await?;
+        let open = [
+            Stmt {
+                sql: &SEQ_HIGH,
+                params: vec![scope.clone()],
+            },
+            Stmt {
+                sql: &LAST_CHUNK,
+                params: vec![scope.clone()],
+            },
+            Stmt {
+                sql: &HOLDER,
+                params: vec![scope],
+            },
+        ];
+        let results = if self.ready.load(Ordering::Acquire) {
+            self.execute("log_open", &open, &Spill::default()).await?
+        } else {
+            let dialect = self.host.dialect();
+            let prepared: Vec<_> = open
+                .iter()
+                .map(|statement| SqlStatement {
+                    sql: dialect.pick(statement.sql),
+                    params: statement.params.iter().map(String::as_str).collect(),
+                })
+                .collect();
+            let results =
+                migrate_format_then(&*self.host, "session_log", &MIGRATIONS, &prepared).await?;
+            self.ready.store(true, Ordering::Release);
+            results
+        };
         let turns = single(&results[0])?
             .and_then(|row| optional(row, 0))
             .map(counter)
@@ -1050,13 +1080,21 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             })
             .transpose()?
             .filter(|holder| holder.last == high);
-        *writer = Writer {
-            ready: true,
-            next: high.saturating_add(GAP),
-            durable: high,
-            holder,
-            ..Writer::default()
-        };
+        if writer.ready {
+            writer.next = writer.next.max(high.saturating_add(GAP));
+            writer.durable = high;
+            writer.holder = holder;
+            writer.rows.clear();
+            writer.stale = false;
+        } else {
+            *writer = Writer {
+                ready: true,
+                next: high.saturating_add(GAP),
+                durable: high,
+                holder,
+                ..Writer::default()
+            };
+        }
         Ok(writer)
     }
 
@@ -1129,6 +1167,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 holder: writer.holder.clone(),
                 last,
                 started: None,
+                guard: None,
             };
         }
         if let Some(holder) = &writer.holder
@@ -1137,17 +1176,27 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             let start = writer.started.contains(&holder.request_id);
             return Placed {
                 own: None,
-                statements: vec![Stmt {
-                    sql: &APPEND_TAIL,
-                    params: vec![
-                        self.scope.to_string(),
-                        holder.request_id.clone(),
-                        last.to_string(),
-                        texts.iter().map(|(_, text)| text.as_str()).collect(),
-                        holder.last.to_string(),
-                        if start { "1" } else { "0" }.to_owned(),
-                    ],
-                }],
+                statements: vec![
+                    Stmt {
+                        sql: &CHECK_TAIL,
+                        params: vec![
+                            self.scope.to_string(),
+                            holder.request_id.clone(),
+                            holder.last.to_string(),
+                        ],
+                    },
+                    Stmt {
+                        sql: &APPEND_TAIL,
+                        params: vec![
+                            self.scope.to_string(),
+                            holder.request_id.clone(),
+                            last.to_string(),
+                            texts.iter().map(|(_, text)| text.as_str()).collect(),
+                            holder.last.to_string(),
+                            if start { "1" } else { "0" }.to_owned(),
+                        ],
+                    },
+                ],
                 holder: Some(Holder {
                     request_id: holder.request_id.clone(),
                     last,
@@ -1156,6 +1205,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 }),
                 last,
                 started: start.then(|| holder.request_id.clone()),
+                guard: Some((holder.request_id.clone(), holder.last)),
             };
         }
         Placed {
@@ -1164,6 +1214,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             holder: None,
             last,
             started: None,
+            guard: None,
         }
     }
 
@@ -1209,6 +1260,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                     holder: Some(held(total)),
                     last,
                     started: None,
+                    guard: None,
                 });
             }
             let mine = &texts[split..];
@@ -1239,6 +1291,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                         }),
                         last,
                         started: None,
+                        guard: None,
                     });
                 }
                 if self.turn_fits(own.request_id, own.other, holder.tail, total) {
@@ -1253,6 +1306,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                         }),
                         last,
                         started: None,
+                        guard: None,
                     });
                 }
                 Ok(Placed {
@@ -1261,6 +1315,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                     holder: None,
                     last,
                     started: None,
+                    guard: None,
                 })
             }
             _ => Ok(self.spread(writer, &texts, last)),
@@ -1294,32 +1349,77 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         };
         let mut statements = placed.statements;
         let extra = statements.len();
-        let built = build(placed.own.as_ref());
-        let checked = placed.own.is_some() && !built.is_empty();
-        statements.extend(built);
+        statements.extend(build(placed.own.as_ref()));
         let mut results = match self.execute(operation, &statements, &spill).await {
             Ok(results) => results,
             Err(error) => {
                 restore(writer, all);
-                return Err(error);
+                writer.stale = true;
+                let tail = placed.guard.as_ref().map(|(request_id, last)| Guard {
+                    request_id,
+                    status: TurnState::Queued,
+                    digest: "",
+                    tail_last: Some(*last),
+                });
+                let turn = own.and_then(|own| own.guard);
+                return Err(
+                    if self.changed(tail, false).await || self.changed(turn, true).await {
+                        StoreError::NotCommitted(format!(
+                            "session log {} changed outside this writer, which reads it again before its next write",
+                            self.scope
+                        ))
+                    } else {
+                        error
+                    },
+                );
             }
         };
-        let tails: Vec<_> = results.drain(..extra).collect();
-        if tails.iter().any(Vec::is_empty) || (checked && results[0].is_empty()) {
-            writer.ready = false;
-            return Err(StoreError::Backend(format!(
-                "session log {} changed outside this writer; it reads the log again",
-                self.scope
-            )));
-        }
+        results.drain(..extra);
         writer.holder = placed.holder;
         writer.durable = writer.durable.max(placed.last);
         writer.outstanding = 0;
         writer.buffered = 0;
-        if let Some(started) = placed.started {
-            writer.started.remove(&started);
+        if let Some(holder) = &writer.holder
+            && let Some(row) = writer.rows.get_mut(&holder.request_id)
+        {
+            row.tail_last = Some(holder.last);
+        }
+        if let Some(id) = placed.started {
+            writer.started.remove(&id);
+            if let Some(row) = writer.rows.get_mut(&id) {
+                row.status = TurnState::Running;
+                started(&mut row.record);
+            }
         }
         Ok(results)
+    }
+
+    async fn changed(&self, guard: Option<Guard<'_>>, whole: bool) -> bool {
+        let Some(guard) = guard else {
+            return false;
+        };
+        let Ok(mut rows) = self
+            .query(
+                "turn",
+                &TURN,
+                vec![self.scope.to_string(), guard.request_id.to_owned()],
+            )
+            .await
+        else {
+            return false;
+        };
+        if self.load_cells(&mut rows, &[3, 10]).await.is_err() {
+            return false;
+        }
+        match single(&rows).map(|found| found.map(row)) {
+            Ok(Some(Ok(found))) => {
+                found.tail_last != guard.tail_last
+                    || (whole
+                        && (found.status != guard.status || found.record.digest != guard.digest))
+            }
+            Ok(None) => true,
+            _ => false,
+        }
     }
 
     async fn flush_locked(&self, writer: &mut Writer) -> Result<(), StoreError> {
@@ -1378,26 +1478,35 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         Ok(logged)
     }
 
-    async fn read(&self, writer: &Writer, request_id: &str) -> Result<Option<Row>, StoreError> {
-        let mut rows = self
-            .query(
-                "turn",
-                &TURN,
-                vec![self.scope.to_string(), request_id.to_owned()],
-            )
-            .await?;
-        self.load_cells(&mut rows, &[3, 10]).await?;
-        let Some(found) = single(&rows)? else {
-            return Ok(None);
+    async fn read(&self, writer: &mut Writer, request_id: &str) -> Result<Option<Row>, StoreError> {
+        let mut found = match writer.rows.get(request_id) {
+            Some(known) => known.clone(),
+            None => {
+                let mut rows = self
+                    .query(
+                        "turn",
+                        &TURN,
+                        vec![self.scope.to_string(), request_id.to_owned()],
+                    )
+                    .await?;
+                self.load_cells(&mut rows, &[3, 10]).await?;
+                let Some(found) = single(&rows)? else {
+                    return Ok(None);
+                };
+                let found = row(found)?;
+                if !found.status.is_terminal() {
+                    writer.rows.insert(request_id.to_owned(), found.clone());
+                }
+                found
+            }
         };
-        let mut found = row(found)?;
         if writer.started.contains(request_id) {
             started(&mut found.record);
         }
         if found.record.result.is_none()
             && let Some(seq) = found.record.last_seq
         {
-            found.record.result = self.event_at(writer, seq).await?;
+            found.record.result = self.event_at(&*writer, seq).await?;
         }
         Ok(Some(found))
     }
@@ -1417,25 +1526,30 @@ impl<H: Sql + ?Sized> SessionLog<H> {
     }
 
     pub async fn turn(&self, request_id: &str) -> Result<Option<TurnRecord>, StoreError> {
-        let writer = self.writer().await?;
-        Ok(self.read(&writer, request_id).await?.map(|row| row.record))
+        let mut writer = self.writer().await?;
+        Ok(self
+            .read(&mut writer, request_id)
+            .await?
+            .map(|row| row.record))
     }
 
     pub async fn pending(&self) -> Result<Vec<TurnRecord>, StoreError> {
-        let writer = self.writer().await?;
+        let mut writer = self.writer().await?;
         let mut rows = self
             .query("pending", &PENDING, vec![self.scope.to_string()])
             .await?;
         self.load_cells(&mut rows, &[3]).await?;
-        rows.iter()
-            .map(|found| {
-                let mut record = row(found)?.record;
-                if writer.started.contains(&record.request_id) {
-                    started(&mut record);
-                }
-                Ok(record)
-            })
-            .collect()
+        let mut records = Vec::with_capacity(rows.len());
+        for found in &rows {
+            let found = row(found)?;
+            let mut record = found.record.clone();
+            writer.rows.insert(record.request_id.clone(), found);
+            if writer.started.contains(&record.request_id) {
+                started(&mut record);
+            }
+            records.push(record);
+        }
+        Ok(records)
     }
 
     fn line(
@@ -1487,12 +1601,15 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         }
         self.put_blobs(&images).await?;
         let mut writer = self.writer().await?;
-        if let Some(found) = self.read(&writer, id).await? {
-            return Ok(if found.record.digest == digest {
+        let existing = |found: Row| {
+            if found.record.digest == digest {
                 Submitted::Existing(found.record)
             } else {
                 Submitted::Conflict(found.record)
-            });
+            }
+        };
+        if let Some(found) = writer.rows.get(id).cloned() {
+            return Ok(existing(found));
         }
         let mut spill = Spill::default();
         let hand = serde_json::to_string(&submission.hand).map_err(encoding)?;
@@ -1509,53 +1626,74 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         let seq = line.seq;
         let other = digest.len() + prompt.len() + hand.len() + metadata.len();
         let scope = self.scope.to_string();
-        self.commit(
-            &mut writer,
-            "submit",
-            vec![line],
-            Some(Own {
-                request_id: id,
-                fresh: true,
-                other,
-            }),
-            spill,
-            |own| {
-                let (first, last, tail) = own.cloned().unwrap_or_default();
-                vec![Stmt {
-                    sql: &NEW_TURN,
-                    params: vec![
-                        scope,
-                        id.to_owned(),
-                        digest.clone(),
-                        prompt,
-                        hand,
-                        metadata.to_owned(),
-                        seq.to_string(),
-                        first.to_string(),
-                        last.to_string(),
-                        tail,
-                    ],
-                }]
+        let digested = digest.clone();
+        let committed = self
+            .commit(
+                &mut writer,
+                "submit",
+                vec![line],
+                Some(Own {
+                    request_id: id,
+                    fresh: true,
+                    other,
+                    guard: None,
+                }),
+                spill,
+                |own| {
+                    let (first, last, tail) = own.cloned().unwrap_or_default();
+                    vec![Stmt {
+                        sql: &NEW_TURN,
+                        params: vec![
+                            scope,
+                            id.to_owned(),
+                            digested,
+                            prompt,
+                            hand,
+                            metadata.to_owned(),
+                            seq.to_string(),
+                            first.to_string(),
+                            last.to_string(),
+                            tail,
+                        ],
+                    }]
+                },
+            )
+            .await;
+        if let Err(error) = committed {
+            return match self.read(&mut writer, id).await {
+                Ok(Some(found)) => Ok(existing(found)),
+                _ => Err(error),
+            };
+        }
+        let record = TurnRecord {
+            request_id: id.to_owned(),
+            state: TurnState::Queued,
+            digest: digest.clone(),
+            prompt: Some(stored.into_owned()),
+            hand: submission.hand.clone(),
+            metadata: submission.metadata.clone(),
+            cancel_requested: false,
+            note: None,
+            first_seq: seq,
+            last_seq: None,
+            result: None,
+            retry: None,
+        };
+        let tail_last = writer
+            .holder
+            .as_ref()
+            .filter(|holder| holder.request_id == id)
+            .map(|holder| holder.last);
+        writer.rows.insert(
+            id.to_owned(),
+            Row {
+                status: TurnState::Queued,
+                record: record.clone(),
+                edits: None,
+                tail_last,
             },
-        )
-        .await?;
-        Ok(Submitted::Accepted {
-            record: TurnRecord {
-                request_id: id.to_owned(),
-                state: TurnState::Queued,
-                digest,
-                prompt: Some(stored.into_owned()),
-                hand: submission.hand.clone(),
-                metadata: submission.metadata.clone(),
-                cancel_requested: false,
-                note: None,
-                first_seq: seq,
-                last_seq: None,
-                result: None,
-                retry: None,
-            },
-            event,
-        })
+        );
+        Ok(Submitted::Accepted { record, event })
     }
 
     pub async fn start(&self, request_id: &str) -> Result<Option<Started>, StoreError> {
@@ -1564,7 +1702,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             request_id,
         })?;
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(None);
         };
         if found.record.state.is_terminal() {
@@ -1643,6 +1781,24 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             .digest
             .clone()
             .unwrap_or_else(|| found.record.digest.clone());
+        let check = vec![
+            scope.clone(),
+            request_id.to_owned(),
+            found.status.as_str().to_owned(),
+            found.record.digest.clone(),
+            found
+                .tail_last
+                .map_or_else(|| "-1".to_owned(), |seq| seq.to_string()),
+        ];
+        let forget = change.state.is_terminal() || matches!(change.prompt, Some(Some(_)));
+        let known = (
+            change.state,
+            change.digest.clone(),
+            change.cancel_requested,
+            change.note.clone(),
+            change.retry.clone(),
+            change.edits.clone(),
+        );
         let (prompt_flag, prompt) = flag(change.prompt.as_ref());
         let (note_flag, note) = flag(change.note.as_ref());
         let (retry_flag, retry) = flag(change.retry.as_ref());
@@ -1692,25 +1848,72 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                     request_id,
                     fresh: false,
                     other,
+                    guard: Some(Guard {
+                        request_id,
+                        status: found.status,
+                        digest: &found.record.digest,
+                        tail_last: found.tail_last,
+                    }),
                 }),
                 spill,
                 |own| {
-                    vec![Stmt {
-                        sql: &UPDATE_TURN,
-                        params: params(own),
-                    }]
+                    vec![
+                        Stmt {
+                            sql: &CHECK_TURN,
+                            params: check,
+                        },
+                        Stmt {
+                            sql: &UPDATE_TURN,
+                            params: params(own),
+                        },
+                    ]
                 },
             )
             .await?
-            .first()
+            .last()
             .is_some_and(|rows| !rows.is_empty());
         if !applied {
-            writer.ready = false;
+            writer.stale = true;
             return Err(StoreError::Backend(format!(
                 "session log turn {request_id} changed outside this writer"
             )));
         }
         writer.started.remove(request_id);
+        if forget {
+            writer.rows.remove(request_id);
+            return Ok(());
+        }
+        let (state, digest, cancel_requested, note, retry, edits) = known;
+        let mut row = writer
+            .rows
+            .remove(request_id)
+            .unwrap_or_else(|| found.clone());
+        row.status = state;
+        row.record.state = state;
+        row.record.cancel_requested = cancel_requested;
+        if let Some(digest) = digest {
+            row.record.digest = digest;
+        }
+        if let Some(note) = note {
+            row.record.note = note;
+        }
+        if let Some(retry) = retry {
+            row.record.retry = retry
+                .map(|retry| serde_json::from_str(&retry))
+                .transpose()
+                .map_err(|error| invalid(format!("retry: {error}")))?;
+        }
+        if let Some(edits) = edits {
+            row.edits = edits;
+        }
+        if let Some(holder) = writer
+            .holder
+            .as_ref()
+            .filter(|holder| holder.request_id == request_id)
+        {
+            row.tail_last = Some(holder.last);
+        }
+        writer.rows.insert(request_id.to_owned(), row);
         Ok(())
     }
 
@@ -1810,7 +2013,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             })?;
         }
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(None);
         };
         if found.record.state.is_terminal() {
@@ -1833,7 +2036,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             fields,
         })?;
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(None);
         };
         match found.record.state {
@@ -1882,7 +2085,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             digest: &edit,
         })?;
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(Replaced::NotQueued);
         };
         let mut edits: BTreeMap<String, String> = match &found.edits {
@@ -1969,7 +2172,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             fields: &fields,
         })?;
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(None);
         };
         if found.record.state != TurnState::Queued || found.record.digest != digest {
@@ -1994,7 +2197,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         retry_at: u64,
     ) -> Result<Option<(TurnRecord, Option<LoggedEvent>)>, StoreError> {
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(None);
         };
         if found.record.state.is_terminal() {
@@ -2048,7 +2251,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
 
     pub async fn interrupted(&self, request_id: &str, note: &str) -> Result<(), StoreError> {
         let mut writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(());
         };
         if found.record.state != TurnState::Running {
@@ -2288,8 +2491,8 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         limit: usize,
         max_bytes: Option<usize>,
     ) -> Result<LogPage, StoreError> {
-        let writer = self.writer().await?;
-        let Some(found) = self.read(&writer, request_id).await? else {
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&mut writer, request_id).await? else {
             return Ok(page_of(Vec::new(), after, false));
         };
         let start = after.max(found.record.first_seq.saturating_sub(1));

@@ -189,6 +189,8 @@ pub(super) struct ToolCallEvent<'a, T> {
     pub(super) tool: &'a str,
     pub(super) arguments: T,
     pub(super) model_call_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) parent_call_id: Option<&'a str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(super) truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

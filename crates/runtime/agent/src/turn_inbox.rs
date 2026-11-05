@@ -326,6 +326,12 @@ fn flush(
     Ok(merged)
 }
 
+#[derive(Deserialize)]
+struct Nested {
+    #[serde(default)]
+    parent_call_id: Option<serde::de::IgnoredAny>,
+}
+
 #[derive(Default, Deserialize)]
 struct Identifiers {
     #[serde(default)]
@@ -388,7 +394,9 @@ impl<H: ?Sized> Shared<H> {
             return false;
         };
         match event.kind {
-            AgentEventKind::ToolCall | AgentEventKind::RunSteered => true,
+            AgentEventKind::ToolCall => serde_json::from_str::<Nested>(event.payload.get())
+                .is_ok_and(|nested| nested.parent_call_id.is_none()),
+            AgentEventKind::RunSteered => true,
             AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
                 !request_id.is_some_and(|id| {
                     self.state.read(|state| {

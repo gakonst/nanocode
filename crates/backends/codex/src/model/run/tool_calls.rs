@@ -256,6 +256,11 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
                         tool: name,
                         arguments: logged.as_ref().map_or(input, |(arguments, _)| arguments),
                         model_call_index: call_index,
+                        parent_call_id: Some(
+                            call_id
+                                .rsplit_once("/code-")
+                                .map_or(self.parent_call_id, |(parent, _)| parent),
+                        ),
                         truncated: logged.is_some(),
                         original_bytes: logged.as_ref().map(|(_, bytes)| *bytes),
                     },
@@ -914,6 +919,7 @@ impl ModelRun {
                 tool: &qualified_name,
                 arguments,
                 model_call_index: call_index,
+                parent_call_id: None,
                 truncated: false,
                 original_bytes: None,
             },

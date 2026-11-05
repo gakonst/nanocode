@@ -140,21 +140,30 @@ pub async fn migrate_format<H: Sql + ?Sized>(
     component: &'static str,
     migrations: &[Migration],
 ) -> Result<(), StoreError> {
+    migrate_format_then(host, component, migrations, &[])
+        .await
+        .map(drop)
+}
+
+pub async fn migrate_format_then<H: Sql + ?Sized>(
+    host: &H,
+    component: &'static str,
+    migrations: &[Migration],
+    then: &[SqlStatement<'_>],
+) -> Result<Vec<Vec<SqlRow>>, StoreError> {
     let dialect = host.dialect();
-    let results = run_checked(
-        host,
-        "format",
-        &[
-            statement(dialect, &CREATE_FORMATS, Vec::new()),
-            statement(dialect, &READ_FORMAT, vec![component]),
-        ],
-    )
-    .await?;
-    let stored = match single(&results[1])? {
-        Some(row) => counter(row, 0)?,
-        None => 0,
-    };
+    let check = [
+        statement(dialect, &CREATE_FORMATS, Vec::new()),
+        statement(dialect, &READ_FORMAT, vec![component]),
+    ];
     let known = u32::try_from(migrations.len()).unwrap_or(u32::MAX);
+    let current = |results: &[Vec<SqlRow>]| -> Result<u64, StoreError> {
+        Ok(match single(&results[1])? {
+            Some(row) => counter(row, 0)?,
+            None => 0,
+        })
+    };
+    let stored = current(&run_checked(host, "format", &check).await?)?;
     if stored > u64::from(known) {
         return Err(StoreError::UnsupportedFormat {
             component,
@@ -162,9 +171,18 @@ pub async fn migrate_format<H: Sql + ?Sized>(
             known,
         });
     }
+    if stored == u64::from(known) {
+        return if then.is_empty() {
+            Ok(Vec::new())
+        } else {
+            run_checked(host, "format", then).await
+        };
+    }
+    let last = migrations.len() - 1;
     for (index, migration) in migrations.iter().enumerate().skip(stored as usize) {
         let version = (index + 1).to_string();
         let write = statement(dialect, &WRITE_FORMAT, vec![component, &version]);
+        let trailing: &[SqlStatement<'_>] = if index == last { then } else { &[] };
         let schema = migration.statements[dialect as usize]
             .iter()
             .map(|sql| SqlStatement {
@@ -172,8 +190,14 @@ pub async fn migrate_format<H: Sql + ?Sized>(
                 params: Vec::new(),
             });
         let Some(adopt) = migration.adopt else {
-            let statements: Vec<_> = schema.chain([write]).collect();
-            run_checked(host, "format", &statements).await?;
+            let statements: Vec<_> = schema
+                .chain([write])
+                .chain(trailing.iter().cloned())
+                .collect();
+            let mut results = run_checked(host, "format", &statements).await?;
+            if index == last {
+                return Ok(results.split_off(statements.len() - trailing.len()));
+            }
             continue;
         };
         let probe = || statement(dialect, &adopt.probe, Vec::new());
@@ -187,9 +211,16 @@ pub async fn migrate_format<H: Sql + ?Sized>(
                 return Err(error);
             }
         }
-        run_checked(host, "format", &[write]).await?;
+        let statements: Vec<_> = [write]
+            .into_iter()
+            .chain(trailing.iter().cloned())
+            .collect();
+        let mut results = run_checked(host, "format", &statements).await?;
+        if index == last {
+            return Ok(results.split_off(1));
+        }
     }
-    Ok(())
+    Ok(Vec::new())
 }
 
 fn column_present(rows: &[SqlRow]) -> Result<bool, StoreError> {

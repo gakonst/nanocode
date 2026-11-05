@@ -40,6 +40,13 @@ const CLOSE: &str = "COMMIT";
 #[derive(Debug)]
 pub struct Unavailable(String);
 
+impl Unavailable {
+    #[must_use]
+    pub fn cause(&self) -> &str {
+        &self.0
+    }
+}
+
 impl Display for Unavailable {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "pipelined connection unavailable: {}", self.0)

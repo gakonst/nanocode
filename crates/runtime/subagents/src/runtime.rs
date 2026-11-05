@@ -14,6 +14,7 @@ use super::{
     task_tree::TaskTree,
 };
 use futures_util::future::join_all;
+use nanocode_agent_core::usage::{UsdAmount, usd_number};
 use nanocode_agent_core::{
     Agent, AgentEvents, AgentHandle, AgentUsage, ExecutionPolicyDisposition, ModelSelection,
     NanocodeError, PromptRoute, ReasoningMode, Result as AgentResult, SessionCheckpoint,
@@ -55,6 +56,7 @@ type MissingRuntime = (
     Option<Arc<str>>,
     Arc<Value>,
     String,
+    Option<UsdAmount>,
     bool,
 );
 
@@ -1182,6 +1184,11 @@ pub struct AgentSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     pub reasoning_mode: ReasoningMode,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "usd_number::serialize"
+    )]
+    pub budget_usd: Option<UsdAmount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_output: Option<Value>,
 
@@ -1208,6 +1215,11 @@ pub struct AgentDirectoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     pub reasoning_mode: ReasoningMode,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "usd_number::serialize"
+    )]
+    pub budget_usd: Option<UsdAmount>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion_revision: Option<u64>,
@@ -1581,6 +1593,7 @@ impl RegistryState {
                     model: session.descriptor.model.clone(),
                     thinking: session.descriptor.thinking,
                     reasoning_mode: session.descriptor.reasoning_mode,
+                    budget_usd: session.descriptor.budget_usd,
                     completion_revision: session.completion_revision(),
                     usage: session.usage.clone(),
                     resuming: false,
@@ -3912,6 +3925,57 @@ impl Registry {
             .await
     }
 
+    pub(super) async fn budgets(&self, session_id: &str) -> Vec<(AgentId, UsdAmount)> {
+        let session_id = session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let Some(scope) = state
+                    .root_by_session
+                    .get(&session_id)
+                    .and_then(|root| state.scopes.get(root))
+                else {
+                    return Vec::new();
+                };
+                let mut budgets = Vec::new();
+                let mut next = scope.topology.agent_for_session(&session_id);
+                while let Some(session) = next.and_then(|id| scope.sessions.get(&id)) {
+                    if let Some(budget) = session.descriptor.budget_usd {
+                        budgets.push((session.descriptor.id, budget));
+                    }
+                    next = session.descriptor.parent;
+                }
+                budgets
+            })
+            .await
+    }
+
+    pub(super) async fn set_budget(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        budget: Option<UsdAmount>,
+    ) -> std::io::Result<AgentSummary> {
+        let root = root_session_id.to_owned();
+        let (descriptor, summary) = self
+            .state
+            .call(move |state| {
+                let session = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))?;
+                session.descriptor.budget_usd = budget;
+                let mut descriptor = session.descriptor.clone();
+                descriptor.task = session.binding_task.clone();
+                Some((descriptor, session.summary()))
+            })
+            .await
+            .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
+        self.persist_durably(root_session_id).await?;
+        self.send(root_session_id, AgentUpdate::Added(descriptor));
+        self.changed();
+        Ok(summary)
+    }
+
     pub(super) async fn reserve(&self, session_id: &str) -> std::io::Result<AgentReservation> {
         let session_id = session_id.to_owned();
         self.state
@@ -5902,6 +5966,7 @@ impl Registry {
                 session.host_context.clone(),
                 session.output_schema.clone(),
                 session.descriptor.task.clone(),
+                session.descriptor.budget_usd,
                 session.conversation,
             ));
             match session.descriptor.parent {
@@ -5926,6 +5991,7 @@ impl Registry {
             host_context,
             schema,
             task,
+            budget,
             conversation,
         )) = missing.pop()
         {
@@ -5968,7 +6034,7 @@ impl Registry {
                 self.capacity.clone(),
                 Arc::downgrade(self),
                 contract.schema,
-                needs_assignment.then(|| super::model::agent_prompt(id, &task)),
+                needs_assignment.then(|| super::model::agent_prompt(id, &task, budget)),
             );
             let scoped = root.clone();
             let announce = self
@@ -7047,6 +7113,7 @@ impl ChildSession {
             model: self.descriptor.model.clone(),
             thinking: self.descriptor.thinking,
             reasoning_mode: self.descriptor.reasoning_mode,
+            budget_usd: self.descriptor.budget_usd,
             last_output,
             completion_revision: self.completion_revision(),
             usage: self.usage.clone(),

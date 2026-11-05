@@ -13,6 +13,7 @@ use super::{
 };
 use async_trait::async_trait;
 use futures_util::future::join_all;
+use nanocode_agent_core::usage::{UsdAmount, usd_number};
 use nanocode_agent_core::{
     AgentHandle, ClaudeModel, ForkRequest, HarnessFamily, Model, ModelSelection, ReasoningMode,
     SpawnOptions, Thinking,
@@ -124,6 +125,8 @@ struct SpawnAgentTask {
     thinking: Option<Thinking>,
     #[serde(default)]
     reasoning_mode: Option<ReasoningMode>,
+    #[serde(default, with = "usd_number")]
+    budget_usd: Option<UsdAmount>,
 
     #[serde(default)]
     output_schema: Option<Value>,
@@ -135,7 +138,7 @@ impl SpawnAgentTask {
     fn into_parts_with_parent(
         self,
         parent: Option<HarnessFamily>,
-    ) -> std::io::Result<(AgentTask, SpawnOptions)> {
+    ) -> std::io::Result<(AgentTask, SpawnOptions, Option<UsdAmount>)> {
         let output_schema = match (self.output_contract, self.output_schema) {
             (Some(contract), None) => contract.into_schema()?,
             (None, Some(schema)) => schema,
@@ -176,6 +179,7 @@ impl SpawnAgentTask {
                 output_schema,
             },
             options,
+            self.budget_usd,
         ))
     }
 }
@@ -190,6 +194,11 @@ pub struct AgentStartReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     pub reasoning_mode: ReasoningMode,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "usd_number::serialize"
+    )]
+    pub budget_usd: Option<UsdAmount>,
 }
 
 fn inferred_harness(parent: Option<HarnessFamily>, model: &str) -> std::io::Result<HarnessFamily> {
@@ -502,6 +511,7 @@ pub async fn start_agents_observed(
             model: model.clone(),
             thinking,
             reasoning_mode,
+            budget_usd: None,
         };
         let (start_events, events_ready) = oneshot::channel();
         let event_task = forward_events(
@@ -534,6 +544,7 @@ pub async fn start_agents_observed(
             model: model.clone(),
             thinking,
             reasoning_mode,
+            budget_usd: None,
         });
         additions.push((
             reservation.root_session_id.clone(),
@@ -543,7 +554,7 @@ pub async fn start_agents_observed(
         launches.push((
             reservation.root_session_id,
             id,
-            agent_prompt(id, &task.task),
+            agent_prompt(id, &task.task, None),
             capacity,
         ));
     }
@@ -601,6 +612,7 @@ pub async fn start_fork_agent(
         session_id,
         task,
         SpawnOptions::new(),
+        None,
         host_context,
         true,
         None,
@@ -622,6 +634,7 @@ async fn start_agent_with_host_context(
         session_id,
         task,
         options,
+        None,
         host_context,
         false,
         None,
@@ -636,12 +649,16 @@ async fn start_child(
     session_id: &str,
     task: AgentTask,
     options: SpawnOptions,
+    budget: Option<UsdAmount>,
     host_context: Option<Arc<str>>,
     fork: bool,
     capacity: Option<TurnCapacity>,
 ) -> AgentToolResult<AgentStartReport> {
     if fork && parent.session_id() != session_id {
         return Err("child caller identity must match its native parent handle".into());
+    }
+    if let Some(budget) = budget {
+        admit_budget(registry, session_id, budget).await?;
     }
     registry.register_handle(parent.clone());
     let policy_parent = spawn_parent(parent, registry, session_id).await?;
@@ -738,6 +755,7 @@ async fn start_child(
         model: model.clone(),
         thinking,
         reasoning_mode,
+        budget_usd: budget,
     };
     let (start_events, events_ready) = oneshot::channel();
     let event_task = forward_events(
@@ -767,7 +785,7 @@ async fn start_child(
         .launch_initial_turn(
             &reservation.root_session_id,
             id,
-            agent_prompt(id, &task),
+            agent_prompt(id, &task, budget),
             capacity,
         )
         .await
@@ -782,7 +800,37 @@ async fn start_child(
         model,
         thinking,
         reasoning_mode,
+        budget_usd: budget,
     })
+}
+
+async fn admit_budget(
+    registry: &Registry,
+    session_id: &str,
+    budget: UsdAmount,
+) -> AgentToolResult<()> {
+    if !registry.spawn_policy().budgets {
+        return Err(
+            "budget_usd is not offered here: this host does not meter what subagents spend".into(),
+        );
+    }
+    if budget.nano_usd() == 0 {
+        return Err("budget_usd must be more than 0".into());
+    }
+    let bound = registry
+        .budgets(session_id)
+        .await
+        .into_iter()
+        .min_by_key(|(_, limit)| limit.nano_usd());
+    if let Some((owner, limit)) = bound
+        && budget.nano_usd() > limit.nano_usd()
+    {
+        return Err(format!(
+            "budget_usd {budget} exceeds the {limit} that agent {owner} and its subagents may spend together"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 struct SpawnAgent {
@@ -811,7 +859,7 @@ impl Tool for SpawnAgent {
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let (task, options) = input
+        let (task, options, budget) = input
             .decode_json::<SpawnAgentTask>()?
             .into_parts_with_parent(Some(self.parent.harness_family()))?;
         let host_context = context.host_context().map(Arc::<str>::from);
@@ -831,6 +879,7 @@ impl Tool for SpawnAgent {
                     &session_id,
                     task,
                     options,
+                    budget,
                     host_context,
                     false,
                     Some(capacity),
@@ -900,6 +949,15 @@ fn spawn_agent_parameters_for(policy: &SpawnPolicy) -> Value {
                 .unwrap_or_default()
         );
         properties["thinking"]["description"] = json!(description);
+    }
+    if policy.budgets {
+        parameters["properties"]["budget_usd"] = json!({
+            "type": ["number", "null"],
+            "description": "The most, in USD, this subagent and the subagents it delegates to may spend together, at most your own budget when you have one; null bounds it only by yours. The host refuses its requests past it."
+        });
+        if let Some(required) = parameters["required"].as_array_mut() {
+            required.push(json!("budget_usd"));
+        }
     }
     parameters
 }
@@ -1494,6 +1552,7 @@ fn spawn_agent_output_schema() -> Value {
             "model": {},
             "thinking": { "type": "string" },
             "reasoning_mode": { "type": "string", "enum": ["standard", "pro"] },
+            "budget_usd": { "type": "number" },
             "status": {
                 "type": "object",
                 "properties": { "state": { "type": "string", "const": "running" } },
@@ -1525,6 +1584,7 @@ fn wait_agent_output_schema() -> Value {
                         "model": {},
                         "thinking": { "type": "string" },
                         "reasoning_mode": { "type": "string", "enum": ["standard", "pro"] },
+                        "budget_usd": { "type": "number" },
                         "last_output": {},
                         "completion_revision": { "type": "integer", "minimum": 0 }
                     },

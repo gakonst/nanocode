@@ -4,7 +4,7 @@ use crate::{
     model::{AgentId, MessagePriority, MessagePurpose},
     platform,
 };
-use nanocode_agent_core::{NanocodeError, SideAnswer};
+use nanocode_agent_core::{NanocodeError, SideAnswer, UsdAmount};
 use std::sync::Arc;
 
 struct SideQuestion {
@@ -63,6 +63,21 @@ impl SubagentControl {
     ) -> std::io::Result<Vec<AgentSummary>> {
         self.require_root(root_session_id).await?;
         self.registry.close(root_session_id, id).await
+    }
+
+    pub async fn set_budget(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        budget: Option<UsdAmount>,
+    ) -> std::io::Result<AgentSummary> {
+        self.require_root(root_session_id).await?;
+        self.registry.await_restored(root_session_id).await?;
+        self.registry.set_budget(root_session_id, id, budget).await
+    }
+
+    pub async fn budgets(&self, session_id: &str) -> Vec<(AgentId, UsdAmount)> {
+        self.registry.budgets(session_id).await
     }
 
     pub async fn agents(&self, root_session_id: &str) -> std::io::Result<Vec<AgentDirectoryEntry>> {

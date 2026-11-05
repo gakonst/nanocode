@@ -12,6 +12,7 @@ pub struct SpawnPolicy {
     /// lower-effort agent cannot escalate into higher-effort descendants.
     pub bounded_by_parent_thinking: bool,
     pub max_reasoning_mode: Option<ReasoningMode>,
+    pub budgets: bool,
 }
 
 impl Default for SpawnPolicy {
@@ -22,6 +23,7 @@ impl Default for SpawnPolicy {
             max_thinking: None,
             bounded_by_parent_thinking: false,
             max_reasoning_mode: None,
+            budgets: false,
         }
     }
 }

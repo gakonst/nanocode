@@ -1,4 +1,5 @@
 use nanocode_agent_core::input::{Prompt, PromptInput, UserInput};
+use nanocode_agent_core::usage::{UsdAmount, usd_number};
 use nanocode_agent_core::{
     Model, ModelSelection, ModelTransport, ReasoningMode, Thinking, events::AgentEvent,
 };
@@ -278,7 +279,7 @@ pub struct AgentMessageUpdate {
     pub delivery: MessageDeliveryState,
 }
 
-pub(super) fn agent_prompt(id: AgentId, task: &str) -> String {
+pub(super) fn agent_prompt(id: AgentId, task: &str, budget: Option<UsdAmount>) -> String {
     let coordination = " Other agents may be working concurrently in the same workspace. Use \
                         list_agents to discover relevant peers. Communicate when doing so prevents \
                         duplicated work, coordinates shared dependencies or overlapping files, or \
@@ -298,8 +299,13 @@ pub(super) fn agent_prompt(id: AgentId, task: &str) -> String {
          the task tree.{coordination} After completing your work, call submit_result({{output}}) \
          with the required JSON value. When its receipt says accepted, send a brief final \
          assistant message with no further tool calls; do not end with an empty model \
-         response. If the receipt says superseded, follow the updated instructions instead.\
-         \n\nDelegated task:\n{task}"
+         response. If the receipt says superseded, follow the updated instructions instead.{}\
+         \n\nDelegated task:\n{task}",
+        budget.map_or_else(String::new, |budget| format!(
+            " You and the subagents you delegate to may spend at most {budget} together. Once it \
+             is spent, your requests are refused and your turn ends, so spend it on what matters \
+             most and submit what you have before it runs out."
+        ))
     )
 }
 
@@ -355,6 +361,8 @@ pub struct AgentDescriptor {
     pub thinking: Option<Thinking>,
     #[serde(default, skip_serializing_if = "ReasoningMode::is_standard")]
     pub reasoning_mode: ReasoningMode,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "usd_number")]
+    pub budget_usd: Option<UsdAmount>,
 }
 
 impl AgentDescriptor {

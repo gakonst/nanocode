@@ -18,12 +18,17 @@ serde.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
+libc.workspace = true
 nix.workspace = true
+sha2.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
 
 [lib]
-test = false
+test = true
 doctest = false
 bench = false

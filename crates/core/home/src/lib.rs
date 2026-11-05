@@ -1,6 +1,10 @@
 mod fs_util;
 mod instructions;
+#[cfg(unix)]
+pub mod private;
 mod project;
+#[cfg(unix)]
+pub mod release;
 mod scoped;
 #[cfg(unix)]
 pub mod service;

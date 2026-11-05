@@ -16,6 +16,7 @@ struct Fake {
     log: Vec<String>,
     pointer: bool,
     trusted: bool,
+    bundles: bool,
 }
 
 impl Fake {
@@ -85,6 +86,10 @@ impl Backend for Fake {
 
     fn apps(&mut self) -> Vec<App> {
         self.running.clone()
+    }
+
+    fn keys_by_bundle(&self) -> bool {
+        self.bundles
     }
 
     fn installed(&mut self, wanted: &str) -> Option<App> {
@@ -629,4 +634,51 @@ fn background_apps_without_windows_are_not_listed_and_found_last() {
     assert_eq!(found.pid, 7);
     let by_path = super::find(engine.backend().running.clone(), "/apps/Fixture.app/").unwrap();
     assert_eq!(by_path.pid, 7);
+}
+
+#[test]
+fn leases_key_on_the_bundle_only_where_the_backend_has_bundles() {
+    let mut bundles = Engine::new(Fake {
+        bundles: true,
+        ..Fake::new()
+    });
+    assert_eq!(
+        bundles.lease_key("Fixture").as_deref(),
+        Some("org.example.fixture"),
+        "a running app by name"
+    );
+    assert_eq!(
+        bundles.lease_key("/apps/Fixture.app").as_deref(),
+        Some("org.example.fixture"),
+        "by path"
+    );
+    assert_eq!(
+        bundles.lease_key("org.example.fixture").as_deref(),
+        Some("org.example.fixture"),
+        "by bundle"
+    );
+    assert_eq!(
+        bundles.lease_key("Notes").as_deref(),
+        Some("com.example.notes"),
+        "an installed app that isn't running"
+    );
+    assert_eq!(
+        bundles.lease_key("Nothing"),
+        None,
+        "unresolved: the name is the key"
+    );
+    assert!(
+        bundles
+            .backend
+            .log
+            .iter()
+            .all(|entry| !entry.starts_with("launch")),
+        "resolving launches nothing"
+    );
+    let mut names = Engine::new(Fake::new());
+    assert_eq!(
+        names.lease_key("Fixture"),
+        None,
+        "without bundles the name is the key"
+    );
 }

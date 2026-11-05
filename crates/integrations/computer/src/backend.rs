@@ -96,6 +96,10 @@ pub trait Backend: Send + 'static {
 
     fn installed(&mut self, wanted: &str) -> Option<App>;
 
+    fn keys_by_bundle(&self) -> bool {
+        false
+    }
+
     fn launch(&mut self, app: &App) -> Result<(), String>;
 
     fn read(&mut self, app: &App) -> Result<Read<Self::Element>, String>;

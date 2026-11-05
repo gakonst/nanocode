@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -29,6 +30,7 @@ const STEPS_PER_CALL: usize = 64;
 pub struct Install {
     pub path: PathBuf,
     pub direct: bool,
+    pub without_env: Vec<OsString>,
 }
 
 impl Install {
@@ -36,7 +38,14 @@ impl Install {
         Self {
             path: path.into(),
             direct,
+            without_env: Vec::new(),
         }
+    }
+
+    #[must_use]
+    pub fn without_env(mut self, name: impl Into<OsString>) -> Self {
+        self.without_env.push(name.into());
+        self
     }
 
     pub fn installed() -> Option<Self> {
@@ -53,6 +62,9 @@ impl Install {
         command.arg("mcp");
         if self.direct {
             command.arg("--direct");
+        }
+        for name in &self.without_env {
+            command.env_remove(name);
         }
         command
     }
@@ -377,6 +389,12 @@ impl Driver {
             features: Features::default(),
             apps: HashMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn without_env(mut self, name: impl Into<OsString>) -> Self {
+        self.install = self.install.map(|install| install.without_env(name));
+        self
     }
 
     pub fn client(mut self, name: impl Into<String>, version: impl Into<String>) -> Self {

@@ -87,6 +87,10 @@ impl Backend for Ax {
             .collect()
     }
 
+    fn keys_by_bundle(&self) -> bool {
+        true
+    }
+
     fn installed(&mut self, wanted: &str) -> Option<App> {
         let by_bundle = wanted.contains('.')
             && !wanted.contains('/')

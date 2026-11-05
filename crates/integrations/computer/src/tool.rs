@@ -170,6 +170,18 @@ impl Provider {
         }
     }
 
+    async fn lease_key(&self, app: &str, limits: &Limits) -> Option<String> {
+        let Self::Native { desktop, .. } = self else {
+            return None;
+        };
+        let mut engine = timeout(limits.step, desktop.clone().acquire_owned())
+            .await
+            .ok()?;
+        let app = app.to_owned();
+        let key = tokio::task::spawn_blocking(move || engine.lease_key(&app));
+        timeout(limits.step, key).await.ok()?.ok()?
+    }
+
     async fn step(&self, action: &str, input: &Value, scope: &str, limits: &Limits) -> ToolOutput {
         match self {
             Self::Missing(reason) => ToolOutput::error(reason.clone()),
@@ -326,15 +338,20 @@ impl Tool for Computer {
                 self.limits.input / 1024
             )));
         }
-        if let Some(app) = input["app"].as_str().filter(|app| !app.trim().is_empty())
-            && !self.leases.acquire().await.take(
-                app,
+        if let Some(app) = input["app"].as_str().filter(|app| !app.trim().is_empty()) {
+            let key = self
+                .provider(&input)
+                .lease_key(app, &self.limits)
+                .await
+                .unwrap_or_else(|| app.to_owned());
+            if !self.leases.acquire().await.take(
+                &key,
                 context.session_id(),
                 context.turn_id().unwrap_or_default(),
                 Instant::now(),
-            )
-        {
-            return Ok(ToolOutput::error((self.refusal)(app)));
+            ) {
+                return Ok(ToolOutput::error((self.refusal)(app)));
+            }
         }
         let scope = json!([context.session_id(), context.turn_id()]).to_string();
         Ok(self.step(&input, &scope).await)

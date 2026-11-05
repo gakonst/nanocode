@@ -154,6 +154,26 @@ const fn libc_nofollow() -> i32 {
     libc::O_NOFOLLOW
 }
 
+/// Sends this process's stdout and stderr to the end of `path` (created 0600,
+/// with its directory), as a service started without a terminal logs.
+pub fn append_output(path: &Path) -> Result<(), PrivateError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| PrivateError::At {
+            path: path.into(),
+            error,
+        })?;
+    nix::unistd::dup2_stdout(&file).map_err(io::Error::from)?;
+    nix::unistd::dup2_stderr(&file).map_err(io::Error::from)?;
+    Ok(())
+}
+
 /// A private lock file (0600, never through a link), taken exclusively as
 /// `flock(2)` takes it, so it excludes any process that flocks the same file.
 /// Dropping it lets the lock go.

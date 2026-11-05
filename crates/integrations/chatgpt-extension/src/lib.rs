@@ -9,6 +9,7 @@ mod native;
 mod proxy;
 mod relay;
 mod steps;
+mod watch;
 
 pub use bridge::{Bridge, Guard, Launch, Launcher, Registration, Upstream, host_path};
 pub use browsers::{
@@ -21,6 +22,7 @@ pub use link::{ExtensionLink, ExtensionTool, relay_host};
 pub use native::{MAX_NATIVE, MAX_RESPONSE, read_body, standalone_reply, write_body};
 pub use proxy::Connection;
 pub use steps::{GROUP_TITLE_MAX, Reference, Snapshot, Tabs, group_title, snapshot};
+pub use watch::{Noticed, Watch};
 
 pub const EXTENSION_ID: &str = "hehggadaopoacecdllhhajmbjkdcmajg";
 pub const EDGE_EXTENSION_ID: &str = "odlomjlbamekndcpllcnffbgeohgkmjh";

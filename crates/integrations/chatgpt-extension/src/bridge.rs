@@ -63,7 +63,33 @@ impl Launcher {
         self
     }
 
-    fn script(&self, manifest: &Path, root: &Path) -> Result<String, Error> {
+    /// Writes this launcher at `path` as an executable of its own (0700, written
+    /// whole through `<path>.tmp` and a rename): it sets its variables and execs
+    /// its program with its arguments and the ones it is started with, as a host's
+    /// own native-messaging host does.
+    pub fn install(&self, path: &Path) -> Result<(), Error> {
+        let script = self.script(&[])?;
+        let temporary = path.with_extension("tmp");
+        let _ = fs::remove_file(&temporary);
+        let written = (|| -> Result<(), Error> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&temporary)?;
+            file.write_all(script.as_bytes())?;
+            file.sync_all()?;
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o700))?;
+            fs::rename(&temporary, path)?;
+            Ok(())
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        written
+    }
+
+    fn script(&self, tail: &[&Path]) -> Result<String, Error> {
         let quote = |text: &str| -> Result<String, Error> {
             if text.chars().any(char::is_control) {
                 return Err("host paths must be UTF-8 without control characters".into());
@@ -101,7 +127,11 @@ impl Launcher {
                 quote(argument)?
             });
         }
-        script.push_str(&format!(" {} {} \"$@\"\n", path(manifest)?, path(root)?));
+        for argument in tail {
+            script.push(' ');
+            script.push_str(&path(argument)?);
+        }
+        script.push_str(" \"$@\"\n");
         Ok(script)
     }
 }
@@ -383,7 +413,7 @@ impl Bridge {
             .launcher
             .as_ref()
             .ok_or("no launcher is configured for the ChatGPT host")?
-            .script(manifest, root)?;
+            .script(&[manifest, root])?;
         if fs::symlink_metadata(launcher)
             .is_ok_and(|meta| meta.file_type().is_file() && meta.permissions().mode() & 0o111 != 0)
             && fs::read(launcher).is_ok_and(|bytes| bytes == script.as_bytes())

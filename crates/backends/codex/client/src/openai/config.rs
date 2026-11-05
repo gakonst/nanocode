@@ -21,6 +21,28 @@ pub(crate) fn prefixed_model_id(prefix: Option<&str>, model: Model) -> Cow<'stat
     }
 }
 
+/// A Cyber access program a request asks OpenAI to apply, as Codex's
+/// `--cyber-access-program`: sent as `access_programs.cyber`. Whether the
+/// account is entitled to it, and which models accept it, is decided by the server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CyberAccessProgram {
+    Standard,
+    DaybreakBlue,
+    DaybreakRed,
+}
+
+impl CyberAccessProgram {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::DaybreakBlue => "daybreak_blue",
+            Self::DaybreakRed => "daybreak_red",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ModelConfig {
     pub model: Model,
@@ -37,6 +59,15 @@ pub struct ModelConfig {
     pub thinking_explicit: bool,
 
     pub service_tier: ServiceTier,
+
+    /// The Cyber access program every request asks for, unless
+    /// `model_cyber_access_programs` names one for its model; `None` leaves it to the server.
+    pub cyber_access_program: Option<CyberAccessProgram>,
+
+    /// The Cyber access program requests to a model ask for, over `cyber_access_program`,
+    /// so a client whose sessions run several models (subagents, a retry on another
+    /// model) asks for each model's own.
+    pub model_cyber_access_programs: Vec<(Model, CyberAccessProgram)>,
 
     pub context_window_tokens: u64,
 
@@ -96,6 +127,16 @@ impl ModelConfig {
             self.model_id_prefix = gateway.model_id_prefix_for(model).map(Arc::from);
         }
         self.model = model;
+    }
+
+    /// The Cyber access program a request to `model` asks for.
+    #[must_use]
+    pub fn cyber_access_program_for(&self, model: Model) -> Option<CyberAccessProgram> {
+        self.model_cyber_access_programs
+            .iter()
+            .find(|(configured, _)| *configured == model)
+            .map(|(_, program)| *program)
+            .or(self.cyber_access_program)
     }
 
     #[must_use]
@@ -195,6 +236,7 @@ impl ModelConfig {
             thinking: Thinking::default(),
             thinking_explicit: false,
             service_tier: ServiceTier::Standard,
+            cyber_access_program: None,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             auto_compact_token_limit: None,
             compaction_thinking: None,
@@ -214,7 +256,35 @@ impl ModelConfig {
             responses_gateway: None,
             system_prompt: None,
             model_system_prompts: Vec::new(),
+            model_cyber_access_programs: Vec::new(),
             additional_instructions: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod cyber_access_program_tests {
+    use super::{CyberAccessProgram, Model, ModelConfig};
+
+    #[test]
+    fn a_model_s_program_wins_over_the_client_s() {
+        let mut config = ModelConfig::default();
+        assert_eq!(config.cyber_access_program_for(Model::Sol), None);
+        config.model_cyber_access_programs =
+            vec![(Model::DaybreakBlue, CyberAccessProgram::DaybreakBlue)];
+        assert_eq!(config.cyber_access_program_for(Model::Sol), None);
+        assert_eq!(
+            config.cyber_access_program_for(Model::DaybreakBlue),
+            Some(CyberAccessProgram::DaybreakBlue)
+        );
+        config.cyber_access_program = Some(CyberAccessProgram::DaybreakRed);
+        assert_eq!(
+            config.cyber_access_program_for(Model::Sol),
+            Some(CyberAccessProgram::DaybreakRed)
+        );
+        assert_eq!(
+            config.cyber_access_program_for(Model::DaybreakBlue),
+            Some(CyberAccessProgram::DaybreakBlue)
+        );
     }
 }

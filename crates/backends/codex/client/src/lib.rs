@@ -44,6 +44,8 @@ pub use openai::ModelConfig;
 
 pub use openai::OpenAiError;
 
+pub use openai::CyberAccessProgram;
+
 #[doc(hidden)]
 pub use pricing::{CostStatus, EstimatedUsdCost};
 pub use responses::ResponseEvent;

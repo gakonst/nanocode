@@ -12,6 +12,7 @@ use crate::client::{
     ResponsesRetryPolicy, ResponsesTransport, transport::ResponsesGateway,
 };
 
+pub use config::CyberAccessProgram;
 #[doc(hidden)]
 pub use config::ModelConfig;
 pub use config::ModelConfig as ResponsesServiceConfig;

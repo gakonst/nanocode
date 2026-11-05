@@ -262,6 +262,7 @@ pub struct HostConfig {
     pub gateway: Option<Gateway>,
     pub clients: ModelClients,
     pub headless: bool,
+    pub cyber_access_program: Option<nanocode::codex::CyberAccessProgram>,
 }
 
 #[derive(Clone)]
@@ -486,6 +487,7 @@ impl Host {
             (None, None) => OpenAi::builder(nanocode::codex::OpenAiAuth::chatgpt()),
         }
         .raw_api_events(false)
+        .cyber_access_program(config.cyber_access_program)
         .build()?;
         let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
         let described = std::sync::Arc::clone(&hand);

@@ -180,7 +180,7 @@ fn reqwest_error(error: reqwest::Error) -> HttpError {
         source = cause.source();
     }
     HttpError::Transport {
-        retryable: error.is_request() || error.is_body(),
+        retryable: nanocode_http::retryable(&error),
         timeout: error.is_timeout(),
         unsent: error.is_connect() || error.is_builder(),
         detail,

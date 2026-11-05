@@ -4985,6 +4985,7 @@ impl State {
         let mut attempt = 0;
         let mut waited = Duration::ZERO;
         let mut dispatched: Option<u64> = None;
+        let mut shown: Option<String> = None;
         loop {
             if cancel.is_cancelled() {
                 return Err(ResponseFailure {
@@ -4998,7 +4999,6 @@ impl State {
             let attempt_started = Instant::now();
             let attempt_started_ns = elapsed_ns();
             let mut accepted = false;
-            let mut published_text = false;
             let mut first_event = None;
             let mut first_output = None;
             let mut response_headers_ns = None;
@@ -5077,7 +5077,8 @@ impl State {
                                 recovery.observe(&event);
                             }
                             if let StreamEvent::MessageStart { message } = &event {
-                                message_id = Some(message.id.clone());
+                                message_id =
+                                    Some(shown.get_or_insert_with(|| message.id.clone()).clone());
                             }
                             if let StreamEvent::ContentBlockStart {
                                 index: block,
@@ -5158,7 +5159,6 @@ impl State {
                                         },
                                         None,
                                     );
-                                    published_text |= kind == AgentEventKind::AssistantDelta;
                                     pipeline.display_delta_emit_ns = pipeline
                                         .display_delta_emit_ns
                                         .saturating_add(telemetry::elapsed_ns(emit_started));
@@ -5232,6 +5232,9 @@ impl State {
                         thread
                             .modify(|thread| thread.complete(turn, &response, completed_at))
                             .map_err(provider_error)?;
+                    }
+                    if let Some(shown) = shown.take() {
+                        response.id = shown;
                     }
                     if let Some(effect) = active_effect {
                         let completion =
@@ -5311,7 +5314,6 @@ impl State {
 
             if attempt >= attempts
                 || !error.is_transient()
-                || published_text
                 || (uncertain && recovery.is_some())
                 || delay > Duration::from_secs(60)
                 || (throttled && waited + delay > THROTTLED_WAIT)
@@ -5336,7 +5338,8 @@ impl State {
                     events,
                     AgentEventKind::ModelAttemptRetrying,
                     json!({
-                        "model_call_index": index,
+                        "model_call_index": index.saturating_add(1),
+                        "error_class": telemetry::retry_class(&error),
                         "attempt": attempt,
                         "next_attempt": attempt + 1,
                         "max_attempts": attempts,

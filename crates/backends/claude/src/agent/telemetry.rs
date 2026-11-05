@@ -469,6 +469,32 @@ const fn error_class(error: &ClaudeError) -> (&'static str, Option<&str>) {
     }
 }
 
+pub(super) fn retry_class(error: &ClaudeError) -> &'static str {
+    match error {
+        ClaudeError::Http { status: 429, .. } => "http_rate_limit",
+        ClaudeError::Http { status: 529, .. } => "http_overloaded",
+        ClaudeError::Http {
+            status: 500..=599, ..
+        } => "http_server",
+        ClaudeError::Http { .. } => "http",
+        ClaudeError::Transport(crate::transport::HttpError::Transport {
+            timeout: true, ..
+        }) => "transport_timeout",
+        ClaudeError::Transport(_) => "transport",
+        ClaudeError::StreamError { kind, .. } => match kind.as_str() {
+            "overloaded_error" => "stream_overloaded",
+            "rate_limit_error" => "stream_rate_limit",
+            "timeout_error" => "stream_timeout",
+            "api_error" => "stream_api_error",
+            _ => "stream",
+        },
+        ClaudeError::IncompleteStream => "incomplete_stream",
+        ClaudeError::Json(_) => "json",
+        ClaudeError::Protocol(_) => "protocol",
+        ClaudeError::AuthUnavailable(_) => "auth_unavailable",
+    }
+}
+
 const fn stop_reason(reason: StopReason) -> &'static str {
     match reason {
         StopReason::EndTurn => "end_turn",

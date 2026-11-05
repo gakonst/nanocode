@@ -41,6 +41,11 @@ impl Sender for ReqwestSender<'_> {
     }
 }
 
+#[must_use]
+pub fn retryable(error: &reqwest::Error) -> bool {
+    error.is_connect() || error.is_body() || error.is_request() || error.is_decode()
+}
+
 pub fn reqwest_error(error: reqwest::Error) -> Error {
     let mut detail = error.to_string();
     let mut source = std::error::Error::source(&error);
@@ -50,7 +55,7 @@ pub fn reqwest_error(error: reqwest::Error) -> Error {
         source = cause.source();
     }
     Error::new(detail)
-        .retryable(error.is_connect() || error.is_body() || error.is_request())
+        .retryable(retryable(&error))
         .timeout(error.is_timeout())
         .unsent(error.is_connect() || error.is_builder())
 }

@@ -15,6 +15,8 @@ use zbus::Connection;
 const ACTION: Duration = Duration::from_secs(5);
 const GONE: &str = "That element is gone, so nothing ran. Read the app again with get_app_state.";
 const UNSUPPORTED: &str = "That element does not support this action, so nothing ran.";
+const NOT_SETTABLE: &str =
+    "That field can't be set directly, so nothing ran. Click it, then use type_text.";
 const SLOW: &str = "The app did not answer in time; whether it took effect is unknown. Read its state before trying again.";
 const REFUSED: &str = "The app refused it, so nothing ran.";
 const NOTHING: &str = "That element has nothing to scroll, so nothing ran.";
@@ -108,9 +110,10 @@ pub async fn press(bus: &Connection, element: &Element, press: Press) -> Result<
     if let Some(index) = chosen(&actions, &CLICK) {
         return perform_at(bus, element, index, "Clicked").await;
     }
-    if interfaces(bus, element)
-        .await
-        .contains(Interface::EditableText)
+    let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
+    if interfaces.contains(Interface::EditableText)
+        || interfaces.contains(Interface::Text)
+            && matches!(role, Some(Role::Entry | Role::PasswordText))
     {
         let component = proxy::<ComponentProxy>(bus, element).await.ok_or(GONE)?;
         done(acted(component.grab_focus()).await?, "Focused it")?;
@@ -184,7 +187,11 @@ pub async fn set_value(
         return Ok("Set the value.".into());
     }
     if !interfaces.contains(Interface::EditableText) {
-        return Err(UNSUPPORTED.into());
+        return Err(if matches!(role, Some(Role::Entry | Role::PasswordText)) {
+            NOT_SETTABLE.into()
+        } else {
+            UNSUPPORTED.into()
+        });
     }
     let editable = proxy::<EditableTextProxy>(bus, element).await.ok_or(GONE)?;
     done(

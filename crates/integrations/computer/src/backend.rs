@@ -13,6 +13,7 @@ pub struct App {
     pub pid: i64,
     pub name: String,
     pub id: String,
+    pub aliases: Vec<String>,
     pub path: String,
     pub background: bool,
     pub windows: bool,

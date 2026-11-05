@@ -4,7 +4,7 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
-use std::{thread, time::Duration};
+use std::{collections::HashMap, thread, time::Duration};
 use x11rb::{
     connection::Connection as _,
     errors::ReplyError,
@@ -30,6 +30,7 @@ pub struct Display {
     size: (i32, i32),
     pid: u32,
     clients: u32,
+    application: u32,
 }
 
 pub struct Keymap {
@@ -150,12 +151,14 @@ impl Display {
                 .atom)
         };
         let (pid, clients) = (atom(b"_NET_WM_PID")?, atom(b"_NET_CLIENT_LIST")?);
+        let application = atom(b"_GTK_APPLICATION_ID")?;
         Ok(Self {
             conn,
             root,
             size,
             pid,
             clients,
+            application,
         })
     }
 
@@ -241,7 +244,7 @@ impl Display {
         ))
     }
 
-    fn windows(&self, pid: u32) -> Result<Vec<(Window, Rect)>, ReplyError> {
+    fn candidates(&self) -> Result<Vec<Window>, ReplyError> {
         let listed = self
             .conn
             .get_property(false, self.root, self.clients, AtomEnum::WINDOW, 0, 4096)?
@@ -254,8 +257,44 @@ impl Display {
                 candidates.extend(self.conn.query_tree(top)?.reply()?.children);
             }
         }
+        Ok(candidates)
+    }
+
+    pub fn classes(&self) -> Result<HashMap<u32, Vec<String>>, ReplyError> {
+        let text = |window, property| {
+            self.conn
+                .get_property(false, window, property, AtomEnum::ANY, 0, 1024)
+        };
+        let mut asked = Vec::new();
+        for window in self.candidates()? {
+            asked.push((
+                self.conn
+                    .get_property(false, window, self.pid, AtomEnum::CARDINAL, 0, 1)?,
+                text(window, self.application)?,
+                text(window, AtomEnum::WM_CLASS.into())?,
+            ));
+        }
+        let mut classes: HashMap<u32, Vec<String>> = HashMap::new();
+        for (pid, application, class) in asked {
+            let Some(pid) = pid.reply()?.value32().and_then(|mut values| values.next()) else {
+                continue;
+            };
+            let names = classes.entry(pid).or_default();
+            for value in [application.reply()?.value, class.reply()?.value] {
+                names.extend(
+                    value
+                        .split(|&byte| byte == 0)
+                        .filter(|name| !name.is_empty())
+                        .map(|name| String::from_utf8_lossy(name).into_owned()),
+                );
+            }
+        }
+        Ok(classes)
+    }
+
+    fn windows(&self, pid: u32) -> Result<Vec<(Window, Rect)>, ReplyError> {
         let mut found = Vec::new();
-        for window in candidates {
+        for window in self.candidates()? {
             if self.pid(window)? != Some(pid) {
                 continue;
             }

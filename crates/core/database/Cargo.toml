@@ -1,0 +1,28 @@
+[package]
+name = "nanocode-database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Lock keys, wake-ups, session locks, reentrancy guards and lanes for a database several processes share"
+autotests = false
+autobenches = false
+
+[dependencies]
+futures-util.workspace = true
+nanocode-sync.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

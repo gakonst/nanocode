@@ -575,6 +575,17 @@ mod store {
         }
 
         #[must_use]
+        pub const fn with_logged_prompts(mut self) -> Self {
+            self.store.logged_prompts = true;
+            self
+        }
+
+        #[must_use]
+        pub const fn logged_prompts(&self) -> bool {
+            self.store.logged_prompts
+        }
+
+        #[must_use]
         pub fn reader(&self) -> Option<SessionReader> {
             self.reader.clone()
         }

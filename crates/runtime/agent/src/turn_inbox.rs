@@ -383,6 +383,26 @@ pub(crate) fn accepted_bytes(
 }
 
 impl<H: ?Sized> Shared<H> {
+    fn boundary(&self, event: &SessionEvent, request_id: Option<&str>) -> bool {
+        let SessionEvent::Agent { event, .. } = event else {
+            return false;
+        };
+        match event.kind {
+            AgentEventKind::ToolCall | AgentEventKind::RunSteered => true,
+            AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
+                !request_id.is_some_and(|id| {
+                    self.state.read(|state| {
+                        state
+                            .requests
+                            .get(id)
+                            .is_some_and(|request| request.running == Some(Run::Inbox))
+                    })
+                })
+            }
+            _ => false,
+        }
+    }
+
     fn attribute(&self, event: &SessionEvent) -> Option<String> {
         let (event, agent) = match event {
             SessionEvent::Agent { event, .. } => (event, true),
@@ -428,10 +448,12 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
         let annotation = self.0.host.annotate();
         let unannotated = Map::new();
         let compact = self.0.log.compact.then_some(&*self.0.session_id);
+        let mut boundary = false;
         let (entries, live): (Vec<_>, Vec<_>) = events
             .iter()
             .map(|event| {
                 let request_id = self.0.attribute(event);
+                boundary |= self.0.boundary(event, request_id.as_deref());
                 let mut body = serde_json::value::to_raw_value(&Envelope {
                     event,
                     annotation: &annotation,
@@ -460,7 +482,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
         let logged = self
             .0
             .log
-            .append(&entries)
+            .stage(&entries)
             .await
             .map_err(|error| error.to_string())?;
         let published = logged
@@ -474,7 +496,15 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> LogSink<H> {
                 logged
             })
             .collect();
-        self.0.host.publish(published).await
+        self.0.host.publish(published).await?;
+        if boundary {
+            self.0
+                .log
+                .flush()
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     async fn publish_live(&self, events: Vec<SessionEvent>) -> Result<(), String> {
@@ -809,6 +839,7 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
 
     pub async fn settle(&self) -> Result<bool, InboxError> {
         self.events.drained().await.map_err(InboxError::Events)?;
+        self.shared.log.flush().await?;
         if !self.idle() {
             return Ok(false);
         }
@@ -818,8 +849,10 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> TurnInbox<H> {
     pub async fn shutdown(&self) -> Result<(), InboxError> {
         let shutdown = self.runtime.shutdown().await;
         let delivered = self.events.drained().await;
+        let flushed = self.shared.log.flush().await;
         shutdown?;
-        delivered.map_err(InboxError::Events)
+        delivered.map_err(InboxError::Events)?;
+        flushed.map_err(InboxError::Store)
     }
 
     fn idle(&self) -> bool {

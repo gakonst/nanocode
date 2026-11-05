@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Sql, SqlDialect, SqlRow,
-    SqlStatement, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
+    SqlStatement, SqlStore, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
     sql::{counter, invalid, keys_json, migrate_format, run_checked, single, statement, text},
 };
 
@@ -28,6 +28,32 @@ const MIGRATIONS: [Migration; 1] = [Migration {
     statements: SCHEMA,
     adopt: None,
 }];
+
+const LEGACY: Dialects = [
+    "SELECT CAST(COUNT(*) AS TEXT) FROM sqlite_schema WHERE type = 'table' AND name = 'states'",
+    "SELECT CAST(COUNT(*) AS TEXT) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'states'",
+];
+
+const CONVERT: [&[&str]; 2] = [
+    &[
+        "WITH held AS (SELECT COALESCE(records.holder, (SELECT state_records.state_id FROM state_records WHERE state_records.record = records.id LIMIT 1)) AS state, records.id AS id, records.key AS key, records.value AS value, length(CAST(records.value AS BLOB)) AS bytes FROM records), paged AS (SELECT state, key, value, bytes, (SUM(bytes) OVER (PARTITION BY state ORDER BY id ROWS UNBOUNDED PRECEDING) - bytes) / 16384 AS page FROM held WHERE state IS NOT NULL) INSERT INTO state_pages (id, page, keys, body) SELECT state, page, json_group_array(key), group_concat(key || ' ' || bytes || char(10) || value, '') FROM paged WHERE true GROUP BY state, page",
+        "INSERT INTO state_rows (id, owner, fence, revision, payload, tail, pages) SELECT owners.id, owners.owner, CAST(owners.fence AS INTEGER), CAST(COALESCE(states.revision, '0') AS INTEGER), states.payload, '', COALESCE((SELECT MAX(state_pages.page) + 1 FROM state_pages WHERE state_pages.id = owners.id), 0) FROM owners LEFT JOIN states ON states.id = owners.id WHERE true ORDER BY COALESCE(states.rowid, 0) ON CONFLICT DO NOTHING",
+        "DROP TABLE state_records",
+        "DROP TABLE records",
+        "DROP TABLE states",
+        "DROP TABLE owners",
+        "DELETE FROM nanocode_formats WHERE component = 'records'",
+    ],
+    &[
+        "WITH held AS (SELECT COALESCE(records.holder, (SELECT state_records.state_id FROM state_records WHERE state_records.record = records.id LIMIT 1)) AS state, records.id AS id, records.key AS key, records.value AS value, octet_length(records.value) AS bytes FROM records), paged AS (SELECT state, key, value, bytes, (SUM(bytes) OVER (PARTITION BY state ORDER BY id ROWS UNBOUNDED PRECEDING) - bytes) / 16384 AS page FROM held WHERE state IS NOT NULL) INSERT INTO state_pages (id, page, keys, body) SELECT state, page, CAST(json_agg(key) AS TEXT), string_agg(key || ' ' || bytes || chr(10) || value, '') FROM paged GROUP BY state, page",
+        "INSERT INTO state_rows (id, owner, fence, revision, payload, tail, pages) SELECT owners.id, owners.owner, CAST(owners.fence AS BIGINT), CAST(COALESCE(states.revision, '0') AS BIGINT), states.payload, '', COALESCE((SELECT MAX(state_pages.page) + 1 FROM state_pages WHERE state_pages.id = owners.id), 0) FROM owners LEFT JOIN states ON states.id = owners.id ORDER BY states.ord NULLS FIRST ON CONFLICT DO NOTHING",
+        "DROP TABLE state_records",
+        "DROP TABLE records",
+        "DROP TABLE states",
+        "DROP TABLE owners",
+        "DELETE FROM nanocode_formats WHERE component = 'records'",
+    ],
+];
 
 const PEEK: Dialects = [
     "SELECT CAST(revision AS TEXT), payload FROM state_rows WHERE id = ?1 AND payload IS NOT NULL",
@@ -203,6 +229,24 @@ impl<H: Sql + ?Sized> RowStore<H> {
 
     pub async fn migrate(&mut self) -> Result<(), StoreError> {
         migrate_format(&*self.host, "rows", &MIGRATIONS).await?;
+        let dialect = self.host.dialect();
+        let legacy = run_checked(
+            &*self.host,
+            "rows_convert",
+            &[statement(dialect, &LEGACY, Vec::new())],
+        )
+        .await?;
+        if single(&legacy[0])?.map(|row| counter(row, 0)).transpose()? == Some(1) {
+            SqlStore::shared(Arc::clone(&self.host)).migrate().await?;
+            let statements: Vec<_> = CONVERT[dialect as usize]
+                .iter()
+                .map(|sql| SqlStatement {
+                    sql,
+                    params: Vec::new(),
+                })
+                .collect();
+            run_checked(&*self.host, "rows_convert", &statements).await?;
+        }
         self.ready = true;
         Ok(())
     }

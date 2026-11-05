@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -8,13 +8,14 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use nanocode_sync::{Held, Owned};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value, value::RawValue};
 
 use crate::{
     durability::{
-        BlobKey, BlobUrl, EncodedPayload, Migration, MissingColumn, SharedBlobStore, Sql,
-        SqlDialect, SqlRow, SqlStatement, StoreError, get_blob, migrate_format,
+        BlobKey, BlobUrl, EncodedPayload, Migration, MissingColumn, SharedBlobStore, Sql, SqlRow,
+        SqlStatement, StoreError, get_blob, migrate_format,
     },
     input::{Prompt, PromptInput, UserInput},
     turn_inbox::accepted_bytes,
@@ -34,13 +35,37 @@ const SCHEMA: [[&str; 3]; 2] = [
         "CREATE TABLE IF NOT EXISTS turns (scope TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, prompt TEXT, hand TEXT, metadata TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, note TEXT, first_seq BIGINT NOT NULL, last_seq BIGINT, retry TEXT, PRIMARY KEY (scope, request_id))",
     ],
 ];
-const MIGRATIONS: [Migration; 1] = [Migration {
-    statements: [&SCHEMA[0], &SCHEMA[1]],
-    adopt: Some(MissingColumn {
-        probe: RETRY_COLUMN,
-        add: ADD_RETRY_COLUMN,
-    }),
-}];
+const CONVERT: [&[&str]; 2] = [
+    &[
+        "CREATE TABLE IF NOT EXISTS log_turns (scope TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, prompt TEXT, hand TEXT, metadata TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, note TEXT, retry TEXT, edits TEXT, first_seq INTEGER NOT NULL, last_seq INTEGER, tail_first INTEGER, tail_last INTEGER, result TEXT, tail TEXT, PRIMARY KEY (scope, request_id)) WITHOUT ROWID",
+        "CREATE TABLE IF NOT EXISTS log_chunks (scope TEXT NOT NULL, seq INTEGER NOT NULL, last INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (scope, seq)) WITHOUT ROWID",
+        "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, retry, edits, first_seq, last_seq, result) SELECT turns.scope, turns.request_id, turns.digest, turns.status, turns.prompt, turns.hand, turns.metadata, turns.cancel_requested, turns.note, turns.retry, (SELECT json_group_object(json_extract(events.body, '$.edit_id'), json_extract(events.body, '$.digest')) FROM events WHERE events.scope = turns.scope AND events.request_id = turns.request_id AND json_extract(events.body, '$.type') = 'replaced' HAVING COUNT(*) > 0), COALESCE(turns.first_seq, 0), turns.last_seq, (SELECT events.body FROM events WHERE events.seq = turns.last_seq) FROM turns WHERE true ON CONFLICT DO NOTHING",
+        "INSERT INTO log_chunks (scope, seq, last, body) SELECT scope, seq, seq, json_array(seq, created_at, request_id, json(body)) || char(10) FROM events WHERE true ON CONFLICT DO NOTHING",
+        "DROP TABLE IF EXISTS events",
+        "DROP TABLE IF EXISTS turns",
+    ],
+    &[
+        "CREATE TABLE IF NOT EXISTS log_turns (scope TEXT NOT NULL, request_id TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL, prompt TEXT, hand TEXT, metadata TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, note TEXT, retry TEXT, edits TEXT, first_seq BIGINT NOT NULL, last_seq BIGINT, tail_first BIGINT, tail_last BIGINT, result TEXT, tail TEXT, PRIMARY KEY (scope, request_id))",
+        "CREATE TABLE IF NOT EXISTS log_chunks (scope TEXT NOT NULL, seq BIGINT NOT NULL, last BIGINT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (scope, seq))",
+        "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, retry, edits, first_seq, last_seq, result) SELECT turns.scope, turns.request_id, turns.digest, turns.status, turns.prompt, turns.hand, turns.metadata, turns.cancel_requested, turns.note, turns.retry, (SELECT CAST(json_object_agg(CAST(events.body AS json) ->> 'edit_id', CAST(events.body AS json) ->> 'digest') AS TEXT) FROM events WHERE events.scope = turns.scope AND events.request_id = turns.request_id AND CAST(events.body AS json) ->> 'type' = 'replaced'), COALESCE(turns.first_seq, 0), turns.last_seq, (SELECT events.body FROM events WHERE events.seq = turns.last_seq) FROM turns ON CONFLICT DO NOTHING",
+        "INSERT INTO log_chunks (scope, seq, last, body) SELECT scope, seq, seq, CAST(json_build_array(seq, created_at, request_id, CAST(body AS json)) AS TEXT) || chr(10) FROM events ON CONFLICT DO NOTHING",
+        "DROP TABLE IF EXISTS events",
+        "DROP TABLE IF EXISTS turns",
+    ],
+];
+const MIGRATIONS: [Migration; 2] = [
+    Migration {
+        statements: [&SCHEMA[0], &SCHEMA[1]],
+        adopt: Some(MissingColumn {
+            probe: RETRY_COLUMN,
+            add: ADD_RETRY_COLUMN,
+        }),
+    },
+    Migration {
+        statements: CONVERT,
+        adopt: None,
+    },
+];
 const PART: Dialects = [
     "INSERT INTO log_parts (key, data) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
     "INSERT INTO log_parts (key, data) VALUES ($1::text, $2::text) ON CONFLICT DO NOTHING",
@@ -50,12 +75,6 @@ const READ_PART: Dialects = [
     "SELECT data FROM log_parts WHERE key = $1::text",
 ];
 const PAYLOAD_MARK: &str = "{\"$nanocode_log\":";
-const LONGEST_SINGLE_KEY_REFERENCE: usize = PAYLOAD_MARK.len()
-    + "[\"b3:\"]".len()
-    + blake3::OUT_LEN * 2
-    + ",\"bytes\":}".len()
-    + u64::MAX.ilog10() as usize
-    + 1;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,144 +93,72 @@ const ADD_RETRY_COLUMN: Dialects = [
     "ALTER TABLE turns ADD COLUMN IF NOT EXISTS retry TEXT",
 ];
 const TURN: Dialects = [
-    "SELECT turns.request_id, turns.status, turns.digest, turns.prompt, turns.hand, turns.metadata, CAST(turns.cancel_requested AS TEXT), turns.note, CAST(turns.first_seq AS TEXT), CAST(turns.last_seq AS TEXT), events.body, turns.retry FROM turns LEFT JOIN events ON events.seq = turns.last_seq WHERE turns.scope = ?1 AND turns.request_id = ?2",
-    "SELECT turns.request_id, turns.status, turns.digest, turns.prompt, turns.hand, turns.metadata, CAST(turns.cancel_requested AS TEXT), turns.note, CAST(turns.first_seq AS TEXT), CAST(turns.last_seq AS TEXT), events.body, turns.retry FROM turns LEFT JOIN events ON events.seq = turns.last_seq WHERE turns.scope = $1::text AND turns.request_id = $2::text",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), result, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = ?1 AND request_id = ?2",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), result, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND request_id = $2::text",
 ];
 const PENDING: Dialects = [
-    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), NULL, NULL, retry FROM turns WHERE scope = ?1 AND status IN ('queued', 'running') ORDER BY first_seq",
-    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), NULL, NULL, retry FROM turns WHERE scope = $1::text AND status IN ('queued', 'running') ORDER BY turns.first_seq",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = ?1 AND status IN ('queued', 'running') ORDER BY first_seq",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND status IN ('queued', 'running') ORDER BY log_turns.first_seq",
 ];
-const UNFINISHED_EVENT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, ?3, CAST(?4 AS INTEGER) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2 AND status IN ('queued', 'running')) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, $3::text, CAST($4::text AS BIGINT) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text AND status IN ('queued', 'running')) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
+const EXISTING: Dialects = [
+    "SELECT request_id FROM log_turns WHERE scope = ?1 AND request_id IN (SELECT value FROM json_each(?2))",
+    "SELECT request_id FROM log_turns WHERE scope = $1::text AND request_id IN (SELECT json_array_elements_text(CAST($2::text AS json)))",
 ];
-const QUEUED_EVENT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, ?3, CAST(?4 AS INTEGER) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2 AND status = 'queued') RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, $3::text, CAST($4::text AS BIGINT) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text AND status = 'queued') RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
+const SEQ_HIGH: Dialects = [
+    "SELECT CAST(MAX(max(first_seq, COALESCE(last_seq, 0), COALESCE(tail_last, 0))) AS TEXT) FROM log_turns WHERE scope = ?1",
+    "SELECT CAST(MAX(GREATEST(first_seq, COALESCE(last_seq, 0), COALESCE(tail_last, 0))) AS TEXT) FROM log_turns WHERE scope = $1::text",
 ];
-const NEW_EVENT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, ?3, CAST(?4 AS INTEGER) WHERE NOT EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, $3::text, CAST($4::text AS BIGINT) WHERE NOT EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
+const LAST_CHUNK: Dialects = [
+    "SELECT CAST(last AS TEXT) FROM log_chunks WHERE scope = ?1 ORDER BY seq DESC LIMIT 1",
+    "SELECT CAST(last AS TEXT) FROM log_chunks WHERE scope = $1::text ORDER BY log_chunks.seq DESC LIMIT 1",
+];
+const HOLDER: Dialects = [
+    "SELECT request_id, CAST(tail_last AS TEXT), CAST(length(CAST(tail AS BLOB)) AS TEXT), CAST(length(CAST(digest AS BLOB)) + COALESCE(length(CAST(prompt AS BLOB)), 0) + COALESCE(length(CAST(hand AS BLOB)), 0) + length(CAST(metadata AS BLOB)) + COALESCE(length(CAST(note AS BLOB)), 0) + COALESCE(length(CAST(retry AS BLOB)), 0) + COALESCE(length(CAST(edits AS BLOB)), 0) + COALESCE(length(CAST(result AS BLOB)), 0) AS TEXT) FROM log_turns WHERE scope = ?1 AND tail_last IS NOT NULL ORDER BY tail_last DESC LIMIT 1",
+    "SELECT request_id, CAST(tail_last AS TEXT), CAST(octet_length(tail) AS TEXT), CAST(octet_length(digest) + COALESCE(octet_length(prompt), 0) + COALESCE(octet_length(hand), 0) + octet_length(metadata) + COALESCE(octet_length(note), 0) + COALESCE(octet_length(retry), 0) + COALESCE(octet_length(edits), 0) + COALESCE(octet_length(result), 0) AS TEXT) FROM log_turns WHERE scope = $1::text AND tail_last IS NOT NULL ORDER BY log_turns.tail_last DESC LIMIT 1",
 ];
 const NEW_TURN: Dialects = [
-    "INSERT INTO turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq) SELECT ?1, ?2, ?3, 'queued', ?4, NULL, ?5, 0, (SELECT MAX(seq) FROM events) WHERE NOT EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2)",
-    "INSERT INTO turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq) SELECT $1::text, $2::text, $3::text, 'queued', $4::text, NULL, $5::text, 0, (SELECT MAX(seq) FROM events WHERE scope = $1::text) WHERE NOT EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text)",
+    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT ?1, ?2, ?3, 'queued', ?4, json_extract(?5, '$'), ?6, 0, CAST(?7 AS INTEGER), CAST(?8 AS INTEGER), CAST(?9 AS INTEGER), ?10 WHERE NOT EXISTS (SELECT 1 FROM log_turns WHERE scope = ?1 AND request_id = ?2) ON CONFLICT DO NOTHING RETURNING request_id",
+    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT $1::text, $2::text, $3::text, 'queued', $4::text, CAST($5::text AS json) #>> '{}', $6::text, 0, CAST($7::text AS BIGINT), CAST($8::text AS BIGINT), CAST($9::text AS BIGINT), $10::text WHERE NOT EXISTS (SELECT 1 FROM log_turns WHERE scope = $1::text AND request_id = $2::text) ON CONFLICT DO NOTHING RETURNING request_id",
 ];
-const NEW_PLACED_TURN: Dialects = [
-    "INSERT INTO turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq) SELECT ?1, ?2, ?3, 'queued', ?4, ?6, ?5, 0, (SELECT MAX(seq) FROM events) WHERE NOT EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2)",
-    "INSERT INTO turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq) SELECT $1::text, $2::text, $3::text, 'queued', $4::text, $6::text, $5::text, 0, (SELECT MAX(seq) FROM events WHERE scope = $1::text) WHERE NOT EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text)",
+const UPDATE_TURN: Dialects = [
+    "UPDATE log_turns SET status = ?3, digest = ?4, prompt = CASE ?5 WHEN 's' THEN ?6 WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST(?7 AS INTEGER), note = CASE ?8 WHEN 's' THEN ?9 WHEN 'n' THEN NULL ELSE note END, retry = CASE ?10 WHEN 's' THEN ?11 WHEN 'n' THEN NULL ELSE retry END, edits = CASE ?12 WHEN 's' THEN ?13 WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF(?14, '') AS INTEGER), last_seq), result = CASE ?15 WHEN 's' THEN ?16 WHEN 'n' THEN NULL ELSE result END, tail_first = COALESCE(tail_first, CAST(NULLIF(?17, '') AS INTEGER)), tail_last = COALESCE(CAST(NULLIF(?18, '') AS INTEGER), tail_last), tail = CASE WHEN ?17 = '' THEN tail ELSE COALESCE(tail, '') || ?19 END WHERE scope = ?1 AND request_id = ?2 AND status = ?20 AND digest = ?21 AND COALESCE(tail_last, -1) = CAST(?22 AS INTEGER) RETURNING request_id",
+    "UPDATE log_turns SET status = $3::text, digest = $4::text, prompt = CASE $5::text WHEN 's' THEN $6::text WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST($7::text AS INTEGER), note = CASE $8::text WHEN 's' THEN $9::text WHEN 'n' THEN NULL ELSE note END, retry = CASE $10::text WHEN 's' THEN $11::text WHEN 'n' THEN NULL ELSE retry END, edits = CASE $12::text WHEN 's' THEN $13::text WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF($14::text, '') AS BIGINT), last_seq), result = CASE $15::text WHEN 's' THEN $16::text WHEN 'n' THEN NULL ELSE result END, tail_first = COALESCE(tail_first, CAST(NULLIF($17::text, '') AS BIGINT)), tail_last = COALESCE(CAST(NULLIF($18::text, '') AS BIGINT), tail_last), tail = CASE WHEN $17::text = '' THEN tail ELSE COALESCE(tail, '') || $19::text END WHERE scope = $1::text AND request_id = $2::text AND status = $20::text AND digest = $21::text AND COALESCE(tail_last, -1) = CAST($22::text AS BIGINT) RETURNING request_id",
 ];
-const START: Dialects = [
-    "UPDATE turns SET status = 'running', note = NULL, retry = NULL WHERE scope = ?1 AND request_id = ?2 AND status IN ('queued', 'running')",
-    "UPDATE turns SET status = 'running', note = NULL, retry = NULL WHERE scope = $1::text AND request_id = $2::text AND status IN ('queued', 'running')",
+const APPEND_TAIL: Dialects = [
+    "UPDATE log_turns SET status = CASE WHEN ?6 = '1' THEN 'running' ELSE status END, note = CASE WHEN ?6 = '1' THEN NULL ELSE note END, retry = CASE WHEN ?6 = '1' THEN NULL ELSE retry END, tail_last = CAST(?3 AS INTEGER), tail = tail || ?4 WHERE scope = ?1 AND request_id = ?2 AND tail_last = CAST(?5 AS INTEGER) RETURNING request_id",
+    "UPDATE log_turns SET status = CASE WHEN $6::text = '1' THEN 'running' ELSE status END, note = CASE WHEN $6::text = '1' THEN NULL ELSE note END, retry = CASE WHEN $6::text = '1' THEN NULL ELSE retry END, tail_last = CAST($3::text AS BIGINT), tail = tail || $4::text WHERE scope = $1::text AND request_id = $2::text AND tail_last = CAST($5::text AS BIGINT) RETURNING request_id",
 ];
-const FINISH: Dialects = [
-    "UPDATE turns SET status = ?3, prompt = NULL, note = NULL, retry = NULL, last_seq = (SELECT MAX(seq) FROM events) WHERE scope = ?1 AND request_id = ?2 AND status IN ('queued', 'running')",
-    "UPDATE turns SET status = $3::text, prompt = NULL, note = NULL, retry = NULL, last_seq = (SELECT MAX(seq) FROM events WHERE scope = $1::text) WHERE scope = $1::text AND request_id = $2::text AND status IN ('queued', 'running')",
+const NEW_CHUNK: Dialects = [
+    "INSERT INTO log_chunks (scope, seq, last, body) VALUES (?1, CAST(?2 AS INTEGER), CAST(?3 AS INTEGER), ?4) RETURNING scope",
+    "INSERT INTO log_chunks (scope, seq, last, body) VALUES ($1::text, CAST($2::text AS BIGINT), CAST($3::text AS BIGINT), $4::text) RETURNING scope",
 ];
-const REQUEST_CANCEL: Dialects = [
-    "UPDATE turns SET cancel_requested = 1 WHERE scope = ?1 AND request_id = ?2 AND status = 'running' AND cancel_requested = 0",
-    "UPDATE turns SET cancel_requested = 1 WHERE scope = $1::text AND request_id = $2::text AND status = 'running' AND cancel_requested = 0",
+const CHUNK_AT: Dialects = [
+    "SELECT CAST(seq AS TEXT), CAST(last AS TEXT), body FROM log_chunks WHERE scope = ?1 AND seq <= CAST(?2 AS INTEGER) ORDER BY seq DESC LIMIT 1",
+    "SELECT CAST(seq AS TEXT), CAST(last AS TEXT), body FROM log_chunks WHERE scope = $1::text AND seq <= CAST($2::text AS BIGINT) ORDER BY log_chunks.seq DESC LIMIT 1",
 ];
-const CANCEL_QUEUED: Dialects = [
-    "UPDATE turns SET status = 'cancelled', prompt = NULL, note = NULL, retry = NULL, last_seq = (SELECT MAX(seq) FROM events) WHERE scope = ?1 AND request_id = ?2 AND status = 'queued'",
-    "UPDATE turns SET status = 'cancelled', prompt = NULL, note = NULL, retry = NULL, last_seq = (SELECT MAX(seq) FROM events WHERE scope = $1::text) WHERE scope = $1::text AND request_id = $2::text AND status = 'queued'",
+const CHUNKS: Dialects = [
+    "SELECT CAST(seq AS TEXT), CAST(last AS TEXT), body FROM log_chunks WHERE scope = ?1 AND seq > CAST(?2 AS INTEGER) ORDER BY seq LIMIT CAST(?3 AS INTEGER)",
+    "SELECT CAST(seq AS TEXT), CAST(last AS TEXT), body FROM log_chunks WHERE scope = $1::text AND seq > CAST($2::text AS BIGINT) ORDER BY log_chunks.seq LIMIT CAST($3::text AS BIGINT)",
 ];
-const EDIT_RECEIPT: Dialects = [
-    "SELECT json_extract(events.body, '$.digest') FROM turns JOIN events ON events.seq >= turns.first_seq WHERE turns.scope = ?1 AND turns.request_id = ?2 AND events.scope = ?1 AND events.request_id = ?2 AND json_extract(events.body, '$.type') = 'replaced' AND json_extract(events.body, '$.edit_id') = ?3 LIMIT 1",
-    "SELECT CAST(events.body AS json) ->> 'digest' FROM turns JOIN events ON events.seq >= turns.first_seq WHERE turns.scope = $1::text AND turns.request_id = $2::text AND events.scope = $1::text AND events.request_id = $2::text AND CAST(events.body AS json) ->> 'type' = 'replaced' AND CAST(events.body AS json) ->> 'edit_id' = $3::text LIMIT 1",
-];
-const REPLACE_QUEUED: Dialects = [
-    "UPDATE turns SET prompt = ?3, digest = ?4 WHERE scope = ?1 AND request_id = ?2 AND status = 'queued' AND digest = ?6 AND NOT EXISTS (SELECT 1 FROM events WHERE events.seq >= turns.first_seq AND events.scope = ?1 AND events.request_id = ?2 AND json_extract(events.body, '$.type') = 'replaced' AND json_extract(events.body, '$.edit_id') = ?5)",
-    "UPDATE turns SET prompt = $3::text, digest = $4::text WHERE scope = $1::text AND request_id = $2::text AND status = 'queued' AND digest = $6::text AND NOT EXISTS (SELECT 1 FROM events WHERE events.seq >= turns.first_seq AND events.scope = $1::text AND events.request_id = $2::text AND CAST(events.body AS json) ->> 'type' = 'replaced' AND CAST(events.body AS json) ->> 'edit_id' = $5::text)",
-];
-const REPLACED_EVENT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, ?3, CAST(?4 AS INTEGER) FROM turns WHERE scope = ?1 AND request_id = ?2 AND status = 'queued' AND digest = ?5 AND NOT EXISTS (SELECT 1 FROM events WHERE events.seq >= turns.first_seq AND events.scope = ?1 AND events.request_id = ?2 AND json_extract(events.body, '$.type') = 'replaced' AND json_extract(events.body, '$.edit_id') = ?6) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, $3::text, CAST($4::text AS BIGINT) FROM turns WHERE scope = $1::text AND request_id = $2::text AND status = 'queued' AND digest = $5::text AND NOT EXISTS (SELECT 1 FROM events WHERE events.seq >= turns.first_seq AND events.scope = $1::text AND events.request_id = $2::text AND CAST(events.body AS json) ->> 'type' = 'replaced' AND CAST(events.body AS json) ->> 'edit_id' = $6::text) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-];
-const STEERED_EVENT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, ?3, CAST(?4 AS INTEGER) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2 AND status = 'queued' AND digest = ?5) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, $3::text, CAST($4::text AS BIGINT) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text AND status = 'queued' AND digest = $5::text) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT)",
-];
-const CANCEL_STEERED: Dialects = [
-    "UPDATE turns SET status = 'cancelled', prompt = NULL, note = NULL, retry = NULL, last_seq = (SELECT MAX(seq) FROM events) WHERE scope = ?1 AND request_id = ?2 AND status = 'queued' AND digest = ?3",
-    "UPDATE turns SET status = 'cancelled', prompt = NULL, note = NULL, retry = NULL, last_seq = (SELECT MAX(seq) FROM events WHERE scope = $1::text) WHERE scope = $1::text AND request_id = $2::text AND status = 'queued' AND digest = $3::text",
-];
-const NOTE: Dialects = [
-    "UPDATE turns SET note = ?3 WHERE scope = ?1 AND request_id = ?2 AND status = 'running'",
-    "UPDATE turns SET note = $3::text WHERE scope = $1::text AND request_id = $2::text AND status = 'running'",
-];
-const RETRY_EVENT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, json_object('type', 'retrying', 'request_id', ?2, 'error', ?3, 'kind', ?4, 'attempts', COALESCE(json_extract(retry, '$.attempts'), 0) + 1, 'retry_at', CAST(?5 AS INTEGER)), CAST(?6 AS INTEGER) FROM turns WHERE scope = ?1 AND request_id = ?2 AND status IN ('queued', 'running') AND (retry IS NULL OR json_extract(retry, '$.error') IS NOT ?3 OR json_extract(retry, '$.kind') IS NOT ?4) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT), body",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, CAST(json_build_object('type', 'retrying', 'request_id', $2::text, 'error', $3::text, 'kind', $4::text, 'attempts', COALESCE(CAST(CAST(retry AS json) ->> 'attempts' AS BIGINT), 0) + 1, 'retry_at', CAST($5::text AS BIGINT)) AS TEXT), CAST($6::text AS BIGINT) FROM turns WHERE scope = $1::text AND request_id = $2::text AND status IN ('queued', 'running') AND (retry IS NULL OR CAST(retry AS json) ->> 'error' IS DISTINCT FROM $3::text OR CAST(retry AS json) ->> 'kind' IS DISTINCT FROM $4::text) RETURNING CAST(seq AS TEXT), CAST(created_at AS TEXT), body",
-];
-const RETRY: Dialects = [
-    "UPDATE turns SET retry = json_object('error', ?3, 'kind', ?4, 'attempts', COALESCE(json_extract(retry, '$.attempts'), 0) + 1, 'retry_at', CAST(?5 AS INTEGER)) WHERE scope = ?1 AND request_id = ?2 AND status IN ('queued', 'running')",
-    "UPDATE turns SET retry = CAST(json_build_object('error', $3::text, 'kind', $4::text, 'attempts', COALESCE(CAST(CAST(retry AS json) ->> 'attempts' AS BIGINT), 0) + 1, 'retry_at', CAST($5::text AS BIGINT)) AS TEXT) WHERE scope = $1::text AND request_id = $2::text AND status IN ('queued', 'running')",
-];
-const APPEND: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) VALUES (?1, ?2, ?3, CAST(?4 AS INTEGER)) RETURNING CAST(seq AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) VALUES ($1::text, $2::text, $3::text, CAST($4::text AS BIGINT)) RETURNING CAST(seq AS TEXT)",
-];
-const APPEND_UNATTRIBUTED: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) VALUES (?1, NULL, ?2, CAST(?3 AS INTEGER)) RETURNING CAST(seq AS TEXT)",
-    "INSERT INTO events (scope, request_id, body, created_at) VALUES ($1::text, NULL, $2::text, CAST($3::text AS BIGINT)) RETURNING CAST(seq AS TEXT)",
-];
-const PAGE: Dialects = [
-    "SELECT CAST(seq AS TEXT), request_id, CAST(created_at AS TEXT), body FROM events WHERE scope = ?1 AND seq > CAST(?2 AS INTEGER) ORDER BY seq LIMIT CAST(?3 AS INTEGER)",
-    "SELECT CAST(seq AS TEXT), request_id, CAST(created_at AS TEXT), body FROM events WHERE scope = $1::text AND seq > CAST($2::text AS BIGINT) ORDER BY events.seq LIMIT CAST($3::text AS BIGINT)",
-];
-const PAGE_BOUNDED: Dialects = [
-    "SELECT CAST(events.seq AS TEXT), events.request_id, CAST(events.created_at AS TEXT), events.body, CAST(sized.rows AS TEXT) FROM (SELECT seq, SUM(size) OVER (ORDER BY seq) AS running, ROW_NUMBER() OVER (ORDER BY seq) AS position, COUNT(*) OVER () AS rows FROM (SELECT seq, MAX(octet_length(body) - CAST(?5 AS INTEGER), 0) AS size FROM events WHERE scope = ?1 AND seq > CAST(?2 AS INTEGER) ORDER BY seq LIMIT CAST(?3 AS INTEGER)) AS candidates) AS sized JOIN events ON events.seq = sized.seq WHERE sized.running <= CAST(?4 AS INTEGER) OR sized.position = 1 ORDER BY sized.seq",
-    "SELECT CAST(events.seq AS TEXT), events.request_id, CAST(events.created_at AS TEXT), events.body, CAST(sized.rows AS TEXT) FROM (SELECT seq, SUM(size) OVER (ORDER BY seq) AS running, ROW_NUMBER() OVER (ORDER BY seq) AS position, COUNT(*) OVER () AS rows FROM (SELECT seq, GREATEST(octet_length(body) - CAST($5::text AS BIGINT), 0) AS size FROM events WHERE scope = $1::text AND seq > CAST($2::text AS BIGINT) ORDER BY seq LIMIT CAST($3::text AS BIGINT)) AS candidates) AS sized JOIN events ON events.seq = sized.seq WHERE sized.running <= CAST($4::text AS BIGINT) OR sized.position = 1 ORDER BY sized.seq",
-];
-const TURN_PAGE_BOUNDED: Dialects = [
-    "SELECT CAST(events.seq AS TEXT), events.request_id, CAST(events.created_at AS TEXT), events.body, CAST(sized.rows AS TEXT) FROM (SELECT seq, SUM(size) OVER (ORDER BY seq) AS running, ROW_NUMBER() OVER (ORDER BY seq) AS position, COUNT(*) OVER () AS rows FROM (SELECT events.seq, MAX(octet_length(events.body) - CAST(?6 AS INTEGER), 0) AS size FROM turns JOIN events ON events.seq > MAX(CAST(?3 AS INTEGER), turns.first_seq - 1) AND events.seq <= COALESCE(turns.last_seq, 9223372036854775807) WHERE turns.scope = ?1 AND turns.request_id = ?2 AND events.scope = ?1 AND events.request_id = ?2 ORDER BY events.seq LIMIT CAST(?4 AS INTEGER)) AS candidates) AS sized JOIN events ON events.seq = sized.seq WHERE sized.running <= CAST(?5 AS INTEGER) OR sized.position = 1 ORDER BY sized.seq",
-    "SELECT CAST(events.seq AS TEXT), events.request_id, CAST(events.created_at AS TEXT), events.body, CAST(sized.rows AS TEXT) FROM (SELECT seq, SUM(size) OVER (ORDER BY seq) AS running, ROW_NUMBER() OVER (ORDER BY seq) AS position, COUNT(*) OVER () AS rows FROM (SELECT events.seq, GREATEST(octet_length(events.body) - CAST($6::text AS BIGINT), 0) AS size FROM turns JOIN events ON events.seq > GREATEST(CAST($3::text AS BIGINT), turns.first_seq - 1) AND events.seq <= COALESCE(turns.last_seq, 9223372036854775807) WHERE turns.scope = $1::text AND turns.request_id = $2::text AND events.scope = $1::text AND events.request_id = $2::text ORDER BY events.seq LIMIT CAST($4::text AS BIGINT)) AS candidates) AS sized JOIN events ON events.seq = sized.seq WHERE sized.running <= CAST($5::text AS BIGINT) OR sized.position = 1 ORDER BY sized.seq",
-];
-const TURN_PAGE: Dialects = [
-    "SELECT CAST(events.seq AS TEXT), events.request_id, CAST(events.created_at AS TEXT), events.body FROM turns JOIN events ON events.seq > MAX(CAST(?3 AS INTEGER), turns.first_seq - 1) AND events.seq <= COALESCE(turns.last_seq, 9223372036854775807) WHERE turns.scope = ?1 AND turns.request_id = ?2 AND events.scope = ?1 AND events.request_id = ?2 ORDER BY events.seq LIMIT CAST(?4 AS INTEGER)",
-    "SELECT CAST(events.seq AS TEXT), events.request_id, CAST(events.created_at AS TEXT), events.body FROM turns JOIN events ON events.seq > GREATEST(CAST($3::text AS BIGINT), turns.first_seq - 1) AND events.seq <= COALESCE(turns.last_seq, 9223372036854775807) WHERE turns.scope = $1::text AND turns.request_id = $2::text AND events.scope = $1::text AND events.request_id = $2::text ORDER BY events.seq LIMIT CAST($4::text AS BIGINT)",
-];
-const TURN_START: Dialects = [
-    "SELECT CAST(first_seq AS TEXT) FROM turns WHERE scope = ?1 AND request_id = ?2",
-    "SELECT CAST(first_seq AS TEXT) FROM turns WHERE scope = $1::text AND request_id = $2::text",
+const TAILS: Dialects = [
+    "SELECT CAST(tail_first AS TEXT), CAST(tail_last AS TEXT), tail FROM log_turns WHERE scope = ?1 AND tail_last > CAST(?2 AS INTEGER) AND tail_first > CAST(?3 AS INTEGER) ORDER BY tail_first LIMIT CAST(?4 AS INTEGER)",
+    "SELECT CAST(tail_first AS TEXT), CAST(tail_last AS TEXT), tail FROM log_turns WHERE scope = $1::text AND tail_last > CAST($2::text AS BIGINT) AND tail_first > CAST($3::text AS BIGINT) ORDER BY log_turns.tail_first LIMIT CAST($4::text AS BIGINT)",
 ];
 const IMPORT: Dialects = [
-    "INSERT INTO turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, first_seq, last_seq) SELECT ?1, json_extract(value, '$.request_id'), json_extract(value, '$.digest'), json_extract(value, '$.status'), json_extract(value, '$.prompt'), json_extract(value, '$.hand'), json_extract(value, '$.metadata'), json_extract(value, '$.cancel_requested'), json_extract(value, '$.note'), json_extract(value, '$.first_seq'), json_extract(value, '$.last_seq') FROM json_each(?2) WHERE true ON CONFLICT DO NOTHING",
-    "INSERT INTO turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, first_seq, last_seq) SELECT $1::text, value ->> 'request_id', value ->> 'digest', value ->> 'status', value ->> 'prompt', value ->> 'hand', value ->> 'metadata', CAST(value ->> 'cancel_requested' AS INTEGER), value ->> 'note', CAST(value ->> 'first_seq' AS BIGINT), CAST(value ->> 'last_seq' AS BIGINT) FROM json_array_elements($2::text::json) AS imported (value) ON CONFLICT DO NOTHING",
+    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, first_seq, last_seq, result) SELECT ?1, json_extract(value, '$.request_id'), json_extract(value, '$.digest'), json_extract(value, '$.status'), json_extract(value, '$.prompt'), json_extract(value, '$.hand'), json_extract(value, '$.metadata'), json_extract(value, '$.cancel_requested'), json_extract(value, '$.note'), json_extract(value, '$.first_seq'), json_extract(value, '$.last_seq'), json_extract(value, '$.result') FROM json_each(?2) WHERE true ON CONFLICT DO NOTHING",
+    "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, first_seq, last_seq, result) SELECT $1::text, value ->> 'request_id', value ->> 'digest', value ->> 'status', value ->> 'prompt', value ->> 'hand', value ->> 'metadata', CAST(value ->> 'cancel_requested' AS INTEGER), value ->> 'note', CAST(value ->> 'first_seq' AS BIGINT), CAST(value ->> 'last_seq' AS BIGINT), value ->> 'result' FROM json_array_elements($2::text::json) AS imported (value) ON CONFLICT DO NOTHING",
 ];
-const IMPORT_RESULT: Dialects = [
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT ?1, ?2, ?3, CAST(?4 AS INTEGER) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = ?1 AND request_id = ?2 AND status IN ('completed', 'failed', 'cancelled') AND last_seq IS NULL)",
-    "INSERT INTO events (scope, request_id, body, created_at) SELECT $1::text, $2::text, $3::text, CAST($4::text AS BIGINT) WHERE EXISTS (SELECT 1 FROM turns WHERE scope = $1::text AND request_id = $2::text AND status IN ('completed', 'failed', 'cancelled') AND last_seq IS NULL)",
-];
-const IMPORT_FINISH: Dialects = [
-    "UPDATE turns SET last_seq = (SELECT MAX(seq) FROM events) WHERE scope = ?1 AND request_id = ?2 AND status IN ('completed', 'failed', 'cancelled') AND last_seq IS NULL",
-    "UPDATE turns SET last_seq = (SELECT MAX(seq) FROM events WHERE scope = $1::text) WHERE scope = $1::text AND request_id = $2::text AND status IN ('completed', 'failed', 'cancelled') AND last_seq IS NULL",
-];
-const IMPORT_EVENT: Dialects = [
-    "INSERT INTO events (seq, scope, request_id, body, created_at) SELECT CAST(?2 AS INTEGER), ?1, ?3, ?4, CAST(?5 AS INTEGER) WHERE (?6 = '0' OR EXISTS (SELECT 1 FROM events WHERE seq = CAST(?6 AS INTEGER) AND scope = ?1)) AND NOT EXISTS (SELECT 1 FROM events WHERE seq > CAST(?6 AS INTEGER) AND scope = ?1) ON CONFLICT DO NOTHING RETURNING CAST(seq AS TEXT)",
-    "INSERT INTO events (seq, scope, request_id, body, created_at) SELECT CAST($2::text AS BIGINT), $1::text, $3::text, $4::text, CAST($5::text AS BIGINT) WHERE ($6::text = '0' OR EXISTS (SELECT 1 FROM events WHERE seq = CAST($6::text AS BIGINT) AND scope = $1::text)) AND NOT EXISTS (SELECT 1 FROM events WHERE seq > CAST($6::text AS BIGINT) AND scope = $1::text) ON CONFLICT DO NOTHING RETURNING CAST(seq AS TEXT)",
-];
-const IMPORT_UNATTRIBUTED_EVENT: Dialects = [
-    "INSERT INTO events (seq, scope, request_id, body, created_at) SELECT CAST(?2 AS INTEGER), ?1, NULL, ?3, CAST(?4 AS INTEGER) WHERE (?5 = '0' OR EXISTS (SELECT 1 FROM events WHERE seq = CAST(?5 AS INTEGER) AND scope = ?1)) AND NOT EXISTS (SELECT 1 FROM events WHERE seq > CAST(?5 AS INTEGER) AND scope = ?1) ON CONFLICT DO NOTHING RETURNING CAST(seq AS TEXT)",
-    "INSERT INTO events (seq, scope, request_id, body, created_at) SELECT CAST($2::text AS BIGINT), $1::text, NULL, $3::text, CAST($4::text AS BIGINT) WHERE ($5::text = '0' OR EXISTS (SELECT 1 FROM events WHERE seq = CAST($5::text AS BIGINT) AND scope = $1::text)) AND NOT EXISTS (SELECT 1 FROM events WHERE seq > CAST($5::text AS BIGINT) AND scope = $1::text) ON CONFLICT DO NOTHING RETURNING CAST(seq AS TEXT)",
-];
-const ADVANCE_EVENT_SEQUENCE: &str = "SELECT CAST(setval(CAST(pg_get_serial_sequence('events', 'seq') AS regclass), MAX(seq)) AS TEXT) FROM events HAVING MAX(seq) > COALESCE(pg_sequence_last_value(CAST(pg_get_serial_sequence('events', 'seq') AS regclass)), 0)";
-const IMPORTED_RANGE: Dialects = [
-    "SELECT CAST(seq AS TEXT), scope, request_id, CAST(created_at AS TEXT), CASE WHEN scope = ?1 THEN body END FROM events WHERE seq > CAST(?2 AS INTEGER) AND seq <= CAST(?3 AS INTEGER)",
-    "SELECT CAST(seq AS TEXT), scope, request_id, CAST(created_at AS TEXT), CASE WHEN scope = $1::text THEN body END FROM events WHERE seq > CAST($2::text AS BIGINT) AND seq <= CAST($3::text AS BIGINT)",
-];
-const LAST_EVENT: Dialects = [
-    "SELECT CAST(seq AS TEXT) FROM events WHERE scope = ?1 ORDER BY events.seq DESC LIMIT 1",
-    "SELECT CAST(seq AS TEXT) FROM events WHERE scope = $1::text ORDER BY events.seq DESC LIMIT 1",
-];
+const SEAL_BYTES: usize = 16 * 1024;
+const GAP: u64 = 1 << 14;
 const VARINT_BYTES: usize = 9;
 const INTEGER_BYTES: usize = 8;
+const LINE_FRAME_BYTES: usize = 2 * 20 + 6;
 const EVENT_TEXTS: usize = 3;
 const EVENT_INTEGERS: usize = 1;
-const TURN_TEXTS: usize = 9;
-const TURN_INTEGERS: usize = 3;
+const TURN_TEXTS: usize = 12;
+const TURN_INTEGERS: usize = 5;
+const CHUNK_TEXTS: usize = 2;
+const CHUNK_INTEGERS: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -252,7 +199,7 @@ impl TurnState {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TurnRetry {
     pub error: String,
     pub kind: String,
@@ -411,6 +358,17 @@ struct Replacement<'a> {
 }
 
 #[derive(Serialize)]
+struct Retrying<'a> {
+    #[serde(rename = "type")]
+    tag: &'static str,
+    request_id: &'a str,
+    error: &'a str,
+    kind: &'a str,
+    attempts: u64,
+    retry_at: u64,
+}
+
+#[derive(Serialize)]
 struct Omitted<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
@@ -433,7 +391,108 @@ struct Imported<'a> {
     note: Option<&'a str>,
     first_seq: u64,
     last_seq: Option<u64>,
+    result: Option<String>,
 }
+
+#[derive(Clone)]
+struct Line {
+    seq: u64,
+    created_at: u64,
+    request_id: Option<String>,
+    body: Box<RawValue>,
+}
+
+impl Line {
+    fn estimate(&self) -> usize {
+        LINE_FRAME_BYTES
+            + self.request_id.as_ref().map_or(4, |id| id.len() + 2)
+            + self.body.get().len()
+    }
+
+    fn logged(&self) -> LoggedEvent {
+        LoggedEvent {
+            seq: self.seq,
+            request_id: self.request_id.clone(),
+            created_at: self.created_at,
+            event: self.body.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Holder {
+    request_id: String,
+    last: u64,
+    tail: usize,
+    other: usize,
+}
+
+#[derive(Default)]
+struct Writer {
+    ready: bool,
+    next: u64,
+    durable: u64,
+    outstanding: u64,
+    buffer: Vec<Line>,
+    buffered: usize,
+    holder: Option<Holder>,
+    started: HashSet<String>,
+}
+
+impl Writer {
+    fn allocate(&mut self) -> Result<u64, StoreError> {
+        if self.outstanding >= GAP {
+            return Err(StoreError::NotCommitted(format!(
+                "the session log has {} events it could not write; it assigns no more until a write succeeds",
+                self.outstanding
+            )));
+        }
+        let seq = self.next;
+        self.next += 1;
+        self.outstanding += 1;
+        Ok(seq)
+    }
+}
+
+struct Row {
+    status: TurnState,
+    record: TurnRecord,
+    edits: Option<String>,
+    tail_last: Option<u64>,
+}
+
+struct Stmt {
+    sql: &'static Dialects,
+    params: Vec<String>,
+}
+
+struct Own<'a> {
+    request_id: &'a str,
+    fresh: bool,
+    other: usize,
+}
+
+struct Placed {
+    own: Option<(u64, u64, String)>,
+    statements: Vec<Stmt>,
+    holder: Option<Holder>,
+    last: u64,
+    started: Option<String>,
+}
+
+struct Change {
+    state: TurnState,
+    digest: Option<String>,
+    prompt: Option<Option<String>>,
+    cancel_requested: bool,
+    note: Option<Option<String>>,
+    retry: Option<Option<String>>,
+    edits: Option<Option<String>>,
+    last_seq: Option<u64>,
+    result: Option<Option<String>>,
+}
+
+type Event = (u64, u64, Option<String>, Box<RawValue>);
 
 fn invalid(detail: impl std::fmt::Display) -> StoreError {
     StoreError::Backend(format!(
@@ -443,17 +502,6 @@ fn invalid(detail: impl std::fmt::Display) -> StoreError {
 
 fn encoding(error: serde_json::Error) -> StoreError {
     StoreError::NotCommitted(format!("encode session log entry: {error}"))
-}
-
-const fn statement<'a>(
-    dialect: SqlDialect,
-    sql: &Dialects,
-    params: Vec<&'a str>,
-) -> SqlStatement<'a> {
-    SqlStatement {
-        sql: dialect.pick(sql),
-        params,
-    }
 }
 
 fn text(row: &SqlRow, column: usize) -> Result<&str, StoreError> {
@@ -487,6 +535,10 @@ fn raw(json: String) -> Result<Box<RawValue>, StoreError> {
     RawValue::from_string(json).map_err(|error| invalid(format!("stored JSON: {error}")))
 }
 
+fn encoded(value: &impl Serialize) -> Result<Box<RawValue>, StoreError> {
+    serde_json::value::to_raw_value(value).map_err(encoding)
+}
+
 const fn record_bytes(texts: usize, text_bytes: usize, integers: usize) -> usize {
     VARINT_BYTES * (1 + texts + integers) + INTEGER_BYTES * integers + text_bytes
 }
@@ -508,18 +560,25 @@ fn omitted(request_id: Option<&str>, body: &str) -> Result<Box<RawValue>, StoreE
         .or_else(|| named("/update/type"))
         .or_else(|| named("/type"))
         .map(str::to_owned);
-    serde_json::value::to_raw_value(&Omitted {
+    encoded(&Omitted {
         kind: "omitted",
         request_id,
         source,
         event_type,
         bytes: body.len(),
     })
-    .map_err(encoding)
 }
 
 fn reference(value: &str) -> Result<PayloadReference, StoreError> {
     serde_json::from_str(value).map_err(|error| invalid(format!("payload reference: {error}")))
+}
+
+fn decoded_bytes(body: &str) -> Result<usize, StoreError> {
+    if body.starts_with(PAYLOAD_MARK) {
+        Ok(reference(body)?.bytes)
+    } else {
+        Ok(body.len())
+    }
 }
 
 pub(crate) fn now() -> u64 {
@@ -530,58 +589,43 @@ pub(crate) fn now() -> u64 {
         })
 }
 
-fn record(row: &SqlRow) -> Result<TurnRecord, StoreError> {
-    Ok(TurnRecord {
-        request_id: text(row, 0)?.to_owned(),
-        state: TurnState::parse(text(row, 1)?)?,
-        digest: text(row, 2)?.to_owned(),
-        prompt: optional(row, 3)
-            .map(|prompt| {
-                serde_json::from_str(prompt).map_err(|error| invalid(format!("prompt: {error}")))
-            })
-            .transpose()?,
-        hand: optional(row, 4).map(str::to_owned),
-        metadata: raw(text(row, 5)?.to_owned())?,
-        cancel_requested: text(row, 6)? != "0",
-        note: optional(row, 7).map(str::to_owned),
-        first_seq: counter(text(row, 8)?)?,
-        last_seq: optional(row, 9).map(counter).transpose()?,
-        result: optional(row, 10)
-            .map(|body| raw(body.to_owned()))
-            .transpose()?,
-        retry: optional(row, 11)
-            .map(|retry| {
-                serde_json::from_str(retry).map_err(|error| invalid(format!("retry: {error}")))
-            })
-            .transpose()?,
-    })
+fn decode_lines(body: &str) -> Result<Vec<Event>, StoreError> {
+    serde_json::Deserializer::from_str(body)
+        .into_iter::<Event>()
+        .map(|line| line.map_err(|error| invalid(format!("session log line: {error}"))))
+        .collect()
 }
 
-fn logged(row: &SqlRow, request_id: &str, event: Box<RawValue>) -> Result<LoggedEvent, StoreError> {
-    Ok(LoggedEvent {
-        seq: counter(text(row, 0)?)?,
-        request_id: Some(request_id.to_owned()),
-        created_at: counter(text(row, 1)?)?,
-        event,
-    })
-}
-
-fn page(rows: &[SqlRow], after: u64, limit: usize) -> Result<LogPage, StoreError> {
-    let events = rows
-        .iter()
-        .map(|row| {
-            Ok(LoggedEvent {
-                seq: counter(text(row, 0)?)?,
-                request_id: optional(row, 1).map(str::to_owned),
-                created_at: counter(text(row, 2)?)?,
-                event: raw(text(row, 3)?.to_owned())?,
-            })
-        })
-        .collect::<Result<Vec<_>, StoreError>>()?;
-    Ok(LogPage {
-        next_cursor: events.last().map_or(after, |event| event.seq),
-        has_more: events.len() == limit,
-        events,
+fn row(row: &SqlRow) -> Result<Row, StoreError> {
+    Ok(Row {
+        status: TurnState::parse(text(row, 1)?)?,
+        record: TurnRecord {
+            request_id: text(row, 0)?.to_owned(),
+            state: TurnState::parse(text(row, 1)?)?,
+            digest: text(row, 2)?.to_owned(),
+            prompt: optional(row, 3)
+                .map(|prompt| {
+                    serde_json::from_str(prompt)
+                        .map_err(|error| invalid(format!("prompt: {error}")))
+                })
+                .transpose()?,
+            hand: optional(row, 4).map(str::to_owned),
+            metadata: raw(text(row, 5)?.to_owned())?,
+            cancel_requested: text(row, 6)? != "0",
+            note: optional(row, 7).map(str::to_owned),
+            first_seq: counter(text(row, 8)?)?,
+            last_seq: optional(row, 9).map(counter).transpose()?,
+            result: optional(row, 10)
+                .map(|body| raw(body.to_owned()))
+                .transpose()?,
+            retry: optional(row, 11)
+                .map(|retry| {
+                    serde_json::from_str(retry).map_err(|error| invalid(format!("retry: {error}")))
+                })
+                .transpose()?,
+        },
+        edits: optional(row, 12).map(str::to_owned),
+        tail_last: optional(row, 13).map(counter).transpose()?,
     })
 }
 
@@ -629,14 +673,28 @@ struct Blobs {
     threshold: usize,
 }
 
-fn edit_receipt(rows: &[SqlRow], edit: &str) -> Result<Option<Replaced>, StoreError> {
-    Ok(single(rows)?.map(|row| {
-        if optional(row, 0) == Some(edit) {
-            Replaced::Applied(None)
-        } else {
-            Replaced::Conflict
-        }
-    }))
+fn flag(value: Option<&Option<String>>) -> (&'static str, String) {
+    match value {
+        None => ("k", String::new()),
+        Some(None) => ("n", String::new()),
+        Some(Some(value)) => ("s", value.clone()),
+    }
+}
+
+fn started(record: &mut TurnRecord) {
+    if !record.state.is_terminal() {
+        record.state = TurnState::Running;
+        record.note = None;
+        record.retry = None;
+    }
+}
+
+fn page_of(events: Vec<LoggedEvent>, start: u64, has_more: bool) -> LogPage {
+    LogPage {
+        next_cursor: events.last().map_or(start, |event| event.seq),
+        has_more,
+        events,
+    }
 }
 
 pub struct SessionLog<H: ?Sized> {
@@ -647,6 +705,7 @@ pub struct SessionLog<H: ?Sized> {
     limit: Option<usize>,
     physical_limit: Option<usize>,
     blobs: Option<Blobs>,
+    writer: Owned<Writer>,
 }
 
 impl<H: Sql + ?Sized> SessionLog<H> {
@@ -659,6 +718,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             limit: None,
             physical_limit: None,
             blobs: None,
+            writer: Owned::new(Writer::default()),
         }
     }
 
@@ -723,111 +783,54 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         Ok(())
     }
 
-    async fn transaction(
+    async fn execute(
         &self,
         operation: &'static str,
-        statements: Vec<SqlStatement<'_>>,
+        statements: &[Stmt],
+        spill: &Spill,
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
         if !self.ready.load(Ordering::Acquire) {
             self.migrate().await?;
         }
-        let dialect = self.host.dialect();
-        let mut spill = Spill::default();
-        let mut values = Vec::with_capacity(statements.len());
-        for stmt in &statements {
-            let slot = if [
-                UNFINISHED_EVENT,
-                QUEUED_EVENT,
-                NEW_EVENT,
-                APPEND,
-                IMPORT_RESULT,
-                REPLACE_QUEUED,
-                IMPORT_UNATTRIBUTED_EVENT,
-            ]
-            .iter()
-            .any(|sql| stmt.sql == dialect.pick(sql))
-            {
-                Some(2)
-            } else if stmt.sql == dialect.pick(&APPEND_UNATTRIBUTED) {
-                Some(1)
-            } else if [NEW_TURN, NEW_PLACED_TURN, IMPORT_EVENT]
+        if let Some(limit) = self.physical_limit
+            && statements
                 .iter()
-                .any(|sql| stmt.sql == dialect.pick(sql))
-            {
-                Some(3)
-            } else {
-                None
-            };
-            let mut params: Vec<Cow<'_, str>> = stmt
-                .params
-                .iter()
-                .map(|value| Cow::Borrowed(*value))
-                .collect();
-            if let Some(slot) = slot {
-                let other = params
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| *index != slot)
-                    .map(|(_, value)| value.len())
-                    .sum::<usize>();
-                let overhead = record_bytes(TURN_TEXTS, other, TURN_INTEGERS);
-                params[slot] = self.store_value(stmt.params[slot], overhead, false, &mut spill)?;
-            }
-            if self
-                .physical_limit
-                .is_some_and(|limit| params.iter().any(|value| value.len() > limit))
-            {
-                return Err(StoreError::NotCommitted(
-                    "session log binding exceeds the physical value limit".into(),
-                ));
-            }
-            values.push(params);
+                .any(|statement| statement.params.iter().any(|value| value.len() > limit))
+        {
+            return Err(StoreError::NotCommitted(
+                "session log binding exceeds the physical value limit".into(),
+            ));
         }
         self.put_blobs(&spill.blobs).await?;
-        let mut prepared: Vec<_> = spill
+        let dialect = self.host.dialect();
+        let mut prepared: Vec<SqlStatement<'_>> = spill
             .parts
             .iter()
-            .map(|(key, data)| statement(dialect, &PART, vec![key, data]))
+            .map(|(key, data)| SqlStatement {
+                sql: dialect.pick(&PART),
+                params: vec![key, data],
+            })
             .collect();
         let prefix = prepared.len();
-        prepared.extend(
-            statements
-                .iter()
-                .zip(&values)
-                .map(|(stmt, params)| SqlStatement {
-                    sql: stmt.sql,
-                    params: params.iter().map(AsRef::as_ref).collect(),
-                }),
-        );
+        prepared.extend(statements.iter().map(|statement| SqlStatement {
+            sql: dialect.pick(statement.sql),
+            params: statement.params.iter().map(String::as_str).collect(),
+        }));
         let mut results = self.run(operation, &prepared).await?;
         results.drain(..prefix);
-        for (stmt, rows) in statements.iter().zip(&mut results) {
-            let columns: &[usize] = if [TURN, PENDING]
-                .iter()
-                .any(|sql| stmt.sql == dialect.pick(sql))
-            {
-                &[3, 10]
-            } else if [PAGE, TURN_PAGE]
-                .iter()
-                .any(|sql| stmt.sql == dialect.pick(sql))
-            {
-                &[3]
-            } else if stmt.sql == dialect.pick(&IMPORTED_RANGE) {
-                &[4]
-            } else {
-                &[]
-            };
-            for row in rows {
-                for &column in columns {
-                    if let Some(Some(value)) = row.get_mut(column)
-                        && value.starts_with(PAYLOAD_MARK)
-                    {
-                        *value = self.load_value(value).await?;
-                    }
-                }
-            }
-        }
         Ok(results)
+    }
+
+    async fn query(
+        &self,
+        operation: &'static str,
+        sql: &'static Dialects,
+        params: Vec<String>,
+    ) -> Result<Vec<SqlRow>, StoreError> {
+        self.execute(operation, &[Stmt { sql, params }], &Spill::default())
+            .await?
+            .pop()
+            .ok_or_else(|| invalid("missing query rows"))
     }
 
     fn store_value<'a>(
@@ -961,7 +964,10 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             let results = self
                 .run(
                     "log_part",
-                    &[statement(self.host.dialect(), &READ_PART, vec![&key])],
+                    &[SqlStatement {
+                        sql: self.host.dialect().pick(&READ_PART),
+                        params: vec![&key],
+                    }],
                 )
                 .await?;
             let row = single(&results[0])?.ok_or_else(|| invalid("missing session log part"))?;
@@ -977,18 +983,485 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         Ok(decoded)
     }
 
+    async fn loaded(&self, value: &mut Box<RawValue>) -> Result<(), StoreError> {
+        if value.get().starts_with(PAYLOAD_MARK) {
+            *value = raw(self.load_value(value.get()).await?)?;
+        }
+        Ok(())
+    }
+
+    async fn load_cells(&self, rows: &mut [SqlRow], columns: &[usize]) -> Result<(), StoreError> {
+        for row in rows {
+            for &column in columns {
+                if let Some(Some(value)) = row.get_mut(column)
+                    && value.starts_with(PAYLOAD_MARK)
+                {
+                    *value = self.load_value(value).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn writer(&self) -> Result<Held<'_, Writer>, StoreError> {
+        let mut writer = self.writer.acquire().await;
+        if writer.ready {
+            return Ok(writer);
+        }
+        let scope = self.scope.to_string();
+        let results = self
+            .execute(
+                "log_open",
+                &[
+                    Stmt {
+                        sql: &SEQ_HIGH,
+                        params: vec![scope.clone()],
+                    },
+                    Stmt {
+                        sql: &LAST_CHUNK,
+                        params: vec![scope.clone()],
+                    },
+                    Stmt {
+                        sql: &HOLDER,
+                        params: vec![scope],
+                    },
+                ],
+                &Spill::default(),
+            )
+            .await?;
+        let turns = single(&results[0])?
+            .and_then(|row| optional(row, 0))
+            .map(counter)
+            .transpose()?
+            .unwrap_or(0);
+        let chunks = single(&results[1])?
+            .map(|row| text(row, 0).and_then(counter))
+            .transpose()?
+            .unwrap_or(0);
+        let high = turns.max(chunks);
+        let holder = single(&results[2])?
+            .map(|row| {
+                Ok::<_, StoreError>(Holder {
+                    request_id: text(row, 0)?.to_owned(),
+                    last: counter(text(row, 1)?)?,
+                    tail: usize::try_from(counter(text(row, 2)?)?).unwrap_or(usize::MAX),
+                    other: usize::try_from(counter(text(row, 3)?)?).unwrap_or(usize::MAX),
+                })
+            })
+            .transpose()?
+            .filter(|holder| holder.last == high);
+        *writer = Writer {
+            ready: true,
+            next: high.saturating_add(GAP),
+            durable: high,
+            holder,
+            ..Writer::default()
+        };
+        Ok(writer)
+    }
+
+    fn turn_fits(&self, request_id: &str, other: usize, tail: usize, add: usize) -> bool {
+        tail.saturating_add(add) <= SEAL_BYTES
+            && self.physical_limit.is_none_or(|limit| {
+                record_bytes(
+                    TURN_TEXTS,
+                    self.scope.len() + request_id.len() + other + tail + add,
+                    TURN_INTEGERS,
+                ) <= limit
+            })
+    }
+
+    fn chunk_capacity(&self) -> usize {
+        self.physical_limit.map_or(SEAL_BYTES, |limit| {
+            SEAL_BYTES.min(limit.saturating_sub(record_bytes(
+                CHUNK_TEXTS,
+                self.scope.len(),
+                CHUNK_INTEGERS,
+            )))
+        })
+    }
+
+    fn encode_line(&self, line: &Line, spill: &mut Spill) -> Result<String, StoreError> {
+        let request_id = serde_json::to_string(&line.request_id).map_err(encoding)?;
+        let overhead = record_bytes(
+            TURN_TEXTS,
+            self.scope.len() + request_id.len() + LINE_FRAME_BYTES,
+            TURN_INTEGERS,
+        );
+        let body = self.store_value(line.body.get(), overhead, false, spill)?;
+        Ok(format!(
+            "[{},{},{request_id},{body}]\n",
+            line.seq, line.created_at
+        ))
+    }
+
+    fn chunks(&self, texts: &[(u64, String)]) -> Vec<Stmt> {
+        let capacity = self.chunk_capacity();
+        let mut statements = Vec::new();
+        let mut start = 0;
+        while start < texts.len() {
+            let mut end = start + 1;
+            let mut body = texts[start].1.clone();
+            while end < texts.len() && body.len() + texts[end].1.len() <= capacity {
+                body.push_str(&texts[end].1);
+                end += 1;
+            }
+            statements.push(Stmt {
+                sql: &NEW_CHUNK,
+                params: vec![
+                    self.scope.to_string(),
+                    texts[start].0.to_string(),
+                    texts[end - 1].0.to_string(),
+                    body,
+                ],
+            });
+            start = end;
+        }
+        statements
+    }
+
+    fn spread(&self, writer: &Writer, texts: &[(u64, String)], last: u64) -> Placed {
+        let total: usize = texts.iter().map(|(_, text)| text.len()).sum();
+        if texts.is_empty() {
+            return Placed {
+                own: None,
+                statements: Vec::new(),
+                holder: writer.holder.clone(),
+                last,
+                started: None,
+            };
+        }
+        if let Some(holder) = &writer.holder
+            && self.turn_fits(&holder.request_id, holder.other, holder.tail, total)
+        {
+            let start = writer.started.contains(&holder.request_id);
+            return Placed {
+                own: None,
+                statements: vec![Stmt {
+                    sql: &APPEND_TAIL,
+                    params: vec![
+                        self.scope.to_string(),
+                        holder.request_id.clone(),
+                        last.to_string(),
+                        texts.iter().map(|(_, text)| text.as_str()).collect(),
+                        holder.last.to_string(),
+                        if start { "1" } else { "0" }.to_owned(),
+                    ],
+                }],
+                holder: Some(Holder {
+                    request_id: holder.request_id.clone(),
+                    last,
+                    tail: holder.tail + total,
+                    other: holder.other,
+                }),
+                last,
+                started: start.then(|| holder.request_id.clone()),
+            };
+        }
+        Placed {
+            own: None,
+            statements: self.chunks(texts),
+            holder: None,
+            last,
+            started: None,
+        }
+    }
+
+    fn place(
+        &self,
+        writer: &Writer,
+        lines: &[Line],
+        own_lines: usize,
+        own: Option<&Own<'_>>,
+        spill: &mut Spill,
+    ) -> Result<Placed, StoreError> {
+        let texts = lines
+            .iter()
+            .map(|line| Ok((line.seq, self.encode_line(line, spill)?)))
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let last = lines.last().map_or(writer.durable, |line| line.seq);
+        let joined = |texts: &[(u64, String)]| {
+            (
+                texts.first().map_or(0, |(seq, _)| *seq),
+                last,
+                texts
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<String>(),
+            )
+        };
+        let total: usize = texts.iter().map(|(_, text)| text.len()).sum();
+        let split = texts.len() - own_lines;
+        let Some(own) = own else {
+            return Ok(self.spread(writer, &texts, last));
+        };
+        if own.fresh {
+            let held = |tail| Holder {
+                request_id: own.request_id.to_owned(),
+                last,
+                tail,
+                other: own.other,
+            };
+            if self.turn_fits(own.request_id, own.other, 0, total) {
+                return Ok(Placed {
+                    own: Some(joined(&texts)),
+                    statements: Vec::new(),
+                    holder: Some(held(total)),
+                    last,
+                    started: None,
+                });
+            }
+            let mine = &texts[split..];
+            let bytes: usize = mine.iter().map(|(_, text)| text.len()).sum();
+            if !self.turn_fits(own.request_id, own.other, 0, bytes) {
+                return Err(StoreError::NotCommitted(
+                    "a turn's own events do not fit its session log row".into(),
+                ));
+            }
+            let before = texts[..split]
+                .last()
+                .map_or(writer.durable, |(seq, _)| *seq);
+            let mut placed = self.spread(writer, &texts[..split], before);
+            placed.own = Some(joined(mine));
+            placed.holder = Some(held(bytes));
+            placed.last = last;
+            return Ok(placed);
+        }
+        match &writer.holder {
+            Some(holder) if holder.request_id == own.request_id => {
+                if total == 0 {
+                    return Ok(Placed {
+                        own: None,
+                        statements: Vec::new(),
+                        holder: Some(Holder {
+                            other: own.other,
+                            ..holder.clone()
+                        }),
+                        last,
+                        started: None,
+                    });
+                }
+                if self.turn_fits(own.request_id, own.other, holder.tail, total) {
+                    return Ok(Placed {
+                        own: Some(joined(&texts)),
+                        statements: Vec::new(),
+                        holder: Some(Holder {
+                            request_id: own.request_id.to_owned(),
+                            last,
+                            tail: holder.tail + total,
+                            other: own.other,
+                        }),
+                        last,
+                        started: None,
+                    });
+                }
+                Ok(Placed {
+                    own: None,
+                    statements: self.chunks(&texts),
+                    holder: None,
+                    last,
+                    started: None,
+                })
+            }
+            _ => Ok(self.spread(writer, &texts, last)),
+        }
+    }
+
+    async fn commit(
+        &self,
+        writer: &mut Writer,
+        operation: &'static str,
+        lines: Vec<Line>,
+        own: Option<Own<'_>>,
+        mut spill: Spill,
+        build: impl FnOnce(Option<&(u64, u64, String)>) -> Vec<Stmt>,
+    ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+        let buffered = writer.buffer.len();
+        let own_lines = lines.len();
+        let mut all = std::mem::take(&mut writer.buffer);
+        all.extend(lines);
+        let restore = |writer: &mut Writer, mut all: Vec<Line>| {
+            all.truncate(buffered);
+            writer.buffered = all.iter().map(Line::estimate).sum();
+            writer.buffer = all;
+        };
+        let placed = match self.place(writer, &all, own_lines, own.as_ref(), &mut spill) {
+            Ok(placed) => placed,
+            Err(error) => {
+                restore(writer, all);
+                return Err(error);
+            }
+        };
+        let mut statements = placed.statements;
+        let extra = statements.len();
+        let built = build(placed.own.as_ref());
+        let checked = placed.own.is_some() && !built.is_empty();
+        statements.extend(built);
+        let mut results = match self.execute(operation, &statements, &spill).await {
+            Ok(results) => results,
+            Err(error) => {
+                restore(writer, all);
+                return Err(error);
+            }
+        };
+        let tails: Vec<_> = results.drain(..extra).collect();
+        if tails.iter().any(Vec::is_empty) || (checked && results[0].is_empty()) {
+            writer.ready = false;
+            return Err(StoreError::Backend(format!(
+                "session log {} changed outside this writer; it reads the log again",
+                self.scope
+            )));
+        }
+        writer.holder = placed.holder;
+        writer.durable = writer.durable.max(placed.last);
+        writer.outstanding = 0;
+        writer.buffered = 0;
+        if let Some(started) = placed.started {
+            writer.started.remove(&started);
+        }
+        Ok(results)
+    }
+
+    async fn flush_locked(&self, writer: &mut Writer) -> Result<(), StoreError> {
+        if writer.buffer.is_empty() {
+            return Ok(());
+        }
+        self.commit(writer, "flush", Vec::new(), None, Spill::default(), |_| {
+            Vec::new()
+        })
+        .await
+        .map(drop)
+    }
+
+    fn buffer(&self, writer: &mut Writer, line: Line) {
+        writer.buffered += line.estimate();
+        writer.buffer.push(line);
+    }
+
+    pub async fn stage(&self, entries: &[LogEntry]) -> Result<Vec<LoggedEvent>, StoreError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let created_at = now();
+        let mut writer = self.writer().await?;
+        let mut logged = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let request_id = entry.request_id.as_deref();
+            let body = if self.event_fits(request_id, entry.event.get()) {
+                entry.event.clone()
+            } else {
+                omitted(request_id, entry.event.get())?
+            };
+            let line = Line {
+                seq: writer.allocate()?,
+                created_at,
+                request_id: entry.request_id.clone(),
+                body,
+            };
+            logged.push(line.logged());
+            self.buffer(&mut writer, line);
+        }
+        if writer.buffered >= self.chunk_capacity() {
+            self.flush_locked(&mut writer).await?;
+        }
+        Ok(logged)
+    }
+
+    pub async fn flush(&self) -> Result<(), StoreError> {
+        let mut writer = self.writer().await?;
+        self.flush_locked(&mut writer).await
+    }
+
+    pub async fn append(&self, entries: &[LogEntry]) -> Result<Vec<LoggedEvent>, StoreError> {
+        let logged = self.stage(entries).await?;
+        self.flush().await?;
+        Ok(logged)
+    }
+
+    async fn read(&self, writer: &Writer, request_id: &str) -> Result<Option<Row>, StoreError> {
+        let mut rows = self
+            .query(
+                "turn",
+                &TURN,
+                vec![self.scope.to_string(), request_id.to_owned()],
+            )
+            .await?;
+        self.load_cells(&mut rows, &[3, 10]).await?;
+        let Some(found) = single(&rows)? else {
+            return Ok(None);
+        };
+        let mut found = row(found)?;
+        if writer.started.contains(request_id) {
+            started(&mut found.record);
+        }
+        if found.record.result.is_none()
+            && let Some(seq) = found.record.last_seq
+        {
+            found.record.result = self.event_at(writer, seq).await?;
+        }
+        Ok(Some(found))
+    }
+
+    async fn event_at(
+        &self,
+        writer: &Writer,
+        seq: u64,
+    ) -> Result<Option<Box<RawValue>>, StoreError> {
+        let (events, _) = self
+            .select(writer, seq.saturating_sub(1), Some(seq), None, 1, None)
+            .await?;
+        Ok(events
+            .into_iter()
+            .find(|event| event.seq == seq)
+            .map(|event| event.event))
+    }
+
+    pub async fn turn(&self, request_id: &str) -> Result<Option<TurnRecord>, StoreError> {
+        let writer = self.writer().await?;
+        Ok(self.read(&writer, request_id).await?.map(|row| row.record))
+    }
+
+    pub async fn pending(&self) -> Result<Vec<TurnRecord>, StoreError> {
+        let writer = self.writer().await?;
+        let mut rows = self
+            .query("pending", &PENDING, vec![self.scope.to_string()])
+            .await?;
+        self.load_cells(&mut rows, &[3]).await?;
+        rows.iter()
+            .map(|found| {
+                let mut record = row(found)?.record;
+                if writer.started.contains(&record.request_id) {
+                    started(&mut record);
+                }
+                Ok(record)
+            })
+            .collect()
+    }
+
+    fn line(
+        &self,
+        writer: &mut Writer,
+        request_id: &str,
+        body: Box<RawValue>,
+    ) -> Result<Line, StoreError> {
+        Ok(Line {
+            seq: writer.allocate()?,
+            created_at: now(),
+            request_id: Some(request_id.to_owned()),
+            body,
+        })
+    }
+
     pub async fn submit(&self, submission: &Submission) -> Result<Submitted, StoreError> {
         let id = submission.request_id.as_str();
         let digest = submission_digest(&submission.prompt, submission.hand.as_deref())?;
         let mut images = BlobWrites::new();
         let stored = self.stored_prompt(&submission.prompt, &mut images);
         let prompt = serde_json::to_string(&*stored).map_err(encoding)?;
-        let body = serde_json::to_string(&Lifecycle {
+        let body = encoded(&Lifecycle {
             kind: "queued",
             request_id: id,
-        })
-        .map_err(encoding)?;
-        let created = now().to_string();
+        })?;
         let metadata = submission.metadata.get();
         if let Some(limit) = self.limit {
             let row = record_bytes(
@@ -1013,104 +1486,286 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             }
         }
         self.put_blobs(&images).await?;
-        let turn = match submission.hand.as_deref() {
-            Some(hand) => statement(
-                self.host.dialect(),
-                &NEW_PLACED_TURN,
-                vec![&self.scope, id, &digest, &prompt, metadata, hand],
-            ),
-            None => statement(
-                self.host.dialect(),
-                &NEW_TURN,
-                vec![&self.scope, id, &digest, &prompt, metadata],
-            ),
-        };
-        let results = self
-            .transaction(
-                "submit",
-                vec![
-                    statement(
-                        self.host.dialect(),
-                        &NEW_EVENT,
-                        vec![&self.scope, id, &body, &created],
-                    ),
-                    turn,
-                    statement(self.host.dialect(), &TURN, vec![&self.scope, id]),
-                ],
-            )
-            .await?;
-        let record = single(&results[2])?
-            .map(record)
-            .transpose()?
-            .ok_or_else(|| invalid("the submitted turn is missing"))?;
-        Ok(match single(&results[0])? {
-            Some(row) => Submitted::Accepted {
-                event: logged(row, id, raw(body)?)?,
-                record,
+        let mut writer = self.writer().await?;
+        if let Some(found) = self.read(&writer, id).await? {
+            return Ok(if found.record.digest == digest {
+                Submitted::Existing(found.record)
+            } else {
+                Submitted::Conflict(found.record)
+            });
+        }
+        let mut spill = Spill::default();
+        let hand = serde_json::to_string(&submission.hand).map_err(encoding)?;
+        let overhead = record_bytes(
+            TURN_TEXTS,
+            self.scope.len() + id.len() + digest.len() + hand.len() + metadata.len() + SEAL_BYTES,
+            TURN_INTEGERS,
+        );
+        let prompt = self
+            .store_value(&prompt, overhead, false, &mut spill)?
+            .into_owned();
+        let line = self.line(&mut writer, id, body)?;
+        let event = line.logged();
+        let seq = line.seq;
+        let other = digest.len() + prompt.len() + hand.len() + metadata.len();
+        let scope = self.scope.to_string();
+        self.commit(
+            &mut writer,
+            "submit",
+            vec![line],
+            Some(Own {
+                request_id: id,
+                fresh: true,
+                other,
+            }),
+            spill,
+            |own| {
+                let (first, last, tail) = own.cloned().unwrap_or_default();
+                vec![Stmt {
+                    sql: &NEW_TURN,
+                    params: vec![
+                        scope,
+                        id.to_owned(),
+                        digest.clone(),
+                        prompt,
+                        hand,
+                        metadata.to_owned(),
+                        seq.to_string(),
+                        first.to_string(),
+                        last.to_string(),
+                        tail,
+                    ],
+                }]
             },
-            None if record.digest == digest => Submitted::Existing(record),
-            None => Submitted::Conflict(record),
+        )
+        .await?;
+        Ok(Submitted::Accepted {
+            record: TurnRecord {
+                request_id: id.to_owned(),
+                state: TurnState::Queued,
+                digest,
+                prompt: Some(stored.into_owned()),
+                hand: submission.hand.clone(),
+                metadata: submission.metadata.clone(),
+                cancel_requested: false,
+                note: None,
+                first_seq: seq,
+                last_seq: None,
+                result: None,
+                retry: None,
+            },
+            event,
         })
-    }
-
-    pub async fn turn(&self, request_id: &str) -> Result<Option<TurnRecord>, StoreError> {
-        let results = self
-            .transaction(
-                "turn",
-                vec![statement(
-                    self.host.dialect(),
-                    &TURN,
-                    vec![&self.scope, request_id],
-                )],
-            )
-            .await?;
-        single(&results[0])?.map(record).transpose()
-    }
-
-    pub async fn pending(&self) -> Result<Vec<TurnRecord>, StoreError> {
-        let results = self
-            .transaction(
-                "pending",
-                vec![statement(self.host.dialect(), &PENDING, vec![&self.scope])],
-            )
-            .await?;
-        results[0].iter().map(record).collect()
     }
 
     pub async fn start(&self, request_id: &str) -> Result<Option<Started>, StoreError> {
-        let body = serde_json::to_string(&Lifecycle {
+        let body = encoded(&Lifecycle {
             kind: "running",
             request_id,
-        })
-        .map_err(encoding)?;
-        let created = now().to_string();
-        let results = self
-            .transaction(
-                "start",
-                vec![
-                    statement(self.host.dialect(), &TURN, vec![&self.scope, request_id]),
-                    statement(
-                        self.host.dialect(),
-                        &UNFINISHED_EVENT,
-                        vec![&self.scope, request_id, &body, &created],
-                    ),
-                    statement(self.host.dialect(), &START, vec![&self.scope, request_id]),
-                    statement(self.host.dialect(), &TURN, vec![&self.scope, request_id]),
-                ],
-            )
-            .await?;
-        let (Some(before), Some(row), Some(current)) = (
-            single(&results[0])?,
-            single(&results[1])?,
-            single(&results[3])?,
-        ) else {
+        })?;
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
             return Ok(None);
         };
+        if found.record.state.is_terminal() {
+            return Ok(None);
+        }
+        let previous = found.record.state;
+        let mut record = found.record;
+        started(&mut record);
+        let line = self.line(&mut writer, request_id, body)?;
+        let event = line.logged();
+        self.buffer(&mut writer, line);
+        writer.started.insert(request_id.to_owned());
+        if writer.buffered >= self.chunk_capacity() {
+            self.flush_locked(&mut writer).await?;
+        }
         Ok(Some(Started {
-            previous: record(before)?.state,
-            record: record(current)?,
-            event: logged(row, request_id, raw(body)?)?,
+            previous,
+            record,
+            event,
         }))
+    }
+
+    async fn update(
+        &self,
+        writer: &mut Writer,
+        operation: &'static str,
+        found: &Row,
+        mut change: Change,
+        lines: Vec<Line>,
+        mut spill: Spill,
+    ) -> Result<(), StoreError> {
+        let request_id = found.record.request_id.as_str();
+        if writer.started.contains(request_id) {
+            change.note.get_or_insert(None);
+            change.retry.get_or_insert(None);
+        }
+        let overhead = record_bytes(
+            TURN_TEXTS,
+            self.scope.len() + request_id.len() + found.record.metadata.get().len() + SEAL_BYTES,
+            TURN_INTEGERS,
+        );
+        if let Some(Some(prompt)) = &mut change.prompt {
+            *prompt = self
+                .store_value(prompt, overhead, false, &mut spill)?
+                .into_owned();
+        }
+        if let Some(Some(result)) = &mut change.result {
+            *result = self
+                .store_value(result, overhead, false, &mut spill)?
+                .into_owned();
+        }
+        let added: usize = [
+            &change.prompt,
+            &change.note,
+            &change.retry,
+            &change.edits,
+            &change.result,
+        ]
+        .into_iter()
+        .map(|value| {
+            value
+                .as_ref()
+                .and_then(Option::as_ref)
+                .map_or(0, String::len)
+        })
+        .sum();
+        let other = writer
+            .holder
+            .as_ref()
+            .filter(|holder| holder.request_id == request_id)
+            .map_or(0, |holder| holder.other)
+            + added
+            + change.digest.as_ref().map_or(0, String::len);
+        let scope = self.scope.to_string();
+        let digest = change
+            .digest
+            .clone()
+            .unwrap_or_else(|| found.record.digest.clone());
+        let (prompt_flag, prompt) = flag(change.prompt.as_ref());
+        let (note_flag, note) = flag(change.note.as_ref());
+        let (retry_flag, retry) = flag(change.retry.as_ref());
+        let (edits_flag, edits) = flag(change.edits.as_ref());
+        let (result_flag, result) = flag(change.result.as_ref());
+        let params = move |own: Option<&(u64, u64, String)>| {
+            let (first, last, tail) = own.map_or(
+                (String::new(), String::new(), String::new()),
+                |(first, last, tail)| (first.to_string(), last.to_string(), tail.clone()),
+            );
+            vec![
+                scope,
+                request_id.to_owned(),
+                change.state.as_str().to_owned(),
+                digest,
+                prompt_flag.to_owned(),
+                prompt,
+                u8::from(change.cancel_requested).to_string(),
+                note_flag.to_owned(),
+                note,
+                retry_flag.to_owned(),
+                retry,
+                edits_flag.to_owned(),
+                edits,
+                change
+                    .last_seq
+                    .map(|seq| seq.to_string())
+                    .unwrap_or_default(),
+                result_flag.to_owned(),
+                result,
+                first,
+                last,
+                tail,
+                found.status.as_str().to_owned(),
+                found.record.digest.clone(),
+                found
+                    .tail_last
+                    .map_or_else(|| "-1".to_owned(), |seq| seq.to_string()),
+            ]
+        };
+        let applied = self
+            .commit(
+                writer,
+                operation,
+                lines,
+                Some(Own {
+                    request_id,
+                    fresh: false,
+                    other,
+                }),
+                spill,
+                |own| {
+                    vec![Stmt {
+                        sql: &UPDATE_TURN,
+                        params: params(own),
+                    }]
+                },
+            )
+            .await?
+            .first()
+            .is_some_and(|rows| !rows.is_empty());
+        if !applied {
+            writer.ready = false;
+            return Err(StoreError::Backend(format!(
+                "session log turn {request_id} changed outside this writer"
+            )));
+        }
+        writer.started.remove(request_id);
+        Ok(())
+    }
+
+    async fn close(
+        &self,
+        writer: &mut Writer,
+        operation: &'static str,
+        found: Row,
+        state: TurnState,
+        body: Box<RawValue>,
+    ) -> Result<(TurnRecord, LoggedEvent), StoreError> {
+        let line = self.line(writer, &found.record.request_id, body.clone())?;
+        let event = line.logged();
+        let seq = line.seq;
+        self.update(
+            writer,
+            operation,
+            &found,
+            Change {
+                state,
+                digest: None,
+                prompt: Some(None),
+                cancel_requested: found.record.cancel_requested,
+                note: Some(None),
+                retry: Some(None),
+                edits: None,
+                last_seq: Some(seq),
+                result: Some(Some(body.get().to_owned())),
+            },
+            vec![line],
+            Spill::default(),
+        )
+        .await?;
+        let mut record = found.record;
+        record.state = state;
+        record.prompt = None;
+        record.note = None;
+        record.retry = None;
+        record.last_seq = Some(seq);
+        record.result = Some(body);
+        Ok((record, event))
+    }
+
+    const fn change(record: &TurnRecord) -> Change {
+        Change {
+            state: record.state,
+            digest: None,
+            prompt: None,
+            cancel_requested: record.cancel_requested,
+            note: None,
+            retry: None,
+            edits: None,
+            last_seq: None,
+            result: None,
+        }
     }
 
     pub async fn finish(
@@ -1126,16 +1781,15 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             )));
         }
         let mut state = state;
-        let mut body = serde_json::to_string(&Outcome {
+        let mut body = encoded(&Outcome {
             kind: "result",
             request_id,
             status: state.as_str(),
             fields,
-        })
-        .map_err(encoding)?;
+        })?;
         if let Some(limit) = self
             .limit
-            .filter(|_| !self.event_fits(Some(request_id), &body))
+            .filter(|_| !self.event_fits(Some(request_id), body.get()))
         {
             let mut failure = Map::new();
             failure.insert(
@@ -1143,45 +1797,28 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 format!(
                     "the turn's {} result is {} bytes, more than the {limit} bytes the session log stores in one event",
                     state.as_str(),
-                    body.len()
+                    body.get().len()
                 )
                 .into(),
             );
             state = TurnState::Failed;
-            body = serde_json::to_string(&Outcome {
+            body = encoded(&Outcome {
                 kind: "result",
                 request_id,
                 status: state.as_str(),
                 fields: &failure,
-            })
-            .map_err(encoding)?;
+            })?;
         }
-        let created = now().to_string();
-        let results = self
-            .transaction(
-                "finish",
-                vec![
-                    statement(
-                        self.host.dialect(),
-                        &UNFINISHED_EVENT,
-                        vec![&self.scope, request_id, &body, &created],
-                    ),
-                    statement(
-                        self.host.dialect(),
-                        &FINISH,
-                        vec![&self.scope, request_id, state.as_str()],
-                    ),
-                    statement(self.host.dialect(), &TURN, vec![&self.scope, request_id]),
-                ],
-            )
-            .await?;
-        let (Some(row), Some(current)) = (single(&results[0])?, single(&results[2])?) else {
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
             return Ok(None);
         };
-        Ok(Some((
-            record(current)?,
-            logged(row, request_id, raw(body)?)?,
-        )))
+        if found.record.state.is_terminal() {
+            return Ok(None);
+        }
+        self.close(&mut writer, "finish", found, state, body)
+            .await
+            .map(Some)
     }
 
     pub async fn cancel(
@@ -1189,44 +1826,41 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         request_id: &str,
         fields: &Map<String, Value>,
     ) -> Result<Option<(TurnRecord, Option<LoggedEvent>)>, StoreError> {
-        let body = serde_json::to_string(&Outcome {
+        let body = encoded(&Outcome {
             kind: "result",
             request_id,
             status: TurnState::Cancelled.as_str(),
             fields,
-        })
-        .map_err(encoding)?;
-        let created = now().to_string();
-        let results = self
-            .transaction(
-                "cancel",
-                vec![
-                    statement(
-                        self.host.dialect(),
-                        &REQUEST_CANCEL,
-                        vec![&self.scope, request_id],
-                    ),
-                    statement(
-                        self.host.dialect(),
-                        &QUEUED_EVENT,
-                        vec![&self.scope, request_id, &body, &created],
-                    ),
-                    statement(
-                        self.host.dialect(),
-                        &CANCEL_QUEUED,
-                        vec![&self.scope, request_id],
-                    ),
-                    statement(self.host.dialect(), &TURN, vec![&self.scope, request_id]),
-                ],
-            )
-            .await?;
-        let Some(current) = single(&results[3])? else {
+        })?;
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
             return Ok(None);
         };
-        let event = single(&results[1])?
-            .map(|row| logged(row, request_id, raw(body)?))
-            .transpose()?;
-        Ok(Some((record(current)?, event)))
+        match found.record.state {
+            TurnState::Running if !found.record.cancel_requested => {
+                let mut change = Self::change(&found.record);
+                change.cancel_requested = true;
+                self.update(
+                    &mut writer,
+                    "cancel",
+                    &found,
+                    change,
+                    Vec::new(),
+                    Spill::default(),
+                )
+                .await?;
+                let mut record = found.record;
+                record.cancel_requested = true;
+                Ok(Some((record, None)))
+            }
+            TurnState::Queued => {
+                let (record, event) = self
+                    .close(&mut writer, "cancel", found, TurnState::Cancelled, body)
+                    .await?;
+                Ok(Some((record, Some(event))))
+            }
+            _ => Ok(Some((found.record, None))),
+        }
     }
 
     pub async fn replace_queued(
@@ -1241,115 +1875,82 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             ));
         }
         let edit = submission_digest(&Prompt::new(text), None)?;
-        let body = serde_json::to_string(&Replacement {
+        let body = encoded(&Replacement {
             kind: "replaced",
             request_id,
             edit_id,
             digest: &edit,
-        })
-        .map_err(encoding)?;
-        let dialect = self.host.dialect();
-        let mut current = self.turn(request_id).await?;
-        loop {
-            let Some((turn, prompt)) = current.as_ref().and_then(|turn| {
-                turn.prompt
-                    .as_ref()
-                    .filter(|_| turn.state == TurnState::Queued)
-                    .map(|prompt| (turn, prompt))
-            }) else {
-                let results = self
-                    .transaction(
-                        "replace",
-                        vec![statement(
-                            dialect,
-                            &EDIT_RECEIPT,
-                            vec![&self.scope, request_id, edit_id],
-                        )],
-                    )
-                    .await?;
-                return Ok(edit_receipt(&results[0], &edit)?.unwrap_or(Replaced::NotQueued));
-            };
-            let prompt = edited(prompt, text)?;
-            let digest = submission_digest(&prompt, turn.hand.as_deref())?;
-            let mut images = BlobWrites::new();
-            let stored = self.stored_prompt(&prompt, &mut images);
-            let encoded = serde_json::to_string(&*stored).map_err(encoding)?;
-            if let Some(limit) = self.limit {
-                let row = record_bytes(
-                    TURN_TEXTS,
-                    self.scope.len()
-                        + request_id.len()
-                        + digest.len()
-                        + TurnState::Running.as_str().len()
-                        + encoded.len()
-                        + turn.hand.as_deref().map_or(0, str::len)
-                        + turn.metadata.get().len(),
-                    TURN_INTEGERS,
-                );
-                let accepted = event_bytes(
-                    &self.scope,
-                    Some(request_id),
-                    accepted_bytes(request_id, &stored.instruction).map_err(encoding)?,
-                );
-                let receipt = event_bytes(&self.scope, Some(request_id), body.len());
-                let bytes = row.max(accepted).max(receipt);
-                if bytes > limit {
-                    return Ok(Replaced::TooLarge { bytes, limit });
-                }
-            }
-            self.put_blobs(&images).await?;
-            let created = now().to_string();
-            let results = self
-                .transaction(
-                    "replace",
-                    vec![
-                        statement(
-                            dialect,
-                            &EDIT_RECEIPT,
-                            vec![&self.scope, request_id, edit_id],
-                        ),
-                        statement(
-                            dialect,
-                            &REPLACE_QUEUED,
-                            vec![
-                                &self.scope,
-                                request_id,
-                                &encoded,
-                                &digest,
-                                edit_id,
-                                &turn.digest,
-                            ],
-                        ),
-                        statement(
-                            dialect,
-                            &REPLACED_EVENT,
-                            vec![&self.scope, request_id, &body, &created, &digest, edit_id],
-                        ),
-                        statement(dialect, &TURN, vec![&self.scope, request_id]),
-                    ],
-                )
-                .await?;
-            if let Some(receipt) = edit_receipt(&results[0], &edit)? {
-                return Ok(receipt);
-            }
-            if let Some(row) = single(&results[2])? {
-                return Ok(Replaced::Applied(Some(logged(
-                    row,
-                    request_id,
-                    raw(body)?,
-                )?)));
-            }
-            let next = single(&results[3])?.map(record).transpose()?;
-            if next
-                .as_ref()
-                .is_some_and(|next| next.state == TurnState::Queued && next.digest == turn.digest)
-            {
-                return Err(invalid(
-                    "a queued turn refused an edit of its current prompt",
-                ));
-            }
-            current = next;
+        })?;
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
+            return Ok(Replaced::NotQueued);
+        };
+        let mut edits: BTreeMap<String, String> = match &found.edits {
+            Some(edits) => serde_json::from_str(edits)
+                .map_err(|error| invalid(format!("edit receipts: {error}")))?,
+            None => BTreeMap::new(),
+        };
+        if let Some(applied) = edits.get(edit_id) {
+            return Ok(if *applied == edit {
+                Replaced::Applied(None)
+            } else {
+                Replaced::Conflict
+            });
         }
+        let Some(prompt) = found
+            .record
+            .prompt
+            .as_ref()
+            .filter(|_| found.record.state == TurnState::Queued)
+        else {
+            return Ok(Replaced::NotQueued);
+        };
+        let prompt = edited(prompt, text)?;
+        let digest = submission_digest(&prompt, found.record.hand.as_deref())?;
+        let mut images = BlobWrites::new();
+        let stored = self.stored_prompt(&prompt, &mut images);
+        let stored = serde_json::to_string(&*stored).map_err(encoding)?;
+        if let Some(limit) = self.limit {
+            let row = record_bytes(
+                TURN_TEXTS,
+                self.scope.len()
+                    + request_id.len()
+                    + digest.len()
+                    + TurnState::Running.as_str().len()
+                    + stored.len()
+                    + found.record.hand.as_deref().map_or(0, str::len)
+                    + found.record.metadata.get().len(),
+                TURN_INTEGERS,
+            );
+            let accepted = event_bytes(
+                &self.scope,
+                Some(request_id),
+                accepted_bytes(request_id, &prompt.instruction).map_err(encoding)?,
+            );
+            let receipt = event_bytes(&self.scope, Some(request_id), body.get().len());
+            let bytes = row.max(accepted).max(receipt);
+            if bytes > limit {
+                return Ok(Replaced::TooLarge { bytes, limit });
+            }
+        }
+        self.put_blobs(&images).await?;
+        edits.insert(edit_id.to_owned(), edit);
+        let line = self.line(&mut writer, request_id, body)?;
+        let event = line.logged();
+        let mut change = Self::change(&found.record);
+        change.digest = Some(digest);
+        change.prompt = Some(Some(stored));
+        change.edits = Some(Some(serde_json::to_string(&edits).map_err(encoding)?));
+        self.update(
+            &mut writer,
+            "replace",
+            &found,
+            change,
+            vec![line],
+            Spill::default(),
+        )
+        .await?;
+        Ok(Replaced::Applied(Some(event)))
     }
 
     pub async fn withdraw_steered(
@@ -1361,40 +1962,28 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             ("cancelled".to_owned(), Value::Bool(true)),
             ("steered".to_owned(), Value::Bool(true)),
         ]);
-        let body = serde_json::to_string(&Outcome {
+        let body = encoded(&Outcome {
             kind: "result",
             request_id,
             status: TurnState::Cancelled.as_str(),
             fields: &fields,
-        })
-        .map_err(encoding)?;
-        let created = now().to_string();
-        let dialect = self.host.dialect();
-        let results = self
-            .transaction(
-                "withdraw_steered",
-                vec![
-                    statement(
-                        dialect,
-                        &STEERED_EVENT,
-                        vec![&self.scope, request_id, &body, &created, digest],
-                    ),
-                    statement(
-                        dialect,
-                        &CANCEL_STEERED,
-                        vec![&self.scope, request_id, digest],
-                    ),
-                    statement(dialect, &TURN, vec![&self.scope, request_id]),
-                ],
-            )
-            .await?;
-        let (Some(row), Some(current)) = (single(&results[0])?, single(&results[2])?) else {
+        })?;
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
             return Ok(None);
         };
-        Ok(Some((
-            record(current)?,
-            logged(row, request_id, raw(body)?)?,
-        )))
+        if found.record.state != TurnState::Queued || found.record.digest != digest {
+            return Ok(None);
+        }
+        self.close(
+            &mut writer,
+            "withdraw_steered",
+            found,
+            TurnState::Cancelled,
+            body,
+        )
+        .await
+        .map(Some)
     }
 
     pub async fn retry(
@@ -1404,145 +1993,253 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         kind: &str,
         retry_at: u64,
     ) -> Result<Option<(TurnRecord, Option<LoggedEvent>)>, StoreError> {
-        let at = retry_at.to_string();
-        let created = now().to_string();
-        let results = self
-            .transaction(
-                "retry",
-                vec![
-                    statement(
-                        self.host.dialect(),
-                        &RETRY_EVENT,
-                        vec![&self.scope, request_id, error, kind, &at, &created],
-                    ),
-                    statement(
-                        self.host.dialect(),
-                        &RETRY,
-                        vec![&self.scope, request_id, error, kind, &at],
-                    ),
-                    statement(self.host.dialect(), &TURN, vec![&self.scope, request_id]),
-                ],
-            )
-            .await?;
-        let Some(current) = single(&results[2])? else {
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
             return Ok(None);
         };
-        let event = single(&results[0])?
-            .map(|row| {
-                Ok::<_, StoreError>(LoggedEvent {
-                    seq: counter(text(row, 0)?)?,
-                    request_id: Some(request_id.to_owned()),
-                    created_at: counter(text(row, 1)?)?,
-                    event: raw(text(row, 2)?.to_owned())?,
-                })
-            })
-            .transpose()?;
-        Ok(Some((record(current)?, event)))
+        if found.record.state.is_terminal() {
+            return Ok(Some((found.record, None)));
+        }
+        let retry = TurnRetry {
+            error: error.to_owned(),
+            kind: kind.to_owned(),
+            attempts: found
+                .record
+                .retry
+                .as_ref()
+                .map_or(0, |retry| retry.attempts)
+                + 1,
+            retry_at,
+        };
+        let changed = found
+            .record
+            .retry
+            .as_ref()
+            .is_none_or(|old| old.error != error || old.kind != kind);
+        let line = if changed {
+            let body = encoded(&Retrying {
+                tag: "retrying",
+                request_id,
+                error,
+                kind,
+                attempts: retry.attempts,
+                retry_at,
+            })?;
+            Some(self.line(&mut writer, request_id, body)?)
+        } else {
+            None
+        };
+        let event = line.as_ref().map(Line::logged);
+        let mut change = Self::change(&found.record);
+        change.retry = Some(Some(serde_json::to_string(&retry).map_err(encoding)?));
+        self.update(
+            &mut writer,
+            "retry",
+            &found,
+            change,
+            line.into_iter().collect(),
+            Spill::default(),
+        )
+        .await?;
+        let mut record = found.record;
+        record.retry = Some(retry);
+        Ok(Some((record, event)))
     }
 
     pub async fn interrupted(&self, request_id: &str, note: &str) -> Result<(), StoreError> {
-        self.transaction(
+        let mut writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
+            return Ok(());
+        };
+        if found.record.state != TurnState::Running {
+            return Ok(());
+        }
+        let mut change = Self::change(&found.record);
+        change.note = Some(Some(note.to_owned()));
+        self.update(
+            &mut writer,
             "interrupted",
-            vec![statement(
-                self.host.dialect(),
-                &NOTE,
-                vec![&self.scope, request_id, note],
-            )],
+            &found,
+            change,
+            Vec::new(),
+            Spill::default(),
         )
         .await
-        .map(drop)
     }
 
-    pub async fn append(&self, entries: &[LogEntry]) -> Result<Vec<LoggedEvent>, StoreError> {
-        if entries.is_empty() {
-            return Ok(Vec::new());
-        }
-        let created = now();
-        let at = created.to_string();
-        let bodies = entries
-            .iter()
-            .map(|entry| {
-                let request_id = entry.request_id.as_deref();
-                if self.event_fits(request_id, entry.event.get()) {
-                    Ok(entry.event.clone())
-                } else {
-                    omitted(request_id, entry.event.get())
+    async fn select(
+        &self,
+        writer: &Writer,
+        after: u64,
+        end: Option<u64>,
+        request_id: Option<&str>,
+        limit: usize,
+        max_bytes: Option<usize>,
+    ) -> Result<(Vec<LoggedEvent>, bool), StoreError> {
+        let wanted = |seq: u64, id: Option<&str>| {
+            seq > after
+                && end.is_none_or(|end| seq <= end)
+                && request_id.is_none_or(|request_id| id == Some(request_id))
+        };
+        let mut found: BTreeMap<u64, Event> = BTreeMap::new();
+        let most = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+        let mut batch = max_bytes
+            .map_or(limit, |bytes| limit.min(bytes / SEAL_BYTES + 1))
+            .clamp(1, most);
+        let mut chunk_from: Option<u64> = None;
+        let mut tail_from: Option<u64> = None;
+        let (mut chunks_done, mut tails_done) = (false, false);
+        let scope = self.scope.to_string();
+        let start = after.to_string();
+        let frontier = loop {
+            let size = batch.to_string();
+            let mut statements = Vec::new();
+            if !chunks_done {
+                if chunk_from.is_none() {
+                    statements.push(Stmt {
+                        sql: &CHUNK_AT,
+                        params: vec![scope.clone(), start.clone()],
+                    });
                 }
-            })
-            .collect::<Result<Vec<_>, StoreError>>()?;
-        let statements = entries
-            .iter()
-            .zip(&bodies)
-            .map(|(entry, body)| match entry.request_id.as_deref() {
-                Some(request_id) => statement(
-                    self.host.dialect(),
-                    &APPEND,
-                    vec![&self.scope, request_id, body.get(), &at],
-                ),
-                None => statement(
-                    self.host.dialect(),
-                    &APPEND_UNATTRIBUTED,
-                    vec![&self.scope, body.get(), &at],
-                ),
-            })
+                statements.push(Stmt {
+                    sql: &CHUNKS,
+                    params: vec![
+                        scope.clone(),
+                        chunk_from.map_or_else(|| start.clone(), |seq| seq.to_string()),
+                        size.clone(),
+                    ],
+                });
+            }
+            if !tails_done {
+                statements.push(Stmt {
+                    sql: &TAILS,
+                    params: vec![
+                        scope.clone(),
+                        start.clone(),
+                        tail_from.map_or_else(|| "-1".to_owned(), |seq| seq.to_string()),
+                        size.clone(),
+                    ],
+                });
+            }
+            let results = self.execute("page", &statements, &Spill::default()).await?;
+            let mut results = results.into_iter();
+            let mut take = |rows: Vec<SqlRow>| -> Result<(usize, Option<u64>), StoreError> {
+                let mut first = None;
+                for row in &rows {
+                    first = Some(counter(text(row, 0)?)?);
+                    if counter(text(row, 1)?)? <= after {
+                        continue;
+                    }
+                    for event in decode_lines(text(row, 2)?)? {
+                        if wanted(event.0, event.2.as_deref()) {
+                            found.insert(event.0, event);
+                        }
+                    }
+                }
+                Ok((rows.len(), first))
+            };
+            if !chunks_done {
+                if chunk_from.is_none() {
+                    take(results.next().unwrap_or_default())?;
+                }
+                let (count, first) = take(results.next().unwrap_or_default())?;
+                chunks_done = count < batch;
+                chunk_from = Some(first.unwrap_or(after));
+            }
+            if !tails_done {
+                let (count, first) = take(results.next().unwrap_or_default())?;
+                tails_done = count < batch;
+                tail_from = first.or(tail_from);
+            }
+            let frontier = match (chunks_done, tails_done) {
+                (true, true) => u64::MAX,
+                (true, false) => tail_from.unwrap_or(after),
+                (false, true) => chunk_from.unwrap_or(after),
+                (false, false) => chunk_from.unwrap_or(after).min(tail_from.unwrap_or(after)),
+            };
+            if frontier == u64::MAX || end.is_some_and(|end| frontier >= end) {
+                break frontier;
+            }
+            let mut count = 0;
+            let mut bytes = 0_usize;
+            let mut enough = false;
+            for event in found.range(..=frontier).map(|(_, event)| event) {
+                count += 1;
+                bytes = bytes.saturating_add(decoded_bytes(event.3.get())?);
+                if count >= limit || max_bytes.is_some_and(|max| bytes > max) {
+                    enough = true;
+                    break;
+                }
+            }
+            if enough {
+                break frontier;
+            }
+            batch = batch.saturating_mul(2).min(most);
+        };
+        let mut events: Vec<Event> = found
+            .into_iter()
+            .take_while(|(seq, _)| *seq <= frontier)
+            .map(|(_, event)| event)
             .collect();
-        let results = self.transaction("append", statements).await?;
-        entries
-            .iter()
-            .zip(bodies)
-            .zip(&results)
-            .map(|((entry, event), rows)| {
-                let row =
-                    single(rows)?.ok_or_else(|| invalid("an appended event has no sequence"))?;
-                Ok(LoggedEvent {
-                    seq: counter(text(row, 0)?)?,
-                    request_id: entry.request_id.clone(),
-                    created_at: created,
-                    event,
-                })
-            })
-            .collect()
+        if frontier == u64::MAX {
+            events.extend(
+                writer
+                    .buffer
+                    .iter()
+                    .filter(|line| wanted(line.seq, line.request_id.as_deref()))
+                    .map(|line| {
+                        (
+                            line.seq,
+                            line.created_at,
+                            line.request_id.clone(),
+                            line.body.clone(),
+                        )
+                    }),
+            );
+        }
+        let complete = frontier == u64::MAX || end.is_some_and(|end| frontier >= end);
+        let known = events.len();
+        events.truncate(limit);
+        if let Some(max) = max_bytes {
+            let mut running = 0_usize;
+            let mut fitting = 0;
+            for event in &events {
+                running = running.saturating_add(decoded_bytes(event.3.get())?);
+                if fitting > 0 && running > max {
+                    break;
+                }
+                fitting += 1;
+            }
+            events.truncate(fitting);
+        }
+        let has_more = match max_bytes {
+            Some(_) => events.len() < known || !complete,
+            None => events.len() == limit,
+        };
+        let mut logged = Vec::with_capacity(events.len());
+        for (seq, created_at, request_id, mut body) in events {
+            self.loaded(&mut body).await?;
+            logged.push(LoggedEvent {
+                seq,
+                request_id,
+                created_at,
+                event: body,
+            });
+        }
+        Ok((logged, has_more))
     }
 
     pub async fn page(&self, after: u64, limit: usize) -> Result<LogPage, StoreError> {
-        let cursor = after.to_string();
-        let count = limit.to_string();
-        let results = self
-            .transaction(
-                "page",
-                vec![statement(
-                    self.host.dialect(),
-                    &PAGE,
-                    vec![&self.scope, &cursor, &count],
-                )],
-            )
-            .await?;
-        page(&results[0], after, limit)
+        if limit == 0 {
+            return Ok(page_of(Vec::new(), after, true));
+        }
+        let writer = self.writer().await?;
+        let (events, has_more) = self.select(&writer, after, None, None, limit, None).await?;
+        Ok(page_of(events, after, has_more))
     }
 
     pub async fn page_bounded(
         &self,
-        after: u64,
-        limit: usize,
-        max_bytes: usize,
-    ) -> Result<LogPage, StoreError> {
-        self.read_bounded(None, after, limit, max_bytes).await
-    }
-
-    pub async fn turn_page_bounded(
-        &self,
-        request_id: &str,
-        after: u64,
-        limit: usize,
-        max_bytes: usize,
-    ) -> Result<LogPage, StoreError> {
-        self.read_bounded(Some(request_id), after, limit, max_bytes)
-            .await
-    }
-
-    async fn read_bounded(
-        &self,
-        request_id: Option<&str>,
         after: u64,
         limit: usize,
         max_bytes: usize,
@@ -1552,72 +2249,11 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 "bounded session log pages require a positive event count".into(),
             ));
         }
-        let cursor = after.to_string();
-        let count = limit.to_string();
-        let bytes = max_bytes.to_string();
-        let reserve = LONGEST_SINGLE_KEY_REFERENCE.to_string();
-        let statements = match request_id {
-            Some(request_id) => vec![
-                statement(
-                    self.host.dialect(),
-                    &TURN_START,
-                    vec![&self.scope, request_id],
-                ),
-                statement(
-                    self.host.dialect(),
-                    &TURN_PAGE_BOUNDED,
-                    vec![&self.scope, request_id, &cursor, &count, &bytes, &reserve],
-                ),
-            ],
-            None => vec![statement(
-                self.host.dialect(),
-                &PAGE_BOUNDED,
-                vec![&self.scope, &cursor, &count, &bytes, &reserve],
-            )],
-        };
-        let mut results = self.transaction("page_bounded", statements).await?;
-        let start = if request_id.is_some() {
-            single(&results[0])?
-                .map(|row| text(row, 0).and_then(counter))
-                .transpose()?
-                .map_or(after, |first| after.max(first.saturating_sub(1)))
-        } else {
-            after
-        };
-        let mut rows = results
-            .pop()
-            .ok_or_else(|| invalid("missing bounded page"))?;
-        let window = rows
-            .first()
-            .map(|row| text(row, 4).and_then(counter))
-            .transpose()?
-            .unwrap_or(0);
-        let mut running = 0_usize;
-        let mut fitting = 0;
-        for row in &rows {
-            let body = text(row, 3)?;
-            let bytes = if body.starts_with(PAYLOAD_MARK) {
-                reference(body)?.bytes
-            } else {
-                body.len()
-            };
-            running = running.saturating_add(bytes);
-            if fitting > 0 && running > max_bytes {
-                break;
-            }
-            fitting += 1;
-        }
-        rows.truncate(fitting);
-        for row in &mut rows {
-            if let Some(Some(body)) = row.get_mut(3)
-                && body.starts_with(PAYLOAD_MARK)
-            {
-                *body = self.load_value(body).await?;
-            }
-        }
-        let mut page = page(&rows, start, limit)?;
-        page.has_more = page.events.len() as u64 != window || window == limit as u64;
-        Ok(page)
+        let writer = self.writer().await?;
+        let (events, has_more) = self
+            .select(&writer, after, None, None, limit, Some(max_bytes))
+            .await?;
+        Ok(page_of(events, after, has_more))
     }
 
     pub async fn turn_page(
@@ -1626,61 +2262,119 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         after: u64,
         limit: usize,
     ) -> Result<LogPage, StoreError> {
-        let cursor = after.to_string();
-        let count = limit.to_string();
-        let results = self
-            .transaction(
-                "turn_page",
-                vec![
-                    statement(
-                        self.host.dialect(),
-                        &TURN_START,
-                        vec![&self.scope, request_id],
-                    ),
-                    statement(
-                        self.host.dialect(),
-                        &TURN_PAGE,
-                        vec![&self.scope, request_id, &cursor, &count],
-                    ),
-                ],
+        self.turn_events(request_id, after, limit, None).await
+    }
+
+    pub async fn turn_page_bounded(
+        &self,
+        request_id: &str,
+        after: u64,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<LogPage, StoreError> {
+        if limit == 0 {
+            return Err(StoreError::NotCommitted(
+                "bounded session log pages require a positive event count".into(),
+            ));
+        }
+        self.turn_events(request_id, after, limit, Some(max_bytes))
+            .await
+    }
+
+    async fn turn_events(
+        &self,
+        request_id: &str,
+        after: u64,
+        limit: usize,
+        max_bytes: Option<usize>,
+    ) -> Result<LogPage, StoreError> {
+        let writer = self.writer().await?;
+        let Some(found) = self.read(&writer, request_id).await? else {
+            return Ok(page_of(Vec::new(), after, false));
+        };
+        let start = after.max(found.record.first_seq.saturating_sub(1));
+        if limit == 0 {
+            return Ok(page_of(Vec::new(), start, true));
+        }
+        let (events, has_more) = self
+            .select(
+                &writer,
+                start,
+                found.record.last_seq,
+                Some(request_id),
+                limit,
+                max_bytes,
             )
             .await?;
-        let start = single(&results[0])?
-            .map(|row| text(row, 0).and_then(counter))
-            .transpose()?
-            .map_or(after, |first| after.max(first.saturating_sub(1)));
-        page(&results[1], start, limit)
+        Ok(page_of(events, start, has_more))
     }
 
     pub async fn import(&self, turns: &[ImportedTurn]) -> Result<usize, StoreError> {
         if turns.is_empty() {
             return Ok(0);
         }
-        let mut spill = Spill::default();
-        let mut rows = turns
+        let mut writer = self.writer().await?;
+        let ids = serde_json::to_string(
+            &turns
+                .iter()
+                .map(|turn| turn.request_id.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(encoding)?;
+        let existing: BTreeSet<String> = self
+            .query("import", &EXISTING, vec![self.scope.to_string(), ids])
+            .await?
             .iter()
-            .map(|turn| {
-                Ok(Imported {
-                    request_id: &turn.request_id,
-                    digest: submission_digest(&turn.prompt, turn.hand.as_deref())?,
-                    status: turn.state.as_str(),
-                    prompt: (!turn.state.is_terminal())
-                        .then(|| {
-                            serde_json::to_string(
-                                &*self.stored_prompt(&turn.prompt, &mut spill.blobs),
-                            )
-                        })
-                        .transpose()
-                        .map_err(encoding)?,
-                    hand: turn.hand.as_deref(),
-                    metadata: turn.metadata.get(),
-                    cancel_requested: u8::from(turn.cancel_requested),
-                    note: turn.note.as_deref(),
-                    first_seq: turn.first_seq.unwrap_or(0),
-                    last_seq: turn.last_seq,
+            .map(|row| text(row, 0).map(str::to_owned))
+            .collect::<Result<_, _>>()?;
+        let mut spill = Spill::default();
+        let mut lines = Vec::new();
+        let mut rows = Vec::new();
+        for turn in turns {
+            if existing.contains(&turn.request_id) {
+                continue;
+            }
+            let result = turn
+                .result
+                .as_ref()
+                .filter(|_| turn.state.is_terminal())
+                .map(|fields| {
+                    encoded(&Outcome {
+                        kind: "result",
+                        request_id: &turn.request_id,
+                        status: turn.state.as_str(),
+                        fields,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, StoreError>>()?;
+                .transpose()?;
+            let last_seq = match (&result, turn.last_seq) {
+                (Some(body), None) => {
+                    let line = self.line(&mut writer, &turn.request_id, body.clone())?;
+                    let seq = line.seq;
+                    lines.push(line);
+                    Some(seq)
+                }
+                (_, last_seq) => last_seq,
+            };
+            rows.push(Imported {
+                request_id: &turn.request_id,
+                digest: submission_digest(&turn.prompt, turn.hand.as_deref())?,
+                status: turn.state.as_str(),
+                prompt: (!turn.state.is_terminal())
+                    .then(|| {
+                        serde_json::to_string(&*self.stored_prompt(&turn.prompt, &mut spill.blobs))
+                    })
+                    .transpose()
+                    .map_err(encoding)?,
+                hand: turn.hand.as_deref(),
+                metadata: turn.metadata.get(),
+                cancel_requested: u8::from(turn.cancel_requested),
+                note: turn.note.as_deref(),
+                first_seq: turn.first_seq.unwrap_or(0),
+                last_seq,
+                result: result.map(|body| body.get().to_owned()),
+            });
+        }
         for row in &mut rows {
             let encoded = serde_json::to_string(row).map_err(encoding)?;
             let force = self.physical_limit.is_some_and(|limit| {
@@ -1688,68 +2382,37 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                     2 + self.scope.len() + record_bytes(TURN_TEXTS, 0, TURN_INTEGERS),
                 ) > limit
             });
-            if let Some(prompt) = &row.prompt {
-                let other = self.scope.len()
-                    + row.request_id.len()
-                    + row.digest.len()
-                    + row.status.len()
-                    + row.metadata.len()
-                    + row.hand.map_or(0, str::len)
-                    + row.note.map_or(0, str::len);
-                row.prompt = Some(
-                    self.store_value(
-                        prompt,
+            let other = self.scope.len()
+                + row.request_id.len()
+                + row.digest.len()
+                + row.status.len()
+                + row.metadata.len()
+                + row.hand.map_or(0, str::len)
+                + row.note.map_or(0, str::len);
+            for value in [&mut row.prompt, &mut row.result].into_iter().flatten() {
+                *value = self
+                    .store_value(
+                        value,
                         record_bytes(TURN_TEXTS, other, TURN_INTEGERS),
                         force,
                         &mut spill,
                     )?
-                    .into_owned(),
-                );
+                    .into_owned();
             }
         }
         let batches = self.batches(&rows)?;
-        let created = now().to_string();
-        let results: Vec<_> = turns
-            .iter()
-            .filter(|turn| turn.state.is_terminal() && turn.last_seq.is_none())
-            .filter_map(|turn| {
-                turn.result.as_ref().map(|fields| {
-                    serde_json::to_string(&Outcome {
-                        kind: "result",
-                        request_id: &turn.request_id,
-                        status: turn.state.as_str(),
-                        fields,
-                    })
-                    .map(|body| (turn.request_id.as_str(), body))
-                })
-            })
-            .collect::<Result<_, _>>()
-            .map_err(encoding)?;
-        self.put_blobs(&spill.blobs).await?;
-        let mut statements: Vec<_> = spill
-            .parts
-            .iter()
-            .map(|(key, data)| statement(self.host.dialect(), &PART, vec![key, data]))
-            .collect();
-        statements.extend(
+        let scope = self.scope.to_string();
+        self.commit(&mut writer, "import", lines, None, spill, |_| {
             batches
-                .iter()
-                .map(|batch| statement(self.host.dialect(), &IMPORT, vec![&self.scope, batch])),
-        );
-        for (request_id, body) in &results {
-            statements.push(statement(
-                self.host.dialect(),
-                &IMPORT_RESULT,
-                vec![&self.scope, request_id, body, &created],
-            ));
-            statements.push(statement(
-                self.host.dialect(),
-                &IMPORT_FINISH,
-                vec![&self.scope, request_id],
-            ));
-        }
-        self.transaction("import", statements).await?;
-        Ok(rows.len())
+                .into_iter()
+                .map(|batch| Stmt {
+                    sql: &IMPORT,
+                    params: vec![scope.clone(), batch],
+                })
+                .collect()
+        })
+        .await?;
+        Ok(turns.len())
     }
 
     pub async fn import_events(
@@ -1776,139 +2439,83 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             }
             previous = event.seq;
         }
-        let dialect = self.host.dialect();
-        let (start, end) = (after.to_string(), last.seq.to_string());
-        let read = self
-            .transaction(
-                "import_events",
-                vec![
-                    statement(dialect, &LAST_EVENT, vec![&self.scope]),
-                    statement(dialect, &IMPORTED_RANGE, vec![&self.scope, &start, &end]),
-                ],
-            )
-            .await?;
-        let ends = single(&read[0])?
-            .map(|row| text(row, 0).and_then(counter))
-            .transpose()?
-            .unwrap_or(0);
+        let mut writer = self.writer().await?;
+        self.flush_locked(&mut writer).await?;
+        let ends = writer.durable;
         if ends < after {
             return Err(StoreError::NotCommitted(format!(
                 "session log {} ends at seq {ends}, before the seq {after} the imported events follow",
                 self.scope
             )));
         }
-        let held = read[1]
-            .iter()
-            .map(|row| Ok((counter(text(row, 0)?)?, row)))
-            .collect::<Result<BTreeMap<_, _>, StoreError>>()?;
-        let imported: BTreeSet<_> = events.iter().map(|event| event.seq).collect();
-        if let Some(seq) = held
-            .iter()
-            .find(|(seq, row)| optional(row, 1) == Some(&self.scope) && !imported.contains(seq))
-            .map(|(seq, _)| seq)
-        {
-            return Err(StoreError::NotCommitted(format!(
-                "session log {} holds event {seq}, which the imported events after seq {after} do not",
-                self.scope
-            )));
-        }
-        for event in events {
-            let seq = event.seq;
-            match held.get(&seq) {
-                None if seq <= ends => {
+        let (held, _) = self
+            .select(&writer, after, Some(last.seq), None, usize::MAX, None)
+            .await?;
+        let imported: BTreeMap<u64, &LoggedEvent> =
+            events.iter().map(|event| (event.seq, event)).collect();
+        for event in &held {
+            match imported.get(&event.seq) {
+                None => {
                     return Err(StoreError::NotCommitted(format!(
-                        "session log {} lacks imported event {seq} but holds later events",
-                        self.scope
+                        "session log {} holds event {}, which the imported events after seq {after} do not",
+                        self.scope, event.seq
                     )));
                 }
-                None => {}
-                Some(row) if optional(row, 1) != Some(&self.scope) => {
-                    return Err(StoreError::NotCommitted(format!(
-                        "seq {seq} already belongs to session log {}",
-                        text(row, 1)?
-                    )));
-                }
-                Some(row)
-                    if optional(row, 2) != event.request_id.as_deref()
-                        || counter(text(row, 3)?)? != event.created_at
-                        || optional(row, 4) != Some(event.event.get()) =>
+                Some(import)
+                    if import.request_id != event.request_id
+                        || import.created_at != event.created_at
+                        || import.event.get() != event.event.get() =>
                 {
                     return Err(StoreError::NotCommitted(format!(
-                        "session log {} already holds a different event at seq {seq}",
-                        self.scope
+                        "session log {} already holds a different event at seq {}",
+                        self.scope, event.seq
                     )));
                 }
                 Some(_) => {}
             }
         }
+        let held: BTreeSet<u64> = held.iter().map(|event| event.seq).collect();
+        if let Some(missing) = events
+            .iter()
+            .find(|event| event.seq <= ends && !held.contains(&event.seq))
+        {
+            return Err(StoreError::NotCommitted(format!(
+                "session log {} lacks imported event {} but holds later events",
+                self.scope, missing.seq
+            )));
+        }
         let fresh = &events[events.partition_point(|event| event.seq <= ends)..];
         if fresh.is_empty() {
             return Ok(last.seq);
         }
-        let mut previous = ends;
-        let values: Vec<_> = fresh
+        let mut spill = Spill::default();
+        let texts = fresh
             .iter()
             .map(|event| {
-                let value = (
-                    event.seq.to_string(),
-                    event.created_at.to_string(),
-                    previous.to_string(),
-                );
-                previous = event.seq;
-                value
+                let line = Line {
+                    seq: event.seq,
+                    created_at: event.created_at,
+                    request_id: event.request_id.clone(),
+                    body: event.event.clone(),
+                };
+                Ok((event.seq, self.encode_line(&line, &mut spill)?))
             })
-            .collect();
-        let mut statements: Vec<_> = fresh
-            .iter()
-            .zip(&values)
-            .map(
-                |(event, (seq, created, previous))| match event.request_id.as_deref() {
-                    Some(request_id) => statement(
-                        dialect,
-                        &IMPORT_EVENT,
-                        vec![
-                            &self.scope,
-                            seq,
-                            request_id,
-                            event.event.get(),
-                            created,
-                            previous,
-                        ],
-                    ),
-                    None => statement(
-                        dialect,
-                        &IMPORT_UNATTRIBUTED_EVENT,
-                        vec![&self.scope, seq, event.event.get(), created, previous],
-                    ),
-                },
-            )
-            .collect();
-        if dialect == SqlDialect::Postgres {
-            statements.push(SqlStatement {
-                sql: ADVANCE_EVENT_SEQUENCE,
-                params: Vec::new(),
-            });
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let statements = self.chunks(&texts);
+        let results = self.execute("import_events", &statements, &spill).await?;
+        if results.iter().any(Vec::is_empty) {
+            writer.ready = false;
+            return Err(StoreError::NotCommitted(format!(
+                "session log {} changed while its events were imported",
+                self.scope
+            )));
         }
-        let results = self.transaction("import_events", statements).await?;
-        for ((seq, _, _), rows) in values.iter().zip(&results) {
-            match single(rows)? {
-                Some(row) if text(row, 0)? == seq => {}
-                Some(row) => {
-                    return Err(invalid(format!(
-                        "imported event {seq} was stored as seq {}",
-                        text(row, 0)?
-                    )));
-                }
-                None => {
-                    return Err(StoreError::NotCommitted(format!(
-                        "session log {} changed while event {seq} was imported",
-                        self.scope
-                    )));
-                }
-            }
-        }
+        writer.durable = last.seq;
+        writer.next = writer.next.max(last.seq.saturating_add(1));
+        writer.holder = None;
         Ok(last.seq)
     }
+
     fn batches(&self, rows: &[Imported<'_>]) -> Result<Vec<String>, StoreError> {
         let mut batches = Vec::new();
         let mut batch = String::from("[");
@@ -1937,7 +2544,9 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             batch.push_str(&encoded);
         }
         batch.push(']');
-        batches.push(batch);
+        if batch.len() > 2 {
+            batches.push(batch);
+        }
         Ok(batches)
     }
 }

@@ -530,6 +530,7 @@ struct Driver {
     state_id: Arc<str>,
     state: DurableState,
     terminal_receipt_limit: Option<usize>,
+    logged_prompts: bool,
     ownership: Ownership,
     next_agent_generation: u64,
     active_agent_generation: Option<u64>,
@@ -1501,11 +1502,31 @@ impl Driver {
                 pending_id: pending_id.to_owned(),
             });
         }
-        self.apply(Transition::OperationAccepted {
-            operation_id: operation_id.clone(),
-            input,
-        })
-        .await?;
+        let revision = self.state.revision();
+        let logged = self.logged_prompts
+            && revision > 0
+            && self.batch.is_none()
+            && self.state.session().is_some_and(|record| {
+                record.lineage.parent_session_id.is_none() && *record.session_id == *self.state_id
+            });
+        if !logged
+            || self
+                .state
+                .apply_within(
+                    revision,
+                    Transition::OperationAccepted {
+                        operation_id: operation_id.clone(),
+                        input: input.clone(),
+                    },
+                )
+                .is_err()
+        {
+            self.apply(Transition::OperationAccepted {
+                operation_id: operation_id.clone(),
+                input,
+            })
+            .await?;
+        }
         self.claimed.insert(operation_id, caller.clone());
         Ok(StoredAdmission::Accepted)
     }
@@ -2566,6 +2587,7 @@ impl DurableSession {
             state_id: Arc::clone(&state_id),
             state: DurableState::default(),
             terminal_receipt_limit,
+            logged_prompts: store.logged_prompts,
             ownership: Ownership::Unacquired(seed),
             next_agent_generation: 0,
             active_agent_generation: None,

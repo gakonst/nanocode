@@ -1,4 +1,4 @@
-use crate::Atom;
+use crate::{Atom, Signal};
 use std::{
     collections::HashMap,
     sync::{
@@ -10,7 +10,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::Notify,
     task::{Id, try_id},
     time::timeout_at,
 };
@@ -54,9 +53,6 @@ impl Reentry {
             let Some((claim, wake)) = held else {
                 return Ok(waited.then(|| started.elapsed()));
             };
-            let woken = wake.notified();
-            tokio::pin!(woken);
-            woken.as_mut().enable();
             if self.held_here() != Some(claim) {
                 continue;
             }
@@ -67,7 +63,7 @@ impl Reentry {
                 return Err(Reentrant);
             }
             waited = true;
-            drop(timeout_at(deadline.into(), woken).await);
+            drop(timeout_at(deadline.into(), wake.wait()).await);
         }
     }
 
@@ -83,10 +79,10 @@ impl Reentry {
             });
             held.claim = claim;
             held.count += 1;
-            held.wake.clone()
+            held.wake.take()
         });
         if let Some(wake) = wake {
-            wake.notify_waiters();
+            wake.fire();
         }
         Claim(self.clone(), owner)
     }
@@ -106,7 +102,7 @@ impl Drop for Claim {
             owners.remove(owner).and_then(|held| held.wake)
         });
         if let Some(wake) = released {
-            wake.notify_waiters();
+            wake.fire();
         }
     }
 }
@@ -121,7 +117,7 @@ enum Owner {
 struct Held {
     claim: u64,
     count: usize,
-    wake: Option<Arc<Notify>>,
+    wake: Option<Arc<Signal>>,
 }
 
 #[derive(Default)]

@@ -1,6 +1,6 @@
-use futures_util::future::{try_join, try_join_all, try_join3};
+use futures_util::future::{select_all, try_join, try_join_all, try_join3};
 use nanocode_durability_core::LockKey;
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, Held, Owned};
 use percent_encoding::percent_decode_str;
 use rustls::{
     CertificateError, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
@@ -26,7 +26,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{fs::read, spawn, sync::Semaphore, time::timeout};
+use tokio::{fs::read, spawn, time::timeout};
 use tokio_postgres::{Client, Config, NoTls, Row, Statement, config::SslMode, types::ToSql};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use webpki_roots::TLS_SERVER_ROOTS;
@@ -69,8 +69,6 @@ pub enum PipelineError {
     Verifier(#[from] VerifierBuilderError),
     #[error(transparent)]
     Password(#[from] std::str::Utf8Error),
-    #[error(transparent)]
-    Closed(#[from] tokio::sync::AcquireError),
     #[error("reading {path}")]
     Read {
         path: String,
@@ -106,8 +104,7 @@ pub struct Pipelines {
     config: Config,
     tls: Tls,
     pipelined: Pipelined,
-    idle: Atom<Vec<Arc<Lane>>>,
-    permits: Semaphore,
+    lanes: Box<[Owned<Option<Lane>>]>,
     failed: Atom<Option<Instant>>,
 }
 
@@ -177,8 +174,7 @@ impl Pipelines {
             config,
             tls,
             pipelined,
-            idle: Atom::default(),
-            permits: Semaphore::new(size.max(1) as usize),
+            lanes: (0..size.max(1)).map(|_| Owned::new(None)).collect(),
             failed: Atom::new(None),
         })
     }
@@ -321,8 +317,8 @@ impl Pipelines {
         }
         Ok(Lane {
             client,
-            prepared: Atom::default(),
-            used: Atom::new(Instant::now()),
+            prepared: HashMap::new(),
+            used: Instant::now(),
         })
     }
 
@@ -330,7 +326,7 @@ impl Pipelines {
         if lane.client.is_closed() {
             return false;
         }
-        if lane.used.get().elapsed() < self.pipelined.ping_idle {
+        if lane.used.elapsed() < self.pipelined.ping_idle {
             return true;
         }
         timeout(self.pipelined.deadline, lane.client.simple_query(""))
@@ -338,20 +334,28 @@ impl Pipelines {
             .is_ok_and(|pinged| pinged.is_ok())
     }
 
-    async fn prepare(lane: &Lane, sql: &str) -> Result<Statement, PipelineError> {
-        if let Some(statement) = lane.prepared.read(|prepared| prepared.get(sql).cloned()) {
-            return Ok(statement);
+    async fn prepare(lane: &mut Lane, sql: &str) -> Result<Statement, PipelineError> {
+        if let Some(statement) = lane.prepared.get(sql) {
+            return Ok(statement.clone());
         }
         let statement = lane.client.prepare(sql).await?;
-        lane.prepared
-            .update(|prepared| drop(prepared.insert(sql.to_owned(), statement.clone())));
+        lane.prepared.insert(sql.to_owned(), statement.clone());
         Ok(statement)
     }
 
-    async fn lane(&self) -> Result<Arc<Lane>, PipelineError> {
-        match self.idle.update(|idle| idle.pop()) {
+    async fn slot(&self) -> Held<'_, Option<Lane>> {
+        if let Some(held) = self.lanes.iter().find_map(Owned::try_acquire) {
+            return held;
+        }
+        select_all(self.lanes.iter().map(|slot| Box::pin(slot.acquire())))
+            .await
+            .0
+    }
+
+    async fn lane(&self, slot: &mut Held<'_, Option<Lane>>) -> Result<Lane, PipelineError> {
+        match slot.take() {
             Some(lane) if self.fresh(&lane).await => Ok(lane),
-            _ => Ok(Arc::new(self.connect().await?)),
+            _ => self.connect().await,
         }
     }
 
@@ -361,10 +365,10 @@ impl Pipelines {
         params: &[&(dyn ToSql + Sync)],
         lent: impl FnOnce() -> G,
     ) -> Result<Vec<Row>, PipelineError> {
-        let _permit = self.permits.acquire().await?;
-        let lane = self.lane().await?;
+        let mut slot = self.slot().await;
+        let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
-        let statement = Self::prepare(&lane, sql).await?;
+        let statement = Self::prepare(&mut lane, sql).await?;
         let ran = timeout(
             self.pipelined.deadline,
             lane.client.query(&statement, params),
@@ -374,8 +378,8 @@ impl Pipelines {
             return Err(PipelineError::Said("pipelined statement timed out"));
         };
         if !lane.client.is_closed() {
-            lane.used.set(Instant::now());
-            self.idle.update(|idle| idle.push(Arc::clone(&lane)));
+            lane.used = Instant::now();
+            *slot = Some(lane);
         }
         Ok(ran?)
     }
@@ -386,8 +390,8 @@ impl Pipelines {
         statements: &[(&str, &[&(dyn ToSql + Sync)])],
         lent: impl FnOnce() -> G,
     ) -> Result<Locked, PipelineError> {
-        let _permit = self.permits.acquire().await?;
-        let lane = self.lane().await?;
+        let mut slot = self.slot().await;
+        let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
         let mut fixed = Vec::with_capacity(5);
         for text in [
@@ -397,17 +401,17 @@ impl Pipelines {
             self.pipelined.collected,
             CLOSE,
         ] {
-            fixed.push(Self::prepare(&lane, text).await?);
+            fixed.push(Self::prepare(&mut lane, text).await?);
         }
         let mut prepared = Vec::with_capacity(statements.len());
         for (text, _) in statements {
-            prepared.push(Self::prepare(&lane, text).await?);
+            prepared.push(Self::prepare(&mut lane, text).await?);
         }
         let classes: Vec<i32> = keys.iter().map(|key| key.class).collect();
         let ids: Vec<i32> = keys.iter().map(|key| key.id).collect();
         let shared: Vec<bool> = keys.iter().map(|key| key.shared).collect();
-        let client = &lane.client;
         let write_lock = self.pipelined.write_lock;
+        let client = &lane.client;
         let ran = timeout(
             self.pipelined.deadline,
             try_join3(
@@ -433,9 +437,9 @@ impl Pipelines {
             drop(lane);
             return Err(PipelineError::Said("pipelined locked write timed out"));
         };
-        if !client.is_closed() {
-            lane.used.set(Instant::now());
-            self.idle.update(|idle| idle.push(Arc::clone(&lane)));
+        if !lane.client.is_closed() {
+            lane.used = Instant::now();
+            *slot = Some(lane);
         }
         let (_, rows, (collected, _)) = ran?;
         let collected: Option<String> = collected.try_get(0)?;
@@ -466,8 +470,8 @@ fn chain(error: &(dyn std::error::Error + 'static)) -> String {
 
 struct Lane {
     client: Client,
-    prepared: Atom<HashMap<String, Statement>>,
-    used: Atom<Instant>,
+    prepared: HashMap<String, Statement>,
+    used: Instant,
 }
 
 struct Tls {

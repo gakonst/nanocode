@@ -43,6 +43,10 @@ pub trait Desktop: Send + 'static {
     fn capabilities(&self) -> Capabilities;
 
     fn step(&mut self, action: &str, input: &Value, max_screenshot: usize) -> Result<Step, String>;
+
+    fn lease_key(&mut self, _app: &str) -> Option<String> {
+        None
+    }
 }
 
 impl<B: Backend> Desktop for Engine<B> {
@@ -55,6 +59,16 @@ impl<B: Backend> Desktop for Engine<B> {
 
     fn step(&mut self, action: &str, input: &Value, max_screenshot: usize) -> Result<Step, String> {
         self.run(action, input, max_screenshot)
+    }
+
+    fn lease_key(&mut self, app: &str) -> Option<String> {
+        if !self.backend.keys_by_bundle() {
+            return None;
+        }
+        find(self.backend.apps(), app)
+            .or_else(|| self.backend.installed(app))
+            .map(|app| app.id)
+            .filter(|id| !id.is_empty())
     }
 }
 

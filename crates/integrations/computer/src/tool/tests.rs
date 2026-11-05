@@ -188,3 +188,73 @@ fn engines_box_as_desktops() {
     desktop(&crate::Engine::new(crate::linux::AtSpi::new()));
     let _ = desktop::<Canned>;
 }
+
+struct Bundles;
+
+impl Desktop for Bundles {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    fn step(&mut self, action: &str, input: &Value, _: usize) -> Result<Step, String> {
+        Ok(Step {
+            text: format!("ran {action} for {}", input["app"]),
+            screenshot: None,
+            omitted: false,
+        })
+    }
+
+    fn lease_key(&mut self, app: &str) -> Option<String> {
+        matches!(app, "Notes" | "com.apple.Notes" | "/Applications/Notes.app")
+            .then(|| "com.apple.Notes".into())
+    }
+}
+
+async fn run(computer: &Computer, session: &str, app: &str) -> String {
+    use nanocode_tool_contracts::{Tool, ToolContext, ToolInput};
+    let input =
+        serde_json::value::to_raw_value(&json!({"action": "get_app_state", "app": app})).unwrap();
+    let context = ToolContext::new("model", session, "call", &[], 10_000);
+    let output = computer
+        .execute(ToolInput::Function(input), context)
+        .await
+        .unwrap();
+    said(&output)
+}
+
+#[tokio::test]
+async fn an_app_is_leased_by_its_bundle_whatever_name_it_is_asked_by() {
+    let computer = Computer::new(Provider::desktop(Box::new(Bundles)))
+        .refusal(|app| format!("{app} is in use by another thread"));
+    assert!(
+        run(&computer, "a", "Notes")
+            .await
+            .contains("ran get_app_state")
+    );
+    let other = run(&computer, "b", "com.apple.Notes").await;
+    assert!(
+        other.contains("com.apple.Notes is in use by another thread"),
+        "{other}"
+    );
+    let path = run(&computer, "b", "/Applications/Notes.app").await;
+    assert!(path.contains("/Applications/Notes.app is in use"), "{path}");
+    assert!(
+        run(&computer, "a", "com.apple.Notes")
+            .await
+            .contains("ran get_app_state")
+    );
+    assert!(
+        run(&computer, "b", "Calculator")
+            .await
+            .contains("ran get_app_state"),
+        "an unresolved name is its own key"
+    );
+    let names = Computer::new(Provider::desktop(Box::new(Canned("main"))));
+    assert!(run(&names, "a", "Notes").await.contains("main ran"));
+    assert!(
+        run(&names, "b", "com.apple.Notes")
+            .await
+            .contains("main ran"),
+        "without bundles the key is the name, as before"
+    );
+}

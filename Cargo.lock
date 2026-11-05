@@ -3049,7 +3049,7 @@ dependencies = [
  "nanocode-backend-claude",
  "nanocode-backend-codex",
  "nanocode-code-mode",
- "nanocode-cua-tools",
+ "nanocode-computer",
  "nanocode-durability",
  "nanocode-home",
  "nanocode-platform",
@@ -3125,7 +3125,7 @@ dependencies = [
  "imbl",
  "nanocode-agent",
  "nanocode-agent-core",
- "nanocode-cua-tools",
+ "nanocode-computer",
  "nanocode-durability",
  "nanocode-home",
  "nanocode-platform",
@@ -3406,42 +3406,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanocode-cua"
+name = "nanocode-computer"
 version = "0.6.7"
 dependencies = [
  "async-trait",
+ "atspi-common",
+ "atspi-proxies",
+ "base64 0.22.1",
+ "base64-simd",
+ "core-foundation",
+ "core-foundation-sys",
  "cua-driver-core",
  "cua-driver-sdk",
  "cursor-overlay",
+ "futures-util",
+ "image",
  "libc",
- "nanocode-cua-tools",
  "nanocode-mcp",
  "nanocode-mcp-tools",
+ "nanocode-sync",
+ "nanocode-tool-contracts",
+ "nanocode-types",
  "serde",
  "serde_json",
  "tokio",
+ "x11rb",
+ "zbus",
 ]
 
 [[package]]
 name = "nanocode-cua-driver"
 version = "0.6.7"
 dependencies = [
- "nanocode-cua",
- "tokio",
-]
-
-[[package]]
-name = "nanocode-cua-tools"
-version = "0.6.7"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "base64-simd",
- "nanocode-sync",
- "nanocode-tool-contracts",
- "nanocode-types",
- "serde",
- "serde_json",
+ "nanocode-computer",
  "tokio",
 ]
 

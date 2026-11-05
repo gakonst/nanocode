@@ -1,0 +1,60 @@
+[package]
+autotests = false
+autobenches = false
+name = "nanocode-computer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Computer use for agents: one computer tool over macOS accessibility, Linux AT-SPI, cua-driver and MCP providers, plus the Sky-compatible cua_repl tools and browser extension host"
+include = ["src/**", "Cargo.toml"]
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+async-trait.workspace = true
+base64.workspace = true
+base64-simd.workspace = true
+nanocode-mcp.workspace = true
+nanocode-mcp-tools.workspace = true
+nanocode-sync.workspace = true
+nanocode-tool-contracts.workspace = true
+nanocode-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+core-foundation-sys.workspace = true
+cua-driver-core.workspace = true
+cua-driver-sdk.workspace = true
+cursor-overlay.workspace = true
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi-common = { workspace = true }
+atspi-proxies = { workspace = true }
+futures-util.workspace = true
+image.workspace = true
+x11rb = { workspace = true }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+large_enum_variant = "allow"
+result_large_err = "allow"
+
+[lib]
+test = true
+doctest = false
+bench = false

@@ -39,8 +39,7 @@ members = [
     "crates/integrations/tool-runtime",
     "crates/integrations/process",
     "crates/integrations/mcp-tools",
-    "crates/integrations/cua",
-    "crates/integrations/cua-tools",
+    "crates/integrations/computer",
     "crates/integrations/chatgpt-extension",
     "crates/integrations/sandbox",
     "crates/integrations/decisions",
@@ -72,6 +71,10 @@ publish = true
 [workspace.dependencies]
 cua-driver-core = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92", default-features = false }
 cua-driver-sdk = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92" }
+atspi-common = { version = "0.14", default-features = false }
+atspi-proxies = { version = "0.14", default-features = false }
+core-foundation = "0.10.1"
+core-foundation-sys = "0.8.7"
 cursor-overlay = { git = "https://github.com/gakonst/cua", rev = "432c76d48d59757fe95ff2fcb19cf1d49c4aac92" }
 nanocode-backend-claude-tools = { version = "0.6.7", path = "crates/backends/claude/tools" }
 nanocode-agent-types = { version = "0.6.7", path = "crates/core/agent-types" }
@@ -90,8 +93,7 @@ nanocode-image = { version = "0.6.7", path = "crates/core/image" }
 nanocode-audio = { version = "0.6.7", path = "crates/core/audio" }
 nanocode-tls = { version = "0.6.7", path = "crates/core/tls" }
 nanocode-types = { version = "0.6.7", path = "crates/core/types" }
-nanocode-cua = { version = "0.6.7", path = "crates/integrations/cua" }
-nanocode-cua-tools = { version = "0.6.7", path = "crates/integrations/cua-tools" }
+nanocode-computer = { version = "0.6.7", path = "crates/integrations/computer" }
 nanocode-chatgpt-extension = { version = "0.6.7", path = "crates/integrations/chatgpt-extension" }
 nanocode-sandbox = { version = "0.6.7", path = "crates/integrations/sandbox" }
 nanocode-decisions = { version = "0.6.7", path = "crates/integrations/decisions" }
@@ -103,6 +105,8 @@ nanocode-store-postgres = { version = "0.6.7", path = "crates/integrations/store
 nanocode-store-sqlx = { version = "0.6.7", path = "crates/integrations/store-sqlx" }
 landlock = "0.4.4"
 libc = "0.2"
+x11rb = { version = "0.13.2", features = ["xtest"] }
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 base64 = "0.22.1"
 base64-simd = "0.8.0"
 memchr = "2.8.3"

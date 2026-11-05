@@ -567,7 +567,7 @@ fn encode_error(error: &dyn std::error::Error) -> ResponsesError {
 #[cfg(not(target_family = "wasm"))]
 fn map_http_error(error: reqwest::Error) -> ResponsesError {
     ResponsesError::HttpRequest {
-        retryable: error.is_connect() || error.is_body() || error.is_request(),
+        retryable: nanocode_http::retryable(&error),
         timeout: error.is_timeout(),
         detail: error.to_string(),
     }

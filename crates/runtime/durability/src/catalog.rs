@@ -585,6 +585,17 @@ mod store {
             self.store.logged_prompts
         }
 
+        pub fn with_state_format(mut self, format: u8) -> Result<Self> {
+            nanocode_durability_core::JournalState::default().write_format(format)?;
+            self.store.state_format = Some(format);
+            Ok(self)
+        }
+
+        #[must_use]
+        pub const fn state_format(&self) -> Option<u8> {
+            self.store.state_format
+        }
+
         #[must_use]
         pub fn reader(&self) -> Option<SessionReader> {
             self.reader.clone()

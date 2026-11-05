@@ -531,6 +531,7 @@ struct Driver {
     state: DurableState,
     terminal_receipt_limit: Option<usize>,
     logged_prompts: bool,
+    state_format: Option<u8>,
     ownership: Ownership,
     next_agent_generation: u64,
     active_agent_generation: Option<u64>,
@@ -2102,6 +2103,9 @@ impl Driver {
         if let Some(record) = next.session_mut() {
             record.record_events(&events);
         }
+        if let Some(format) = self.state_format {
+            next.write_format(format)?;
+        }
         if self.terminal_receipt_limit.is_none() {
             next.seal_receipts()?;
         }
@@ -2588,6 +2592,7 @@ impl DurableSession {
             state: DurableState::default(),
             terminal_receipt_limit,
             logged_prompts: store.logged_prompts,
+            state_format: store.state_format,
             ownership: Ownership::Unacquired(seed),
             next_agent_generation: 0,
             active_agent_generation: None,

@@ -168,6 +168,7 @@ pub struct SharedStore {
     supports_events: bool,
     supports_summaries: bool,
     pub(crate) terminal_receipt_limit: Option<usize>,
+    pub(crate) state_format: Option<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +213,7 @@ impl SharedStore {
             supports_events,
             supports_summaries,
             terminal_receipt_limit: None,
+            state_format: None,
         })
     }
 }

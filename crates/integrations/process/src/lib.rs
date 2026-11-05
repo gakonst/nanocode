@@ -216,6 +216,8 @@ impl Sessions {
 
 pub type SecretEnvironment = Arc<dyn Fn() -> Vec<(OsString, OsString)> + Send + Sync>;
 
+const LOWERCASE_PROXY_VARIABLES: [&str; 4] = ["http_proxy", "https_proxy", "no_proxy", "all_proxy"];
+
 #[must_use]
 pub fn file_secrets(file: PathBuf) -> SecretEnvironment {
     Arc::new(move || {
@@ -231,6 +233,7 @@ pub fn file_secrets(file: PathBuf) -> SecretEnvironment {
                         .bytes()
                         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
                     && !name.as_bytes()[0].is_ascii_digit()
+                    || LOWERCASE_PROXY_VARIABLES.contains(&name.as_str())
             })
             .map(|(name, value)| (name.into(), value.into()))
             .collect()

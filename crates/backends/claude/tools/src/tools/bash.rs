@@ -7,6 +7,8 @@ pub const MAX_DESCRIPTION_BYTES: usize = 1024;
 
 pub const MAX_STREAM_BYTES: usize = 30_000;
 
+pub const NESTED_STREAM_BYTES: usize = 128 * 1024;
+
 pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -192,13 +194,18 @@ impl<E: BashExecutor> ClaudeBash<E> {
         if !(1..=maximum).contains(&timeout_ms) {
             return Err(format!("timeout must be 1 to {maximum} milliseconds"));
         }
+        let stream_bytes = if call_id.is_some_and(|id| id.contains("/code-")) {
+            NESTED_STREAM_BYTES
+        } else {
+            MAX_STREAM_BYTES
+        };
         let request = BashRequest {
             command: command.to_owned(),
             description,
             call_id: call_id.map(str::to_owned),
             timeout_ms,
-            max_stdout_bytes: MAX_STREAM_BYTES,
-            max_stderr_bytes: MAX_STREAM_BYTES,
+            max_stdout_bytes: stream_bytes,
+            max_stderr_bytes: stream_bytes,
             session,
         };
         let result = self
@@ -223,8 +230,8 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 .to_string());
             }
         };
-        let (stdout, stdout_cut) = cap_utf8(&result.stdout, MAX_STREAM_BYTES);
-        let (stderr, stderr_cut) = cap_utf8(&result.stderr, MAX_STREAM_BYTES);
+        let (stdout, stdout_cut) = cap_utf8(&result.stdout, stream_bytes);
+        let (stderr, stderr_cut) = cap_utf8(&result.stderr, stream_bytes);
         Ok(json!({
             "stdout": stdout,
             "stderr": stderr,

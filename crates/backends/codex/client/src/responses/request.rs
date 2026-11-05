@@ -1013,7 +1013,7 @@ impl<'a> ResponseCreate<'a> {
                 }),
             },
             access_programs: config
-                .cyber_access_program
+                .cyber_access_program_for(policy.model)
                 .map(|cyber| AccessPrograms { cyber }),
             provider: config
                 .responses_gateway

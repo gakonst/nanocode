@@ -198,6 +198,15 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
+    /// Ask for `program` on every request to `model`, over `cyber_access_program`.
+    #[must_use]
+    pub fn model_cyber_access_program(mut self, model: Model, program: CyberAccessProgram) -> Self {
+        let configured = &mut self.config.model_cyber_access_programs;
+        configured.retain(|(existing, _)| *existing != model);
+        configured.push((model, program));
+        self
+    }
+
     #[must_use]
     pub const fn context_window_tokens(mut self, tokens: u64) -> Self {
         let maximum = self.config.model.max_context_window_tokens();

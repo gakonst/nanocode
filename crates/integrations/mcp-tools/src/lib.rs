@@ -361,14 +361,11 @@ impl PreparedMcpTool {
         &self.entry.definition
     }
 
+    /// The tool as its server's `tools/list` gave it: name, description,
+    /// inputSchema, annotations and, when the server declared one,
+    /// outputSchema.
     pub fn listed(&self) -> Value {
-        let definition = self.definition();
-        json!({
-            "name": self.remote_name(),
-            "description": definition.description(),
-            "inputSchema": definition.parameters().map(|schema| schema.as_value().clone()),
-            "annotations": {"readOnlyHint": self.read_only()},
-        })
+        tools_list_entry(self.remote_name(), self.definition(), self.read_only())
     }
 
     pub fn supports_parallel_tool_calls(&self) -> bool {
@@ -1194,4 +1191,51 @@ fn search_description(servers: &[NamedServer]) -> String {
 
 fn take_bytes_at_char_boundary(value: &str, max_bytes: usize) -> &str {
     &value[..value.floor_char_boundary(max_bytes)]
+}
+
+/// A tool's `tools/list` entry from its definition, whose output schema
+/// carries the server's outputSchema as the type of `structuredContent`
+/// (`{}` when it declared none).
+fn tools_list_entry(name: &str, definition: &ToolDefinition, read_only: bool) -> Value {
+    let mut listed = json!({
+        "name": name,
+        "description": definition.description(),
+        "inputSchema": definition.parameters().map(|schema| schema.as_value().clone()),
+        "annotations": {"readOnlyHint": read_only},
+    });
+    let output = definition
+        .output_schema()
+        .map(|schema| &schema.as_value()["properties"]["structuredContent"])
+        .filter(|schema| schema.as_object().is_some_and(|schema| !schema.is_empty()));
+    if let Some(output) = output {
+        listed["outputSchema"] = output.clone();
+    }
+    listed
+}
+
+#[cfg(test)]
+mod listed_tests {
+    use super::*;
+
+    fn definition(structured: Value) -> ToolDefinition {
+        ToolDefinition::function("docs__stat", "Count words", json!({"type": "object"}))
+            .with_output_schema(json!({
+                "type": "object",
+                "properties": {"content": {"type": "array"}, "structuredContent": structured},
+            }))
+    }
+
+    #[test]
+    fn a_listing_keeps_the_servers_output_schema() {
+        let words = json!({"type": "object", "properties": {"words": {"type": "integer"}}});
+        let listed = tools_list_entry("stat", &definition(words.clone()), true);
+        assert_eq!(listed["name"], "stat");
+        assert_eq!(listed["outputSchema"], words);
+        assert_eq!(listed["annotations"]["readOnlyHint"], true);
+        // A server that declared none gets none.
+        assert_eq!(
+            tools_list_entry("stat", &definition(json!({})), false).get("outputSchema"),
+            None
+        );
+    }
 }

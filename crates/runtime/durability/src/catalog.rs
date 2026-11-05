@@ -243,6 +243,7 @@ fn now_ms() -> u64 {
 pub use store::*;
 
 mod store {
+    mod pending;
     mod transfer;
 
     use std::{
@@ -270,6 +271,7 @@ mod store {
     };
 
     pub use nanocode_agent_core::session::TranscriptItem;
+    pub use pending::{CancelTo, CancelledPending};
     pub use transfer::{BranchCursor, BranchExport, BranchImport, BranchPage};
 
     pub const LIST_LIMIT: usize = 1000;

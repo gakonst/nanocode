@@ -285,3 +285,107 @@ fn default_user_shell_from_path(user_shell_path: Option<&Path>) -> Shell {
 pub fn default_shell_name() -> &'static str {
     default_user_shell().name()
 }
+
+/// PATH as the user's login shell sets it (Homebrew's, a version manager's),
+/// for a program started by launchd or systemd with their bare PATH:
+/// `shell -ilc` prints it between markers, in its own process group, which
+/// is killed once PATH is read or `within` passed. `Ok(None)` when the shell
+/// printed none; `Err` when it could not start.
+#[cfg(unix)]
+pub fn login_path(shell: &Path, within: std::time::Duration) -> std::io::Result<Option<OsString>> {
+    use nix::{
+        sys::signal::{Signal, killpg},
+        unistd::Pid,
+    };
+    use std::{
+        io::Read,
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+        sync::mpsc,
+        thread,
+    };
+    const BEGIN: &str = "__NANOCODE_LOGIN_PATH_BEGIN__";
+    const END: &str = "__NANOCODE_LOGIN_PATH_END__";
+    let mut child = Command::new(shell)
+        .arg("-ilc")
+        .arg(format!("echo {BEGIN}; printenv PATH; echo {END}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    let (group, stdout) = (i32::try_from(child.id()), child.stdout.take());
+    let (Ok(group), Some(mut stdout)) = (group, stdout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("the login shell has no output"));
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        let _ = sender.send(text);
+    });
+    let output = receiver.recv_timeout(within).ok();
+    let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
+    let _ = child.wait();
+    Ok(output.and_then(|text| {
+        let path = text
+            .split_once(BEGIN)?
+            .1
+            .split_once(END)?
+            .0
+            .trim()
+            .to_owned();
+        (!path.is_empty() && !path.chars().any(char::is_control)).then(|| path.into())
+    }))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{io::Write, process::Stdio, time::Duration};
+
+    fn executable(path: &Path, contents: &str) {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(contents.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn the_login_shells_path_is_read_between_its_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = dir.path().join("login-shell");
+        executable(
+            &shell,
+            "#!/bin/sh\nPATH=\"/login/bin:$PATH\"; export PATH\necho profile noise\nshift\nexec /bin/sh -c \"$1\"\n",
+        );
+        let path = login_path(&shell, Duration::from_secs(5)).unwrap().unwrap();
+        assert!(
+            path.to_string_lossy().starts_with("/login/bin:"),
+            "{path:?}"
+        );
+        let silent = dir.path().join("silent-shell");
+        executable(&silent, "#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            login_path(&silent, Duration::from_millis(200)).unwrap(),
+            None
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the shell's group is killed"
+        );
+        assert!(login_path(&dir.path().join("missing"), Duration::from_secs(1)).is_err());
+    }
+}

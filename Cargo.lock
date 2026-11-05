@@ -3487,7 +3487,6 @@ dependencies = [
  "nix 0.31.3",
  "serde",
  "sha2 0.11.0",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -3829,7 +3828,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

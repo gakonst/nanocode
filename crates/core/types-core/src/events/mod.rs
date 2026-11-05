@@ -2,6 +2,7 @@ mod error;
 pub use error::EventError;
 
 mod data;
+mod observed;
 mod text;
 mod wire;
 
@@ -17,5 +18,6 @@ pub use data::{
     RunTerminal, TextDeltaRef, ToolCall, ToolEvent, ToolInputDelta, ToolNotification,
     ToolResultEvent, ToolStatus, TransportEvent,
 };
+pub use observed::{MessagePhases, ModelRetries, Retry, Shown};
 pub use text::{AssistantText, AssistantTextUpdate};
 pub use wire::{AGENT_EVENT_PROTOCOL_VERSION, AgentEvent, AgentEventKind};

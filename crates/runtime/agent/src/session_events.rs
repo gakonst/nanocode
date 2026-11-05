@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::future::select;
+use futures_util::future::{Either, select};
 use nanocode_platform::Instant;
 use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
 use nanocode_tool_host::embedded::HostFuture;
@@ -39,9 +39,31 @@ pub enum SessionEvent {
 
 pub trait EventSink: Send + Sync + 'static {
     fn deliver(&self, events: Vec<SessionEvent>) -> HostFuture<'_, Result<(), String>>;
+
+    fn coalesces(&self) -> bool {
+        true
+    }
+
+    fn tick(&self) -> Option<Duration> {
+        None
+    }
+
+    fn ticked(&self) -> HostFuture<'_, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
-type Drain = oneshot::Sender<Result<(), String>>;
+struct Drain {
+    answer: oneshot::Sender<Result<(), String>>,
+    flush: bool,
+}
+
+enum Polled {
+    Batch(Vec<SessionEvent>),
+    Drained,
+    Ended,
+    Tick,
+}
 
 #[derive(Clone)]
 pub struct SessionEvents {
@@ -313,11 +335,19 @@ impl SessionEvents {
     }
 
     pub async fn drained(&self) -> Result<(), String> {
+        self.request(false).await
+    }
+
+    pub async fn flushed(&self) -> Result<(), String> {
+        self.request(true).await
+    }
+
+    async fn request(&self, flush: bool) -> Result<(), String> {
         if let Some(outcome) = self.outcome.get() {
             return outcome.clone();
         }
-        let (sender, receiver) = oneshot::channel();
-        if self.requests.send(sender).is_err() {
+        let (answer, receiver) = oneshot::channel();
+        if self.requests.send(Drain { answer, flush }).is_err() {
             return self.stopped();
         }
         match receiver.await {
@@ -336,7 +366,7 @@ impl SessionEvents {
 
 fn answer(waiting: &mut Vec<Drain>, outcome: &Result<(), String>) {
     for waiter in waiting.drain(..) {
-        let _ = waiter.send(outcome.clone());
+        let _ = waiter.answer.send(outcome.clone());
     }
 }
 
@@ -350,19 +380,44 @@ async fn run(
     let mut waiting = Vec::new();
     let mut flushed: Option<Instant> = None;
     let result = loop {
-        let batch = poll_fn(|context| {
+        let polled = poll_fn(|context| {
             while let Poll::Ready(Some(drain)) = drains.poll_recv(context) {
                 waiting.push(drain);
             }
-            let polled = sources.poll_batch(context);
-            if polled.is_pending() {
-                answer(&mut waiting, &Ok(()));
+            match sources.poll_batch(context) {
+                Poll::Ready(Some(batch)) => Poll::Ready(Polled::Batch(batch)),
+                Poll::Ready(None) => Poll::Ready(Polled::Ended),
+                Poll::Pending if waiting.is_empty() => Poll::Pending,
+                Poll::Pending => Poll::Ready(Polled::Drained),
             }
-            polled
-        })
-        .await;
-        let Some(mut batch) = batch else {
-            break Ok(());
+        });
+        let polled = match sink.tick() {
+            Some(period) => {
+                match select(pin!(polled), pin!(nanocode_platform::sleep(period))).await {
+                    Either::Left((polled, _)) => polled,
+                    Either::Right(_) => Polled::Tick,
+                }
+            }
+            None => polled.await,
+        };
+        let mut batch = match polled {
+            Polled::Batch(batch) => batch,
+            Polled::Ended => break Ok(()),
+            Polled::Tick => {
+                if let Err(error) = sink.ticked().await {
+                    break Err(format!("persist agent events: {error}"));
+                }
+                continue;
+            }
+            Polled::Drained => {
+                if waiting.iter().any(|drain| drain.flush)
+                    && let Err(error) = sink.ticked().await
+                {
+                    break Err(format!("persist agent events: {error}"));
+                }
+                answer(&mut waiting, &Ok(()));
+                continue;
+            }
         };
         if waiting.is_empty()
             && batch.last().is_some_and(|event| event.delta().is_some())
@@ -388,7 +443,12 @@ async fn run(
                 batch.extend(more);
             }
         }
-        if let Err(error) = sink.deliver(coalesce(batch)).await {
+        let batch = if sink.coalesces() {
+            coalesce(batch)
+        } else {
+            batch
+        };
+        if let Err(error) = sink.deliver(batch).await {
             break Err(format!("persist agent events: {error}"));
         }
         flushed = Some(Instant::now());

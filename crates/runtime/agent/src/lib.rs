@@ -8,6 +8,7 @@ mod session_events;
 mod session_log;
 mod stored_event;
 mod turn_inbox;
+mod turn_log;
 pub use router::{
     CheckpointFormats, Harness, HarnessBuilder, HarnessRequest, NoFormats, session_store,
 };
@@ -20,4 +21,8 @@ pub use session_log::{
     ImportedTurn, LogEntry, LogPage, LoggedEvent, Replaced, SessionLog, Started, Submission,
     Submitted, TurnRecord, TurnRetry, TurnState, submission_digest,
 };
-pub use turn_inbox::{Driven, InboxError, InboxHost, MovedQueued, TurnInbox};
+pub use turn_inbox::{
+    Attach, Delivery, Driven, Halt, InboxError, InboxHost, MovedQueued, Next, PassEnd, TurnInbox,
+    Wake,
+};
+pub use turn_log::{EventLog, Recording, TurnLog};

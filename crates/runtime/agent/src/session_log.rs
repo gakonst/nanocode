@@ -9,6 +9,7 @@ use std::{
 };
 
 use nanocode_sync::{Held, Owned};
+use nanocode_tool_host::embedded::HostFuture;
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Map, Value, value::RawValue};
 
@@ -18,7 +19,9 @@ use crate::{
         SqlStatement, StoreError, get_blob, migrate_format, migrate_format_then,
     },
     input::{Prompt, PromptInput, UserInput},
-    turn_inbox::accepted_bytes,
+    stored_event::Stored,
+    turn_inbox::{Envelope, accepted_bytes},
+    turn_log::{EventLog, Logged, Recording, TurnLog},
 };
 
 type Dialects = [&'static str; 2];
@@ -2751,5 +2754,109 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             batches.push(batch);
         }
         Ok(batches)
+    }
+}
+
+impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
+    async fn recorded(&self, recording: Recording<'_>) -> Result<Vec<LoggedEvent>, String> {
+        let unannotated = Map::new();
+        let compact = self.compact.then_some(recording.session_id);
+        let (entries, live): (Vec<_>, Vec<_>) = recording
+            .events
+            .iter()
+            .zip(recording.request_ids)
+            .map(|(event, request_id)| {
+                let mut body = serde_json::value::to_raw_value(&Envelope {
+                    event,
+                    annotation: recording.annotation,
+                })?;
+                if !recording.annotation.is_empty()
+                    && !self.event_fits(request_id.as_deref(), body.get())
+                {
+                    body = serde_json::value::to_raw_value(&Envelope {
+                        event,
+                        annotation: &unannotated,
+                    })?;
+                }
+                let stored = serde_json::value::to_raw_value(&Stored { event, compact })?;
+                Ok((
+                    LogEntry {
+                        request_id: request_id.clone(),
+                        event: stored,
+                    },
+                    body,
+                ))
+            })
+            .collect::<Result<Vec<_>, serde_json::Error>>()
+            .map_err(|error| format!("encode agent event: {error}"))?
+            .into_iter()
+            .unzip();
+        let logged = self
+            .stage(&entries)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(logged
+            .into_iter()
+            .zip(&entries)
+            .zip(live)
+            .map(|((mut logged, entry), live)| {
+                if logged.event.get() == entry.event.get() {
+                    logged.event = live;
+                }
+                logged
+            })
+            .collect())
+    }
+}
+
+impl<H: Sql + Send + Sync + ?Sized + 'static> EventLog for SessionLog<H> {
+    fn record<'a>(
+        &'a self,
+        recording: Recording<'a>,
+    ) -> HostFuture<'a, Result<Vec<LoggedEvent>, String>> {
+        Box::pin(self.recorded(recording))
+    }
+
+    fn flush(&self) -> Logged<'_, ()> {
+        Box::pin(Self::flush(self))
+    }
+}
+
+impl<H: Sql + Send + Sync + ?Sized + 'static> TurnLog for SessionLog<H> {
+    fn turn<'a>(&'a self, request_id: &'a str) -> Logged<'a, Option<TurnRecord>> {
+        Box::pin(Self::turn(self, request_id))
+    }
+
+    fn pending(&self) -> Logged<'_, Vec<TurnRecord>> {
+        Box::pin(Self::pending(self))
+    }
+
+    fn start<'a>(&'a self, request_id: &'a str) -> Logged<'a, Option<Started>> {
+        Box::pin(Self::start(self, request_id))
+    }
+
+    fn finish<'a>(
+        &'a self,
+        request_id: &'a str,
+        state: TurnState,
+        fields: &'a Map<String, Value>,
+    ) -> Logged<'a, Option<(TurnRecord, LoggedEvent)>> {
+        Box::pin(Self::finish(self, request_id, state, fields))
+    }
+
+    fn cancel<'a>(
+        &'a self,
+        request_id: &'a str,
+        fields: &'a Map<String, Value>,
+    ) -> Logged<'a, Option<(TurnRecord, Option<LoggedEvent>)>> {
+        Box::pin(Self::cancel(self, request_id, fields))
+    }
+
+    fn withdraw_steered<'a>(
+        &'a self,
+        request_id: &'a str,
+        digest: &'a str,
+    ) -> Logged<'a, Option<(TurnRecord, LoggedEvent)>> {
+        Box::pin(Self::withdraw_steered(self, request_id, digest))
     }
 }

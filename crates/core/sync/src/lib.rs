@@ -1004,8 +1004,20 @@ where
         }) {
             Some(shared) => shared,
             None => {
-                let started: RecentRead<V, E> =
-                    read().map(|read| read.map_err(Arc::new)).boxed().shared();
+                let reading = read();
+                let started: RecentRead<V, E> = async move {
+                    match tokio::spawn(reading).await {
+                        Ok(read) => read.map_err(Arc::new),
+                        Err(stopped) => match stopped.try_into_panic() {
+                            Ok(panic) => std::panic::resume_unwind(panic),
+                            Err(cancelled) => {
+                                std::panic::resume_unwind(Box::new(cancelled.to_string()))
+                            }
+                        },
+                    }
+                }
+                .boxed()
+                .shared();
                 self.reads.update(|reads| {
                     if let Some((_, existing)) = reads.get(key).filter(|entry| fresh(entry)) {
                         return existing.clone();

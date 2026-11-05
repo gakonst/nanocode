@@ -1047,3 +1047,244 @@ where
         reads.insert(key.into(), (now, read));
     }
 }
+
+#[derive(Default)]
+pub struct Lines(Atom<imbl::HashMap<Arc<str>, std::sync::Weak<Line>>>);
+
+impl Lines {
+    pub async fn enter(&self, key: &str) -> Turn {
+        self.line(key).enter().await
+    }
+
+    pub fn try_enter(&self, key: &str) -> Option<Turn> {
+        self.line(key).try_enter()
+    }
+
+    fn line(&self, key: &str) -> Sequencer {
+        if let Some(line) = self
+            .0
+            .read(|lines| lines.get(key).and_then(std::sync::Weak::upgrade))
+        {
+            return Sequencer(line);
+        }
+        Sequencer(self.0.update(|lines| {
+            if let Some(line) = lines.get(key).and_then(std::sync::Weak::upgrade) {
+                return line;
+            }
+            lines.retain(|_, line| line.strong_count() > 0);
+            let line = Arc::new(Line::default());
+            lines.insert(key.into(), Arc::downgrade(&line));
+            line
+        }))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct Waiter<V, E, C> {
+    answer: oneshot::Sender<Result<Arc<V>, E>>,
+    context: C,
+}
+
+#[cfg(not(target_family = "wasm"))]
+type Waiting<V, E, C> = imbl::HashMap<Arc<str>, imbl::Vector<Arc<Slot<Waiter<V, E, C>>>>>;
+
+#[cfg(not(target_family = "wasm"))]
+pub struct Coalesce<V, E, C = ()>(Atom<Waiting<V, E, C>>);
+
+#[cfg(not(target_family = "wasm"))]
+impl<V, E, C> Default for Coalesce<V, E, C> {
+    fn default() -> Self {
+        Self(Atom::new(imbl::HashMap::new()))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<V, E, C> Coalesce<V, E, C>
+where
+    V: Send + Sync + 'static,
+    E: Clone + Send + From<Stopped> + 'static,
+    C: Clone + Send + 'static,
+{
+    pub async fn read<F, Fut>(self: &Arc<Self>, key: &str, context: C, read: F) -> Result<Arc<V>, E>
+    where
+        F: Fn(C) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<V, E>> + Send + 'static,
+    {
+        let (answer, answered) = oneshot::channel();
+        let waiter = Arc::new(Slot::new(Some(Waiter { answer, context })));
+        let key: Arc<str> = key.into();
+        let lead = self.0.update(|waiting| match waiting.get_mut(&key) {
+            Some(next) => {
+                next.push_back(Arc::clone(&waiter));
+                false
+            }
+            None => {
+                waiting.insert(Arc::clone(&key), imbl::Vector::new());
+                true
+            }
+        });
+        if lead && let Some(waiter) = waiter.take() {
+            drop(tokio::spawn(Arc::clone(self).serve(
+                key,
+                read,
+                vec![waiter],
+            )));
+        }
+        answered.await.unwrap_or_else(|_| Err(E::from(Stopped)))
+    }
+
+    async fn serve<F, Fut>(
+        self: Arc<Self>,
+        key: Arc<str>,
+        read: F,
+        mut answers: Vec<Waiter<V, E, C>>,
+    ) where
+        F: Fn(C) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<V, E>> + Send + 'static,
+    {
+        let mut running = Serving {
+            coalesce: Arc::clone(&self),
+            key,
+            served: false,
+        };
+        while let Some(context) = answers.first().map(|waiter| waiter.context.clone()) {
+            let answer = read(context).await.map(Arc::new);
+            for waiter in answers {
+                drop(waiter.answer.send(answer.clone()));
+            }
+            let next = self.0.update(|waiting| {
+                let next = waiting
+                    .get_mut(&running.key)
+                    .map(std::mem::take)
+                    .unwrap_or_default();
+                if next.is_empty() {
+                    waiting.remove(&running.key);
+                }
+                next
+            });
+            answers = next.iter().filter_map(|waiter| waiter.take()).collect();
+        }
+        running.served = true;
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct Serving<V, E, C> {
+    coalesce: Arc<Coalesce<V, E, C>>,
+    key: Arc<str>,
+    served: bool,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<V, E, C> Drop for Serving<V, E, C> {
+    fn drop(&mut self) {
+        if self.served {
+            return;
+        }
+        let queued = self.coalesce.0.update(|waiting| waiting.remove(&self.key));
+        for waiter in queued.iter().flatten() {
+            drop(waiter.take());
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Clone)]
+struct Fetched<T> {
+    value: Option<T>,
+    at: Option<std::time::Instant>,
+    refreshing: bool,
+}
+
+#[cfg(not(target_family = "wasm"))]
+type Fetches<T> = Arc<Atom<imbl::HashMap<Arc<str>, Fetched<T>>>>;
+
+#[cfg(not(target_family = "wasm"))]
+pub struct Refreshed<T> {
+    entries: Fetches<T>,
+    max_read: std::time::Duration,
+}
+
+#[cfg(not(target_family = "wasm"))]
+struct Refreshing<T: Clone> {
+    entries: Fetches<T>,
+    key: Arc<str>,
+    value: Option<T>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<T: Clone> Drop for Refreshing<T> {
+    fn drop(&mut self) {
+        let value = self.value.take();
+        self.entries.update(|entries| {
+            if let Some(entry) = entries.get_mut(&self.key) {
+                entry.refreshing = false;
+                entry.at = Some(std::time::Instant::now());
+                if value.is_some() {
+                    entry.value.clone_from(&value);
+                }
+            }
+        });
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
+    pub fn new(max_read: std::time::Duration) -> Self {
+        Self {
+            entries: Arc::new(Atom::new(imbl::HashMap::new())),
+            max_read,
+        }
+    }
+
+    pub fn now(
+        &self,
+        key: &str,
+        fresh: std::time::Duration,
+        read: impl Future<Output = Option<T>> + Send + 'static,
+    ) -> Option<T> {
+        self.now_unless(key, fresh, |_| false, read)
+    }
+
+    pub fn now_unless(
+        &self,
+        key: &str,
+        fresh: std::time::Duration,
+        outdated: impl FnOnce(&T) -> bool,
+        read: impl Future<Output = Option<T>> + Send + 'static,
+    ) -> Option<T> {
+        let stale = self.entries.read(|entries| {
+            entries.get(key).is_none_or(|entry| {
+                entry.at.is_none_or(|at| at.elapsed() >= fresh)
+                    || entry.value.as_ref().is_some_and(outdated)
+            })
+        });
+        let key: Arc<str> = key.into();
+        let (refresh, value) = self.entries.update(|entries| {
+            let entry = entries.entry(Arc::clone(&key)).or_insert(Fetched {
+                value: None,
+                at: None,
+                refreshing: false,
+            });
+            let refresh = stale && !entry.refreshing;
+            if refresh {
+                entry.refreshing = true;
+            }
+            (refresh, entry.value.clone())
+        });
+        if refresh {
+            let mut refreshing = Refreshing {
+                entries: Arc::clone(&self.entries),
+                key,
+                value: None,
+            };
+            let max_read = self.max_read;
+            drop(tokio::spawn(async move {
+                let value = tokio::time::timeout(max_read, read).await.ok().flatten();
+                refreshing.value = value;
+                drop(refreshing);
+            }));
+        }
+        value
+    }
+}

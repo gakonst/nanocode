@@ -6,19 +6,22 @@ use rcgen::{
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     crypto::CryptoProvider,
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, pem::PemObject},
 };
 use std::{
+    cmp::Reverse,
     collections::HashMap,
     error::Error,
+    fmt,
     future::Future,
     io,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
+    str::FromStr,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant, SystemTime},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -54,12 +57,39 @@ impl Injection {
     }
 }
 
+#[derive(Clone)]
+pub struct Leaves {
+    pub lifetime: Option<Lifetime>,
+    pub cached: usize,
+    pub usages: Vec<ExtendedKeyUsagePurpose>,
+}
+
+impl Default for Leaves {
+    fn default() -> Self {
+        Self {
+            lifetime: None,
+            cached: usize::MAX,
+            usages: vec![ExtendedKeyUsagePurpose::ServerAuth],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Lifetime {
+    pub backdated: Duration,
+    pub valid: Duration,
+    pub renewed: Duration,
+}
+
+type Minted = HashMap<String, (Instant, Arc<ServerConfig>)>;
+
 pub struct Tls {
     issuer: Issuer<'static, KeyPair>,
     ca_der: CertificateDer<'static>,
     ca_pem: String,
     upstream: Arc<ClientConfig>,
-    leaves: Atom<HashMap<String, Arc<ServerConfig>>>,
+    leaves: Leaves,
+    minted: Atom<Minted>,
 }
 
 fn provider() -> Arc<CryptoProvider> {
@@ -91,6 +121,32 @@ impl Tls {
             KeyUsagePurpose::DigitalSignature,
         ];
         let certificate = params.self_signed(&key).map_err(other)?;
+        Self::issuing(
+            Issuer::new(params, key),
+            certificate.der().clone(),
+            certificate.pem(),
+            roots,
+            Leaves::default(),
+        )
+    }
+
+    pub fn signed_by(
+        issuer: Issuer<'static, KeyPair>,
+        ca_pem: &str,
+        roots: RootCertStore,
+        leaves: Leaves,
+    ) -> io::Result<Self> {
+        let ca_der = CertificateDer::from_pem_slice(ca_pem.as_bytes()).map_err(other)?;
+        Self::issuing(issuer, ca_der, ca_pem.to_owned(), roots, leaves)
+    }
+
+    fn issuing(
+        issuer: Issuer<'static, KeyPair>,
+        ca_der: CertificateDer<'static>,
+        ca_pem: String,
+        roots: RootCertStore,
+        leaves: Leaves,
+    ) -> io::Result<Self> {
         let mut upstream = ClientConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
             .map_err(other)?
@@ -98,11 +154,12 @@ impl Tls {
             .with_no_client_auth();
         upstream.alpn_protocols = vec![b"http/1.1".to_vec()];
         Ok(Self {
-            ca_pem: certificate.pem(),
-            ca_der: certificate.der().clone(),
-            issuer: Issuer::new(params, key),
+            issuer,
+            ca_der,
+            ca_pem,
             upstream: Arc::new(upstream),
-            leaves: Atom::new(HashMap::new()),
+            leaves,
+            minted: Atom::new(HashMap::new()),
         })
     }
 
@@ -114,14 +171,33 @@ impl Tls {
         &self.ca_der
     }
 
-    fn server(&self, host: &str) -> io::Result<Arc<ServerConfig>> {
-        if let Some(config) = self.leaves.read(|leaves| leaves.get(host).cloned()) {
+    pub fn upstream(&self) -> Arc<ClientConfig> {
+        Arc::clone(&self.upstream)
+    }
+
+    fn cached(&self, minted: &Minted, host: &str) -> Option<Arc<ServerConfig>> {
+        let (made, config) = minted.get(host)?;
+        let fresh = self
+            .leaves
+            .lifetime
+            .is_none_or(|lifetime| made.elapsed() < lifetime.renewed);
+        fresh.then(|| Arc::clone(config))
+    }
+
+    pub fn server(&self, host: &str) -> io::Result<Arc<ServerConfig>> {
+        if let Some(config) = self.minted.read(|minted| self.cached(minted, host)) {
             return Ok(config);
         }
         let key = KeyPair::generate().map_err(other)?;
         let mut params = CertificateParams::new(vec![host.to_owned()]).map_err(other)?;
         params.distinguished_name.push(DnType::CommonName, host);
-        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.extended_key_usages.clone_from(&self.leaves.usages);
+        params.use_authority_key_identifier_extension = true;
+        if let Some(lifetime) = self.leaves.lifetime {
+            let now = SystemTime::now();
+            params.not_before = (now - lifetime.backdated).into();
+            params.not_after = (now + lifetime.valid).into();
+        }
         let leaf = params.signed_by(&key, &self.issuer).map_err(other)?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let mut config = ServerConfig::builder_with_provider(provider())
@@ -132,12 +208,16 @@ impl Tls {
             .map_err(other)?;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let config = Arc::new(config);
-        Ok(self.leaves.update(|leaves| {
-            Arc::clone(
-                leaves
-                    .entry(host.to_owned())
-                    .or_insert_with(|| Arc::clone(&config)),
-            )
+        let made = Instant::now();
+        Ok(self.minted.update(|minted| {
+            if let Some(config) = self.cached(minted, host) {
+                return config;
+            }
+            if minted.len() >= self.leaves.cached {
+                minted.clear();
+            }
+            minted.insert(host.to_owned(), (made, Arc::clone(&config)));
+            Arc::clone(&config)
         }))
     }
 }
@@ -169,6 +249,87 @@ pub const fn is_public(address: IpAddr) -> bool {
                 || v6.is_unicast_link_local()
                 || v6.is_multicast())
         }
+    }
+}
+
+pub const SPECIAL: [Cidr; 2] = [
+    Cidr {
+        network: IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0)),
+        bits: 10,
+    },
+    Cidr {
+        network: IpAddr::V4(Ipv4Addr::new(192, 0, 0, 0)),
+        bits: 24,
+    },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cidr {
+    network: IpAddr,
+    bits: u8,
+}
+
+impl Cidr {
+    #[must_use]
+    pub fn contains(&self, address: IpAddr) -> bool {
+        match (address.to_canonical(), self.network) {
+            (IpAddr::V4(address), IpAddr::V4(network)) => {
+                let mask = u32::MAX.checked_shl(32 - u32::from(self.bits)).unwrap_or(0);
+                u32::from(address) & mask == u32::from(network) & mask
+            }
+            (IpAddr::V6(address), IpAddr::V6(network)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.bits))
+                    .unwrap_or(0);
+                u128::from(address) & mask == u128::from(network) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl FromStr for Cidr {
+    type Err = NotCidr;
+
+    fn from_str(text: &str) -> Result<Self, NotCidr> {
+        let not = |cause: Option<Box<dyn Error + Send + Sync>>| NotCidr {
+            text: text.to_owned(),
+            cause,
+        };
+        let (network, bits) = text.split_once('/').unwrap_or((text, ""));
+        let network: IpAddr = network
+            .parse()
+            .map_err(|error| not(Some(Box::new(error))))?;
+        let most = if network.is_ipv4() { 32 } else { 128 };
+        let bits = if bits.is_empty() {
+            most
+        } else {
+            bits.parse().map_err(|error| not(Some(Box::new(error))))?
+        };
+        if bits > most {
+            return Err(not(None));
+        }
+        Ok(Self { network, bits })
+    }
+}
+
+#[derive(Debug)]
+pub struct NotCidr {
+    text: String,
+    cause: Option<Box<dyn Error + Send + Sync>>,
+}
+
+impl fmt::Display for NotCidr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} is not a CIDR", self.text)
+    }
+}
+
+impl Error for NotCidr {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause
+            .as_deref()
+            .map(|cause| cause as &(dyn Error + 'static))
     }
 }
 
@@ -560,7 +721,7 @@ async fn intercept<C: Client>(
         return;
     }
     let head_only = head.starts_with(b"HEAD ");
-    let forms = masks(&injection.value);
+    let redactions = Redactions::masking(&injection.value);
     let (mut client_read, mut client_write) = tokio::io::split(client);
     let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
     let requests = async {
@@ -572,7 +733,7 @@ async fn intercept<C: Client>(
     };
     tokio::select! {
         () = requests => {}
-        _ = relay(upstream_read, &mut client_write, head_only, &forms) => {}
+        _ = relay(upstream_read, &mut client_write, head_only, &redactions) => {}
     }
 }
 
@@ -614,48 +775,113 @@ fn json_escape(bytes: &[u8], slash: bool) -> Vec<u8> {
 }
 
 pub fn mask(bytes: &mut [u8], forms: &[Vec<u8>]) {
-    let mut at = 0;
-    'scan: while at < bytes.len() {
-        for form in forms {
-            if bytes[at..].starts_with(form) {
-                bytes[at..at + form.len()].fill(b'*');
-                at += form.len();
-                continue 'scan;
-            }
+    let masked = Redactions::stars(forms).redact(bytes);
+    bytes.copy_from_slice(&masked);
+}
+
+#[derive(Clone, Default)]
+pub struct Redactions {
+    pairs: Arc<[(Vec<u8>, Vec<u8>)]>,
+}
+
+impl Redactions {
+    pub fn new(pairs: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>) -> Self {
+        let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = pairs
+            .into_iter()
+            .filter(|(value, _)| value.len() >= MIN_MASKED)
+            .collect();
+        let escaped: Vec<(Vec<u8>, Vec<u8>)> = pairs
+            .iter()
+            .flat_map(|(value, replacement)| {
+                [true, false]
+                    .map(|slash| (json_escape(value, slash), json_escape(replacement, slash)))
+            })
+            .filter(|(value, _)| !pairs.iter().any(|(raw, _)| raw == value))
+            .collect();
+        pairs.extend(escaped);
+        Self::longest_first(pairs)
+    }
+
+    pub fn masking(value: &str) -> Self {
+        Self::stars(&masks(value))
+    }
+
+    fn stars(forms: &[Vec<u8>]) -> Self {
+        let pairs: Vec<(Vec<u8>, Vec<u8>)> = forms
+            .iter()
+            .map(|form| (form.clone(), vec![b'*'; form.len()]))
+            .collect();
+        Self {
+            pairs: pairs.into(),
         }
-        at += 1;
+    }
+
+    fn longest_first(mut pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
+        pairs.sort_by_key(|(value, _)| Reverse(value.len()));
+        pairs.dedup_by(|a, b| a.0 == b.0);
+        Self {
+            pairs: pairs.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+
+    #[must_use]
+    pub fn redact(&self, bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut at = 0;
+        'scan: while at < bytes.len() {
+            for (value, replacement) in self.pairs.iter() {
+                if bytes[at..].starts_with(value) {
+                    out.extend_from_slice(replacement);
+                    at += value.len();
+                    continue 'scan;
+                }
+            }
+            out.push(bytes[at]);
+            at += 1;
+        }
+        out
+    }
+
+    fn held(&self, bytes: &[u8]) -> usize {
+        self.pairs
+            .iter()
+            .filter_map(|(value, _)| {
+                (1..value.len().min(bytes.len() + 1))
+                    .rev()
+                    .find(|len| bytes.ends_with(&value[..*len]))
+            })
+            .max()
+            .unwrap_or(0)
     }
 }
 
-fn partial(bytes: &[u8], forms: &[Vec<u8>]) -> usize {
-    forms
-        .iter()
-        .filter_map(|form| {
-            (1..form.len().min(bytes.len() + 1))
-                .rev()
-                .find(|len| bytes.ends_with(&form[..*len]))
-        })
-        .max()
-        .unwrap_or(0)
-}
-
-pub struct Masker<'a> {
-    forms: &'a [Vec<u8>],
+#[derive(Default)]
+pub struct Masker {
+    redactions: Redactions,
     carry: Vec<u8>,
 }
 
-impl<'a> Masker<'a> {
-    pub const fn new(forms: &'a [Vec<u8>]) -> Self {
+impl Masker {
+    pub fn new(forms: &[Vec<u8>]) -> Self {
+        Self::replacing(Redactions::stars(forms))
+    }
+
+    pub const fn replacing(redactions: Redactions) -> Self {
         Self {
-            forms,
+            redactions,
             carry: Vec::new(),
         }
     }
 
     pub fn push(&mut self, data: &[u8]) -> Vec<u8> {
         self.carry.extend_from_slice(data);
-        mask(&mut self.carry, self.forms);
-        let keep = partial(&self.carry, self.forms);
+        self.carry = self.redactions.redact(&self.carry);
+        let keep = self.redactions.held(&self.carry);
         self.carry.drain(..self.carry.len() - keep).collect()
     }
 
@@ -780,7 +1006,7 @@ async fn relay<R, W>(
     upstream: R,
     client: &mut W,
     head_only: bool,
-    forms: &[Vec<u8>],
+    redactions: &Redactions,
 ) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
@@ -791,7 +1017,7 @@ where
         buffer: Vec::new(),
     };
     loop {
-        let mut head = upstream.until(b"\r\n\r\n", MAX_RESPONSE_HEAD).await?;
+        let head = upstream.until(b"\r\n\r\n", MAX_RESPONSE_HEAD).await?;
         let Some(response) = parse_response(&head) else {
             respond(client, "502 Bad Gateway").await;
             return Ok(());
@@ -805,7 +1031,7 @@ where
             .await;
             return Ok(());
         }
-        mask(&mut head, forms);
+        let head = redactions.redact(&head);
         client.write_all(&head).await?;
         if (100..200).contains(&response.status) {
             continue;
@@ -813,7 +1039,7 @@ where
         if head_only || response.status == 204 || response.status == 304 {
             break;
         }
-        let mut masker = Masker::new(forms);
+        let mut masker = Masker::replacing(redactions.clone());
         match response.framing {
             Framing::Chunked => {
                 loop {
@@ -847,7 +1073,7 @@ where
                         break;
                     }
                 }
-                mask(&mut trailers, forms);
+                let trailers = redactions.redact(&trailers);
                 client.write_all(&trailers).await?;
             }
             Framing::Length(length) => {
@@ -1013,4 +1239,389 @@ pub fn host_matches(pattern: &str, host: &str) -> bool {
                 .is_some_and(|prefix| prefix.len() > 1 && prefix.ends_with('.'))
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustls::{
+        ClientConnection, ServerConnection,
+        client::{WebPkiServerVerifier, danger::ServerCertVerifier},
+        pki_types::UnixTime,
+    };
+    use std::time::UNIX_EPOCH;
+
+    const DAY: Duration = Duration::from_secs(86_400);
+    const MINUTE: Duration = Duration::from_secs(60);
+    const AUTHORITY_KEY: [u8; 5] = [0x06, 0x03, 0x55, 0x1d, 0x23];
+    const EXTENDED_USAGE: [u8; 5] = [0x06, 0x03, 0x55, 0x1d, 0x25];
+
+    fn issuer() -> (Issuer<'static, KeyPair>, String) {
+        let key = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::default();
+        params
+            .distinguished_name
+            .push(DnType::CommonName, "Test egress CA");
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        let pem = params.self_signed(&key).unwrap().pem();
+        (Issuer::new(params, key), pem)
+    }
+
+    fn trusting(tls: &Tls) -> RootCertStore {
+        let mut roots = RootCertStore::empty();
+        roots.add(tls.ca_der().clone()).unwrap();
+        roots
+    }
+
+    fn presented(tls: &Tls, host: &str) -> Vec<CertificateDer<'static>> {
+        let config = ClientConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(trusting(tls))
+            .with_no_client_auth();
+        let name = ServerName::try_from(host.to_owned()).unwrap();
+        let mut client = ClientConnection::new(Arc::new(config), name).unwrap();
+        let mut server = ServerConnection::new(tls.server(host).unwrap()).unwrap();
+        while client.is_handshaking() || server.is_handshaking() {
+            let mut sent = Vec::new();
+            client.write_tls(&mut sent).unwrap();
+            server.read_tls(&mut sent.as_slice()).unwrap();
+            server.process_new_packets().unwrap();
+            let mut answered = Vec::new();
+            server.write_tls(&mut answered).unwrap();
+            client.read_tls(&mut answered.as_slice()).unwrap();
+            client.process_new_packets().unwrap();
+        }
+        client.peer_certificates().unwrap().to_vec()
+    }
+
+    fn valid_at(tls: &Tls, leaf: &CertificateDer<'_>, host: &str, at: SystemTime) -> bool {
+        let verifier =
+            WebPkiServerVerifier::builder_with_provider(Arc::new(trusting(tls)), provider())
+                .build()
+                .unwrap();
+        let name = ServerName::try_from(host.to_owned()).unwrap();
+        let at = UnixTime::since_unix_epoch(at.duration_since(UNIX_EPOCH).unwrap());
+        verifier
+            .verify_server_cert(leaf, &[], &name, &[], at)
+            .is_ok()
+    }
+
+    fn has(der: &[u8], oid: &[u8]) -> bool {
+        der.windows(oid.len()).any(|window| window == oid)
+    }
+
+    #[test]
+    fn leaves_of_a_supplied_ca_expire_renew_and_stay_bounded() {
+        let (issuer, pem) = issuer();
+        let leaves = Leaves {
+            lifetime: Some(Lifetime {
+                backdated: DAY,
+                valid: 30 * DAY,
+                renewed: 20 * DAY,
+            }),
+            cached: 2,
+            usages: Vec::new(),
+        };
+        let tls = Tls::signed_by(issuer, &pem, RootCertStore::empty(), leaves).unwrap();
+        assert_eq!(tls.ca_pem(), pem);
+        let host = "api.example.com";
+        let chain = presented(&tls, host);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(&chain[1], tls.ca_der());
+        assert!(has(&chain[0], &AUTHORITY_KEY));
+        assert!(!has(&chain[0], &EXTENDED_USAGE));
+        let now = SystemTime::now();
+        assert!(valid_at(&tls, &chain[0], host, now - DAY + MINUTE));
+        assert!(!valid_at(&tls, &chain[0], host, now - DAY - MINUTE));
+        assert!(valid_at(&tls, &chain[0], host, now + 30 * DAY - MINUTE));
+        assert!(!valid_at(&tls, &chain[0], host, now + 30 * DAY + MINUTE));
+        assert!(!valid_at(&tls, &chain[0], "other.example.com", now));
+        let first = tls.server("a.example").unwrap();
+        assert!(Arc::ptr_eq(&first, &tls.server("a.example").unwrap()));
+        tls.server("b.example").unwrap();
+        assert!(!Arc::ptr_eq(&first, &tls.server("a.example").unwrap()));
+        assert_eq!(tls.minted.get().len(), 2);
+        assert!(
+            Tls::signed_by(
+                self::issuer().0,
+                "not a certificate",
+                RootCertStore::empty(),
+                Leaves::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_leaf_past_its_renewal_age_is_minted_again() {
+        let (issuer, pem) = issuer();
+        let leaves = Leaves {
+            lifetime: Some(Lifetime {
+                backdated: Duration::ZERO,
+                valid: DAY,
+                renewed: Duration::ZERO,
+            }),
+            ..Leaves::default()
+        };
+        let tls = Tls::signed_by(issuer, &pem, RootCertStore::empty(), leaves).unwrap();
+        let first = tls.server("a.example").unwrap();
+        assert!(!Arc::ptr_eq(&first, &tls.server("a.example").unwrap()));
+    }
+
+    #[test]
+    fn its_own_ca_issues_lasting_server_leaves() {
+        let tls = Tls::with_roots("test egress", RootCertStore::empty()).unwrap();
+        let host = "api.example.com";
+        let chain = presented(&tls, host);
+        assert_eq!(&chain[1], tls.ca_der());
+        assert!(has(&chain[0], &AUTHORITY_KEY));
+        assert!(has(&chain[0], &EXTENDED_USAGE));
+        assert!(valid_at(
+            &tls,
+            &chain[0],
+            host,
+            SystemTime::now() + 365 * 100 * DAY
+        ));
+        let first = tls.server(host).unwrap();
+        assert!(Arc::ptr_eq(&first, &tls.server(host).unwrap()));
+    }
+
+    #[test]
+    fn redactions_replace_raw_and_json_escaped_values_longest_first() {
+        let redactions = Redactions::new([
+            (b"sk/1\"abc".to_vec(), b"<a/b>".to_vec()),
+            (b"sk/1\"abc-longer".to_vec(), b"<long>".to_vec()),
+            (b"abc".to_vec(), b"<short>".to_vec()),
+        ]);
+        assert_eq!(redactions.redact(b"x sk/1\"abc y"), b"x <a/b> y");
+        assert_eq!(redactions.redact(b"x sk/1\"abc-longer y"), b"x <long> y");
+        assert_eq!(
+            redactions.redact(br#"{"v":"sk\/1\"abc"}"#),
+            br#"{"v":"<a\/b>"}"#
+        );
+        assert_eq!(
+            redactions.redact(br#"{"v":"sk/1\"abc"}"#),
+            br#"{"v":"<a/b>"}"#
+        );
+        assert_eq!(redactions.redact(b"abc"), b"abc");
+        assert!(Redactions::new([(b"abc".to_vec(), Vec::new())]).is_empty());
+        assert_eq!(Redactions::default().redact(b"anything"), b"anything");
+    }
+
+    #[test]
+    fn a_masker_holds_back_only_a_possible_start_of_a_value() {
+        let redactions = Redactions::new([(b"abcdefghij".to_vec(), b"<A>".to_vec())]);
+        let body = b"xxabcdefghijyyabcdefghijzzabcd";
+        for size in 1..=body.len() {
+            let mut masker = Masker::replacing(redactions.clone());
+            let mut out = Vec::new();
+            for chunk in body.chunks(size) {
+                out.extend(masker.push(chunk));
+            }
+            assert_eq!(out, b"xx<A>yy<A>zz", "chunks of {size}");
+            out.extend(masker.finish());
+            assert_eq!(out, b"xx<A>yy<A>zzabcd", "chunks of {size}");
+        }
+    }
+
+    #[test]
+    fn masking_a_value_stars_each_form_in_place() {
+        let value = "Bearer sk-live-0123/456789";
+        let token = "sk-live-0123/456789";
+        let escaped = "sk-live-0123\\/456789";
+        let text = format!("auth {value}, token {token}, json {escaped}");
+        let starred = format!(
+            "auth {}, token {}, json {}",
+            "*".repeat(value.len()),
+            "*".repeat(token.len()),
+            "*".repeat(escaped.len())
+        );
+        let mut masked = text.clone().into_bytes();
+        mask(&mut masked, &masks(value));
+        assert_eq!(masked, starred.as_bytes());
+        assert_eq!(
+            Redactions::masking(value).redact(text.as_bytes()),
+            starred.as_bytes()
+        );
+        let mut masker = Masker::new(&masks(value));
+        let mut out = Vec::new();
+        for chunk in text.as_bytes().chunks(3) {
+            out.extend(masker.push(chunk));
+        }
+        out.extend(masker.finish());
+        assert_eq!(out, starred.as_bytes());
+    }
+
+    const SECRET: &str = "sk-live-0123456789abcdef";
+
+    async fn read_head<S: AsyncRead + Unpin>(stream: &mut S) -> Vec<u8> {
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+        }
+        head
+    }
+
+    fn echo(head: &str) -> String {
+        let json = serde_json::to_string(head).unwrap();
+        match head.split(' ').nth(1).unwrap() {
+            "/chunked" => {
+                let at = json.find("sk-live").unwrap() + 10;
+                let (a, b) = json.split_at(at);
+                format!(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Echo: {SECRET}\r\n\r\n{:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n\r\n",
+                    a.len(),
+                    b.len()
+                )
+            }
+            "/gzip" => format!(
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n{json}",
+                json.len()
+            ),
+            _ => format!(
+                "HTTP/1.1 401 invalid token {SECRET}\r\nContent-Length: {}\r\n\r\n{json}",
+                json.len()
+            ),
+        }
+    }
+
+    async fn echo_server() -> (u16, RootCertStore) {
+        let tls = Tls::with_roots("test upstream", RootCertStore::empty()).unwrap();
+        let acceptor = TlsAcceptor::from(tls.server("localhost").unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut stream) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    let head = read_head(&mut stream).await;
+                    let response = echo(&String::from_utf8_lossy(&head));
+                    stream.write_all(response.as_bytes()).await.ok();
+                    stream.shutdown().await.ok();
+                });
+            }
+        });
+        (port, trusting(&tls))
+    }
+
+    async fn fetch(path: &str) -> String {
+        let (port, upstream) = echo_server().await;
+        let tls = Arc::new(Tls::with_roots("test egress", upstream).unwrap());
+        let egress = Egress::tcp(Allowlist {
+            hosts: vec!["localhost".into()],
+            private_hosts: vec!["localhost".into()],
+            injections: vec![Injection {
+                host: "localhost".into(),
+                header: "Authorization".into(),
+                value: format!("Bearer {SECRET}"),
+            }],
+            tls: Arc::clone(&tls),
+            tailnet: None,
+            refusal: |host| format!("blocked {host}"),
+        })
+        .await
+        .unwrap();
+        let mut proxy = TcpStream::connect(("127.0.0.1", egress.port()))
+            .await
+            .unwrap();
+        let connect =
+            format!("CONNECT localhost:{port} HTTP/1.1\r\nHost: localhost:{port}\r\n\r\n");
+        proxy.write_all(connect.as_bytes()).await.unwrap();
+        assert!(read_head(&mut proxy).await.starts_with(b"HTTP/1.1 200"));
+        let config = ClientConfig::builder_with_provider(provider())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(trusting(&tls))
+            .with_no_client_auth();
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut stream = TlsConnector::from(Arc::new(config))
+            .connect(name, proxy)
+            .await
+            .unwrap();
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .ok();
+        String::from_utf8(response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_echoed_secret_is_masked_in_the_status_line_and_body() {
+        let response = fetch("/").await;
+        assert!(
+            response.starts_with("HTTP/1.1 401 invalid token ****"),
+            "{response}"
+        );
+        assert!(response.contains("Accept-Encoding: identity"), "{response}");
+        assert!(response.contains("Authorization: ******"), "{response}");
+        assert!(!response.contains(SECRET), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_secret_split_across_chunks_is_masked() {
+        let response = fetch("/chunked").await;
+        assert!(response.contains("X-Echo: ****"), "{response}");
+        assert!(!response.contains("sk-live-01"), "{response}");
+        assert!(response.ends_with("0\r\n\r\n"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn a_compressed_response_is_refused() {
+        let response = fetch("/gzip").await;
+        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+        assert!(!response.contains(SECRET), "{response}");
+    }
+
+    #[test]
+    fn cidrs_parse_one_by_one_and_hold_mapped_addresses() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let net: Cidr = "10.0.0.0/8".parse().unwrap();
+        assert!(net.contains(ip("10.1.2.3")));
+        assert!(net.contains(ip("::ffff:10.1.2.3")));
+        assert!(!net.contains(ip("11.0.0.1")));
+        let one: Cidr = "203.0.113.7".parse().unwrap();
+        assert!(one.contains(ip("203.0.113.7")) && !one.contains(ip("203.0.113.8")));
+        assert_eq!("203.0.113.7/".parse::<Cidr>().unwrap(), one);
+        let v6: Cidr = "2001:db8::/32".parse().unwrap();
+        assert!(v6.contains(ip("2001:db8:1::1")));
+        assert!(!v6.contains(ip("2001:db9::1")) && !v6.contains(ip("10.0.0.1")));
+        let all: Cidr = "0.0.0.0/0".parse().unwrap();
+        assert!(all.contains(ip("8.8.8.8")) && !all.contains(ip("2001:db8::1")));
+        let refused = "10.0.0.0/33".parse::<Cidr>().unwrap_err();
+        assert_eq!(refused.to_string(), "10.0.0.0/33 is not a CIDR");
+        assert!(refused.source().is_none());
+        for text in ["10.0.0/8", "10.0.0.0/x", "10.0.0.0/300", " 10.0.0.0/8"] {
+            let refused = text.parse::<Cidr>().unwrap_err();
+            assert_eq!(refused.to_string(), format!("{text} is not a CIDR"));
+            assert!(refused.source().is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn special_ranges_stay_public_but_are_listed() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        let special = |address| SPECIAL.iter().any(|cidr| cidr.contains(address));
+        for listed in [
+            "100.64.0.1",
+            "100.127.255.255",
+            "192.0.0.8",
+            "::ffff:100.64.0.1",
+        ] {
+            assert!(is_public(ip(listed)) && special(ip(listed)), "{listed}");
+        }
+        for other in ["100.63.255.255", "100.128.0.1", "192.0.1.1", "8.8.8.8"] {
+            assert!(!special(ip(other)), "{other}");
+        }
+    }
 }

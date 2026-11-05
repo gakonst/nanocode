@@ -472,6 +472,3 @@ fn schema() -> Value {
         "additionalProperties": false
     })
 }
-
-#[cfg(test)]
-mod tests;

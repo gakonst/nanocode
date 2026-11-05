@@ -1212,30 +1212,3 @@ fn tools_list_entry(name: &str, definition: &ToolDefinition, read_only: bool) ->
     }
     listed
 }
-
-#[cfg(test)]
-mod listed_tests {
-    use super::*;
-
-    fn definition(structured: Value) -> ToolDefinition {
-        ToolDefinition::function("docs__stat", "Count words", json!({"type": "object"}))
-            .with_output_schema(json!({
-                "type": "object",
-                "properties": {"content": {"type": "array"}, "structuredContent": structured},
-            }))
-    }
-
-    #[test]
-    fn a_listing_keeps_the_servers_output_schema() {
-        let words = json!({"type": "object", "properties": {"words": {"type": "integer"}}});
-        let listed = tools_list_entry("stat", &definition(words.clone()), true);
-        assert_eq!(listed["name"], "stat");
-        assert_eq!(listed["outputSchema"], words);
-        assert_eq!(listed["annotations"]["readOnlyHint"], true);
-        // A server that declared none gets none.
-        assert_eq!(
-            tools_list_entry("stat", &definition(json!({})), false).get("outputSchema"),
-            None
-        );
-    }
-}

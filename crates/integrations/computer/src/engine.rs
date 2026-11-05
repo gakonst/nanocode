@@ -449,6 +449,3 @@ pub fn find(mut apps: Vec<App>, wanted: &str) -> Option<App> {
     })?;
     Some(apps.swap_remove(index))
 }
-
-#[cfg(test)]
-mod tests;

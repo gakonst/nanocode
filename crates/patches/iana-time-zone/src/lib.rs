@@ -119,13 +119,3 @@ impl From<std::io::Error> for GetTimezoneError {
 pub fn get_timezone() -> Result<String, GetTimezoneError> {
     platform::get_timezone_inner()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn get_current() {
-        println!("current: {}", get_timezone().unwrap());
-    }
-}

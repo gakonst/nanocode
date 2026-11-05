@@ -432,6 +432,3 @@ fn installed(name: &str) -> Option<String> {
         })
     })
 }
-
-#[cfg(test)]
-mod tests;

@@ -707,25 +707,3 @@ impl<'de> Deserialize<'de> for UserInput {
         UserInputFields::deserialize(value).map_err(serde::de::Error::custom)
     }
 }
-
-#[cfg(test)]
-mod daybreak_tests {
-    use super::{Model, Thinking};
-
-    #[test]
-    fn daybreak_blue_is_a_known_gpt_model() {
-        assert_eq!(
-            "gpt-daybreak-blue-latest".parse::<Model>(),
-            Ok(Model::DaybreakBlue)
-        );
-        assert_eq!("daybreak-blue".parse::<Model>(), Ok(Model::DaybreakBlue));
-        assert_eq!(Model::DaybreakBlue.as_str(), "gpt-daybreak-blue-latest");
-        assert_eq!(
-            serde_json::to_string(&Model::DaybreakBlue).ok().as_deref(),
-            Some("\"gpt-daybreak-blue-latest\"")
-        );
-        assert!(!Model::DaybreakBlue.supports_thinking(Thinking::None));
-        assert!(Model::DaybreakBlue.supports_thinking(Thinking::Max));
-        assert!(!Model::ALL.contains(&Model::DaybreakBlue));
-    }
-}

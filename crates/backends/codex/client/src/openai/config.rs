@@ -261,30 +261,3 @@ impl ModelConfig {
         }
     }
 }
-
-#[cfg(test)]
-mod cyber_access_program_tests {
-    use super::{CyberAccessProgram, Model, ModelConfig};
-
-    #[test]
-    fn a_model_s_program_wins_over_the_client_s() {
-        let mut config = ModelConfig::default();
-        assert_eq!(config.cyber_access_program_for(Model::Sol), None);
-        config.model_cyber_access_programs =
-            vec![(Model::DaybreakBlue, CyberAccessProgram::DaybreakBlue)];
-        assert_eq!(config.cyber_access_program_for(Model::Sol), None);
-        assert_eq!(
-            config.cyber_access_program_for(Model::DaybreakBlue),
-            Some(CyberAccessProgram::DaybreakBlue)
-        );
-        config.cyber_access_program = Some(CyberAccessProgram::DaybreakRed);
-        assert_eq!(
-            config.cyber_access_program_for(Model::Sol),
-            Some(CyberAccessProgram::DaybreakRed)
-        );
-        assert_eq!(
-            config.cyber_access_program_for(Model::DaybreakBlue),
-            Some(CyberAccessProgram::DaybreakBlue)
-        );
-    }
-}

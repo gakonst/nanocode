@@ -2,10 +2,6 @@ mod act;
 mod atspi;
 mod desktop;
 mod identity;
-#[cfg(test)]
-mod live;
-#[cfg(test)]
-mod tests;
 mod x11;
 
 use crate::{

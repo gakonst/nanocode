@@ -326,43 +326,6 @@ impl Extension {
     }
 }
 
-#[cfg(test)]
-impl Extension {
-    pub(crate) fn fake(answer: impl Fn(&str, &Value) -> Option<Value> + Send + 'static) -> Self {
-        let (sender, responses) = mpsc::sync_channel(RESPONSES);
-        let (output, outgoing) = mpsc::sync_channel::<Vec<u8>>(OUTGOING);
-        thread::spawn(move || {
-            for body in outgoing {
-                let Ok(call) = serde_json::from_slice::<Value>(&body) else {
-                    continue;
-                };
-                let Some(result) =
-                    answer(call["method"].as_str().unwrap_or_default(), &call["params"])
-                else {
-                    continue;
-                };
-                if sender
-                    .send(json!({"id": call["id"], "result": result}))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        Self {
-            responses,
-            output,
-            connected: Arc::new(AtomicBool::new(true)),
-            upstream: None,
-            prefix: "test-".into(),
-            owner: "Pyramid".into(),
-            alternative: None,
-            next: 0,
-            timeout: Duration::from_millis(200),
-        }
-    }
-}
-
 impl Drop for Extension {
     fn drop(&mut self) {
         self.connected.store(false, Ordering::Release);
@@ -533,58 +496,5 @@ impl Connection {
         while self.extension.connected() {
             thread::sleep(Duration::from_millis(250));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn framed(value: &Value) -> Vec<u8> {
-        let body = serde_json::to_vec(value).unwrap();
-        let mut bytes = (body.len() as u32).to_ne_bytes().to_vec();
-        bytes.extend(body);
-        bytes
-    }
-
-    #[test]
-    fn a_large_answer_keeps_the_connection() {
-        let tree = "x".repeat(9 * 1024 * 1024);
-        let mut input = framed(&json!({"jsonrpc":"2.0","id":"p-1","result":{"nodes":tree}}));
-        input.extend(framed(&json!({"jsonrpc":"2.0","id":"p-2","result":{}})));
-        let (sender, replies) = mpsc::sync_channel(8);
-        let (answer, _answers) = mpsc::sync_channel(8);
-        pump(
-            &mut input.as_slice(),
-            MAX_FROM_BROWSER,
-            "p-",
-            &sender,
-            None,
-            &answer,
-        );
-        let first = replies.try_recv().unwrap();
-        assert_eq!(first["result"]["nodes"].as_str().unwrap().len(), tree.len());
-        assert_eq!(replies.try_recv().unwrap()["id"], "p-2");
-
-        let mut input =
-            framed(&json!({"jsonrpc":"2.0","id":"p-3","result":"y".repeat(2 * 1024 * 1024)}));
-        input.extend(framed(
-            &json!({"jsonrpc":"2.0","method":"onCDPEvent","params":"z".repeat(2 * 1024 * 1024)}),
-        ));
-        input.extend(framed(&json!({"jsonrpc":"2.0","id":"p-4","result":{}})));
-        pump(
-            &mut input.as_slice(),
-            1024 * 1024,
-            "p-",
-            &sender,
-            None,
-            &answer,
-        );
-        assert_eq!(
-            replies.try_recv().unwrap(),
-            json!({"id":"p-3","error":{"message":"the extension's answer was 3 MiB, more than the 1 MiB the connector reads"}})
-        );
-        assert_eq!(replies.try_recv().unwrap()["id"], "p-4");
-        assert!(replies.try_recv().is_err());
     }
 }

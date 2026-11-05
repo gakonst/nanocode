@@ -40,9 +40,6 @@ image.workspace = true
 x11rb = { workspace = true }
 zbus = { workspace = true }
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-
 [lints.rust]
 unsafe_code = "deny"
 

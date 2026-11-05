@@ -26,8 +26,8 @@ impl Fake {
                 name: "Fixture".into(),
                 id: "org.example.fixture".into(),
                 path: "/apps/Fixture.app".into(),
-                background: false,
                 windows: true,
+                ..App::default()
             }],
             installed: vec![
                 App {
@@ -553,6 +553,44 @@ fn apps_resolve_launch_and_follow_the_policy() {
     assert!(
         running.starts_with("Terminal: com.apple.Terminal is blocked"),
         "{running}"
+    );
+}
+
+#[test]
+fn an_app_is_refused_when_any_of_its_identities_is() {
+    let mut fake = Fake::new();
+    fake.running.push(App {
+        pid: 12,
+        name: "Calm".into(),
+        id: "org.example.Calm".into(),
+        aliases: vec!["calm.py".into(), "xterm".into()],
+        ..App::default()
+    });
+    fake.installed.push(App {
+        name: "Harmless".into(),
+        id: "org.example.Harmless".into(),
+        aliases: vec!["xterm".into()],
+        path: "/apps/org.example.Harmless.desktop".into(),
+        ..App::default()
+    });
+    let mut engine = engine(fake);
+    let running = engine
+        .run("get_app_state", &json!({"app": "calm.py"}), 0)
+        .err()
+        .unwrap();
+    assert!(running.starts_with("Calm: xterm is blocked"), "{running}");
+    let installed = engine
+        .run("get_app_state", &json!({"app": "Harmless"}), 0)
+        .err()
+        .unwrap();
+    assert!(
+        installed.starts_with("Harmless: xterm is blocked"),
+        "{installed}"
+    );
+    assert!(
+        engine.backend().log.is_empty(),
+        "{:?}",
+        engine.backend().log
     );
 }
 

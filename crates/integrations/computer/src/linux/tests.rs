@@ -1,12 +1,14 @@
 use super::{
     act::{chosen, moved, normal},
     atspi::{camel, flags, number, role_name},
-    desktop::{arguments, matches, parse},
+    desktop::{Entry, Listed, arguments, interpreter, matches, names, parse},
+    identity::{Process, by_class, by_exec},
     label,
     x11::{Keymap, Layout, jpeg, rgb},
 };
 use crate::Chord;
 use atspi_common::{Role, State, StateSet};
+use std::fs;
 
 #[test]
 fn roles_read_as_camel_case_at_spi_names() {
@@ -200,9 +202,225 @@ fn desktop_entries_name_their_program() {
     assert!(parse("[Desktop Entry]\nType=Link\nName=Site\nExec=x\n").is_none());
     assert!(parse("[Desktop Entry]\nType=Application\nName=Gone\nExec=x\nHidden=true\n").is_none());
     assert!(parse("[Desktop Entry]\nType=Application\nName=Nothing\n").is_none());
+    let chrome = parse(
+        "[Desktop Entry]\nType=Application\nName=Chrome\nExec=chrome\nStartupWMClass=Google-chrome\n",
+    )
+    .unwrap();
+    assert_eq!(chrome.wm_class.as_deref(), Some("Google-chrome"));
+    assert_eq!(entry.wm_class, None);
     assert_eq!(
         arguments("sh -c \"echo \\\"hi\\\"\" 100%% %f --file=%u"),
         ["sh", "-c", "echo \"hi\"", "100%", "--file="]
     );
     assert_eq!(arguments("app \"\" end"), ["app", "", "end"]);
+}
+
+fn listed(id: &str, exec: &str, wm_class: Option<&str>, program: &str) -> Listed {
+    Listed {
+        id: id.into(),
+        path: format!("/usr/share/applications/{id}.desktop"),
+        entry: Entry {
+            name: id.into(),
+            exec: arguments(exec),
+            wm_class: wm_class.map(Into::into),
+        },
+        program: Some(program.into()),
+    }
+}
+
+fn process(exe: &str, args: &[&str], environ: &str) -> Process {
+    Process {
+        exe: exe.into(),
+        args: args.iter().map(|&arg| arg.to_owned()).collect(),
+        cwd: None,
+        environ: environ.replace(' ', "\0").into_bytes(),
+    }
+}
+
+#[test]
+fn a_launched_app_names_its_desktop_entry_but_its_children_do_not() {
+    let launched = process(
+        "/usr/bin/python3.12",
+        &["python3", "/opt/notes/notes.py"],
+        "HOME=/home/a GIO_LAUNCHED_DESKTOP_FILE=/usr/share/applications/org.example.Notes.desktop GIO_LAUNCHED_DESKTOP_FILE_PID=42",
+    );
+    assert_eq!(
+        launched.launched_from(42).as_deref(),
+        Some("org.example.Notes")
+    );
+    assert_eq!(launched.launched_from(43), None);
+    let hinted = process(
+        "/usr/lib/firefox/firefox",
+        &["firefox"],
+        "BAMF_DESKTOP_FILE_HINT=/usr/share/applications/firefox.desktop",
+    );
+    assert_eq!(hinted.launched_from(7).as_deref(), Some("firefox"));
+    assert_eq!(
+        process("/usr/bin/gedit", &["gedit"], "PATH=/bin").launched_from(7),
+        None
+    );
+}
+
+#[test]
+fn interpreters_are_known_by_their_script() {
+    for program in [
+        "python3.12",
+        "python3",
+        "perl5.36.0",
+        "node",
+        "bash",
+        "java",
+        "gjs",
+    ] {
+        assert!(interpreter(program), "{program}");
+    }
+    for program in ["gedit", "python-gui", "firefox", ""] {
+        assert!(!interpreter(program), "{program}");
+    }
+    let notes = process(
+        "/usr/bin/python3.12",
+        &["python3", "-u", "notes.py", "-v"],
+        "",
+    );
+    assert_eq!(notes.script(), Some((2, "notes.py")));
+    assert_eq!(
+        process("/usr/bin/python3.12", &["python3"], "").script(),
+        None
+    );
+    assert_eq!(
+        process("/usr/bin/gedit", &["gedit", "a.txt"], "").script(),
+        None
+    );
+    assert_eq!(
+        names([
+            Some("org.example.Notes".into()),
+            None,
+            Some("notes.py".into()),
+            Some("".into()),
+            Some("ORG.example.notes".into()),
+            Some("python3.12".into()),
+        ]),
+        ["org.example.Notes", "notes.py", "python3.12"]
+    );
+}
+
+#[test]
+fn windows_find_their_entry_by_application_id_or_class() {
+    let entries = [
+        listed(
+            "org.gnome.TextEditor",
+            "gnome-text-editor %U",
+            None,
+            "/usr/bin/gnome-text-editor",
+        ),
+        listed(
+            "google-chrome",
+            "/usr/bin/google-chrome-stable %U",
+            Some("Google-chrome-beta"),
+            "/opt/google/chrome/google-chrome",
+        ),
+    ];
+    let classes = |names: &[&str]| {
+        names
+            .iter()
+            .map(|&name| name.to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        by_class(
+            &entries,
+            &classes(&["org.gnome.TextEditor", "gnome-text-editor"])
+        )
+        .as_deref(),
+        Some("org.gnome.TextEditor")
+    );
+    assert_eq!(
+        by_class(
+            &entries,
+            &classes(&["google-chrome-beta", "Google-chrome-beta"])
+        )
+        .as_deref(),
+        Some("google-chrome")
+    );
+    assert_eq!(by_class(&entries, &classes(&["xterm", "XTerm"])), None);
+}
+
+#[test]
+fn processes_find_the_entry_whose_command_they_run() {
+    let dir = std::env::temp_dir().join(format!("nanocode-computer-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let tool = dir.join("run.py");
+    fs::write(&tool, "#!/usr/bin/env python3\n").unwrap();
+    let tool = fs::canonicalize(tool).unwrap();
+    let tool = tool.to_str().unwrap();
+    let entries = [
+        listed(
+            "second",
+            "python3 /harness/fixture.py second %U",
+            None,
+            "/usr/bin/python3.12",
+        ),
+        listed("python3.12", "python3.12", None, "/usr/bin/python3.12"),
+        listed("gedit-plain", "gedit", None, "/usr/bin/gedit"),
+        listed(
+            "org.gnome.gedit",
+            "gedit --new-window %U",
+            None,
+            "/usr/bin/gedit",
+        ),
+        listed("org.example.Tool", &format!("{tool} --gui"), None, tool),
+    ];
+    let found = |exe: &str, args: &[&str]| by_exec(&entries, &process(exe, args, ""));
+    assert_eq!(
+        found(
+            "/usr/bin/python3.12",
+            &["python3", "/harness/fixture.py", "second"]
+        )
+        .as_deref(),
+        Some("second")
+    );
+    assert_eq!(
+        found("/usr/bin/python3.12", &["python3", "/harness/fixture.py"]),
+        None
+    );
+    assert_eq!(found("/usr/bin/python3.12", &["python3.12"]), None);
+    assert_eq!(
+        found("/usr/bin/gedit", &["gedit", "--new-window", "a.txt"]).as_deref(),
+        Some("org.gnome.gedit")
+    );
+    assert_eq!(
+        found("/usr/bin/gedit", &["gedit"]).as_deref(),
+        Some("gedit-plain")
+    );
+    assert_eq!(
+        found("/usr/bin/python3.12", &["python3", tool, "--gui"]).as_deref(),
+        Some("org.example.Tool")
+    );
+    assert_eq!(found("/usr/bin/vim", &["vim"]), None);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_entry_launches_as_its_desktop_id_and_answers_for_its_program() {
+    let xterm = listed(
+        "debian-xterm",
+        "xterm -class UXTerm",
+        None,
+        "/usr/bin/xterm",
+    )
+    .app();
+    assert_eq!(
+        (xterm.id.as_str(), xterm.aliases.as_slice()),
+        ("debian-xterm", &["xterm".to_owned()][..])
+    );
+    assert_eq!(xterm.path, "/usr/share/applications/debian-xterm.desktop");
+    let second = listed(
+        "second",
+        "python3 /harness/fixture.py second %U",
+        None,
+        "/usr/bin/python3.12",
+    )
+    .app();
+    assert_eq!(second.id, "second");
+    assert_eq!(second.aliases, ["fixture.py", "python3", "python3.12"]);
 }

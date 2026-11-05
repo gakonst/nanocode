@@ -78,6 +78,7 @@ impl Backend for Ax {
                     pid: pid.into(),
                     name,
                     id,
+                    aliases: Vec::new(),
                     path: bundle.to_owned(),
                     background,
                     windows: shown.contains(&pid),

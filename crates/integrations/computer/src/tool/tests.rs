@@ -30,9 +30,8 @@ fn step_lines_name_the_action_and_app_but_not_typed_text() {
     );
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn the_mac_definition_is_pyramids_pinned_one() {
+fn the_definition_is_pyramids_pinned_one_on_every_platform() {
     let pinned: Value = serde_json::from_str(include_str!("pinned.json")).unwrap();
     let full = Capabilities {
         pointer: true,

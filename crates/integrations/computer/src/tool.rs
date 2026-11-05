@@ -397,19 +397,18 @@ pub fn definition(capabilities: Capabilities) -> ToolDefinition {
 }
 
 fn description(capabilities: Capabilities) -> String {
-    let (opening, app, key, secondary) = platform_text(capabilities);
     let click = if capabilities.pointer {
         "click (element_index, or x and y in the latest screenshot's pixels; mouse_button, click_count); drag (from_x, from_y, to_x, to_y); "
     } else {
         "click (element_index; mouse_button left or right); "
     };
-    let indexes = if capabilities.diffs {
-        "Indexes belong to the app's latest state; each action returns what changed, and lines it leaves out kept their index."
+    let changes = if capabilities.diffs {
+        "the app's new state, or only what changed, where lines it leaves out keep their index"
     } else {
-        "Indexes belong to the app's latest state; each action returns the app's whole new state, and only its indexes are valid."
+        "the app's whole new state"
     };
     let mut text = format!(
-        "{opening} action: list_apps; get_app_state (app) reads the app's accessibility tree, one element per line as [index] Role \"title\" …, launching it in the background if needed; {click}type_text (text) into the focused element; press_key (key such as {key}); set_value (element_index, value); select_text (element_index, text, prefix, suffix, selection_type); scroll (element_index, direction, pages); perform_secondary_action (element_index, ax_action such as {secondary}). Every action but list_apps needs app: {app}. {indexes}"
+        "Operates this computer's apps through accessibility, with window screenshots as a fallback. action: list_apps; get_app_state (app) reads the app's accessibility tree, one element per line as [index] Role \"title\" …, launching it if needed; {click}type_text (text) into the focused element; press_key (key such as Return, Escape, ctrl+a, or cmd+shift+z on a Mac); set_value (element_index, value); select_text (element_index, text, prefix, suffix, selection_type); scroll (element_index, direction, pages); perform_secondary_action (element_index, ax_action such as ShowMenu, Increment or activate). Every action but list_apps needs app: a display name, a bundle identifier or .app path on macOS, or a .desktop id or executable name on Linux. Each action returns {changes}; use indexes only from the latest state."
     );
     if capabilities.screenshots {
         text.push_str(" screenshot adds a JPEG of the app's window; get_app_state includes one unless screenshot is false.");
@@ -423,46 +422,6 @@ fn description(capabilities: Capabilities) -> String {
         " Ask before submitting, sending, buying or deleting anything the user did not ask for.",
     );
     text
-}
-
-#[cfg(target_os = "macos")]
-const fn platform_text(
-    _: Capabilities,
-) -> (&'static str, &'static str, &'static str, &'static str) {
-    (
-        "Operates the owner's own Mac apps through macOS accessibility, with window screenshots as a fallback, in the background: it does not activate apps or move the pointer, so the owner keeps working.",
-        "a display name, bundle identifier or .app path",
-        "Return, Escape, cmd+a, cmd+shift+z",
-        "ShowMenu or Increment",
-    )
-}
-
-#[cfg(target_os = "windows")]
-const fn platform_text(
-    _: Capabilities,
-) -> (&'static str, &'static str, &'static str, &'static str) {
-    (
-        "Would operate this computer's Windows apps through UI Automation, which is not built yet: every action is refused, so continue without it.",
-        "a display name or executable name",
-        "Return, Escape, ctrl+a, ctrl+shift+z",
-        "Expand or Toggle",
-    )
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const fn platform_text(
-    capabilities: Capabilities,
-) -> (&'static str, &'static str, &'static str, &'static str) {
-    (
-        if capabilities.pointer {
-            "Operates the apps of this computer's Linux desktop through AT-SPI accessibility, with window screenshots as a fallback: it acts through accessibility actions and uses the pointer only for coordinates, drags, middle and multiple clicks."
-        } else {
-            "Operates the apps of this computer's Linux desktop through AT-SPI accessibility, with window screenshots as a fallback, in the background: it acts through accessibility actions and never takes the pointer."
-        },
-        "a display name, executable name or path",
-        "Return, Escape, ctrl+a, ctrl+shift+z",
-        "activate or expand or contract",
-    )
 }
 
 fn schema() -> Value {

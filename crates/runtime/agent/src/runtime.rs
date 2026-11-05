@@ -1121,14 +1121,15 @@ impl AgentRuntime {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        // The registry holds its roots' handles and runs their subagents,
+        // whose tools hold the registry: stop them, or the runtime's sessions
+        // and the subagents' tasks are never freed.
+        if let Some(subagents) = &self.inner.subagents {
+            subagents.shutdown().await;
+        }
         self.inner.services.close();
         let host_result = self.inner.services.shutdown().await;
         let ownership_result = self.inner.ownership.shutdown().await;
-        // The registry holds its roots' handles, whose tools hold the
-        // registry: let them go, or the runtime's sessions are never freed.
-        if let Some(subagents) = &self.inner.subagents {
-            subagents.release_sessions();
-        }
         let store_result = match &self.inner.durability {
             Some(store) => store.flush().await.map_err(catalog_error),
             None => Ok(()),

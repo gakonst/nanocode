@@ -175,12 +175,16 @@ pub async fn actions(bus: &Connection, element: &Element) -> Vec<String> {
     let Some(action) = proxy::<ActionProxy>(bus, element).await else {
         return Vec::new();
     };
-    timed(action.get_actions())
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|action| action.name)
-        .collect()
+    let listed = timed(action.get_actions()).await.unwrap_or_default();
+    let mut names = Vec::with_capacity(listed.len());
+    for (index, listed) in (0..).zip(listed) {
+        names.push(if listed.name.is_empty() {
+            timed(action.get_name(index)).await.unwrap_or_default()
+        } else {
+            listed.name
+        });
+    }
+    names
 }
 
 pub async fn extents(bus: &Connection, element: &Element) -> Option<(i32, i32, i32, i32)> {

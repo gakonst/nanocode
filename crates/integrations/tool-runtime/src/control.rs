@@ -9,20 +9,19 @@ use std::{
     io::{self, BufRead, Read, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
-    sync::Arc,
     time::Duration,
 };
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::Semaphore,
+    sync::mpsc,
     time::{sleep, timeout},
 };
 
 /// How much a control socket serves at once.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Conversations at once; another waits for one to end.
+    /// Conversations at once; the next connection is accepted once one ends.
     pub conversations: usize,
     /// The longest request line, in bytes; a longer one ends its conversation.
     pub line: u64,
@@ -59,19 +58,29 @@ where
     let _ = fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    let slots = Arc::new(Semaphore::new(limits.conversations));
-    let mut failures = 0;
+    let (ended, mut ends) = mpsc::unbounded_channel();
+    let (mut active, mut failures) = (0, 0);
     while failures < limits.failures {
-        let Ok(permit) = Arc::clone(&slots).acquire_owned().await else {
-            return Ok(());
+        if active >= limits.conversations {
+            ends.recv().await;
+            active -= 1;
+            continue;
+        }
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            Some(()) = ends.recv() => {
+                active -= 1;
+                continue;
+            }
         };
-        match listener.accept().await {
+        match accepted {
             Ok((stream, _)) => {
                 failures = 0;
-                let answer = answer.clone();
+                active += 1;
+                let (answer, ended) = (answer.clone(), Ended(ended.clone()));
                 tokio::spawn(async move {
                     converse(stream, limits, answer).await;
-                    drop(permit);
+                    drop(ended);
                 });
             }
             Err(error) => {
@@ -82,6 +91,15 @@ where
         }
     }
     Ok(())
+}
+
+/// Tells the accepting task a conversation ended, however it ended.
+struct Ended(mpsc::UnboundedSender<()>);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
 }
 
 async fn converse<A, F>(stream: UnixStream, limits: Limits, answer: A)

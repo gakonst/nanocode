@@ -65,6 +65,19 @@ pub trait DynamicToolProvider: Send + Sync {
         false
     }
 
+    /// Called for a nested call to `name` that neither the host nor any
+    /// provider lists, before the host rejects it with `TOOL_NOT_AVAILABLE`.
+    /// A Code Mode cell fixes its tool names when it starts and sends a name
+    /// missing from them to the host (`code-tools.mjs`), so a provider that
+    /// learns its tools in the background can make one callable now: register
+    /// it so `available_definitions` lists it and return `true`, and the
+    /// host runs the call through `execute`. Return `false` when it is not
+    /// yours or can't be found. The host asks each provider in turn and stops
+    /// at the first `true`. Never changes what the model's catalog shows.
+    async fn resolve(&self, _name: &str) -> bool {
+        false
+    }
+
     async fn execute(
         &self,
         name: &str,

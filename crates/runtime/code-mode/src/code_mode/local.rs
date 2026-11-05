@@ -17,7 +17,7 @@ use crate::{
     CodeModeToolset, Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
     embedded::{
         CodeModeHost, CodeModeHostError, EmbeddedToolMode, HandCalls, HostFuture, OwnedToolContext,
-        declares_hand, take_hand,
+        declares_hand, take_hand, tool_not_available,
     },
 };
 
@@ -221,7 +221,7 @@ fn execute<'a>(
 ) -> HostFuture<'a, ToolOutput> {
     Box::pin(async move {
         let Some((tool, definition)) = found else {
-            return ToolOutput::error(format!("unsupported nested tool call: {name}"));
+            return tool_not_available(name);
         };
         let input = match definition {
             ToolDefinition::Function { .. } if !input.is_object() => {

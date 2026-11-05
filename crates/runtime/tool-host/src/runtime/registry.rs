@@ -3,7 +3,7 @@ use super::execution::{
 };
 use super::*;
 use crate::attachment::{ProcessRouteStore, RemoteRoute, RunnerRouting};
-use nanocode_code_mode::embedded::{declares_hand, take_hand};
+use nanocode_code_mode::embedded::{declares_hand, take_hand, tool_not_available};
 use nanocode_sync::Atom;
 
 pub struct RoutingCatalog<'a> {
@@ -190,6 +190,13 @@ impl ToolRegistry {
                 "hand tool `{name}` is not permitted for this session"
             ));
         }
+        // A name nothing here lists, from a cell whose catalog lacked it: a
+        // provider may find it now. Asked before the call's span and
+        // admission, so a slow resolve holds no nested slot, and a name
+        // nobody has (any string a script wrote) opens no span.
+        if !self.lists(name) && !self.routes_to_hand(&input) && !self.resolve(name).await {
+            return tool_not_available(name);
+        }
         let trace_content = tracing::enabled!(
             target: "nanocode_code_mode",
             tracing::Level::INFO
@@ -303,13 +310,8 @@ impl ToolRegistry {
             return ToolOutput::error(format!("unsupported nested tool call: {name}"));
         }
         let Some((handler, definition)) = self.get(name) else {
-            let Some(provider) = self.providers.iter().find(|provider| {
-                provider
-                    .available_definitions()
-                    .iter()
-                    .any(|definition| definition.name() == name)
-            }) else {
-                return ToolOutput::error(format!("unsupported nested tool call: {name}"));
+            let Some(provider) = self.provider_of(name) else {
+                return tool_not_available(name);
             };
             if let Some(execution) = provider.execute(name, input, context).await {
                 return execution;
@@ -502,6 +504,44 @@ impl ToolRegistry {
                     .any(|definition| definition.name() == name && declares_hand(definition))
             }),
         }
+    }
+
+    /// The provider that lists the nested tool `name`, if any.
+    fn provider_of(&self, name: &str) -> Option<&Arc<dyn DynamicToolProvider>> {
+        self.providers.iter().find(|provider| {
+            provider
+                .available_definitions()
+                .iter()
+                .any(|definition| definition.name() == name)
+        })
+    }
+
+    /// Whether the registry or one of its providers lists `name`.
+    fn lists(&self, name: &str) -> bool {
+        self.by_name.contains_key(name) || self.provider_of(name).is_some()
+    }
+
+    /// Whether `input` names an attached hand other than this one, which
+    /// takes the call whatever this registry lists.
+    fn routes_to_hand(&self, input: &Value) -> bool {
+        self.hand_calls.as_ref().is_some_and(|calls| {
+            input
+                .get("hand")
+                .and_then(Value::as_str)
+                .is_some_and(|hand| !calls.here(hand))
+        })
+    }
+
+    /// Ask each provider in turn to resolve `name`
+    /// ([`DynamicToolProvider::resolve`]), stopping at the first that does;
+    /// whether a provider lists it now.
+    async fn resolve(&self, name: &str) -> bool {
+        for provider in &self.providers {
+            if provider.resolve(name).await {
+                break;
+            }
+        }
+        self.provider_of(name).is_some()
     }
 
     fn get(&self, name: &str) -> Option<(&Arc<dyn Tool>, &ToolDefinition)> {

@@ -96,6 +96,24 @@ pub enum HarnessArg {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum CyberAccessProgramArg {
+    Standard,
+    DaybreakBlue,
+    DaybreakRed,
+}
+
+impl From<CyberAccessProgramArg> for nanocode::codex::CyberAccessProgram {
+    fn from(program: CyberAccessProgramArg) -> Self {
+        match program {
+            CyberAccessProgramArg::Standard => Self::Standard,
+            CyberAccessProgramArg::DaybreakBlue => Self::DaybreakBlue,
+            CyberAccessProgramArg::DaybreakRed => Self::DaybreakRed,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum GatewayArg {
     #[value(help = "OpenRouter Responses API; key from OPENROUTER_API_KEY")]
     Openrouter,
@@ -149,6 +167,14 @@ pub struct SessionArgs {
         help = "Service tier; only tiers the model supports are accepted"
     )]
     pub tier: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        value_name = "PROGRAM",
+        help = "Request an experimental Cyber access program on Codex models (OpenAI only, not with --gateway), as Codex's --cyber-access-program; omit to use server defaults"
+    )]
+    pub cyber_access_program: Option<CyberAccessProgramArg>,
 
     #[arg(
         short = 'C',
@@ -246,6 +272,7 @@ impl SessionArgs {
             harness: self.harness.or(root.harness),
             thinking: self.thinking.or(root.thinking),
             tier: self.tier.or(root.tier),
+            cyber_access_program: self.cyber_access_program.or(root.cyber_access_program),
             workspace: self.workspace.or(root.workspace),
             resume: self.resume.or(root.resume),
             reload_state: self.reload_state.or(root.reload_state),

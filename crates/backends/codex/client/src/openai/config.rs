@@ -21,6 +21,28 @@ pub(crate) fn prefixed_model_id(prefix: Option<&str>, model: Model) -> Cow<'stat
     }
 }
 
+/// A Cyber access program a request asks OpenAI to apply, as Codex's
+/// `--cyber-access-program`: sent as `access_programs.cyber`. Whether the
+/// account is entitled to it, and which models accept it, is decided by the server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CyberAccessProgram {
+    Standard,
+    DaybreakBlue,
+    DaybreakRed,
+}
+
+impl CyberAccessProgram {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::DaybreakBlue => "daybreak_blue",
+            Self::DaybreakRed => "daybreak_red",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ModelConfig {
     pub model: Model,
@@ -37,6 +59,9 @@ pub struct ModelConfig {
     pub thinking_explicit: bool,
 
     pub service_tier: ServiceTier,
+
+    /// The Cyber access program every request asks for; `None` leaves it to the server.
+    pub cyber_access_program: Option<CyberAccessProgram>,
 
     pub context_window_tokens: u64,
 
@@ -195,6 +220,7 @@ impl ModelConfig {
             thinking: Thinking::default(),
             thinking_explicit: false,
             service_tier: ServiceTier::Standard,
+            cyber_access_program: None,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             auto_compact_token_limit: None,
             compaction_thinking: None,

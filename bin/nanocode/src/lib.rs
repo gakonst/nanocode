@@ -217,6 +217,11 @@ async fn prepare(
     };
     let home = host::home_dir(args.home.as_deref())?;
     let gateway = host::gateway(&args.gateway)?;
+    if args.cyber_access_program.is_some() && gateway.is_some() {
+        return Err(
+            "--cyber-access-program needs OpenAI itself; it is unavailable with --gateway".into(),
+        );
+    }
     if gateway.is_some() && clients.supplies_openai() {
         return Err("this binary supplies its own Codex client; --gateway is unavailable".into());
     }
@@ -287,6 +292,7 @@ async fn prepare(
         gateway,
         clients,
         headless,
+        cyber_access_program: args.cyber_access_program.map(Into::into),
     };
     let host = tracing::Instrument::instrument(
         Host::build(config, &model, thinking),

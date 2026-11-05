@@ -869,6 +869,8 @@ pub(crate) struct ResponseCreate<'a> {
     generate: Option<bool>,
     client_metadata: ClientMetadata<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    access_programs: Option<AccessPrograms>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<&'a serde_json::Value>,
     #[serde(rename = "providerOptions", skip_serializing_if = "Option::is_none")]
     provider_options: Option<crate::client::transport::gateway::VercelProviderOptions<'a>>,
@@ -1010,6 +1012,9 @@ impl<'a> ResponseCreate<'a> {
                     },
                 }),
             },
+            access_programs: config
+                .cyber_access_program
+                .map(|cyber| AccessPrograms { cyber }),
             provider: config
                 .responses_gateway
                 .as_deref()
@@ -1020,6 +1025,12 @@ impl<'a> ResponseCreate<'a> {
                 .and_then(crate::client::transport::ResponsesGateway::vercel_provider_options),
         }
     }
+}
+
+/// Codex's `access_programs` request field.
+#[derive(Clone, Copy, Serialize)]
+struct AccessPrograms {
+    cyber: crate::client::CyberAccessProgram,
 }
 
 #[derive(Clone, Copy)]

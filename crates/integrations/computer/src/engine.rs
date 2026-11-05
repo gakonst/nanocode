@@ -117,7 +117,7 @@ impl<B: Backend> Engine<B> {
         let wanted = input["app"]
             .as_str()
             .filter(|app| !app.trim().is_empty())
-            .ok_or("app is required: a display name, bundle identifier or .app path")?;
+            .ok_or("app is required: a display name or the app's identifier")?;
         let app = self.resolve(wanted)?;
         self.permitted(&app)
             .map_err(|why| format!("{}: {why}", app.name))?;
@@ -154,13 +154,17 @@ impl<B: Backend> Engine<B> {
     }
 
     fn permitted(&self, app: &App) -> Result<(), String> {
-        match &self.policy {
-            Some(policy) => policy(AppIdentity {
-                name: &app.name,
-                id: &app.id,
-            }),
-            None => Ok(()),
-        }
+        let Some(policy) = &self.policy else {
+            return Ok(());
+        };
+        std::iter::once(&app.id)
+            .chain(&app.aliases)
+            .try_for_each(|id| {
+                policy(AppIdentity {
+                    name: &app.name,
+                    id,
+                })
+            })
     }
 
     fn list_apps(&mut self) -> String {
@@ -418,6 +422,10 @@ pub fn find(mut apps: Vec<App>, wanted: &str) -> Option<App> {
         let stem = stem.strip_suffix(".app").unwrap_or(stem);
         app.name.eq_ignore_ascii_case(wanted)
             || app.id.eq_ignore_ascii_case(wanted)
+            || app
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(wanted))
             || (!app.path.is_empty() && app.path == wanted)
             || (!stem.is_empty() && stem.eq_ignore_ascii_case(wanted.trim_end_matches(".app")))
     });

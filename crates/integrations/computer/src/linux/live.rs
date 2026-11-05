@@ -1,8 +1,11 @@
 use super::AtSpi;
-use crate::{Backend, Chord, Computer, Native, Provider};
+use crate::{Backend, Chord, Computer, Native, Provider, sensitive};
 use nanocode_tool_contracts::ToolOutput;
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 const APP: &str = "fixture";
 
@@ -281,7 +284,7 @@ async fn drives_a_gtk_app_over_at_spi_and_x11() {
         .to_owned();
     println!("list_apps:\n{listed}");
     assert!(
-        listed.contains("second (python3") && listed.contains("windows on screen"),
+        listed.contains("second (second) pid") && listed.contains("windows on screen"),
         "{listed}"
     );
     let (success, refused, _) =
@@ -307,4 +310,79 @@ async fn drives_a_gtk_app_over_at_spi_and_x11() {
         refused,
         Err("press_key reaches only the window with keyboard focus, and fixture doesn't have it, so nothing was sent.".into())
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs an X11 display, the AT-SPI bus and the harness's apps and desktop entries"]
+async fn apps_are_known_by_desktop_id_script_or_program() {
+    let computer = Computer::new(Provider::native(Native::default().policy(Arc::new(
+        |app| {
+            if sensitive(app.id) {
+                Err(format!("{} is blocked", app.id))
+            } else {
+                Ok(())
+            }
+        },
+    ))));
+    let list = async || {
+        let started = Instant::now();
+        let listed = ok(&computer, json!({"action": "list_apps"})).await;
+        println!("list_apps in {:?}:\n{listed}", started.elapsed());
+        listed
+    };
+    let listed = list().await;
+    for app in [
+        "fixture (fixture.py) pid",
+        "fourth (org.example.Fourth) pid",
+        "fifth (org.example.Fifth) pid",
+        "calm (org.example.Calm) pid",
+    ] {
+        assert!(listed.contains(app), "{app} in\n{listed}");
+    }
+    for app in ["Third", "Second"] {
+        let started = Instant::now();
+        let state = ok(
+            &computer,
+            json!({"action": "get_app_state", "app": app, "screenshot": false}),
+        )
+        .await;
+        println!("launched and read {app} in {:?}", started.elapsed());
+        assert!(
+            state.starts_with(&format!("{} — window \"{app}\"", app.to_lowercase())),
+            "{state}"
+        );
+    }
+    let listed = list().await;
+    for app in ["third (org.example.Third) pid", "second (second) pid"] {
+        assert!(listed.contains(app), "{app} in\n{listed}");
+    }
+    let started = Instant::now();
+    let state = ok(
+        &computer,
+        json!({"action": "get_app_state", "app": "org.example.Fourth", "screenshot": false}),
+    )
+    .await;
+    println!("read org.example.Fourth in {:?}", started.elapsed());
+    assert!(state.starts_with("fourth — window"), "{state}");
+    for (app, refused) in [
+        ("calm", "calm: ssh-askpass is blocked"),
+        ("xterm", "XTerm: debian-xterm is blocked"),
+        ("UXTerm", "UXTerm: debian-uxterm is blocked"),
+        ("Harmless", "Harmless: xterm is blocked"),
+    ] {
+        let started = Instant::now();
+        let (success, text, _) = step(
+            &computer,
+            json!({"action": "get_app_state", "app": app, "screenshot": false}),
+        )
+        .await;
+        println!("{app} refused in {:?}: {text}", started.elapsed());
+        assert!(!success && text.starts_with(refused), "{app}: {text}");
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let xterms = std::process::Command::new("pgrep")
+        .args(["-x", "xterm"])
+        .output()
+        .unwrap();
+    assert!(xterms.stdout.is_empty(), "an xterm started");
 }

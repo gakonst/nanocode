@@ -1,6 +1,7 @@
 mod act;
 mod atspi;
 mod desktop;
+mod identity;
 #[cfg(test)]
 mod live;
 #[cfg(test)]
@@ -30,6 +31,7 @@ pub struct AtSpi {
     bus: Option<Connection>,
     display: Option<x11::Display>,
     apps: HashMap<i64, Vec<Element>>,
+    entries: desktop::Index,
 }
 
 impl AtSpi {
@@ -178,6 +180,15 @@ impl Backend for AtSpi {
             return Vec::new();
         };
         let registered = self.block(atspi::registered(&bus)).unwrap_or_default();
+        let classes = if x11::available() {
+            self.display()
+                .ok()
+                .and_then(|display| display.classes().ok())
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        let entries = self.entries.entries();
         let own = std::process::id();
         self.apps.clear();
         let mut apps: Vec<App> = Vec::new();
@@ -197,15 +208,18 @@ impl Backend for AtSpi {
             } else {
                 found.name
             };
-            let id = path
-                .rsplit('/')
-                .next()
-                .filter(|id| !id.is_empty())
-                .map_or_else(|| name.clone(), str::to_owned);
+            let window = classes.get(&found.pid).map_or(&[][..], Vec::as_slice);
+            let mut aliases = identity::of(found.pid, &path, window, entries);
+            let id = if aliases.is_empty() {
+                name.clone()
+            } else {
+                aliases.remove(0)
+            };
             apps.push(App {
                 pid,
                 name,
                 id,
+                aliases,
                 path,
                 background: false,
                 windows: found.windows,
@@ -215,7 +229,7 @@ impl Backend for AtSpi {
     }
 
     fn installed(&mut self, wanted: &str) -> Option<App> {
-        desktop::installed(wanted)
+        desktop::installed(self.entries.entries(), wanted)
     }
 
     fn launch(&mut self, app: &App) -> Result<(), String> {

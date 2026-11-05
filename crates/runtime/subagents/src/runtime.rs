@@ -6628,6 +6628,50 @@ impl Registry {
         Ok(summaries)
     }
 
+    async fn release_all(&self) {
+        let roots = self
+            .state
+            .call(|state| state.scopes.keys().cloned().collect::<Vec<_>>())
+            .await;
+        let released = join_all(roots.iter().map(|root| self.release_scope(root))).await;
+        for (root, result) in roots.iter().zip(released) {
+            if let Err(error) = result {
+                tracing::warn!(%root, %error, "could not stop subagents at shutdown");
+            }
+        }
+        self.session_handles.update(|handles| handles.clear());
+    }
+
+    async fn release_scope(&self, root_session_id: &str) -> std::io::Result<()> {
+        drop(
+            timeout_at(
+                Instant::now() + AGENT_STOP_TIMEOUT,
+                self.await_restored(root_session_id),
+            )
+            .await,
+        );
+        let locks = self.session_locks(root_session_id).await;
+        let _closing = locks.closing.enter().await;
+        let _paused = self.pause_messages(root_session_id).await;
+        let root = root_session_id.to_owned();
+        let request = self
+            .state
+            .call(move |state| {
+                state.scope_mut(&root).life = ScopeLife::Frozen;
+                state.request_close_all(&root)
+            })
+            .await?;
+        self.changed();
+        self.stop_and_close(
+            request.root_session_id,
+            request.ids,
+            request.harnesses,
+            true,
+        )
+        .await
+        .map(drop)
+    }
+
     async fn stop_and_close(
         &self,
         root_session_id: String,
@@ -7022,14 +7066,16 @@ pub struct SubagentControl {
 }
 
 impl SubagentControl {
-    /// Forget the handle of every session the registry holds, as the runtime
-    /// that owns it shuts down. A root's handle stays until `close_all` for
-    /// it, and the handle's subagent tools hold this registry, so a runtime
-    /// shut down without it kept every root session, its tools and whatever
-    /// they hold alive for good. Writes nothing to the journals, so a host
-    /// that moves running subagents to another process keeps them.
-    pub fn release_sessions(&self) {
-        self.registry.session_handles.update(|handles| handles.clear());
+    /// Stop every subagent the registry runs and forget every session handle
+    /// it holds, as the runtime that owns it shuts down. A root's handle and
+    /// its subagents stay until `close_all` for it, and their tools hold this
+    /// registry, so a runtime shut down without it kept every root session,
+    /// each subagent's harness, event forwarder and journal writer alive for
+    /// good. Each scope is frozen first, so this writes nothing to the
+    /// journals: a host that moves running subagents to another process keeps
+    /// them as last saved, and the process that claims them owns the journal.
+    pub async fn shutdown(&self) {
+        self.registry.release_all().await;
     }
 
     pub async fn completion_origin(&self, request_id: &str) -> Option<Arc<str>> {

@@ -116,6 +116,21 @@ pub fn declares_hand(definition: &ToolDefinition) -> bool {
         .is_some_and(|schema| schema.as_value()["properties"].get("hand").is_some())
 }
 
+/// What a nested call to a tool the host doesn't have returns: the same
+/// `TOOL_NOT_AVAILABLE` rejection a cell used to raise locally
+/// (`code-tools.mjs`), with `code` and `tool` on the cell's error.
+#[must_use]
+pub fn tool_not_available(name: &str) -> ToolOutput {
+    let message = format!(
+        "TOOL_NOT_AVAILABLE: Tool \"{name}\" is not available in this Code Mode execution. Check ALL_TOOLS for callable names. A tool exposed directly by the host may need to be called through its direct tool entry instead."
+    );
+    ToolOutput::error(message.clone()).with_structured_result(serde_json::json!({
+        "message": message,
+        "code": "TOOL_NOT_AVAILABLE",
+        "tool": name,
+    }))
+}
+
 pub fn take_hand(declared: bool, input: Value) -> Result<(Value, Option<String>), ToolOutput> {
     let Value::Object(mut fields) = input else {
         return Ok((input, None));

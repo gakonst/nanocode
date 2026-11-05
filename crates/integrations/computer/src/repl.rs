@@ -1,5 +1,3 @@
-#![cfg(not(target_family = "wasm"))]
-
 #[cfg(unix)]
 pub mod browser;
 
@@ -29,9 +27,9 @@ use tokio::{
 
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const INTERRUPTED: &str = "CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
-const PINNED_CATALOG: &str = include_str!("catalog.json");
-const CUA_DRIVER_PROVIDER: &str = include_str!("cua_driver.mjs");
-const CUA_DRIVER_CATALOG: &str = include_str!("cua_driver_catalog.json");
+const PINNED_CATALOG: &str = include_str!("repl/catalog.json");
+const CUA_DRIVER_PROVIDER: &str = include_str!("repl/cua_driver.mjs");
+const CUA_DRIVER_CATALOG: &str = include_str!("repl/cua_driver_catalog.json");
 const CUA_DRIVER_SEARCH: &[&str] = &[
     ".local/bin/cua-driver",
     "/usr/local/bin/cua-driver",
@@ -152,7 +150,7 @@ impl ComputerConfig {
                 base.join("lib/node_modules").into_os_string(),
             ),
             ("SKY_CUA_SERVICE_PATH", service.clone().into_os_string()),
-            ("CODEX_HOME", codex_home.clone().into_os_string()),
+            ("CODEX_HOME", codex_home.into_os_string()),
         ]
         .into_iter()
         .map(|(key, value)| (OsString::from(key), value))
@@ -303,19 +301,19 @@ impl ComputerConfig {
     }
 
     #[must_use]
-    pub fn startup_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn startup_timeout(mut self, timeout: Duration) -> Self {
         self.startup_timeout = timeout;
         self
     }
 
     #[must_use]
-    pub fn step_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn step_timeout(mut self, timeout: Duration) -> Self {
         self.step_timeout = Some(timeout);
         self
     }
 
     #[must_use]
-    pub fn restart_after_failure(mut self) -> Self {
+    pub const fn restart_after_failure(mut self) -> Self {
         self.restart_after_failure = true;
         self
     }
@@ -512,7 +510,7 @@ pub struct ComputerTool {
 }
 
 impl ComputerTool {
-    pub fn provider_definition(&self) -> &ProviderTool {
+    pub const fn provider_definition(&self) -> &ProviderTool {
         &self.definition
     }
 }

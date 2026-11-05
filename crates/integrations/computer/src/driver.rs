@@ -9,6 +9,7 @@ use nanocode_mcp::Session;
 use serde_json::{Map, Value, json};
 use tokio::process::Command;
 
+pub use crate::policy::{Leases, app_key};
 pub use nanocode_mcp::Error as McpError;
 
 const SEARCH: &[&str] = &[
@@ -396,7 +397,7 @@ impl Driver {
         self
     }
 
-    pub fn install(&self) -> Option<&Install> {
+    pub const fn install(&self) -> Option<&Install> {
         self.install.as_ref()
     }
 
@@ -1017,70 +1018,50 @@ impl Driver {
     }
 }
 
-pub struct Leases {
-    idle: Duration,
-    held: HashMap<String, Lease>,
-}
+#[cfg(test)]
+mod tests {
+    use super::{ax_action, chord, find_app};
+    use serde_json::json;
 
-struct Lease {
-    session: String,
-    turn: String,
-    used: Instant,
-}
-
-impl Leases {
-    pub fn new(idle: Duration) -> Self {
-        Self {
-            idle,
-            held: HashMap::new(),
-        }
-    }
-
-    pub fn take(&mut self, app: &str, session: &str, turn: &str, now: Instant) -> bool {
-        let idle = self.idle;
-        self.held
-            .retain(|_, lease| now.duration_since(lease.used) < idle);
-        let key = app_key(app);
-        if self
-            .held
-            .get(&key)
-            .is_some_and(|lease| lease.session != session)
-        {
-            return false;
-        }
-        self.held.insert(
-            key,
-            Lease {
-                session: session.to_owned(),
-                turn: turn.to_owned(),
-                used: now,
-            },
+    #[test]
+    fn apps_resolve_like_pyramids_engine() {
+        let apps = vec![
+            json!({"name": "Calculator", "bundle_id": "com.apple.calculator", "running": false, "pid": 0}),
+            json!({"name": "Notes", "bundle_id": "com.apple.Notes", "running": true, "pid": 7}),
+            json!({"name": "Brave Browser", "bundle_id": "com.brave.Browser", "launch_path": "/Applications/Brave Browser.app", "running": true, "pid": 9}),
+            json!({"name": "Brave Browser", "bundle_id": "com.brave.Browser", "launch_path": "/Applications/Brave Browser 2.app", "running": false, "pid": 0}),
+        ];
+        let name = |wanted| {
+            find_app(&apps, wanted)
+                .unwrap()
+                .map(|app| app["name"].as_str().unwrap().to_owned())
+        };
+        assert_eq!(name("calculator").as_deref(), Some("Calculator"));
+        assert_eq!(name("com.apple.notes").as_deref(), Some("Notes"));
+        assert_eq!(
+            name("/Applications/Brave Browser.app").as_deref(),
+            Some("Brave Browser")
         );
-        true
+        assert_eq!(
+            find_app(&apps, "com.brave.Browser").unwrap().unwrap()["pid"],
+            9
+        );
+        assert_eq!(name("Calc").as_deref(), Some("Calculator"));
+        assert!(name("Xcode").is_none());
     }
 
-    pub fn end(&mut self, session: &str, turn: &str) {
-        self.held
-            .retain(|_, lease| lease.session != session || lease.turn != turn);
+    #[test]
+    fn keys_and_actions_map_to_cua_driver_names() {
+        assert_eq!(chord("Return").unwrap(), ("return".into(), vec![]));
+        assert_eq!(
+            chord("cmd+shift+z").unwrap(),
+            ("z".into(), vec!["cmd", "shift"])
+        );
+        assert_eq!(chord("Page_Down").unwrap().0, "pagedown");
+        assert_eq!(chord("+").unwrap().0, "+");
+        assert!(chord("hyper+a").is_err());
+        assert_eq!(ax_action("AXShowMenu"), "show_menu");
+        assert_eq!(ax_action("ShowMenu"), "show_menu");
+        assert_eq!(ax_action("Increment"), "Increment");
     }
-}
-
-pub fn app_key(app: &str) -> String {
-    let name = app.trim().trim_end_matches('/');
-    let name = name.rsplit('/').next().unwrap_or(name).to_lowercase();
-    let name = name.strip_suffix(".app").unwrap_or(&name);
-    match name {
-        "chrome" | "com.google.chrome" => "google chrome",
-        "chrome beta" | "com.google.chrome.beta" => "google chrome beta",
-        "chrome canary" | "com.google.chrome.canary" => "google chrome canary",
-        "chromium" | "org.chromium.chromium" => "chromium",
-        "arc" | "company.thebrowser.browser" => "arc",
-        "brave" | "com.brave.browser" => "brave browser",
-        "edge" | "com.microsoft.edgemac" => "microsoft edge",
-        "safari" | "com.apple.safari" => "safari",
-        "firefox" | "org.mozilla.firefox" => "firefox",
-        "dia" | "company.thebrowser.dia" => "dia",
-        other => other,
-    }
-    .to_owned()
 }

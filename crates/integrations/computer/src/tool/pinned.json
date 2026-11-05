@@ -1,0 +1,110 @@
+{
+  "description": "Operates the owner's own Mac apps through macOS accessibility, with window screenshots as a fallback, in the background: it does not activate apps or move the pointer, so the owner keeps working. action: list_apps; get_app_state (app) reads the app's accessibility tree, one element per line as [index] Role \"title\" …, launching it in the background if needed; click (element_index, or x and y in the latest screenshot's pixels; mouse_button, click_count); drag (from_x, from_y, to_x, to_y); type_text (text) into the focused element; press_key (key such as Return, Escape, cmd+a, cmd+shift+z); set_value (element_index, value); select_text (element_index, text, prefix, suffix, selection_type); scroll (element_index, direction, pages); perform_secondary_action (element_index, ax_action such as ShowMenu or Increment). Every action but list_apps needs app: a display name, bundle identifier or .app path. Indexes belong to the app's latest state; each action returns what changed, and lines it leaves out kept their index. screenshot adds a JPEG of the app's window; get_app_state includes one unless screenshot is false. Terminals, password managers and system authentication dialogs are refused. Ask before submitting, sending, buying or deleting anything the user did not ask for.",
+  "name": "computer",
+  "parameters": {
+    "additionalProperties": false,
+    "properties": {
+      "action": {
+        "enum": [
+          "list_apps",
+          "get_app_state",
+          "click",
+          "drag",
+          "type_text",
+          "press_key",
+          "set_value",
+          "select_text",
+          "scroll",
+          "perform_secondary_action"
+        ],
+        "type": "string"
+      },
+      "app": {
+        "type": "string"
+      },
+      "ax_action": {
+        "type": "string"
+      },
+      "click_count": {
+        "type": "integer"
+      },
+      "direction": {
+        "enum": [
+          "up",
+          "down",
+          "left",
+          "right"
+        ],
+        "type": "string"
+      },
+      "element_index": {
+        "type": "integer"
+      },
+      "from_x": {
+        "type": "number"
+      },
+      "from_y": {
+        "type": "number"
+      },
+      "full": {
+        "description": "get_app_state: the whole tree instead of what changed.",
+        "type": "boolean"
+      },
+      "key": {
+        "type": "string"
+      },
+      "mouse_button": {
+        "enum": [
+          "left",
+          "right",
+          "middle"
+        ],
+        "type": "string"
+      },
+      "pages": {
+        "type": "number"
+      },
+      "prefix": {
+        "type": "string"
+      },
+      "screenshot": {
+        "type": "boolean"
+      },
+      "selection_type": {
+        "enum": [
+          "text",
+          "cursor_before",
+          "cursor_after"
+        ],
+        "type": "string"
+      },
+      "suffix": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      },
+      "to_x": {
+        "type": "number"
+      },
+      "to_y": {
+        "type": "number"
+      },
+      "value": {
+        "type": "string"
+      },
+      "x": {
+        "type": "number"
+      },
+      "y": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  },
+  "strict": false,
+  "type": "function"
+}

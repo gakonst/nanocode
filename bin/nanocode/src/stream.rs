@@ -94,10 +94,9 @@ impl<O: Write> Printer<O> {
             AgentEventKind::AssistantMessage if !self.streamed.contains(&*payload.key()) => {
                 self.answer(&payload.key(), text)
             }
-            AgentEventKind::ToolCall => self.notice(&format!(
-                "· {}",
-                payload.tool.as_deref().unwrap_or("tool")
-            )),
+            AgentEventKind::ToolCall => {
+                self.notice(&format!("· {}", payload.tool.as_deref().unwrap_or("tool")))
+            }
             AgentEventKind::RunError
                 if payload.observational.as_ref() == Some(&Value::Bool(true)) =>
             {

@@ -83,7 +83,11 @@ where
     }
 
     fn invalid_input(&self, _name: &str, error: &str) -> Option<Result<Value, String>> {
-        Some(self.0.failed(serde_json::Error::custom(error).into()).into())
+        Some(
+            self.0
+                .failed(serde_json::Error::custom(error).into())
+                .into(),
+        )
     }
 }
 

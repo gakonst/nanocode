@@ -928,7 +928,10 @@ impl JournalSnapshot {
         for (leaf, agents) in self.agents {
             let mut entries = Vec::with_capacity(agents.len());
             for (id, entry) in agents {
-                let stored = update.agents.get(&id).map(|cached| Arc::clone(&cached.profile));
+                let stored = update
+                    .agents
+                    .get(&id)
+                    .map(|cached| Arc::clone(&cached.profile));
                 let record = agent_record(entry.agent, stored, entry.unchanged, &mut records)?;
                 update.agents.insert(
                     id,
@@ -1005,8 +1008,8 @@ impl JournalCache {
         &mut self,
         records: &mut Vec<(Arc<str>, Arc<str>)>,
     ) -> std::io::Result<()> {
-        let leaf = u64::try_from(self.sealed_messages() / PAGE_MESSAGES)
-            .map_err(std::io::Error::other)?;
+        let leaf =
+            u64::try_from(self.sealed_messages() / PAGE_MESSAGES).map_err(std::io::Error::other)?;
         let (key, json) = message_leaf(&self.message_tail);
         if self.messages.get(0, leaf) != Some(&key) {
             records.push((Arc::clone(&key), json));

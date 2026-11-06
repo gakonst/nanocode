@@ -25,7 +25,6 @@ use transport::{HttpClient, HttpError, HttpResponse, layer::retry};
 pub mod subscription;
 pub mod thread;
 mod wire_cache;
-pub use wire_cache::WireCache;
 pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
@@ -33,6 +32,7 @@ pub use thread::{
     CreateReason, MESSAGE_THREADS_BETA, MessageThread, THREAD_IDLE_EXPIRY, ThreadErrorCode,
     ThreadMode, ThreadParam, ThreadRecovery, ThreadTurn,
 };
+pub use wire_cache::WireCache;
 
 pub const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 
@@ -2180,9 +2180,9 @@ impl PreparedWire {
         serde_json::from_str::<Digest>(recorded).is_ok_and(|digest| {
             digest.wire == self.wire_name()
                 && digest.conversation.is_some_and(|recorded| {
-                    self.digests.is_some_and(|(conversation, _)| {
-                        recorded == conversation.to_hex().as_str()
-                    }) || recorded == self.stream_digests().0.to_hex().as_str()
+                    self.digests
+                        .is_some_and(|(conversation, _)| recorded == conversation.to_hex().as_str())
+                        || recorded == self.stream_digests().0.to_hex().as_str()
                 })
         })
     }

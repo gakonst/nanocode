@@ -570,9 +570,9 @@ impl EncodedPayload {
                 .iter()
                 .map(|value| match value.content {
                     Some(_) => Ok(value.clone()),
-                    None => loaded.next().ok_or_else(|| {
-                        Error::InvalidState("record batch length mismatch".into())
-                    }),
+                    None => loaded
+                        .next()
+                        .ok_or_else(|| Error::InvalidState("record batch length mismatch".into())),
                 })
                 .collect();
         }
@@ -616,17 +616,16 @@ impl EncodedPayload {
                 .filter(|value| value.content.is_none())
                 .cloned()
                 .collect();
-            let mut loaded =
-                Box::pin(Self::load_many_noting(&missing, store, state_id, read))
-                    .await?
-                    .into_iter();
+            let mut loaded = Box::pin(Self::load_many_noting(&missing, store, state_id, read))
+                .await?
+                .into_iter();
             return values
                 .iter()
                 .map(|value| match value.content {
                     Some(_) => Ok(value.clone()),
-                    None => loaded.next().ok_or_else(|| {
-                        Error::InvalidState("record batch length mismatch".into())
-                    }),
+                    None => loaded
+                        .next()
+                        .ok_or_else(|| Error::InvalidState("record batch length mismatch".into())),
                 })
                 .collect();
         }

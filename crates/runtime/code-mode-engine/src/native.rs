@@ -512,11 +512,7 @@ impl Worker {
     }
 
     fn release(&mut self, id: u64, bytes: bool) {
-        let Some(mut engine) = self
-            .hosts
-            .get_mut(&id)
-            .and_then(|host| host.engine.take())
-        else {
+        let Some(mut engine) = self.hosts.get_mut(&id).and_then(|host| host.engine.take()) else {
             return;
         };
         self.engaged -= 1;

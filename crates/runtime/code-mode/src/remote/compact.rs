@@ -367,9 +367,9 @@ impl ReceivedCalls {
     }
 
     fn asked(&self, call_id: &str) -> Option<Arc<Value>> {
-        self.answers
-            .as_ref()
-            .and_then(|(answers, session_id)| answers.take(&answer_key(session_id, &asked_key(call_id))))
+        self.answers.as_ref().and_then(|(answers, session_id)| {
+            answers.take(&answer_key(session_id, &asked_key(call_id)))
+        })
     }
 
     fn expand(&mut self, call: &mut Value) -> Result<(), CodeModeHostError> {

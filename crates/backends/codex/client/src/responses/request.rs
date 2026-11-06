@@ -672,7 +672,11 @@ impl RequestInput<'_> {
         }
     }
 
-    fn items<S: SerializeSeq>(&self, sequence: &mut S, items: &[ResponseItem]) -> Result<(), S::Error> {
+    fn items<S: SerializeSeq>(
+        &self,
+        sequence: &mut S,
+        items: &[ResponseItem],
+    ) -> Result<(), S::Error> {
         for item in items.iter().filter(|item| self.supports(item)) {
             sequence.serialize_element(&self.element(item))?;
         }
@@ -714,7 +718,10 @@ impl RequestInput<'_> {
                 None => self.items(sequence, &segment.items[skip..])?,
             }
         }
-        self.items(sequence, &history.tail[start.saturating_sub(committed_len)..])
+        self.items(
+            sequence,
+            &history.tail[start.saturating_sub(committed_len)..],
+        )
     }
 }
 

@@ -438,12 +438,14 @@ fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
 fn visible_output(output: &ToolOutputBody) -> Option<ToolOutputBody> {
     use crate::client::session::{TOOL_OUTPUT_TOKEN_LIMIT, truncate_middle_with_token_budget};
     match output {
-        ToolOutputBody::Text(text) => (text.len().div_ceil(4) > TOOL_OUTPUT_TOKEN_LIMIT).then(|| {
-            ToolOutputBody::Text(truncate_middle_with_token_budget(
-                text,
-                TOOL_OUTPUT_TOKEN_LIMIT,
-            ))
-        }),
+        ToolOutputBody::Text(text) => {
+            (text.len().div_ceil(4) > TOOL_OUTPUT_TOKEN_LIMIT).then(|| {
+                ToolOutputBody::Text(truncate_middle_with_token_budget(
+                    text,
+                    TOOL_OUTPUT_TOKEN_LIMIT,
+                ))
+            })
+        }
         ToolOutputBody::Content(content) => {
             let mut remaining = TOOL_OUTPUT_TOKEN_LIMIT;
             let mut omitted = 0_usize;
@@ -857,7 +859,10 @@ impl ModelRun {
                                 completed.work_duration_ns =
                                     Self::completed_tool_work_duration(&active);
                                 match (&execution_steps, timing) {
-                                    (Some(steps), nanocode_durability::ResultTiming::NextCommit) => {
+                                    (
+                                        Some(steps),
+                                        nanocode_durability::ResultTiming::NextCommit,
+                                    ) => {
                                         steps.complete_deferred(&step_id, &completed).await?;
                                     }
                                     (Some(steps), nanocode_durability::ResultTiming::Now) => {

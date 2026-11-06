@@ -33,12 +33,24 @@ impl WireCache {
         tools: &[ClaudeToolSpec],
     ) -> Result<Arc<Encoded<Vec<ClaudeToolSpec>>>, ClaudeError> {
         static LIVE: LazyLock<Entries<Vec<ClaudeToolSpec>>> = LazyLock::new(Atom::default);
-        remembered(&self.tools, &LIVE, tools, |value| value.as_slice() == tools, || tools.to_vec())
+        remembered(
+            &self.tools,
+            &LIVE,
+            tools,
+            |value| value.as_slice() == tools,
+            || tools.to_vec(),
+        )
     }
 
     pub(crate) fn system(&self, system: &Value) -> Result<Arc<Encoded<Value>>, ClaudeError> {
         static LIVE: LazyLock<Entries<Value>> = LazyLock::new(Atom::default);
-        remembered(&self.system, &LIVE, system, |value| value == system, || system.clone())
+        remembered(
+            &self.system,
+            &LIVE,
+            system,
+            |value| value == system,
+            || system.clone(),
+        )
     }
 
     pub fn tools_fingerprint(&self, tools: &[ClaudeToolSpec]) -> Result<String, ClaudeError> {

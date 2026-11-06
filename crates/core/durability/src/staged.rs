@@ -53,7 +53,8 @@ impl StagedWrites {
     }
 
     pub fn retain(&self, mut keep: impl FnMut(&str) -> bool) {
-        self.0.update(|states| states.retain(|state_id, _| keep(state_id)));
+        self.0
+            .update(|states| states.retain(|state_id, _| keep(state_id)));
     }
 
     pub async fn stage_records<T: StateStore + ?Sized>(

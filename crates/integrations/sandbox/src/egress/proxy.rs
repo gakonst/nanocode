@@ -1,0 +1,741 @@
+use crate::egress::{
+    address::{Cidr, host_matches, is_public, reachable},
+    addresses::Addresses,
+    audit::{Audit, Kind, Reporting},
+    authority::Authority,
+    lookup::{Caching, Client, Lookups, Purpose, Verdict},
+    pipe::pipe,
+    redact::{self, Failed, Injecting},
+    tls::Tls,
+    wire::{Credential, Secret},
+};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use bytes::Bytes;
+use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
+use hyper::{
+    Error, Method, Request, Response, StatusCode, Uri,
+    body::Incoming,
+    client::conn::http1::handshake,
+    header::{self, HeaderMap, HeaderValue},
+    http::uri::Authority as UriAuthority,
+    rt::{Read, Write},
+    server::conn::http1::Builder,
+    service::{HttpService, service_fn},
+    upgrade::{OnUpgrade, Upgraded, on},
+};
+use hyper_util::rt::{TokioIo, TokioTimer};
+use nanocode_sync::Atom;
+use rustls::pki_types::ServerName;
+use std::{
+    any::Any,
+    collections::HashMap,
+    convert::Infallible,
+    error, io,
+    io::ErrorKind,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::{TcpStream, lookup_host},
+    spawn,
+    sync::mpsc,
+    time::timeout,
+};
+use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tracing::{debug, error, info, warn};
+
+const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization proxy-connection te trailer transfer-encoding";
+
+pub type Slot = Arc<dyn Any + Send + Sync>;
+
+type Body = BoxBody<Bytes, Failed>;
+type Refusal = Box<Response<Body>>;
+
+pub enum Identity {
+    Fixed(Credential),
+    Basic,
+    Addresses(Arc<Addresses>),
+}
+
+pub enum Reach {
+    Public {
+        deny: Vec<Cidr>,
+    },
+    Listed {
+        hosts: Vec<String>,
+        private_hosts: Vec<String>,
+        tailnet: Option<SocketAddr>,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub struct Texts {
+    pub client: &'static str,
+    pub needs_credential: &'static str,
+    pub realm: &'static str,
+    pub unreachable: &'static str,
+    pub stale: &'static str,
+    pub private: fn(&str) -> String,
+    pub refused: fn(&str) -> String,
+    pub compressed: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub struct Limits {
+    pub connections: usize,
+    pub per_source: usize,
+    pub connect: Duration,
+    pub idle_headers: Duration,
+    pub idle_tunnel: Duration,
+}
+
+pub struct Rules {
+    pub caching: Caching,
+    pub reporting: Option<Reporting>,
+    pub identity: Identity,
+    pub reach: Reach,
+    pub passthrough: Vec<String>,
+    pub injecting: Injecting,
+    pub intercept_port: Option<u16>,
+    pub texts: Texts,
+    pub limits: Limits,
+}
+
+#[derive(Default)]
+pub(crate) struct Log {
+    pub(crate) denied: Atom<Vec<String>>,
+    pub(crate) unreachable: Atom<Vec<String>>,
+}
+
+pub struct Proxy<A: Authority> {
+    lookups: Lookups<A>,
+    audit: Option<Audit>,
+    log: Option<Arc<Log>>,
+    tls: Arc<Tls>,
+    rules: Rules,
+}
+
+struct Admitted {
+    source: IpAddr,
+    ended: mpsc::UnboundedSender<IpAddr>,
+}
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        self.ended.send(self.source).ok();
+    }
+}
+
+impl<A: Authority> Proxy<A> {
+    pub fn new(authority: Arc<A>, tls: Arc<Tls>, rules: Rules) -> Self {
+        Self {
+            lookups: Lookups::new(Arc::clone(&authority), rules.texts.client, rules.caching),
+            audit: rules
+                .reporting
+                .map(|reporting| Audit::start(authority, reporting)),
+            log: None,
+            tls,
+            rules,
+        }
+    }
+
+    pub(crate) fn logged(mut self, log: Arc<Log>) -> Self {
+        self.log = Some(log);
+        self
+    }
+
+    pub async fn accept<T, F, Fut>(self: Arc<Self>, mut next: F)
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Option<(T, IpAddr)>>,
+    {
+        let (ended, mut endings) = mpsc::unbounded_channel();
+        let (mut open, mut total) = (HashMap::<IpAddr, usize>::new(), 0usize);
+        let limits = self.rules.limits;
+        while let Some((stream, source)) = next().await {
+            while let Ok(gone) = endings.try_recv() {
+                total = total.saturating_sub(1);
+                if let Some(count) = open.get_mut(&gone) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        open.remove(&gone);
+                    }
+                }
+            }
+            let count = open.entry(source).or_default();
+            if total >= limits.connections || *count >= limits.per_source {
+                if *count == 0 {
+                    open.remove(&source);
+                }
+                continue;
+            }
+            *count += 1;
+            total += 1;
+            let slot: Slot = Arc::new(Admitted {
+                source,
+                ended: ended.clone(),
+            });
+            let proxy = Arc::clone(&self);
+            spawn(async move { proxy.serve(stream, slot, source).await });
+        }
+    }
+
+    pub async fn serve<T>(self: Arc<Self>, stream: T, slot: Slot, source: IpAddr)
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let proxy = Arc::clone(&self);
+        let service = service_fn(move |request| {
+            Arc::clone(&proxy).handle(request, Arc::clone(&slot), source)
+        });
+        if let Err(error) = self.served(TokioIo::new(stream), service).await
+            && !error.is_incomplete_message()
+        {
+            warn!("egress connection: {error}");
+        }
+    }
+
+    async fn client(
+        &self,
+        headers: &HeaderMap,
+        source: IpAddr,
+        purpose: Purpose,
+    ) -> Result<Arc<Client>, Refusal> {
+        let credential = match &self.rules.identity {
+            Identity::Fixed(credential) => Some(credential.clone()),
+            Identity::Addresses(addresses) => addresses.name(source).map(|name| Credential {
+                name,
+                token: String::new(),
+            }),
+            Identity::Basic => credential(headers),
+        };
+        let credential = credential.ok_or_else(|| self.needs_credential())?;
+        match self.lookups.resolve(&Arc::new(credential), purpose).await {
+            Verdict::Granted(client) => Ok(client),
+            Verdict::Refused => Err(self.needs_credential()),
+            Verdict::Unreachable => Err(self.unreachable()),
+        }
+    }
+
+    fn count(&self, client: &Client, host: &str, port: u16, kind: Kind) {
+        let Some(audit) = &self.audit else { return };
+        let pattern = if kind == Kind::Intercepted {
+            client.pattern(host)
+        } else {
+            None
+        };
+        audit.count(&client.credential, host, port, kind, pattern);
+    }
+
+    fn noted(&self, host: &str, denied: bool) {
+        if let Some(log) = &self.log {
+            let list = if denied {
+                &log.denied
+            } else {
+                &log.unreachable
+            };
+            list.update(|hosts| hosts.push(host.to_owned()));
+        }
+    }
+
+    fn allowed(&self, host: &str) -> Result<(), Refusal> {
+        let Reach::Listed { hosts, .. } = &self.rules.reach else {
+            return Ok(());
+        };
+        if hosts.iter().any(|pattern| host_matches(pattern, host)) {
+            return Ok(());
+        }
+        self.noted(host, true);
+        Err(refuse(
+            StatusCode::FORBIDDEN,
+            &(self.rules.texts.refused)(host),
+        ))
+    }
+
+    fn secrets<'a>(&self, client: &'a Client, host: &str) -> Vec<&'a Secret> {
+        match self.rules.injecting {
+            Injecting::Swap { .. } => client.bound(host),
+            Injecting::Set => client.set(host),
+        }
+    }
+
+    fn intercepts(&self, client: &Client, host: &str, port: u16) -> bool {
+        let bound = match self.rules.injecting {
+            Injecting::Swap { .. } => client.pattern(host).is_some(),
+            Injecting::Set => !client.set(host).is_empty(),
+        };
+        let passthrough = self
+            .rules
+            .passthrough
+            .iter()
+            .any(|pattern| host_matches(pattern, host));
+        self.rules.intercept_port.is_none_or(|only| only == port) && bound && !passthrough
+    }
+
+    async fn handle(
+        self: Arc<Self>,
+        request: Request<Incoming>,
+        slot: Slot,
+        source: IpAddr,
+    ) -> Result<Response<Body>, Infallible> {
+        let connect = request.method() == Method::CONNECT;
+        let mut client = self.client(request.headers(), source, Purpose::Route).await;
+        if let Ok(known) = &client
+            && connect
+            && let Some(host) = request.uri().host()
+            && known.pattern(&host.to_ascii_lowercase()).is_none()
+        {
+            client = self
+                .client(request.headers(), source, Purpose::Recheck)
+                .await;
+        }
+        Ok(match client {
+            Err(response) => *response,
+            Ok(client) if connect => self.connect(client, request, slot).await,
+            Ok(client) => self
+                .plain(&client, request, slot)
+                .await
+                .unwrap_or_else(|response| *response),
+        })
+    }
+
+    async fn dial(&self, host: &str, port: u16) -> Result<TcpStream, Refusal> {
+        let connect = self.rules.limits.connect;
+        let failed = |host: &str| {
+            self.noted(host, false);
+            refuse(
+                StatusCode::BAD_GATEWAY,
+                &format!("{host}:{port} can't be reached."),
+            )
+        };
+        let (private_hosts, deny) = match &self.rules.reach {
+            Reach::Public { deny } => (None, deny.as_slice()),
+            Reach::Listed {
+                private_hosts,
+                tailnet,
+                ..
+            } => {
+                let name = host.trim_end_matches('.').to_ascii_lowercase();
+                if let Some(server) = tailnet
+                    && name.ends_with(".ts.net")
+                {
+                    return match timeout(connect, socks(*server, &name, port)).await {
+                        Ok(Ok(stream)) => Ok(stream),
+                        _ => Err(failed(host)),
+                    };
+                }
+                (Some(private_hosts), &[][..])
+            }
+        };
+        let literal = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        let addresses: Vec<SocketAddr> = match literal.parse::<IpAddr>() {
+            Ok(ip) => vec![SocketAddr::new(ip, port)],
+            Err(_) => timeout(connect, lookup_host((literal, port)))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .ok_or_else(|| {
+                    self.noted(host, false);
+                    refuse(
+                        StatusCode::BAD_GATEWAY,
+                        &format!("{host} does not resolve."),
+                    )
+                })?
+                .collect(),
+        };
+        let addresses: Vec<SocketAddr> = match private_hosts {
+            None if addresses.is_empty()
+                || !addresses
+                    .iter()
+                    .all(|address| reachable(address.ip(), deny)) =>
+            {
+                Vec::new()
+            }
+            None => addresses,
+            Some(private) if private.iter().any(|pattern| host_matches(pattern, host)) => addresses,
+            Some(_) => addresses
+                .into_iter()
+                .filter(|address| is_public(address.ip()))
+                .collect(),
+        };
+        if addresses.is_empty() {
+            self.noted(host, false);
+            let message = (self.rules.texts.private)(host);
+            return Err(refuse(StatusCode::FORBIDDEN, &message));
+        }
+        for address in addresses {
+            if let Ok(Ok(stream)) = timeout(connect, TcpStream::connect(address)).await {
+                drop(stream.set_nodelay(true));
+                return Ok(stream);
+            }
+        }
+        Err(failed(host))
+    }
+
+    async fn connect(
+        self: Arc<Self>,
+        client: Arc<Client>,
+        request: Request<Incoming>,
+        slot: Slot,
+    ) -> Response<Body> {
+        let Some(authority) = request.uri().authority().cloned() else {
+            return text(StatusCode::BAD_REQUEST, "CONNECT needs host:port.");
+        };
+        let (host, port) = (host_of(&authority), authority.port_u16().unwrap_or(443));
+        if let Err(response) = self.allowed(&host) {
+            return *response;
+        }
+        let empty = || Response::new(Empty::new().map_err(|never| match never {}).boxed());
+        if self.intercepts(&client, &host, port) {
+            self.count(&client, &host, port, Kind::Intercepted);
+            spawn(async move {
+                match on(request).await {
+                    Ok(upgraded) => self.intercept(client, host, port, upgraded, slot).await,
+                    Err(error) => warn!("egress upgrade: {error}"),
+                }
+            });
+            return empty();
+        }
+        let upstream = match self.dial(&host, port).await {
+            Ok(upstream) => upstream,
+            Err(response) => {
+                self.count(&client, &host, port, Kind::Refused);
+                return *response;
+            }
+        };
+        self.count(&client, &host, port, Kind::Tunneled);
+        let idle = self.rules.limits.idle_tunnel;
+        spawn(async move {
+            match on(request).await {
+                Ok(upgraded) => pipe(TokioIo::new(upgraded), upstream, idle).await,
+                Err(error) => warn!("egress upgrade: {error}"),
+            }
+            drop(slot);
+        });
+        empty()
+    }
+
+    async fn intercept(
+        self: Arc<Self>,
+        client: Arc<Client>,
+        host: String,
+        port: u16,
+        upgraded: Upgraded,
+        slot: Slot,
+    ) {
+        let config = match self.tls.server(&host) {
+            Ok(config) => config,
+            Err(error) => {
+                return error!("egress certificate for {host} failed: {error:#}");
+            }
+        };
+        let accept = TlsAcceptor::from(config).accept(TokioIo::new(upgraded));
+        let error = match timeout(self.rules.limits.connect, accept).await {
+            Ok(Ok(tls)) => {
+                let service = Arc::clone(&self).service(Arc::clone(&client), host, port, slot);
+                return drop(self.served(TokioIo::new(tls), service).await);
+            }
+            Ok(Err(error)) => error.to_string(),
+            Err(_) => "no handshake in time".to_owned(),
+        };
+        let name = &client.credential.name;
+        info!(%name, "egress TLS from {name} for {host}: {error}");
+    }
+
+    fn service(
+        self: Arc<Self>,
+        client: Arc<Client>,
+        host: String,
+        port: u16,
+        slot: Slot,
+    ) -> impl HttpService<Incoming, ResBody = Body, Future: Send> + Send {
+        service_fn(move |request| {
+            let (proxy, client, host, slot) = (
+                Arc::clone(&self),
+                Arc::clone(&client),
+                host.clone(),
+                Arc::clone(&slot),
+            );
+            async move {
+                let response = proxy.forward(&client, &host, port, request, slot).await;
+                Ok::<_, Infallible>(response.unwrap_or_else(|response| *response))
+            }
+        })
+    }
+
+    async fn forward(
+        &self,
+        client: &Client,
+        host: &str,
+        port: u16,
+        request: Request<Incoming>,
+        slot: Slot,
+    ) -> Result<Response<Body>, Refusal> {
+        let client = match self
+            .lookups
+            .resolve(&client.credential, Purpose::Inject)
+            .await
+        {
+            Verdict::Granted(client) => client,
+            Verdict::Refused => {
+                let message = self.rules.texts.stale;
+                return Err(refuse(StatusCode::PROXY_AUTHENTICATION_REQUIRED, message));
+            }
+            Verdict::Unreachable => return Err(self.unreachable()),
+        };
+        let (upgrade, mut request) = outgoing(request)?;
+        let headers = request.headers_mut();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+        let injecting = self.rules.injecting;
+        let bound = self.secrets(&client, host);
+        let written = redact::inject(headers, &bound, injecting);
+        let pairs = redact::redactions(&bound, &written, injecting);
+        if let Ok(value) = HeaderValue::try_from(host) {
+            headers.insert(header::HOST, value);
+        }
+        let stream = self.dial(host, port).await?;
+        let name = ServerName::try_from(host.to_owned())
+            .map_err(|_| refuse(StatusCode::BAD_REQUEST, "Invalid host."))?;
+        let connect = TlsConnector::from(self.tls.upstream()).connect(name, stream);
+        let tls = timeout(self.rules.limits.connect, connect)
+            .await
+            .unwrap_or_else(|_| Err(ErrorKind::TimedOut.into()))
+            .map_err(|error| {
+                self.noted(host, false);
+                refuse(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("TLS to {host} failed: {error}"),
+                )
+            })?;
+        let sealed = injecting == Injecting::Set && !bound.is_empty();
+        let response = self.send(TokioIo::new(tls), request).await?;
+        Ok(self.relay(response, upgrade, Some(pairs), slot, sealed))
+    }
+
+    async fn plain(
+        &self,
+        client: &Client,
+        request: Request<Incoming>,
+        slot: Slot,
+    ) -> Result<Response<Body>, Refusal> {
+        let uri = request.uri().clone();
+        let (Some("http"), Some(authority)) = (uri.scheme_str(), uri.authority()) else {
+            let message = "Send HTTPS through CONNECT and plain HTTP as an absolute URL.";
+            return Err(refuse(StatusCode::BAD_REQUEST, message));
+        };
+        let (host, port) = (host_of(authority), authority.port_u16().unwrap_or(80));
+        self.allowed(&host)?;
+        let dialed = self.dial(&host, port).await;
+        let kind = if dialed.is_ok() {
+            Kind::Tunneled
+        } else {
+            Kind::Refused
+        };
+        self.count(client, &host, port, kind);
+        let stream = dialed?;
+        let (upgrade, request) = outgoing(request)?;
+        let response = self.send(TokioIo::new(stream), request).await?;
+        Ok(self.relay(response, upgrade, None, slot, false))
+    }
+
+    fn needs_credential(&self) -> Refusal {
+        let texts = &self.rules.texts;
+        let mut response = text(
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+            texts.needs_credential,
+        );
+        if let Ok(realm) = HeaderValue::from_str(texts.realm) {
+            response
+                .headers_mut()
+                .insert(header::PROXY_AUTHENTICATE, realm);
+        }
+        Box::new(response)
+    }
+
+    fn unreachable(&self) -> Refusal {
+        refuse(StatusCode::BAD_GATEWAY, self.rules.texts.unreachable)
+    }
+
+    fn served<S: HttpService<Incoming, ResBody = Body>, T>(
+        &self,
+        io: T,
+        service: S,
+    ) -> impl Future<Output = hyper::Result<()>> + use<S, T, A>
+    where
+        T: Read + Write + Unpin + Send + 'static,
+        S::Future: Send + 'static,
+        S::Error: Into<Box<dyn error::Error + Send + Sync>>,
+    {
+        Builder::new()
+            .timer(TokioTimer::new())
+            .header_read_timeout(self.rules.limits.idle_headers)
+            .serve_connection(io, service)
+            .with_upgrades()
+    }
+
+    async fn send<T>(
+        &self,
+        io: T,
+        request: Request<Incoming>,
+    ) -> Result<Response<Incoming>, Refusal>
+    where
+        T: Read + Write + Unpin + Send + 'static,
+    {
+        let failed = |error: Error| refuse(StatusCode::BAD_GATEWAY, &format!("upstream: {error}"));
+        let (mut sender, connection) = handshake(io).await.map_err(failed)?;
+        spawn(async move { drop(connection.with_upgrades().await) });
+        let answer = timeout(self.rules.limits.idle_tunnel, sender.send_request(request))
+            .await
+            .map_err(|_| {
+                refuse(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "The host sent no answer in time.",
+                )
+            })?;
+        answer.map_err(failed)
+    }
+
+    fn relay(
+        &self,
+        mut response: Response<Incoming>,
+        client: OnUpgrade,
+        pairs: Option<redact::Redactions>,
+        slot: Slot,
+        sealed: bool,
+    ) -> Response<Body> {
+        let pairs = pairs.filter(|pairs| !pairs.is_empty());
+        let coding = response.headers().get(header::CONTENT_ENCODING);
+        let compressed = pairs.is_some()
+            && coding.is_some_and(|coding| !coding.as_bytes().eq_ignore_ascii_case(b"identity"));
+        let upgraded = response.status() == StatusCode::SWITCHING_PROTOCOLS;
+        if compressed || (sealed && upgraded) {
+            return text(StatusCode::BAD_GATEWAY, self.rules.texts.compressed);
+        }
+        if let Some(pairs) = &pairs {
+            redact::headers(response.headers_mut(), pairs);
+        }
+        let idle = self.rules.limits.idle_tunnel;
+        if upgraded {
+            let upstream = on(&mut response);
+            spawn(async move {
+                if let (Ok(client), Ok(upstream)) = (client.await, upstream.await) {
+                    pipe(TokioIo::new(client), TokioIo::new(upstream), idle).await;
+                }
+                drop(slot);
+            });
+        } else {
+            strip_hop(response.headers_mut(), false);
+        }
+        if pairs.is_some() {
+            response.headers_mut().remove(header::CONTENT_LENGTH);
+        }
+        let pairs = pairs.unwrap_or_default();
+        response.map(|inner| redact::body(inner, pairs, idle))
+    }
+}
+
+fn text(status: StatusCode, message: &str) -> Response<Body> {
+    let body = Full::new(Bytes::from(format!("{message}\n")));
+    let mut response = Response::new(body.map_err(|never| match never {}).boxed());
+    *response.status_mut() = status;
+    let plain = HeaderValue::from_static("text/plain");
+    response.headers_mut().insert(header::CONTENT_TYPE, plain);
+    response
+}
+
+fn refuse(status: StatusCode, message: &str) -> Refusal {
+    Box::new(text(status, message))
+}
+
+fn strip_hop(headers: &mut HeaderMap, upgrade: bool) {
+    let listed: Vec<String> = headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !(upgrade && name == "upgrade"))
+        .collect();
+    for name in HOP.split(' ').map(str::to_owned).chain(listed) {
+        if !(upgrade && name == "connection") {
+            headers.remove(name.as_str());
+        }
+    }
+}
+
+fn outgoing(mut request: Request<Incoming>) -> Result<(OnUpgrade, Request<Incoming>), Refusal> {
+    let client = on(&mut request);
+    let (mut parts, body) = request.into_parts();
+    let upgrade = parts.headers.contains_key(header::UPGRADE);
+    strip_hop(&mut parts.headers, upgrade);
+    parts.uri = parts
+        .uri
+        .path_and_query()
+        .map_or("/", |p| p.as_str())
+        .parse::<Uri>()
+        .map_err(|error| {
+            debug!(%error, "invalid request target");
+            refuse(StatusCode::BAD_REQUEST, "Invalid request target.")
+        })?;
+    Ok((client, Request::from_parts(parts, body)))
+}
+
+fn credential(headers: &HeaderMap) -> Option<Credential> {
+    let value = headers.get(header::PROXY_AUTHORIZATION)?.to_str().ok()?;
+    let encoded = value
+        .strip_prefix("Basic ")
+        .or_else(|| value.strip_prefix("basic "))?;
+    let decoded = String::from_utf8(STANDARD.decode(encoded.trim()).ok()?).ok()?;
+    let (name, token) = decoded.split_once(':')?;
+    (!name.is_empty() && !token.is_empty()).then(|| Credential {
+        name: name.to_owned(),
+        token: token.to_owned(),
+    })
+}
+
+fn host_of(authority: &UriAuthority) -> String {
+    let host = authority
+        .host()
+        .trim_start_matches('[')
+        .trim_end_matches(']');
+    host.to_ascii_lowercase()
+}
+
+async fn socks(server: SocketAddr, host: &str, port: u16) -> io::Result<TcpStream> {
+    let refused = |what: &str| io::Error::other(format!("SOCKS5 {what}"));
+    let length = u8::try_from(host.len()).map_err(|_| refused("host too long"))?;
+    let mut stream = TcpStream::connect(server).await?;
+    stream.write_all(&[5, 1, 0]).await?;
+    let mut choice = [0u8; 2];
+    stream.read_exact(&mut choice).await?;
+    if choice != [5, 0] {
+        return Err(refused("server wants authentication"));
+    }
+    let mut request = vec![5, 1, 0, 3, length];
+    request.extend_from_slice(host.as_bytes());
+    request.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&request).await?;
+    let mut reply = [0u8; 4];
+    stream.read_exact(&mut reply).await?;
+    if reply[..2] != [5, 0] {
+        return Err(refused("connect failed"));
+    }
+    let address = match reply[3] {
+        1 => 4,
+        4 => 16,
+        3 => usize::from(stream.read_u8().await?),
+        _ => return Err(refused("reply malformed")),
+    };
+    let mut bound = vec![0u8; address + 2];
+    stream.read_exact(&mut bound).await?;
+    Ok(stream)
+}

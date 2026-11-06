@@ -2376,6 +2376,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -3645,6 +3646,12 @@ dependencies = [
 name = "nanocode-sandbox"
 version = "0.6.7"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "landlock",
  "libc",
  "nanocode-sync",
@@ -3657,6 +3664,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

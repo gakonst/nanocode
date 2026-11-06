@@ -15,13 +15,21 @@ description = "Run a command confined to read-only paths, one writable directory
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(unix)'.dependencies]
+base64.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 nanocode-sync.workspace = true
 rcgen.workspace = true
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 rustls-native-certs.workspace = true
 serde.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock.workspace = true

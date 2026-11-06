@@ -33,16 +33,14 @@ nanocode-code-mode = { path = "../runtime/code-mode", version = "0.6.7"   }
 serde_json.workspace = true
 nanocode-home.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net", "fs"] }
-nanocode-computer = { workspace = true, optional = true }
+nanocode-computer.workspace = true
 nanocode-store-jsonl.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix.workspace = true
 
 [features]
-default = ["local-cells", "cua"]
-# Computer use: re-exports nanocode-computer and lets agents use it.
-cua = ["dep:nanocode-computer", "nanocode-agent-host/cua"]
+default = ["local-cells"]
 local-cells = ["nanocode-code-mode/local-cells"]
 
 [lints]

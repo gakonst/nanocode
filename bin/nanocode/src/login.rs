@@ -141,6 +141,12 @@ async fn tempo_wallet(args: &[&str]) -> Result<serde_json::Value, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(message) = [&stdout, &stderr].into_iter().find_map(|text| {
+            let error: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+            error["message"].as_str().map(str::to_owned)
+        }) {
+            return Err(message);
+        }
         return Err(format!(
             "{} {} exited with {}: {}",
             program.display(),

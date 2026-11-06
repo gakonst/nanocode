@@ -433,31 +433,39 @@ impl Ledger {
                     .get(&service.host)
                     .map(|session| session.spend().remaining)
                     .filter(|left| *left > 0)
-                    .map_or_else(String::new, |left| format!("{} left", mach(left)));
+                    .map_or_else(String::new, |left| {
+                        format!("{} {} left", mach(left), service.symbol)
+                    });
                 vec![
                     format!("{} {host}", if service.live(now) { '●' } else { ' ' }),
                     if service.model { "model" } else { "tool" }.to_owned(),
                     buckets.iter().map(|change| bar(*change, peak)).collect(),
-                    format!("{} {}", mach(service.spent), service.symbol),
+                    priced(service.spent, &service.symbol),
                     format!("{}×", service.requests),
-                    format!("last {}", mach(service.last)),
+                    format!("last {}", priced(service.last, &service.symbol)),
                     left,
                 ]
             })
             .collect();
         let rate = u128::try_from(window).unwrap_or(0) * 60 / WATERFALL.as_secs() as u128;
-        let unit = match services.first() {
-            Some((_, first)) if services.iter().all(|(_, s)| s.symbol == first.symbol) => {
-                first.symbol.as_str()
+        let rate = match services.first() {
+            _ if services.iter().all(|(_, service)| dollars(&service.symbol)) => {
+                format!(" · ${}/min", mach(rate))
             }
-            _ => "USD",
+            Some((_, first))
+                if services
+                    .iter()
+                    .all(|(_, service)| service.symbol == first.symbol) =>
+            {
+                format!(" · {} {}/min", mach(rate), first.symbol)
+            }
+            _ => String::new(),
         };
         Some(Panel {
             title: format!(
-                "⚡ {} streamed · {calls} paid calls · {} services · {} {unit}/min",
+                "⚡ {} streamed · {calls} paid calls · {} services{rate}",
                 ledger.totals(),
                 services.len(),
-                mach(rate)
             ),
             rows,
             accent: vec![2],
@@ -500,9 +508,13 @@ impl Ledger {
             "session" => ("session", "channel"),
             intent => (intent, "tx"),
         };
+        let token = match dollars(&symbol) {
+            true => format!(" in {symbol}"),
+            false => String::new(),
+        };
         Some(format!(
-            "paid {} {symbol} to {key} ({intent}, {label} {})",
-            mach(paid.amount),
+            "paid {}{token} to {key} ({intent}, {label} {})",
+            priced(paid.amount, &symbol),
             paid.reference
         ))
     }
@@ -517,13 +529,21 @@ impl Ledger {
     }
 
     fn totals(&self) -> String {
-        let mut totals = BTreeMap::<&str, u128>::new();
+        let mut usd = None::<u128>;
+        let mut tokens = BTreeMap::<&str, u128>::new();
         for service in self.services.values() {
-            *totals.entry(&service.symbol).or_default() += service.spent;
+            match dollars(&service.symbol) {
+                true => *usd.get_or_insert(0) += service.spent,
+                false => *tokens.entry(&service.symbol).or_default() += service.spent,
+            }
         }
-        totals
+        usd.map(|total| format!("${}", mach(total)))
             .into_iter()
-            .map(|(symbol, total)| format!("{} {symbol}", mach(total)))
+            .chain(
+                tokens
+                    .into_iter()
+                    .map(|(symbol, total)| priced(total, symbol)),
+            )
             .collect::<Vec<_>>()
             .join(" + ")
     }
@@ -649,17 +669,16 @@ impl McpPendingPayment for McpPending {
                 .ok()
                 .and_then(|request| request.get("amount")?.as_str()?.parse().ok())
         });
-        if let Some(amount) = amount {
+        if let (Some(receipt), Some(amount)) = (&self.receipt, amount) {
             let funding = self.wallet.funding_currency(challenge);
             let charge = Paid {
                 url: &self.url,
                 challenge,
                 amount,
                 funding: funding.as_deref(),
-                reference: self
-                    .receipt
-                    .as_ref()
-                    .and_then(|receipt| receipt.get("reference")?.as_str())
+                reference: receipt
+                    .get("reference")
+                    .and_then(Value::as_str)
                     .unwrap_or_default(),
             };
             notify(
@@ -737,6 +756,17 @@ fn bar(change: i128, peak: i128) -> char {
 
 fn mach(amount: u128) -> String {
     format!("{}.{:06}", amount / MACH, amount % MACH)
+}
+
+fn dollars(symbol: &str) -> bool {
+    matches!(symbol, "MACH" | "USDC.e" | "pathUSD" | "OUSD")
+}
+
+fn priced(amount: u128, symbol: &str) -> String {
+    match dollars(symbol) {
+        true => format!("${}", mach(amount)),
+        false => format!("{} {symbol}", mach(amount)),
+    }
 }
 
 fn endpoint(

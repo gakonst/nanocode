@@ -419,8 +419,12 @@ impl App {
                             .model
                             .as_ref()
                             .map_or_else(String::new, |model| format!(" · {model}"));
+                        let cost = entry.usage.cost_usd.map_or_else(String::new, |cost| {
+                            let reported = entry.usage.estimated_cost_turns == 0;
+                            format!(" · {}", crate::events::dollars(cost.as_f64(), reported))
+                        });
                         format!(
-                            "#{} {} · {state}{model}{parent}",
+                            "#{} {} · {state}{model}{cost}{parent}",
                             entry.agent_id, entry.role
                         )
                     }));

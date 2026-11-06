@@ -310,7 +310,7 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_DEPOSIT",
         value_name = "BASE_UNITS",
-        help = "Model session deposit and top-up for --gateway tempo in the token's base units (6 decimals): 2000000 (2 MACH) on Tempo's proxies and 1000000 (1 of the token) on an endpoint unless set"
+        help = "Model session deposit and top-up for --gateway tempo in the token's base units (6 decimals) when the service suggests no deposit of its own: 2000000 (2 MACH) on Tempo's proxies and 1000000 (1 of the token) on an endpoint unless set"
     )]
     pub tempo_deposit: Option<u128>,
 
@@ -318,7 +318,7 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_TOOL_DEPOSIT",
         value_name = "BASE_UNITS",
-        help = "Session deposit and top-up, in base units, for the paid services tools reach with --gateway tempo on Tempo's proxies: 100000 (0.1 MACH) unless set"
+        help = "Session deposit and top-up, in base units, for the paid services tools reach with --gateway tempo on Tempo's proxies, when a service suggests no deposit of its own (the Tempo gateway suggests 1 MACH): 100000 (0.1 MACH) unless set"
     )]
     pub tempo_tool_deposit: Option<u128>,
 }

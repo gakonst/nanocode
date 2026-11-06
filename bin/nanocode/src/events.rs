@@ -1297,6 +1297,14 @@ fn agent_lines(value: &Value, lines: &mut Vec<String>) {
             if let Some(error) = status["error"].as_str() {
                 line.push_str(&format!(" · {error}"));
             }
+            let usage = &value["usage"];
+            if let Some(cost) = usage["cost_usd"]
+                .as_str()
+                .and_then(|cost| cost.parse::<f64>().ok())
+            {
+                let reported = usage["estimated_cost_turns"].as_u64().is_none();
+                line.push_str(&format!(" · {}", dollars(cost, reported)));
+            }
             lines.push(line);
         }
         Value::Object(map) => map.values().for_each(|value| agent_lines(value, lines)),
@@ -1361,9 +1369,19 @@ fn summary(payload: &Value, status: &str, observed: Usage) -> String {
         parts.push(usage_text);
     }
     if let Some(cost) = payload["cost_usd"].as_f64() {
-        parts.push(format!("{}{cost:.4}", '$'));
+        parts.push(dollars(
+            cost,
+            payload["cost_status"] == "reported_by_provider",
+        ));
     }
     parts.join(" · ")
+}
+
+pub(crate) fn dollars(cost: f64, reported: bool) -> String {
+    match reported {
+        true => format!("{}{cost:.6}", '$'),
+        false => format!("~{}{cost:.4}", '$'),
+    }
 }
 
 fn tokens(count: u64) -> String {

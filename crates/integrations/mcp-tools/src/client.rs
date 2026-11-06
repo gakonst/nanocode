@@ -108,12 +108,17 @@ impl ClientInner {
             }
             Ok(result) => {
                 let mut pending = pending;
-                if let Some(receipt) = result
+                match result
                     .meta
                     .as_ref()
                     .and_then(|meta| meta.get(MCP_RECEIPT_META_KEY))
                 {
-                    pending.receipt(receipt);
+                    Some(receipt) => pending.receipt(receipt),
+                    None if result.is_error() => {
+                        pending.rollback().await.map_err(McpCallError::Payment)?;
+                        return Ok(result);
+                    }
+                    None => {}
                 }
                 pending.commit().await.map_err(McpCallError::Payment)?;
                 Ok(result)

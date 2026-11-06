@@ -1,146 +1,95 @@
 # Crate layout
 
-| Directory | Responsibility | Expected changes |
-| --- | --- | --- |
-| `nanocode/` | Public Rust composition and builders | Public API wiring |
-| `runtime/` | Agent lifecycle, Code Mode, durability, and subagent orchestration | Active runtime development |
-| `backends/` | Provider APIs, execution adapters, prompts, backend-owned tools, and each backend's durability adapter | Provider-specific maintenance |
-| `core/` | Shared types, tool contracts, macros, media, platform interfaces, TLS, and home configuration | Changes to shared contracts or infrastructure |
-| `integrations/` | Computer use, observability, and state stores | Integration-specific development |
-| `tui/` | Reusable terminal UI components (`nanocode-tui`): terminal session, composer, transcript, markdown, diff, pickers, queue, agent tree | Terminal presentation |
-| `../bin/nanocode/` | The `nanocode` / `nc` interactive agent built on `nanocode` and `nanocode-tui` | Application behavior |
+| Directory | Responsibility |
+| --- | --- |
+| `nanocode/` | The public facade: re-exports and builders |
+| `core/` | Values, contracts and plumbing every layer shares |
+| `runtime/` | Backend-generic orchestration: agents, subagents, Code Mode, durable sessions, tool selection |
+| `backends/<provider>/` | One tree per provider: `client` (wire protocol, authentication, transport), Claude's `tools`, and the driver crate (agent, prompts, tool assembly, durability format) |
+| `integrations/` | Native host adapters: shells and processes, computer use, browsers, sandboxing, MCP, remote hands and runners, stores, telemetry |
+| `tui/` | Terminal UI components |
+| `../bin/nanocode/` | The `nanocode` / `nc` executable |
+| `../bin/cua-driver/` | The macOS computer-use helper |
 
-Each backend is one crate containing its API definitions, tools, and durability
-adapter. `core/` depends on nothing above it; `runtime/` depends only on `core/`
-and `runtime/`. `scripts/check-dependency-boundaries.mjs` enforces both.
+`scripts/check-dependency-boundaries.mjs` enforces the layering: `core/` depends on nothing above it, `runtime/` only on `core/`, `integrations/` on neither `backends/` nor the facade, and a backend on no other backend and no host implementation. Provider `client` crates stay free of runtime, tool-host, Code Mode and durability dependencies, and `nanocode-types-core` and `nanocode-agent-types` stay free of Tokio.
 
-Directory placement describes ownership. Cargo dependencies determine rebuilds;
-keep backend details out of shared contracts and runtime-only changes out of backends.
+## core
 
-`nanocode-code-mode-engine` owns the native QuickJS execution worker and its
-event protocol. It depends only on core tool contracts and the execution engine,
-so Cargo can compile it alongside MCP rather than inside the Code Mode facade.
-`nanocode-code-mode` preserves the existing entry points and orchestrates both.
-The native worker is gated out on WASM, which continues to use the Rust host
-interface for Code Mode execution.
+| Crate | Owns |
+| --- | --- |
+| `nanocode-types-core` | SDK values and event wire formats |
+| `nanocode-types` | Event channels, over `nanocode-types-core` |
+| `nanocode-agent-types` | Model, usage and error values |
+| `nanocode-agent-core` | Agent lifecycle, handles and session contracts |
+| `nanocode-durability-core` | `StateStore`, content-addressed payloads, the deterministic state machine, `SqlStore`, `RowStore`, `StagedStore`, `BlobStore` |
+| `nanocode-tool-contracts`, `nanocode-tool-provider` | Tool invocation traits and dynamic tool providers |
+| `nanocode-tools`, `nanocode-tools-macros` | The `#[tool]` macro and the crate its expansion names |
+| `nanocode-process-contracts` | Portable shell and file host interfaces, `Redactor` |
+| `nanocode-platform` | The host interface WASM embedders install |
+| `nanocode-sync` | Lock-free primitives: `Atom`, `Mailbox`, `Actor`, `Sequencer`, `Slot`, `Signal`, ... |
+| `nanocode-http`, `nanocode-zstd`, `nanocode-tls` | HTTP layer contracts and retry rules, a streaming zstd decoder, cached TLS configuration |
+| `nanocode-mcp`, `nanocode-mcp-http` | The MCP client: portable session engine; native Streamable HTTP and OAuth |
+| `nanocode-schema` | JSON Schema validation for output contracts |
+| `nanocode-home` | The Nanocode home, AGENTS.md and skill discovery, shell detection, user services |
+| `nanocode-image`, `nanocode-audio` | Prompt image preparation; audio token accounting |
+
+## runtime
+
+| Crate | Owns |
+| --- | --- |
+| `nanocode-agent` | `AgentRuntime`, `TurnInbox`, `SessionLog`, session event batching |
+| `nanocode-agent-config` | Assembly interfaces, so backends do not depend on `nanocode-agent` |
+| `nanocode-subagents` | The task tree: spawning, waiting, messages, residency, completions, budgets, the journal |
+| `nanocode-code-mode` | `exec` and `wait`, cell orchestration and replay, the remote hand protocol |
+| `nanocode-code-mode-engine` | The QuickJS cell worker pool (native) and stepped execution (WASM) |
+| `nanocode-durability` | Session drivers, the `SessionStore` catalog, `SharedStore`, `MemoryStore`, branches, the record cache |
+| `nanocode-tool-host` | The `Tools` builder, tool selection, admission, `FunctionTool`, description pins |
+
+## backends
+
+| Crate | Owns |
+| --- | --- |
+| `nanocode-backend-claude-client` | The Messages wire format, authentication, the subscription wire, streaming, message threads |
+| `nanocode-backend-claude-tools` | Claude's tool definitions and handlers |
+| `nanocode-backend-claude` | The Claude driver, its pinned upstream prompts and tools, durability format |
+| `nanocode-backend-codex-client` | The Responses protocol, ChatGPT and API authentication, WebSocket and HTTPS transports, gateways, pricing |
+| `nanocode-backend-codex` | The Codex driver, built-in tools, compaction, durability format |
+
+## integrations
+
+| Crate | Owns |
+| --- | --- |
+| `nanocode-agent-host` | Native defaults: durable process routing, runner lifecycle, computer use |
+| `nanocode-tool-runtime` | Host tool registration, workspace execution, MCP, hands and attachment runners |
+| `nanocode-process` | Shell sessions, PTYs, the zsh shell server, warm bash processes |
+| `nanocode-mcp-tools` | MCP discovery, catalogs, prepared tools, stdio processes |
+| `nanocode-computer` | The `computer` tool over macOS accessibility, Linux AT-SPI, cua-driver and MCP providers; the `cua_repl` tools and browser extension host |
+| `nanocode-chatgpt-extension` | Browser tabs through the official ChatGPT extension's native-messaging host |
+| `nanocode-sandbox` | Commands confined to read-only paths, one writable directory and an allowlisting egress proxy |
+| `nanocode-store-jsonl` | The append-only JSONL store, one file per session: the CLI's default |
+| `nanocode-store-sql` | `Sql` hosts for SQLite (`SqliteSql`), Postgres (`PostgresSql`) and a host's own sqlx pool or transaction (`SqlxSql`, `SqlxTransaction`, `commit_staged`) |
+| `nanocode-observability` | Tracing and OpenTelemetry setup |
 
 ## Durability
 
-`nanocode-durability` owns the durable state machine, the `StateStore` contract,
-`MemoryStore`, the session catalog, and the `CheckpointFormat` trait. It has no
-backend or database dependencies and builds for native and WASM.
-
-Each backend implements `DurableAgentExt`, `DurableBackendRegistration`, and a
-`CheckpointFormat` in its own `durability` module. Third-party backends use the
-same traits. `SessionStore::register_format` registers a format on every clone of
-the store; the composed runtime registers the Codex, Claude, and configured backend
-formats on the store passed to `.durability(...)`, which accepts any `StateStore`.
-
-Durability is enabled by default on the composed runtime. Native sessions use
-`nanocode-store-jsonl` at the configured Codex home under `nanocode/sessions.jsonl`.
-`.durability(...)` selects one shared store for roots and their subagents.
-`nanocode-store-sqlite` and `nanocode-store-postgres` are optional store crates.
-The JSONL adapter keeps a rebuildable SQLite offset index beside each log as
-`<log>.index.sqlite`. Payloads and immutable records remain in JSONL; opening an
-indexed log or resuming one state reads only its index pages and referenced log
-entries. The first open builds the index for existing logs. JSONL is synced
-before the index advances, and any unindexed tail is replayed on recovery.
-Index transactions and connection shutdown share the log's file lock. The index
-uses SQLite WAL with normal synchronization and requires a local filesystem;
-its offsets use SQLite's signed 64-bit integer range, while revisions and fences
-retain the full unsigned 64-bit range. Removing the index rebuilds it from JSONL.
-WASM defaults to memory; hosts implement `StateStore` over persistent storage to
-retain sessions across host restarts.
-
-Beginning a previously started step without a committed receipt returns
-`BeginStep::Interrupted`. The built-in backends record an unknown-outcome error
-for interrupted tool calls and deliver it to the model without invoking the
-handler again. Committed tool receipts replay their recorded output.
+Each backend implements `DurableAgentExt`, `DurableBackendRegistration` and a `CheckpointFormat` in its own `durability` module, and the composed runtime registers them on the store it is given. Native hosts default to `nanocode-store-jsonl` in the Nanocode home. `SqlStore`, `RowStore` and `SessionLog` run over any `Sql` host: `nanocode-store-sql` natively, a host's own SQL (Durable Objects, D1, libSQL, sqlite-wasm) on WASM. Memory is the WASM default and is not durable.
 
 ## Composition
 
 | Host | Crates |
 | --- | --- |
-| Native TUI or CLI | `nanocode`, `nanocode-tui`, a store such as `nanocode-store-jsonl` or `nanocode-store-sqlite`, optionally `nanocode-observability` |
-| Native server | `nanocode`, `nanocode-store-postgres`, `nanocode-observability` |
-| WASM worker | `nanocode` and a host `StateStore` |
+| Native TUI or CLI | `nanocode`, `nanocode-tui`, `nanocode-observability` |
+| Native server | `nanocode`, `nanocode-store-sql`, `nanocode-observability` |
+| WASM brain | `nanocode` with `default-features = false` (no QuickJS) and a host `Sql` or `StateStore` |
+| WASM with local cells | `nanocode` with `local-cells`, built against wasi-sdk |
 
-`nc` records OpenTelemetry traces and metrics by default in its home directory
-under `log/otel/<timestamp>-<pid>/traces.jsonl` and `metrics.jsonl`. Each line is
-an OTLP JSON export request with resource and scope metadata. Completed spans
-are written immediately; metrics are written periodically and at shutdown.
-`--home` also selects this telemetry location. `--otel-endpoint` additionally
-exports to an OTLP/HTTP collector, while local recording continues.
-`ObservabilityBuilder::otlp_directory` enables the same file exporters in native
-hosts without changing library defaults.
+## WASM
 
-TUI traces include `nc.input`, `nc.command`, `nc.action`, `nc.app_event` and
-`nc.frame`. Frame spans link to the input that requested them and carry session
-IDs and input/stream/resize causes. Nested spans measure transcript cache misses
-and visited cells, markdown/code/diff formatting, composer and overlay rendering,
-pane rendering, terminal diffing, encoding and writes, plus session loading,
-replay and restoration. Frame metrics report input/stream/resize latency and
-frame duration. Action spans measure dispatch work; asynchronous model and tool
-work has its own spans. Export uses completed spans, so active operations appear
-when they finish.
+Every reusable crate builds for native and `wasm32-unknown-unknown`. There is no packaged WASM SDK and no wasm-bindgen ABI; bindings live in other repositories. A WASM embedding installs one `Rc<dyn nanocode_platform::Host>` per execution thread, which schedules local futures, implements cancellable sleeps and supplies clocks and secure random bytes. Codex networking goes through `HostTransport` and Claude's through `HttpTransport`; native terminal, filesystem, database, process and telemetry adapters are gated out.
 
-## WASM compilation
+## Replacements and patches
 
-This is one Rust crate workspace. Reusable crates compile individually for native
-and `wasm32-unknown-unknown` targets. There is no separately packaged WASM SDK,
-JavaScript package, or project-owned wasm-bindgen ABI. Language bindings belong
-in an external repository.
-
-`nanocode-platform` provides the Rust host interface used by portable crates.
-On native targets it uses the operating system and Tokio. A WASM embedding
-installs one `Rc<dyn nanocode_platform::Host>` per execution thread before using
-the runtime. The host schedules local futures, implements cancellable sleeps,
-supplies monotonic and wall clocks, and fills buffers with cryptographically
-secure random bytes. The host is installed once for that execution thread. Dropping a sleep
-future must cancel its timer. UUIDv7 uses the RFC 9562 48-bit Unix millisecond timestamp;
-clock values outside that range are rejected.
-
-Codex networking uses `nanocode::codex::transport::host::HostTransport`.
-Claude networking uses `nanocode::claude::transport::HttpTransport` and its
-streaming response body. WASM hosts also supply tool execution and persistent
-storage through the existing Rust contracts. Native terminal, filesystem,
-database, desktop-process, and telemetry exporters are native adapters, gated out
-on WASM. Their library targets compile without exposing native APIs on WASM;
-the `nc` and `nanocode` executables run on native targets.
-`nanocode-schema` validates output contracts without JavaScript bindings or
-host randomness. The active WASM dependency graph contains no `wasm-bindgen`.
-Cargo.lock can still list optional JavaScript dependencies of native-only upstream
-packages; those packages are excluded from WASM builds.
-
-Check a reusable crate with `cargo check -p <crate>` and
-`cargo check --target wasm32-unknown-unknown -p <crate>`.
-
-Check every library target with `cargo check --workspace --lib` and
-`cargo check --workspace --lib --target wasm32-unknown-unknown`.
-
-## Focused dependency replacements
-
-Output-contract validation uses [`nanocode-schema`](core/schema/README.md), a
-locally maintained adaptation of Boon with full draft 4 through 2020-12 support.
-It replaces the broad jsonschema dependency tree while keeping schema checking,
-references, format behavior and validation error locations. Its sources retain
-upstream licenses and provenance. No project Cargo features are needed.
-
-The MCP client uses [`nanocode-mcp`](core/mcp/README.md) rather than rmcp and
-oauth2. The portable crate provides JSON-RPC and protocol types, the client
-session, SSE parsing and OAuth helpers. `nanocode-mcp-http` holds the native
-Streamable HTTP transport and the OAuth discovery, login and refresh flows; it
-compiles to an empty library on WASM. Code Mode keeps the stdio transport and
-the tool and runtime orchestration, and re-exports the public OAuth types. Stdio, Streamable HTTP with
-SSE, session re-initialization, paginated discovery, payments, OAuth login and
-refresh keep their existing behavior.
-
-MCP tool discovery uses an internal immutable BM25 index rather than the bm25
-crate. Tokenization and scoring parameters are preserved; ties are deterministic.
-See [the scoring contract](runtime/code-mode/src/mcp/SEARCH.md).
-
-Claude's legacy subscription user ID uses the pinned Claude Code wire format:
-`user_<64 ASCII hex digits>_account_<lowercase hyphenated UUID>_session_<lowercase hyphenated UUID>`.
-It is parsed directly with the existing UUID dependency. General regex support
-is confined to native tools. Codex enables only Tower retry and service utilities;
-the TUI loads built-in syntax definitions and supplies its own highlighting theme.
+- `nanocode-schema` is an adaptation of Boon (JSON Schema drafts 4 through 2020-12), in place of jsonschema; see [its README](core/schema/README.md).
+- `nanocode-mcp` replaces rmcp and oauth2; see [its README](core/mcp/README.md). MCP tool search uses its own BM25 index; see [the scoring contract](integrations/mcp-tools/src/SEARCH.md).
+- `nanocode-zstd` decodes zstd responses without a C library.
+- `patches/` holds rustls-platform-verifier and iana-time-zone, patched so macOS builds link neither Security.framework nor CoreFoundation.

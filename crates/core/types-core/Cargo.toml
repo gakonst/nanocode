@@ -11,7 +11,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-nanocode-sync.workspace = true
+arc-swap.workspace = true
 smallvec.workspace = true
 serde.workspace = true
 serde_json.workspace = true

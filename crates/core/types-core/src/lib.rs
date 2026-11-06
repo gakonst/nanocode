@@ -47,20 +47,26 @@ impl CustomModel {
     #[must_use]
     pub fn new(id: &str) -> Self {
         static INTERNED: std::sync::OnceLock<
-            nanocode_sync::Atom<std::collections::BTreeSet<&'static str>>,
+            arc_swap::ArcSwap<std::collections::BTreeSet<&'static str>>,
         > = std::sync::OnceLock::new();
         let interned = INTERNED.get_or_init(Default::default);
-        if let Some(existing) = interned.read(|ids| ids.get(id).copied()) {
+        if let Some(existing) = interned.load().get(id).copied() {
             return Self(existing);
         }
         let leaked: &'static str = Box::leak(id.to_owned().into_boxed_str());
-        Self(interned.update(|ids| {
-            if let Some(existing) = ids.get(id) {
-                return *existing;
+        let mut interned_id = leaked;
+        interned.rcu(|ids| {
+            let mut ids = std::collections::BTreeSet::clone(ids);
+            match ids.get(id) {
+                Some(existing) => interned_id = existing,
+                None => {
+                    ids.insert(leaked);
+                    interned_id = leaked;
+                }
             }
-            ids.insert(leaked);
-            leaked
-        }))
+            ids
+        });
+        Self(interned_id)
     }
 
     #[must_use]

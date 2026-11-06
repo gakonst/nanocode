@@ -16,7 +16,7 @@ pub mod embedded;
 pub mod remote;
 mod toolset;
 
-pub use nanocode_media::image;
+pub use nanocode_image as image;
 pub use nanocode_tools::tool;
 pub use toolset::{CodeModeToolObservation, CodeModeToolset};
 

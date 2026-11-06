@@ -6,7 +6,7 @@ use nanocode_agent_core::{
     input::{Prompt, PromptInput, PromptMessageRole, UserInput},
 };
 use nanocode_durability::BlobUrl;
-use nanocode_media::image::{ImageHistory, prepare_base64_images};
+use nanocode_image::{ImageHistory, prepare_base64_images};
 use serde_json::json;
 use std::io::Cursor;
 

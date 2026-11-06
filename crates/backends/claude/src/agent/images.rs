@@ -6,7 +6,7 @@ use crate::{
 };
 use nanocode_agent_core::NanocodeError;
 use nanocode_durability::{BlobUrl, agent_store_error, base64_data_url};
-use nanocode_media::image::ImageHistory;
+use nanocode_image::ImageHistory;
 use serde_json::{Value, json};
 
 use super::history::HistoryMessage;

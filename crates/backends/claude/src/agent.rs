@@ -33,7 +33,7 @@ pub use durable::{
 };
 use durable::{Cursor, Effect, Journal, Snapshot};
 use history::HistoryMessage;
-use nanocode_media::image::ImageHistory;
+use nanocode_image::ImageHistory;
 use nanocode_platform::Instant;
 #[cfg(target_family = "wasm")]
 use nanocode_platform::sleep;

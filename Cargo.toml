@@ -26,7 +26,6 @@ members = [
     "crates/core/mcp-http",
     "crates/core/platform",
     "crates/core/schema",
-    "crates/core/media",
     "crates/core/tool-provider",
     "crates/core/image",
     "crates/core/audio",
@@ -42,11 +41,8 @@ members = [
     "crates/integrations/computer",
     "crates/integrations/chatgpt-extension",
     "crates/integrations/sandbox",
-    "crates/integrations/decisions",
     "crates/integrations/observability",
-    "crates/integrations/store-postgres",
-    "crates/integrations/store-sqlx",
-    "crates/integrations/store-sqlite",
+    "crates/integrations/store-sql",
     "crates/integrations/store-jsonl",
     "crates/tui",
     "bin/nanocode",
@@ -87,7 +83,6 @@ nanocode-backend-codex = { version = "0.6.7", path = "crates/backends/codex" }
 nanocode-backend-codex-client = { version = "0.6.7", path = "crates/backends/codex/client" }
 nanocode-agent-core = { version = "0.6.7", path = "crates/core/agent" }
 nanocode-tool-host = { version = "0.6.7", path = "crates/runtime/tool-host" }
-nanocode-media = { version = "0.6.7", path = "crates/core/media" }
 nanocode-image = { version = "0.6.7", path = "crates/core/image" }
 nanocode-audio = { version = "0.6.7", path = "crates/core/audio" }
 nanocode-tls = { version = "0.6.7", path = "crates/core/tls" }

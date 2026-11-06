@@ -6,7 +6,7 @@ pub use nanocode_tools::{
 pub mod contract {
     pub use nanocode_tools::*;
 }
-pub use nanocode_media::image;
+pub use nanocode_image as image;
 
 pub mod apply_patch;
 mod code_mode_policy;

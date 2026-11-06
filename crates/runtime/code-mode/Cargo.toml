@@ -19,7 +19,8 @@ rustdoc-args = ["-D", "warnings"]
 [dependencies]
 blake3.workspace = true
 nanocode-types-core.workspace = true
-nanocode-media = { path = "../../core/media", version = "0.6.7" }
+nanocode-audio.workspace = true
+nanocode-image.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true

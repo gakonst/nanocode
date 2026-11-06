@@ -23,20 +23,17 @@ const forbiddenDependencies = {
     "nanocode-backend-claude-client", "nanocode-agent-core", "nanocode-agent-types",
     "nanocode-agent-config", "nanocode-tool-host", "nanocode-code-mode", "nanocode-durability",
   ]),
-
-
   "nanocode-agent-types": new Set(["nanocode-agent-core", "nanocode-types", "nanocode-platform", "tokio", "futures-util"]),
   "nanocode-types-core": new Set(["tokio", "nanocode-platform", "futures-util"]),
   "nanocode-durability-core": new Set(["nanocode-agent-core", "nanocode-types", "nanocode-types-core"]),
   "nanocode-tool-contracts": new Set([
     "nanocode-tools", "nanocode-tools-macros", "schemars", "proc-macro-crate", "async-trait",
   ]),
-  "nanocode-store-jsonl": new Set(["rusqlite", "libsqlite3-sys", "nanocode-store-sqlite", "nanocode-durability"]),
-  "nanocode-store-sqlite": new Set(["nanocode-durability"]),
-  "nanocode-store-postgres": new Set(["nanocode-durability"]),
+  "nanocode-store-jsonl": new Set(["rusqlite", "libsqlite3-sys", "nanocode-store-sql", "nanocode-durability"]),
+  "nanocode-store-sql": new Set(["nanocode-durability"]),
   "nanocode-agent-config": new Set(["nanocode-agent", "nanocode-subagents"]),
   "nanocode-backend-codex-client": new Set([
-    "nanocode-agent-core", "nanocode-media", "nanocode-image",
+    "nanocode-agent-core", "nanocode-image",
     "nanocode-agent-config", "nanocode-tool-host", "nanocode-code-mode", "nanocode-durability",
   ]),
   "nanocode-backend-claude-client": new Set([

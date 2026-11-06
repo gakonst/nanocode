@@ -3183,7 +3183,7 @@ dependencies = [
  "nanocode-durability",
  "nanocode-home",
  "nanocode-http",
- "nanocode-media",
+ "nanocode-image",
  "nanocode-platform",
  "nanocode-process",
  "nanocode-process-contracts",
@@ -3268,7 +3268,7 @@ dependencies = [
  "nanocode-durability",
  "nanocode-home",
  "nanocode-http",
- "nanocode-media",
+ "nanocode-image",
  "nanocode-platform",
  "nanocode-process",
  "nanocode-process-contracts",
@@ -3374,8 +3374,9 @@ dependencies = [
  "blake3",
  "futures-util",
  "imbl",
+ "nanocode-audio",
  "nanocode-code-mode-engine",
- "nanocode-media",
+ "nanocode-image",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tool-contracts",
@@ -3440,19 +3441,6 @@ version = "0.6.7"
 dependencies = [
  "nanocode-computer",
  "tokio",
-]
-
-[[package]]
-name = "nanocode-decisions"
-version = "0.6.7"
-dependencies = [
- "async-trait",
- "nanocode-tls",
- "nanocode-tool-contracts",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3597,14 +3585,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanocode-media"
-version = "0.6.7"
-dependencies = [
- "nanocode-audio",
- "nanocode-image",
-]
-
-[[package]]
 name = "nanocode-observability"
 version = "0.6.7"
 dependencies = [
@@ -3711,32 +3691,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanocode-store-postgres"
+name = "nanocode-store-sql"
 version = "0.6.7"
 dependencies = [
  "futures-util",
  "nanocode-durability-core",
  "nanocode-sync",
+ "rusqlite",
+ "sqlx",
  "tokio",
  "tokio-postgres",
-]
-
-[[package]]
-name = "nanocode-store-sqlite"
-version = "0.6.7"
-dependencies = [
- "nanocode-durability-core",
- "rusqlite",
- "tokio",
-]
-
-[[package]]
-name = "nanocode-store-sqlx"
-version = "0.6.7"
-dependencies = [
- "nanocode-durability-core",
- "nanocode-sync",
- "sqlx",
 ]
 
 [[package]]
@@ -3804,7 +3768,7 @@ dependencies = [
  "futures-util",
  "nanocode-code-mode",
  "nanocode-home",
- "nanocode-media",
+ "nanocode-image",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tool-provider",
@@ -3842,7 +3806,6 @@ dependencies = [
  "nanocode-code-mode",
  "nanocode-home",
  "nanocode-mcp-tools",
- "nanocode-media",
  "nanocode-process",
  "nanocode-sync",
  "nanocode-tls",

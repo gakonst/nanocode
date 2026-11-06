@@ -1,7 +1,7 @@
 [package]
 autotests = false
 autobenches = false
-name = "nanocode-store-sqlite"
+name = "nanocode-store-sql"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,12 +9,16 @@ publish.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SQLite state store for Nanocode durability"
+description = "SQLite and Postgres hosts for Nanocode's SQL stores: rusqlite, tokio-postgres, and a host's own sqlx pool or transaction"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+futures-util.workspace = true
 nanocode-durability-core.workspace = true
+nanocode-sync.workspace = true
 rusqlite.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+sqlx.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+tokio-postgres.workspace = true
 
 [lints]
 workspace = true

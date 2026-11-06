@@ -1,10 +1,8 @@
-#![cfg(not(target_family = "wasm"))]
-
 use std::ops::DerefMut;
 
-pub use nanocode_durability_core::{Collected, Unreachable};
 use nanocode_durability_core::{
-    Sql, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites, StoreError, StoreFuture,
+    Collected, Sql, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites, StoreError,
+    StoreFuture, Unreachable,
 };
 use nanocode_sync::Owned;
 use sqlx::{PgConnection, PgPool, Postgres, Row, pool::PoolConnection};
@@ -117,7 +115,7 @@ pub async fn collect(
         .await
 }
 
-pub async fn run(
+async fn run(
     connection: &mut PgConnection,
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {

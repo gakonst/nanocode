@@ -1,6 +1,6 @@
 pub use nanocode_code_mode::{code_mode, code_mode_description, code_mode_spec};
 pub use nanocode_home::SessionEnvironment;
-pub use nanocode_media::image;
+pub use nanocode_image as image;
 pub use nanocode_tools::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult, tool,
 };

@@ -134,5 +134,5 @@ fn output_bytes(output: &FunctionOutputBody) -> usize {
 }
 
 fn audio_bytes(url: &str) -> usize {
-    crate::client::audio::estimate_audio_token_count(url).saturating_mul(APPROX_BYTES_PER_TOKEN)
+    nanocode_audio::estimate_audio_token_count(url).saturating_mul(APPROX_BYTES_PER_TOKEN)
 }

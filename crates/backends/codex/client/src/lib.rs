@@ -7,8 +7,6 @@ compile_error!(
 
 use crate as client;
 
-pub mod audio;
-
 pub mod auth;
 
 pub mod events;

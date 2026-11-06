@@ -1,77 +1,67 @@
-["package"]
-"name" = "nanocode-backend-codex"
-"version" = { "workspace" = true }
-"edition" = { "workspace" = true }
-"rust-version" = { "workspace" = true }
-"publish" = { "workspace" = true }
-"authors" = { "workspace" = true }
-"license" = { "workspace" = true }
-"repository" = { "workspace" = true }
-"keywords" = { "workspace" = true }
-"categories" = { "workspace" = true }
-"description" = "Codex backend: agent driver, tools and durability over the Responses client"
-"metadata" = { "docs" = { "rs" = {  "rustdoc-args" = ["-D", "warnings"] } } }
+[package]
+name = "nanocode-backend-codex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Codex backend: agent driver, tools and durability over the Responses client"
 
-["dependencies"]
+[package.metadata.docs.rs]
+rustdoc-args = ["-D", "warnings"]
+
+[dependencies]
 arc-swap.workspace = true
-nanocode-sync.workspace = true
+async-trait.workspace = true
+base64.workspace = true
 base64-simd.workspace = true
-nanocode-backend-codex-client.workspace = true
-nanocode-process-contracts.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+http.workspace = true
+image.workspace = true
 nanocode-agent-config.workspace = true
+nanocode-agent-core.workspace = true
+nanocode-backend-codex-client.workspace = true
+nanocode-code-mode.workspace = true
+nanocode-durability.workspace = true
+nanocode-home.workspace = true
+nanocode-image.workspace = true
+nanocode-platform.workspace = true
+nanocode-process-contracts.workspace = true
+nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true
-"nanocode-platform" = { "workspace" = true }
-"nanocode-home" = { "workspace" = true }
-"chrono" = { "workspace" = true  }
-"futures-util" = { "workspace" = true }
-"http" = { "workspace" = true }
-"nanocode-code-mode" = { "workspace" = true  }
-"nanocode-tool-host" = { "workspace" = true }
-"serde" = { "workspace" = true }
-"serde_json" = { "workspace" = true }
-"sha2" = { "workspace" = true  }
-"thiserror" = { "workspace" = true }
-"tokio" = { "workspace" = true, "features" = ["macros", "sync", "time"] }
-"tower" = { "workspace" = true  }
-"tracing" = { "workspace" = true }
-"nanocode-media" = { "workspace" = true }
-"nanocode-types" = { "workspace" = true }
-"sha1" = { "workspace" = true }
-"image" = { "workspace" = true }
-"async-trait" = { "workspace" = true }
-"base64" = { "workspace" = true }
-"smallvec" = { "workspace" = true }
-"nanocode-tools" = { "workspace" = true }
-"schemars" = { "workspace" = true }
-"nanocode-agent-core" = { "workspace" = true }
-"nanocode-durability" = { "workspace" = true }
+nanocode-tool-host.workspace = true
+nanocode-tools.workspace = true
+nanocode-types.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tower.workspace = true
+tracing.workspace = true
 
-["target"]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+chrono = { workspace = true, features = ["clock"] }
+iana-time-zone.workspace = true
+nanocode-http.workspace = true
+nanocode-process.workspace = true
+nanocode-tls.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
 
-["target"."cfg(not(target_family = \"wasm\"))"]
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
-["target"."cfg(not(target_family = \"wasm\"))"."dependencies"]
-"chrono" = { "workspace" = true, "features" = ["clock"] }
-"iana-time-zone" = { "workspace" = true }
-"tokio" = { "workspace" = true, "features" = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time", "rt"] }
-"reqwest" = { "workspace" = true  }
-"nanocode-tls" = { "workspace" = true }
-"nanocode-process" = { "workspace" = true }
-"nanocode-http" = { "workspace" = true }
-"async-trait" = { "workspace" = true }
-
-["target"."cfg(unix)"]
-
-["target"."cfg(unix)"."dependencies"]
-"libc" = { "workspace" = true }
-
-["target"."cfg(target_os = \"macos\")"]
-
-["target"."cfg(target_os = \"macos\")"."dependencies"]
-
-["lints"]
-"workspace" = true
-
+[lints]
+workspace = true
 
 [lib]
 test = false

@@ -9,6 +9,6 @@
 - Preserve public APIs. Use authentic, version-pinned upstream Claude and Codex prompts and tool shapes, keeping SDK additions separate, and share Code Mode and computer use across both backends.
 - Inference, subagents and durability live in the brain; Code Mode runs on the user's machine. Never silently replay dispatched work: report uncertain outcomes.
 - Validate with focused builds (`cargo check --locked --lib -p <crate>`, again with `--target wasm32-unknown-unknown`) and back performance changes with reproducible before/after measurements.
-- Keep artifacts in ignored `output/`; never commit credentials or personal data.
+- Check behavior with harnesses in ignored `output/`, such as `output/hand-wiring`: a crate with its own `[workspace]` and path dependencies on these crates, one binary per check or benchmark, run against local mocks, with builds compared by interleaved runs. Keep every artifact there; never commit them, credentials or personal data.
 - Work on master in the main checkout, commit only your own changes and push each one. Use subagents only when asked.
 - This file holds principles only; history belongs in commit messages.

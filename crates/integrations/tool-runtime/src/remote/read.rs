@@ -12,12 +12,6 @@ pub enum ReadError<E> {
     Call(E),
 }
 
-/// Reads a whole file through a Hand's chunked `read_file`, `chunk` bytes at a time.
-/// `read` runs one `read_file` call with the given input and returns its outcome
-/// (`{status, output: {success, output, structured_result}}`). A file that changes
-/// size or modification time between chunks, shrinks, or moves under the reader is
-/// `Changed`; a refusal, a symbolic link or a file larger than `limit` is
-/// `Unreadable`; a missing file is `Ok(None)`.
 pub async fn read_whole<E, F, Fut>(
     path: &str,
     chunk: u64,

@@ -543,7 +543,6 @@ impl ProcessGroupGuard {
         for signal in [Signal::SIGSTOP, Signal::SIGKILL] {
             match killpg(process_group, signal) {
                 Ok(()) => {}
-                // No process is left in the group to kill.
                 Err(Errno::ESRCH) => return Ok(()),
                 Err(error) => return Err(io::Error::from_raw_os_error(error as i32)),
             }
@@ -588,9 +587,6 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-/// The environment for a command and a redactor for its output: inherited or
-/// overridden values of sensitive-looking variables show as `[REDACTED]`,
-/// and each of `secret_overrides` as `[secret NAME]`.
 pub(super) fn sanitized_environment(
     overrides: &[(OsString, OsString)],
     secret_overrides: &[(OsString, OsString)],
@@ -631,13 +627,6 @@ pub(super) fn sanitized_environment(
     (environment, redactor)
 }
 
-/// The script a login shell runs so that `secret_overrides` win over its
-/// profile: a profile that sets a variable of the same name runs after the
-/// environment is applied and would replace the host's value. For POSIX
-/// shells each secret is also passed under a private name and exported again
-/// from it before the script; other shells and non-login shells read no
-/// profile this way and run the script unchanged. Names that are not shell
-/// identifiers keep only the environment.
 pub(super) fn export_secrets_after_profile<'a>(
     script: &'a str,
     shell: &Shell,
@@ -656,8 +645,6 @@ pub(super) fn export_secrets_after_profile<'a>(
         let private = format!("{SECRET_COPY_PREFIX}{name}");
         environment.retain(|(candidate, _)| candidate != private.as_str());
         environment.push((private.clone().into(), value.clone()));
-        // A read-only or special name (UID, PPID...) fails in a subshell
-        // first, so it can't abort the command under zsh or sh.
         prefix.push_str(&format!(
             "( export {name}=\"${private}\" ) 2>/dev/null && export {name}=\"${private}\"; unset {private}; "
         ));
@@ -665,12 +652,10 @@ pub(super) fn export_secrets_after_profile<'a>(
     if prefix.is_empty() {
         return script.into();
     }
-    // One line, so the script's line numbers are unchanged.
     prefix.push_str(script);
     prefix.into()
 }
 
-/// Prefix of the private copies `export_secrets_after_profile` passes.
 const SECRET_COPY_PREFIX: &str = "__NANOCODE_SECRET_";
 
 fn is_shell_identifier(name: &str) -> bool {

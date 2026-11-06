@@ -376,14 +376,10 @@ pub trait LifecycleBackend: Send + Sync + 'static {
 
     fn set_fast_mode(&self, enabled: bool) -> BackendFuture<Result<()>>;
 
-    /// Sets the context size, in tokens, at which the agent compacts its history by itself, from
-    /// the next turn on; `None` restores the backend's own default.
     fn set_auto_compact_token_limit(&self, _limit: Option<u64>) -> BackendFuture<Result<()>> {
         unsupported("auto_compact_token_limit")
     }
 
-    /// Sets the reasoning effort the agent's compactions run at, from the next one on; `None`
-    /// compacts at the conversation's own effort.
     fn set_compaction_thinking(&self, _thinking: Option<Thinking>) -> BackendFuture<Result<()>> {
         unsupported("compaction_thinking")
     }

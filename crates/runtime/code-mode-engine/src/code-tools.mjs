@@ -41,15 +41,9 @@ export function createCodeTools(names, invoke) {
       }
       return {
         missing(input) {
-          // Object's own names and toJSON are what String(tools) or
-          // JSON.stringify(tools) call, never tools: they stay local.
           if (name in Object.prototype || name === "toJSON") {
             return helpers.observe(helpers.unavailable(name));
           }
-          // Any other missing name goes to the host, which may find a tool
-          // registered after this cell started (DynamicToolProvider::resolve)
-          // or route it to a named hand, and otherwise rejects it with
-          // TOOL_NOT_AVAILABLE as unavailable() does.
           return helpers.observe(helpers.dispatch(name, input));
         },
       }.missing;

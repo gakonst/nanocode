@@ -116,9 +116,6 @@ pub fn declares_hand(definition: &ToolDefinition) -> bool {
         .is_some_and(|schema| schema.as_value()["properties"].get("hand").is_some())
 }
 
-/// What a nested call to a tool the host doesn't have returns: the same
-/// `TOOL_NOT_AVAILABLE` rejection a cell used to raise locally
-/// (`code-tools.mjs`), with `code` and `tool` on the cell's error.
 #[must_use]
 pub fn tool_not_available(name: &str) -> ToolOutput {
     let message = format!(

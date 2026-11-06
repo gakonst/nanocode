@@ -61,7 +61,6 @@ const MCP_PAYMENT_REQUIRED_META_KEY: &str = "org.paymentauth/payment-required";
 const MCP_RECEIPT_META_KEY: &str = "org.paymentauth/receipt";
 
 impl ClientInner {
-    /// What the server's `initialize` result said about how to use it, if anything.
     pub(crate) fn instructions(&self) -> Option<String> {
         self.session.server().and_then(|result| result.instructions)
     }
@@ -735,8 +734,6 @@ async fn finish_startup(
     Ok(ConnectedServer { client, tools })
 }
 
-/// Whether the server definitely turned the request down: a JSON-RPC error
-/// or an HTTP 4xx other than 401, not a missing answer, a 5xx or a 401.
 fn is_refusal(error: &SessionError) -> bool {
     let refusal = |status: u16| status != 401 && (400..500).contains(&status);
     match error {

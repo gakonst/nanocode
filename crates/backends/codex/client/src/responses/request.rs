@@ -1027,7 +1027,6 @@ impl<'a> ResponseCreate<'a> {
     }
 }
 
-/// Codex's `access_programs` request field.
 #[derive(Clone, Copy, Serialize)]
 struct AccessPrograms {
     cyber: crate::client::CyberAccessProgram,

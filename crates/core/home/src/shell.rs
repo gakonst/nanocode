@@ -263,10 +263,6 @@ fn default_user_shell_from_path(user_shell_path: Option<&Path>) -> Shell {
     let shell_with_fallback = user_default_shell
         .or_else(|| shell(ShellType::PowerShell, None))
         .or_else(|| shell(ShellType::Cmd, None));
-    // A Mac user whose own shell runs no commands (fish, nushell) gets the
-    // system zsh before the first one on PATH: a Nix or Homebrew zsh loads its
-    // libraries from outside the dyld shared cache, so every command started
-    // about 2 ms later and its shell cost about 40% more CPU.
     #[cfg(not(windows))]
     let shell_with_fallback = if cfg!(target_os = "macos") {
         user_default_shell

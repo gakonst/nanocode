@@ -2775,7 +2775,6 @@ pub(super) fn agent_session_context(
     ))
 }
 
-/// Sets the effort the agent's compactions run at, which its model must accept.
 fn set_compaction_thinking(
     config: &mut Arc<ModelConfig>,
     model: Model,

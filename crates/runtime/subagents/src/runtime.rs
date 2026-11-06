@@ -871,11 +871,6 @@ fn copy_error(error: &std::io::Error) -> std::io::Error {
     std::io::Error::new(error.kind(), error.to_string())
 }
 
-/// Whether a journal save failed because another process acquired the journal
-/// after this one: every store answers `Fenced` once the writer's owner token is
-/// no longer the head's, a state's fence only grows, and the journal keeps its
-/// token after `Fenced` rather than acquiring again, which would take the journal
-/// back from its new owner. No retry of this writer can succeed.
 fn is_fenced(error: &std::io::Error) -> bool {
     error
         .get_ref()
@@ -7133,14 +7128,6 @@ pub struct SubagentControl {
 }
 
 impl SubagentControl {
-    /// Stop every subagent the registry runs and forget every session handle
-    /// it holds, as the runtime that owns it shuts down. A root's handle and
-    /// its subagents stay until `close_all` for it, and their tools hold this
-    /// registry, so a runtime shut down without it kept every root session,
-    /// each subagent's harness, event forwarder and journal writer alive for
-    /// good. Each scope is frozen first, so this writes nothing to the
-    /// journals: a host that moves running subagents to another process keeps
-    /// them as last saved, and the process that claims them owns the journal.
     pub async fn shutdown(&self) {
         self.registry.release_all().await;
     }
@@ -7220,11 +7207,6 @@ impl SubagentControl {
         Ok(self.registry.resume_interrupted(root_session_id).await)
     }
 
-    /// Close the agents restored as interrupted that the host chose not to
-    /// resume, and keep the root's scope open for new work. Each closure is
-    /// journaled, so the next restore does not bring them back. `close_all`
-    /// is the root's shutdown: it freezes the scope, which refuses spawns and
-    /// later journal writes, so a root whose turn goes on must not use it here.
     pub async fn discard_restored(&self, root_session_id: &str) -> std::io::Result<()> {
         self.registry.await_restored(root_session_id).await?;
         let mut ids = Vec::new();

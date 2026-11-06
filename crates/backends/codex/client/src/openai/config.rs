@@ -21,9 +21,6 @@ pub(crate) fn prefixed_model_id(prefix: Option<&str>, model: Model) -> Cow<'stat
     }
 }
 
-/// A Cyber access program a request asks OpenAI to apply, as Codex's
-/// `--cyber-access-program`: sent as `access_programs.cyber`. Whether the
-/// account is entitled to it, and which models accept it, is decided by the server.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CyberAccessProgram {
@@ -60,24 +57,14 @@ pub struct ModelConfig {
 
     pub service_tier: ServiceTier,
 
-    /// The Cyber access program every request asks for, unless
-    /// `model_cyber_access_programs` names one for its model; `None` leaves it to the server.
     pub cyber_access_program: Option<CyberAccessProgram>,
 
-    /// The Cyber access program requests to a model ask for, over `cyber_access_program`,
-    /// so a client whose sessions run several models (subagents, a retry on another
-    /// model) asks for each model's own.
     pub model_cyber_access_programs: Vec<(Model, CyberAccessProgram)>,
 
     pub context_window_tokens: u64,
 
-    /// Overrides the context size at which the agent compacts itself; `None` keeps the model's
-    /// default, which only some models have.
     pub auto_compact_token_limit: Option<u64>,
 
-    /// The reasoning effort compactions run at, selected by a `configuration_update` ahead of
-    /// the trigger so the cached prefix stays at the context's baseline; `None` compacts at the
-    /// context's own effort, as do models without effort updates and gateways.
     pub compaction_thinking: Option<Thinking>,
 
     pub responses_transport: ResponsesTransport,
@@ -129,7 +116,6 @@ impl ModelConfig {
         self.model = model;
     }
 
-    /// The Cyber access program a request to `model` asks for.
     #[must_use]
     pub fn cyber_access_program_for(&self, model: Model) -> Option<CyberAccessProgram> {
         self.model_cyber_access_programs

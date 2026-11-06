@@ -121,9 +121,6 @@ fn pump(
         }
     }
 }
-/// Frames waiting for the stdout writer before senders block, so a browser
-/// that stops reading pushes back on OpenAI's host instead of growing memory;
-/// the stdout writes the proxy replaces were synchronous.
 const OUTGOING: usize = 64;
 
 pub(crate) struct Extension {
@@ -223,7 +220,6 @@ impl Extension {
         let id = format!("{}{}", self.prefix, self.next);
         let body = frame(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
         let deadline = Instant::now() + self.timeout;
-        // The output channel is bounded: wait for room only until the deadline.
         let mut body = body;
         loop {
             match self.output.try_send(body) {
@@ -352,7 +348,6 @@ pub struct Connection {
 }
 
 impl Bridge {
-    /// Records that the browser started the launcher, and why it stopped, for [`Bridge::launches`].
     pub fn connect(
         &self,
         manifest: &Path,

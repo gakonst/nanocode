@@ -133,16 +133,12 @@ impl ForegroundExecutor for EnvironmentForeground {
     }
 }
 
-/// Sessions by ID in shards, as Atom::update copies the whole value and a
-/// call adds its session and removes it again: with one map, copying and
-/// dropping it were 5.4% of a Hand's busy samples at 512 calls at once.
 struct Sessions {
     shards: [Atom<HashMap<i64, Arc<Session>>>; SHARDS],
     count: AtomicUsize,
     exits: Arc<Notify>,
 }
 
-/// One shard for each session a Hand keeps when it is full.
 const SHARDS: usize = MAX_SESSIONS;
 
 impl Sessions {
@@ -163,8 +159,6 @@ impl Sessions {
         self.shard(id).read(|sessions| sessions.get(&id).cloned())
     }
 
-    /// Adds a session and returns the one it replaces, if the Hand keeps
-    /// MAX_SESSIONS already.
     fn insert(&self, session: &Arc<Session>) -> Option<Arc<Session>> {
         let pruned = self.prune();
         self.shard(session.id).update(|sessions| {
@@ -188,7 +182,6 @@ impl Sessions {
             let shards: Vec<_> = self.shards.iter().map(Atom::get).collect();
             let sessions: Vec<_> = shards.iter().flat_map(|shard| shard.values()).collect();
             let victim = prune(&sessions)?;
-            // Another call may have removed it first: choose again.
             if let Some(pruned) = self.remove(victim) {
                 return Some(pruned);
             }
@@ -652,9 +645,6 @@ impl Drop for Busy<'_> {
     }
 }
 
-/// The ID of the session a new one replaces: the least recently used session
-/// not in a call and not among the PROTECTED_SESSIONS most recent, one whose
-/// process exited first.
 fn prune(sessions: &[&Arc<Session>]) -> Option<i64> {
     if sessions.len() < MAX_SESSIONS
         || sessions
@@ -1014,10 +1004,6 @@ fn generate_chunk_id() -> String {
         .collect()
 }
 
-/// Random bits for values that only need to differ, such as chunk IDs and a
-/// command's RANDOM seed: splitmix64 over a counter seeded once by the OS. A
-/// getentropy call for each was 1.5 to 2% of a Hand's busy samples at 512
-/// calls at once.
 fn random() -> u64 {
     const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
     static STATE: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();

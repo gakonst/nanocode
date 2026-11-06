@@ -523,11 +523,6 @@ pub fn dedup_scopes(scopes: impl IntoIterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-/// The scopes to request, as the MCP authorization spec selects them: the
-/// challenge's, else every scope the protected resource lists, else none,
-/// plus `offline_access` where the authorization server offers it. The
-/// authorization server's own list is not a fallback: it names every scope
-/// it grants to any resource, which a client may not be allowed to request.
 #[must_use]
 pub fn select_scopes(
     challenge_scopes: &[String],

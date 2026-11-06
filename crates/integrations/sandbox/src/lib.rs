@@ -3,7 +3,6 @@
 pub mod bubblewrap;
 #[cfg(target_os = "linux")]
 pub mod confine;
-/// Landlock and seccomp are Linux's: elsewhere confinement is refused.
 #[cfg(not(target_os = "linux"))]
 #[path = "confine_other.rs"]
 pub mod confine;

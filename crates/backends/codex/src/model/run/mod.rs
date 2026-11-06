@@ -422,7 +422,6 @@ impl ModelRun {
         self.images = images;
     }
 
-    /// Sets the effort the run's compactions run at (`ModelConfig::compaction_thinking`).
     pub(crate) const fn set_compaction_thinking(&mut self, thinking: Option<Thinking>) {
         self.compaction_thinking = thinking;
     }

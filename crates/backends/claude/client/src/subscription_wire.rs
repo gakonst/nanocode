@@ -298,7 +298,6 @@ pub fn body(
     .map(|(body, _)| body)
 }
 
-/// The subscription wire's body, and where its messages are in it.
 pub(crate) fn wire<M: WireMessage>(
     head: &MessagesRequest,
     messages: &[M],

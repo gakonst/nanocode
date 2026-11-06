@@ -134,11 +134,7 @@ struct Liveness {
     origin: tokio::time::Instant,
     last_inbound_us: AtomicU64,
     probe_us: AtomicU64,
-    /// Fired by the first text frame or ping from the peer: a pong may answer
-    /// our own ping before the peer took the connection, but a peer only
-    /// sends frames or pings once it serves the socket.
     heard: Signal,
-    /// The code of the peer's close frame, 0 before one arrives.
     close_code: AtomicU16,
 }
 
@@ -251,11 +247,6 @@ pub(super) fn request_headers(
     Ok(headers)
 }
 
-/// How long each stage of a dial took: loading the TLS trust configuration
-/// (the platform verifier, cached after the first), resolving the host,
-/// connecting, the TLS handshake (with the chain's trust evaluation) and the
-/// WebSocket upgrade (the brain's authorization and registration of the
-/// upgrade, not of the runtime).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DialStages {
     pub trust: Duration,
@@ -282,7 +273,6 @@ pub(super) async fn dial(
         .map(|(socket, _)| socket)
 }
 
-/// Dials in stages, each timed, so a slow (re)connect can be attributed.
 pub(super) async fn dial_staged(
     target: &crate::attachment::AttachmentTarget,
     headers: &http::HeaderMap,
@@ -1196,31 +1186,20 @@ async fn serve_once<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     served.result
 }
 
-/// How a served connection ended: its result, the code of the peer's close
-/// frame, if one arrived, and whether the peer served it (sent a frame or a
-/// ping), even when that frame and the close were read together.
 pub(super) struct Served {
     pub(super) result: Result<(), CodeModeHostError>,
     pub(super) close_code: Option<u16>,
     pub(super) heard: bool,
 }
 
-/// Whether a served connection carries the runtime's replies from the start,
-/// or only once the brain served it, the current one serving meanwhile.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Role {
     Current,
     Standby,
 }
 
-/// How long a connection a newer one took over waits for its close frame to
-/// be written.
 const LEAVE_CLOSE: Duration = Duration::from_secs(2);
 
-/// Serves one connection. `heard` runs once the peer first sends a frame or
-/// a ping, which a brain does only after it took the connection, and `moved`
-/// when the brain asks the Hand to move ([`RemoteFrame::Move`]). A connection
-/// asked to move closes once a newer connection of the runtime took over.
 pub(super) async fn serve<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     socket: WebSocketStream<S>,
     core: &HandCore,
@@ -1252,7 +1231,6 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 ) -> Result<(), CodeModeHostError> {
     let mut heard = Some(heard);
     let mut moved = Some(moved);
-    // Asked to move: once a newer connection took over, this one closes.
     let mut moving = false;
     let catalog = core.catalog(policy.max_frame_bytes).await?;
     let catalog = match &meter {
@@ -1305,7 +1283,6 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 },
                 failed = &mut connection.failed, if open => match failed {
                     Ok(issue) => return Err(issue),
-                    // A newer connection took over: this one has served.
                     Err(_) if moving => return Ok(true),
                     Err(_) => open = false,
                 },
@@ -1326,8 +1303,6 @@ async fn serve_link<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     core.closed(connection.id).await;
     let left = result?;
     if left {
-        // The writer closes the socket once its last sender is gone: the
-        // core dropped its own when the newer connection took over.
         drop(answers);
         let _ = tokio::time::timeout(LEAVE_CLOSE, &mut writer.0).await;
     }

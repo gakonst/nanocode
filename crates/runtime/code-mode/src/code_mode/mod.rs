@@ -109,9 +109,6 @@ pub struct CodeModeRuntime {
     catalog: Atom<Option<Arc<NestedCatalog>>>,
 }
 
-/// The nested tools the last cell offered, encoded as its QuickJS bootstrap
-/// reads them. A catalog of many tools takes longer to encode than a short
-/// cell takes to run, and a session's cells mostly offer the same tools.
 struct NestedCatalog {
     metadata: Arc<[Value]>,
     encoded: Arc<CellTools>,

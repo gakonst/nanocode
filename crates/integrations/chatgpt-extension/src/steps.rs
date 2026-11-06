@@ -33,11 +33,7 @@ pub struct Tabs {
     tabs: HashMap<u64, Tab>,
     titles: HashMap<String, String>,
     active: HashMap<(String, String), Instant>,
-    /// Tab groups already collapsed once: a group the member expanded stays open.
     collapsed: HashSet<u64>,
-    /// Browser management failed once on this connection (OpenAI's gate is
-    /// off for this browser, or the extension didn't answer), so groups
-    /// aren't collapsed on it.
     unmanaged: bool,
     fresh: HashMap<String, u32>,
 }
@@ -393,10 +389,6 @@ impl Tabs {
         Err("page did not finish loading".into())
     }
 
-    /// Collapses the new tab's group the first time it is seen, so agent tabs
-    /// don't spread across the tab strip. The extension creates groups expanded
-    /// and only lets callers change them through its browser management
-    /// command, which OpenAI gates per browser. Best effort.
     fn collapse(&mut self, ext: &mut Extension, namespace: &str, common: &Value, tab: u64) {
         if self.unmanaged {
             return;
@@ -412,8 +404,6 @@ impl Tabs {
                 .map(|result| result["value"].clone())
         };
         let Ok(info) = call("tabs", "get", json!([tab])) else {
-            // Gated off, unsupported or unanswered: don't make every later
-            // open wait on it again.
             self.unmanaged = true;
             return;
         };

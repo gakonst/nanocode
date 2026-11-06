@@ -1069,16 +1069,6 @@ fn owner_write(write: &JournalWrite) -> OwnerWrite {
 }
 
 impl ClaudeExecution {
-    /// The input another build recorded for model step `step_id`, if this
-    /// build's request `wire` for it is the same one: that request's input in
-    /// an earlier build's format (the whole body's blake3, its sha256, or the
-    /// body itself), or, once the step completed, any input that names the
-    /// same conversation ([`PreparedWire::same_conversation`]). The
-    /// latter replays the step's response although a Nanocodex bump changed
-    /// the tools, system prompt or cache breakpoints the hosts send around
-    /// the messages, which would otherwise end a turn handed off across that
-    /// bump. A step whose effect is still pending stays strict: running it
-    /// again sends this build's request.
     async fn earlier_input(
         &self,
         wire: &PreparedWire,

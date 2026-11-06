@@ -46,8 +46,6 @@ struct HostSearch {
     transport: Arc<dyn HostTransport>,
 }
 
-/// Codex's `web__run`, searching on the calling agent's model, or on `Model::Luna` for agents on
-/// another vendor's model.
 #[must_use]
 pub fn web_search_tool(
     api_base_url: &str,
@@ -57,8 +55,6 @@ pub fn web_search_tool(
     web_search_tool_with_model(api_base_url, model_prefix, Model::Luna, transport)
 }
 
-/// `web_search_tool` with `fallback_model`, the OpenAI model that searches for agents on another
-/// vendor's model.
 #[must_use]
 pub fn web_search_tool_with_model(
     api_base_url: &str,

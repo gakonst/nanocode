@@ -733,9 +733,6 @@ async fn discover_from_resource_metadata(
     else {
         return Ok(None);
     };
-    // A missing or mismatched `resource` is tolerated: the server's own URL
-    // becomes the resource indicator, and its authorization servers are
-    // still used.
     discovery.resource = match resource_metadata.validate_resource(base_url) {
         Ok(()) => Some(resource_metadata.resource.clone().unwrap_or_default()),
         Err(error) => {
@@ -802,8 +799,6 @@ async fn fetch_authorization_metadata(
     }
     match serde_json::from_slice::<AuthorizationMetadata>(&response.body) {
         Ok(mut metadata) => {
-            // Metadata that states no issuer is the issuer's it was fetched
-            // for, as servers that leave the field out still mean it.
             if metadata.issuer.is_none() {
                 metadata.issuer = nanocode_mcp::oauth::expected_issuer(url)
                     .map(|issuer| issuer.trim_end_matches('/').to_owned());

@@ -1467,9 +1467,6 @@ impl Tool for ChangeAgentLifecycle {
     }
 }
 
-/// The delegation tools every agent gets, the root and its subagents alike: `submit_result` too,
-/// which `Registry::submit_result` refuses a root (`NotChild`), so a subagent's tools, and with
-/// them the cached prefix of its first request, are its root's.
 fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn Tool>> {
     registry.register_handle(parent.clone());
     vec![

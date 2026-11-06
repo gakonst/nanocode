@@ -62,8 +62,6 @@ const TOOL_RESULT_TOKEN_LIMIT: u64 = 12_000;
 const RETRY_BASE_MS: u64 = 500;
 const RETRY_CAP_MS: u64 = 32_000;
 const RETRY_JITTER_PERCENT: u64 = 25;
-// A rate limit or overload passes in minutes, not seconds: such a call gets
-// more attempts, within a bound on its total wait.
 const THROTTLED_ATTEMPTS: u32 = 10;
 const THROTTLED_WAIT: Duration = Duration::from_secs(180);
 
@@ -987,13 +985,6 @@ impl ClaudeBuilder {
         self
     }
 
-    /// Sends the conversation's model requests in a message thread (beta), so that each request
-    /// after the first sends only the messages after the previous response.
-    ///
-    /// The API holds the conversation in memory for up to an hour after its last use, so
-    /// threads are not eligible for zero data retention. A thread that expired or that the API
-    /// lost is sent again whole, and a conversation the API cannot hold goes without one.
-    /// Threads apply to the Messages API wire; subscription requests never use them.
     pub const fn message_threads(mut self, enabled: bool) -> Self {
         self.message_threads = enabled;
         self
@@ -3321,12 +3312,10 @@ struct State {
     fast_mode: AtomicBool,
     message_diagnostics: bool,
     tool_input_deltas: bool,
-    /// The conversation's message thread, when the builder enabled threads.
     message_thread: Option<Atom<crate::MessageThread>>,
     wire_cache: crate::WireCache,
     context_window_tokens: u64,
     auto_compact_window_tokens: Option<u64>,
-    /// A host's override of the compaction threshold, which the next turn's cursor takes.
     auto_compact_token_limit: Atom<Option<u64>>,
     images: ImageHistory,
     workspace: String,
@@ -3909,8 +3898,6 @@ async fn abandon_deferred(
 fn unsupported(message: &str) -> NanocodeError {
     NanocodeError::InvalidRequest(message.into())
 }
-/// Anthropic signs thinking blocks for the API key's organization, so a session
-/// resumed under another organization's key has its request refused with this.
 fn unsigned_thinking(error: &NanocodeError) -> bool {
     matches!(error, NanocodeError::Response(_))
         && error
@@ -4202,7 +4189,6 @@ struct ResponseContext<'a> {
     wire_profile: Option<&'a crate::FrozenWireProfile>,
     effect: Option<Effect<'a>>,
     journal: Option<&'a mut Journal>,
-    /// The request is a step of the conversation, which may use its message thread.
     threaded: bool,
 }
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
@@ -5283,7 +5269,6 @@ impl State {
                     %error,
                     "Claude could not use the conversation's message thread; sending the request again"
                 );
-                // The API refused the thread before the model ran, so this was no attempt.
                 attempt -= 1;
                 continue;
             }
@@ -5742,8 +5727,6 @@ impl State {
                     )
                     .await;
                 match outcome {
-                    // As in a model step: thinking another API key's
-                    // organization signed is refused, so drop it and retry once.
                     Err(failure) if !stripped_thinking && unsigned_thinking(&failure.error) => {
                         history::strip_thinking(&mut messages);
                         history::strip_thinking(&mut retained);
@@ -6644,7 +6627,6 @@ impl State {
                             previous_message_id: previous_message_id.as_deref(),
                             template: Some(&cursor.template),
                             wire_profile: cursor.wire_profile.as_ref(),
-                            // The retry sends other messages, so it is its own durable step.
                             effect: if stripped_thinking {
                                 effect.map(|effect| effect.scoped("unsigned-thinking"))
                             } else {

@@ -1121,9 +1121,6 @@ impl AgentRuntime {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        // The registry holds its roots' handles and runs their subagents,
-        // whose tools hold the registry: stop them, or the runtime's sessions
-        // and the subagents' tasks are never freed.
         if let Some(subagents) = &self.inner.subagents {
             subagents.shutdown().await;
         }

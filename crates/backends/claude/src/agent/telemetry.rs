@@ -53,10 +53,6 @@ pub(super) fn turn_span(parent: &Span, labels: &TurnLabels<'_>) -> Span {
     span
 }
 
-/// Records a turn's end on its span. A turn the host stopped (`shutdown`, which
-/// ends every live turn with `TurnStopped`) ended as asked, as a cancelled one
-/// does, so it is `cancelled` without an error event, as Codex records it; a
-/// panic also surfaces as `TurnStopped`, so `panicked` keeps that one `failed`.
 pub(super) fn finish_turn(span: &Span, result: &Result<TurnResult>, panicked: bool) {
     if let Some(usage) = result.as_ref().ok().and_then(TurnResult::usage) {
         span.record("usage.input_tokens", usage.input_tokens());
@@ -130,12 +126,6 @@ pub(super) fn model_call_span(
     )
 }
 
-/// Records what decides whether the provider's prompt cache serves a call:
-/// fingerprints of its tools, system prompt and first message, in the order
-/// the cache reads them (a change in one rewrites everything after it), its
-/// speed (each speed has its own cache), the cache TTL it asks for, and
-/// whether it goes on a member's subscription, whose cache is not the API
-/// key's.
 pub(super) fn record_prompt<M: WireMessage>(
     span: &Span,
     request: &MessagesRequest,
@@ -287,10 +277,6 @@ pub(super) struct CompactionLabels<'a> {
     pub(super) threshold: u64,
 }
 
-/// A compaction's summary request, named as Codex names its own, so one query
-/// finds both providers' compactions: it is no model call of the turn, so
-/// without it only its `messages.attempt` shows, and its tokens only in the
-/// turn's.
 pub(super) fn compaction_span(labels: &CompactionLabels<'_>) -> Span {
     info_span!(
         target: "nanocode",

@@ -158,11 +158,6 @@ pub struct HandCapability {
     pub permission: HandPermission,
 }
 
-/// The catalog capability of a Hand that moves between brains without a gap:
-/// sent [`RemoteFrame::Move`], it connects again with the same runtime while
-/// this connection still serves, and drops this one once the brain served the
-/// new one. A brain sends the frame only to a Hand that lists it, since an older
-/// Hand fails its connection on a frame type it doesn't know.
 pub const MOVE_CAPABILITY: &str = "move";
 
 #[must_use]
@@ -310,7 +305,6 @@ impl RemoteCodeModeHost {
                 .iter()
                 .map(|definition| definition.name().to_owned())
                 .collect(),
-            // A protocol capability, not one the Hand's device offers.
             capabilities: catalog
                 .capabilities
                 .iter()
@@ -767,8 +761,6 @@ pub enum RemoteFrame {
     Resume {
         pending: Vec<u64>,
     },
-    /// Brain to a Hand that lists [`MOVE_CAPABILITY`]: connect again with the
-    /// same runtime and drop this connection once the brain served the new one.
     Move,
 }
 
@@ -854,7 +846,6 @@ impl RemoteCatalog {
         self.runtime_id.as_deref().filter(|_| self.resumable)
     }
 
-    /// Whether the Hand moves without a gap when sent [`RemoteFrame::Move`].
     #[must_use]
     pub fn moves(&self) -> bool {
         self.capabilities

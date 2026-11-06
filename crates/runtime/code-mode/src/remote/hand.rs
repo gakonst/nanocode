@@ -63,8 +63,6 @@ pub struct ExecutorOptions {
     pub device: Option<Arc<dyn HandCapabilities>>,
     pub tools_only: bool,
     pub environment: Option<HandEnvironment>,
-    /// Lists [`super::MOVE_CAPABILITY`] in the catalog: the connection loop
-    /// serves a second connection of this runtime when the brain asks it to move.
     pub moves: bool,
 }
 
@@ -1288,7 +1286,6 @@ struct Link {
 pub struct HandConnection {
     pub id: u64,
     pub failed: oneshot::Receiver<CodeModeHostError>,
-    /// Fires when the brain asks the Hand to move ([`super::RemoteFrame::Move`]).
     pub moved: oneshot::Receiver<()>,
 }
 
@@ -1326,7 +1323,6 @@ impl HandCore {
         answer.await.map_err(|_| error("the hand stopped"))?
     }
 
-    /// Makes `wire` the connection replies go on, from now.
     #[must_use]
     pub fn connect(
         &self,
@@ -1336,10 +1332,6 @@ impl HandCore {
         self.link(wire, max_frame_bytes, false)
     }
 
-    /// A second connection of this runtime, dialed while the current one
-    /// still serves: it takes over at its first frame from the brain or at
-    /// [`Self::promote`], once the brain served it. Until then the current
-    /// connection serves on, and a standby that closes leaves it be.
     #[must_use]
     pub fn standby(
         &self,
@@ -1375,7 +1367,6 @@ impl HandCore {
         }
     }
 
-    /// The brain served standby `connection`: replies go on it from now.
     pub fn promote(&self, connection: u64) {
         let _ = self.events.send(Event::Promote { connection });
     }
@@ -1577,9 +1568,6 @@ impl State {
         self.earlier_brain_tools = std::mem::take(&mut self.brain_tools);
     }
 
-    /// Make standby `connection` current, as a reconnect would: the brain
-    /// resumes every call on it, and the connection it replaces, no longer
-    /// current, sees its `failed` sender dropped. Whether it was the standby.
     fn promote(&mut self, connection: u64) -> bool {
         let Some(link) = self.standby.take_if(|link| link.connection == connection) else {
             return false;

@@ -1241,26 +1241,13 @@ pub(super) fn in_flight_evidence(calls: &[InFlightCall], omitted: u32) -> Option
     ))
 }
 
-/// The most of one call's arguments a resume message quotes: enough to tell
-/// which call it was (a command, a path), not a whole file it wrote.
 const RESUME_ARGUMENT_BYTES: usize = 2 * 1024;
 
-/// What closes a delegated task cut to fit its resume message.
 const CUT_TASK: &str = "\n\n[The task is cut here to fit this message; your history begins with \
                         it whole.]";
 
-/// The most of its delegated task a resume message that doesn't fit whole
-/// quotes before it drops evidence.
 const RESUME_TASK_BYTES: usize = 16 * 1024;
 
-/// The message that resumes an agent restored mid-turn: [`RESUME_MESSAGE`],
-/// the evidence of its in-flight calls and its delegated task, kept within
-/// [`MAX_MESSAGE_BYTES`] so delivering it never fails. When it doesn't fit
-/// whole, each call quotes at most [`RESUME_ARGUMENT_BYTES`] of its arguments
-/// and the task at most [`RESUME_TASK_BYTES`], since the agent's history
-/// begins with it whole; then the oldest calls are counted as omitted, and
-/// last the task is cut to what is left. Uncapped, one in-flight call that
-/// wrote a large file was enough to exceed the limit, and the agent was lost.
 pub(super) fn resume_message(calls: &[InFlightCall], omitted: u32, task: Option<&str>) -> String {
     let compose = |calls: &[InFlightCall], omitted: u32, task: Option<&str>| {
         let mut message = RESUME_MESSAGE.to_owned();
@@ -1303,8 +1290,6 @@ pub(super) fn resume_message(calls: &[InFlightCall], omitted: u32, task: Option<
     format!("{head}{}", cut_task(task.unwrap_or_default(), room))
 }
 
-/// `task` whole when it is at most `max` bytes, else cut so that it and
-/// [`CUT_TASK`] take at most `max`.
 fn cut_task(task: &str, max: usize) -> String {
     if task.len() <= max {
         return task.to_owned();
@@ -1316,8 +1301,6 @@ fn cut_task(task: &str, max: usize) -> String {
     format!("{}{CUT_TASK}", &task[..end])
 }
 
-/// `text` cut to at most about `max` bytes at a character boundary, saying
-/// how much it left out.
 fn clip(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();

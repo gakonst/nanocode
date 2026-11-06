@@ -583,12 +583,6 @@ pub(crate) fn run_execution<'js>(
     Ok(promise)
 }
 
-/// A cell's nested tools as the bootstrap reads them: each tool's names and
-/// kind, which every cell parses, and their descriptions and schemas, which
-/// only a cell that reads `ALL_TOOLS` or calls `toolSchema` parses.
-/// Encoding a catalog of many tools costs more than the rest of a short cell,
-/// so a host encodes it once and passes the same `CellTools` to every cell
-/// that offers those tools.
 pub struct CellTools {
     definitions: String,
     descriptions: String,

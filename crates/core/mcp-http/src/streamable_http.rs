@@ -391,9 +391,6 @@ fn sender_error(error: &nanocode_http::layer::Error) -> TransportError {
     }
 }
 
-/// Whether the server rejected the token sent. Any 401 counts, with or
-/// without the `WWW-Authenticate` header the spec requires, since some
-/// servers omit it.
 fn challenged(response: &Reply) -> bool {
     response.status == StatusCode::UNAUTHORIZED
 }
@@ -793,9 +790,6 @@ impl Shared {
                             .deliver(with_request_id(error, message.request_id()));
                         return Ok(());
                     }
-                    // The error returned below carries the status and the body, so a
-                    // second report here would only repeat it (a rate-limited server
-                    // answering 429 with its own JSON logged a warning per request).
                     parsed => tracing::debug!(
                         parse_error = ?parsed.err(),
                         "HTTP {status}: JSON body is not a JSON-RPC error; returning it as a transport error"

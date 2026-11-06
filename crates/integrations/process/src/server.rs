@@ -362,8 +362,6 @@ impl Dispatcher {
                     {
                         self.watch = Watch::new(&probe.files);
                     }
-                    // The fingerprint predates the watch: a change between
-                    // the two shows only in a fresh fingerprint.
                     if let Some(watch) = self.watch.as_mut()
                         && fingerprint(&probe.files) != probe.fingerprint
                     {
@@ -501,7 +499,6 @@ impl Dispatcher {
         drop(notes);
         tokio::spawn(async move {
             let ready = run(&launch, inbox).await;
-            // A server that died reported it when it did (see Owner::died).
             if matches!(ready, Err(Stop::Died)) {
                 return;
             }
@@ -592,11 +589,9 @@ async fn read_all(
     chunks: &output::Sender,
     activity: &nanocode_process_contracts::LastActivity,
 ) -> Option<Output> {
-    // On the heap: in the future itself, every spawn copied it.
     let mut buffer = vec![0_u8; output::READ_BUFFER_LENGTH];
     let mut reading = Reading::Watching { sooner: false };
     loop {
-        // readable() spends no budget: a ready pipe would starve the runtime.
         tokio::task::consume_budget().await;
         let read = match reading {
             Reading::Watching { sooner } => tokio::select! {
@@ -706,8 +701,6 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
         is_shell_identifier(name.as_bytes()) && !ready.shape.readonly.contains(name.as_bytes())
     };
     let undiffed = |name: &OsStr| UNDIFFED.iter().any(|undiffed| name == *undiffed);
-    // Commands usually have the server's environment exactly, in the same
-    // order: then only secrets are exported and nothing is unset.
     let same = job.environment == ready.listed;
     for (name, value) in &job.environment {
         let secret = job.secrets.contains(name);
@@ -739,7 +732,6 @@ fn prefix(ready: &Ready, job: &Job) -> Option<(Vec<u8>, usize)> {
         prefix.extend_from_slice(b"; ");
     }
     prefix.extend_from_slice(format!("RANDOM={}; SECONDS=0; ", super::random() as u16).as_bytes());
-    // The server itself runs with bg_nice off and notify on (see bootstrap).
     for (restore, option) in [
         (ready.argzero, "\\builtin setopt function_argzero; "),
         (ready.bgnice, "\\builtin setopt bg_nice; "),
@@ -850,19 +842,10 @@ fn fingerprint(files: &[PathBuf]) -> Fingerprint {
     )
 }
 
-/// Changes to what fingerprint reads for a probe's files, so that a batch of
-/// commands checks the files again only after one: their stats were 5 to 7%
-/// of a Hand's busy samples at 512 calls at once.
-/// kqueue watches each file and every directory its path and, through links,
-/// its target resolve through, so a change of contents or attributes, a
-/// rename, a removal or a relinked component each wakes one of them, before
-/// the system call that made the change returns. Other systems have no watch
-/// and check every batch.
 #[cfg(target_os = "macos")]
 struct Watch {
     kqueue: nix::sys::event::Kqueue,
     _watched: Vec<std::fs::File>,
-    /// Report a change on the next call, whatever the kqueue says.
     pending: bool,
 }
 
@@ -894,7 +877,6 @@ impl Watch {
             | FilterFlag::NOTE_REVOKE;
         let mut watched = Vec::new();
         let mut changes = Vec::new();
-        // A missing file's nearest existing directory sees it appear.
         for path in &paths {
             let Ok(file) = std::fs::OpenOptions::new()
                 .read(true)
@@ -984,7 +966,6 @@ struct Launch {
     login: bool,
     workdir: PathBuf,
     environment: HashMap<OsString, OsString>,
-    /// The same environment as the first command listed it.
     listed: Vec<(OsString, OsString)>,
     probe: Probe,
     weak: mpsc::WeakUnboundedSender<Message>,
@@ -992,12 +973,8 @@ struct Launch {
 }
 
 enum Stop {
-    /// The shell did not start; a later command tries again.
     Launch(io::Error),
-    /// Startup files printed output or ended the shell, or zsh had no job
-    /// control: commands start their own shells until those files change.
     Unready(io::Error),
-    /// The server died after it was ready and already said so (Owner::died).
     Died,
 }
 
@@ -1011,14 +988,6 @@ impl std::fmt::Display for Stop {
     }
 }
 
-/// The server: a close-on-exec copy of its output (zsh/system's sysopen,
-/// unloaded again unless the startup files loaded it) for each command's EXIT
-/// trap to report its status on, so commands outlive a server that dies (zsh
-/// exits when a fork fails); the startup report; then one request per line: a
-/// slot forks that slot's command, w<pid> waits for one that exited without a
-/// report and "c <pid>..." for ones that reported, which zsh keeps until then.
-/// bg_nice is off, so commands are not niced, and notify on, so zsh drops a
-/// job once it reaped it; a command's prelude restores both.
 fn bootstrap(nonce: &str, dir: &Path) -> OsString {
     let mut script = format!(
         "for __nc_f in /dev/fd/<3->(N:t); do [[ -p /dev/fd/$__nc_f || -S /dev/fd/$__nc_f ]] && \\builtin exec {{__nc_f}}>&-; done\n\\builtin unset __nc_f\n\\builtin zmodload -e zsh/system && __nc_m=0 || __nc_m=1\n\\builtin zmodload zsh/system && \\builtin sysopen -w -o cloexec -u __nc_e /dev/fd/1 || \\builtin exit 1\n(( ! __nc_m )) || \\builtin zmodload -u zsh/system\n\\builtin unset __nc_m\n\\builtin print -r -- {nonce}\n\\builtin print -r -- \"${{ZDOTDIR-}}\"\n\\builtin print -r -- ${{(k)parameters[(R)*readonly*]}}\n\\builtin print -r -- $options[functionargzero] $options[bgnice] $options[notify]\n\\builtin print -r -- ${{(k)aliases[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{(k)functions[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)builtins[@]:#*[^[:alnum:]_./,:+=%-]*}} ${{reswords[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)galiases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin print -r -- ${{(k)saliases[@]:#*[^[:alnum:]_./,:+=%-]*}}\n\\builtin hash -r\n\\builtin setopt notify no_bg_nice\n\\builtin setopt monitor 2>/dev/null\n\\builtin print -r -- $options[monitor]\n__nc_d="
@@ -1108,8 +1077,6 @@ async fn serve(launch: &Launch, mut inbox: mpsc::UnboundedReceiver<Message>) -> 
         let _ = watcher.await;
     }
     owner.life = Life::Stopped;
-    // All the server wrote, such as the start of a command it forked just
-    // before it stopped.
     let _ = owner.read(&mut events, &exits, true);
     match stopped {
         Ok(reply) => {
@@ -1195,16 +1162,12 @@ fn launch_shell(launch: &Launch) -> io::Result<Launched> {
     Ok((child, keeper, requests, events, nonce, master))
 }
 
-/// The server's output: its startup report, then a line per event.
 struct Events {
     pipe: pipe::Receiver,
     buffer: Vec<u8>,
 }
 
 impl Events {
-    /// Reads what the pipe holds, false once every writer closed it. With
-    /// force it also reads what tokio has not seen arrive yet, such as the
-    /// status a command wrote before the exit kqueue just reported.
     fn fill(&mut self, force: bool) -> io::Result<bool> {
         let mut chunk = [0_u8; output::READ_BUFFER_LENGTH];
         if force {
@@ -1229,7 +1192,6 @@ impl Events {
         }
     }
 
-    /// Takes the complete lines read so far.
     fn take(&mut self) -> Vec<u8> {
         let end = self
             .buffer
@@ -1485,7 +1447,6 @@ impl Slots {
         self.entry(slot).and_then(|entry| entry.busy.as_mut())
     }
 
-    /// Whether a command still waits for its status.
     fn waiting(&self) -> bool {
         self.entries
             .iter()
@@ -1531,9 +1492,7 @@ struct Owner {
     ready: Ready,
     slots: Slots,
     pids: HashMap<u32, usize>,
-    /// Commands that had exited when the server named them.
     gone: Vec<u32>,
-    /// Commands that reported their status, for the next "c" request.
     forget: Vec<u32>,
     outbound: Vec<u8>,
     requests: pipe::Sender,
@@ -1541,7 +1500,6 @@ struct Owner {
     notes: mpsc::WeakUnboundedSender<Note>,
     live: usize,
     life: Life,
-    /// How the server process ended, once the watcher said.
     exit: Option<String>,
 }
 
@@ -1607,8 +1565,6 @@ impl Owner {
         }
     }
 
-    /// Keeps the commands of a server that died until each reported its
-    /// status or exited without one.
     async fn orphans(
         &mut self,
         events: &mut Events,
@@ -1620,12 +1576,9 @@ impl Owner {
                 continue;
             };
             if let Stage::Forking { .. } = busy.stage {
-                // Never forked: its caller starts a shell of its own.
                 busy.abandon();
                 entry.busy = None;
             } else if let Stage::Unreported = busy.stage {
-                // It exited without reporting, and the server died before
-                // its wait answered.
                 busy.end(Err(io::Error::other("the shell server stopped")));
             }
         }
@@ -1651,8 +1604,6 @@ impl Owner {
                     }
                     None => listening = false,
                 },
-                // Closed once no command can report anymore; those that did
-                // still get their exit.
                 ready = events.pipe.readable(), if open => {
                     open = ready.is_ok() && self.read(events, exits, false).unwrap_or(false);
                 }
@@ -1664,12 +1615,9 @@ impl Owner {
                 }
             }
         }
-        // Whatever is left can no longer report a status.
         self.fail();
     }
 
-    /// Logs why the server stopped, with the last error zsh wrote, and tells
-    /// the dispatcher at once, so later commands go elsewhere.
     fn died(&self, error: &io::Error, dir: &Path) {
         let log = std::fs::read_to_string(dir.join("log")).unwrap_or_default();
         let zsh = log
@@ -1752,7 +1700,6 @@ impl Owner {
                 return Err((reply, Some(error)));
             }
         };
-        // Once a pipe's writers all closed, tokio keeps it readable for good.
         if let Err(error) = self.slots.reregister(slot) {
             self.slots.retire(slot);
             return Err((reply, Some(error)));
@@ -1778,13 +1725,9 @@ impl Owner {
         Ok(())
     }
 
-    /// Handles every line the server wrote so far, false once its output
-    /// closed.
     fn read(&mut self, events: &mut Events, exits: &Exits, force: bool) -> io::Result<bool> {
         let mut open = self.handle(events, exits, force)?;
         while !self.gone.is_empty() {
-            // Each wrote any status of its own before it exited, so the pipe
-            // holds it now.
             let gone = std::mem::take(&mut self.gone);
             open = self.handle(events, exits, true)? && open;
             for pid in gone {
@@ -1808,7 +1751,6 @@ impl Owner {
         events: &mut Events,
         exits: &Exits,
     ) -> io::Result<bool> {
-        // A command writes its status before it exits.
         let open = self.read(events, exits, true)?;
         for pid in exited.drain(..) {
             self.reap(pid);
@@ -1816,9 +1758,6 @@ impl Owner {
         Ok(open)
     }
 
-    /// A command's process exited: its status is the one it reported, else
-    /// the server's wait gives it (after exec, a signal, or a trap of the
-    /// command's own that replaced the report).
     fn reap(&mut self, pid: u32) {
         let Some(&slot) = self.pids.get(&pid) else {
             return;
@@ -1907,7 +1846,6 @@ impl Owner {
             }
         };
         if !owned {
-            // Its caller stopped waiting; the dropped lease returned the pipes.
             busy.end(Err(io::Error::other("the command was cancelled")));
             drop(process::ProcessGroupGuard::new(pid));
         }
@@ -1978,10 +1916,6 @@ impl Exits {
         )
     }
 
-    /// Registers `changes` and returns the events the queue holds now.
-    /// kevent64 with KEVENT_FLAG_IMMEDIATE returns at once when it holds none,
-    /// in 0.23 µs where a zero timeout took 11.5 µs (either call, under no
-    /// load). A kqueue takes only kevent64 once it had one.
     fn poll(
         kqueue: &nix::sys::event::Kqueue,
         changes: &[nix::sys::event::KEvent64],
@@ -2014,8 +1948,6 @@ impl Exits {
                     .filter(|event| event.fflags().contains(FilterFlag::NOTE_EXIT))
                     .filter_map(|event| u32::try_from(event.ident()).ok()),
             );
-            // A queue that had room left is empty: wait until tokio sees it
-            // readable again.
             if count < events.len() {
                 Err(io::ErrorKind::WouldBlock.into())
             } else {

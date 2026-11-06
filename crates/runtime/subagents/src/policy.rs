@@ -7,9 +7,6 @@ pub struct SpawnPolicy {
     pub models: Option<Vec<ModelSelection>>,
     pub min_thinking: Option<Thinking>,
     pub max_thinking: Option<Thinking>,
-    /// Refuses a child whose thinking ranks above its spawning agent's own,
-    /// whether that agent is the root or a registered subagent, so a
-    /// lower-effort agent cannot escalate into higher-effort descendants.
     pub bounded_by_parent_thinking: bool,
     pub max_reasoning_mode: Option<ReasoningMode>,
     pub budgets: bool,

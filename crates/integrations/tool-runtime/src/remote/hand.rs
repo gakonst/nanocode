@@ -28,13 +28,10 @@ pub enum HandEvent {
     Connecting {
         endpoint: String,
     },
-    /// The brain served the connection; `dialed` times its dial's stages.
     Connected {
         endpoint: String,
         dialed: DialStages,
     },
-    /// The brain asked the Hand to move: it dials again with the same
-    /// runtime while the current connection serves on, and stays online.
     Moving {
         endpoint: String,
     },
@@ -52,9 +49,6 @@ pub enum HandEvent {
     },
     Revoked,
     Replaced,
-    /// The brain refused the hand for good: `status` is the HTTP status of a
-    /// refused upgrade (401, 403, 410 or 426). `Hand::run` returns an error
-    /// after it.
     Rejected {
         status: u16,
     },
@@ -239,8 +233,6 @@ impl Hand {
                         .map_err(error)?;
                     let headers = request_headers(&self.headers)?;
                     let mut backoff = crate::attachment::INITIAL_TRANSPORT_BACKOFF;
-                    // This loop serves a second connection of the runtime when
-                    // the brain asks it to move.
                     options.moves = true;
                     let renew = |options: &ExecutorOptions| {
                         hand_core(
@@ -251,8 +243,6 @@ impl Hand {
                         )
                     };
                     let mut core = renew(&options);
-                    // The connection the brain asked to move from: it serves on
-                    // until the next one is served, then closes.
                     let mut leaving: Option<Serving> = None;
                     loop {
                         let endpoint = target.endpoint().to_string();
@@ -278,7 +268,6 @@ impl Hand {
                                 }
                             }
                         };
-                        // Redial at once, not after the backoff.
                         let mut fresh = false;
                         match dialed {
                             Ok((socket, dialed)) => {
@@ -294,9 +283,6 @@ impl Hand {
                                     tokio::select! {
                                         served = ended(&mut link.task) => break Phase::Ended(served),
                                         Some(note) = link.notes.recv() => match note {
-                                            // Connected only once the brain serves the socket: it
-                                            // may still refuse this runtime after the upgrade. A
-                                            // connection this one moves from closes on its own.
                                             Note::Heard => {
                                                 events(HandEvent::Connected {
                                                     endpoint: endpoint.clone(),
@@ -317,15 +303,10 @@ impl Hand {
                                 };
                                 let served = match ended {
                                     Phase::Ended(served) => served,
-                                    // Asked to move: dial the next brain at once, this
-                                    // connection serving on meanwhile. One it moved from
-                                    // before has been taken over already.
                                     Phase::Moved => {
                                         leaving = Some(link);
                                         continue;
                                     }
-                                    // The runtime this connection serves is gone: dial
-                                    // again as the new one, after the cap.
                                     Phase::Fenced => {
                                         drop(link);
                                         backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
@@ -337,11 +318,6 @@ impl Hand {
                                     }
                                 };
                                 drop(link);
-                                // A brain that served this socket and closed it with 1012
-                                // moves the Hand to another brain (a deploy), and a
-                                // connection that lasted was no failure: either way the
-                                // next dial is a fresh start. Only quick failures in a
-                                // row back off.
                                 fresh = (served.heard && served.close_code == Some(RESTART_CLOSE))
                                     || started.elapsed() >= FRESH_CONNECTION;
                                 if fresh {
@@ -359,7 +335,6 @@ impl Hand {
                                 {
                                     Next::Stop => return Ok(()),
                                     Next::Redial { fenced: true } => {
-                                        // A move in progress served the fenced runtime too.
                                         leaving = None;
                                         fresh = false;
                                         backoff = crate::attachment::MAX_TRANSPORT_BACKOFF;
@@ -434,17 +409,13 @@ impl Hand {
     }
 }
 
-/// One served connection, in a task of its own so that the next can be
-/// dialed and served while it still serves. Dropping it drops the connection.
 struct Serving {
     task: tokio::task::JoinHandle<Served>,
     notes: mpsc::UnboundedReceiver<Note>,
 }
 
 enum Note {
-    /// The brain served the connection.
     Heard,
-    /// The brain asked the Hand to move.
     Moved,
 }
 
@@ -489,7 +460,6 @@ impl Drop for Serving {
     }
 }
 
-/// The end of the connection the brain asked to move from, if there is one.
 async fn left(leaving: &mut Option<Serving>) -> Served {
     match leaving {
         Some(serving) => ended(&mut serving.task).await,
@@ -497,17 +467,12 @@ async fn left(leaving: &mut Option<Serving>) -> Served {
     }
 }
 
-/// How serving a connection ended.
 enum Phase {
     Ended(Served),
-    /// The brain asked the Hand to move, and the connection serves on.
     Moved,
-    /// The brain fenced the runtime on the connection the Hand moved from.
     Fenced,
 }
 
-/// Which connection ended: the current one, or one the Hand moved from,
-/// whose ordinary end (taken over, or closed by its brain) is expected.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Settled {
     Current,
@@ -516,15 +481,9 @@ enum Settled {
 
 enum Next {
     Stop,
-    /// `fenced`: the brain fenced the runtime, and a new one replaces it.
-    Redial {
-        fenced: bool,
-    },
+    Redial { fenced: bool },
 }
 
-/// Act on a connection's end: stop for good when the brain revoked or
-/// replaced the Hand, start a new runtime when it fenced this one, else dial
-/// again.
 async fn settle<F: FnMut(HandEvent)>(
     served: Served,
     settled: Settled,
@@ -578,14 +537,8 @@ async fn settle<F: FnMut(HandEvent)>(
 }
 
 const MAX_NAME_BYTES: usize = 48;
-/// WebSocket close code 1008 (policy violation, RFC 6455 section 7.4.1).
 const POLICY_CLOSE: u16 = 1008;
-/// WebSocket close code 1012 (service restart): the brain asks the Hand to
-/// reconnect, perhaps to another brain behind the same endpoint.
 const RESTART_CLOSE: u16 = 1012;
-/// A connection that lasted this long ended for a reason of its own (a cut
-/// path, a brain that restarted), not as one of a run of failed dials, so
-/// the Hand redials at once.
 const FRESH_CONNECTION: Duration = Duration::from_secs(10);
 
 #[cfg(unix)]

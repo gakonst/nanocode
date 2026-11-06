@@ -190,15 +190,12 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
-    /// Ask OpenAI for a Cyber access program on every request (`access_programs.cyber`),
-    /// as Codex's `--cyber-access-program`; `None` leaves it to the server.
     #[must_use]
     pub const fn cyber_access_program(mut self, program: Option<CyberAccessProgram>) -> Self {
         self.config.cyber_access_program = program;
         self
     }
 
-    /// Ask for `program` on every request to `model`, over `cyber_access_program`.
     #[must_use]
     pub fn model_cyber_access_program(mut self, model: Model, program: CyberAccessProgram) -> Self {
         let configured = &mut self.config.model_cyber_access_programs;

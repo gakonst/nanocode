@@ -927,19 +927,10 @@ impl Agent {
         self.backend.set_thinking(thinking).await
     }
 
-    /// Sets the context size, in tokens, at which the agent compacts its history by itself, from
-    /// the next turn on; `None` restores the backend's own default. The limit is capped at the
-    /// model's context window and is not persisted with the agent.
     pub async fn set_auto_compact_token_limit(&self, limit: Option<u64>) -> Result<()> {
         self.backend.set_auto_compact_token_limit(limit).await
     }
 
-    /// Sets the reasoning effort the agent's compactions run at, from the next one on, without
-    /// changing its turns' effort; `None` compacts at the conversation's own effort. Codex
-    /// applies it only on models that take `configuration_update` items (Sol, Terra, Astra and
-    /// Daybreak Blue, not through a gateway), so the compaction still reads the cached prefix;
-    /// elsewhere it compacts at the conversation's effort. Not persisted with the agent; other
-    /// backends refuse it.
     pub async fn set_compaction_thinking(&self, thinking: Option<Thinking>) -> Result<()> {
         self.backend.set_compaction_thinking(thinking).await
     }

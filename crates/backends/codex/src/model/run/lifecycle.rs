@@ -94,16 +94,10 @@ pub(super) enum CompactionPhase {
     MidTurn,
 }
 
-/// The reasoning effort of a compaction request.
 #[derive(Clone, Copy)]
 pub(super) struct CompactionEffort {
-    /// The request-level `reasoning.effort`: the context's baseline, which its cached prefix was
-    /// written at.
     pub(super) request: Thinking,
-    /// The effort the compaction runs at: the host's `compaction_thinking`, else the context's.
     pub(super) effort: Thinking,
-    /// Whether `effort` differs from the context's, so a `configuration_update` ahead of the
-    /// trigger selects it.
     pub(super) update: bool,
 }
 
@@ -113,8 +107,6 @@ pub(super) struct CompactionContext<'a> {
 }
 
 impl ModelRun {
-    /// The context size at which the run compacts itself: the host's override, capped at the
-    /// context window, else the model's default, which only some models have.
     pub(super) fn auto_compact_token_limit(&self) -> Option<u64> {
         let window = self.config.context_window_tokens;
         self.config
@@ -123,10 +115,6 @@ impl ModelRun {
             .or_else(|| compaction::auto_compact_token_limit(self.model.as_str(), window))
     }
 
-    /// The effort a compaction of a context with `reasoning` runs at. The host's
-    /// `compaction_thinking` applies only where effort updates keep the cached prefix: changing
-    /// the request-level effort instead would make the compaction read its whole context
-    /// uncached.
     pub(super) fn compaction_effort(
         &self,
         reasoning: &crate::reasoning::ReasoningState,
@@ -465,8 +453,6 @@ impl ModelRun {
             self.config.context_window_tokens,
         );
         if effort.update {
-            // Only this request carries it: the conversation keeps its own items, and installing
-            // the compaction replays the next request in full at the context's selection.
             history.push(ResponseItem::configuration_update(effort.effort));
         }
         let history = evict_images(&self.images, &history);

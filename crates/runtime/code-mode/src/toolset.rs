@@ -13,9 +13,6 @@ pub struct CodeModeToolObservation<'a> {
 pub trait CodeModeToolset: Send + Sync {
     fn nested_tool_metadata(&self) -> Vec<Value>;
 
-    /// [`Self::nested_tool_metadata`] behind an `Arc`. A toolset that returns
-    /// the same `Arc` while its catalog is unchanged lets the runtime reuse the
-    /// catalog it encoded for an earlier cell without comparing the two.
     fn shared_nested_tool_metadata(&self) -> Arc<[Value]> {
         self.nested_tool_metadata().into()
     }

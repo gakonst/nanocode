@@ -448,11 +448,6 @@ impl Tools {
         self
     }
 
-    /// Gives each registered tool that `descriptions` names the description
-    /// it maps that name to, keeping the tool's schema, exposure, place in the
-    /// catalog and handler. Code Mode's `exec` renders a nested tool's
-    /// replaced description too. A host pins a warm session's tool prose this
-    /// way, so a reworded description does not change its cached prompt.
     #[must_use]
     pub fn with_descriptions(mut self, descriptions: &HashMap<String, String>) -> Self {
         for registered in &mut self.registered {
@@ -469,9 +464,6 @@ impl Tools {
         self
     }
 
-    /// Has the host keep its earlier wording of what the runtime itself
-    /// writes for the model ([`crate::TextPins`]): the tools added after
-    /// this (`add_shared_tool`) and Code Mode's `exec` and `wait`.
     #[must_use]
     pub fn with_text_pins(mut self, pins: Arc<dyn crate::TextPins>) -> Self {
         self.text_pins = Some(pins);

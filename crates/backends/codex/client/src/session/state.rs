@@ -402,7 +402,6 @@ impl RequestHistory {
         self.incremental_start
     }
 
-    /// Appends `item` after the history, still continuing from the previous response.
     pub fn push(&mut self, item: ResponseItem) {
         self.full.push(item.clone());
         self.incremental.push(item);

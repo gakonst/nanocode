@@ -98,8 +98,6 @@ impl ReasoningState {
         selected
     }
 
-    /// The effort the context's next response runs at without a new update: its latest
-    /// authored update, else its baseline, else the selection.
     pub(crate) fn effective_effort(
         &self,
         model: crate::client::Model,

@@ -379,8 +379,6 @@ pub struct ToolDefinition {
     pub strict: Option<bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub defer_loading: bool,
-    /// A cache breakpoint on this tool, which ends the tools' part of the prompt
-    /// ([`MessagesRequest::cache_system_prefix_with`] sets it on the last one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }
@@ -738,10 +736,6 @@ fn validate_cache_layout<'a>(
     layout.validate(automatic)
 }
 
-/// A short fingerprint of `value` as JSON (its xxh64, in hex). Model call
-/// spans carry one for each part of a request a prompt cache reads in order,
-/// so a call that wrote its whole prompt to the cache again can be told apart
-/// by which part changed since the session's previous call. Never the text.
 pub fn fingerprint(value: &impl Serialize) -> String {
     fingerprint_bytes(&serde_json::to_vec(value).unwrap_or_default())
 }
@@ -866,8 +860,6 @@ impl MessagesRequest {
         result
     }
 
-    /// Puts cache breakpoints at the end of the system prompt and of the tools, under the
-    /// request's automatic one (the end of the conversation), unless the host placed its own.
     #[doc(hidden)]
     pub fn cache_system_prefix_with<M: WireMessage>(
         &mut self,
@@ -877,12 +869,6 @@ impl MessagesRequest {
         self.cache_tools_tail_with(messages)
     }
 
-    /// Marks the last tool the prompt carries (not a deferred one) with the request's cache
-    /// control, when the request still has room for it and for the subscription wire's own
-    /// breakpoint. The tools come first in the cached prefix and depend only on the host's tool
-    /// catalog, while the system prompt after them often differs between sessions (a member's
-    /// memory, a project's instructions): with this breakpoint a session whose system prompt no
-    /// session sent before still reads the tools another session with the same catalog wrote.
     fn cache_tools_tail_with<M: WireMessage>(&mut self, messages: &[M]) -> Result<(), ClaudeError> {
         let Some(control) = self.cache_control.clone() else {
             return Ok(());
@@ -1539,7 +1525,6 @@ impl ClaudeClient {
             .map(|wire| wire.body)
     }
 
-    /// The request's body and where its messages are in it.
     fn wire_body<M: WireMessage>(
         &self,
         head: &MessagesRequest,
@@ -1650,14 +1635,6 @@ impl ClaudeClient {
         .legacy_durable_input()
     }
 
-    /// Makes `wire`, prepared from `head` and `messages`, send `turn`: with the `thread` field
-    /// and, on a continue, only the messages after the previous response and no `system` or
-    /// `tools`, which the thread keeps. A turn without a thread sends `wire` as prepared.
-    ///
-    /// `wire` keeps its full body for [`PreparedWire::durable_input`], so a request's durable
-    /// identity does not depend on whether the API still held its thread.
-    ///
-    /// Threads use the Messages API wire; the subscription wire cannot carry them.
     pub fn attach_thread<M: WireMessage>(
         &self,
         wire: &mut PreparedWire,
@@ -2045,15 +2022,11 @@ impl ClaudeClient {
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct PreparedWire {
-    /// The whole request, which durable inputs record.
     body: Arc<String>,
-    /// Where the conversation's messages are in [`Self::body`]: between the
-    /// brackets of its `messages` array.
     messages: std::ops::Range<usize>,
     system: Option<Encoding>,
     tools: Option<Encoding>,
     digests: Option<(blake3::Hash, blake3::Hash)>,
-    /// The request as a thread turn sends it, when it uses a thread.
     thread: Option<Arc<String>>,
     subscription: bool,
     streaming: bool,
@@ -2070,7 +2043,6 @@ impl PreparedWire {
         &self.body
     }
 
-    /// The body this request posts: the thread turn's when it has one, else [`Self::body`].
     pub fn sent_body(&self) -> &str {
         self.thread.as_deref().unwrap_or(&self.body)
     }
@@ -2079,9 +2051,6 @@ impl PreparedWire {
         Arc::clone(self.thread.as_ref().unwrap_or(&self.body))
     }
 
-    /// The request's durable identity: a digest of the whole body, and
-    /// separate ones of its conversation and of the host prefix around it
-    /// ([`Self::same_conversation`]).
     pub fn durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         #[derive(Serialize)]
         struct Digest<'a> {
@@ -2187,8 +2156,6 @@ impl PreparedWire {
         })?)
     }
 
-    /// The durable input of builds before the conversation had its own
-    /// digest: the whole body's alone.
     pub fn blake3_durable_input(&self) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         #[derive(Serialize)]
         struct Digest<'a> {
@@ -2203,11 +2170,6 @@ impl PreparedWire {
         })?)
     }
 
-    /// Whether `recorded`, the durable input of a step another build began,
-    /// names this request's conversation on the same wire: the same messages,
-    /// whatever tools, system prompt, settings or cache breakpoints the hosts
-    /// around them sent. An input without a conversation digest, recorded
-    /// before it had one, names none.
     #[must_use]
     pub fn same_conversation(&self, recorded: &str) -> bool {
         #[derive(Deserialize)]
@@ -2225,9 +2187,6 @@ impl PreparedWire {
         })
     }
 
-    /// The blake3 of the messages as sent, without their `cache_control`
-    /// markers: where a host puts its cache breakpoints, and their TTL, don't
-    /// change what the model reads.
     fn stream_digests(&self) -> (blake3::Hash, blake3::Hash) {
         let mut hasher = blake3::Hasher::new();
         let mut markers = blake3::Hasher::new();
@@ -2294,7 +2253,6 @@ impl PreparedWire {
     }
 }
 
-/// The Messages API body of `head` with `messages`, and where those are in it.
 struct WireBody {
     body: String,
     messages: std::ops::Range<usize>,
@@ -2323,7 +2281,6 @@ fn api_body<M: WireMessage>(
     thread: Option<&ThreadParam>,
     cache: Option<&WireCache>,
 ) -> Result<WireBody, ClaudeError> {
-    // A continue request must leave out `system` and `tools`: the thread keeps them.
     let continuing = matches!(thread, Some(ThreadParam::Continue { .. }));
     let MessagesRequest {
         model,
@@ -2473,10 +2430,6 @@ fn api_body<M: WireMessage>(
     })
 }
 
-/// The first `cache_control` member in `json`, encoded messages: the text
-/// before it and after it, without the comma between it and a neighbor. Only
-/// a key follows `{` or `,` with a quote, since a string escapes its quotes,
-/// and its value is a flat object ([`CacheControl`]).
 fn cache_marker(json: &str) -> Option<(&str, &str)> {
     const KEY: &str = "\"cache_control\":{";
     let mut from = 0;

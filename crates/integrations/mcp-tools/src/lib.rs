@@ -197,10 +197,6 @@ impl McpCallError {
     }
 }
 
-/// Why an MCP server failed to start or list its tools. `refused` is true
-/// when the server answered with a definite refusal (a JSON-RPC error or an
-/// HTTP 4xx other than 401), so trying again would get the same answer;
-/// false for no answer, a timeout, a 5xx or a 401.
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct McpServerError {
@@ -280,9 +276,6 @@ impl Mcp {
 }
 
 impl Mcp {
-    /// Each connected server's `instructions` from its `initialize` result
-    /// (MCP's guidance on how to use the server), by server name. Servers that
-    /// gave none, or haven't connected, are left out.
     pub fn server_instructions(&self) -> McpFuture<'_, BTreeMap<String, String>> {
         Box::pin(async move {
             self.start_servers();
@@ -361,9 +354,6 @@ impl PreparedMcpTool {
         &self.entry.definition
     }
 
-    /// The tool as its server's `tools/list` gave it: name, description,
-    /// inputSchema, annotations and, when the server declared one,
-    /// outputSchema.
     pub fn listed(&self) -> Value {
         tools_list_entry(self.remote_name(), self.definition(), self.read_only())
     }
@@ -1193,9 +1183,6 @@ fn take_bytes_at_char_boundary(value: &str, max_bytes: usize) -> &str {
     &value[..value.floor_char_boundary(max_bytes)]
 }
 
-/// A tool's `tools/list` entry from its definition, whose output schema
-/// carries the server's outputSchema as the type of `structuredContent`
-/// (`{}` when it declared none).
 fn tools_list_entry(name: &str, definition: &ToolDefinition, read_only: bool) -> Value {
     let mut listed = json!({
         "name": name,

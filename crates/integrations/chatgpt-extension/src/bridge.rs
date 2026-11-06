@@ -27,16 +27,11 @@ pub struct Upstream {
     pub origins: Value,
 }
 
-/// A registration's native-host manifest, and the browser's last start of its launcher since that
-/// manifest was written (see [`Bridge::launches`]).
 #[derive(Clone, Debug)]
 pub struct Launch {
     pub root: PathBuf,
     pub manifest: PathBuf,
-    /// When the manifest was last written.
     pub registered: SystemTime,
-    /// When the browser last started the launcher, and why that connection stopped: empty while
-    /// it runs or after a clean start. `None` when it has not started since `registered`.
     pub started: Option<(SystemTime, String)>,
 }
 
@@ -137,7 +132,6 @@ fn random_hex() -> Result<String, Error> {
     Ok(random.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Written by [`Bridge::connect`] each time the browser starts the launcher.
 pub(crate) fn started_path(record: &Path) -> PathBuf {
     record.with_extension("started")
 }
@@ -635,8 +629,6 @@ impl Bridge {
         Ok(())
     }
 
-    /// Each registration's last launch, to tell a browser that never started the launcher since it
-    /// was registered, or started it and failed, from one that connected.
     pub fn launches(&self) -> Vec<Launch> {
         let mut result = Vec::new();
         for record_path in self.records().unwrap_or_default() {

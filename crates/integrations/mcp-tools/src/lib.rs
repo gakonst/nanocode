@@ -168,6 +168,15 @@ pub enum McpCallEffect {
 
 impl McpCallError {
     #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Session(nanocode_mcp::Error::Rpc(error)) => error.retry_after(),
+            Self::Session(nanocode_mcp::Error::Transport(error)) => error.retry_after(),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub fn effect(&self) -> McpCallEffect {
         match self {
             Self::Session(nanocode_mcp::Error::Rpc(error))

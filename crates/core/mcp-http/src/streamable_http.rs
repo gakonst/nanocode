@@ -775,6 +775,7 @@ impl Shared {
             return Ok(());
         }
         if !status.is_success() {
+            let retry_after = nanocode_http::layer::retry::retry_after(&response.headers);
             let body = response
                 .text(self.options.max_response_bytes)
                 .await
@@ -784,7 +785,9 @@ impl Shared {
                     Ok(Message::Error { id, error }) => {
                         let error = Message::Error {
                             id,
-                            error: error.with_status(status.as_u16()),
+                            error: error
+                                .with_status(status.as_u16())
+                                .with_retry_after(retry_after),
                         };
                         self.inbound
                             .deliver(with_request_id(error, message.request_id()));
@@ -796,10 +799,13 @@ impl Shared {
                     ),
                 }
             }
-            return Err(PostError::Failed(TransportError::with_status(
-                format!("unexpected server response: HTTP {status}: {body}"),
-                status.as_u16(),
-            )));
+            return Err(PostError::Failed(
+                TransportError::with_status(
+                    format!("unexpected server response: HTTP {status}: {body}"),
+                    status.as_u16(),
+                )
+                .with_retry_after(retry_after),
+            ));
         }
         if is_mime(content_type.as_deref(), EVENT_STREAM_MIME_TYPE) {
             return self

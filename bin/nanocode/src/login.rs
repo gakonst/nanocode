@@ -32,6 +32,11 @@ impl App {
             argument.trim().trim_start_matches('$').to_owned(),
         ));
     }
+
+    pub(crate) fn wallet(&mut self) {
+        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "wallet", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        tokio::spawn(wallet(self.tx.clone()));
+    }
 }
 
 async fn codex(tx: UnboundedSender<AppEvent>) {
@@ -46,7 +51,7 @@ async fn codex(tx: UnboundedSender<AppEvent>) {
     };
     notice(
         NoticeLevel::Info,
-        browse("ChatGPT", login.authorization_url()),
+        browse("ChatGPT sign-in", login.authorization_url()),
     );
     match login.complete().await {
         Ok(status) => notice(
@@ -68,7 +73,7 @@ async fn claude(tx: UnboundedSender<AppEvent>) {
     };
     notice(
         NoticeLevel::Info,
-        browse("Claude", login.authorization_url()),
+        browse("Claude sign-in", login.authorization_url()),
     );
     match login.complete().await {
         Ok(ClaudeSubscriptionStatus::Authenticated { .. }) => {
@@ -107,7 +112,10 @@ async fn tempo(tx: UnboundedSender<AppEvent>) {
     };
     notice(
         NoticeLevel::Info,
-        format!("{}; check that it shows {code}", browse("Tempo", url)),
+        format!(
+            "{}; check that it shows {code}",
+            browse("Tempo sign-in", url)
+        ),
     );
     match tempo_wallet(&["wallet", "login", "status"]).await {
         Ok(status) => notice(
@@ -137,17 +145,39 @@ async fn fund(tx: UnboundedSender<AppEvent>, amount: String) {
             format!("fund: tempo wallet fund answered {checkout}"),
         );
     };
-    let shown = match crate::extras::open_url(url) {
-        true => {
-            format!("opened the MACH checkout in your browser; if it did not appear, visit {url}")
-        }
-        false => format!("visit {url} to buy MACH"),
-    };
     notice(
         NoticeLevel::Info,
         format!(
-            "{shown}; MACH bought there goes to the Tempo wallet {wallet}, and nanocode pays with it once it arrives"
+            "{}; MACH bought there goes to the Tempo wallet {wallet}, and nanocode pays with it once it arrives",
+            browse("the MACH checkout", url)
         ),
+    );
+}
+
+async fn wallet(tx: UnboundedSender<AppEvent>) {
+    let notice = |level, text| drop(tx.send(AppEvent::Notice(level, text)));
+    let doctor = match tempo_wallet(&["wallet", "doctor"]).await {
+        Ok(doctor) => doctor,
+        Err(error) => return notice(NoticeLevel::Error, format!("wallet: {error}")),
+    };
+    let Some(url) = doctor["auth"]["url"].as_str() else {
+        return notice(
+            NoticeLevel::Error,
+            format!(
+                "wallet: tempo wallet doctor named no wallet app: {}",
+                doctor["auth"]
+            ),
+        );
+    };
+    let held = match doctor["wallet"]["address"].as_str() {
+        Some(address) if doctor["wallet"]["logged_in"].as_bool() == Some(true) => {
+            format!("nanocode pays from {address}; /fund buys MACH for it")
+        }
+        _ => "/login tempo signs nanocode in to a wallet".to_owned(),
+    };
+    notice(
+        NoticeLevel::Info,
+        format!("{}; {held}", browse("the Tempo wallet app", url)),
     );
 }
 
@@ -204,10 +234,10 @@ async fn tempo_wallet(args: &[&str]) -> Result<serde_json::Value, String> {
     })
 }
 
-fn browse(service: &str, url: &str) -> String {
+fn browse(page: &str, url: &str) -> String {
     if crate::extras::open_url(url) {
-        format!("opened {service} sign-in in your browser; if it did not appear, visit {url}")
+        format!("opened {page} in your browser; if it did not appear, visit {url}")
     } else {
-        format!("visit {url} to sign in to {service}")
+        format!("visit {url} for {page}")
     }
 }

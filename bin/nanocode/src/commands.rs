@@ -1,4 +1,4 @@
-pub const COMMANDS: [(&str, &str); 32] = [
+pub const COMMANDS: [(&str, &str); 33] = [
     (
         "/model",
         "choose harness, model, thinking and speed for a new thread",
@@ -21,6 +21,10 @@ pub const COMMANDS: [(&str, &str); 32] = [
     (
         "/fund",
         "buy MACH by card for the Tempo wallet that pays for tools and --gateway tempo: /fund [usd]",
+    ),
+    (
+        "/wallet",
+        "open the Tempo wallet web app for the wallet nanocode pays from",
     ),
     ("/new", "start a new session"),
     (

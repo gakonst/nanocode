@@ -2473,6 +2473,7 @@ impl App {
             "zoom" => self.zoom_pane(),
             "login" => self.login(argument),
             "fund" => self.fund(argument),
+            "wallet" => self.wallet(),
             "resume" | "sessions" => self.open_session_picker(),
             "new" | "clear" => self.new_session(),
             "agents" => self.agents_command(argument),

@@ -1,7 +1,3 @@
-//! Replacing a program with a newer release of itself: downloaded beside it
-//! through the host's source, checked for size and SHA-256, run once to check
-//! the version it reports, and renamed over it.
-
 use sha2::{Digest, Sha256};
 use std::{
     env,
@@ -16,11 +12,8 @@ use std::{
     process::{self, Command, Stdio},
 };
 
-/// The most a release may weigh.
 pub const MAX_BYTES: u64 = 512 << 20;
 
-/// A release: its version and the SHA-256 (lowercase hex) and size (0 when
-/// unknown) of its executable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
@@ -29,8 +22,6 @@ pub struct Release {
 }
 
 impl Release {
-    /// Whether it is well formed: a three-number version, a SHA-256 and at
-    /// most [`MAX_BYTES`].
     pub fn is_valid(&self) -> bool {
         parse_version(&self.version).is_some()
             && self.sha256.len() == 64
@@ -39,7 +30,6 @@ impl Release {
     }
 }
 
-/// A release version: three numbers of at most 9 digits, nothing else.
 pub fn parse_version(version: &str) -> Option<[u64; 3]> {
     let mut parts = version.split('.');
     let mut numbers = [0; 3];
@@ -53,8 +43,6 @@ pub fn parse_version(version: &str) -> Option<[u64; 3]> {
     parts.next().is_none().then_some(numbers)
 }
 
-/// Whether `candidate` is a release newer than `current`; every release is
-/// newer than a build whose version is not one (a development build).
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     match (parse_version(candidate), parse_version(current)) {
         (Some(candidate), Some(current)) => candidate > current,
@@ -63,28 +51,22 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-/// Why [`install`] left the executable as it was.
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError<E: Display> {
     #[error("the executable has no directory")]
     NoDirectory,
-    /// The temporary beside the executable could not be created.
     #[error("cannot write next to the executable: {0}")]
     Write(io::Error),
     #[error("{0}")]
     Download(E),
     #[error("the download is larger than its release allows")]
     TooLarge,
-    /// Its size or SHA-256 is not the release's.
     #[error("the download doesn't match its release's SHA-256")]
     Mismatch,
-    /// It could not be started.
     #[error("the download doesn't run: {0}")]
     Run(io::Error),
-    /// It failed, or reported another version.
     #[error("the download doesn't report its release's version")]
     Version,
-    /// It could not be renamed over the executable.
     #[error("cannot replace the executable: {0}")]
     Replace(io::Error),
     #[error(transparent)]
@@ -110,11 +92,6 @@ impl Write for Hashing<'_> {
     }
 }
 
-/// Replaces `exe` with `release`. `download` writes the release's executable
-/// into a new 0700 file `.<name>.update-<pid>` beside `exe`; it must have the
-/// release's size (when known) and SHA-256, and running it with
-/// `version_args` must succeed and print the release's version as its last
-/// word. Only then is it renamed over `exe`; else it is removed.
 pub fn install<E: Display>(
     exe: &Path,
     release: &Release,
@@ -172,8 +149,6 @@ pub fn install<E: Display>(
     result
 }
 
-/// Starts `exe` in this process's place with this process's arguments; it
-/// returns only the error that stopped it.
 pub fn restart(exe: &Path) -> io::Error {
     Command::new(exe).args(env::args_os().skip(1)).exec()
 }

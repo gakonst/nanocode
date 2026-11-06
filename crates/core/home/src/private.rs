@@ -1,7 +1,3 @@
-//! Files only their owner may read, as a host keeps a credential and its
-//! state: a directory no one else may enter, files no one else may read,
-//! written new or replaced whole, and lock files.
-
 use nix::{
     errno::Errno,
     sys::signal::kill,
@@ -15,28 +11,22 @@ use std::{
     process,
 };
 
-/// Why a private path was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum PrivateError {
     #[error("{} must be a directory", .0.display())]
     NotDirectory(PathBuf),
-    /// The directory is another user's, or others may enter it.
     #[error("{} must be owned by you and owner-private (chmod 700)", .0.display())]
     OpenDirectory(PathBuf),
     #[error("{} must be a regular file", .0.display())]
     NotFile(PathBuf),
-    /// The file is another user's, or others may read it.
     #[error("{} must be owned by you and private (0600)", .0.display())]
     OpenFile(PathBuf),
-    /// Opening or creating the path failed.
     #[error("{}: {error}", .path.display())]
     At { path: PathBuf, error: io::Error },
     #[error(transparent)]
     Io(#[from] io::Error),
 }
 
-/// Creates `dir` (and its parents) with mode 0700 if it is missing, then
-/// [`check_dir`]s it.
 pub fn ensure_dir(dir: &Path) -> Result<(), PrivateError> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -45,8 +35,6 @@ pub fn ensure_dir(dir: &Path) -> Result<(), PrivateError> {
     check_dir(dir)
 }
 
-/// Whether `dir` is a directory, not a link, that the user owns and no one
-/// else may enter.
 pub fn check_dir(dir: &Path) -> Result<(), PrivateError> {
     let meta = fs::symlink_metadata(dir)?;
     if !meta.is_dir() {
@@ -58,8 +46,6 @@ pub fn check_dir(dir: &Path) -> Result<(), PrivateError> {
     Ok(())
 }
 
-/// Opens `path` for reading if it is a regular file, not a link, that the
-/// user owns and no one else may read or write.
 pub fn open(path: &Path) -> Result<File, PrivateError> {
     let meta = fs::symlink_metadata(path).map_err(|error| PrivateError::At {
         path: path.into(),
@@ -74,8 +60,6 @@ pub fn open(path: &Path) -> Result<File, PrivateError> {
     Ok(File::open(path)?)
 }
 
-/// Writes `bytes` to a new 0600 file at `path`, never through a link and
-/// never over an existing file, and syncs it.
 pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -92,10 +76,6 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
     Ok(())
 }
 
-/// Replaces `path` whole with `bytes`, a 0600 file: written new as
-/// `<name>.<pid>.tmp` beside it, then renamed over it, so a reader sees the
-/// old file or the new one. The temporaries that processes that are gone
-/// left are removed first.
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
     let own = process::id();
     let temporary = temporary(path, own);
@@ -110,7 +90,6 @@ pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
     Ok(())
 }
 
-/// The temporaries [`replace`] left beside `path`, with their processes' IDs.
 pub fn temporaries(path: &Path) -> Vec<(PathBuf, u32)> {
     let (Some(dir), Some(name)) = (
         path.parent(),
@@ -154,8 +133,6 @@ const fn libc_nofollow() -> i32 {
     libc::O_NOFOLLOW
 }
 
-/// Sends this process's stdout and stderr to the end of `path` (created 0600,
-/// with its directory), as a service started without a terminal logs.
 pub fn append_output(path: &Path) -> Result<(), PrivateError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -174,16 +151,12 @@ pub fn append_output(path: &Path) -> Result<(), PrivateError> {
     Ok(())
 }
 
-/// A private lock file (0600, never through a link), taken exclusively as
-/// `flock(2)` takes it, so it excludes any process that flocks the same file.
-/// Dropping it lets the lock go.
 #[derive(Debug)]
 pub struct Lock {
     file: File,
 }
 
 impl Lock {
-    /// Opens (creating) the lock file without taking it.
     pub fn open(path: &Path) -> Result<Self, PrivateError> {
         let file = OpenOptions::new()
             .read(true)
@@ -197,12 +170,10 @@ impl Lock {
         Ok(Self { file })
     }
 
-    /// Waits for the lock.
     pub fn lock(&self) -> io::Result<()> {
         self.file.lock()
     }
 
-    /// Takes the lock unless another holds it, which fails with `EWOULDBLOCK`.
     pub fn try_lock(&self) -> io::Result<()> {
         match self.file.try_lock() {
             Ok(()) => Ok(()),

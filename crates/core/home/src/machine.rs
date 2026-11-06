@@ -1,11 +1,5 @@
-//! What the machine, or the cgroup a program runs in, has.
-
 use std::fs;
 
-/// Memory used and in all, in bytes. Under a cgroup v2 limit below the
-/// machine's memory, the cgroup's use without its inactive file cache (which
-/// the kernel reclaims first) and its limit; else the machine's memory less what
-/// it has available. `None` without `/proc/meminfo` (not Linux).
 #[must_use]
 pub fn memory() -> Option<(u64, u64)> {
     let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
@@ -18,8 +12,6 @@ pub fn memory() -> Option<(u64, u64)> {
     )
 }
 
-/// [`memory`] from the texts of `/proc/meminfo` and the cgroup's `memory.max`,
-/// `memory.current` and `memory.stat`.
 #[must_use]
 pub fn measure(
     meminfo: &str,

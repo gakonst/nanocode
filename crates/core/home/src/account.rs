@@ -1,10 +1,6 @@
-//! The OS user a program runs as, and where its per-user files go: macOS's
-//! `~/Library` folders, or the XDG directories elsewhere.
-
 use nix::unistd::{User, getuid};
 use std::{env, path::PathBuf};
 
-/// Why the user could not be told.
 #[derive(Debug, thiserror::Error)]
 pub enum AccountError {
     #[error("cannot determine your OS user name")]
@@ -13,9 +9,6 @@ pub enum AccountError {
     Home,
 }
 
-/// The OS user: its name, home and login shell. The name is the password
-/// database's, else `$USER`; the home is `$HOME`, else the database's, and must
-/// be absolute.
 #[derive(Clone, Debug)]
 pub struct Account {
     pub name: String,
@@ -44,8 +37,6 @@ impl Account {
         Ok(Self { name, home, shell })
     }
 
-    /// A program's configuration directory: `~/Library/Application
-    /// Support/<mac>` on macOS, else `${XDG_CONFIG_HOME:-~/.config}/<name>`.
     pub fn config_dir(&self, mac: &str, name: &str) -> PathBuf {
         self.user_path(
             "Library/Application Support",
@@ -56,8 +47,6 @@ impl Account {
         )
     }
 
-    /// A program's log file: `~/Library/Logs/<name>` on macOS, else
-    /// `${XDG_STATE_HOME:-~/.local/state}/<name>`.
     pub fn log_path(&self, name: &str) -> PathBuf {
         self.user_path("Library/Logs", name, "XDG_STATE_HOME", ".local/state", name)
     }

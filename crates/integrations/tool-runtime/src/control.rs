@@ -1,8 +1,3 @@
-//! A local control socket: a Unix socket only its owner may use, on which a
-//! client writes one request per line and reads one answer per line, as a
-//! desktop app asks a hand what it is doing. Bounded in conversations, line
-//! length, idle time and failed accepts.
-
 use std::{
     fs,
     future::Future,
@@ -18,16 +13,11 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-/// How much a control socket serves at once.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Conversations at once; the next connection is accepted once one ends.
     pub conversations: usize,
-    /// The longest request line, in bytes; a longer one ends its conversation.
     pub line: u64,
-    /// How long a conversation may wait for its next line.
     pub idle: Duration,
-    /// Failed accepts in a row after which [`serve`] returns.
     pub failures: u32,
 }
 
@@ -42,9 +32,6 @@ impl Default for Limits {
     }
 }
 
-/// Serves `path`, replacing what was there, as a 0600 socket: each request
-/// line gets `answer`'s line back. Fails only when it cannot bind; `failed`
-/// hears each failed accept, and it returns after `limits.failures` in a row.
 pub async fn serve<A, F>(
     path: &Path,
     limits: Limits,
@@ -93,7 +80,6 @@ where
     Ok(())
 }
 
-/// Tells the accepting task a conversation ended, however it ended.
 struct Ended(mpsc::UnboundedSender<()>);
 
 impl Drop for Ended {
@@ -117,8 +103,6 @@ where
     }
 }
 
-/// One line of at most `max` bytes, without its line ending; `None` at the
-/// end of the stream, for a longer line, or one that is not UTF-8.
 pub async fn read_line(reader: &mut (impl AsyncBufRead + Unpin), max: u64) -> Option<String> {
     let mut line = Vec::new();
     let read = (&mut *reader)
@@ -135,8 +119,6 @@ pub async fn read_line(reader: &mut (impl AsyncBufRead + Unpin), max: u64) -> Op
     String::from_utf8(line).ok()
 }
 
-/// Asks the socket at `path` one request and returns its answer line, or
-/// `None` when the answer did not end its line within `max` bytes.
 pub fn ask(
     path: &Path,
     request: &str,

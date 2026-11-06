@@ -52,18 +52,12 @@ pub enum HandEvent {
     Rejected {
         status: u16,
     },
-    /// An upgrade refused with 401 or 403 that the host's
-    /// [`Hand::confirm_refusals`] hook did not confirm, such as a proxy's or an
-    /// access gateway's in front of the brain: the hand dials again as a new
-    /// runtime after `retry`.
     Unconfirmed {
         status: u16,
         retry: Duration,
     },
 }
 
-/// Answers whether the brain itself refuses the hand's credential, given the
-/// HTTP status of a refused upgrade.
 pub type ConfirmRefusal =
     std::sync::Arc<dyn Fn(u16) -> futures_util::future::BoxFuture<'static, bool> + Send + Sync>;
 
@@ -112,11 +106,6 @@ impl Hand {
         }
     }
 
-    /// Asks `confirm` before stopping for an upgrade refused with 401 or 403.
-    /// A refusal the brain confirms stops the hand as without the hook; one it
-    /// doesn't (the credential is fine and something in front of the brain
-    /// refused it) emits [`HandEvent::Unconfirmed`] and dials again, as a new
-    /// runtime, after `retry`. 410 and 426 always stop the hand.
     #[must_use]
     pub fn confirm_refusals(mut self, confirm: ConfirmRefusal, retry: Duration) -> Self {
         self.confirm = Some((confirm, retry));

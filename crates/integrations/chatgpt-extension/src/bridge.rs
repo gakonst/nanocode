@@ -63,10 +63,6 @@ impl Launcher {
         self
     }
 
-    /// Writes this launcher at `path` as an executable of its own (0700, written
-    /// whole through `<path>.tmp` and a rename): it sets its variables and execs
-    /// its program with its arguments and the ones it is started with, as a host's
-    /// own native-messaging host does.
     pub fn install(&self, path: &Path) -> Result<(), Error> {
         let script = self.script(&[])?;
         let temporary = path.with_extension("tmp");

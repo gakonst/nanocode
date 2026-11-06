@@ -282,11 +282,6 @@ pub fn default_shell_name() -> &'static str {
     default_user_shell().name()
 }
 
-/// PATH as the user's login shell sets it (Homebrew's, a version manager's),
-/// for a program started by launchd or systemd with their bare PATH:
-/// `shell -ilc` prints it between markers, in its own process group, which
-/// is killed once PATH is read or `within` passed. `Ok(None)` when the shell
-/// printed none; `Err` when it could not start.
 #[cfg(unix)]
 pub fn login_path(shell: &Path, within: std::time::Duration) -> std::io::Result<Option<OsString>> {
     use nix::{

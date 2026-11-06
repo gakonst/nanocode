@@ -1,10 +1,15 @@
 [package]
+autotests = false
+autobenches = false
 name = "nanocode-store-jsonl"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Append-only JSONL state store, one file per session: the CLI's default durability"
 
 [dependencies]
 nanocode-durability-core.workspace = true
@@ -18,9 +23,6 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["fs"] }
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
 nix = { workspace = true, features = ["fs"] }
 
 [lints]

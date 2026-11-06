@@ -6,7 +6,10 @@ use std::{
 use crate::{
     Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Sql, SqlDialect, SqlRow,
     SqlStatement, SqlStore, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
-    sql::{counter, invalid, keys_json, migrate_format, run_checked, single, statement, text},
+    sql::{
+        SqlAccess, counter, invalid, keys_json, migrate_format, run_checked, single, statement,
+        text,
+    },
 };
 
 type Dialects = [&'static str; 2];
@@ -232,6 +235,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
         let dialect = self.host.dialect();
         let legacy = run_checked(
             &*self.host,
+            SqlAccess::Schema,
             "rows_convert",
             &[statement(dialect, &LEGACY, Vec::new())],
         )
@@ -245,7 +249,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
                     params: Vec::new(),
                 })
                 .collect();
-            run_checked(&*self.host, "rows_convert", &statements).await?;
+            run_checked(&*self.host, SqlAccess::Schema, "rows_convert", &statements).await?;
         }
         self.ready = true;
         Ok(())
@@ -256,10 +260,19 @@ impl<H: Sql + ?Sized> RowStore<H> {
         operation: &'static str,
         statements: Vec<SqlStatement<'_>>,
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+        self.run(SqlAccess::Write, operation, statements).await
+    }
+
+    async fn run(
+        &mut self,
+        access: SqlAccess,
+        operation: &'static str,
+        statements: Vec<SqlStatement<'_>>,
+    ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
         if !self.ready {
             self.migrate().await?;
         }
-        run_checked(&*self.host, operation, &statements).await
+        run_checked(&*self.host, access, operation, &statements).await
     }
 
     async fn query(
@@ -270,7 +283,11 @@ impl<H: Sql + ?Sized> RowStore<H> {
     ) -> Result<Vec<SqlRow>, StoreError> {
         let dialect = self.host.dialect();
         let mut results = self
-            .transaction(operation, vec![statement(dialect, sql, params)])
+            .run(
+                SqlAccess::Read,
+                operation,
+                vec![statement(dialect, sql, params)],
+            )
             .await?;
         Ok(results.pop().unwrap_or_default())
     }

@@ -3,7 +3,7 @@ use std::{path::Path, thread};
 use rusqlite::{Connection, TransactionBehavior, types::ValueRef};
 use tokio::sync::{mpsc, oneshot};
 
-use nanocode_durability_core::{Sql, SqlRow, SqlStatement, StoreError, StoreFuture};
+use nanocode_durability_core::{Sql, SqlAccess, SqlRow, SqlStatement, StoreError, StoreFuture};
 
 const JOB_CAPACITY: usize = 1;
 
@@ -117,12 +117,8 @@ impl SqliteSql {
     }
 }
 
-impl Sql for SqliteSql {
-    fn transaction<'a>(
-        &'a self,
-        _operation: &'static str,
-        statements: &'a [SqlStatement<'a>],
-    ) -> StoreFuture<'a, Rows> {
+impl SqliteSql {
+    fn send<'a>(&'a self, reads: bool, statements: &[SqlStatement<'_>]) -> StoreFuture<'a, Rows> {
         let statements: Vec<(&'static str, Vec<String>)> = statements
             .iter()
             .map(|statement| {
@@ -136,9 +132,7 @@ impl Sql for SqliteSql {
                 )
             })
             .collect();
-        let reads =
-            !self.readers.is_empty() && statements.iter().all(|(sql, _)| sql.starts_with("SELECT"));
-        let worker = if reads {
+        let worker = if reads && !self.readers.is_empty() {
             let next = self
                 .next_reader
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -154,6 +148,28 @@ impl Sql for SqliteSql {
                 .map_err(|_| stopped())?;
             result.await.map_err(|_| stopped())?
         })
+    }
+}
+
+impl Sql for SqliteSql {
+    fn transaction<'a>(
+        &'a self,
+        _operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Rows> {
+        let reads = statements
+            .iter()
+            .all(|statement| statement.sql.starts_with("SELECT"));
+        self.send(reads, statements)
+    }
+
+    fn run<'a>(
+        &'a self,
+        access: SqlAccess,
+        _operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Rows> {
+        self.send(access == SqlAccess::Read, statements)
     }
 
     fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {

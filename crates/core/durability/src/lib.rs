@@ -14,8 +14,8 @@ pub use lock::{LockKey, LocksHeld};
 pub use payload::EncodedPayload;
 pub use row::RowStore;
 pub use sql::{
-    Collected, Migration, MissingColumn, Sql, SqlDialect, SqlRow, SqlStatement, SqlStore,
-    Unreachable, migrate_format, migrate_format_then,
+    Collected, Migration, MissingColumn, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement,
+    SqlStore, Unreachable, migrate_format, migrate_format_then,
 };
 pub use staged::{StagedStore, StagedWrites};
 pub use state::{

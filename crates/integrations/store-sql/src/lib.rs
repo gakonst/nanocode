@@ -1,20 +1,29 @@
 #![cfg(not(target_family = "wasm"))]
 
 mod lock;
+mod migrate;
 mod notify;
-mod pipeline;
+mod pool;
 mod postgres;
 mod sqlite;
 mod sqlx_postgres;
+mod statements;
 
 pub use lock::{begin, begin_exclusive, held};
+pub use migrate::{
+    Leadership, after, allowed, applied, drop_replaced, ensure_index, index, locked, try_lock,
+};
 pub use nanocode_durability_core::{Collected, Unreachable};
 pub use notify::{Forwarding, Trouble, forward, listen};
-pub use pipeline::{
-    Alive, Locked, PipelineError, Pipelined, Pipelines, Unavailable, collected_wakes,
+pub use pool::{
+    Counts, Lent, LongHold, Owing, PoolSlot, Reach, Reaching, Side, Sided, Sides, Stranded, Warmed,
+    contended, unavailable, warm,
 };
-pub use postgres::PostgresSql;
+pub use postgres::{
+    Alive, Locked, PipelineError, Pipelined, PostgresSql, Unavailable, collected_wakes,
+};
 pub use sqlite::{SqliteOptions, SqliteSql};
 pub use sqlx_postgres::{
     PgConnections, SqlxSql, SqlxTransaction, collect, commit_staged, stage_records, unreachable,
 };
+pub use statements::{Ran, Slow, SlowPlans, generic_plan, timed};

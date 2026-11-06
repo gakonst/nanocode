@@ -1,8 +1,8 @@
 use std::ops::DerefMut;
 
 use nanocode_durability_core::{
-    Collected, Sql, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites, StoreError,
-    StoreFuture, Unreachable,
+    Collected, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites,
+    StoreError, StoreFuture, Unreachable,
 };
 use nanocode_sync::Owned;
 use sqlx::{PgConnection, PgPool, Postgres, Row, pool::PoolConnection};
@@ -21,30 +21,63 @@ impl PgConnections for PgPool {
     }
 }
 
-pub struct SqlxSql<C>(C);
+pub struct SqlxSql<C, R = C> {
+    writes: C,
+    reads: Option<R>,
+}
 
 impl<C: PgConnections> SqlxSql<C> {
     #[must_use]
     pub const fn new(connections: C) -> Self {
-        Self(connections)
+        Self {
+            writes: connections,
+            reads: None,
+        }
     }
 }
 
-impl<C: PgConnections> Sql for SqlxSql<C> {
+impl<C: PgConnections, R: PgConnections> SqlxSql<C, R> {
+    #[must_use]
+    pub const fn reading(writes: C, reads: R) -> Self {
+        Self {
+            writes,
+            reads: Some(reads),
+        }
+    }
+}
+
+async fn transact<C: PgConnections>(
+    connections: &C,
+    statements: &[SqlStatement<'_>],
+) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+    let mut connection = connections.acquire().await?;
+    let mut transaction = sqlx::Connection::begin(&mut *connection)
+        .await
+        .map_err(backend)?;
+    let results = run(&mut transaction, statements).await?;
+    transaction.commit().await.map_err(backend)?;
+    Ok(results)
+}
+
+impl<C: PgConnections, R: PgConnections> Sql for SqlxSql<C, R> {
     fn transaction<'a>(
         &'a self,
         _operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        Box::pin(async move {
-            let mut connection = self.0.acquire().await?;
-            let mut transaction = sqlx::Connection::begin(&mut *connection)
-                .await
-                .map_err(backend)?;
-            let results = run(&mut transaction, statements).await?;
-            transaction.commit().await.map_err(backend)?;
-            Ok(results)
-        })
+        Box::pin(transact(&self.writes, statements))
+    }
+
+    fn run<'a>(
+        &'a self,
+        access: SqlAccess,
+        _operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
+        match (access, &self.reads) {
+            (SqlAccess::Read, Some(reads)) => Box::pin(transact(reads, statements)),
+            _ => Box::pin(transact(&self.writes, statements)),
+        }
     }
 
     fn dialect(&self) -> SqlDialect {

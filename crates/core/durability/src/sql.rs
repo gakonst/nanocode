@@ -26,6 +26,13 @@ impl serde::Serialize for SqlStatement<'_> {
 
 pub type SqlRow = Vec<Option<String>>;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SqlAccess {
+    Read,
+    Write,
+    Schema,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum SqlDialect {
     #[default]
@@ -47,6 +54,16 @@ pub trait Sql: Send + Sync {
         operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>>;
+
+    fn run<'a>(
+        &'a self,
+        access: SqlAccess,
+        operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
+        let _ = access;
+        self.transaction(operation, statements)
+    }
 
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
@@ -72,6 +89,16 @@ pub trait Sql {
         operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>>;
+
+    fn run<'a>(
+        &'a self,
+        access: SqlAccess,
+        operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
+        let _ = access;
+        self.transaction(operation, statements)
+    }
 
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
@@ -121,10 +148,11 @@ const WRITE_FORMAT: Dialects = [
 
 pub(crate) async fn run_checked<H: Sql + ?Sized>(
     host: &H,
+    access: SqlAccess,
     operation: &'static str,
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-    let results = host.transaction(operation, statements).await?;
+    let results = host.run(access, operation, statements).await?;
     if results.len() != statements.len() {
         return Err(StoreError::Backend(format!(
             "SQL host answered {} of {} statements",
@@ -163,7 +191,7 @@ pub async fn migrate_format_then<H: Sql + ?Sized>(
             None => 0,
         })
     };
-    let stored = current(&run_checked(host, "format", &check).await?)?;
+    let stored = current(&run_checked(host, SqlAccess::Schema, "format", &check).await?)?;
     if stored > u64::from(known) {
         return Err(StoreError::UnsupportedFormat {
             component,
@@ -175,7 +203,7 @@ pub async fn migrate_format_then<H: Sql + ?Sized>(
         return if then.is_empty() {
             Ok(Vec::new())
         } else {
-            run_checked(host, "format", then).await
+            run_checked(host, SqlAccess::Schema, "format", then).await
         };
     }
     let last = migrations.len() - 1;
@@ -194,7 +222,7 @@ pub async fn migrate_format_then<H: Sql + ?Sized>(
                 .chain([write])
                 .chain(trailing.iter().cloned())
                 .collect();
-            let mut results = run_checked(host, "format", &statements).await?;
+            let mut results = run_checked(host, SqlAccess::Schema, "format", &statements).await?;
             if index == last {
                 return Ok(results.split_off(statements.len() - trailing.len()));
             }
@@ -202,11 +230,13 @@ pub async fn migrate_format_then<H: Sql + ?Sized>(
         };
         let probe = || statement(dialect, &adopt.probe, Vec::new());
         let statements: Vec<_> = schema.chain([probe()]).collect();
-        let results = run_checked(host, "format", &statements).await?;
+        let results = run_checked(host, SqlAccess::Schema, "format", &statements).await?;
         if !column_present(&results[statements.len() - 1])? {
             let add = [statement(dialect, &adopt.add, Vec::new())];
-            if let Err(error) = run_checked(host, "format", &add).await
-                && !column_present(&run_checked(host, "format", &[probe()]).await?[0])?
+            if let Err(error) = run_checked(host, SqlAccess::Schema, "format", &add).await
+                && !column_present(
+                    &run_checked(host, SqlAccess::Schema, "format", &[probe()]).await?[0],
+                )?
             {
                 return Err(error);
             }
@@ -215,7 +245,7 @@ pub async fn migrate_format_then<H: Sql + ?Sized>(
             .into_iter()
             .chain(trailing.iter().cloned())
             .collect();
-        let mut results = run_checked(host, "format", &statements).await?;
+        let mut results = run_checked(host, SqlAccess::Schema, "format", &statements).await?;
         if index == last {
             return Ok(results.split_off(1));
         }
@@ -685,10 +715,19 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         operation: &'static str,
         statements: Vec<SqlStatement<'_>>,
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+        self.run(SqlAccess::Write, operation, statements).await
+    }
+
+    async fn run(
+        &mut self,
+        access: SqlAccess,
+        operation: &'static str,
+        statements: Vec<SqlStatement<'_>>,
+    ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
         if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
             self.migrate().await?;
         }
-        run_checked(&*self.host, operation, &statements).await
+        run_checked(&*self.host, access, operation, &statements).await
     }
 
     async fn query(
@@ -699,7 +738,11 @@ impl<H: Sql + ?Sized> SqlStore<H> {
     ) -> Result<Vec<SqlRow>, StoreError> {
         let dialect = self.host.dialect();
         let mut results = self
-            .transaction(operation, vec![statement(dialect, sql, params)])
+            .run(
+                SqlAccess::Read,
+                operation,
+                vec![statement(dialect, sql, params)],
+            )
             .await?;
         Ok(results.pop().unwrap_or_default())
     }
@@ -740,7 +783,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
             futures_util::future::try_join_all(
                 statements
                     .iter()
-                    .map(|statement| run_checked(host, "read_records", statement)),
+                    .map(|statement| run_checked(host, SqlAccess::Read, "read_records", statement)),
             )
             .await?
             .into_iter()

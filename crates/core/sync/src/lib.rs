@@ -3,9 +3,12 @@ use std::{future::Future, pin::Pin, sync::Arc};
 #[cfg(not(target_family = "wasm"))]
 mod lanes;
 #[cfg(not(target_family = "wasm"))]
+mod lease;
+#[cfg(not(target_family = "wasm"))]
 mod reentry;
 #[cfg(not(target_family = "wasm"))]
 mod session;
+mod shelf;
 #[cfg(not(target_family = "wasm"))]
 mod stalled;
 mod wakes;
@@ -13,9 +16,12 @@ mod wakes;
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Lanes, NotCommitted, together};
 #[cfg(not(target_family = "wasm"))]
+pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
+#[cfg(not(target_family = "wasm"))]
 pub use reentry::{Claim, Reentrant, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
+pub use shelf::{Armed, Shelf};
 #[cfg(not(target_family = "wasm"))]
 pub use stalled::StalledWaits;
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};

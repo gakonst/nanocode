@@ -72,8 +72,9 @@ use nanocode_code_mode_engine::{CellTools, EmbeddedHost as ExecutionWorker, Runt
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use replay::{
-    CELL_JOURNAL_VERSION, CellJournal, CellJournalHeader, CellJournalSink, CellJournalState,
-    CellJournalUpdate, CellJournals, JournaledCall, JournaledCallState,
+    CELL_JOURNAL_VERSION, CellHold, CellJournal, CellJournalHeader, CellJournalSink,
+    CellJournalState, CellJournalUpdate, CellJournals, JournaledCall, JournaledCallState,
+    MovedCells,
 };
 use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan};
 pub use spec::{exec_spec, wait_spec};

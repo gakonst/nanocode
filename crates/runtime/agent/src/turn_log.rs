@@ -19,6 +19,26 @@ pub struct Recording<'a> {
     pub read: &'a (dyn Fn(&str) -> bool + Send + Sync),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Verdict<T> {
+    Accepted,
+    Existing(T),
+    Conflict(T),
+    Steered(T),
+}
+
+impl<T> Verdict<T> {
+    pub fn of(previous: Option<(T, bool)>, active: Option<T>, steers: bool) -> Self {
+        match (previous, active) {
+            (Some((previous, true)), _) => Self::Existing(previous),
+            (Some((previous, false)), _) => Self::Conflict(previous),
+            (None, Some(active)) if steers => Self::Steered(active),
+            (None, Some(active)) => Self::Conflict(active),
+            (None, None) => Self::Accepted,
+        }
+    }
+}
+
 pub trait EventLog: Send + Sync + 'static {
     fn record<'a>(
         &'a self,

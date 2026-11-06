@@ -193,6 +193,20 @@ impl CellJournalState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CellHold {
+    None,
+    Wait,
+    Replay,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MovedCells {
+    pub turn: String,
+    pub run: u32,
+    pub cells: Vec<CellJournal>,
+}
+
 #[derive(Clone, Default)]
 pub struct CellJournals(Arc<Journals>);
 
@@ -356,6 +370,66 @@ impl CellJournals {
     #[must_use]
     pub fn has_restored(&self, session_id: &str) -> bool {
         self.0.restored.read(|map| map.contains_key(session_id))
+    }
+
+    #[must_use]
+    pub fn hold_for_handoff(&self, session_id: &str, replayable: bool, forced: bool) -> CellHold {
+        let state = self.state(session_id);
+        if !replayable || state.cells == 0 || !state.replayable {
+            self.release_held(session_id);
+            return CellHold::None;
+        }
+        if !self.holding(session_id) {
+            self.hold(session_id);
+        }
+        if self.state(session_id).settled() {
+            CellHold::Replay
+        } else if forced {
+            CellHold::None
+        } else {
+            CellHold::Wait
+        }
+    }
+
+    pub fn release_held(&self, session_id: &str) {
+        if self.holding(session_id) {
+            self.release(session_id);
+        }
+    }
+
+    #[must_use]
+    pub fn moved(&self, session_id: &str, request_id: &str, run: u32) -> MovedCells {
+        MovedCells {
+            turn: request_id.to_owned(),
+            run,
+            cells: self.journals(session_id).unwrap_or_default(),
+        }
+    }
+
+    pub fn restore_moved(
+        &self,
+        session_id: &str,
+        moved: MovedCells,
+        request_id: &str,
+        run: u32,
+        fallback: Option<String>,
+        outcome: impl Fn(&JournaledCall) -> Option<(Value, bool)>,
+    ) -> usize {
+        if moved.turn != request_id
+            || moved.run.checked_add(1) != Some(run)
+            || moved.cells.is_empty()
+        {
+            return 0;
+        }
+        let outcomes = moved
+            .cells
+            .iter()
+            .flat_map(CellJournal::unknown_calls)
+            .filter_map(|call| Some((call.call_id.clone(), outcome(call)?)))
+            .collect();
+        let restored = moved.cells.len();
+        self.restore(session_id, moved.cells, fallback, outcomes);
+        restored
     }
 
     pub(super) fn take_restored(&self, session_id: &str) -> Option<Restored> {

@@ -54,6 +54,12 @@ pub enum Error {
     #[error("invalid durability state: {0}")]
     InvalidState(String),
 
+    #[error("invalid durability state: step `{step_id}` in operation `{operation_id}` changed definition")]
+    StepChanged {
+        operation_id: String,
+        step_id: String,
+    },
+
     #[error("durable operation `{operation_id}` already has different input")]
     OperationConflict { operation_id: String },
 

@@ -960,9 +960,10 @@ impl JournalState {
                 }
                 if let Some(step) = operation.steps.get(step_id) {
                     if step.kind != *kind || step.input != *input {
-                        return Err(Error::InvalidState(format!(
-                            "step `{step_id}` in operation `{operation_id}` changed definition"
-                        )));
+                        return Err(Error::StepChanged {
+                            operation_id: operation_id.to_string(),
+                            step_id: step_id.to_string(),
+                        });
                     }
                     if matches!(step.status, StepStatus::Completed(_)) {
                         return Err(Error::InvalidState(format!(

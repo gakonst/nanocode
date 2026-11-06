@@ -57,6 +57,30 @@ impl MessagePhases {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Streaming {
+    pub speaking: bool,
+    pub calling: bool,
+}
+
+impl Streaming {
+    pub const fn observe(&mut self, event: &AgentEventData) {
+        (self.speaking, self.calling) = match event {
+            AgentEventData::Assistant(_) => (true, true),
+            AgentEventData::Model(ModelEvent::CallStarted(_)) => (false, true),
+            AgentEventData::Model(ModelEvent::CallCompleted(_) | ModelEvent::CallFailed(_)) => {
+                (false, false)
+            }
+            _ => return,
+        };
+    }
+
+    #[must_use]
+    pub const fn quiet(self, calls_cut: bool) -> bool {
+        !self.speaking && (!self.calling || calls_cut)
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct Retrying {
     model_call_index: Option<u32>,

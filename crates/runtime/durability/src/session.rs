@@ -1745,9 +1745,10 @@ impl Driver {
             .and_then(|operation| operation.steps.get(&step_id))
         {
             if step.kind != kind || step.input != input {
-                return Err(Error::InvalidState(format!(
-                    "step `{step_id}` in operation `{operation_id}` changed definition"
-                )));
+                return Err(Error::StepChanged {
+                    operation_id: operation_id.to_string(),
+                    step_id: step_id.to_string(),
+                });
             }
             match &step.status {
                 StepStatus::Completed(output) => {

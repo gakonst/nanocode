@@ -373,6 +373,7 @@ pub fn gateway(args: &GatewayArgs) -> Result<Option<Gateway>> {
             }
             (route, OpenAiAuth::api_key(key), name)
         }
+        GatewayArg::Tempo => return Ok(None),
         GatewayArg::CloudflareGateway => {
             let gateway = args
                 .cloudflare_gateway
@@ -418,6 +419,7 @@ const fn kind_name(kind: GatewayArg) -> &'static str {
         GatewayArg::Vercel => "vercel",
         GatewayArg::Cloudflare => "cloudflare",
         GatewayArg::CloudflareGateway => "cloudflare-gateway",
+        GatewayArg::Tempo => "tempo",
     }
 }
 

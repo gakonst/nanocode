@@ -19,6 +19,7 @@ mod side;
 mod split;
 mod stream;
 mod telemetry;
+mod tempo;
 mod view;
 
 use std::{
@@ -32,13 +33,22 @@ use futures_util::StreamExt;
 use nanocode::{ModelSelection, ServiceTier, Thinking, durability::TranscriptItem};
 
 use crate::{
-    cli::{Cli, Command, HandArgs, HarnessArg, SessionArgs, SessionsArgs},
+    cli::{Cli, Command, GatewayArg, GatewayArgs, HandArgs, HarnessArg, SessionArgs, SessionsArgs},
     host::{Host, HostConfig, Result},
 };
 
 pub use host::{ModelClients, Panel};
 
 const TELEMETRY_SHUTDOWN: std::time::Duration = std::time::Duration::from_millis(500);
+
+fn tempo_gateway(cli: &Cli) -> Option<GatewayArgs> {
+    let gateway = match &cli.command {
+        None | Some(Command::Models | Command::Resume { .. }) => cli.session.gateway.clone(),
+        Some(Command::Exec(args)) => args.clone().or(cli.session.clone()).gateway,
+        _ => return None,
+    };
+    (gateway.gateway == Some(GatewayArg::Tempo)).then_some(gateway)
+}
 
 fn cli_home(cli: &Cli) -> Result<PathBuf> {
     let explicit_home = match &cli.command {
@@ -107,6 +117,16 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
             eprintln!("nanocode: {error}");
             return ExitCode::FAILURE;
         }
+    };
+    let (clients, closing) = match tempo_gateway(&cli) {
+        Some(gateway) => match tempo::apply(clients, &gateway) {
+            Ok(applied) => applied,
+            Err(error) => {
+                eprintln!("nanocode: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => (clients, None),
     };
     let home = match cli_home(&cli) {
         Ok(home) => home,
@@ -181,6 +201,9 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
             None => interactive(cli.session, clients).await,
         }
     });
+    if let Some(closing) = closing {
+        runtime.block_on(tempo::close(closing));
+    }
     runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     drop(telemetry);
     match outcome {

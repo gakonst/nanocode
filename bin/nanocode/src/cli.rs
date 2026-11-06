@@ -127,6 +127,18 @@ pub enum GatewayArg {
         help = "Cloudflare AI Gateway OpenAI proxy; OPENAI_API_KEY, CF_AIG_TOKEN for stored keys, or CLOUDFLARE_API_TOKEN for Unified Billing; needs --cloudflare-account and --cloudflare-gateway"
     )]
     CloudflareGateway,
+    #[value(
+        help = "Tempo wallet (tempo wallet login): pay Codex and Claude per request over MPP sessions through Tempo's proxies, or with --gateway-base-url one MPP endpoint such as Boundless"
+    )]
+    Tempo,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum TempoNetworkArg {
+    #[value(help = "Tempo mainnet (chain 4217), paid in USDC.e by default")]
+    Mainnet,
+    #[value(help = "Tempo testnet (chain 42431), paid in pathUSD by default")]
+    Testnet,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -235,7 +247,7 @@ pub struct GatewayArgs {
         long,
         value_enum,
         env = "NANOCODE_GATEWAY",
-        help = "Route Codex models (gpt-6.1-sol, terra, luna, astra) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login; restart to change"
+        help = "Route Codex models (gpt-6.1-sol, terra, luna, astra) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login except with tempo, which pays both from a Tempo wallet; restart to change"
     )]
     pub gateway: Option<GatewayArg>,
 
@@ -259,9 +271,56 @@ pub struct GatewayArgs {
         long,
         value_name = "URL",
         requires = "gateway",
-        help = "Override the gateway base URL, for example a Cloudflare custom domain"
+        help = "Override the gateway base URL, for example a Cloudflare custom domain; with --gateway tempo, the MPP endpoint to pay instead of Tempo's proxies, such as https://api.inference.boundless.network/mpp, offering the models it lists"
     )]
     pub gateway_base_url: Option<String>,
+
+    #[arg(
+        long,
+        value_enum,
+        env = "NANOCODE_TEMPO_NETWORK",
+        help = "Chain to pay --gateway tempo's --gateway-base-url on, instead of the one its payment challenge names"
+    )]
+    pub tempo_network: Option<TempoNetworkArg>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_TEMPO_CURRENCY",
+        value_name = "TOKEN",
+        help = "Token to prefer paying --gateway tempo's --gateway-base-url in: mach, usdc.e or ousd (mainnet), pathusd (testnet) or a token address; an endpoint that does not offer it is paid in one it does, in sessions of their own"
+    )]
+    pub tempo_currency: Option<String>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_TEMPO_SESSION",
+        value_name = "NAME",
+        help = "Pay --gateway tempo's --gateway-base-url from this named session instead of the lowest of 64 slots no other process holds"
+    )]
+    pub tempo_session: Option<String>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_TEMPO_KEEP_SESSION",
+        help = "Keep --gateway tempo's --gateway-base-url session open on exit for later runs instead of closing it cooperatively, which returns the unspent deposit at once"
+    )]
+    pub tempo_keep_session: bool,
+
+    #[arg(
+        long,
+        env = "NANOCODE_TEMPO_DEPOSIT",
+        value_name = "BASE_UNITS",
+        help = "Model session deposit and top-up for --gateway tempo in the token's base units (6 decimals): 2000000 (2 MACH) on Tempo's proxies and 1000000 (1 of the token) on an endpoint unless set"
+    )]
+    pub tempo_deposit: Option<u128>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_TEMPO_TOOL_DEPOSIT",
+        value_name = "BASE_UNITS",
+        help = "Session deposit and top-up, in base units, for the paid services tools reach with --gateway tempo on Tempo's proxies: 100000 (0.1 MACH) unless set"
+    )]
+    pub tempo_tool_deposit: Option<u128>,
 }
 
 impl SessionArgs {
@@ -295,6 +354,16 @@ impl SessionArgs {
                     .gateway
                     .gateway_base_url
                     .or(root.gateway.gateway_base_url),
+                tempo_network: self.gateway.tempo_network.or(root.gateway.tempo_network),
+                tempo_currency: self.gateway.tempo_currency.or(root.gateway.tempo_currency),
+                tempo_session: self.gateway.tempo_session.or(root.gateway.tempo_session),
+                tempo_keep_session: self.gateway.tempo_keep_session
+                    || root.gateway.tempo_keep_session,
+                tempo_deposit: self.gateway.tempo_deposit.or(root.gateway.tempo_deposit),
+                tempo_tool_deposit: self
+                    .gateway
+                    .tempo_tool_deposit
+                    .or(root.gateway.tempo_tool_deposit),
             },
             remote: RemoteArgs {
                 runner_connect: self.remote.runner_connect.or(root.remote.runner_connect),

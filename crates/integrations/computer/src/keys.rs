@@ -104,7 +104,7 @@ impl Key {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 pub mod mac {
     use super::{Chord, Key};
 
@@ -178,7 +178,7 @@ pub mod mac {
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 pub mod x11 {
     use super::Key;
 

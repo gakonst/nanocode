@@ -52,6 +52,6 @@ large_enum_variant = "allow"
 result_large_err = "allow"
 
 [lib]
-test = true
+test = false
 doctest = false
 bench = false

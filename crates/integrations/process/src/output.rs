@@ -3,10 +3,7 @@ use std::{io::Read, sync::Arc};
 use nanocode_process_contracts::LastActivity;
 use nanocode_sync::{Actor, Stopped};
 
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    sync::mpsc::UnboundedSender,
-};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub(super) const READ_BUFFER_LENGTH: usize = 8 * 1024;
 pub(super) use nanocode_process_contracts::{effective_token_limit, redact_and_limit};
@@ -42,13 +39,15 @@ impl Capture {
 #[derive(Clone)]
 pub(super) enum Sender {
     Captured(Capture),
-    Unbounded(UnboundedSender<Vec<u8>>),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Unbounded(tokio::sync::mpsc::UnboundedSender<Vec<u8>>),
 }
 
 impl Sender {
     pub(super) async fn send(&self, bytes: Vec<u8>) -> Result<(), ()> {
         match self {
             Self::Captured(capture) => capture.push(bytes).await.map_err(|_| ()),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             Self::Unbounded(sender) => sender.send(bytes).map_err(|_| ()),
         }
     }

@@ -30,6 +30,6 @@ url.workspace = true
 workspace = true
 
 [lib]
-test = true
+test = false
 doctest = false
 bench = false

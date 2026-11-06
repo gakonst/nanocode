@@ -1182,6 +1182,51 @@ pub(super) fn tool_execution_span(
     )
 }
 
+pub(super) struct OpenToolSpan {
+    span: tracing::Span,
+    opened_at: std::time::Instant,
+    finished: bool,
+}
+
+impl OpenToolSpan {
+    pub(super) fn new(span: &tracing::Span) -> Self {
+        Self {
+            span: span.clone(),
+            opened_at: std::time::Instant::now(),
+            finished: false,
+        }
+    }
+
+    pub(super) fn finish(
+        mut self,
+        started_at: std::time::Instant,
+        execution: &ToolOutput,
+        output_content: Option<&str>,
+    ) {
+        finish_tool_execution_span(&self.span, started_at, execution, output_content);
+        self.finished = true;
+    }
+
+    pub(super) fn refuse(self, execution: &ToolOutput) {
+        let opened_at = self.opened_at;
+        self.finish(opened_at, execution, None);
+    }
+}
+
+impl Drop for OpenToolSpan {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.span.record("status", "cancelled");
+        self.span.record("otel.status_code", "ERROR");
+        self.span.record(
+            "duration_ns",
+            u64::try_from(self.opened_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        );
+    }
+}
+
 pub(super) fn finish_tool_execution_span(
     span: &tracing::Span,
     started_at: std::time::Instant,

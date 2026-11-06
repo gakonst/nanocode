@@ -6,6 +6,7 @@ use futures_util::stream::unfold;
 use http_body_util::{BodyExt, BodyStream, StreamBody, combinators::BoxBody};
 use hyper::{
     body::{Frame, Incoming},
+    ext::ReasonPhrase,
     header::{self, HeaderMap, HeaderName, HeaderValue},
 };
 use std::{cmp::Reverse, error::Error, fmt, sync::Arc, time::Duration};
@@ -286,6 +287,24 @@ pub(crate) fn headers(headers: &mut HeaderMap, pairs: &Redactions) {
             && let Ok(clean) = HeaderValue::from_bytes(&redacted)
         {
             *value = clean;
+        }
+    }
+}
+
+pub(crate) fn reason(extensions: &mut hyper::http::Extensions, pairs: &Redactions) {
+    let Some(reason) = extensions.get::<ReasonPhrase>() else {
+        return;
+    };
+    let redacted = pairs.redact(reason.as_bytes());
+    if redacted == reason.as_bytes() {
+        return;
+    }
+    match ReasonPhrase::try_from(redacted) {
+        Ok(clean) => {
+            extensions.insert(clean);
+        }
+        Err(_) => {
+            extensions.remove::<ReasonPhrase>();
         }
     }
 }

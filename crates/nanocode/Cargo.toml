@@ -27,7 +27,7 @@ nanocode-tools.workspace = true
 nanocode-backend-claude = { workspace = true }
 nanocode-durability = { workspace = true   }
 nanocode-subagents.workspace = true
-nanocode-code-mode = { path = "../runtime/code-mode", version = "0.6.7"   }
+nanocode-code-mode = { path = "../runtime/code-mode", version = "0.7.0"   }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 serde_json.workspace = true

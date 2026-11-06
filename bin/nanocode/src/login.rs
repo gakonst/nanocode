@@ -74,6 +74,8 @@ async fn claude(tx: UnboundedSender<AppEvent>) {
     }
 }
 
+const TEMPO_PAYS: &str = "it pays for the Tempo gateway's and Mercator's tools, and --gateway tempo pays for models with it";
+
 async fn tempo(tx: UnboundedSender<AppEvent>) {
     let notice = |level, text| drop(tx.send(AppEvent::Notice(level, text)));
     let started = match tempo_wallet(&["wallet", "login", "--no-wait", "--no-browser"]).await {
@@ -83,7 +85,7 @@ async fn tempo(tx: UnboundedSender<AppEvent>) {
     if let Some(wallet) = started["wallet"].as_str() {
         return notice(
             NoticeLevel::Info,
-            format!("signed in to the Tempo wallet {wallet}; --gateway tempo pays with it"),
+            format!("signed in to the Tempo wallet {wallet}; {TEMPO_PAYS}"),
         );
     }
     let (Some(url), Some(code)) = (
@@ -103,7 +105,7 @@ async fn tempo(tx: UnboundedSender<AppEvent>) {
         Ok(status) => notice(
             NoticeLevel::Info,
             format!(
-                "signed in to the Tempo wallet {}; --gateway tempo pays with it",
+                "signed in to the Tempo wallet {}; {TEMPO_PAYS}",
                 status["accounts"][0].as_str().unwrap_or_default()
             ),
         ),

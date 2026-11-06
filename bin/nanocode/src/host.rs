@@ -249,6 +249,10 @@ impl ModelClients {
     pub(crate) const fn supplies_openai(&self) -> bool {
         self.openai.is_some()
     }
+
+    pub(crate) const fn reports_spend(&self) -> bool {
+        self.panel.is_some() || self.status.is_some() || self.notices.is_some()
+    }
 }
 
 #[derive(Clone)]

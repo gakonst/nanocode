@@ -318,9 +318,16 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_TOOL_DEPOSIT",
         value_name = "BASE_UNITS",
-        help = "Session deposit and top-up, in base units, for the paid services tools reach with --gateway tempo on Tempo's proxies, when a service suggests no deposit of its own (the Tempo gateway suggests 1 MACH): 100000 (0.1 MACH) unless set"
+        help = "Session deposit and top-up, in base units, for the Tempo gateway's tools and, with --gateway tempo on Tempo's proxies, the paid services shell tools reach, when a service suggests no deposit of its own (the Tempo gateway suggests 1 MACH): 100000 (0.1 MACH) unless set"
     )]
     pub tempo_tool_deposit: Option<u128>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_NO_TEMPO_TOOLS",
+        help = "Leave out the paid tools of the Tempo gateway (key-value store, buckets, compute) and Mercator, which every session offers by default and pays for from the Tempo wallet (/login tempo) when the agent calls one"
+    )]
+    pub no_tempo_tools: bool,
 }
 
 impl SessionArgs {
@@ -364,6 +371,7 @@ impl SessionArgs {
                     .gateway
                     .tempo_tool_deposit
                     .or(root.gateway.tempo_tool_deposit),
+                no_tempo_tools: self.gateway.no_tempo_tools || root.gateway.no_tempo_tools,
             },
             remote: RemoteArgs {
                 runner_connect: self.remote.runner_connect.or(root.remote.runner_connect),

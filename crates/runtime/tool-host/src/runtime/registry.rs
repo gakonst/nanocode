@@ -1,5 +1,5 @@
 use super::execution::{
-    finish_tool_execution_span, panicked_tool_output, record_tool_content, tool_execution_span,
+    OpenToolSpan, panicked_tool_output, record_tool_content, tool_execution_span,
 };
 use super::*;
 use crate::attachment::{ProcessRouteStore, RemoteRoute, RunnerRouting};
@@ -120,6 +120,7 @@ impl ToolRegistry {
         };
         let arguments_content = trace_content.then(|| arguments.to_owned());
         let span = tool_execution_span(name, context, arguments.len(), arguments_kind, 1, "");
+        let open = OpenToolSpan::new(&span);
         if let Some(arguments_content) = &arguments_content {
             record_tool_content(&span, "tool.arguments", arguments_content);
         }
@@ -171,7 +172,7 @@ impl ToolRegistry {
         let output_content = trace_content
             .then(|| serde_json::to_string(&execution.output).ok())
             .flatten();
-        finish_tool_execution_span(&span, started_at, &execution, output_content.as_deref());
+        open.finish(started_at, &execution, output_content.as_deref());
         execution
     }
 
@@ -181,14 +182,6 @@ impl ToolRegistry {
         input: Value,
         context: ToolContext<'_>,
     ) -> ToolOutput {
-        if self.excluded_code_tools.contains(name) {
-            return ToolOutput::error(format!(
-                "hand tool `{name}` is not permitted for this session"
-            ));
-        }
-        if !self.lists(name) && !self.routes_to_hand(&input) && !self.resolve(name).await {
-            return tool_not_available(name);
-        }
         let trace_content = tracing::enabled!(
             target: "nanocode_code_mode",
             tracing::Level::INFO
@@ -229,8 +222,24 @@ impl ToolRegistry {
             arguments_count,
             &argument_keys,
         );
+        let open = OpenToolSpan::new(&span);
         if let Some(arguments_content) = &arguments_content {
             record_tool_content(&span, "tool.arguments", arguments_content);
+        }
+        if self.excluded_code_tools.contains(name) {
+            let refused = ToolOutput::error(format!(
+                "hand tool `{name}` is not permitted for this session"
+            ));
+            open.refuse(&refused);
+            return refused;
+        }
+        if !self.lists(name)
+            && !self.routes_to_hand(&input)
+            && !self.resolve(name).instrument(span.clone()).await
+        {
+            let refused = tool_not_available(name);
+            open.refuse(&refused);
+            return refused;
         }
         let (input, hand) = match &self.hand_calls {
             Some(calls) => match take_hand(self.declares_hand(name), input) {
@@ -238,7 +247,10 @@ impl ToolRegistry {
                     input,
                     hand.filter(|hand| !calls.here(hand)).zip(Some(calls)),
                 ),
-                Err(output) => return output,
+                Err(refused) => {
+                    open.refuse(&refused);
+                    return refused;
+                }
             },
             None => (input, None),
         };
@@ -252,7 +264,7 @@ impl ToolRegistry {
             let output_content = trace_content
                 .then(|| serde_json::to_string(&execution.output).ok())
                 .flatten();
-            finish_tool_execution_span(&span, started_at, &execution, output_content.as_deref());
+            open.finish(started_at, &execution, output_content.as_deref());
             return execution;
         }
         let queued_at = std::time::Instant::now();
@@ -284,7 +296,7 @@ impl ToolRegistry {
         let output_content = trace_content
             .then(|| serde_json::to_string(&execution.output).ok())
             .flatten();
-        finish_tool_execution_span(&span, started_at, &execution, output_content.as_deref());
+        open.finish(started_at, &execution, output_content.as_deref());
         execution
     }
 

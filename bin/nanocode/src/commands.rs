@@ -1,4 +1,4 @@
-pub const COMMANDS: [(&str, &str); 31] = [
+pub const COMMANDS: [(&str, &str); 32] = [
     (
         "/model",
         "choose harness, model, thinking and speed for a new thread",
@@ -17,6 +17,10 @@ pub const COMMANDS: [(&str, &str); 31] = [
     (
         "/login",
         "sign in with ChatGPT, Claude or a Tempo wallet: /login codex|claude|tempo",
+    ),
+    (
+        "/fund",
+        "buy MACH by card for the Tempo wallet that pays for tools and --gateway tempo: /fund [usd]",
     ),
     ("/new", "start a new session"),
     (

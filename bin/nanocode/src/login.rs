@@ -24,6 +24,14 @@ impl App {
             _ => self.notice(NoticeLevel::Info, "usage: /login codex|claude|tempo"),
         }
     }
+
+    pub(crate) fn fund(&mut self, argument: &str) {
+        let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "fund", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        tokio::spawn(fund(
+            self.tx.clone(),
+            argument.trim().trim_start_matches('$').to_owned(),
+        ));
+    }
 }
 
 async fn codex(tx: UnboundedSender<AppEvent>) {
@@ -74,7 +82,7 @@ async fn claude(tx: UnboundedSender<AppEvent>) {
     }
 }
 
-const TEMPO_PAYS: &str = "it pays for the Tempo gateway's and Mercator's tools, and --gateway tempo pays for models with it";
+const TEMPO_PAYS: &str = "it pays for the Tempo gateway's and Mercator's tools and the Tempo services shell commands reach, and --gateway tempo pays for models with it; /fund buys MACH by card";
 
 async fn tempo(tx: UnboundedSender<AppEvent>) {
     let notice = |level, text| drop(tx.send(AppEvent::Notice(level, text)));
@@ -111,6 +119,36 @@ async fn tempo(tx: UnboundedSender<AppEvent>) {
         ),
         Err(error) => notice(NoticeLevel::Error, format!("login tempo: {error}")),
     }
+}
+
+async fn fund(tx: UnboundedSender<AppEvent>, amount: String) {
+    let notice = |level, text| drop(tx.send(AppEvent::Notice(level, text)));
+    let mut args = vec!["wallet", "fund", "--mach", "--no-browser"];
+    if !amount.is_empty() {
+        args.extend(["--amount", amount.as_str()]);
+    }
+    let checkout = match tempo_wallet(&args).await {
+        Ok(checkout) => checkout,
+        Err(error) => return notice(NoticeLevel::Error, format!("fund: {error}")),
+    };
+    let (Some(url), Some(wallet)) = (checkout["url"].as_str(), checkout["wallet"].as_str()) else {
+        return notice(
+            NoticeLevel::Error,
+            format!("fund: tempo wallet fund answered {checkout}"),
+        );
+    };
+    let shown = match crate::extras::open_url(url) {
+        true => {
+            format!("opened the MACH checkout in your browser; if it did not appear, visit {url}")
+        }
+        false => format!("visit {url} to buy MACH"),
+    };
+    notice(
+        NoticeLevel::Info,
+        format!(
+            "{shown}; MACH bought there goes to the Tempo wallet {wallet}, and nanocode pays with it once it arrives"
+        ),
+    );
 }
 
 async fn tempo_wallet(args: &[&str]) -> Result<serde_json::Value, String> {

@@ -2472,6 +2472,7 @@ impl App {
             "close" => self.close_side(),
             "zoom" => self.zoom_pane(),
             "login" => self.login(argument),
+            "fund" => self.fund(argument),
             "resume" | "sessions" => self.open_session_picker(),
             "new" | "clear" => self.new_session(),
             "agents" => self.agents_command(argument),

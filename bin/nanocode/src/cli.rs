@@ -295,7 +295,7 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_SESSION",
         value_name = "NAME",
-        help = "Pay --gateway tempo's --gateway-base-url from this named session instead of the lowest of 64 slots no other process holds"
+        help = "Pay each Tempo service (--gateway tempo's endpoint or proxies, the paid tools and the services shell commands reach) from this named session instead of the lowest of 64 slots no other process holds"
     )]
     pub tempo_session: Option<String>,
 
@@ -318,14 +318,14 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_TOOL_DEPOSIT",
         value_name = "BASE_UNITS",
-        help = "Session deposit and top-up, in base units, for the Tempo gateway's tools and, with --gateway tempo on Tempo's proxies, the paid services shell tools reach, when a service suggests no deposit of its own (the Tempo gateway suggests 1 MACH): 100000 (0.1 MACH) unless set"
+        help = "Session deposit and top-up, in base units, for the Tempo gateway's tools and the paid services shell commands reach, when a service suggests no deposit of its own (the Tempo gateway suggests 1 MACH): 100000 (0.1 MACH) unless set"
     )]
     pub tempo_tool_deposit: Option<u128>,
 
     #[arg(
         long,
         env = "NANOCODE_NO_TEMPO_TOOLS",
-        help = "Leave out the paid tools of the Tempo gateway (key-value store, buckets, compute) and Mercator, which every session offers by default and pays for from the Tempo wallet (/login tempo) when the agent calls one"
+        help = "Leave out the paid tools of the Tempo gateway (key-value store, buckets, compute) and Mercator, and the local proxy through which shell commands pay Tempo's services (*.mpp.tempo.xyz), the Tempo gateway and Mercator; every session has them by default and pays from the Tempo wallet (/login tempo, /fund) when one charges. A session whose environment sets its own HTTP(S)_PROXY, ALL_PROXY or CA bundle keeps those and gets no proxy"
     )]
     pub no_tempo_tools: bool,
 }

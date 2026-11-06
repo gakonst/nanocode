@@ -17,8 +17,13 @@ nanocode-durability-core.workspace = true
 nanocode-sync.workspace = true
 rusqlite.workspace = true
 sqlx.workspace = true
-tokio = { workspace = true, features = ["rt", "sync"] }
+percent-encoding = "2"
+rustls = { workspace = true, features = ["ring", "std", "tls12"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "rt", "sync", "time"] }
 tokio-postgres.workspace = true
+tokio-postgres-rustls = "0.13"
+webpki-roots = "1"
 
 [lints]
 workspace = true

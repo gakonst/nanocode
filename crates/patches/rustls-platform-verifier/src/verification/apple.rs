@@ -46,9 +46,6 @@ pub struct Verifier {
     /// Extra trust anchors to add to the verifier above and beyond those provided by
     /// the system-provided trust stores.
     extra_roots: Vec<SecCertificate>,
-    /// Testing only: The root CA certificate to trust.
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    test_only_root_ca_override: Option<SecCertificate>,
     crypto_provider: Arc<CryptoProvider>,
 }
 
@@ -59,8 +56,6 @@ impl Verifier {
     pub fn new(crypto_provider: Arc<CryptoProvider>) -> Result<Self, TlsError> {
         Ok(Self {
             extra_roots: Vec::new(),
-            #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-            test_only_root_ca_override: None,
             crypto_provider,
         })
     }
@@ -83,23 +78,8 @@ impl Verifier {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             extra_roots,
-            #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-            test_only_root_ca_override: None,
             crypto_provider,
         })
-    }
-
-    /// Creates a test-only TLS certificate verifier which trusts our fake root CA cert.
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    pub(crate) fn new_with_fake_root(
-        root: pki_types::CertificateDer<'static>,
-        crypto_provider: Arc<CryptoProvider>,
-    ) -> Self {
-        Self {
-            extra_roots: Vec::new(),
-            test_only_root_ca_override: Some(SecCertificate::from_der(root.as_ref()).unwrap()),
-            crypto_provider,
-        }
     }
 
     fn verify_certificate(
@@ -152,20 +132,9 @@ impl Verifier {
                 .map_err(|e| invalid_certificate(e.to_string()))?;
         }
 
-        #[cfg(not(any(test, feature = "ffi-testing", feature = "dbg")))]
         let extra_roots = self.extra_roots.as_slice();
 
-        #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-        let extra_roots: Vec<_> = self
-            .extra_roots
-            .iter()
-            .chain(self.test_only_root_ca_override.as_ref())
-            .cloned()
-            .collect();
-        #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-        let extra_roots = extra_roots.as_slice();
-
-        // If any extra roots were provided by the user (or tests), provide them to the trust
+        // If any extra roots were provided by the user, provide them to the trust
         // evaluation regardless of their system trust settings or status.
         if !extra_roots.is_empty() {
             trust_evaluation
@@ -178,32 +147,6 @@ impl Verifier {
             trust_evaluation
                 .set_trust_anchor_certificates_only(false)
                 .map_err(|e| TlsError::Other(OtherError(Arc::new(e))))?;
-        }
-
-        // When testing, support using fake roots and ignoring default roots present on the system for
-        // consistency/reproducibility reasons.
-        //
-        // XXX: This does not currently limit revocation from fetching information online, or prevent
-        // the downloading of root CAs.
-        #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-        {
-            if self.test_only_root_ca_override.is_some() {
-                // XXX: The test root was already provided to the trust evaluation as an extra root.
-                // We only need to stop use of the default system-installed roots.
-
-                // As per [Apple's docs], building and verifying a certificate chain will
-                // search through the system and keychain to find certificates that it
-                // needs to try and construct a trust chain back to the root.
-                //
-                // `SecTrustSetAnchorCertificatesOnly` must be called after setting custom
-                // anchor certificates, which "disables trusting any other anchors than the ones passed in
-                // with the `SecTrustSetAnchorCertificates` function".
-                //
-                // [Apple's docs]: https://developer.apple.com/documentation/security/certificate_key_and_trust_services/trust/creating_a_trust_object
-                trust_evaluation
-                    .set_trust_anchor_certificates_only(true)
-                    .expect("failed to tell trust to only use provided anchors");
-            }
         }
 
         let trust_error = match trust_evaluation.evaluate_with_error() {

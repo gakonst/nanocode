@@ -270,43 +270,6 @@ impl CertEngine {
         })?;
         Ok(Self { inner: engine })
     }
-
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    fn new_with_fake_root(root: &[u8]) -> Result<Self, TlsError> {
-        use windows_sys::Win32::Security::Cryptography::{
-            CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL, CERT_CHAIN_ENABLE_CACHE_AUTO_UPDATE,
-        };
-
-        let mut root_store = CertificateStore::new()?;
-        root_store.add_cert(root)?;
-
-        let mut config = CERT_CHAIN_ENGINE_CONFIG::zeroed_with_size();
-        // We use these flags for the following reasons:
-        //
-        // - CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL is used in an attempt to stop Windows from using the internet to
-        // fetch anything during the tests, regardless of what test data is used.
-        //
-        // - CERT_CHAIN_ENABLE_CACHE_AUTO_UPDATE is used as a minor performance optimization to allow Windows to reuse
-        // data inside of a test and avoid any extra parsing, etc, it might need to do pulling directly from the store each time.
-        //
-        // Ref: https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/ns-wincrypt-cert_chain_engine_config
-        config.dwFlags = CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL | CERT_CHAIN_ENABLE_CACHE_AUTO_UPDATE;
-        config.hExclusiveRoot = root_store.inner.as_ptr();
-
-        let mut engine = EnginePtr::NULL;
-        // Same workaround with as above when creating the engine.
-        let config = NonNull::from(&config).cast().as_ptr();
-        // SAFETY: `engine` is valid to be written to and the config is valid to be read.
-        let res = unsafe { CertCreateCertificateChainEngine(config, &mut engine) };
-
-        #[allow(clippy::as_conversions)]
-        let engine = call_with_last_error(|| match NonNull::new(engine as *mut c_void) {
-            Some(c) if res == TRUE => Some(c),
-            _ => None,
-        })?;
-
-        Ok(Self { inner: engine })
-    }
 }
 
 impl Drop for CertEngine {
@@ -369,19 +332,6 @@ impl CertificateStore {
             inner: store,
             engine: None,
         })
-    }
-
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    fn new_with_fake_root(root: &[u8]) -> Result<Self, TlsError> {
-        let mut inner = Self::new()?;
-
-        let mut root_store = CertificateStore::new()?;
-        root_store.add_cert(root)?;
-
-        let engine = CertEngine::new_with_fake_root(root)?;
-        inner.engine = Some(engine);
-
-        Ok(inner)
     }
 
     /// Adds the provided certificate to the store.
@@ -541,9 +491,6 @@ fn call_with_last_error<T, F: FnMut() -> Option<T>>(mut call: F) -> Result<T, Tl
 /// A TLS certificate verifier that utilizes the Windows certificate facilities.
 #[derive(Debug)]
 pub struct Verifier {
-    /// Testing only: The root CA certificate to trust.
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    test_only_root_ca_override: Option<pki_types::CertificateDer<'static>>,
     crypto_provider: Arc<CryptoProvider>,
     /// Extra trust anchors to add to the verifier above and beyond those provided by
     /// the system-provided trust stores.
@@ -556,8 +503,6 @@ impl Verifier {
     #[cfg_attr(docsrs, doc(cfg(all())))]
     pub fn new(crypto_provider: Arc<CryptoProvider>) -> Result<Self, TlsError> {
         Ok(Self {
-            #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-            test_only_root_ca_override: None,
             crypto_provider,
             extra_roots: None,
         })
@@ -572,24 +517,9 @@ impl Verifier {
     ) -> Result<Self, TlsError> {
         let cert_engine = CertEngine::new_with_extra_roots(roots)?;
         Ok(Self {
-            #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-            test_only_root_ca_override: None,
             crypto_provider,
             extra_roots: Some(cert_engine),
         })
-    }
-
-    /// Creates a test-only TLS certificate verifier which trusts our fake root CA cert.
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    pub(crate) fn new_with_fake_root(
-        root: pki_types::CertificateDer<'static>,
-        crypto_provider: Arc<CryptoProvider>,
-    ) -> Self {
-        Self {
-            test_only_root_ca_override: Some(root),
-            crypto_provider,
-            extra_roots: None,
-        }
     }
 
     /// Verifies a certificate and its chain for the specified `server`.
@@ -603,15 +533,6 @@ impl Verifier {
         ocsp_data: Option<&[u8]>,
         now: pki_types::UnixTime,
     ) -> Result<(), TlsError> {
-        #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-        let mut store = match self.test_only_root_ca_override.as_ref() {
-            Some(test_only_root_ca_override) => {
-                CertificateStore::new_with_fake_root(test_only_root_ca_override)?
-            }
-            None => CertificateStore::new()?,
-        };
-
-        #[cfg(not(any(test, feature = "ffi-testing", feature = "dbg")))]
         let mut store = CertificateStore::new()?;
 
         let mut primary_cert = store.add_cert(primary_cert)?;

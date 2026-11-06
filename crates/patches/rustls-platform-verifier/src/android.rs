@@ -7,17 +7,6 @@
 //!
 //! See the [crate's Android section][crate#android] for more details.
 //! </div>
-//!
-//! # Examples
-//!
-//! ```
-//! // A typical entrypoint signature for obtaining the necessary pointers
-//! pub fn android_init(raw_env: *mut c_void, raw_context: *mut c_void) -> Result<(), jni::errors::Error> {
-//!     let mut env = unsafe { JNIEnv::from_raw(raw_env as *mut jni::sys::JNIEnv).unwrap() };
-//!     let context = unsafe { JObject::from_raw(raw_context as jni::sys::jobject) };
-//!     rustls_platform_verifier::android::init_with_env(&mut env, context)?;
-//! }
-//! ```
 
 use jni::errors::Error as JNIError;
 use jni::objects::{Global, JClass, JClassLoader, JObject};
@@ -131,24 +120,6 @@ pub fn init_with_runtime(runtime: &'static dyn Runtime) {
 /// global references to objects for efficiency.
 ///
 /// This function will never panic.
-///
-/// # Examples
-///
-/// ```
-/// pub fn android_init(raw_env: *mut c_void, raw_context: *mut c_void) -> Result<(), jni::errors::Error> {
-///     let mut env = unsafe { jni::EnvUnowned::from_raw(raw_env as *mut jni::sys::JNIEnv).unwrap() };
-///     let context = unsafe { JObject::from_raw(raw_context as jni::sys::jobject) };
-///     let loader = env.get_object_class(&context)?.get_class_loader(env)?;
-///
-///     env.with_env(|env| {
-///         rustls_platform_verifier::android::init_with_refs(
-///             env.get_java_vm(),
-///             env.new_global_ref(context)?,
-///             env.new_global_ref(loader)?,
-///         );
-///     });
-/// }
-/// ```
 pub fn init_with_refs(
     java_vm: JavaVM,
     context: Global<JObject<'static>>,

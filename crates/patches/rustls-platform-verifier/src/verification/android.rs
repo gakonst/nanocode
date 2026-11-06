@@ -38,29 +38,7 @@ const AUTH_TYPE: &str = "RSA";
 /// A TLS certificate verifier that utilizes the Android platform verifier.
 #[derive(Debug)]
 pub struct Verifier {
-    /// Testing only: The root CA certificate to trust.
-    #[cfg(any(test, feature = "ffi-testing"))]
-    test_only_root_ca_override: Option<pki_types::CertificateDer<'static>>,
     crypto_provider: Arc<CryptoProvider>,
-}
-
-#[cfg(any(test, feature = "ffi-testing"))]
-impl Drop for Verifier {
-    fn drop(&mut self) {
-        with_context::<_, ()>(|cx| {
-            let cert_verifier_class = CERT_VERIFIER_CLASS.get(cx)?;
-            cx.env
-                .call_static_method(
-                    cert_verifier_class,
-                    jni_str!("clearMockRoots"),
-                    jni_sig!(() -> void),
-                    &[],
-                )?
-                .v()?;
-            Ok(())
-        })
-        .expect("failed to clear test roots")
-    }
 }
 
 impl Verifier {
@@ -69,22 +47,8 @@ impl Verifier {
     #[cfg_attr(docsrs, doc(cfg(all())))]
     pub fn new(crypto_provider: Arc<CryptoProvider>) -> Result<Self, TlsError> {
         Ok(Self {
-            #[cfg(any(test, feature = "ffi-testing"))]
-            test_only_root_ca_override: None,
             crypto_provider,
         })
-    }
-
-    /// Creates a test-only TLS certificate verifier which trusts our fake root CA cert.
-    #[cfg(any(test, feature = "ffi-testing"))]
-    pub(crate) fn new_with_fake_root(
-        root: pki_types::CertificateDer<'static>,
-        crypto_provider: Arc<CryptoProvider>,
-    ) -> Self {
-        Self {
-            test_only_root_ca_override: Some(root),
-            crypto_provider,
-        }
     }
 
     fn verify_certificate(
@@ -143,22 +107,6 @@ impl Verifier {
                 Some(b) => cx.env.byte_array_from_slice(b)?,
                 None => JByteArray::null(),
             };
-
-            #[cfg(any(test, feature = "ffi-testing"))]
-            {
-                if let Some(mock_root) = &self.test_only_root_ca_override {
-                    let mock_root = cx.env.byte_array_from_slice(mock_root)?;
-                    cx.env
-                        .call_static_method(
-                            cert_verifier_class,
-                            jni_str!("addMockRoot"),
-                            jni_sig!((byte[]) -> void),
-                            &[JValue::from(&mock_root)],
-                        )?
-                        .v()
-                        .expect("failed to add test root")
-                }
-            }
 
             const VERIFIER_CALL: MethodSignature<'static, 'static> = jni_sig!(
                 (

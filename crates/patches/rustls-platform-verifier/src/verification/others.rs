@@ -25,7 +25,7 @@ impl Verifier {
     /// WebPKI, using root certificates provided by the platform.
     #[cfg_attr(docsrs, doc(cfg(all())))]
     pub fn new(crypto_provider: Arc<CryptoProvider>) -> Result<Self, TlsError> {
-        Self::new_inner([], None, crypto_provider)
+        Self::new_inner([], crypto_provider)
     }
 
     /// Creates a new verifier whose certificate validation is provided by
@@ -36,17 +36,7 @@ impl Verifier {
         extra_roots: impl IntoIterator<Item = pki_types::CertificateDer<'static>>,
         crypto_provider: Arc<CryptoProvider>,
     ) -> Result<Self, TlsError> {
-        Self::new_inner(extra_roots, None, crypto_provider)
-    }
-
-    /// Creates a test-only TLS certificate verifier which trusts our fake root CA cert.
-    #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-    pub(crate) fn new_with_fake_root(
-        root: pki_types::CertificateDer<'static>,
-        crypto_provider: Arc<CryptoProvider>,
-    ) -> Self {
-        Self::new_inner([], Some(root), crypto_provider)
-            .expect("failed to create verifier with fake root")
+        Self::new_inner(extra_roots, crypto_provider)
     }
 
     /// Creates a new verifier whose certificate validation is provided by
@@ -54,27 +44,9 @@ impl Verifier {
     /// the provided extra root certificates.
     fn new_inner(
         extra_roots: impl IntoIterator<Item = pki_types::CertificateDer<'static>>,
-        #[allow(unused)] // test_root is only used in tests
-        test_root: Option<pki_types::CertificateDer<'static>>,
         crypto_provider: Arc<CryptoProvider>,
     ) -> Result<Self, TlsError> {
         let mut root_store = rustls::RootCertStore::empty();
-
-        // For testing only: load fake root cert, instead of native/WebPKI roots
-        #[cfg(any(test, feature = "ffi-testing", feature = "dbg"))]
-        {
-            if let Some(test_root) = test_root {
-                root_store.add(test_root)?;
-                return Ok(Self {
-                    inner: WebPkiServerVerifier::builder_with_provider(
-                        root_store.into(),
-                        crypto_provider.clone(),
-                    )
-                    .build()
-                    .map_err(|e| TlsError::Other(OtherError(Arc::new(e))))?,
-                });
-            }
-        }
 
         // While we ignore invalid certificates from the system, we forward errors from
         // parsing the extra roots to the caller.

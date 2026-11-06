@@ -14,22 +14,6 @@
 //!
 //! This small utility crate provides the
 //! [`get_timezone()`](fn.get_timezone.html) function.
-//!
-//! ```rust
-//! // Get the current time zone as a string.
-//! let tz_str = iana_time_zone::get_timezone()?;
-//! println!("The current time zone is: {}", tz_str);
-//! # Ok::<(), iana_time_zone::GetTimezoneError>(())
-//! ```
-//!
-//! The resulting string can be parsed to a
-//! [`chrono-tz::Tz`](https://docs.rs/chrono-tz/latest/chrono_tz/enum.Tz.html)
-//! variant like this:
-//! ```rust
-//! let tz_str = iana_time_zone::get_timezone()?;
-//! let tz: chrono_tz::Tz = tz_str.parse()?;
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
 
 #[allow(dead_code)]
 mod ffi_utils;
@@ -112,9 +96,6 @@ impl From<std::io::Error> for GetTimezoneError {
 }
 
 /// Get the current IANA time zone as a string.
-///
-/// See the module-level documentation for a usage example and more details
-/// about this function.
 #[inline]
 pub fn get_timezone() -> Result<String, GetTimezoneError> {
     platform::get_timezone_inner()

@@ -62,7 +62,6 @@ edition = "2024"
 rust-version = "1.97"
 authors = ["Nanocode Contributors"]
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/gakonst/nanocode"
 repository = "https://github.com/gakonst/nanocode"
 keywords = ["ai", "agents", "openai", "sdk", "websocket"]
 categories = ["api-bindings", "asynchronous", "development-tools"]
@@ -94,15 +93,9 @@ nanocode-audio = { version = "0.6.7", path = "crates/core/audio" }
 nanocode-tls = { version = "0.6.7", path = "crates/core/tls" }
 nanocode-types = { version = "0.6.7", path = "crates/core/types" }
 nanocode-computer = { version = "0.6.7", path = "crates/integrations/computer" }
-nanocode-chatgpt-extension = { version = "0.6.7", path = "crates/integrations/chatgpt-extension" }
-nanocode-sandbox = { version = "0.6.7", path = "crates/integrations/sandbox" }
-nanocode-decisions = { version = "0.6.7", path = "crates/integrations/decisions" }
 nanocode-tools = { version = "0.6.7", path = "crates/core/tools" }
 nanocode-tool-contracts = { version = "0.6.7", path = "crates/core/tool-contracts" }
 nanocode-store-jsonl = { version = "0.6.7", path = "crates/integrations/store-jsonl" }
-nanocode-store-sqlite = { version = "0.6.7", path = "crates/integrations/store-sqlite" }
-nanocode-store-postgres = { version = "0.6.7", path = "crates/integrations/store-postgres" }
-nanocode-store-sqlx = { version = "0.6.7", path = "crates/integrations/store-sqlx" }
 landlock = "0.4.4"
 libc = "0.2"
 x11rb = { version = "0.13.2", features = ["xtest"] }
@@ -117,20 +110,14 @@ zstd = { version = "0.14.3", default-features = false }
 arc-swap = "1.9.2"
 imbl = "7.0.2"
 crossbeam-utils = { version = "0.8.22", default-features = false, features = ["std"] }
-sync_wrapper = "1.0.2"
 async-trait = "=0.1.89"
-axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "query", "tokio"] }
 chrono = { version = "0.4.43", default-features = false, features = ["std"] }
 clap = { version = "4.5.54", features = ["derive", "env"] }
-eyre = "0.6.12"
 futures-channel = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }
-roxmltree = "0.21.1"
 getrandom = "0.4.3"
 http = "1.3.1"
 httpdate = "1.0.3"
-ignore = "0.4.31"
-nanocode = { version = "0.6.7", path = "crates/nanocode" }
 nanocode-backend-claude = { version = "0.6.7", path = "crates/backends/claude" }
 nanocode-backend-claude-client = { version = "0.6.7", path = "crates/backends/claude/client" }
 nanocode-home = { version = "0.6.7", path = "crates/core/home" }
@@ -141,7 +128,6 @@ nanocode-platform = { version = "0.6.7", path = "crates/core/platform" }
 nanocode-sync = { version = "0.6.7", path = "crates/core/sync" }
 nanocode-schema = { version = "0.6.7", path = "crates/core/schema" }
 nanocode-durability = { version = "0.6.7", path = "crates/runtime/durability" }
-nanocode-observability = { version = "0.6.7", path = "crates/integrations/observability" }
 nanocode-subagents = { version = "0.6.7", path = "crates/runtime/subagents" }
 nanocode-code-mode = { version = "0.6.7", path = "crates/runtime/code-mode"  }
 nanocode-tool-runtime = { version = "0.6.7", path = "crates/integrations/tool-runtime" }
@@ -167,7 +153,6 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 rustix = { version = "1.1.4", features = ["thread"] }
 rustls-native-certs = "0.8.4"
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
-regex = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }
 tokio-postgres = "0.7"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
@@ -179,9 +164,7 @@ serde_json = { version = "1.0.149", features = ["raw_value"] }
 sha1 = "0.11.0"
 sha2 = { version = "0.11.0", default-features = false }
 blake3 = { version = "1.8.7", default-features = false }
-simd-json = "=0.15.1"
 smallvec = { version = "1.15.1", features = ["serde"] }
-sonic-rs = "0.5.8"
 syn = { version = "2.0.119", features = ["full"] }
 thiserror = "2.0.17"
 tempfile = "3.27.0"

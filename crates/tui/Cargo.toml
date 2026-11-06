@@ -8,7 +8,6 @@ rust-version.workspace = true
 publish = false
 authors = ["Nanocode Contributors", "Ben Clabby"]
 license = "Apache-2.0"
-homepage.workspace = true
 repository.workspace = true
 description = "Terminal UI components for Nanocode hosts, derived from clabby/tact"
 

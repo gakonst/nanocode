@@ -53,6 +53,7 @@ pub(crate) fn pin_tool(pins: &dyn TextPins, tool: Arc<dyn Tool>) -> Arc<dyn Tool
 
 /// Code Mode's `exec` and `wait` among `specs`, with the descriptions
 /// `pins` keeps for them. `inputs` is everything `exec` is rendered from.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn pin_code_mode(
     pins: &dyn TextPins,
     specs: &mut [ToolDefinition],

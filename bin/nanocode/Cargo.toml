@@ -8,7 +8,6 @@ rust-version.workspace = true
 publish = false
 authors = ["Nanocode Contributors", "Ben Clabby"]
 license = "Apache-2.0"
-homepage.workspace = true
 repository.workspace = true
 description = "Interactive terminal coding agent built on the Nanocode Rust crates"
 

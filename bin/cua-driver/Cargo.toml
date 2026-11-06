@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 license = "Apache-2.0"
-homepage.workspace = true
 repository.workspace = true
 description = "The cua-driver built into nanocode, as its own executable"
 

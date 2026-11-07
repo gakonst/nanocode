@@ -542,6 +542,8 @@ struct Driver {
     staged: Vec<SessionWrite>,
     preview: Option<(String, Option<String>)>,
     batch: Option<u64>,
+    rerun_steps: HashSet<(String, String)>,
+    unsaved_results: HashSet<(String, String)>,
 
     committed_records: HashSet<String>,
     next_event: Option<u64>,
@@ -1828,6 +1830,7 @@ impl Driver {
             ))),
             Some(StepStatus::EffectPending) => {
                 let revision = self.state.revision();
+                let key = (operation_id.clone(), step_id.clone());
                 self.state.apply_within(
                     revision,
                     Transition::StepCompleted {
@@ -1835,7 +1838,11 @@ impl Driver {
                         step_id,
                         output,
                     },
-                )
+                )?;
+                if !self.rerun_steps.remove(&key) {
+                    self.unsaved_results.insert(key);
+                }
+                Ok(())
             }
         }
     }
@@ -1942,6 +1949,12 @@ impl Driver {
         writes: Vec<OwnerWrite>,
         deferred: bool,
     ) -> Result<Vec<WriteOutcome>> {
+        let deferred = deferred
+            && self.unsaved_results.is_empty()
+            && !writes.iter().any(|write| {
+                matches!(write, OwnerWrite::CompleteStep { step_id, .. }
+                    if !self.rerun_steps.contains(&(operation_id.clone(), step_id.clone())))
+            });
         let revision = if deferred {
             self.state.revision()
         } else {
@@ -1953,6 +1966,8 @@ impl Driver {
         self.batch = Some(revision);
         let mut outcomes = Vec::with_capacity(writes.len());
         let mut failure = None;
+        let mut begun = Vec::new();
+        let mut completed = Vec::new();
         for write in writes {
             let outcome = match write {
                 OwnerWrite::Advance { continuation } => {
@@ -1974,14 +1989,18 @@ impl Driver {
                     step_id,
                     kind,
                     input,
-                } => self
-                    .begin_step(caller, operation_id.clone(), step_id, kind, input)
-                    .await
-                    .map(|step| WriteOutcome::Began(step.into())),
-                OwnerWrite::CompleteStep { step_id, output } => self
-                    .complete_step(caller, operation_id.clone(), step_id, output)
-                    .await
-                    .map(|()| WriteOutcome::Completed),
+                } => {
+                    begun.push((operation_id.clone(), step_id.clone()));
+                    self.begin_step(caller, operation_id.clone(), step_id, kind, input)
+                        .await
+                        .map(|step| WriteOutcome::Began(step.into()))
+                }
+                OwnerWrite::CompleteStep { step_id, output } => {
+                    completed.push((operation_id.clone(), step_id.clone()));
+                    self.complete_step(caller, operation_id.clone(), step_id, output)
+                        .await
+                        .map(|()| WriteOutcome::Completed)
+                }
             };
             match outcome {
                 Ok(outcome) => outcomes.push(outcome),
@@ -1996,7 +2015,11 @@ impl Driver {
         if let Some(error) = failure {
             return Err(error);
         }
+        for key in &completed {
+            self.rerun_steps.remove(key);
+        }
         if deferred {
+            self.rerun_steps.extend(begun);
             self.state = next;
             return Ok(outcomes);
         }
@@ -2210,6 +2233,7 @@ impl Driver {
             self.next_event = Some(assigned.end);
         }
         self.staged.clear();
+        self.unsaved_results.clear();
         self.state = next;
         Ok(SessionReceipt {
             revision: committed.revision,
@@ -2604,6 +2628,8 @@ impl DurableSession {
             staged: Vec::new(),
             preview: None,
             batch: None,
+            rerun_steps: HashSet::new(),
+            unsaved_results: HashSet::new(),
             committed_records: HashSet::new(),
             next_event: None,
             commands: receiver,

@@ -127,12 +127,10 @@ impl AtSpi {
             .block(atspi::registered(&bus, &known, shown))
             .unwrap_or_default();
         for found in &registered {
-            if !found.name.trim().is_empty() {
-                self.known.insert(
-                    found.element.bus.clone(),
-                    (found.pid, found.name.clone(), found.activation),
-                );
-            }
+            self.known.insert(
+                found.element.bus.clone(),
+                (found.pid, found.name.clone(), found.activation),
+            );
         }
         let classes = if x11::available() {
             self.display()

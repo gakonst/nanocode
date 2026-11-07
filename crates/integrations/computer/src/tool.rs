@@ -141,8 +141,8 @@ impl Lanes {
         }
     }
 
-    fn lane(&self, key: Option<&str>, idle: Duration) -> Shared {
-        let (Some(make), Some(key)) = (&self.make, key) else {
+    fn lane(&self, key: &str, idle: Duration) -> Shared {
+        let Some(make) = &self.make else {
             return self.front.clone();
         };
         let now = Instant::now();
@@ -252,7 +252,7 @@ impl Provider {
         match self {
             Self::Missing(reason) => ToolOutput::error(reason.clone()),
             Self::Native { lanes, .. } => {
-                let desktop = lanes.lane(key, limits.lease_idle);
+                let desktop = lanes.lane(key.unwrap_or_default(), limits.lease_idle);
                 native(&desktop, action, input, limits).await
             }
             Self::Driver(driver) => {

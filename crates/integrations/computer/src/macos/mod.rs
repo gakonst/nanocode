@@ -159,7 +159,7 @@ impl Backend for Ax {
         let title = window.as_ref().and_then(|window| window.text("AXTitle"));
         let root = window
             .clone()
-            .map(|window| read_node(window, 0, focused.as_ref(), &mut budget));
+            .map(|window| read_node(window, 0, focused.as_ref(), &mut budget, &mut Vec::new()));
         Ok(Read {
             title,
             root,
@@ -334,6 +334,7 @@ fn read_node(
     depth: usize,
     focused: Option<&Element>,
     budget: &mut Budget,
+    above: &mut Vec<Element>,
 ) -> Node<Element> {
     budget.nodes += 1;
     let role = element.text("AXRole").unwrap_or_else(|| "AXUnknown".into());
@@ -369,13 +370,17 @@ fn read_node(
     let value = if checkable { None } else { value };
     let mut children = Vec::new();
     if depth < MAX_DEPTH {
+        above.push(element.clone());
         for child in element.elements("AXChildren", MAX_CHILDREN) {
             if budget.nodes >= MAX_NODES || Instant::now() > budget.deadline {
                 budget.complete = false;
                 break;
             }
-            children.push(read_node(child, depth + 1, focused, budget));
+            if !above.contains(&child) {
+                children.push(read_node(child, depth + 1, focused, budget, above));
+            }
         }
+        above.pop();
     } else {
         budget.complete = false;
     }

@@ -5268,6 +5268,7 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "nanocode-home",
+ "nanocode-platform",
  "nanocode-sync",
  "nanocode-tools",
  "nix 0.31.3",

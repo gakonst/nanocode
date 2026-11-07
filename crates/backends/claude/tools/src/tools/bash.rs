@@ -52,14 +52,8 @@ pub struct BashResult {
     pub truncated: bool,
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub trait BashFuture<T>: Future<Output = T> + Send {}
-#[cfg(not(target_family = "wasm"))]
-impl<T, F: Future<Output = T> + Send> BashFuture<T> for F {}
-#[cfg(target_family = "wasm")]
-pub trait BashFuture<T>: Future<Output = T> {}
-#[cfg(target_family = "wasm")]
-impl<T, F: Future<Output = T>> BashFuture<T> for F {}
+pub trait BashFuture<T>: Future<Output = T> + nanocode_platform::MaybeSend {}
+impl<T, F: Future<Output = T> + nanocode_platform::MaybeSend> BashFuture<T> for F {}
 
 pub trait SandboxBashExecutor: Send + Sync {
     fn execute(&self, request: BashRequest) -> impl BashFuture<Result<BashResult, String>>;

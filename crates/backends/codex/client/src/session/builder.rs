@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use ::tower::Service;
+use nanocode_platform::MaybeSend;
 use tokio::sync::mpsc;
 
 use crate::client::{
@@ -175,31 +176,11 @@ impl<S> ResponseTurn<'_, S> {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl<S> ResponseTurn<'_, S>
 where
-    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + Send,
-    S::Error: Into<ResponseError> + Send,
-    S::Future: Send,
-{
-    pub fn create(&mut self, input: impl Into<ResponseInput>) -> Response<'_> {
-        let (sink, raw_events) = EventSink::channel(self.session.profile.session_id().to_owned());
-        drop(raw_events);
-        let (response_events, events) = mpsc::channel(RESPONSE_EVENT_CAPACITY);
-        let run = Box::pin(run_create(self, input.into(), sink, response_events));
-        Response::new(events, run)
-    }
-
-    pub async fn compact(&mut self) -> Result<CompletedCompaction, ResponseError> {
-        run_compact(self).await
-    }
-}
-
-#[cfg(target_family = "wasm")]
-impl<S> ResponseTurn<'_, S>
-where
-    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse>,
-    S::Error: Into<ResponseError>,
+    S: Service<ResponsesAttempt, Response = ResponsesServiceResponse> + MaybeSend,
+    S::Error: Into<ResponseError> + MaybeSend,
+    S::Future: MaybeSend,
 {
     pub fn create(&mut self, input: impl Into<ResponseInput>) -> Response<'_> {
         let (sink, raw_events) = EventSink::channel(self.session.profile.session_id().to_owned());

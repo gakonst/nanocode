@@ -7,18 +7,8 @@ use std::{
 
 use futures_util::future::{AbortHandle, Abortable};
 use nanocode_agent_core::backend::BackendFuture;
-use nanocode_platform::Instant;
+use nanocode_platform::{Instant, MaybeSend};
 use tokio::sync::oneshot;
-
-#[cfg(not(target_family = "wasm"))]
-pub(crate) trait TaskSend: Send {}
-#[cfg(not(target_family = "wasm"))]
-impl<T: Send> TaskSend for T {}
-
-#[cfg(target_family = "wasm")]
-pub(crate) trait TaskSend {}
-#[cfg(target_family = "wasm")]
-impl<T> TaskSend for T {}
 
 #[derive(Debug)]
 pub(crate) struct TaskError;
@@ -64,8 +54,8 @@ impl<T> Future for Task<T> {
 
 pub(crate) fn spawn<T, F>(future: F) -> Task<T>
 where
-    T: TaskSend + 'static,
-    F: Future<Output = T> + TaskSend + 'static,
+    T: MaybeSend + 'static,
+    F: Future<Output = T> + MaybeSend + 'static,
 {
     let (send, result) = oneshot::channel();
     let (abort, registration) = AbortHandle::new_pair();

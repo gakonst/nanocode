@@ -2454,16 +2454,8 @@ pub type ClaudeStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ClaudeErro
 pub type ClaudeStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, ClaudeError>>>>;
 
 #[doc(hidden)]
-#[cfg(not(target_family = "wasm"))]
-pub trait ToolFuture: Future + Send {}
-#[cfg(not(target_family = "wasm"))]
-impl<T: Future + Send> ToolFuture for T {}
-
-#[doc(hidden)]
-#[cfg(target_family = "wasm")]
-pub trait ToolFuture: Future {}
-#[cfg(target_family = "wasm")]
-impl<T: Future> ToolFuture for T {}
+pub trait ToolFuture: Future + nanocode_platform::MaybeSend {}
+impl<T: Future + nanocode_platform::MaybeSend> ToolFuture for T {}
 
 const MAX_SSE_FRAME_BYTES: usize = 32 * 1024 * 1024;
 

@@ -12,6 +12,7 @@ description = "Claude tool definitions and handlers independent of the Messages 
 
 [dependencies]
 nanocode-home.workspace = true
+nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-tools.workspace = true
 schemars.workspace = true

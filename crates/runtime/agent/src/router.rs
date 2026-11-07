@@ -35,25 +35,10 @@ impl<D: CheckpointFormats> HarnessBuilder<D> {
         self
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub fn register<F, Fut>(mut self, family: HarnessFamily, recipe: F) -> Self
     where
         F: Fn(HarnessRequest) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = AgentResult> + Send + 'static,
-    {
-        self.defaults
-            .entry(family.clone())
-            .or_insert_with(|| family.default_model());
-        self.recipes
-            .insert(family, Arc::new(move |request| Box::pin(recipe(request))));
-        self
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub fn register<F, Fut>(mut self, family: HarnessFamily, recipe: F) -> Self
-    where
-        F: Fn(HarnessRequest) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = AgentResult> + 'static,
+        Fut: Future<Output = AgentResult> + nanocode_platform::MaybeSend + 'static,
     {
         self.defaults
             .entry(family.clone())

@@ -4,6 +4,7 @@ use nanocode_agent_core::{Agent, AgentEvents, BackendRequest, Result, backend::B
 use nanocode_durability::{
     CheckpointFormat, DurableAgentExt as _, DurableBackendRegistration, DurableSession,
 };
+use nanocode_platform::MaybeSend;
 use tower::Service;
 
 use crate::{
@@ -16,22 +17,13 @@ use crate::{
     durability::CodexCheckpointFormat,
 };
 
-#[cfg(not(target_family = "wasm"))]
-trait PlatformSend: Send {}
-#[cfg(not(target_family = "wasm"))]
-impl<T: Send> PlatformSend for T {}
-#[cfg(target_family = "wasm")]
-trait PlatformSend {}
-#[cfg(target_family = "wasm")]
-impl<T> PlatformSend for T {}
-
 impl<F> DurableBackendRegistration for CodexBuilder<F>
 where
     F: ResponsesServiceFactory + Send + Sync + 'static,
     F::Service:
-        Service<ResponsesAttempt, Response = ResponsesServiceResponse> + PlatformSend + 'static,
-    <F::Service as Service<ResponsesAttempt>>::Error: Into<ResponseError> + PlatformSend + 'static,
-    <F::Service as Service<ResponsesAttempt>>::Future: PlatformSend,
+        Service<ResponsesAttempt, Response = ResponsesServiceResponse> + MaybeSend + 'static,
+    <F::Service as Service<ResponsesAttempt>>::Error: Into<ResponseError> + MaybeSend + 'static,
+    <F::Service as Service<ResponsesAttempt>>::Future: MaybeSend,
 {
     fn checkpoint_format(&self) -> Option<Arc<dyn CheckpointFormat>> {
         Some(Arc::new(CodexCheckpointFormat))
@@ -66,9 +58,9 @@ impl<F> DurableBackendRegistration for OpenAi<F>
 where
     F: ResponsesServiceFactory + Send + Sync + 'static,
     F::Service:
-        Service<ResponsesAttempt, Response = ResponsesServiceResponse> + PlatformSend + 'static,
-    <F::Service as Service<ResponsesAttempt>>::Error: Into<ResponseError> + PlatformSend + 'static,
-    <F::Service as Service<ResponsesAttempt>>::Future: PlatformSend,
+        Service<ResponsesAttempt, Response = ResponsesServiceResponse> + MaybeSend + 'static,
+    <F::Service as Service<ResponsesAttempt>>::Error: Into<ResponseError> + MaybeSend + 'static,
+    <F::Service as Service<ResponsesAttempt>>::Future: MaybeSend,
 {
     fn checkpoint_format(&self) -> Option<Arc<dyn CheckpointFormat>> {
         Some(Arc::new(CodexCheckpointFormat))

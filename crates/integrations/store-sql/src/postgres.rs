@@ -108,7 +108,7 @@ pub struct Pipelined {
     pub alive: Option<Alive>,
     pub deadline: Duration,
     pub backoff: Duration,
-    pub ping_idle: Duration,
+    pub ping: fn(Duration) -> bool,
 }
 
 pub struct Locked {
@@ -121,7 +121,7 @@ pub struct PostgresSql {
     pipelined: Option<Pipelined>,
     lanes: Box<[Owned<Option<Lane>>]>,
     failed: Atom<Option<Instant>>,
-    next: AtomicUsize,
+    latest: AtomicUsize,
     custom_plans: bool,
 }
 
@@ -191,7 +191,7 @@ impl PostgresSql {
                 .map(|client| Owned::new(Some(Lane::new(client))))
                 .collect(),
             failed: Atom::new(None),
-            next: AtomicUsize::new(0),
+            latest: AtomicUsize::new(0),
             custom_plans: true,
         }
     }
@@ -299,7 +299,7 @@ impl PostgresSql {
             pipelined: Some(pipelined),
             lanes: (0..size.max(1)).map(|_| Owned::new(None)).collect(),
             failed: Atom::new(None),
-            next: AtomicUsize::new(0),
+            latest: AtomicUsize::new(0),
             custom_plans: false,
         })
     }
@@ -479,7 +479,7 @@ impl PostgresSql {
         let Some(pipelined) = &self.pipelined else {
             return true;
         };
-        if lane.used.elapsed() < pipelined.ping_idle {
+        if !(pipelined.ping)(lane.used.elapsed()) {
             return true;
         }
         timeout(pipelined.deadline, lane.client.simple_query(""))
@@ -487,17 +487,26 @@ impl PostgresSql {
             .is_ok_and(|pinged| pinged.is_ok())
     }
 
-    async fn slot(&self) -> Held<'_, Option<Lane>> {
-        let start = self.next.fetch_add(1, Ordering::Relaxed);
+    async fn slot(&self) -> (usize, Held<'_, Option<Lane>>) {
+        let start = self.latest.load(Ordering::Relaxed);
         let count = self.lanes.len();
-        if let Some(held) =
-            (0..count).find_map(|offset| self.lanes[(start + offset) % count].try_acquire())
-        {
+        if let Some(held) = (0..count).find_map(|offset| {
+            let index = (start + offset) % count;
+            self.lanes[index].try_acquire().map(|held| (index, held))
+        }) {
             return held;
         }
-        select_all(self.lanes.iter().map(|slot| Box::pin(slot.acquire())))
-            .await
-            .0
+        let (held, index, _) =
+            select_all(self.lanes.iter().map(|slot| Box::pin(slot.acquire()))).await;
+        (index, held)
+    }
+
+    fn release(&self, index: usize, slot: &mut Held<'_, Option<Lane>>, mut lane: Lane) {
+        if !lane.client.is_closed() {
+            lane.used = Instant::now();
+            **slot = Some(lane);
+            self.latest.store(index, Ordering::Relaxed);
+        }
     }
 
     async fn lane(&self, slot: &mut Held<'_, Option<Lane>>) -> Result<Lane, PipelineError> {
@@ -519,7 +528,7 @@ impl PostgresSql {
         params: &[&(dyn ToSql + Sync)],
         lent: impl FnOnce() -> G,
     ) -> Result<Vec<Row>, PipelineError> {
-        let mut slot = self.slot().await;
+        let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
         let statement = lane.prepare(sql).await?;
@@ -529,10 +538,7 @@ impl PostgresSql {
                 "pipelined statement timed out",
             )
             .await?;
-        if !lane.client.is_closed() {
-            lane.used = Instant::now();
-            *slot = Some(lane);
-        }
+        self.release(index, &mut slot, lane);
         Ok(ran?)
     }
 
@@ -543,7 +549,7 @@ impl PostgresSql {
         lent: impl FnOnce() -> G,
     ) -> Result<Locked, PipelineError> {
         let pipelined = self.settings()?;
-        let mut slot = self.slot().await;
+        let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
         let mut fixed = Vec::with_capacity(5);
@@ -584,10 +590,7 @@ impl PostgresSql {
             drop(lane);
             return Err(PipelineError::Said("pipelined locked write timed out"));
         };
-        if !lane.client.is_closed() {
-            lane.used = Instant::now();
-            *slot = Some(lane);
-        }
+        self.release(index, &mut slot, lane);
         let (_, rows, (collected, _)) = ran?;
         let collected: Option<String> = collected.try_get(0)?;
         Ok(Locked {
@@ -601,7 +604,7 @@ impl PostgresSql {
         access: SqlAccess,
         statements: &[SqlStatement<'_>],
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-        let mut slot = self.slot().await;
+        let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await.map_err(piped)?;
         let ran = self
             .bounded(
@@ -609,10 +612,7 @@ impl PostgresSql {
                 "a Postgres transaction timed out",
             )
             .await;
-        if !lane.client.is_closed() {
-            lane.used = Instant::now();
-            *slot = Some(lane);
-        }
+        self.release(index, &mut slot, lane);
         let replies = ran.map_err(piped)?.map_err(backend)?;
         text_rows(&replies)
     }

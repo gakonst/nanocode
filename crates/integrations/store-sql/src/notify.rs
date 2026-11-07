@@ -14,7 +14,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{spawn, time::sleep};
+use tokio::{
+    spawn,
+    time::{Instant, sleep, timeout_at},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trouble {
@@ -28,6 +31,7 @@ pub struct Forwarding {
     pub wake_all: &'static str,
     pub forwarder: Arc<AtomicU32>,
     pub batch: usize,
+    pub linger: Duration,
     pub retry: Duration,
     pub trouble: fn(Trouble, &dyn Display),
 }
@@ -86,6 +90,7 @@ pub async fn forward<S>(
         wake_all,
         forwarder,
         batch: limit,
+        linger,
         retry,
         trouble,
     } = forwarding;
@@ -94,7 +99,11 @@ pub async fn forward<S>(
     let mut connected_before = false;
     loop {
         let received = if batch.is_empty() {
-            outbox.recv_many(&mut batch, limit).await
+            let received = outbox.recv_many(&mut batch, limit).await;
+            if received > 0 && !linger.is_zero() {
+                gather(&mut outbox, &mut batch, limit, Instant::now() + linger).await;
+            }
+            received
         } else {
             batch.len()
         };
@@ -137,6 +146,15 @@ pub async fn forward<S>(
                 conn = None;
                 sleep(retry).await;
             }
+        }
+    }
+}
+
+async fn gather(outbox: &mut WakeOutbox, batch: &mut Vec<Wake>, limit: usize, until: Instant) {
+    while batch.len() < limit {
+        match timeout_at(until, outbox.recv_many(batch, limit - batch.len())).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
         }
     }
 }

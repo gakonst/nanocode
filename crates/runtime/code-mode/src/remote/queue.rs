@@ -34,7 +34,7 @@ pub fn request_id(call_id: &str) -> u64 {
 
 pub struct QueuedCall<O> {
     pub name: String,
-    pub input: Value,
+    pub input: Arc<Value>,
     pub context: RemoteContext,
     pub request: Option<u64>,
     pub origin: O,
@@ -244,7 +244,7 @@ pub async fn serve_queue<Q: CommandQueue>(
                                 request,
                                 RemoteOperation::Call {
                                     name: call.name,
-                                    input: call.input,
+                                    input: Arc::unwrap_or_clone(call.input),
                                     selected_tools: None,
                                     context: call.context,
                                 },

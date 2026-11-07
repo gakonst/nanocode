@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 description = "Shared audio duration and token accounting"
 [dependencies]
-arc-swap.workspace = true
+nanocode-sync.workspace = true
 base64-simd.workspace = true
 tracing.workspace = true
 base64.workspace = true

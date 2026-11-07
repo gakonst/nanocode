@@ -9,7 +9,7 @@ use crate::client::{
     responses::{RequestProfile, ToolDefinition},
 };
 use crate::model::run::ModelCheckpoint;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use nanocode_sync::{Swap, SwapOption};
 use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
@@ -24,13 +24,13 @@ pub(crate) struct ModelPromptCache {
     key: Arc<OnceLock<Arc<str>>>,
     seed: Arc<str>,
     shared: Option<SharedPromptCache>,
-    live: Arc<ArcSwapOption<ModelCheckpoint>>,
-    request: Arc<ArcSwapOption<(Thinking, ServiceTier)>>,
+    live: Arc<SwapOption<ModelCheckpoint>>,
+    request: Arc<SwapOption<(Thinking, ServiceTier)>>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct SharedPromptCache {
-    entries: Arc<ArcSwap<WarmupEntries>>,
+    entries: Arc<Swap<WarmupEntries>>,
 }
 
 impl ModelPromptCache {
@@ -131,7 +131,7 @@ struct PrefixDigest {
 }
 
 fn prefix_digest(model: Model, tools: &[ToolDefinition], instructions: &str) -> Result<Arc<str>> {
-    static LAST: ArcSwapOption<PrefixDigest> = ArcSwapOption::const_empty();
+    static LAST: SwapOption<PrefixDigest> = SwapOption::const_empty();
     if let Some(last) = LAST.load().as_deref()
         && last.model == model
         && *last.instructions == *instructions

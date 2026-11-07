@@ -11,13 +11,13 @@ autotests = false
 autobenches = false
 
 [dependencies]
-arc-swap.workspace = true
 crossbeam-utils.workspace = true
 futures-util.workspace = true
 imbl.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+arc-swap.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]

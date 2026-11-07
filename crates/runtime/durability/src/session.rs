@@ -7,8 +7,8 @@ use std::{
     },
 };
 
-use arc_swap::ArcSwapOption;
 use nanocode_agent_core::backend::SteerReceiptStatus;
+use nanocode_sync::SwapOption;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{mpsc, oneshot};
 use tracing::Instrument;
@@ -2468,8 +2468,8 @@ pub struct DurableSession {
     caller_id: OwnerId,
     active_claims: AtomicUsize,
     described: Option<crate::SessionRecord>,
-    preload: Arc<ArcSwapOption<CheckpointPreload>>,
-    adopted: Arc<ArcSwapOption<crate::JournalClaim>>,
+    preload: Arc<SwapOption<CheckpointPreload>>,
+    adopted: Arc<SwapOption<crate::JournalClaim>>,
 }
 
 pub(crate) type LoadedCheckpoint = (EncodedPayload, Arc<HashSet<String>>);

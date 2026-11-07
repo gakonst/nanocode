@@ -23,7 +23,7 @@ use std::{
     },
 };
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use nanocode_sync::{Swap, SwapOption};
 
 type Result<T> = nanocode_agent_core::Result<T>;
 
@@ -34,7 +34,7 @@ type Recipe = Arc<dyn Fn(AgentSpec) -> BackendFuture<AgentResult> + Send + Sync>
 
 pub type SubagentUpdates =
     tokio::sync::mpsc::UnboundedReceiver<nanocode_subagents::ScopedAgentUpdate>;
-type UpdateSlot = Arc<ArcSwapOption<SubagentUpdates>>;
+type UpdateSlot = Arc<SwapOption<SubagentUpdates>>;
 #[cfg(not(target_family = "wasm"))]
 type RunnerFuture<'a, H, T> = nanocode_tool_host::embedded::HostFuture<
     'a,
@@ -416,8 +416,7 @@ fn assemble(
         }));
         (Some(registry), Some(control), Some(updates))
     };
-    let subagent_updates: UpdateSlot =
-        Arc::new(ArcSwapOption::from(subagent_updates.map(Arc::new)));
+    let subagent_updates: UpdateSlot = Arc::new(SwapOption::from(subagent_updates.map(Arc::new)));
     let mut recipes: Vec<(HarnessFamily, Recipe)> = Vec::new();
 
     for backend in data.backends {
@@ -1395,9 +1394,9 @@ type Reopener = Arc<dyn Fn(String) -> BackendFuture<AgentResult> + Send + Sync>;
 pub(crate) struct Ownership {
     admissions: AtomicUsize,
     drained: AtomicBool,
-    owned: ArcSwap<Vec<(usize, WeakAgent)>>,
-    children: ArcSwap<imbl::Vector<WeakAgent>>,
-    opening: ArcSwap<HashMap<String, Arc<Opening>>>,
+    owned: Swap<Vec<(usize, WeakAgent)>>,
+    children: Swap<imbl::Vector<WeakAgent>>,
+    opening: Swap<HashMap<String, Arc<Opening>>>,
     services: OnceLock<std::sync::Weak<dyn HostServices>>,
     reopener: OnceLock<Reopener>,
     idle: tokio::sync::Notify,
@@ -1405,7 +1404,7 @@ pub(crate) struct Ownership {
 }
 
 struct Opening {
-    finish: ArcSwapOption<tokio::sync::oneshot::Sender<()>>,
+    finish: SwapOption<tokio::sync::oneshot::Sender<()>>,
     finished: futures_util::future::Shared<tokio::sync::oneshot::Receiver<()>>,
 }
 
@@ -1413,7 +1412,7 @@ impl Opening {
     fn new() -> Arc<Self> {
         let (finish, finished) = tokio::sync::oneshot::channel();
         Arc::new(Self {
-            finish: ArcSwapOption::from_pointee(finish),
+            finish: SwapOption::from_pointee(finish),
             finished: futures_util::FutureExt::shared(finished),
         })
     }

@@ -1,9 +1,8 @@
 use super::*;
 use crate::client::responses::FunctionOutputContent;
-use arc_swap::{ArcSwap, ArcSwapOption};
 use nanocode_code_mode::code_mode::NestedToolCall;
 use nanocode_code_mode::contract::ToolOutputContent;
-use nanocode_sync::Slot;
+use nanocode_sync::{Slot, Swap, SwapOption};
 use nanocode_types::preview;
 
 #[derive(Clone)]
@@ -14,8 +13,8 @@ pub(super) struct ActiveToolCall {
     pub(super) started_at: Instant,
     pub(super) shell_abort_format: bool,
     pub(super) completion: Arc<Slot<CompletedToolCall>>,
-    pub(super) progress: Arc<ArcSwap<ActiveToolProgress>>,
-    pub(super) execution_started_at: Arc<ArcSwapOption<Instant>>,
+    pub(super) progress: Arc<Swap<ActiveToolProgress>>,
+    pub(super) execution_started_at: Arc<SwapOption<Instant>>,
     pub(super) span: tracing::Span,
 }
 
@@ -230,7 +229,7 @@ fn restored_output(primary: &FunctionOutputBody) -> Option<ToolOutputBody> {
 pub(super) struct NestedToolEventObserver<'a> {
     events: &'a EventSink,
     tool_call_indices: &'a HashMap<Box<str>, u32>,
-    pub(super) progress: &'a ArcSwap<ActiveToolProgress>,
+    pub(super) progress: &'a Swap<ActiveToolProgress>,
     fallback_call_index: u32,
     parent_call_id: &'a str,
     error: Option<NanocodeError>,
@@ -490,7 +489,7 @@ fn logged_top_level_result(completed: &CompletedToolCall) -> Option<LoggedResult
 pub(super) struct DetachedNestedToolEvents {
     events: EventSink,
     tool_call_indices: HashMap<Box<str>, u32>,
-    progress: ArcSwap<ActiveToolProgress>,
+    progress: Swap<ActiveToolProgress>,
     parent_call_id: String,
 }
 
@@ -503,7 +502,7 @@ impl DetachedNestedToolEvents {
         Self {
             events,
             tool_call_indices,
-            progress: ArcSwap::default(),
+            progress: Swap::default(),
             parent_call_id: parent_call_id.to_owned(),
         }
     }
@@ -534,8 +533,8 @@ impl CodeModeObserver for DetachedNestedToolEvents {
 pub(super) struct TurnTeardownEvents<'a> {
     events: &'a EventSink,
     tool_call_indices: &'a HashMap<Box<str>, u32>,
-    active: Vec<Arc<ArcSwap<ActiveToolProgress>>>,
-    progress: ArcSwap<ActiveToolProgress>,
+    active: Vec<Arc<Swap<ActiveToolProgress>>>,
+    progress: Swap<ActiveToolProgress>,
     pub(super) terminated: Vec<(String, String)>,
 }
 
@@ -549,7 +548,7 @@ impl<'a> TurnTeardownEvents<'a> {
             events,
             tool_call_indices,
             active: active.iter().map(|call| call.progress.clone()).collect(),
-            progress: ArcSwap::default(),
+            progress: Swap::default(),
             terminated: Vec::new(),
         }
     }
@@ -872,7 +871,7 @@ impl ModelRun {
     pub(super) fn finish_completed_tool_call(
         &mut self,
         completed: CompletedToolCall,
-        progress: &ArcSwap<ActiveToolProgress>,
+        progress: &Swap<ActiveToolProgress>,
     ) -> Result<Vec<ResponseItem>> {
         if !completed
             .cell
@@ -893,7 +892,7 @@ impl ModelRun {
 
     pub(super) fn finish_active_tool_progress(
         &mut self,
-        progress: &ArcSwap<ActiveToolProgress>,
+        progress: &Swap<ActiveToolProgress>,
     ) -> Vec<ActiveNestedToolCall> {
         let progress = Arc::unwrap_or_clone(progress.swap(Arc::default()));
         self.stats.tool_calls += progress.nested_tool_calls;
@@ -1066,7 +1065,7 @@ impl ModelRun {
         host_context: Option<&str>,
         instruction_revision: Option<u64>,
         started_at: Instant,
-        progress: &ArcSwap<ActiveToolProgress>,
+        progress: &Swap<ActiveToolProgress>,
         tool_span: &tracing::Span,
         recover: bool,
     ) -> Result<CompletedToolCall> {

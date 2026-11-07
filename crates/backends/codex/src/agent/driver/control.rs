@@ -6,7 +6,7 @@ type SharedShutdownResult = std::result::Result<(), Arc<NanocodeError>>;
 struct ShutdownState {
     requested: std::sync::atomic::AtomicBool,
     done: nanocode_sync::Signal,
-    outcome: arc_swap::ArcSwapOption<SharedShutdownResult>,
+    outcome: nanocode_sync::SwapOption<SharedShutdownResult>,
 }
 
 impl ShutdownState {

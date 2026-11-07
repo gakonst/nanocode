@@ -1,9 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
-use arc_swap::ArcSwapOption;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_platform::SystemTime;
-use nanocode_sync::SingleFlight;
+use nanocode_sync::{SingleFlight, SwapOption};
 
 use crate::{ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable};
 
@@ -67,7 +66,7 @@ pub trait ClaudeTokenSource: Send + Sync {
 pub struct RefreshingClaudeAuth {
     source: Arc<dyn ClaudeTokenSource>,
     refresh_margin: Duration,
-    token: Arc<ArcSwapOption<ClaudeAccessToken>>,
+    token: Arc<SwapOption<ClaudeAccessToken>>,
     refreshing: SingleFlight<Result<(), String>>,
 }
 

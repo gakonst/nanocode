@@ -4,8 +4,7 @@ use std::{
     time::Duration,
 };
 
-use arc_swap::ArcSwap;
-use nanocode_sync::SingleFlight;
+use nanocode_sync::{SingleFlight, Swap};
 
 use nanocode_mcp::oauth::{TokenError, TokenResponse};
 use tokio::time::timeout;
@@ -18,8 +17,7 @@ const REFRESH_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 type Refresh = SingleFlight<Result<(), String>>;
 
-static REFRESHES: LazyLock<ArcSwap<HashMap<String, Weak<Refresh>>>> =
-    LazyLock::new(ArcSwap::default);
+static REFRESHES: LazyLock<Swap<HashMap<String, Weak<Refresh>>>> = LazyLock::new(Swap::default);
 
 fn refresh_for(key: &str) -> Arc<Refresh> {
     let mut refresh = None;

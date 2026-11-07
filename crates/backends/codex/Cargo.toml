@@ -15,7 +15,6 @@ description = "Codex backend: agent driver, tools and durability over the Respon
 rustdoc-args = ["-D", "warnings"]
 
 [dependencies]
-arc-swap.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 base64-simd.workspace = true

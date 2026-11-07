@@ -12,9 +12,8 @@ use super::{
     OpenAiAuth, OpenAiAuthError, OpenAiAuthFuture, OpenAiAuthMode, OpenAiAuthSnapshot,
     OpenAiAuthSource,
 };
-use arc_swap::ArcSwap;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use nanocode_sync::SingleFlight;
+use nanocode_sync::{SingleFlight, Swap};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -245,7 +244,7 @@ pub fn load_chatgpt_auth(auth_file: impl Into<PathBuf>) -> Result<OpenAiAuth, Ch
         auth_file,
         issuer: Arc::from(AUTH_ISSUER),
         client: auth_client()?,
-        state: ArcSwap::from_pointee(ManagedState::new(credentials, document, 0)),
+        state: Swap::from_pointee(ManagedState::new(credentials, document, 0)),
         refreshing: SingleFlight::default(),
     };
     Ok(OpenAiAuth::managed_chatgpt(Arc::new(ManagedChatGptAuth {
@@ -445,7 +444,7 @@ struct ManagedAuthInner {
     auth_file: PathBuf,
     issuer: Arc<str>,
     client: reqwest::Client,
-    state: ArcSwap<ManagedState>,
+    state: Swap<ManagedState>,
     refreshing: SingleFlight<Result<(), OpenAiAuthError>>,
 }
 

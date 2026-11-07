@@ -6,8 +6,7 @@ use std::{
     },
 };
 
-use arc_swap::{ArcSwap, ArcSwapOption};
-use nanocode_sync::Slot;
+use nanocode_sync::{Slot, Swap, SwapOption};
 
 use nanocode_agent_core::{
     ExecutionPolicyDisposition, NanocodeError, Result as AgentResult, SteerReceiptStatus,
@@ -179,7 +178,7 @@ struct DurableExecution {
     owner: DurableOwner,
     state_id: String,
     branches: Option<Branches>,
-    context_records: ArcSwap<HashSet<String>>,
+    context_records: Swap<HashSet<String>>,
     continuation_cache: Slot<context::ContinuationCache>,
 }
 
@@ -197,7 +196,7 @@ impl DurableExecution {
             owner,
             state_id,
             branches,
-            context_records: ArcSwap::default(),
+            context_records: Swap::default(),
             continuation_cache: Slot::default(),
         }
     }
@@ -777,7 +776,7 @@ struct LazyExecution {
 
     initialized: std::sync::atomic::AtomicBool,
 
-    created_with: ArcSwapOption<crate::execution::InitialSettings>,
+    created_with: SwapOption<crate::execution::InitialSettings>,
 
     deferred: Option<Deferred>,
 }
@@ -789,7 +788,7 @@ impl LazyExecution {
             record,
             ready: tokio::sync::OnceCell::new(),
             initialized: std::sync::atomic::AtomicBool::new(false),
-            created_with: ArcSwapOption::empty(),
+            created_with: SwapOption::empty(),
             deferred: None,
         }
     }

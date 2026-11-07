@@ -47,33 +47,54 @@ pub struct CustomModel(&'static str);
 impl CustomModel {
     #[must_use]
     pub fn new(id: &str) -> Self {
-        static INTERNED: std::sync::OnceLock<
-            arc_swap::ArcSwap<std::collections::BTreeSet<&'static str>>,
-        > = std::sync::OnceLock::new();
-        let interned = INTERNED.get_or_init(Default::default);
-        if let Some(existing) = interned.load().get(id).copied() {
-            return Self(existing);
-        }
-        let leaked: &'static str = Box::leak(id.to_owned().into_boxed_str());
-        let mut interned_id = leaked;
-        interned.rcu(|ids| {
-            let mut ids = std::collections::BTreeSet::clone(ids);
-            match ids.get(id) {
-                Some(existing) => interned_id = existing,
-                None => {
-                    ids.insert(leaked);
-                    interned_id = leaked;
-                }
-            }
-            ids
-        });
-        Self(interned_id)
+        Self(intern(id))
     }
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         self.0
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn intern(id: &str) -> &'static str {
+    static INTERNED: std::sync::OnceLock<
+        arc_swap::ArcSwap<std::collections::BTreeSet<&'static str>>,
+    > = std::sync::OnceLock::new();
+    let interned = INTERNED.get_or_init(Default::default);
+    if let Some(existing) = interned.load().get(id).copied() {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(id.to_owned().into_boxed_str());
+    let mut interned_id = leaked;
+    interned.rcu(|ids| {
+        let mut ids = std::collections::BTreeSet::clone(ids);
+        match ids.get(id) {
+            Some(existing) => interned_id = existing,
+            None => {
+                ids.insert(leaked);
+                interned_id = leaked;
+            }
+        }
+        ids
+    });
+    interned_id
+}
+
+#[cfg(target_family = "wasm")]
+fn intern(id: &str) -> &'static str {
+    thread_local! {
+        static INTERNED: std::cell::RefCell<std::collections::BTreeSet<&'static str>> =
+            const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    }
+    INTERNED.with_borrow_mut(|ids| {
+        if let Some(existing) = ids.get(id) {
+            return *existing;
+        }
+        let leaked: &'static str = Box::leak(id.to_owned().into_boxed_str());
+        ids.insert(leaked);
+        leaked
+    })
 }
 
 impl Serialize for CustomModel {

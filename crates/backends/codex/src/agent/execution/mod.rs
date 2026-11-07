@@ -863,14 +863,14 @@ const DELIVERY_WITHDRAWING: u8 = 3;
 
 pub(crate) struct Delivery {
     state: std::sync::atomic::AtomicU8,
-    settled: arc_swap::ArcSwap<nanocode_sync::Signal>,
+    settled: nanocode_sync::Swap<nanocode_sync::Signal>,
 }
 
 impl Delivery {
     pub(crate) fn pending() -> Arc<Self> {
         Arc::new(Self {
             state: std::sync::atomic::AtomicU8::new(DELIVERY_PENDING),
-            settled: arc_swap::ArcSwap::default(),
+            settled: nanocode_sync::Swap::default(),
         })
     }
 

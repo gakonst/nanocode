@@ -9,12 +9,12 @@ license.workspace = true
 repository.workspace = true
 description = "Shared prompt image preparation"
 [dependencies]
-arc-swap.workspace = true
 memchr.workspace = true
 base64-simd.workspace = true
 tracing = { workspace = true  }
 nanocode-types-core = { workspace = true  }
 nanocode-durability-core = { workspace = true }
+nanocode-sync.workspace = true
 base64 = { workspace = true  }
 image = { workspace = true  }
 png = "0.17.16"

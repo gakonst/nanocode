@@ -437,8 +437,8 @@ impl ExecutionEnvironment {
 #[cfg(target_os = "macos")]
 fn system_timezone() -> Result<String, iana_time_zone::GetTimezoneError> {
     const TZDIR: &str = "/var/db/timezone/zoneinfo/";
-    static KNOWN: arc_swap::ArcSwapOption<(std::path::PathBuf, String)> =
-        arc_swap::ArcSwapOption::const_empty();
+    static KNOWN: nanocode_sync::SwapOption<(std::path::PathBuf, String)> =
+        nanocode_sync::SwapOption::const_empty();
     if std::env::var_os("TZFILE").is_none()
         && std::env::var_os("TZ").is_none()
         && let Ok(link) = std::fs::read_link("/etc/localtime")

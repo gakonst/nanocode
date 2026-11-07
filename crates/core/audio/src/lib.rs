@@ -11,15 +11,14 @@ use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 
-use arc_swap::ArcSwap;
+use nanocode_sync::Swap;
 
 const AUDIO_TOKEN_ESTIMATE_CACHE_SIZE: usize = 32;
 const AUDIO_TOKENS_PER_SECOND: f64 = 10.0;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 
 type AudioEstimates = VecDeque<([u8; 20], usize)>;
-static AUDIO_TOKEN_ESTIMATE_CACHE: LazyLock<ArcSwap<AudioEstimates>> =
-    LazyLock::new(ArcSwap::default);
+static AUDIO_TOKEN_ESTIMATE_CACHE: LazyLock<Swap<AudioEstimates>> = LazyLock::new(Swap::default);
 
 fn remember(key: [u8; 20], tokens: usize) {
     AUDIO_TOKEN_ESTIMATE_CACHE.rcu(|cache| {

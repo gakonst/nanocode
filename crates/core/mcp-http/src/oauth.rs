@@ -21,7 +21,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use nanocode_sync::{Swap, SwapOption};
 use tracing::{Instrument, info_span};
 
 use crate::SecretSource;
@@ -78,7 +78,7 @@ impl DiscoveryPolicy {
 
 #[derive(Default)]
 pub struct OAuthMetadataCache {
-    entries: ArcSwap<MetadataEntries>,
+    entries: Swap<MetadataEntries>,
 }
 
 impl OAuthMetadataCache {
@@ -286,8 +286,8 @@ pub struct OAuthRuntime {
     base_url: Option<Url>,
     http: reqwest::Client,
     store: Arc<dyn McpOAuthStore>,
-    credentials: ArcSwapOption<McpOAuthCredentials>,
-    settled: ArcSwapOption<String>,
+    credentials: SwapOption<McpOAuthCredentials>,
+    settled: SwapOption<String>,
 }
 
 impl OAuthRuntime {
@@ -307,8 +307,8 @@ impl OAuthRuntime {
             base_url: None,
             http,
             store,
-            credentials: ArcSwapOption::from_pointee(credentials),
-            settled: ArcSwapOption::empty(),
+            credentials: SwapOption::from_pointee(credentials),
+            settled: SwapOption::empty(),
         }))
     }
 
@@ -501,8 +501,8 @@ pub fn transport_from_credentials<'call>(
             base_url: Some(base_url),
             http: http_client,
             store,
-            credentials: ArcSwapOption::from_pointee(staged_credentials),
-            settled: ArcSwapOption::empty(),
+            credentials: SwapOption::from_pointee(staged_credentials),
+            settled: SwapOption::empty(),
         });
         Ok(OAuthTransport {
             runtime,

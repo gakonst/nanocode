@@ -7,10 +7,9 @@ use std::{
     },
 };
 
-use arc_swap::ArcSwap;
 use futures_util::Stream;
 use nanocode_platform::Instant;
-use nanocode_sync::{Inbox, Slot};
+use nanocode_sync::{Inbox, Slot, Swap};
 use nanocode_types_core::responses::MessagePhase;
 use serde::Serialize;
 use serde_json::value::{RawValue, to_raw_value};
@@ -163,15 +162,12 @@ impl Subscriber {
     }
 }
 
-struct Subscribers(ArcSwap<Vec<Subscriber>>);
+struct Subscribers(Swap<Vec<Subscriber>>);
 
 impl Subscribers {
     fn channel(request_id: &Arc<str>) -> (Arc<Self>, AgentEvents) {
         let (subscriber, events) = Subscriber::channel(request_id);
-        (
-            Arc::new(Self(ArcSwap::from_pointee(vec![subscriber]))),
-            events,
-        )
+        (Arc::new(Self(Swap::from_pointee(vec![subscriber]))), events)
     }
 
     fn subscribe(&self, request_id: &Arc<str>) -> AgentEvents {

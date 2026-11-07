@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
 
-use arc_swap::ArcSwap;
+use nanocode_sync::Swap;
 
 use nanocode_agent_core::{HarnessFamily, SessionCheckpoint, Thinking, session::TranscriptItem};
 use serde_json::Value;
@@ -67,7 +67,7 @@ pub trait CheckpointFormat: Send + Sync {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Formats(Arc<ArcSwap<Vec<Arc<dyn CheckpointFormat>>>>);
+pub(crate) struct Formats(Arc<Swap<Vec<Arc<dyn CheckpointFormat>>>>);
 
 impl Formats {
     pub(crate) fn register(&self, format: Arc<dyn CheckpointFormat>) -> Result<()> {

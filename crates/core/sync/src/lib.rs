@@ -14,8 +14,12 @@ mod shelf;
 mod splice;
 #[cfg(not(target_family = "wasm"))]
 mod stalled;
+#[cfg(target_family = "wasm")]
+mod swap;
 mod wakes;
 
+#[cfg(not(target_family = "wasm"))]
+pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Lanes, NotCommitted, together};
 #[cfg(not(target_family = "wasm"))]
@@ -32,9 +36,10 @@ pub use shelf::{Armed, Shelf};
 pub use splice::{pipe, splice};
 #[cfg(not(target_family = "wasm"))]
 pub use stalled::StalledWaits;
+#[cfg(target_family = "wasm")]
+pub use swap::{Guard, Swap, SwapOption};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
 
-use arc_swap::{ArcSwap, ArcSwapOption};
 use futures_util::future::{FutureExt, Shared};
 use tokio::sync::{mpsc, oneshot};
 
@@ -73,7 +78,7 @@ impl Signal {
     }
 }
 
-pub struct Atom<T>(ArcSwap<T>);
+pub struct Atom<T>(Swap<T>);
 
 impl<T: Default> Default for Atom<T> {
     fn default() -> Self {
@@ -89,7 +94,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Atom<T> {
 
 impl<T> Atom<T> {
     pub fn new(value: T) -> Self {
-        Self(ArcSwap::from_pointee(value))
+        Self(Swap::from_pointee(value))
     }
 
     #[must_use]
@@ -116,7 +121,7 @@ impl<T: Clone> Atom<T> {
             if Arc::ptr_eq(&previous, &current) {
                 return output;
             }
-            current = arc_swap::Guard::into_inner(previous);
+            current = Guard::into_inner(previous);
         }
     }
 
@@ -133,7 +138,7 @@ impl<T: Clone> Atom<T> {
             if Arc::ptr_eq(&previous, &current) {
                 return Ok(output);
             }
-            current = arc_swap::Guard::into_inner(previous);
+            current = Guard::into_inner(previous);
         }
     }
 }
@@ -239,13 +244,13 @@ struct Node<T> {
 }
 
 pub struct Inbox<T> {
-    head: ArcSwapOption<Node<T>>,
+    head: SwapOption<Node<T>>,
 }
 
 impl<T> Default for Inbox<T> {
     fn default() -> Self {
         Self {
-            head: ArcSwapOption::empty(),
+            head: SwapOption::empty(),
         }
     }
 }
@@ -317,17 +322,17 @@ impl<T: Clone> Inbox<T> {
 
 struct Flight<T> {
     done: Signal,
-    result: ArcSwapOption<T>,
+    result: SwapOption<T>,
 }
 
 pub struct SingleFlight<T> {
-    running: ArcSwapOption<Flight<T>>,
+    running: SwapOption<Flight<T>>,
 }
 
 impl<T> Default for SingleFlight<T> {
     fn default() -> Self {
         Self {
-            running: ArcSwapOption::empty(),
+            running: SwapOption::empty(),
         }
     }
 }
@@ -357,7 +362,7 @@ impl<T: Clone> SingleFlight<T> {
         loop {
             let flight = Arc::new(Flight {
                 done: Signal::new(),
-                result: ArcSwapOption::empty(),
+                result: SwapOption::empty(),
             });
             let previous = self
                 .running

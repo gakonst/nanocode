@@ -485,7 +485,8 @@ pub fn responses_lite_request_prefix(
     tools: Vec<crate::client::ToolDefinition>,
     instructions: &str,
 ) -> Result<[ResponseItem; 2], serde_json::Error> {
-    static LAST: arc_swap::ArcSwapOption<RequestPrefix> = arc_swap::ArcSwapOption::const_empty();
+    static LAST: nanocode_sync::SwapOption<RequestPrefix> =
+        nanocode_sync::SwapOption::const_empty();
     if let Some(last) = LAST.load().as_deref()
         && *last.cache_lineage == *cache_lineage
         && *last.instructions == *instructions

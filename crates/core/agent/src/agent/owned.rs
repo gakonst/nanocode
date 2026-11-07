@@ -4,7 +4,7 @@ use super::backend::{
 };
 use super::handle::{Interrupted, OwnershipProbe, Signal};
 use super::*;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use nanocode_sync::{Swap, SwapOption};
 use std::sync::atomic::AtomicU8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,15 +60,15 @@ pub trait AgentOwner: Send + Sync + 'static {
 pub async fn adopt(agent: Agent, owner: &Arc<dyn AgentOwner>) -> Result<Agent> {
     let key = Arc::as_ptr(&agent.backend).cast::<()>() as usize;
     let backend: Arc<dyn LifecycleBackend> = Arc::new(Owned(Arc::new(Shared {
-        inner: ArcSwap::from_pointee(Arc::clone(&agent.backend)),
-        probe: ArcSwapOption::from(agent.ownership.clone().map(Arc::new)),
+        inner: Swap::from_pointee(Arc::clone(&agent.backend)),
+        probe: SwapOption::from(agent.ownership.clone().map(Arc::new)),
         owner: Arc::downgrade(owner),
         key,
         session_id: Arc::from(agent.session_id()),
         events: agent.events.downgrade(),
         interrupted: Arc::clone(&agent.interrupted),
         next_turn: Arc::clone(&agent.next_turn),
-        healing: ArcSwapOption::empty(),
+        healing: SwapOption::empty(),
         life: Lifecycle::new(),
     })));
     let owned = Agent {
@@ -115,20 +115,20 @@ async fn adopt_created(
 }
 
 struct Shared {
-    inner: ArcSwap<Arc<dyn LifecycleBackend>>,
-    probe: ArcSwapOption<OwnershipProbe>,
+    inner: Swap<Arc<dyn LifecycleBackend>>,
+    probe: SwapOption<OwnershipProbe>,
     owner: std::sync::Weak<dyn AgentOwner>,
     key: usize,
     session_id: Arc<str>,
     events: nanocode_types::events::WeakAgentEventPublisher,
     interrupted: Arc<Interrupted>,
     next_turn: Arc<AtomicU64>,
-    healing: ArcSwapOption<Signal>,
+    healing: SwapOption<Signal>,
     life: Lifecycle,
 }
 
 struct Healing<'a> {
-    healing: &'a ArcSwapOption<Signal>,
+    healing: &'a SwapOption<Signal>,
     signal: Arc<Signal>,
 }
 

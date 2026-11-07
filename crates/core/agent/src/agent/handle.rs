@@ -2,7 +2,7 @@ use super::backend::{
     BackendPrompt, BackendPromptRoute, BackendTurn, BackendTurnKey, LifecycleBackend,
 };
 use super::*;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use nanocode_sync::{Swap, SwapOption};
 use std::sync::atomic::AtomicBool;
 
 pub struct Agent {
@@ -14,7 +14,7 @@ pub struct Agent {
 
     pub(super) driver_turn_ids: bool,
 
-    pub(super) seed: Arc<ArcSwap<SeedState>>,
+    pub(super) seed: Arc<Swap<SeedState>>,
 
     pub(super) interrupted: Arc<Interrupted>,
 
@@ -28,7 +28,7 @@ pub(super) type OwnershipProbe =
 
 #[derive(Default)]
 pub(super) struct Interrupted {
-    turns: ArcSwapOption<Resumption>,
+    turns: SwapOption<Resumption>,
     host_resumes: AtomicBool,
 }
 
@@ -61,7 +61,7 @@ impl Interrupted {
 }
 
 #[derive(Default)]
-pub(super) struct Requests(ArcSwap<std::collections::HashMap<String, Arc<Admitted>>>);
+pub(super) struct Requests(Swap<std::collections::HashMap<String, Arc<Admitted>>>);
 
 pub(super) use nanocode_sync::Signal;
 
@@ -166,7 +166,7 @@ pub(super) struct SeedState {
 }
 
 struct SeedClaim {
-    seed: Arc<ArcSwap<SeedState>>,
+    seed: Arc<Swap<SeedState>>,
     completed: bool,
 }
 
@@ -209,7 +209,7 @@ pub struct WeakAgent {
     agent_id: Arc<str>,
     session: Arc<SessionInfo>,
     driver_turn_ids: bool,
-    seed: Arc<ArcSwap<SeedState>>,
+    seed: Arc<Swap<SeedState>>,
     interrupted: Arc<Interrupted>,
     requests: Arc<Requests>,
     ownership: Option<OwnershipProbe>,

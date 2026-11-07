@@ -10,7 +10,6 @@ repository.workspace = true
 description = "Shared SDK contracts and event channels with compatible value reexports"
 
 [dependencies]
-arc-swap.workspace = true
 nanocode-sync.workspace = true
 nanocode-platform.workspace = true
 nanocode-types-core.workspace = true

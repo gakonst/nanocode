@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
-use arc_swap::ArcSwap;
 use nanocode_durability_core::{BlobKey, BlobStore, StoreError, StoreFuture};
+use nanocode_sync::Swap;
 
 #[derive(Clone, Default)]
 pub struct MemoryBlobStore {
-    blobs: Arc<ArcSwap<HashMap<BlobKey, Arc<[u8]>>>>,
+    blobs: Arc<Swap<HashMap<BlobKey, Arc<[u8]>>>>,
 }
 
 impl MemoryBlobStore {

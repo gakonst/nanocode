@@ -1,7 +1,6 @@
 #![cfg(not(target_family = "wasm"))]
 
-use arc_swap::ArcSwapOption;
-use nanocode_sync::SingleFlight;
+use nanocode_sync::{SingleFlight, SwapOption};
 use rustls::{ClientConfig, RootCertStore};
 use std::{
     ffi::OsString,
@@ -22,7 +21,7 @@ impl Cached {
         now.duration_since(self.loaded) < MAX_AGE && &self.environment == environment
     }
 }
-static CACHE: ArcSwapOption<Cached> = ArcSwapOption::const_empty();
+static CACHE: SwapOption<Cached> = SwapOption::const_empty();
 type Loaded = Result<Arc<ClientConfig>, (io::ErrorKind, String)>;
 static LOADING: LazyLock<SingleFlight<Loaded>> = LazyLock::new(SingleFlight::default);
 

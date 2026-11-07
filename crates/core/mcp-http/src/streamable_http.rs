@@ -1,6 +1,5 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
-use arc_swap::ArcSwap;
 use futures_util::StreamExt;
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
@@ -13,7 +12,7 @@ use nanocode_mcp::{
     sse,
 };
 use nanocode_platform::{sleep, timeout};
-use nanocode_sync::{SingleFlight, Slot};
+use nanocode_sync::{SingleFlight, Slot, Swap};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::oauth::OAuthRuntime;
@@ -111,7 +110,7 @@ struct Shared {
     client: Client,
     auth: HttpAuth,
     inbound: Inbound,
-    session: ArcSwap<SessionState>,
+    session: Swap<SessionState>,
     reinitialize: SingleFlight<Result<(), String>>,
     listener: Slot<Background>,
     options: HttpOptions,
@@ -291,7 +290,7 @@ fn start(
         client,
         auth,
         inbound,
-        session: ArcSwap::default(),
+        session: Swap::default(),
         reinitialize: SingleFlight::default(),
         listener: Slot::default(),
         options,

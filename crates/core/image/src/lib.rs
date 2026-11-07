@@ -6,12 +6,12 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use arc_swap::ArcSwap;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use image::{
     ColorType, DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat,
     ImageReader, codecs::jpeg::JpegEncoder,
 };
+use nanocode_sync::Swap;
 mod history;
 mod metadata;
 mod pam;
@@ -139,7 +139,7 @@ impl ImageCache {
     }
 }
 
-static IMAGE_CACHE: LazyLock<ArcSwap<ImageCache>> = LazyLock::new(ArcSwap::default);
+static IMAGE_CACHE: LazyLock<Swap<ImageCache>> = LazyLock::new(Swap::default);
 
 fn cached_image(key: &ImageCacheKey) -> Option<EncodedImage> {
     let mut image = None;

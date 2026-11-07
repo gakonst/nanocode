@@ -4,7 +4,7 @@ use std::{
     sync::LazyLock,
 };
 
-use arc_swap::ArcSwap;
+use nanocode_sync::Swap;
 
 use crate::client::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, ImageDetail, ResponseItem,
@@ -52,8 +52,8 @@ impl OriginalImageEstimateCache {
     }
 }
 
-static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<ArcSwap<OriginalImageEstimateCache>> =
-    LazyLock::new(ArcSwap::default);
+static ORIGINAL_IMAGE_ESTIMATE_CACHE: LazyLock<Swap<OriginalImageEstimateCache>> =
+    LazyLock::new(Swap::default);
 
 #[must_use]
 pub fn auto_compact_token_limit(model: &str, context_window_tokens: u64) -> Option<u64> {

@@ -1,4 +1,4 @@
-use arc_swap::ArcSwapOption;
+use nanocode_sync::SwapOption;
 use nanocode_tools::ToolDefinition;
 use serde::Deserialize;
 use serde_json::json;
@@ -6,14 +6,14 @@ use serde_json::json;
 use super::{StandardTool, Tool, ToolContext, ToolInput, ToolOutput, ToolResult};
 
 pub struct UpdatePlanTool {
-    current: ArcSwapOption<UpdatePlanArgs>,
+    current: SwapOption<UpdatePlanArgs>,
 }
 
 impl UpdatePlanTool {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            current: ArcSwapOption::const_empty(),
+            current: SwapOption::const_empty(),
         }
     }
 }

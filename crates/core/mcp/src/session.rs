@@ -8,8 +8,7 @@ use std::{
     time::Duration,
 };
 
-use arc_swap::{ArcSwap, ArcSwapOption};
-use nanocode_sync::Slot;
+use nanocode_sync::{Slot, Swap, SwapOption};
 
 use futures_channel::{mpsc, oneshot};
 use serde::{Serialize, de::DeserializeOwned};
@@ -152,9 +151,9 @@ type Pending = HashMap<RequestId, Arc<Slot<Reply>>>;
 struct Shared {
     outbound: mpsc::UnboundedSender<Message>,
     next_id: AtomicU32,
-    pending: ArcSwap<Pending>,
+    pending: Swap<Pending>,
     closed: AtomicBool,
-    server: ArcSwapOption<InitializeResult>,
+    server: SwapOption<InitializeResult>,
 }
 
 impl Shared {
@@ -225,9 +224,9 @@ impl Session {
         let shared = Arc::new(Shared {
             outbound,
             next_id: AtomicU32::new(0),
-            pending: ArcSwap::default(),
+            pending: Swap::default(),
             closed: AtomicBool::new(false),
-            server: ArcSwapOption::empty(),
+            server: SwapOption::empty(),
         });
         let inbound = Inbound {
             shared: Arc::downgrade(&shared),

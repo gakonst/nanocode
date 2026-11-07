@@ -5102,7 +5102,6 @@ dependencies = [
 name = "nanocode-agent"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "blake3",
  "futures-util",
  "imbl",
@@ -5136,7 +5135,6 @@ dependencies = [
 name = "nanocode-agent-core"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "futures-util",
  "nanocode-agent-types",
  "nanocode-home",
@@ -5187,9 +5185,9 @@ dependencies = [
 name = "nanocode-audio"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "base64 0.22.1",
  "base64-simd",
+ "nanocode-sync",
  "sha1 0.11.0",
  "tracing",
 ]
@@ -5234,7 +5232,6 @@ dependencies = [
 name = "nanocode-backend-claude-client"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "base64 0.22.1",
  "blake3",
  "bytes",
@@ -5283,7 +5280,6 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "async-trait",
  "base64 0.22.1",
  "base64-simd",
@@ -5324,7 +5320,6 @@ dependencies = [
 name = "nanocode-backend-codex-client"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "base64 0.22.1",
  "flate2",
  "futures-util",
@@ -5479,7 +5474,6 @@ dependencies = [
 name = "nanocode-durability"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "futures-util",
  "imbl",
  "nanocode-agent-core",
@@ -5536,7 +5530,6 @@ dependencies = [
 name = "nanocode-image"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "base64 0.22.1",
  "base64-simd",
  "crc32fast",
@@ -5544,6 +5537,7 @@ dependencies = [
  "image-webp",
  "memchr",
  "nanocode-durability-core",
+ "nanocode-sync",
  "nanocode-types-core",
  "png",
  "sha1 0.11.0",
@@ -5556,7 +5550,6 @@ dependencies = [
 name = "nanocode-mcp"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "base64 0.22.1",
  "futures-channel",
  "memchr",
@@ -5572,7 +5565,6 @@ dependencies = [
 name = "nanocode-mcp-http"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "async-trait",
  "futures-util",
  "getrandom 0.4.3",
@@ -5784,7 +5776,6 @@ dependencies = [
 name = "nanocode-tls"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "nanocode-sync",
  "rustls",
  "rustls-graviola",
@@ -5808,7 +5799,6 @@ dependencies = [
 name = "nanocode-tool-host"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "async-trait",
  "blake3",
  "futures-util",
@@ -5914,7 +5904,6 @@ dependencies = [
 name = "nanocode-types"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "futures-util",
  "nanocode-platform",
  "nanocode-sync",

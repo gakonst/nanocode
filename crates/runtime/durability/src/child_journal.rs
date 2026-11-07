@@ -7,10 +7,10 @@ use std::{
     },
 };
 
-use arc_swap::ArcSwapOption;
 use nanocode_agent_core::backend::{
     BackendFuture, ChildJournal, ChildJournalStore, DeferredJournal, JournalFill,
 };
+use nanocode_sync::SwapOption;
 
 use tokio::sync::{mpsc, oneshot};
 
@@ -37,7 +37,7 @@ impl Seed {
     }
 }
 
-pub struct JournalSeed(Option<Arc<ArcSwapOption<Seed>>>);
+pub struct JournalSeed(Option<Arc<SwapOption<Seed>>>);
 
 impl JournalSeed {
     #[must_use]
@@ -62,7 +62,7 @@ impl JournalSeed {
 }
 
 #[derive(Clone)]
-pub struct JournalClaim(Weak<ArcSwapOption<Seed>>);
+pub struct JournalClaim(Weak<SwapOption<Seed>>);
 
 impl JournalClaim {
     pub(crate) fn take(&self) -> Option<Seed> {
@@ -366,7 +366,7 @@ struct SharedJournal {
     state_id: Arc<str>,
     store: SharedStore,
     writes: mpsc::UnboundedSender<Write>,
-    manifests: Arc<ArcSwapOption<HashMap<String, String>>>,
+    manifests: Arc<SwapOption<HashMap<String, String>>>,
     pending: Pending,
 }
 
@@ -541,7 +541,7 @@ impl ChildJournalStore for SharedJournal {
 async fn filed_by_content(
     store: &mut SharedStore,
     state_id: &str,
-    manifests: &ArcSwapOption<HashMap<String, String>>,
+    manifests: &SwapOption<HashMap<String, String>>,
     key: &str,
 ) -> std::io::Result<Option<String>> {
     if store
@@ -619,7 +619,7 @@ pub(crate) fn seeded_child_journal(
             state_id.clone(),
             Some((receiver, Arc::clone(&awaited))),
         ),
-        JournalSeed(Some(Arc::new(ArcSwapOption::from_pointee(Seed {
+        JournalSeed(Some(Arc::new(SwapOption::from_pointee(Seed {
             store,
             state_id,
             root_state_id: root_state_id.to_owned(),

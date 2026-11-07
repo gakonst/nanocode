@@ -10,7 +10,6 @@ publish.workspace = true
 description = "Typed Anthropic Messages protocol, authentication and streaming transport"
 
 [dependencies]
-arc-swap.workspace = true
 nanocode-sync.workspace = true
 blake3.workspace = true
 memchr.workspace = true

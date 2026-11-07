@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
-use arc_swap::ArcSwap;
+use nanocode_sync::Swap;
 
 use nanocode_tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput};
 use nanocode_types::responses::CustomToolFormat;
@@ -33,7 +33,7 @@ pub struct EmbeddedToolRuntime {
     host: Option<Arc<dyn CodeModeHost>>,
     session_id: Option<Arc<str>>,
     local: Vec<LocalTool>,
-    callable_tool_names: ArcSwap<HashSet<String>>,
+    callable_tool_names: Swap<HashSet<String>>,
     policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
     brief: Arc<[String]>,
@@ -66,7 +66,7 @@ impl EmbeddedToolRuntime {
                     model_visible: true,
                 })
                 .collect(),
-            callable_tool_names: ArcSwap::default(),
+            callable_tool_names: Swap::default(),
             policies: Vec::new(),
             recovery: None,
             brief: Arc::from([]),

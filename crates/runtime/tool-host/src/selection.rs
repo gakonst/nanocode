@@ -16,6 +16,88 @@ use std::{any::Any, ffi::OsString, path::PathBuf};
 pub use nanocode_tool_provider::DynamicToolProvider;
 pub use nanocode_tool_provider::ToolExposure;
 
+#[cfg(not(target_family = "wasm"))]
+type Nested<'a> = crate::embedded::HostFuture<'a, Option<crate::ToolOutput>>;
+
+#[cfg(not(target_family = "wasm"))]
+pub type ProviderGate =
+    Arc<dyn for<'a> Fn(&'a str, &'a str, Nested<'a>) -> Nested<'a> + Send + Sync>;
+
+#[cfg(not(target_family = "wasm"))]
+struct Gated {
+    inner: Arc<dyn DynamicToolProvider>,
+    gate: ProviderGate,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl DynamicToolProvider for Gated {
+    fn start(&self) {
+        self.inner.start();
+    }
+
+    fn bind_session(&self, session: &crate::SessionEnvironment) {
+        self.inner.bind_session(session);
+    }
+
+    fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.inner.direct_tools()
+    }
+
+    fn direct_tools_for_exposure(&self, exposure: ToolExposure) -> Vec<Arc<dyn Tool>> {
+        self.inner.direct_tools_for_exposure(exposure)
+    }
+
+    fn available_definitions(&self) -> Vec<ToolDefinition> {
+        self.inner.available_definitions()
+    }
+
+    fn model_catalog_visible(&self) -> bool {
+        self.inner.model_catalog_visible()
+    }
+
+    fn code_mode_tool_summaries(&self) -> Vec<(String, String)> {
+        self.inner.code_mode_tool_summaries()
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.inner.contains(name)
+    }
+
+    fn supports_parallel_tool_calls(&self, name: &str) -> bool {
+        self.inner.supports_parallel_tool_calls(name)
+    }
+
+    fn resolve<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
+    ) -> crate::embedded::HostFuture<'async_trait, bool>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        self.inner.resolve(name)
+    }
+
+    fn execute<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
+        input: serde_json::Value,
+        context: crate::ToolContext<'life2>,
+    ) -> Nested<'async_trait>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let call_id = context.call_id().to_owned();
+            (self.gate)(name, &call_id, self.inner.execute(name, input, context)).await
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct RegisteredTool {
     pub(crate) handler: Arc<dyn Tool>,
@@ -872,6 +954,22 @@ impl ToolsBuilder {
     #[cfg(not(target_family = "wasm"))]
     pub fn shared_provider(mut self, provider: Arc<dyn DynamicToolProvider>) -> Self {
         self.tools.providers.push(provider);
+        self.refresh_provider_direct();
+        self
+    }
+
+    #[must_use]
+    #[cfg(not(target_family = "wasm"))]
+    pub fn gate_providers(mut self, gate: &ProviderGate) -> Self {
+        self.tools.providers = std::mem::take(&mut self.tools.providers)
+            .into_iter()
+            .map(|inner| {
+                Arc::new(Gated {
+                    inner,
+                    gate: Arc::clone(gate),
+                }) as Arc<dyn DynamicToolProvider>
+            })
+            .collect();
         self.refresh_provider_direct();
         self
     }

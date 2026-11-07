@@ -147,11 +147,10 @@ pub async fn settle_pending(
 }
 
 pub async fn base_checkpoint(sessions: &SessionStore, id: &str) -> Result<String, DurabilityError> {
-    if sessions.record(id).await?.is_none() {
-        return Ok(String::new());
-    }
-    let latest = sessions.resume(id).await?.latest_checkpoint().await?;
-    Ok(latest.map_or_else(String::new, |checkpoint| checkpoint.key().to_owned()))
+    Ok(sessions
+        .latest_checkpoint_key(id)
+        .await?
+        .unwrap_or_default())
 }
 
 impl AgentRuntime {

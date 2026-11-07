@@ -729,6 +729,15 @@ mod store {
             }
         }
 
+        pub async fn latest_checkpoint_key(&self, id: &str) -> Result<Option<String>> {
+            let Some(state) = self.peek_head(id).await? else {
+                return Ok(None);
+            };
+            Ok(is_listed(&state)
+                .then(|| state.latest_checkpoint().map(|latest| latest.key().to_owned()))
+                .flatten())
+        }
+
         pub async fn load(&self, id: &str) -> Result<StoredSession> {
             let state = self.require(id).await?;
             let (checkpoint, checkpoint_payload) = match self.loaded_checkpoint(id, &state).await? {

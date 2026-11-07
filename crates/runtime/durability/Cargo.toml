@@ -28,7 +28,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 tracing.workspace = true
-uuid.workspace = true
 
 [lints]
 workspace = true

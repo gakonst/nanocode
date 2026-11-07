@@ -17,7 +17,6 @@ nanocode-agent-core.workspace = true
 nanocode-durability.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-tool-contracts.workspace = true
-nanocode-platform.workspace = true
 nanocode-process-contracts.workspace = true
 nanocode-sync.workspace = true
 imbl.workspace = true

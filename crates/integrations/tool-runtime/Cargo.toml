@@ -15,7 +15,6 @@ nanocode-tool-host.workspace = true
 nanocode-tool-provider.workspace = true
 nanocode-code-mode.workspace = true
 nanocode-tools.workspace = true
-nanocode-types.workspace = true
 nanocode-home.workspace = true
 nanocode-sync.workspace = true
 nanocode-mcp-tools.workspace = true
@@ -33,7 +32,6 @@ getrandom.workspace = true
 http.workspace = true
 httpdate.workspace = true
 nanocode-tls.workspace = true
-reqwest.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util.workspace = true
 tokio-rustls.workspace = true

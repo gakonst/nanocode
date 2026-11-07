@@ -33,16 +33,13 @@ nanocode-image.workspace = true
 nanocode-platform.workspace = true
 nanocode-process-contracts.workspace = true
 nanocode-sync.workspace = true
-nanocode-tool-contracts.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-tools.workspace = true
 nanocode-types.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha1.workspace = true
 sha2.workspace = true
-smallvec.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tower.workspace = true

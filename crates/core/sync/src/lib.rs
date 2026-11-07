@@ -1292,12 +1292,19 @@ impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
         outdated: impl FnOnce(&T) -> bool,
         read: impl Future<Output = Option<T>> + Send + 'static,
     ) -> Option<T> {
-        let stale = self.entries.read(|entries| {
-            entries.get(key).is_none_or(|entry| {
+        let (stale, held) = self.entries.read(|entries| match entries.get(key) {
+            None => (true, None),
+            Some(entry) => (
                 entry.at.is_none_or(|at| at.elapsed() >= fresh)
-                    || entry.value.as_ref().is_some_and(outdated)
-            })
+                    || entry.value.as_ref().is_some_and(outdated),
+                Some((entry.refreshing, entry.value.clone())),
+            ),
         });
+        if let Some((refreshing, value)) = held
+            && (!stale || refreshing)
+        {
+            return value;
+        }
         let key: Arc<str> = key.into();
         let (refresh, value) = self.entries.update(|entries| {
             let entry = entries.entry(Arc::clone(&key)).or_insert(Fetched {

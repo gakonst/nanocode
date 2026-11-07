@@ -309,22 +309,26 @@ enum ContentItemFields {
     },
 }
 
+fn input_image(
+    value: serde_json::Value,
+) -> Result<(crate::responses::ImageReference, Option<ImageDetail>), String> {
+    let serde_json::Value::Object(mut object) = value else {
+        return Err("expected image object".to_owned());
+    };
+    object.remove("type");
+    let detail = object.remove("detail");
+    let reference = serde_json::from_value(serde_json::Value::Object(object))
+        .map_err(|error| error.to_string())?;
+    let detail = serde_json::from_value(detail.unwrap_or(serde_json::Value::Null))
+        .map_err(|error| error.to_string())?;
+    Ok((reference, detail))
+}
+
 impl<'de> Deserialize<'de> for ContentItem {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
         if value.get("type").and_then(serde_json::Value::as_str) == Some("input_image") {
-            let serde_json::Value::Object(mut object) = value else {
-                return Err(serde::de::Error::custom("expected image object"));
-            };
-            object.remove("type");
-
-            let detail = object.remove("detail");
-            let reference: crate::responses::ImageReference =
-                serde_json::from_value(serde_json::Value::Object(object))
-                    .map_err(serde::de::Error::custom)?;
-            let detail: Option<ImageDetail> =
-                serde_json::from_value(detail.unwrap_or(serde_json::Value::Null))
-                    .map_err(serde::de::Error::custom)?;
+            let (reference, detail) = input_image(value).map_err(serde::de::Error::custom)?;
             return Ok(match reference {
                 crate::responses::ImageReference::Inline { image_url } => Self::InputImage {
                     image_url: image_url.into(),
@@ -370,18 +374,7 @@ impl<'de> Deserialize<'de> for FunctionOutputContent {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
         if value.get("type").and_then(serde_json::Value::as_str) == Some("input_image") {
-            let serde_json::Value::Object(mut object) = value else {
-                return Err(serde::de::Error::custom("expected image object"));
-            };
-            object.remove("type");
-
-            let detail = object.remove("detail");
-            let reference: crate::responses::ImageReference =
-                serde_json::from_value(serde_json::Value::Object(object))
-                    .map_err(serde::de::Error::custom)?;
-            let detail: Option<ImageDetail> =
-                serde_json::from_value(detail.unwrap_or(serde_json::Value::Null))
-                    .map_err(serde::de::Error::custom)?;
+            let (reference, detail) = input_image(value).map_err(serde::de::Error::custom)?;
             return Ok(match reference {
                 crate::responses::ImageReference::Inline { image_url } => Self::InputImage {
                     image_url: image_url.into(),

@@ -67,13 +67,31 @@ impl NativeHost {
             .is_some_and(|value| value["path"].as_str() == self.path.to_str())
     }
 
+    pub fn holder(manifest: &Path) -> Option<PathBuf> {
+        let bytes = fs::read(manifest).ok()?;
+        let value = serde_json::from_slice::<Value>(&bytes).ok()?;
+        value["path"].as_str().map(PathBuf::from)
+    }
+
     pub fn register(&self, base: &Path) -> io::Result<Vec<&'static str>> {
+        self.register_unless(base, |_| false)
+    }
+
+    pub fn register_unless(
+        &self,
+        base: &Path,
+        mut held: impl FnMut(&Path) -> bool,
+    ) -> io::Result<Vec<&'static str>> {
         let manifest = serde_json::to_vec_pretty(&self.manifest())?;
         let mut registered = Vec::new();
         let mut written = Vec::new();
         for (browser, root) in browser_dirs(base) {
             let path = manifest_path(&root, &self.name);
             if !root.is_dir() || written.contains(&path) {
+                continue;
+            }
+            if Self::holder(&path).is_some_and(|other| other != self.path && held(&other)) {
+                written.push(path);
                 continue;
             }
             if let Some(hosts) = path.parent() {

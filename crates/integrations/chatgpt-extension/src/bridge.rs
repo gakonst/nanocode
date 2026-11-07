@@ -322,7 +322,14 @@ impl Bridge {
                 .map(|(_, path)| path)
                 .ok_or_else(|| format!("unknown browser {browser:?}; use a browser name or an absolute Chromium data directory"))?
         };
-        Ok(fs::canonicalize(root)?)
+        fs::canonicalize(&root).map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => format!(
+                "{browser} has no data directory at {}: it is not installed for this user, or it has not been opened yet",
+                root.display()
+            )
+            .into(),
+            _ => format!("{browser}'s data directory {}: {error}", root.display()).into(),
+        })
     }
 
     fn paths(&self, root: &Path) -> Result<(PathBuf, PathBuf), Error> {

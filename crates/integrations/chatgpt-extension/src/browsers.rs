@@ -150,6 +150,40 @@ pub fn extension_enabled(root: &Path, extension: &str) -> io::Result<bool> {
     }))
 }
 
+pub fn disable_reasons(root: &Path, extension: &str) -> io::Result<Vec<u64>> {
+    let mut reasons = Vec::new();
+    for profile in profiles(root)? {
+        let entry = ["Secure Preferences", "Preferences"]
+            .iter()
+            .find_map(|name| {
+                fs::read(profile.join(name))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .map(|value| value["extensions"]["settings"][extension].clone())
+                    .filter(|entry| !entry.is_null())
+            });
+        let Some(entry) = entry.filter(|entry| !extension_on(entry)) else {
+            continue;
+        };
+        let found: Vec<u64> = match &entry["disable_reasons"] {
+            Value::Array(listed) => listed.iter().filter_map(Value::as_u64).collect(),
+            Value::Number(mask) => mask.as_u64().map_or_else(Vec::new, |mask| {
+                (0..u64::BITS)
+                    .map(|bit| 1 << bit)
+                    .filter(|reason| mask & reason != 0)
+                    .collect()
+            }),
+            _ => Vec::new(),
+        };
+        for reason in found {
+            if !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        }
+    }
+    Ok(reasons)
+}
+
 pub fn browser_for_bundle(bundle: &str) -> Option<&'static str> {
     let browsers: &[(&str, &str)] = &[
         ("com.google.chrome", "Chrome"),

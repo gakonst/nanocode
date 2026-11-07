@@ -30,12 +30,15 @@ const MAX_CONNECTIONS: usize = 8;
 const OUTBOX: usize = 64;
 const MAX_INPUT: usize = 32 * 1024;
 
+type Diagnose = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 pub struct ExtensionLink {
     name: String,
     absent: String,
     next: AtomicU64,
     live: Atom<Option<Arc<Live>>>,
     unavailable: Atom<Option<String>>,
+    diagnose: Option<Diagnose>,
 }
 
 struct Live {
@@ -60,6 +63,22 @@ impl ExtensionLink {
             next: AtomicU64::new(0),
             live: Atom::default(),
             unavailable: Atom::default(),
+            diagnose: None,
+        })
+    }
+
+    pub fn diagnosing(
+        name: impl Into<String>,
+        absent: impl Into<String>,
+        diagnose: impl Fn() -> Option<String> + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            name: name.into(),
+            absent: absent.into(),
+            next: AtomicU64::new(0),
+            live: Atom::default(),
+            unavailable: Atom::default(),
+            diagnose: Some(Arc::new(diagnose)),
         })
     }
 
@@ -69,6 +88,15 @@ impl ExtensionLink {
 
     pub fn set_unavailable(&self, reason: Option<String>) {
         self.unavailable.set(reason);
+    }
+
+    async fn missing(&self) -> ToolOutput {
+        if let Some(diagnose) = self.diagnose.clone()
+            && let Ok(Some(reason)) = tokio::task::spawn_blocking(move || diagnose()).await
+        {
+            return ToolOutput::error(reason);
+        }
+        self.absent()
     }
 
     fn absent(&self) -> ToolOutput {
@@ -176,7 +204,7 @@ impl ExtensionLink {
         })
         .to_string();
         let Some(live) = Option::clone(&self.live.get()) else {
-            return self.absent();
+            return self.missing().await;
         };
         let (sender, receiver) = oneshot::channel();
         let waiting = Arc::new(Slot::new(Some(sender)));
@@ -198,7 +226,7 @@ impl ExtensionLink {
                 if let Some(live) = live.upgrade() {
                     drop(live.answer(&call));
                 }
-                return self.absent();
+                return self.missing().await;
             }
             Ok(Some(Ok(reply))) => reply,
             Ok(Some(Err(_))) => {

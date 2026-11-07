@@ -206,6 +206,7 @@ struct ActivityShared {
     busy: watch::Sender<usize>,
     tools: Vec<Weak<dyn Tool>>,
     boards: Atom<Vec<Arc<Board>>>,
+    runtime: Atom<Option<String>>,
 }
 
 impl Default for HandActivity {
@@ -223,8 +224,14 @@ impl HandActivity {
                 busy: watch::channel(0).0,
                 tools,
                 boards: Atom::default(),
+                runtime: Atom::default(),
             }),
         }
+    }
+
+    #[must_use]
+    pub fn runtime(&self) -> Option<String> {
+        Option::clone(&self.shared.runtime.get())
     }
 
     #[must_use]
@@ -1617,6 +1624,10 @@ impl State {
                 self.options.runtime_id = Some(nanocode_platform::uuid_v4().to_string());
             }
         }
+        self.activity
+            .shared
+            .runtime
+            .set(self.options.runtime_id.clone());
         let mut capabilities = self.capability_list().await;
         if self.options.moves {
             capabilities.push(super::move_capability());
@@ -2026,6 +2037,17 @@ impl State {
             }
             return Ok(());
         }
+        if self.activity.draining()
+            && matches!(
+                &operation,
+                RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }
+            )
+        {
+            return outgoing.send(&Frame::Reply {
+                id,
+                result: Err(NOT_RECEIVED.into()),
+            });
+        }
         let session_id = work.session_id.clone();
         let ended = self.list(&work);
         self.running.insert(
@@ -2039,15 +2061,6 @@ impl State {
             },
         );
         self.publish();
-        if self.activity.draining()
-            && matches!(
-                &operation,
-                RemoteOperation::Execute { .. } | RemoteOperation::Call { .. }
-            )
-        {
-            self.finish(id, Err(NOT_RECEIVED.into()));
-            return Ok(());
-        }
         if let RemoteOperation::Execute {
             local_tools,
             local_tools_key: Some(key),

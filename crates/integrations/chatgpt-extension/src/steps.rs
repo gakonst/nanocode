@@ -21,11 +21,28 @@ pub struct Snapshot {
     pub refs: HashMap<String, Reference>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Numbering {
+    nodes: HashMap<u64, String>,
+    next: usize,
+}
+
+struct Mark {
+    document: String,
+    since: f64,
+}
+
+const PAGE_WAIT: Duration = Duration::from_secs(10);
+const NAVIGATING: Duration = Duration::from_millis(50);
+const TRACK: &str = r#"(()=>{if(window.__nanocodeSteps?.document!==String(performance.timeOrigin)){const steps={document:String(performance.timeOrigin),requests:new Map(),next:0,leaving:-1};const begin=()=>{const id=++steps.next;steps.requests.set(id,performance.now());return()=>steps.requests.delete(id)};const fetched=window.fetch;window.fetch=function(...args){const end=begin();return fetched.apply(this,args).finally(end)};const send=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.send=function(...args){this.addEventListener('loadend',begin(),{once:true});return send.apply(this,args)};window.navigation?.addEventListener('navigate',event=>{if(!event.destination.sameDocument)steps.leaving=performance.now()});addEventListener('beforeunload',()=>{steps.leaving=performance.now()});window.__nanocodeSteps=steps}return[window.__nanocodeSteps.document,performance.now()]})()"#;
+const SETTLE: &str = r#"new Promise(resolve=>{const steps=window.__nanocodeSteps;if(steps?.document!==DOCUMENT){resolve('document');return}const since=SINCE,end=performance.now()+LEFT;let calm=performance.now();const observer=new MutationObserver(()=>{calm=performance.now()});observer.observe(document,{subtree:true,childList:true,attributes:true,characterData:true});const poll=setInterval(()=>{const now=performance.now();if(steps.leaving>=since||document.readyState!=='complete'||[...steps.requests.values()].some(at=>at>=since&&now-at<2000))calm=now;if(now-calm>=200||now>end){clearInterval(poll);observer.disconnect();resolve(now>end?'timeout':'quiet')}},20)})"#;
+
 #[derive(Default)]
 struct Tab {
     session: String,
     turn: String,
     refs: HashMap<String, Reference>,
+    numbering: Numbering,
 }
 
 #[derive(Default)]
@@ -100,6 +117,15 @@ fn clipped(text: &str, limit: usize) -> String {
 }
 
 pub fn snapshot(nodes: &[Value], offset: usize) -> Snapshot {
+    numbered(nodes, offset, &mut Numbering::default())
+}
+
+pub fn numbered(nodes: &[Value], offset: usize, numbering: &mut Numbering) -> Snapshot {
+    let present: HashSet<u64> = nodes
+        .iter()
+        .filter_map(|node| node["backendDOMNodeId"].as_u64())
+        .collect();
+    numbering.nodes.retain(|node, _| present.contains(node));
     let by_id: HashMap<&str, &Value> = nodes
         .iter()
         .filter_map(|n| Some((n["nodeId"].as_str()?, n)))
@@ -168,7 +194,7 @@ pub fn snapshot(nodes: &[Value], offset: usize) -> Snapshot {
         cut: bool,
         offset: usize,
         walked: usize,
-        numbered: usize,
+        numbering: &'a mut Numbering,
     }
     fn visit(
         node: &Value,
@@ -208,6 +234,7 @@ pub fn snapshot(nodes: &[Value], offset: usize) -> Snapshot {
                             line.push_str(&format!(" [level={value}]"));
                         } else if [
                             "checked", "disabled", "expanded", "selected", "pressed", "required",
+                            "focused",
                         ]
                         .contains(&key)
                             && !value.is_null()
@@ -232,8 +259,15 @@ pub fn snapshot(nodes: &[Value], offset: usize) -> Snapshot {
                 if (actionable.contains(&role.as_str()) || focusable)
                     && let Some(dom) = node["backendDOMNodeId"].as_u64()
                 {
-                    walk.numbered += 1;
-                    let key = format!("e{}", walk.numbered);
+                    let numbering = &mut *walk.numbering;
+                    let key = numbering
+                        .nodes
+                        .entry(dom)
+                        .or_insert_with(|| {
+                            numbering.next += 1;
+                            format!("e{}", numbering.next)
+                        })
+                        .clone();
                     line.push_str(&format!(" [ref={key}]"));
                     reference = Some((
                         key,
@@ -309,7 +343,7 @@ pub fn snapshot(nodes: &[Value], offset: usize) -> Snapshot {
         cut: false,
         offset,
         walked: 0,
-        numbered: 0,
+        numbering,
     };
     for node in nodes {
         if node["nodeId"]
@@ -357,13 +391,15 @@ impl Tabs {
         let current_url = ext.evaluate(session, turn, tab, "location.href")?;
         let title = ext.evaluate(session, turn, tab, "document.title")?;
         let tree = ext.cdp(session, turn, tab, "Accessibility.getFullAXTree", json!({}))?;
-        let Snapshot { text, refs } = snapshot(
+        let known = self.tabs.get_mut(&tab).ok_or("tab closed")?;
+        let Snapshot { text, refs } = numbered(
             tree["nodes"]
                 .as_array()
                 .ok_or("extension returned no accessibility tree")?,
             offset,
+            &mut known.numbering,
         );
-        self.tabs.get_mut(&tab).ok_or("tab closed")?.refs = refs;
+        known.refs = refs;
         let mut result = json!({"tab":tab,"url":current_url,"title":title,"snapshot":text});
         if screenshot {
             let image = ext.cdp(
@@ -378,13 +414,45 @@ impl Tabs {
         Ok(result)
     }
 
-    fn settle(ext: &mut Extension, session: &str, turn: &str, tab: u64) -> Result<(), Error> {
-        let expression = r#"new Promise(resolve=>{let timer;const done=()=>{observer.disconnect();resolve(true)};const observer=new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(done,200)});const start=()=>{observer.observe(document,{subtree:true,childList:true,attributes:true,characterData:true});timer=setTimeout(done,200)};if(document.readyState==='complete')start();else addEventListener('load',start,{once:true});setTimeout(done,10000)})"#;
-        for _ in 0..3 {
-            if ext.evaluate(session, turn, tab, expression).is_ok() {
-                return Ok(());
+    fn mark(ext: &mut Extension, session: &str, turn: &str, tab: u64) -> Option<Mark> {
+        let marked = ext.evaluate(session, turn, tab, TRACK).ok()?;
+        Some(Mark {
+            document: marked[0].as_str()?.to_owned(),
+            since: marked[1].as_f64()?,
+        })
+    }
+
+    fn settle(
+        ext: &mut Extension,
+        session: &str,
+        turn: &str,
+        tab: u64,
+        mut mark: Option<Mark>,
+    ) -> Result<(), Error> {
+        let deadline = Instant::now() + PAGE_WAIT;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            let Some(Mark { document, since }) = &mark else {
+                mark = Self::mark(ext, session, turn, tab).map(|marked| Mark {
+                    since: 0.0,
+                    ..marked
+                });
+                if mark.is_none() {
+                    thread::sleep(NAVIGATING);
+                }
+                continue;
+            };
+            let expression = SETTLE
+                .replace("DOCUMENT", &json!(document).to_string())
+                .replace("SINCE", &since.to_string())
+                .replace("LEFT", &left.as_millis().to_string());
+            match ext.evaluate(session, turn, tab, &expression) {
+                Ok(settled) if settled == "document" => mark = None,
+                Ok(_) => return Ok(()),
+                Err(_) => {
+                    mark = None;
+                    thread::sleep(NAVIGATING);
+                }
             }
-            thread::sleep(Duration::from_millis(200));
         }
         Err("page did not finish loading".into())
     }
@@ -551,13 +619,18 @@ impl Tabs {
                     "Page.navigate",
                     json!({"url":value}),
                 )?;
-                Self::settle(ext, &session_id, turn, tab)?;
+                Self::settle(ext, &session_id, turn, tab, None)?;
                 value.clone()
             } else {
                 ext.evaluate(&session_id, turn, tab, "location.href")?
                     .as_str()
                     .ok_or("missing tab URL")?
                     .to_string()
+            };
+            let mark = if matches!(action, "click" | "type" | "press" | "navigate") {
+                Self::mark(ext, &session_id, turn, tab)
+            } else {
+                None
             };
             let summary = match action {
                 "open" => format!("Opened {}", site(&current_url)),
@@ -596,7 +669,7 @@ impl Tabs {
                             json!({"type":kind,"x":x,"y":y,"button":"left","clickCount":1}),
                         )?;
                     }
-                    Self::settle(ext, &session_id, turn, tab)?;
+                    Self::settle(ext, &session_id, turn, tab, mark)?;
                     format!("Clicked {label} on {}", site(&current_url))
                 }
                 "type" => {
@@ -632,7 +705,7 @@ impl Tabs {
                     if input["submit"] == true {
                         Self::press(ext, &session_id, turn, tab, "Enter")?;
                     }
-                    Self::settle(ext, &session_id, turn, tab)?;
+                    Self::settle(ext, &session_id, turn, tab, mark)?;
                     format!(
                         "Typed into {label} on {}{}",
                         site(&current_url),
@@ -646,7 +719,7 @@ impl Tabs {
                 "press" => {
                     let key = input["key"].as_str().ok_or("missing key")?;
                     Self::press(ext, &session_id, turn, tab, key)?;
-                    Self::settle(ext, &session_id, turn, tab)?;
+                    Self::settle(ext, &session_id, turn, tab, mark)?;
                     format!("Pressed {key} on {}", site(&current_url))
                 }
                 "scroll" => {
@@ -700,7 +773,7 @@ impl Tabs {
                             )?;
                         }
                     }
-                    Self::settle(ext, &session_id, turn, tab)?;
+                    Self::settle(ext, &session_id, turn, tab, mark)?;
                     format!(
                         "Navigated {}",
                         site(if ["back", "forward", "reload"].contains(&destination) {

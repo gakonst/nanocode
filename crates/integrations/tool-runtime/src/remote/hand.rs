@@ -76,6 +76,7 @@ pub struct Hand {
     environment: Option<nanocode_code_mode::remote::HandEnvironment>,
     pricing: Option<HandPricing>,
     confirm: Option<(ConfirmRefusal, Duration)>,
+    runtime: Option<String>,
 }
 
 impl Hand {
@@ -103,7 +104,14 @@ impl Hand {
             environment: None,
             pricing: None,
             confirm: None,
+            runtime: None,
         }
+    }
+
+    #[must_use]
+    pub fn resume_runtime(mut self, runtime: impl Into<String>) -> Self {
+        self.runtime = Some(runtime.into());
+        self
     }
 
     #[must_use]
@@ -231,9 +239,13 @@ impl Hand {
                     as std::sync::Arc<dyn super::HandCapabilities>),
                 None => self.device.clone(),
             };
+            let mut resumed = self.runtime.is_some();
             let mut options = ExecutorOptions {
                 name: Some(name),
-                runtime_id: Some(uuid::Uuid::new_v4().to_string()),
+                runtime_id: Some(
+                    self.runtime
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                ),
                 callback_timeout: None,
                 callback_hold: self.callback_hold,
                 device,
@@ -333,6 +345,19 @@ impl Hand {
                                     }
                                 };
                                 drop(link);
+                                let retired = std::mem::take(&mut resumed)
+                                    && served.result.as_ref().is_err_and(|issue| {
+                                        issue.message() == super::HAND_REPLACED
+                                    });
+                                if retired {
+                                    core.reset().await;
+                                    options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+                                    core = renew(&options);
+                                    events(HandEvent::Disconnected {
+                                        reason: "the brain retired the resumed runtime; reconnecting as a new runtime".into(),
+                                    });
+                                    continue;
+                                }
                                 fresh = (served.heard && served.close_code == Some(RESTART_CLOSE))
                                     || started.elapsed() >= FRESH_CONNECTION;
                                 if fresh {

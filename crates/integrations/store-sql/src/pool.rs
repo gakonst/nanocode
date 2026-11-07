@@ -1,7 +1,7 @@
 use nanocode_sync::{Atom, Shelf};
 use sqlx::{
     AssertSqlSafe, Connection as _, Error, PgConnection, PgPool, Postgres, pool::PoolConnection,
-    raw_sql,
+    postgres::Ahead, raw_sql,
 };
 use std::{
     ops::{Deref, DerefMut},
@@ -144,11 +144,13 @@ impl Sided {
     }
 
     fn lent(self: &Arc<Self>, conn: PoolConnection<Postgres>, side: Side, want: Side) -> Lent {
+        let queued = conn.ahead() == Ahead::Queued;
         Lent {
             conn: Some(conn),
             pool: Arc::clone(self),
             want,
-            current: Some(side),
+            current: (!queued).then_some(side),
+            pending: queued.then_some(side),
             open: false,
         }
     }
@@ -171,31 +173,33 @@ impl Sided {
     ) {
         match (open, current) {
             (false, Some(Side::Default)) => self.returned(conn),
-            (false, Some(Side::Other)) if !self.pool.is_closed() => {
+            (false, _) if self.pool.is_closed() => self.closed(conn),
+            (false, Some(Side::Other)) => {
                 if let Some((conn, _)) = self.shelf.put((conn, Instant::now())) {
-                    self.restore(conn, false);
+                    self.reset(conn);
                 } else if self.acquiring.load(Ordering::SeqCst) > 0
                     && let Some((conn, _)) = self.shelf.take()
                 {
-                    self.restore(conn, false);
+                    self.reset(conn);
                 }
             }
-            (false, Some(Side::Other)) => self.closed(conn),
-            (open, _) => self.restore(conn, open),
+            (false, None) => self.reset(conn),
+            (true, _) => self.restore(conn),
         }
     }
 
-    fn restore(self: &Arc<Self>, mut conn: PoolConnection<Postgres>, open: bool) {
+    fn reset(&self, mut conn: PoolConnection<Postgres>) {
+        conn.run_ahead(self.sides.default.split(';'));
+        self.returned(conn);
+    }
+
+    fn restore(self: &Arc<Self>, mut conn: PoolConnection<Postgres>) {
         let Ok(runtime) = Handle::try_current() else {
             return self.closed(conn);
         };
         let pool = Arc::clone(self);
         runtime.spawn(async move {
-            let statement = if open {
-                format!("ROLLBACK;{}", pool.sides.default)
-            } else {
-                pool.sides.default.clone()
-            };
+            let statement = format!("ROLLBACK;{}", pool.sides.default);
             let restored = timeout(
                 pool.sides.within,
                 raw_sql(AssertSqlSafe(statement)).execute(&mut *conn),
@@ -254,13 +258,32 @@ pub struct Lent {
     pool: Arc<Sided>,
     want: Side,
     current: Option<Side>,
+    pending: Option<Side>,
     open: bool,
 }
 
 impl Lent {
     #[must_use]
-    pub const fn side(&self) -> Option<Side> {
-        self.current
+    pub fn side(&self) -> Option<Side> {
+        match (self.pending, (**self).ahead()) {
+            (None, _) => self.current,
+            (Some(side), Ahead::Queued | Ahead::Committed) => Some(side),
+            (Some(_), Ahead::Sent | Ahead::Clear) => None,
+        }
+    }
+
+    fn resolve(&mut self) {
+        if self.pending.is_some() && (**self).ahead() != Ahead::Queued {
+            self.current = self.side();
+            self.pending = None;
+        }
+    }
+
+    fn statements(&self, side: Side) -> String {
+        match side {
+            Side::Default => self.pool.sides.default.clone(),
+            Side::Other => self.pool.sides.other.clone(),
+        }
     }
 
     pub fn switch(&mut self) -> Option<String> {
@@ -268,26 +291,42 @@ impl Lent {
     }
 
     pub fn switch_to(&mut self, side: Side) -> Option<String> {
-        if self.current == Some(side) {
+        self.resolve();
+        if self.side() == Some(side) {
             return None;
         }
         self.current = None;
-        Some(match side {
-            Side::Default => self.pool.sides.default.clone(),
-            Side::Other => self.pool.sides.other.clone(),
-        })
+        self.pending = None;
+        Some(self.statements(side))
+    }
+
+    pub fn switch_ahead(&mut self, side: Side) {
+        self.resolve();
+        if self.side() == Some(side) {
+            return;
+        }
+        let statements = self.statements(side);
+        self.run_ahead(statements.split(';'));
+        self.pending = Some(side);
+    }
+
+    pub fn queue(&mut self, statements: &str) {
+        self.resolve();
+        self.run_ahead(statements.split(';'));
     }
 
     pub const fn switched(&mut self) {
-        self.current = Some(self.want);
+        self.switched_to(self.want);
     }
 
     pub const fn switched_to(&mut self, side: Side) {
         self.current = Some(side);
+        self.pending = None;
     }
 
     pub const fn changed(&mut self) {
         self.current = None;
+        self.pending = None;
     }
 
     pub const fn opened(&mut self) {
@@ -305,12 +344,9 @@ impl Lent {
     }
 
     pub async fn begin(&mut self, begin: &str) -> Result<(), Error> {
-        let statement = match self.switch() {
-            Some(switch) => format!("{switch};{begin}"),
-            None => begin.to_owned(),
-        };
+        self.switch_ahead(self.want);
         self.open = true;
-        raw_sql(AssertSqlSafe(statement))
+        raw_sql(AssertSqlSafe(begin.to_owned()))
             .execute(&mut **self)
             .await?;
         self.switched();
@@ -347,6 +383,10 @@ impl DerefMut for Lent {
 
 impl Drop for Lent {
     fn drop(&mut self) {
+        self.resolve();
+        if let Some(conn) = self.conn.as_deref_mut() {
+            conn.clear_ahead();
+        }
         if let Some(conn) = self.conn.take() {
             self.pool.release(conn, self.current, self.open);
         }

@@ -184,6 +184,8 @@ nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 [patch.crates-io]
 iana-time-zone = { path = "crates/patches/iana-time-zone" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
+sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "00ff1557ee066390d4c4bdadcb967ec0c042c188" }
+sqlx-postgres = { git = "https://github.com/gakonst/sqlx", rev = "00ff1557ee066390d4c4bdadcb967ec0c042c188" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

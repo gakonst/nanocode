@@ -470,6 +470,12 @@ fn flush(
     Ok(merged)
 }
 
+#[derive(Deserialize)]
+struct Nested {
+    #[serde(default)]
+    parent_call_id: Option<serde::de::IgnoredAny>,
+}
+
 #[derive(Default, Deserialize)]
 struct Identifiers {
     #[serde(default)]
@@ -527,6 +533,28 @@ pub(crate) fn accepted_bytes(
 }
 
 impl<L: ?Sized> Shared<L> {
+    fn boundary(&self, event: &SessionEvent, request_id: Option<&str>) -> bool {
+        let SessionEvent::Agent { event, .. } = event else {
+            return false;
+        };
+        match event.kind {
+            AgentEventKind::ToolCall => serde_json::from_str::<Nested>(event.payload.get())
+                .is_ok_and(|nested| nested.parent_call_id.is_none()),
+            AgentEventKind::RunSteered => true,
+            AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
+                !request_id.is_some_and(|id| {
+                    self.state.read(|state| {
+                        state
+                            .requests
+                            .get(id)
+                            .is_some_and(|request| request.running == Some(Run::Inbox))
+                    })
+                })
+            }
+            _ => false,
+        }
+    }
+
     fn attribute(&self, event: &SessionEvent) -> Option<String> {
         let (event, agent) = match event {
             SessionEvent::Agent { event, .. } => (event, true),
@@ -574,6 +602,11 @@ impl<L: EventLog + ?Sized> LogSink<L> {
         }
         let annotation = self.0.host.annotate();
         let request_ids: Vec<_> = events.iter().map(|event| self.0.attribute(event)).collect();
+        let boundary = self.0.log.tick().is_none()
+            || events
+                .iter()
+                .zip(&request_ids)
+                .any(|(event, request_id)| self.0.boundary(event, request_id.as_deref()));
         let read = |id: &str| {
             self.0
                 .delivery
@@ -590,11 +623,13 @@ impl<L: EventLog + ?Sized> LogSink<L> {
                 read: &read,
             })
             .await?;
-        self.0
-            .log
-            .flush()
-            .await
-            .map_err(|error| error.to_string())?;
+        if boundary {
+            self.0
+                .log
+                .flush()
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         self.0.host.publish(published).await
     }
 

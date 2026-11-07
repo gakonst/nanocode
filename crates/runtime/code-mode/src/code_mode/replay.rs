@@ -38,6 +38,8 @@ pub struct CellJournal {
     pub entries: Vec<JournalEntry>,
     #[serde(default)]
     pub calls: Vec<JournaledCall>,
+    #[serde(default)]
+    pub finished: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -90,6 +92,8 @@ pub struct CellJournalUpdate {
     pub observer_call_id: Option<String>,
     #[serde(default)]
     pub content_returned: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finished: bool,
 }
 
 pub trait CellJournalSink: Send + Sync + 'static {
@@ -122,6 +126,7 @@ impl CellJournal {
             content_returned: 0,
             entries: Vec::new(),
             calls: Vec::new(),
+            finished: false,
         };
         let mut calls = BTreeMap::new();
         let mut seq = first.seq;
@@ -144,6 +149,7 @@ impl CellJournal {
                 journal.observer_call_id = update.observer_call_id;
             }
             journal.content_returned = journal.content_returned.max(update.content_returned);
+            journal.finished |= update.finished;
         }
         let delivered = journal
             .entries
@@ -215,6 +221,8 @@ struct Journals {
     cells: Atom<Vec<Weak<CellRecord>>>,
     held: Atom<HashSet<String>>,
     restored: Atom<HashMap<String, Arc<Restored>>>,
+    finished: Atom<Vec<Arc<CellRecord>>>,
+    dormant: Atom<Vec<(Arc<CellJournal>, Arc<Restored>)>>,
     sink: Option<Arc<dyn CellJournalSink>>,
 }
 
@@ -268,6 +276,65 @@ impl CellJournals {
         self.0.sink.as_ref().map(|sink| Persistence {
             sink: Arc::clone(sink),
             saving: Owned::new(Saving::Unsaved),
+        })
+    }
+
+    pub(super) fn finished(&self, record: &Arc<CellRecord>) {
+        record.update(|status| status.life = CellLife::Retired);
+        if record.persistence.is_none() {
+            return;
+        }
+        self.0
+            .finished
+            .update(|finished| finished.push(Arc::clone(record)));
+        let record = Arc::clone(record);
+        super::spawn(async move { record.mark_finished().await });
+    }
+
+    pub(super) async fn release_finished(&self, session_id: &str) {
+        let released = self.0.finished.update(|finished| {
+            let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(finished)
+                .into_iter()
+                .partition(|record| record.session_id == session_id);
+            *finished = kept;
+            released
+        });
+        for record in released {
+            record.forget_now().await;
+        }
+        let dormant = self.0.dormant.update(|dormant| {
+            let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(dormant)
+                .into_iter()
+                .partition(|(journal, _)| journal.session_id == session_id);
+            *dormant = kept;
+            released
+        });
+        if let Some(sink) = &self.0.sink {
+            for (journal, _) in dormant {
+                sink.forget(&journal.session_id, journal.cell_id).await;
+            }
+        }
+    }
+
+    pub(super) fn keep_dormant(&self, journal: CellJournal, restored: &Arc<Restored>) {
+        let journal = Arc::new(journal);
+        self.0
+            .dormant
+            .update(|dormant| dormant.push((Arc::clone(&journal), Arc::clone(restored))));
+    }
+
+    pub(super) fn take_dormant(
+        &self,
+        session_id: &str,
+        call_id: &str,
+    ) -> Option<(Arc<CellJournal>, Arc<Restored>)> {
+        self.0.dormant.update(|dormant| {
+            let index = dormant.iter().position(|(journal, _)| {
+                journal.session_id == session_id
+                    && (journal.origin_call_id == call_id
+                        || journal.observer_call_id.as_deref() == Some(call_id))
+            })?;
+            Some(dormant.swap_remove(index))
         })
     }
 
@@ -689,6 +756,7 @@ impl CellRecord {
             calls,
             observer_call_id: observer_call_id.clone(),
             content_returned,
+            finished: false,
         };
         match persistence.sink.save(update).await {
             Ok(()) => {
@@ -725,6 +793,58 @@ impl CellRecord {
                 .collect()
         });
         self.persist(calls).await;
+    }
+
+    async fn mark_finished(&self) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        let mut saving = persistence.saving.acquire().await;
+        let Saving::Saved {
+            persisted,
+            next_seq,
+            observer_call_id,
+            content_returned,
+            ..
+        } = &*saving
+        else {
+            return;
+        };
+        let Some(entries) = self.journal.entries_from(*persisted) else {
+            return;
+        };
+        let update = CellJournalUpdate {
+            session_id: self.session_id.clone(),
+            cell_id: self.cell_id,
+            seq: *next_seq,
+            header: None,
+            entries_from: *persisted,
+            entries,
+            calls: Vec::new(),
+            observer_call_id: observer_call_id.clone(),
+            content_returned: *content_returned,
+            finished: true,
+        };
+        if let Err(error) = persistence.sink.save(update).await {
+            tracing::warn!(
+                target: "nanocode_code_mode",
+                cell_id = self.cell_id,
+                %error,
+                "a finished Code Mode cell's journal could not be marked finished"
+            );
+        }
+        *saving = Saving::Stopped;
+    }
+
+    async fn forget_now(&self) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        *persistence.saving.acquire().await = Saving::Stopped;
+        persistence
+            .sink
+            .forget(&self.session_id, self.cell_id)
+            .await;
     }
 
     pub(super) fn forget(self: &Arc<Self>) {
@@ -777,6 +897,7 @@ impl CellRecord {
                 .values()
                 .map(|call| JournaledCall::clone(call))
                 .collect(),
+            finished: false,
         })
     }
 }

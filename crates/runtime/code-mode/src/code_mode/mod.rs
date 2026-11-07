@@ -76,7 +76,7 @@ pub use replay::{
     CellJournalState, CellJournalUpdate, CellJournals, JournaledCall, JournaledCallState,
     MovedCells,
 };
-use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan};
+use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan, Restored};
 pub use spec::{exec_spec, wait_spec};
 
 const INITIAL_YIELD: Duration = Duration::from_secs(10);
@@ -472,11 +472,11 @@ impl CodeModeRuntime {
             return;
         }
         let _admission = self.admission.enter().await;
-        let Some(restored) = journals.take_restored(&context.session_id) else {
+        let Some(restored) = journals.take_restored(&context.session_id).map(Arc::new) else {
             return;
         };
         let turn = self.current_turn.load(Ordering::Acquire);
-        for journal in restored.cells {
+        for journal in restored.cells.iter().cloned() {
             if journal.version != CELL_JOURNAL_VERSION || journal.session_id != context.session_id {
                 tracing::warn!(
                     target: "nanocode_code_mode",
@@ -486,80 +486,101 @@ impl CodeModeRuntime {
                 );
                 continue;
             }
-            let cell_id = journal.cell_id;
-            let cell_context = OwnedToolContext {
-                instruction_revision: context.instruction_revision,
-                model: context.model.clone(),
-                session_id: context.session_id.clone(),
-                call_id: journal.origin_call_id.clone(),
-                turn_id: context.turn_id.clone(),
-                history: Arc::clone(&context.history),
-                output_token_budget: journal
-                    .max_output_tokens
-                    .unwrap_or(context.output_token_budget),
-                host_context: context.host_context.clone(),
-            };
-            let stored = journal.stored_values();
-            let metadata: Arc<[Value]> = journal.tools.into();
-            let catalog = match self.cell_tools(&metadata) {
-                Ok(catalog) => catalog,
-                Err(error) => {
-                    tracing::warn!(
-                        target: "nanocode_code_mode",
-                        cell_id,
-                        %error,
-                        "skipped a Code Mode cell journal whose tools cannot be encoded"
-                    );
-                    continue;
-                }
-            };
-            let record = Arc::new(CellRecord {
-                cell_id,
-                session_id: journal.session_id.clone(),
-                origin_call_id: journal.origin_call_id.clone(),
-                script: journal.script.clone(),
-                tools: metadata,
-                stored: stored.clone(),
-                prelude: journal.prelude,
-                yield_time_ms: journal.yield_time_ms,
-                max_output_tokens: journal.max_output_tokens,
-                journal: nanocode_code_mode_engine::SharedJournal::new(),
-                status: nanocode_sync::Atom::new(CellStatus {
-                    observer_call_id: journal.observer_call_id.clone(),
-                    content_returned: journal.content_returned,
-                    ..CellStatus::new(CellLife::started(Replay::Replaying))
-                }),
-                hold: watch::channel(journals.holding(&journal.session_id)).0,
-                persistence: journals.persistence(),
-            });
-            journals.register(&record);
-            let plan = ReplayPlan {
-                entries: journal.entries,
-                calls: journal.calls,
-                fallback: restored.fallback.clone(),
-                outcomes: restored.outcomes.clone(),
-                content_returned: journal.content_returned,
-            };
-            let cell = Arc::new(LiveCell::spawn(
-                cell_id,
-                turn,
-                journal.script,
-                Arc::clone(&tools),
-                catalog,
-                cell_context,
-                stored,
-                Arc::clone(&self.stored),
-                Arc::clone(&self.host),
-                self.prelude.clone(),
-                self.nested_limit,
-                Some((record, Some(plan))),
-            ));
-            self.cells.update(|registry| {
-                registry.next_cell_id = registry.next_cell_id.max(cell_id.saturating_add(1));
-                registry.live_cells.insert(cell_id, Arc::clone(&cell));
-            });
-            cell.yielded();
+            if journal.finished {
+                self.cells.update(|registry| {
+                    registry.next_cell_id =
+                        registry.next_cell_id.max(journal.cell_id.saturating_add(1));
+                });
+                journals.keep_dormant(journal, &restored);
+                continue;
+            }
+            self.revive(&tools, context, journals, journal, &restored, turn);
         }
+    }
+
+    fn revive(
+        &self,
+        tools: &Arc<dyn CodeModeToolset>,
+        context: &OwnedToolContext,
+        journals: &CellJournals,
+        journal: CellJournal,
+        restored: &Restored,
+        turn: u64,
+    ) -> Option<Arc<LiveCell>> {
+        let cell_id = journal.cell_id;
+        let cell_context = OwnedToolContext {
+            instruction_revision: context.instruction_revision,
+            model: context.model.clone(),
+            session_id: context.session_id.clone(),
+            call_id: journal.origin_call_id.clone(),
+            turn_id: context.turn_id.clone(),
+            history: Arc::clone(&context.history),
+            output_token_budget: journal
+                .max_output_tokens
+                .unwrap_or(context.output_token_budget),
+            host_context: context.host_context.clone(),
+        };
+        let stored = journal.stored_values();
+        let metadata: Arc<[Value]> = journal.tools.into();
+        let catalog = match self.cell_tools(&metadata) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                tracing::warn!(
+                    target: "nanocode_code_mode",
+                    cell_id,
+                    %error,
+                    "skipped a Code Mode cell journal whose tools cannot be encoded"
+                );
+                return None;
+            }
+        };
+        let record = Arc::new(CellRecord {
+            cell_id,
+            session_id: journal.session_id.clone(),
+            origin_call_id: journal.origin_call_id.clone(),
+            script: journal.script.clone(),
+            tools: metadata,
+            stored: stored.clone(),
+            prelude: journal.prelude,
+            yield_time_ms: journal.yield_time_ms,
+            max_output_tokens: journal.max_output_tokens,
+            journal: nanocode_code_mode_engine::SharedJournal::new(),
+            status: nanocode_sync::Atom::new(CellStatus {
+                observer_call_id: journal.observer_call_id.clone(),
+                content_returned: journal.content_returned,
+                ..CellStatus::new(CellLife::started(Replay::Replaying))
+            }),
+            hold: watch::channel(journals.holding(&journal.session_id)).0,
+            persistence: journals.persistence(),
+        });
+        journals.register(&record);
+        let plan = ReplayPlan {
+            entries: journal.entries,
+            calls: journal.calls,
+            fallback: restored.fallback.clone(),
+            outcomes: restored.outcomes.clone(),
+            content_returned: journal.content_returned,
+        };
+        let cell = Arc::new(LiveCell::spawn(
+            cell_id,
+            turn,
+            journal.script,
+            Arc::clone(tools),
+            catalog,
+            cell_context,
+            stored,
+            Arc::clone(&self.stored),
+            Arc::clone(&self.host),
+            self.prelude.clone(),
+            self.nested_limit,
+            Some((record, Some(plan))),
+        ));
+        self.cells.update(|registry| {
+            registry.next_cell_id = registry.next_cell_id.max(cell_id.saturating_add(1));
+            registry.live_cells.insert(cell_id, Arc::clone(&cell));
+        });
+        cell.yielded();
+        Some(cell)
     }
 
     pub async fn recover_with_updates(
@@ -575,9 +596,9 @@ impl CodeModeRuntime {
             seen: self.preempt_consumed.load(Ordering::Acquire),
             consumed: Arc::clone(&self.preempt_consumed),
         };
-        self.adopt(tools, &context).await;
+        self.adopt(Arc::clone(&tools), &context).await;
         let call_id = context.call_id.as_str();
-        let cell = self.cells.read(|registry| {
+        let live = self.cells.read(|registry| {
             registry
                 .live_cells
                 .values()
@@ -590,7 +611,24 @@ impl CodeModeRuntime {
                     })
                 })
                 .cloned()
-        })?;
+        });
+        let cell = match live {
+            Some(cell) => cell,
+            None => {
+                let journals = self.journals.as_ref()?;
+                let (journal, restored) = journals.take_dormant(&context.session_id, call_id)?;
+                let _admission = self.admission.enter().await;
+                let turn = self.current_turn.load(Ordering::Acquire);
+                self.revive(
+                    &tools,
+                    &context,
+                    journals,
+                    Arc::unwrap_or_clone(journal),
+                    &restored,
+                    turn,
+                )?
+            }
+        };
         let record = cell.record.clone()?;
         let observation = cell.begin_observation().await.ok()?;
         record.update(|status| status.observer_call_id = Some(call_id.to_owned()));
@@ -723,6 +761,9 @@ impl CodeModeRuntime {
                 Vec::new(),
                 Vec::new(),
             );
+        }
+        if let Some(journals) = &self.journals {
+            journals.release_finished(&context.session_id).await;
         }
         let stored = HashMap::clone(&self.stored.get());
         let metadata = tools.shared_nested_tool_metadata();
@@ -959,7 +1000,10 @@ impl CodeModeRuntime {
     }
 
     async fn remove_and_join(&self, cell: &Arc<LiveCell>) {
-        cell.retire();
+        match (&self.journals, &cell.record) {
+            (Some(journals), Some(record)) => journals.finished(record),
+            _ => cell.retire(),
+        }
         self.cells.update(|registry| {
             if registry
                 .live_cells

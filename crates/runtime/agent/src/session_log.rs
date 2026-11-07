@@ -108,8 +108,8 @@ const EXISTING: Dialects = [
     "SELECT request_id FROM log_turns WHERE scope = $1::text AND request_id IN (SELECT json_array_elements_text(CAST($2::text AS json)))",
 ];
 const SEQ_HIGH: Dialects = [
-    "SELECT CAST(MAX(max(first_seq, COALESCE(last_seq, 0), COALESCE(tail_last, 0))) AS TEXT) FROM log_turns WHERE scope = ?1",
-    "SELECT CAST(MAX(GREATEST(first_seq, COALESCE(last_seq, 0), COALESCE(tail_last, 0))) AS TEXT) FROM log_turns WHERE scope = $1::text",
+    "SELECT CAST(MAX(max(first_seq, COALESCE(last_seq, 0), COALESCE(tail_last, 0))) AS TEXT), CAST(MAX(tail_last) AS TEXT) FROM log_turns WHERE scope = ?1",
+    "SELECT CAST(MAX(GREATEST(first_seq, COALESCE(last_seq, 0), COALESCE(tail_last, 0))) AS TEXT), CAST(MAX(tail_last) AS TEXT) FROM log_turns WHERE scope = $1::text",
 ];
 const LAST_CHUNK: Dialects = [
     "SELECT CAST(last AS TEXT) FROM log_chunks WHERE scope = ?1 ORDER BY seq DESC LIMIT 1",
@@ -1062,8 +1062,14 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             self.ready.store(true, Ordering::Release);
             results
         };
-        let turns = single(&results[0])?
+        let turns = single(&results[0])?;
+        let referenced = turns
             .and_then(|row| optional(row, 0))
+            .map(counter)
+            .transpose()?
+            .unwrap_or(0);
+        let tails = turns
+            .and_then(|row| optional(row, 1))
             .map(counter)
             .transpose()?
             .unwrap_or(0);
@@ -1071,7 +1077,8 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             .map(|row| text(row, 0).and_then(counter))
             .transpose()?
             .unwrap_or(0);
-        let high = turns.max(chunks);
+        let high = tails.max(chunks);
+        let seen = referenced.max(chunks);
         let holder = single(&results[2])?
             .map(|row| {
                 Ok::<_, StoreError>(Holder {
@@ -1084,7 +1091,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             .transpose()?
             .filter(|holder| holder.last == high);
         if writer.ready {
-            writer.next = writer.next.max(high.saturating_add(GAP));
+            writer.next = writer.next.max(seen.saturating_add(GAP));
             writer.durable = high;
             writer.holder = holder;
             writer.rows.clear();
@@ -1092,7 +1099,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         } else {
             *writer = Writer {
                 ready: true,
-                next: high.saturating_add(GAP),
+                next: seen.saturating_add(GAP),
                 durable: high,
                 holder,
                 ..Writer::default()

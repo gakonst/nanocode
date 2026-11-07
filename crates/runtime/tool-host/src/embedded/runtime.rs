@@ -226,7 +226,7 @@ impl EmbeddedToolRuntime {
             .iter()
             .map(|definition| {
                 (
-                    normalize_identifier(definition.name()),
+                    crate::code_mode_description::normalize_identifier(definition.name()),
                     definition.name().to_owned(),
                 )
             })
@@ -271,7 +271,9 @@ impl EmbeddedToolRuntime {
                 if !deferred.is_empty() {
                     let names = deferred
                         .iter()
-                        .map(|definition| normalize_identifier(definition.name()))
+                        .map(|definition| {
+                            crate::code_mode_description::normalize_identifier(definition.name())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     *description = format!("{description}\nDeferred nested tools: {names}.").into();
@@ -543,23 +545,6 @@ impl CodeModeObserver for IgnoreUpdates {
     fn update(&mut self, _update: super::CodeModeUpdate<'_>) {}
 }
 
-fn normalize_identifier(name: &str) -> String {
-    let mut identifier = String::new();
-    for (index, character) in name.chars().enumerate() {
-        let valid = if index == 0 {
-            character == '_' || character == '$' || character.is_ascii_alphabetic()
-        } else {
-            character == '_' || character == '$' || character.is_ascii_alphanumeric()
-        };
-        identifier.push(if valid { character } else { '_' });
-    }
-    if identifier.is_empty() {
-        "_".to_owned()
-    } else {
-        identifier
-    }
-}
-
 impl EmbeddedToolRuntimeControl {
     pub async fn preempt_turn(&self) {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
@@ -658,7 +643,7 @@ fn summary(definition: &ToolDefinition) -> (String, String) {
         })
         .unwrap_or_default();
     (
-        normalize_identifier(definition.name()),
+        crate::code_mode_description::normalize_identifier(definition.name()),
         format!("{first}. Arguments: {{ {arguments} }}."),
     )
 }

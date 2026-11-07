@@ -5,6 +5,7 @@ use std::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
+    time::Duration,
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -59,6 +60,7 @@ pub struct TransportError {
     message: String,
     unsent: bool,
     status: Option<u16>,
+    retry_after: Option<Duration>,
 }
 
 impl TransportError {
@@ -68,6 +70,7 @@ impl TransportError {
             message: message.into(),
             unsent: false,
             status: None,
+            retry_after: None,
         }
     }
 
@@ -88,6 +91,12 @@ impl TransportError {
     }
 
     #[must_use]
+    pub const fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -100,6 +109,11 @@ impl TransportError {
     #[must_use]
     pub const fn status(&self) -> Option<u16> {
         self.status
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
     }
 }
 

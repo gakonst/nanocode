@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeMap};
 use serde_json::Value;
@@ -44,6 +44,8 @@ pub struct RpcError {
     pub data: Option<Value>,
     #[serde(skip)]
     status: Option<u16>,
+    #[serde(skip)]
+    retry_after: Option<Duration>,
 }
 
 impl RpcError {
@@ -54,6 +56,7 @@ impl RpcError {
             message: message.into(),
             data: None,
             status: None,
+            retry_after: None,
         }
     }
 
@@ -64,8 +67,19 @@ impl RpcError {
     }
 
     #[must_use]
+    pub const fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    #[must_use]
     pub const fn status(&self) -> Option<u16> {
         self.status
+    }
+
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
     }
 }
 

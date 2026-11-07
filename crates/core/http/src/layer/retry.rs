@@ -21,6 +21,20 @@ pub const fn retryable_status(status: u16) -> bool {
 }
 
 #[must_use]
+pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    retry_after_ms(headers).or_else(|| {
+        let seconds = headers
+            .get(http::header::RETRY_AFTER)?
+            .to_str()
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        Some(Duration::from_secs(seconds))
+    })
+}
+
+#[must_use]
 pub fn retry_after_ms(headers: &HeaderMap) -> Option<Duration> {
     let milliseconds: f64 = headers
         .get(RETRY_AFTER_MS)?

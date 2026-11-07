@@ -69,12 +69,17 @@ const MIGRATIONS: [Migration; 2] = [
         adopt: None,
     },
 ];
-const TURN_INDEXES: &[&str] = &[
-    "CREATE INDEX IF NOT EXISTS log_turns_tail ON log_turns (scope, tail_last)",
-    "CREATE INDEX IF NOT EXISTS log_turns_status ON log_turns (scope, status)",
-];
 const INDEXES: [Migration; 1] = [Migration {
-    statements: [TURN_INDEXES, TURN_INDEXES],
+    statements: [&[], &[]],
+    adopt: None,
+}];
+const TURN_ORDER: &[&str] = &[
+    "DROP INDEX IF EXISTS log_turns_tail",
+    "DROP INDEX IF EXISTS log_turns_status",
+    "CREATE INDEX IF NOT EXISTS log_turns_order ON log_turns (scope, tail_first)",
+];
+const ORDER: [Migration; 1] = [Migration {
+    statements: [TURN_ORDER, TURN_ORDER],
     adopt: None,
 }];
 const PART: Dialects = [
@@ -108,8 +113,8 @@ const TURN: Dialects = [
     "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), result, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND request_id = $2::text",
 ];
 const PENDING: Dialects = [
-    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = ?1 AND request_id IN (SELECT request_id FROM log_turns WHERE scope = ?1 AND status IN ('queued', 'running')) ORDER BY first_seq",
-    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND request_id IN (SELECT request_id FROM log_turns WHERE scope = $1::text AND status IN ('queued', 'running')) ORDER BY log_turns.first_seq",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = ?1 AND status IN ('queued', 'running') ORDER BY first_seq",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND status IN ('queued', 'running') ORDER BY log_turns.first_seq",
 ];
 const EXISTING: Dialects = [
     "SELECT request_id FROM log_turns WHERE scope = ?1 AND request_id IN (SELECT value FROM json_each(?2))",
@@ -124,8 +129,8 @@ const LAST_CHUNK: Dialects = [
     "SELECT CAST(last AS TEXT) FROM log_chunks WHERE scope = $1::text ORDER BY log_chunks.seq DESC LIMIT 1",
 ];
 const HOLDER: Dialects = [
-    "SELECT request_id, CAST(tail_last AS TEXT), CAST(length(CAST(tail AS BLOB)) AS TEXT), CAST(length(CAST(digest AS BLOB)) + COALESCE(length(CAST(prompt AS BLOB)), 0) + COALESCE(length(CAST(hand AS BLOB)), 0) + length(CAST(metadata AS BLOB)) + COALESCE(length(CAST(note AS BLOB)), 0) + COALESCE(length(CAST(retry AS BLOB)), 0) + COALESCE(length(CAST(edits AS BLOB)), 0) + COALESCE(length(CAST(result AS BLOB)), 0) AS TEXT) FROM log_turns WHERE scope = ?1 AND tail_last IS NOT NULL ORDER BY tail_last DESC LIMIT 1",
-    "SELECT request_id, CAST(tail_last AS TEXT), CAST(octet_length(tail) AS TEXT), CAST(octet_length(digest) + COALESCE(octet_length(prompt), 0) + COALESCE(octet_length(hand), 0) + octet_length(metadata) + COALESCE(octet_length(note), 0) + COALESCE(octet_length(retry), 0) + COALESCE(octet_length(edits), 0) + COALESCE(octet_length(result), 0) AS TEXT) FROM log_turns WHERE scope = $1::text AND tail_last IS NOT NULL ORDER BY log_turns.tail_last DESC LIMIT 1",
+    "SELECT request_id, CAST(tail_last AS TEXT), CAST(length(CAST(tail AS BLOB)) AS TEXT), CAST(length(CAST(digest AS BLOB)) + COALESCE(length(CAST(prompt AS BLOB)), 0) + COALESCE(length(CAST(hand AS BLOB)), 0) + length(CAST(metadata AS BLOB)) + COALESCE(length(CAST(note AS BLOB)), 0) + COALESCE(length(CAST(retry AS BLOB)), 0) + COALESCE(length(CAST(edits AS BLOB)), 0) + COALESCE(length(CAST(result AS BLOB)), 0) AS TEXT) FROM log_turns WHERE scope = ?1 AND tail_first IS NOT NULL ORDER BY tail_first DESC LIMIT 1",
+    "SELECT request_id, CAST(tail_last AS TEXT), CAST(octet_length(tail) AS TEXT), CAST(octet_length(digest) + COALESCE(octet_length(prompt), 0) + COALESCE(octet_length(hand), 0) + octet_length(metadata) + COALESCE(octet_length(note), 0) + COALESCE(octet_length(retry), 0) + COALESCE(octet_length(edits), 0) + COALESCE(octet_length(result), 0) AS TEXT) FROM log_turns WHERE scope = $1::text AND tail_first IS NOT NULL ORDER BY log_turns.tail_first DESC LIMIT 1",
 ];
 const NEW_TURN: Dialects = [
     "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, first_seq, tail_first, tail_last, tail) SELECT ?1, ?2, ?3, 'queued', ?4, json_extract(?5, '$'), ?6, 0, CAST(?7 AS INTEGER), CAST(?8 AS INTEGER), CAST(?9 AS INTEGER), ?10 RETURNING request_id",
@@ -140,8 +145,8 @@ const CHECK_TURN: Dialects = [
     "SELECT CAST(1 / (SELECT COUNT(*) FROM log_turns WHERE scope = $1::text AND request_id = $2::text AND status = $3::text AND digest = $4::text AND COALESCE(tail_last, -1) = CAST($5::text AS BIGINT)) AS TEXT)",
 ];
 const UPDATE_TURN: Dialects = [
-    "UPDATE log_turns SET status = ?3, digest = ?4, prompt = CASE ?5 WHEN 's' THEN ?6 WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST(?7 AS INTEGER), note = CASE ?8 WHEN 's' THEN ?9 WHEN 'n' THEN NULL ELSE note END, retry = CASE ?10 WHEN 's' THEN ?11 WHEN 'n' THEN NULL ELSE retry END, edits = CASE ?12 WHEN 's' THEN ?13 WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF(?14, '') AS INTEGER), last_seq), result = CASE ?15 WHEN 's' THEN ?16 WHEN 'n' THEN NULL ELSE result END, tail_first = COALESCE(tail_first, CAST(NULLIF(?17, '') AS INTEGER)), tail_last = COALESCE(CAST(NULLIF(?18, '') AS INTEGER), tail_last), tail = CASE WHEN ?17 = '' THEN tail ELSE COALESCE(tail, '') || ?19 END WHERE scope = ?1 AND request_id = ?2 AND status = ?20 AND digest = ?21 AND COALESCE(tail_last, -1) = CAST(?22 AS INTEGER) RETURNING request_id",
-    "UPDATE log_turns SET status = $3::text, digest = $4::text, prompt = CASE $5::text WHEN 's' THEN $6::text WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST($7::text AS INTEGER), note = CASE $8::text WHEN 's' THEN $9::text WHEN 'n' THEN NULL ELSE note END, retry = CASE $10::text WHEN 's' THEN $11::text WHEN 'n' THEN NULL ELSE retry END, edits = CASE $12::text WHEN 's' THEN $13::text WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF($14::text, '') AS BIGINT), last_seq), result = CASE $15::text WHEN 's' THEN $16::text WHEN 'n' THEN NULL ELSE result END, tail_first = COALESCE(tail_first, CAST(NULLIF($17::text, '') AS BIGINT)), tail_last = COALESCE(CAST(NULLIF($18::text, '') AS BIGINT), tail_last), tail = CASE WHEN $17::text = '' THEN tail ELSE COALESCE(tail, '') || $19::text END WHERE scope = $1::text AND request_id = $2::text AND status = $20::text AND digest = $21::text AND COALESCE(tail_last, -1) = CAST($22::text AS BIGINT) RETURNING request_id",
+    "UPDATE log_turns SET status = ?3, digest = ?4, prompt = CASE ?5 WHEN 's' THEN ?6 WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST(?7 AS INTEGER), note = CASE ?8 WHEN 's' THEN ?9 WHEN 'n' THEN NULL ELSE note END, retry = CASE ?10 WHEN 's' THEN ?11 WHEN 'n' THEN NULL ELSE retry END, edits = CASE ?12 WHEN 's' THEN ?13 WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF(?14, '') AS INTEGER), last_seq), result = CASE ?15 WHEN 's' THEN ?16 WHEN 'n' THEN NULL ELSE result END, tail_last = COALESCE(CAST(NULLIF(?18, '') AS INTEGER), tail_last), tail = CASE WHEN ?17 = '' THEN tail ELSE COALESCE(tail, '') || ?19 END WHERE scope = ?1 AND request_id = ?2 AND status = ?20 AND digest = ?21 AND COALESCE(tail_last, -1) = CAST(?22 AS INTEGER) RETURNING request_id",
+    "UPDATE log_turns SET status = $3::text, digest = $4::text, prompt = CASE $5::text WHEN 's' THEN $6::text WHEN 'n' THEN NULL ELSE prompt END, cancel_requested = CAST($7::text AS INTEGER), note = CASE $8::text WHEN 's' THEN $9::text WHEN 'n' THEN NULL ELSE note END, retry = CASE $10::text WHEN 's' THEN $11::text WHEN 'n' THEN NULL ELSE retry END, edits = CASE $12::text WHEN 's' THEN $13::text WHEN 'n' THEN NULL ELSE edits END, last_seq = COALESCE(CAST(NULLIF($14::text, '') AS BIGINT), last_seq), result = CASE $15::text WHEN 's' THEN $16::text WHEN 'n' THEN NULL ELSE result END, tail_last = COALESCE(CAST(NULLIF($18::text, '') AS BIGINT), tail_last), tail = CASE WHEN $17::text = '' THEN tail ELSE COALESCE(tail, '') || $19::text END WHERE scope = $1::text AND request_id = $2::text AND status = $20::text AND digest = $21::text AND COALESCE(tail_last, -1) = CAST($22::text AS BIGINT) RETURNING request_id",
 ];
 const APPEND_TAIL: Dialects = [
     "UPDATE log_turns SET status = CASE WHEN ?6 = '1' THEN 'running' ELSE status END, note = CASE WHEN ?6 = '1' THEN NULL ELSE note END, retry = CASE WHEN ?6 = '1' THEN NULL ELSE retry END, tail_last = CAST(?3 AS INTEGER), tail = tail || ?4 WHERE scope = ?1 AND request_id = ?2 AND tail_last = CAST(?5 AS INTEGER) RETURNING request_id",
@@ -160,8 +165,8 @@ const CHUNKS: Dialects = [
     "SELECT CAST(seq AS TEXT), CAST(last AS TEXT), body FROM log_chunks WHERE scope = $1::text AND seq > CAST($2::text AS BIGINT) ORDER BY log_chunks.seq LIMIT CAST($3::text AS BIGINT)",
 ];
 const TAILS: Dialects = [
-    "SELECT CAST(tail_first AS TEXT), CAST(tail_last AS TEXT), tail FROM log_turns WHERE scope = ?1 AND tail_last > CAST(?2 AS INTEGER) AND tail_first > CAST(?3 AS INTEGER) ORDER BY tail_first LIMIT CAST(?4 AS INTEGER)",
-    "SELECT CAST(tail_first AS TEXT), CAST(tail_last AS TEXT), tail FROM log_turns WHERE scope = $1::text AND tail_last > CAST($2::text AS BIGINT) AND tail_first > CAST($3::text AS BIGINT) ORDER BY log_turns.tail_first LIMIT CAST($4::text AS BIGINT)",
+    "SELECT CAST(tail_first AS TEXT), CAST(tail_last AS TEXT), tail FROM log_turns WHERE scope = ?1 AND tail_first >= max(CAST(?3 AS INTEGER) + 1, COALESCE((SELECT MAX(tail_first) FROM log_turns WHERE scope = ?1 AND tail_first <= CAST(?2 AS INTEGER)), -1)) AND tail_last > CAST(?2 AS INTEGER) ORDER BY tail_first LIMIT CAST(?4 AS INTEGER)",
+    "SELECT CAST(tail_first AS TEXT), CAST(tail_last AS TEXT), tail FROM log_turns WHERE scope = $1::text AND tail_first >= GREATEST(CAST($3::text AS BIGINT) + 1, COALESCE((SELECT MAX(inner_turns.tail_first) FROM log_turns AS inner_turns WHERE inner_turns.scope = $1::text AND inner_turns.tail_first <= CAST($2::text AS BIGINT)), -1)) AND tail_last > CAST($2::text AS BIGINT) ORDER BY log_turns.tail_first LIMIT CAST($4::text AS BIGINT)",
 ];
 const IMPORT: Dialects = [
     "INSERT INTO log_turns (scope, request_id, digest, status, prompt, hand, metadata, cancel_requested, note, first_seq, last_seq, result) SELECT ?1, json_extract(value, '$.request_id'), json_extract(value, '$.digest'), json_extract(value, '$.status'), json_extract(value, '$.prompt'), json_extract(value, '$.hand'), json_extract(value, '$.metadata'), json_extract(value, '$.cancel_requested'), json_extract(value, '$.note'), json_extract(value, '$.first_seq'), json_extract(value, '$.last_seq'), json_extract(value, '$.result') FROM json_each(?2) WHERE true ON CONFLICT DO NOTHING",
@@ -803,6 +808,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
     pub async fn migrate(&self) -> Result<(), StoreError> {
         migrate_format(&*self.host, "session_log", &MIGRATIONS).await?;
         migrate_format(&*self.host, "session_log_indexes", &INDEXES).await?;
+        migrate_format(&*self.host, "session_log_order", &ORDER).await?;
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -1061,6 +1067,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             let results =
                 migrate_format_then(&*self.host, "session_log", &MIGRATIONS, &prepared).await?;
             migrate_format(&*self.host, "session_log_indexes", &INDEXES).await?;
+            migrate_format(&*self.host, "session_log_order", &ORDER).await?;
             self.ready.store(true, Ordering::Release);
             results
         };

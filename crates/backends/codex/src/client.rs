@@ -212,6 +212,12 @@ impl<F> OpenAiBuilder<F> {
     }
 
     #[must_use]
+    pub const fn auto_compact_token_limit(mut self, tokens: u64) -> Self {
+        self.config.auto_compact_token_limit = Some(tokens);
+        self
+    }
+
+    #[must_use]
     pub fn websocket_url(mut self, url: impl Into<String>) -> Self {
         self.config.websocket_url = url.into();
         self

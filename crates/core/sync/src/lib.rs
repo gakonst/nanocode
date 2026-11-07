@@ -1087,8 +1087,14 @@ where
     }
 }
 
+#[derive(Clone, Default)]
+struct Keyed {
+    lines: imbl::HashMap<Arc<str>, std::sync::Weak<Line>>,
+    swept: usize,
+}
+
 #[derive(Default)]
-pub struct Lines(Atom<imbl::HashMap<Arc<str>, std::sync::Weak<Line>>>);
+pub struct Lines(Atom<Keyed>);
 
 impl Lines {
     pub async fn enter(&self, key: &str) -> Turn {
@@ -1102,17 +1108,20 @@ impl Lines {
     fn line(&self, key: &str) -> Sequencer {
         if let Some(line) = self
             .0
-            .read(|lines| lines.get(key).and_then(std::sync::Weak::upgrade))
+            .read(|keyed| keyed.lines.get(key).and_then(std::sync::Weak::upgrade))
         {
             return Sequencer(line);
         }
-        Sequencer(self.0.update(|lines| {
-            if let Some(line) = lines.get(key).and_then(std::sync::Weak::upgrade) {
+        Sequencer(self.0.update(|keyed| {
+            if let Some(line) = keyed.lines.get(key).and_then(std::sync::Weak::upgrade) {
                 return line;
             }
-            lines.retain(|_, line| line.strong_count() > 0);
+            if keyed.lines.len() >= 2 * keyed.swept {
+                keyed.lines.retain(|_, line| line.strong_count() > 0);
+                keyed.swept = keyed.lines.len();
+            }
             let line = Arc::new(Line::default());
-            lines.insert(key.into(), Arc::downgrade(&line));
+            keyed.lines.insert(key.into(), Arc::downgrade(&line));
             line
         }))
     }

@@ -10,6 +10,7 @@ use serde_json::{
 use crate::{
     SessionEvent,
     events::{AgentEvent, AgentEventKind},
+    session_events::SdkTiming,
     session_log::LoggedEvent,
 };
 
@@ -27,8 +28,15 @@ pub(crate) struct Stored<'a> {
 impl Serialize for Stored<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match (self.event, self.compact) {
-            (SessionEvent::Agent { event, .. }, compact) => {
-                let mut map = serializer.serialize_map(Some(2))?;
+            (
+                SessionEvent::Agent {
+                    event,
+                    timing,
+                    received_ns,
+                },
+                compact,
+            ) => {
+                let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("source", "agent")?;
                 map.serialize_entry(
                     "event",
@@ -36,6 +44,14 @@ impl Serialize for Stored<'_> {
                         event,
                         root: true,
                         compact,
+                    },
+                )?;
+                map.serialize_entry(
+                    "sdk_timing",
+                    &SdkTiming {
+                        emitted_ns: timing.emitted_ns,
+                        received_ns: *received_ns,
+                        source_received_ns: timing.source_received_ns,
                     },
                 )?;
                 map.end()
@@ -101,8 +117,7 @@ impl Serialize for Event<'_> {
             root,
             compact,
         } = *self;
-        let slim = root.then(|| without_timing(&event.payload)).flatten();
-        let payload = slim.as_deref().unwrap_or(&event.payload);
+        let payload = &event.payload;
         let deduplicated = (compact.is_some() && event.kind == AgentEventKind::ToolResult)
             .then(|| deduplicated(payload))
             .flatten();
@@ -118,17 +133,6 @@ impl Serialize for Event<'_> {
         map.serialize_entry("payload", deduplicated.as_deref().unwrap_or(payload))?;
         map.end()
     }
-}
-
-fn without_timing(payload: &RawValue) -> Option<Box<RawValue>> {
-    if !payload.get().contains("\"timing\"") {
-        return None;
-    }
-    let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(payload.get()) else {
-        return None;
-    };
-    fields.remove("timing")?;
-    to_raw_value(&fields).ok()
 }
 
 fn deduplicated(payload: &RawValue) -> Option<Box<RawValue>> {

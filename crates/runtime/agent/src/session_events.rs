@@ -128,10 +128,10 @@ impl SessionEvent {
     }
 }
 
-struct SdkTiming {
-    emitted_ns: u64,
-    received_ns: u64,
-    source_received_ns: Option<u64>,
+pub(crate) struct SdkTiming {
+    pub(crate) emitted_ns: u64,
+    pub(crate) received_ns: u64,
+    pub(crate) source_received_ns: Option<u64>,
 }
 
 impl Serialize for SdkTiming {

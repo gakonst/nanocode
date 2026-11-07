@@ -1,6 +1,7 @@
 const MAX_VALUE: usize = 200;
 const MASK: &str = "••••";
 const STATIC: [&str; 3] = ["Label", "Static", "StaticText"];
+pub const NO_WINDOW: &str = "(no open window)";
 
 pub struct Node<E> {
     pub role: String,
@@ -28,17 +29,53 @@ impl<E> Node<E> {
     }
 }
 
-pub fn render<E>(title: &str, root: Option<Node<E>>, complete: bool) -> (String, Vec<E>) {
+pub struct Line<E> {
+    pub element: E,
+    pub depth: usize,
+    pub actionable: bool,
+    pub text: String,
+}
+
+impl<E> Line<E> {
+    pub fn shown(&self, index: Option<usize>) -> String {
+        let indent = "  ".repeat(self.depth);
+        match index {
+            Some(index) => format!("{indent}[{index}] {}", self.text),
+            None => format!("{indent}{}", self.text),
+        }
+    }
+}
+
+pub fn lines<E>(root: Node<E>) -> Vec<Line<E>> {
+    let mut lines = Vec::new();
+    walk(root, 0, None, &mut lines);
+    lines
+}
+
+pub fn heading(title: &str, complete: bool) -> Vec<String> {
     let mut lines = vec![title.to_owned()];
     if !complete {
         lines.push("(tree cut short: it was too large or slow to read whole)".into());
     }
+    lines
+}
+
+pub fn render<E>(title: &str, root: Option<Node<E>>, complete: bool) -> (String, Vec<E>) {
+    let mut text = heading(title, complete);
     let mut elements = Vec::new();
     match root {
-        Some(root) => walk(root, 0, None, &mut lines, &mut elements),
-        None => lines.push("(no open window)".into()),
+        Some(root) => {
+            for line in lines(root) {
+                let index = line.actionable.then_some(elements.len());
+                text.push(line.shown(index));
+                if line.actionable {
+                    elements.push(line.element);
+                }
+            }
+        }
+        None => text.push(NO_WINDOW.into()),
     }
-    (lines.join("\n"), elements)
+    (text.join("\n"), elements)
 }
 
 fn redundant<E>(node: &Node<E>, above: Option<&str>) -> bool {
@@ -52,13 +89,7 @@ fn redundant<E>(node: &Node<E>, above: Option<&str>) -> bool {
         })
 }
 
-fn walk<E>(
-    node: Node<E>,
-    depth: usize,
-    above: Option<&str>,
-    lines: &mut Vec<String>,
-    elements: &mut Vec<E>,
-) {
+fn walk<E>(node: Node<E>, depth: usize, above: Option<&str>, lines: &mut Vec<Line<E>>) {
     if redundant(&node, above) {
         return;
     }
@@ -79,28 +110,28 @@ fn walk<E>(
     };
     if !(actionable || name.is_some() || value.is_some()) {
         for child in children {
-            walk(child, depth, above, lines, elements);
+            walk(child, depth, above, lines);
         }
         return;
     }
-    let mut line = "  ".repeat(depth);
-    if actionable {
-        line.push_str(&format!("[{}] ", elements.len()));
-        elements.push(element);
-    }
-    line.push_str(&role);
+    let mut text = role;
     if let Some(name) = &name {
-        line.push_str(&format!(" \"{}\"", flat(name)));
+        text.push_str(&format!(" \"{}\"", flat(name)));
     }
     if let Some(value) = value {
-        line.push_str(&format!(" value=\"{}\"", flat(&value)));
+        text.push_str(&format!(" value=\"{}\"", flat(&value)));
     }
     if !states.is_empty() {
-        line.push_str(&format!(" ({})", states.join(", ")));
+        text.push_str(&format!(" ({})", states.join(", ")));
     }
-    lines.push(line);
+    lines.push(Line {
+        element,
+        depth,
+        actionable,
+        text,
+    });
     for child in children {
-        walk(child, depth + 1, name.as_deref(), lines, elements);
+        walk(child, depth + 1, name.as_deref(), lines);
     }
 }
 

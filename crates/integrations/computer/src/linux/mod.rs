@@ -8,8 +8,13 @@ use crate::{
     App, Backend, Capabilities, Chord, Direction, Key, Pointer, Press, Read, Selection, Target,
 };
 use atspi::Element;
-use std::{collections::HashMap, future::Future};
-use tokio::runtime::{Builder, Handle, Runtime};
+use futures_util::{StreamExt, stream};
+use std::{collections::HashMap, future::Future, time::Duration};
+use tokio::{
+    runtime::{Builder, Handle, Runtime},
+    sync::mpsc::{self, UnboundedReceiver},
+    task::JoinHandle,
+};
 use zbus::Connection;
 
 const NO_BUS: &str = "Computer use needs a desktop session with the AT-SPI accessibility bus (DISPLAY or WAYLAND_DISPLAY and at-spi2-core), so nothing ran.";
@@ -21,6 +26,12 @@ enum Exec {
     Own(Runtime),
 }
 
+struct Watch {
+    changes: UnboundedReceiver<()>,
+    task: JoinHandle<()>,
+    activation: Duration,
+}
+
 #[derive(Default)]
 pub struct AtSpi {
     exec: Option<Exec>,
@@ -30,7 +41,10 @@ pub struct AtSpi {
     entries: desktop::Index,
     unwatched: bool,
     before: Option<u32>,
-    known: HashMap<String, (u32, String)>,
+    known: HashMap<String, (u32, String, Duration)>,
+    activations: HashMap<i64, Duration>,
+    registered: bool,
+    watching: Option<Watch>,
 }
 
 impl AtSpi {
@@ -42,6 +56,13 @@ impl AtSpi {
         match self.exec.as_ref()? {
             Exec::Shared(handle) => Some(handle.block_on(work)),
             Exec::Own(runtime) => Some(runtime.block_on(work)),
+        }
+    }
+
+    fn spawn(&self, work: impl Future<Output = ()> + Send + 'static) -> Option<JoinHandle<()>> {
+        match self.exec.as_ref()? {
+            Exec::Shared(handle) => Some(handle.spawn(work)),
+            Exec::Own(runtime) => Some(runtime.spawn(work)),
         }
     }
 
@@ -105,8 +126,10 @@ impl AtSpi {
             .unwrap_or_default();
         for found in &registered {
             if !found.name.trim().is_empty() {
-                self.known
-                    .insert(found.element.bus.clone(), (found.pid, found.name.clone()));
+                self.known.insert(
+                    found.element.bus.clone(),
+                    (found.pid, found.name.clone(), found.activation),
+                );
             }
         }
         let classes = if x11::available() {
@@ -127,6 +150,8 @@ impl AtSpi {
             }
             let pid = i64::from(found.pid);
             self.apps.entry(pid).or_default().push(found.element);
+            let activation = self.activations.entry(pid).or_default();
+            *activation = found.activation.max(*activation);
             if let Some(app) = apps.iter_mut().find(|app| app.pid == pid) {
                 app.windows |= found.windows;
                 continue;
@@ -180,6 +205,7 @@ impl AtSpi {
 
 impl Drop for AtSpi {
     fn drop(&mut self) {
+        self.unwatch();
         if let Some(Exec::Own(runtime)) = self.exec.take() {
             runtime.shutdown_background();
         }
@@ -255,6 +281,10 @@ impl Backend for AtSpi {
             None
         };
         self.bus = self.block(atspi::connect(fallback)).flatten();
+        self.registered = match &self.bus {
+            Some(bus) => self.block(atspi::register(bus)) == Some(true),
+            None => false,
+        };
         self.bus
             .as_ref()
             .map(|_| ())
@@ -271,6 +301,10 @@ impl Backend for AtSpi {
 
     fn installed(&mut self, wanted: &str) -> Option<App> {
         desktop::installed(self.entries.entries(), wanted)
+    }
+
+    fn keys_by_bundle(&self) -> bool {
+        true
     }
 
     fn watched(&mut self, watched: bool) {
@@ -295,6 +329,75 @@ impl Backend for AtSpi {
             && display.active_pid() == Some(pid)
         {
             let _ = display.activate(before);
+        }
+    }
+
+    fn watch(&mut self, app: &App) -> bool {
+        self.unwatch();
+        let Ok(bus) = self.bus() else {
+            return false;
+        };
+        let senders: Vec<String> = self
+            .apps
+            .get(&app.pid)
+            .map(|elements| elements.iter().map(|element| element.bus.clone()).collect())
+            .unwrap_or_default();
+        if !self.registered || senders.is_empty() {
+            return false;
+        }
+        let streams = self.block(async {
+            let mut streams = Vec::new();
+            for sender in &senders {
+                streams.push(atspi::changes(&bus, sender).await?);
+            }
+            Some(streams)
+        });
+        let Some(Some(streams)) = streams else {
+            return false;
+        };
+        let (sender, changes) = mpsc::unbounded_channel();
+        let task = self.spawn(async move {
+            let mut messages = stream::select_all(streams);
+            while let Some(message) = messages.next().await {
+                if message.is_ok_and(|message| atspi::changed(&message)) && sender.send(()).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let Some(task) = task else {
+            return false;
+        };
+        self.watching = Some(Watch {
+            changes,
+            task,
+            activation: self.activations.get(&app.pid).copied().unwrap_or_default(),
+        });
+        true
+    }
+
+    fn settle(&mut self, first: Duration, quiet: Duration) -> bool {
+        let Some(mut watch) = self.watching.take() else {
+            return false;
+        };
+        let changed = self
+            .block(atspi::settle(
+                &mut watch.changes,
+                if first.is_zero() {
+                    first
+                } else {
+                    first + watch.activation
+                },
+                quiet,
+            ))
+            .unwrap_or(false);
+        self.watching = Some(watch);
+        changed
+    }
+
+    fn unwatch(&mut self) {
+        if let Some(watch) = self.watching.take() {
+            watch.task.abort();
         }
     }
 
@@ -328,6 +431,7 @@ impl Backend for AtSpi {
                 window: None,
                 focused: None,
                 complete: true,
+                note: None,
             });
         };
         let tree = self.block(atspi::tree(&bus, &window)).ok_or(NO_BUS)?;
@@ -337,6 +441,7 @@ impl Backend for AtSpi {
             window: Some(window),
             focused: tree.focused,
             complete: tree.complete,
+            note: None,
         })
     }
 

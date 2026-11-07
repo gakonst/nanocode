@@ -1,15 +1,20 @@
 use crate::state::Node;
 use atspi_common::{Interface, InterfaceSet, Role, State, StateSet};
 use atspi_proxies::{
-    accessible::AccessibleProxy, action::ActionProxy, bus::BusProxy, component::ComponentProxy,
-    selection::SelectionProxy, text::TextProxy, value::ValueProxy,
+    accessible::AccessibleProxy, action::ActionProxy, application::ApplicationProxy, bus::BusProxy,
+    component::ComponentProxy, registry::RegistryProxy, selection::SelectionProxy, text::TextProxy,
+    value::ValueProxy,
 };
 use futures_util::{StreamExt, stream};
 use std::{collections::HashMap, future::Future, time::Duration};
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::{
+    sync::mpsc::UnboundedReceiver,
+    time::{Instant, timeout, timeout_at},
+};
 use zbus::{
-    Connection,
+    Connection, MatchRule, Message, MessageStream,
     fdo::DBusProxy,
+    message::Type,
     names::BusName,
     proxy::{Builder, CacheProperties, Defaults},
     zvariant::{OwnedObjectPath, OwnedValue},
@@ -26,6 +31,27 @@ const REGISTRY: &str = "org.a11y.atspi.Registry";
 const ROOT: &str = "/org/a11y/atspi/accessible/root";
 const NULL: &str = "/org/a11y/atspi/null";
 const WINDOWS: [Role; 4] = [Role::Frame, Role::Window, Role::Dialog, Role::Alert];
+const GTK4_ACTIVATION: Duration = Duration::from_millis(250);
+const EVENTS: [&str; 9] = [
+    "object:state-changed",
+    "object:property-change",
+    "object:children-changed",
+    "object:text-changed",
+    "object:text-caret-moved",
+    "object:text-selection-changed",
+    "object:selection-changed",
+    "window:",
+    "focus:",
+];
+const CHANGES: [&str; 7] = [
+    "StateChanged",
+    "PropertyChange",
+    "ChildrenChanged",
+    "TextChanged",
+    "TextCaretMoved",
+    "TextSelectionChanged",
+    "SelectionChanged",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Element {
@@ -62,6 +88,7 @@ pub struct Registered {
     pub element: Element,
     pub pid: u32,
     pub name: String,
+    pub activation: Duration,
     pub windows: bool,
 }
 
@@ -101,6 +128,57 @@ async fn session_address() -> Option<String> {
         .await
         .ok()?;
     timed(bus.get_address()).await
+}
+
+pub async fn register(bus: &Connection) -> bool {
+    let Ok(registry) = RegistryProxy::builder(bus)
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+    else {
+        return false;
+    };
+    for event in EVENTS {
+        if timed(registry.register_event(event)).await.is_none() {
+            return false;
+        }
+    }
+    true
+}
+
+pub async fn changes(bus: &Connection, sender: &str) -> Option<MessageStream> {
+    let rule = MatchRule::builder()
+        .msg_type(Type::Signal)
+        .sender(sender)
+        .ok()?
+        .build();
+    timed(MessageStream::for_match_rule(rule, bus, None)).await
+}
+
+pub fn changed(message: &Message) -> bool {
+    let header = message.header();
+    let (Some(interface), Some(member)) = (header.interface(), header.member()) else {
+        return false;
+    };
+    match interface.as_str() {
+        "org.a11y.atspi.Event.Window" | "org.a11y.atspi.Event.Focus" => true,
+        "org.a11y.atspi.Event.Object" => CHANGES
+            .iter()
+            .any(|change| change.eq_ignore_ascii_case(member.as_str())),
+        _ => false,
+    }
+}
+
+pub async fn settle(changes: &mut UnboundedReceiver<()>, first: Duration, quiet: Duration) -> bool {
+    let start = Instant::now();
+    let cap = start + first + quiet;
+    let mut until = start + first;
+    let mut changed = false;
+    while let Ok(Some(())) = timeout_at(until, changes.recv()).await {
+        changed = true;
+        until = (Instant::now() + quiet).min(cap);
+    }
+    changed
 }
 
 pub async fn ping(bus: &Connection) -> bool {
@@ -491,7 +569,7 @@ pub async fn tree(bus: &Connection, window: &Element) -> Tree {
 
 pub async fn registered(
     bus: &Connection,
-    known: &HashMap<String, (u32, String)>,
+    known: &HashMap<String, (u32, String, Duration)>,
     shown: bool,
 ) -> Vec<Registered> {
     let root = Element {
@@ -516,8 +594,8 @@ pub async fn registered(
                     Vec::new()
                 }
             };
-            let (pid, name) = match known.get(&element.bus) {
-                Some((pid, name)) => (Some(*pid), name.clone()),
+            let (pid, name, activation) = match known.get(&element.bus) {
+                Some((pid, name, activation)) => (Some(*pid), name.clone(), *activation),
                 None => {
                     let pid = async {
                         timed(dbus.get_connection_unix_process_id(
@@ -529,14 +607,16 @@ pub async fn registered(
                         let accessible = proxy::<AccessibleProxy>(bus, &element).await?;
                         timed(accessible.name()).await
                     };
-                    let (pid, name) = tokio::join!(pid, name);
-                    (pid, name.unwrap_or_default())
+                    let (pid, name, activation) =
+                        tokio::join!(pid, name, activation(bus, &element));
+                    (pid, name.unwrap_or_default(), activation)
                 }
             };
             let windows = windows.await;
             Some(Registered {
                 pid: pid?,
                 name,
+                activation,
                 windows: windows
                     .iter()
                     .any(|(_, _, states)| states.contains(State::Showing)),
@@ -547,6 +627,22 @@ pub async fn registered(
         .collect()
         .await;
     found.into_iter().flatten().collect()
+}
+
+async fn activation(bus: &Connection, app: &Element) -> Duration {
+    let Some(application) = proxy::<ApplicationProxy>(bus, app).await else {
+        return Duration::ZERO;
+    };
+    let (toolkit, version) = tokio::join!(
+        timed(application.toolkit_name()),
+        timed(application.version())
+    );
+    if toolkit.as_deref() == Some("GTK") && version.is_some_and(|version| version.starts_with("4."))
+    {
+        GTK4_ACTIVATION
+    } else {
+        Duration::ZERO
+    }
 }
 
 pub async fn windows(bus: &Connection, app: &Element) -> Option<Vec<(Element, Role, StateSet)>> {

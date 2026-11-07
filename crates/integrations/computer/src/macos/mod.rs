@@ -37,6 +37,7 @@ const NODE: [&str; 9] = [
 #[derive(Default)]
 pub struct Ax {
     host: String,
+    watching: Option<ax::Observer>,
 }
 
 impl Ax {
@@ -140,7 +141,7 @@ impl Backend for Ax {
             ("-a", &app.path)
         };
         let launched = Command::new("/usr/bin/open")
-            .args(["-g", flag, target])
+            .args(["-g", "-j", flag, target])
             .output()
             .map_err(|error| {
                 format!(
@@ -176,6 +177,12 @@ impl Backend for Ax {
             complete: true,
         };
         let title = window.as_ref().and_then(|window| window.text("AXTitle"));
+        let note = (window.is_none() && ax.flag("AXHidden") == Some(true)).then(|| {
+            format!(
+                "(no open window: {0} runs hidden, which keeps it off the user's screen, and has no window to read. A document app shows one once it opens a file: open the file with it in the background (open -g -j -a \"{0}\" FILE in a shell), or ask the user to bring {0} to the front.)",
+                app.name
+            )
+        });
         let root = window
             .clone()
             .map(|window| read_node(window, 0, focused.as_ref(), &mut budget, &mut Vec::new()));
@@ -185,11 +192,27 @@ impl Backend for Ax {
             window,
             focused,
             complete: budget.complete,
+            note,
         })
     }
 
     fn alive(&mut self, element: &Element) -> bool {
         element.alive()
+    }
+
+    fn watch(&mut self, app: &App) -> bool {
+        self.watching = ax::Observer::new(app.pid as i32);
+        self.watching.is_some()
+    }
+
+    fn settle(&mut self, first: Duration, quiet: Duration) -> bool {
+        self.watching
+            .as_mut()
+            .is_some_and(|watching| watching.settle(first, quiet))
+    }
+
+    fn unwatch(&mut self) {
+        self.watching = None;
     }
 
     fn focus_unchanged(&mut self, app: &App, then: Option<&Element>) -> bool {
@@ -334,10 +357,16 @@ impl Backend for Ax {
 
     fn screenshot(
         &mut self,
-        _: &App,
+        app: &App,
         window: &Element,
         max: usize,
     ) -> Result<Option<String>, String> {
+        if !ax::on_screen().contains(&(app.pid as i32)) {
+            return Err(format!(
+                "{} has no window on the user's screen (it runs hidden or minimized), so there is nothing to capture; the state above stands without one",
+                app.name
+            ));
+        }
         ax::screenshot(window, max)
     }
 }

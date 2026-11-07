@@ -1,4 +1,5 @@
 use crate::{keys::Chord, state::Node, state::Selection};
+use std::{hash::Hash, time::Duration};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Capabilities {
@@ -25,6 +26,7 @@ pub struct Read<E> {
     pub window: Option<E>,
     pub focused: Option<E>,
     pub complete: bool,
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +88,7 @@ pub enum Pointer<'a, E> {
 }
 
 pub trait Backend: Send + 'static {
-    type Element: Clone + Send + 'static;
+    type Element: Clone + Send + Eq + Hash + 'static;
 
     fn capabilities(&self) -> Capabilities;
 
@@ -113,6 +115,18 @@ pub trait Backend: Send + 'static {
     fn launched(&mut self, app: &App) {
         let _ = app;
     }
+
+    fn watch(&mut self, app: &App) -> bool {
+        let _ = app;
+        false
+    }
+
+    fn settle(&mut self, first: Duration, quiet: Duration) -> bool {
+        let _ = (first, quiet);
+        false
+    }
+
+    fn unwatch(&mut self) {}
 
     fn types_into(&mut self, element: &Self::Element) -> bool {
         let _ = element;

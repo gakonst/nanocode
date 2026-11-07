@@ -12,14 +12,25 @@ use core_foundation::{
 use core_foundation_sys::{
     array::{CFArrayGetCount, CFArrayGetTypeID, CFArrayGetValueAtIndex, CFArrayRef},
     base::{
-        CFEqual, CFGetTypeID, CFIndex, CFNullGetTypeID, CFRange, CFRelease, CFRetain, CFTypeID,
-        CFTypeRef, kCFAllocatorDefault,
+        CFEqual, CFGetTypeID, CFHash, CFIndex, CFNullGetTypeID, CFRange, CFRelease, CFRetain,
+        CFTypeID, CFTypeRef, kCFAllocatorDefault,
     },
     data::{CFDataCreateMutable, CFDataGetBytePtr, CFDataGetLength, CFMutableDataRef},
     dictionary::{CFDictionaryGetValue, CFDictionaryRef},
+    runloop::{
+        CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRef, CFRunLoopRemoveSource,
+        CFRunLoopRunInMode, CFRunLoopSourceRef, kCFRunLoopRunFinished,
+    },
     string::CFStringRef,
 };
-use std::{ffi::c_void, ptr, slice, thread, time::Duration};
+use std::{
+    ffi::c_void,
+    hash::{Hash, Hasher},
+    ptr, slice,
+    sync::atomic::{AtomicUsize, Ordering},
+    thread,
+    time::{Duration, Instant},
+};
 
 pub type AXError = i32;
 pub const AX_SUCCESS: AXError = 0;
@@ -34,6 +45,19 @@ const AX_RANGE: u32 = 4;
 const AX_ERROR_VALUE: u32 = 5;
 const MESSAGING_TIMEOUT: f32 = 1.0;
 const ACTION_TIMEOUT: f32 = 10.0;
+const SETTLING: &str = "nanocode.computer.settle";
+const CHANGES: [&str; 10] = [
+    "AXValueChanged",
+    "AXUIElementDestroyed",
+    "AXCreated",
+    "AXFocusedUIElementChanged",
+    "AXFocusedWindowChanged",
+    "AXWindowCreated",
+    "AXTitleChanged",
+    "AXSelectedChildrenChanged",
+    "AXSelectedRowsChanged",
+    "AXRowCountChanged",
+];
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -71,6 +95,18 @@ unsafe extern "C" {
     fn AXUIElementPerformAction(element: CFTypeRef, action: CFStringRef) -> AXError;
     fn AXUIElementSetMessagingTimeout(element: CFTypeRef, seconds: f32) -> AXError;
     fn AXValueCreate(kind: u32, value: *const c_void) -> CFTypeRef;
+    fn AXObserverCreate(
+        application: i32,
+        callback: unsafe extern "C" fn(CFTypeRef, CFTypeRef, CFStringRef, *mut c_void),
+        observer: *mut CFTypeRef,
+    ) -> AXError;
+    fn AXObserverAddNotification(
+        observer: CFTypeRef,
+        element: CFTypeRef,
+        notification: CFStringRef,
+        refcon: *mut c_void,
+    ) -> AXError;
+    fn AXObserverGetRunLoopSource(observer: CFTypeRef) -> CFRunLoopSourceRef;
     fn _AXUIElementGetWindow(element: CFTypeRef, window: *mut u32) -> AXError;
 }
 
@@ -346,9 +382,114 @@ impl PartialEq for Element {
     }
 }
 
+impl Eq for Element {}
+
+impl Hash for Element {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        unsafe { CFHash(self.0) }.hash(state);
+    }
+}
+
 impl Drop for Element {
     fn drop(&mut self) {
         unsafe { CFRelease(self.0) };
+    }
+}
+
+pub struct Observer {
+    observer: CFTypeRef,
+    run_loop: CFRunLoopRef,
+    seen: Box<AtomicUsize>,
+    handled: usize,
+}
+
+unsafe impl Send for Observer {}
+
+unsafe extern "C" fn noticed(_: CFTypeRef, _: CFTypeRef, _: CFStringRef, seen: *mut c_void) {
+    unsafe { &*seen.cast::<AtomicUsize>() }.fetch_add(1, Ordering::Relaxed);
+}
+
+impl Observer {
+    pub fn new(pid: i32) -> Option<Self> {
+        let mut observer: CFTypeRef = ptr::null();
+        if unsafe { AXObserverCreate(pid, noticed, &mut observer) } != AX_SUCCESS
+            || observer.is_null()
+        {
+            return None;
+        }
+        let seen = Box::new(AtomicUsize::new(0));
+        let app = Element::application(pid);
+        let added = app.as_ref().is_some_and(|app| {
+            CHANGES.iter().fold(false, |added, change| {
+                let name = CFString::new(change);
+                let error = unsafe {
+                    AXObserverAddNotification(
+                        observer,
+                        app.0,
+                        name.as_concrete_TypeRef(),
+                        (&raw const *seen).cast_mut().cast(),
+                    )
+                };
+                added | (error == AX_SUCCESS)
+            })
+        });
+        if !added {
+            unsafe { CFRelease(observer) };
+            return None;
+        }
+        let run_loop = unsafe { CFRunLoopGetCurrent() };
+        let mode = CFString::from_static_string(SETTLING);
+        unsafe {
+            CFRunLoopAddSource(
+                run_loop,
+                AXObserverGetRunLoopSource(observer),
+                mode.as_concrete_TypeRef(),
+            );
+        }
+        Some(Self {
+            observer,
+            run_loop,
+            seen,
+            handled: 0,
+        })
+    }
+
+    pub fn settle(&mut self, first: Duration, quiet: Duration) -> bool {
+        let mode = CFString::from_static_string(SETTLING);
+        let start = Instant::now();
+        let cap = start + first + quiet;
+        let mut until = start + first;
+        let mut changed = false;
+        loop {
+            let wait = until.saturating_duration_since(Instant::now());
+            let ran =
+                unsafe { CFRunLoopRunInMode(mode.as_concrete_TypeRef(), wait.as_secs_f64(), 1) };
+            if ran == kCFRunLoopRunFinished {
+                return changed;
+            }
+            let seen = self.seen.load(Ordering::Relaxed);
+            if seen > self.handled {
+                self.handled = seen;
+                changed = true;
+                until = (Instant::now() + quiet).min(cap);
+            } else if Instant::now() >= until {
+                return changed;
+            }
+        }
+    }
+}
+
+impl Drop for Observer {
+    fn drop(&mut self) {
+        let mode = CFString::from_static_string(SETTLING);
+        unsafe {
+            CFRunLoopRemoveSource(
+                self.run_loop,
+                AXObserverGetRunLoopSource(self.observer),
+                mode.as_concrete_TypeRef(),
+            );
+            CFRelease(self.observer);
+        }
     }
 }
 

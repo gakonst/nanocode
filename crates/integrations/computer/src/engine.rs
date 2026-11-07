@@ -2,16 +2,19 @@ use crate::{
     backend::{App, Backend, Button, Capabilities, Direction, Pointer, Press, Target},
     keys::Chord,
     policy::{AppIdentity, Policy},
-    state::{Selection, render},
+    state::{Line, NO_WINDOW, Selection, heading, lines},
 };
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     thread,
     time::{Duration, Instant},
 };
 
 const SETTLE: Duration = Duration::from_millis(150);
+const QUIET: Duration = Duration::from_millis(20);
+const SINCE: &str = "Since its last state (lines left out are unchanged and keep their index; + added, ~ changed, - removed):";
+const UNCHANGED: &str = "No change since its last state.";
 const LAUNCH: Duration = Duration::from_secs(10);
 const LAUNCH_POLL: Duration = Duration::from_millis(250);
 const LAUNCH_SETTLE: Duration = Duration::from_millis(500);
@@ -23,11 +26,22 @@ pub struct Step {
     pub omitted: bool,
 }
 
+struct Shown<E> {
+    line: Line<E>,
+    index: Option<usize>,
+}
+
 struct Snapshot<E> {
-    elements: Vec<E>,
+    shown: Vec<Shown<E>>,
+    next: usize,
     focused: Option<E>,
     window: Option<E>,
     typing: Option<E>,
+}
+
+struct Seen<E> {
+    text: String,
+    snapshot: Snapshot<E>,
 }
 
 pub struct Engine<B: Backend> {
@@ -55,6 +69,7 @@ impl<B: Backend> Desktop for Engine<B> {
         let mut capabilities = self.backend.capabilities();
         capabilities.pointer &= self.pointer;
         capabilities.policy = self.policy.is_some();
+        capabilities.diffs = true;
         capabilities
     }
 
@@ -137,14 +152,25 @@ impl<B: Backend> Engine<B> {
         let app = self.resolve(wanted, action == "get_app_state")?;
         self.permitted(&app)
             .map_err(|why| format!("{}: {why}", app.name))?;
-        let done = if action == "get_app_state" {
-            None
+        let (done, watching) = if action == "get_app_state" {
+            (None, false)
         } else {
-            let done = self.act(action, input, &app)?;
-            thread::sleep(self.settle);
-            Some(done)
+            let watching = self.backend.watch(&app);
+            let done = self.act(action, input, &app);
+            match &done {
+                Ok(_) if watching => {
+                    self.backend.settle(self.settle, QUIET);
+                }
+                Ok(_) => thread::sleep(self.settle),
+                Err(_) => self.backend.unwatch(),
+            }
+            (Some(done?), watching)
         };
-        let (mut text, window) = match (self.read(&app), &done) {
+        let read = self.read(&app, done.is_some(), watching);
+        if watching {
+            self.backend.unwatch();
+        }
+        let (mut text, window) = match (read, &done) {
             (Ok(read), _) => read,
             (Err(why), Some(_)) => (why, None),
             (Err(why), None) => return Err(why),
@@ -252,24 +278,94 @@ impl<B: Backend> Engine<B> {
         ))
     }
 
-    fn read(&mut self, app: &App) -> Result<(String, Option<B::Element>), String> {
+    fn read(
+        &mut self,
+        app: &App,
+        diff: bool,
+        watching: bool,
+    ) -> Result<(String, Option<B::Element>), String> {
+        let before = self.apps.remove(&app.pid);
+        let since = before.as_ref().filter(|_| diff);
+        let mut seen = self.seen(app, since);
+        if watching && seen.is_ok() && self.backend.settle(Duration::ZERO, QUIET) {
+            seen = self.seen(app, since);
+        }
+        match seen {
+            Ok(Seen { text, mut snapshot }) => {
+                snapshot.typing = before.and_then(|before| before.typing);
+                let window = snapshot.window.clone();
+                self.apps.insert(app.pid, snapshot);
+                Ok((text, window))
+            }
+            Err(why) => {
+                if let Some(before) = before {
+                    self.apps.insert(app.pid, before);
+                }
+                Err(why)
+            }
+        }
+    }
+
+    fn seen(
+        &mut self,
+        app: &App,
+        since: Option<&Snapshot<B::Element>>,
+    ) -> Result<Seen<B::Element>, String> {
         let read = self.backend.read(app)?;
         let title = match &read.title {
             Some(title) => format!("{} — window \"{title}\"", app.name),
             None => app.name.clone(),
         };
-        let (text, elements) = render(&title, read.root, read.complete);
-        let typing = self.apps.remove(&app.pid).and_then(|state| state.typing);
-        self.apps.insert(
-            app.pid,
-            Snapshot {
-                elements,
+        let mut text = heading(&title, read.complete);
+        let Some(root) = read.root else {
+            text.push(read.note.unwrap_or_else(|| NO_WINDOW.into()));
+            return Ok(Seen {
+                text: text.join("\n"),
+                snapshot: Snapshot {
+                    shown: Vec::new(),
+                    next: 0,
+                    focused: read.focused,
+                    window: read.window,
+                    typing: None,
+                },
+            });
+        };
+        let lines = lines(root);
+        let (fresh, count, shown) = numbered(&lines, None);
+        let size = |lines: &[String]| lines.iter().map(|line| line.len() + 1).sum::<usize>();
+        let changed = since
+            .filter(|since| since.window.is_some() && since.window == read.window)
+            .map(|since| numbered(&lines, Some(since)))
+            .filter(|(_, _, changes)| size(changes) < size(&shown));
+        let (indexes, next) = match changed {
+            Some((indexes, next, changes)) => {
+                if changes.is_empty() {
+                    text.push(UNCHANGED.into());
+                } else {
+                    text.push(SINCE.into());
+                    text.extend(changes);
+                }
+                (indexes, next)
+            }
+            None => {
+                text.extend(shown);
+                (fresh, count)
+            }
+        };
+        Ok(Seen {
+            text: text.join("\n"),
+            snapshot: Snapshot {
+                shown: lines
+                    .into_iter()
+                    .zip(indexes)
+                    .map(|(line, index)| Shown { line, index })
+                    .collect(),
+                next,
                 focused: read.focused,
-                window: read.window.clone(),
-                typing,
+                window: read.window,
+                typing: None,
             },
-        );
-        Ok((text, read.window))
+        })
     }
 
     fn target(&mut self, app: &App, input: &Value) -> Result<B::Element, String> {
@@ -279,8 +375,13 @@ impl<B: Backend> Engine<B> {
         let element = self
             .apps
             .get(&app.pid)
-            .and_then(|state| state.elements.get(index as usize))
-            .cloned()
+            .and_then(|state| {
+                state
+                    .shown
+                    .iter()
+                    .find(|shown| shown.index == usize::try_from(index).ok())
+            })
+            .map(|shown| shown.line.element.clone())
             .ok_or_else(|| {
                 format!(
                     "Element {index} is not in {}'s latest state, so nothing ran. Read it with get_app_state.",
@@ -467,6 +568,71 @@ impl<B: Backend> Engine<B> {
         self.typing(app, Some(&element));
         Ok(done)
     }
+}
+
+fn numbered<E: Eq + std::hash::Hash>(
+    lines: &[Line<E>],
+    since: Option<&Snapshot<E>>,
+) -> (Vec<Option<usize>>, usize, Vec<String>) {
+    let Some(since) = since else {
+        let mut next = 0;
+        let indexes: Vec<Option<usize>> = lines
+            .iter()
+            .map(|line| {
+                next += usize::from(line.actionable);
+                line.actionable.then_some(next - 1)
+            })
+            .collect();
+        let shown = lines
+            .iter()
+            .zip(&indexes)
+            .map(|(line, index)| line.shown(*index))
+            .collect();
+        return (indexes, next, shown);
+    };
+    let known: HashMap<&E, &Shown<E>> = since
+        .shown
+        .iter()
+        .map(|shown| (&shown.line.element, shown))
+        .collect();
+    let mut next = since.next;
+    let mut changes = Vec::new();
+    let indexes = lines
+        .iter()
+        .map(|line| {
+            let old = known.get(&line.element);
+            let index = line.actionable.then(|| {
+                old.and_then(|old| old.index).unwrap_or_else(|| {
+                    next += 1;
+                    next - 1
+                })
+            });
+            match old {
+                Some(old)
+                    if old.index == index
+                        && old.line.depth == line.depth
+                        && old.line.text == line.text => {}
+                Some(old) if index.is_some() && old.index == index => {
+                    changes.push(format!("~ {}", line.shown(index)));
+                }
+                Some(old) => {
+                    changes.push(format!("- {}", old.line.shown(old.index)));
+                    changes.push(format!("+ {}", line.shown(index)));
+                }
+                None => changes.push(format!("+ {}", line.shown(index))),
+            }
+            index
+        })
+        .collect();
+    let kept: HashSet<&E> = lines.iter().map(|line| &line.element).collect();
+    changes.extend(
+        since
+            .shown
+            .iter()
+            .filter(|shown| !kept.contains(&shown.line.element))
+            .map(|shown| format!("- {}", shown.line.shown(shown.index))),
+    );
+    (indexes, next, changes)
 }
 
 pub fn find(mut apps: Vec<App>, wanted: &str) -> Option<App> {

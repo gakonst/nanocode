@@ -86,6 +86,17 @@ impl Sided {
         &self.pool
     }
 
+    pub async fn warm(&self, within: Duration, failed: impl FnOnce(&Error)) -> Warmed {
+        let counts = self.counts();
+        warm_more(
+            &self.pool,
+            counts.max.saturating_sub(counts.shelved),
+            within,
+            failed,
+        )
+        .await
+    }
+
     #[must_use]
     pub fn counts(&self) -> Counts {
         Counts {
@@ -371,10 +382,18 @@ pub enum Warmed {
 }
 
 pub async fn warm(pool: &PgPool, within: Duration, failed: impl FnOnce(&Error)) -> Warmed {
-    let max = pool.options().get_max_connections();
+    warm_more(pool, pool.options().get_max_connections(), within, failed).await
+}
+
+async fn warm_more(
+    pool: &PgPool,
+    more: u32,
+    within: Duration,
+    failed: impl FnOnce(&Error),
+) -> Warmed {
     let held = timeout(
         within,
-        futures_util::future::try_join_all((0..max).map(|_| pool.acquire())),
+        futures_util::future::try_join_all((0..more).map(|_| pool.acquire())),
     )
     .await;
     match held {

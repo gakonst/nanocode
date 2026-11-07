@@ -9,6 +9,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Row, pool::PoolConnection};
 
 pub trait PgConnections: Send + Sync {
     type Connection: DerefMut<Target = PgConnection> + Send;
+    const IN_TRANSACTION: bool = false;
 
     fn acquire(&self) -> StoreFuture<'_, Result<Self::Connection, StoreError>>;
 }
@@ -51,6 +52,9 @@ async fn transact<C: PgConnections>(
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
     let mut connection = connections.acquire().await?;
+    if C::IN_TRANSACTION {
+        return run(&mut connection, statements).await;
+    }
     let mut transaction = sqlx::Connection::begin(&mut *connection)
         .await
         .map_err(backend)?;

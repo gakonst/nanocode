@@ -38,6 +38,8 @@ const DEFAULT_CALLBACK_HOLD: Duration = Duration::from_secs(60);
 
 const MAX_BUFFERED_FRAMES: usize = 1024;
 
+const BACKLOG_OVERFLOWED: &str = "the hand held more frames for its brain than it can buffer while the link was down; it starts a new runtime, so the brain reports the old one's outcomes as unknown";
+
 const WORK_PUBLISH_DELAY: Duration = Duration::from_millis(10);
 
 fn error(value: impl std::fmt::Display) -> CodeModeHostError {
@@ -355,9 +357,10 @@ impl Cancel {
 struct Outgoing {
     wire: Arc<Atom<Option<mpsc::UnboundedSender<String>>>>,
     limit: Arc<AtomicUsize>,
-    backlog: Arc<Atom<VecDeque<Arc<str>>>>,
+    backlog: Arc<Atom<VecDeque<Arc<String>>>>,
     flushing: Arc<AtomicBool>,
     resumed: Arc<AtomicBool>,
+    lost: Arc<AtomicBool>,
 }
 
 impl Outgoing {
@@ -368,6 +371,7 @@ impl Outgoing {
             backlog: Arc::default(),
             flushing: Arc::default(),
             resumed: Arc::default(),
+            lost: Arc::default(),
         }
     }
     fn connect(&self, wire: mpsc::UnboundedSender<String>) {
@@ -376,8 +380,19 @@ impl Outgoing {
     }
     fn clear_backlog(&self) {
         self.backlog.set(VecDeque::new());
+        self.lost.store(false, Ordering::SeqCst);
+    }
+    fn lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+    fn overflowed(&self) {
+        self.lost.store(true, Ordering::SeqCst);
+        self.backlog.set(VecDeque::new());
     }
     fn queue(&self, text: String) {
+        if self.lost() {
+            return;
+        }
         let text = if self.backlog.read(VecDeque::is_empty) && !self.flushing.load(Ordering::SeqCst)
         {
             match self.offer(text) {
@@ -387,13 +402,18 @@ impl Outgoing {
         } else {
             text
         };
-        let text = Arc::<str>::from(text);
-        self.backlog.update(|backlog| {
+        let text = Arc::new(text);
+        let kept = self.backlog.update(|backlog| {
             if backlog.len() >= MAX_BUFFERED_FRAMES {
-                backlog.pop_front();
+                return false;
             }
             backlog.push_back(Arc::clone(&text));
+            true
         });
+        if !kept {
+            self.overflowed();
+            return;
+        }
         if self.resumed.load(Ordering::SeqCst) && self.claim() {
             let _ = self.drain();
         }
@@ -404,6 +424,9 @@ impl Outgoing {
             .is_ok()
     }
     fn flush(&self) -> Result<(), CodeModeHostError> {
+        if self.lost() {
+            return Err(error(BACKLOG_OVERFLOWED));
+        }
         self.resumed.store(true, Ordering::SeqCst);
         if self.claim() { self.drain() } else { Ok(()) }
     }
@@ -411,16 +434,23 @@ impl Outgoing {
         loop {
             let mut frames = self.backlog.update(std::mem::take).into_iter();
             while let Some(text) = frames.next() {
-                if let Err((_, issue)) = self.offer(text.to_string()) {
-                    let unsent = std::iter::once(text).chain(frames).collect::<VecDeque<_>>();
-                    self.backlog.update(|backlog| {
+                let text = Arc::try_unwrap(text).unwrap_or_else(|shared| String::clone(&shared));
+                if let Err((text, issue)) = self.offer(text) {
+                    let unsent = std::iter::once(Arc::new(text))
+                        .chain(frames)
+                        .collect::<VecDeque<_>>();
+                    let kept = self.backlog.update(|backlog| {
+                        if unsent.len() + backlog.len() > MAX_BUFFERED_FRAMES {
+                            return false;
+                        }
                         let mut held = unsent.clone();
                         held.extend(backlog.iter().cloned());
-                        while held.len() > MAX_BUFFERED_FRAMES {
-                            held.pop_front();
-                        }
                         *backlog = held;
+                        true
                     });
+                    if !kept {
+                        self.overflowed();
+                    }
                     self.flushing.store(false, Ordering::SeqCst);
                     return Err(issue);
                 }
@@ -1581,6 +1611,12 @@ impl State {
     }
 
     async fn catalog(&mut self, max_frame_bytes: usize) -> Result<String, CodeModeHostError> {
+        if self.outgoing.lost() {
+            self.reset().await;
+            if self.options.runtime_id.is_some() {
+                self.options.runtime_id = Some(nanocode_platform::uuid_v4().to_string());
+            }
+        }
         let mut capabilities = self.capability_list().await;
         if self.options.moves {
             capabilities.push(super::move_capability());

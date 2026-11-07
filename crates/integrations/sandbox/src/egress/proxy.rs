@@ -622,6 +622,7 @@ impl<A: Authority> Proxy<A> {
         }
         if let Some(pairs) = &pairs {
             redact::headers(response.headers_mut(), pairs);
+            redact::reason(response.extensions_mut(), pairs);
         }
         let idle = self.rules.limits.idle_tunnel;
         if upgraded {

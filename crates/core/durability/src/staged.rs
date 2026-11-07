@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use nanocode_sync::Atom;
 
@@ -17,9 +14,9 @@ struct Staged {
     owner: OwnerToken,
     revision: u64,
     payload: Option<Arc<str>>,
-    payloads: Vec<Arc<str>>,
-    records: BTreeMap<String, Arc<str>>,
-    stored: BTreeSet<String>,
+    payloads: imbl::Vector<Arc<str>>,
+    records: imbl::OrdMap<String, Arc<str>>,
+    stored: imbl::OrdSet<String>,
 }
 
 type States = BTreeMap<String, Arc<Staged>>;
@@ -213,7 +210,7 @@ impl StagedWrites {
         let payload = Arc::<str>::from(payload);
         staged.revision = revision;
         staged.payload = Some(Arc::clone(&payload));
-        staged.payloads.push(payload);
+        staged.payloads.push_back(payload);
         Ok(revision)
     }
 }
@@ -289,9 +286,9 @@ impl<S: StateStore> StagedStore<S> {
                     owner: OwnerToken::new(owner_id.clone(), fence),
                     revision: state.revision,
                     payload: state.payload.map(Arc::from),
-                    payloads: Vec::new(),
-                    records: BTreeMap::new(),
-                    stored: BTreeSet::new(),
+                    payloads: imbl::Vector::new(),
+                    records: imbl::OrdMap::new(),
+                    stored: imbl::OrdSet::new(),
                 }
             }
         };

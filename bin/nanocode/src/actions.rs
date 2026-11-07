@@ -1,15 +1,18 @@
 use nanocode::{
     AgentStatus, AgentUpdate, ModelSelection, Mutability, ScopedAgentUpdate, ServiceTier, Thinking,
-    agent::events::AgentEventKind,
+    agent::events::AgentEventKind, subagents::AgentId,
 };
 use nanocode_tui::{
     transcript::{CellKind, NoticeLevel},
     tree::{NodeStatus, TreeNode},
 };
 
-use crate::app::{
-    App, AppEvent, BtwUpdate, Ready, Redraw, TurnState, apply_tier, family_label, open_session,
-    subagent_status,
+use crate::{
+    app::{
+        App, AppEvent, BtwUpdate, Ready, Redraw, TurnState, apply_tier, family_label, open_session,
+        subagent_status,
+    },
+    side::SIDE_AGENT,
 };
 
 impl App {
@@ -197,17 +200,31 @@ impl App {
     }
 
     pub(crate) fn subagent(&mut self, scoped: ScopedAgentUpdate) -> Redraw {
-        if self
-            .agent
-            .as_ref()
-            .is_some_and(|agent| agent.session_id() != scoped.root_session_id)
+        let side = self.panes.session() == Some(scoped.root_session_id.as_str());
+        if !side
+            && self
+                .agent
+                .as_ref()
+                .is_some_and(|agent| agent.session_id() != scoped.root_session_id)
         {
             return Redraw::None;
         }
+        let tree_id = |id: AgentId| {
+            if side {
+                format!("{SIDE_AGENT}{id}")
+            } else {
+                id.to_string()
+            }
+        };
         match scoped.update {
             AgentUpdate::Added(descriptor) => {
-                self.track_subagent(&descriptor);
-                let id = descriptor.id.to_string();
+                if side {
+                    self.panes
+                        .learn_agent(descriptor.id, descriptor.role.clone());
+                } else {
+                    self.track_subagent(&descriptor);
+                }
+                let id = tree_id(descriptor.id);
                 let mut existing = None;
                 self.tree.update(&id, |node| {
                     existing = Some((node.status, node.label.clone()))
@@ -215,12 +232,17 @@ impl App {
                 let (status, label) = existing.unwrap_or_else(|| {
                     (
                         NodeStatus::Pending,
-                        format!("#{} {}", descriptor.id, descriptor.role),
+                        format!(
+                            "{}#{} {}",
+                            if side { "btw " } else { "" },
+                            descriptor.id,
+                            descriptor.role
+                        ),
                     )
                 });
                 self.tree.upsert(TreeNode {
                     id,
-                    parent: descriptor.parent.map(|parent| parent.to_string()),
+                    parent: descriptor.parent.map(tree_id),
                     label,
                     detail: descriptor
                         .task
@@ -233,11 +255,11 @@ impl App {
                 Redraw::Streaming
             }
             AgentUpdate::Status { id, status } => {
-                if matches!(status, AgentStatus::Interrupted) {
+                if matches!(status, AgentStatus::Interrupted) && !side {
                     self.refresh_agents();
                 }
                 let (status, detail) = subagent_status(&status);
-                self.tree.update(&id.to_string(), |node| {
+                self.tree.update(&tree_id(id), |node| {
                     if node.status != NodeStatus::Closed {
                         node.status = status;
                     }
@@ -248,11 +270,11 @@ impl App {
                 Redraw::Streaming
             }
             AgentUpdate::Completion { id, status, .. } => {
-                if matches!(status, AgentStatus::Interrupted) {
+                if matches!(status, AgentStatus::Interrupted) && !side {
                     self.refresh_agents();
                 }
                 let (node_status, detail) = subagent_status(&status);
-                let key = id.to_string();
+                let key = tree_id(id);
                 self.tree.update(&key, |node| {
                     if node.status != NodeStatus::Closed {
                         node.status = node_status;
@@ -272,13 +294,13 @@ impl App {
                 )
                 .then(|| serde_json::from_str::<serde_json::Value>(event.payload.get()).ok())
                 .flatten();
-                let changed = self.subagent_event(id, &event, payload.as_ref());
+                let changed = !side && self.subagent_event(id, &event, payload.as_ref());
                 let mut redraw = if changed && self.focus == Some(id) {
                     Redraw::Streaming
                 } else {
                     Redraw::None
                 };
-                let key = id.to_string();
+                let key = tree_id(id);
                 if event.kind == AgentEventKind::RunStarted
                     && let Some(model) = payload
                         .as_ref()

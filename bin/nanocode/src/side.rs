@@ -37,6 +37,8 @@ const COLLAPSE_INSTRUCTION: &str = "The user finished a /btw side conversation f
 
 const EARLIER: &str = "Earlier questions and answers in this side conversation, for context:";
 
+pub const SIDE_AGENT: &str = "btw:";
+
 const SIDE_COMMANDS: [&str; 15] = [
     "btw", "collapse", "split", "close", "zoom", "copy", "id", "expand", "mouse", "help", "keys",
     "quit", "exit", "reload", "restart",
@@ -159,10 +161,7 @@ impl Panes {
             waiting.insert(0, question);
         }
         Some(SavedSide {
-            session: match &side.mode {
-                Mode::Fork(agent) => Some(agent.session_id().to_owned()),
-                _ => side.session_hint.clone(),
-            },
+            session: self.session().map(str::to_owned),
             owner: side.owner,
             exchanges,
             waiting,
@@ -173,6 +172,21 @@ impl Panes {
             zoomed: self.zoomed,
         })
     }
+
+    pub fn session(&self) -> Option<&str> {
+        let side = self.side.as_ref()?;
+        match &side.mode {
+            Mode::Fork(agent) => Some(agent.session_id()),
+            _ => side.session_hint.as_deref(),
+        }
+    }
+
+    pub(crate) fn learn_agent(&mut self, id: AgentId, role: String) {
+        if let Some(side) = self.side.as_mut() {
+            side.mapper.learn_agent(id, role);
+        }
+    }
+
     pub const fn side_active(&self) -> bool {
         self.active && self.side.is_some()
     }
@@ -802,6 +816,7 @@ impl App {
         if let Some((_, task)) = &side.asking {
             task.abort();
         }
+        self.tree.retain(|node| !node.id.starts_with(SIDE_AGENT));
         self.panes.active = false;
         self.panes.zoomed = false;
         self.panes.armed = None;

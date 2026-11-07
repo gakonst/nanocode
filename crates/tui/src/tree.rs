@@ -90,6 +90,10 @@ impl AgentTree {
         }
     }
 
+    pub fn retain(&mut self, keep: impl FnMut(&TreeNode) -> bool) {
+        self.nodes.retain(keep);
+    }
+
     pub fn update(&mut self, id: &str, update: impl FnOnce(&mut TreeNode)) -> bool {
         self.nodes
             .iter_mut()

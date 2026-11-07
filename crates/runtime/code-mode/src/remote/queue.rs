@@ -114,6 +114,9 @@ pub trait CommandQueue: Send + Sync + 'static {
     fn next_deadline(&self) -> Option<Instant> {
         None
     }
+    fn end_due(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -266,7 +269,7 @@ pub async fn serve_queue<Q: CommandQueue>(
                     ));
                 }
             }
-            if !watching.is_empty() && checked.elapsed() >= options.end_check {
+            if !watching.is_empty() && (queue.end_due() || checked.elapsed() >= options.end_check) {
                 let turns = watching.iter().cloned().collect::<Vec<_>>();
                 let ended = queue.turns_ended(&turns).await;
                 for ((session_id, turn_id), ended) in turns.into_iter().zip(ended) {

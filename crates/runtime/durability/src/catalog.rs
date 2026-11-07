@@ -714,19 +714,30 @@ mod store {
         }
 
         pub async fn record(&self, id: &str) -> Result<Option<SessionRecord>> {
+            Ok(self.record_and_base(id).await?.map(|(record, _)| record))
+        }
+
+        pub async fn record_and_base(
+            &self,
+            id: &str,
+        ) -> Result<Option<(SessionRecord, Option<String>)>> {
             let Some(state) = self.peek(id).await? else {
                 return Ok(None);
             };
             if !is_listed(&state) {
                 return Ok(None);
             }
-            match state.session() {
-                Some(record) => Ok(Some(record.clone())),
+            let base = state
+                .latest_checkpoint()
+                .map(|latest| latest.key().to_owned());
+            let record = match state.session() {
+                Some(record) => record.clone(),
                 None => match self.native_checkpoint(id, &state).await? {
-                    Some(checkpoint) => self.infer_record(id, &checkpoint).map(Some),
-                    None => Ok(None),
+                    Some(checkpoint) => self.infer_record(id, &checkpoint)?,
+                    None => return Ok(None),
                 },
-            }
+            };
+            Ok(Some((record, base)))
         }
 
         pub async fn latest_checkpoint_key(&self, id: &str) -> Result<Option<String>> {

@@ -528,9 +528,19 @@ impl<H: Sql + ?Sized> RowStore<H> {
         state_id: &str,
         owner_id: OwnerId,
     ) -> Result<OwnedState, StoreError> {
+        let dialect = self.host.dialect();
         let rows = self
-            .query("acquire", &ACQUIRE, vec![state_id, owner_id.as_str()])
-            .await?;
+            .transaction(
+                "acquire",
+                vec![statement(
+                    dialect,
+                    &ACQUIRE,
+                    vec![state_id, owner_id.as_str()],
+                )],
+            )
+            .await?
+            .pop()
+            .unwrap_or_default();
         let row = single(&rows)?
             .ok_or_else(|| StoreError::NotCommitted("row store owner fence overflow".to_owned()))?;
         let fence = counter(row, 0)?;

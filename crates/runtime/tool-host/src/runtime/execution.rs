@@ -1023,7 +1023,7 @@ impl NativeToolRuntimeControl {
     pub fn begin_turn(&self) {
         let _ = self
             .current_turn
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |turn| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |turn| {
                 Some(turn.saturating_add(1))
             });
         for (session, host) in self.remote() {

@@ -137,13 +137,16 @@ pub async fn settle_pending(
         Base::To(key) => CancelTo::Checkpoint(EncodedPayload::from_key(key)),
         Base::Fresh => CancelTo::Fresh,
     };
-    Ok(sessions.cancel_pending(id, to).await?.map(|settled| Settled {
-        cancelled: settled.cancelled,
-        base: settled
-            .checkpoint
-            .map(|checkpoint| checkpoint.key().to_owned()),
-        unresolved: settled.unresolved,
-    }))
+    Ok(sessions
+        .cancel_pending(id, to)
+        .await?
+        .map(|settled| Settled {
+            cancelled: settled.cancelled,
+            base: settled
+                .checkpoint
+                .map(|checkpoint| checkpoint.key().to_owned()),
+            unresolved: settled.unresolved,
+        }))
 }
 
 pub async fn base_checkpoint(sessions: &SessionStore, id: &str) -> Result<String, DurabilityError> {

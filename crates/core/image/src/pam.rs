@@ -96,15 +96,17 @@ pub(super) fn decode_alpha(bytes: &[u8]) -> Result<Option<DynamicImage>, ImagePr
         let factor = f32::from(u16::MAX) / maxval as f32;
         let pixels = if maxval == u32::from(u16::MAX) {
             pixels
-                .chunks_exact(2)
-                .map(|value| u16::from_be_bytes([value[0], value[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|value| u16::from_be_bytes(*value))
                 .collect()
         } else {
             pixels
-                .chunks_exact(2)
-                .map(|value| {
-                    (f32::from(u16::from_be_bytes([value[0], value[1]])) * factor).round() as u16
-                })
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|value| (f32::from(u16::from_be_bytes(*value)) * factor).round() as u16)
                 .collect()
         };
         if channels == 2 {

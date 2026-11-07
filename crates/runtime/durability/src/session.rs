@@ -3230,7 +3230,7 @@ impl DurableSession {
     fn release_one_claim(&self) {
         let _ = self
             .active_claims
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |claims| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |claims| {
                 claims.checked_sub(1)
             });
     }

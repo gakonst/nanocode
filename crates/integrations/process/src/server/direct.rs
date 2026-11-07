@@ -77,7 +77,7 @@ impl Admission {
     pub(super) fn new(running: &Arc<AtomicUsize>) -> Option<Self> {
         let limit = std::thread::available_parallelism().map_or(1, usize::from) * super::DEPTH;
         running
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < limit).then_some(count + 1)
             })
             .ok()

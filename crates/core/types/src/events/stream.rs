@@ -562,7 +562,7 @@ impl EventChannel {
 
     fn allocate_sequence(&self) -> Result<u64, EventError> {
         self.next_seq
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |seq| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |seq| {
                 seq.checked_add(1)
             })
             .map_err(|_| EventError::SequenceExhausted)

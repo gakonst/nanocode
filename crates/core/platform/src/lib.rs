@@ -92,7 +92,7 @@ pub fn uuid_v7() -> uuid::Uuid {
     let floor = (millis as u64) << 12;
     let next = |last: u64| floor.max(last + 1);
     let stamp = next(
-        LAST.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+        LAST.try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
             Some(next(last))
         })
         .unwrap_or_else(|last| last),

@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
 };
 
-pub(crate) fn is_valid_uri_template(template: &str) -> bool {
+pub(crate) const fn is_valid_uri_template(template: &str) -> bool {
     let bytes = template.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -60,7 +60,7 @@ const fn is_operator(b: u8) -> bool {
 }
 
 #[inline]
-fn parse_varspec(bytes: &[u8], i: &mut usize) -> bool {
+const fn parse_varspec(bytes: &[u8], i: &mut usize) -> bool {
     let len = bytes.len();
 
     if !parse_varname(bytes, i) {
@@ -97,7 +97,7 @@ fn parse_varspec(bytes: &[u8], i: &mut usize) -> bool {
 }
 
 #[inline]
-fn parse_varname(bytes: &[u8], i: &mut usize) -> bool {
+const fn parse_varname(bytes: &[u8], i: &mut usize) -> bool {
     let len = bytes.len();
 
     if !parse_varchar(bytes, i) {
@@ -123,7 +123,7 @@ fn parse_varname(bytes: &[u8], i: &mut usize) -> bool {
 }
 
 #[inline]
-fn parse_varchar(bytes: &[u8], i: &mut usize) -> bool {
+const fn parse_varchar(bytes: &[u8], i: &mut usize) -> bool {
     let len = bytes.len();
     let start = *i;
 
@@ -157,7 +157,7 @@ const fn is_hex_digit(b: u8) -> bool {
 }
 
 #[inline]
-fn parse_literal(bytes: &[u8], i: &mut usize) -> bool {
+const fn parse_literal(bytes: &[u8], i: &mut usize) -> bool {
     let len = bytes.len();
     let b = bytes[*i];
 
@@ -274,12 +274,12 @@ const VALID_HOSTNAME_CHARS: [bool; 256] = {
 };
 
 #[inline]
-fn is_punycode_label(label: &[u8]) -> bool {
+const fn is_punycode_label(label: &[u8]) -> bool {
     label.len() >= 4 && label[0] == b'x' && label[1] == b'n' && label[2] == b'-' && label[3] == b'-'
 }
 
 #[inline]
-fn validate_hostname_label(label: &[u8]) -> bool {
+const fn validate_hostname_label(label: &[u8]) -> bool {
     !label.is_empty() && label.len() <= 63 && label[0] != b'-' && *label.last().unwrap() != b'-'
 }
 

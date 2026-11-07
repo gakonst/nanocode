@@ -168,7 +168,7 @@ fn closes_control_header(tokens: &[Token<'_>]) -> bool {
     false
 }
 
-fn scan_regex(bytes: &[u8], start: usize) -> usize {
+const fn scan_regex(bytes: &[u8], start: usize) -> usize {
     let mut index = start + 1;
     let mut class = false;
     while index < bytes.len() {

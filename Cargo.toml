@@ -195,6 +195,7 @@ use_self = "warn"
 redundant_clone = "warn"
 large_enum_variant = "allow"
 result_large_err = "allow"
+double_must_use = "allow"
 
 [profile.dev]
 debug = false

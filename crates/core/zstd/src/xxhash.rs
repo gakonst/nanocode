@@ -118,10 +118,10 @@ const fn avalanche(mut hash: u64) -> u64 {
     hash ^= hash >> 32;
     hash
 }
-fn read_u32_le(src: &[u8]) -> u32 {
+const fn read_u32_le(src: &[u8]) -> u32 {
     u32::from_le_bytes([src[0], src[1], src[2], src[3]])
 }
-fn read_u64_le(src: &[u8]) -> u64 {
+const fn read_u64_le(src: &[u8]) -> u64 {
     u64::from_le_bytes([
         src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7],
     ])

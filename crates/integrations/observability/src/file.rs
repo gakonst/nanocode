@@ -244,7 +244,7 @@ impl SpanProcessor for TraceProcessor {
         if self
             .queue
             .queued
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
                 (queued < capacity).then_some(queued + 1)
             })
             .is_ok()

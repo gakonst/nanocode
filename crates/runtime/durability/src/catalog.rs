@@ -734,7 +734,11 @@ mod store {
                 return Ok(None);
             };
             Ok(is_listed(&state)
-                .then(|| state.latest_checkpoint().map(|latest| latest.key().to_owned()))
+                .then(|| {
+                    state
+                        .latest_checkpoint()
+                        .map(|latest| latest.key().to_owned())
+                })
                 .flatten())
         }
 

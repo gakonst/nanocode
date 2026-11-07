@@ -292,7 +292,7 @@ pub(crate) const fn build_rle_dtable(dt: &mut DTable, symbol: u8) {
         nb_bits: 0,
     };
 }
-pub(crate) fn build_rle_sequence_dtable(
+pub(crate) const fn build_rle_sequence_dtable(
     out: &mut SequenceDTable,
     symbol: u8,
     baselines: &[u32],

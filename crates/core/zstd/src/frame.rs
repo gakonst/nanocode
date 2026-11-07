@@ -168,7 +168,7 @@ fn decode_window_descriptor(descriptor: u8) -> u64 {
     let window_add = (window_base / 8) * u64::from(mantissa);
     window_base + window_add
 }
-fn decode_frame_content_size(field: &[u8]) -> Result<u64> {
+const fn decode_frame_content_size(field: &[u8]) -> Result<u64> {
     let value = match field.len() {
         1 => field[0] as u64,
         2 => u16::from_le_bytes([field[0], field[1]]) as u64 + 256,

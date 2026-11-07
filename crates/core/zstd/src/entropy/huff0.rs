@@ -30,7 +30,7 @@ impl Default for DTableX1 {
     }
 }
 #[inline(always)]
-fn read_segment_length(src: &[u8], offset: usize) -> usize {
+const fn read_segment_length(src: &[u8], offset: usize) -> usize {
     u16::from_le_bytes([src[offset], src[offset + 1]]) as usize
 }
 fn read_stats(

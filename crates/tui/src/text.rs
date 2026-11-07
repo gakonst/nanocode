@@ -41,9 +41,9 @@ pub(crate) fn control_prefix(text: &str, newline: bool) -> usize {
 fn control_prefix_unicode(text: &str, newline: bool) -> usize {
     let bytes = text.as_bytes();
     let mut offset = 0;
-    let mut chunks = bytes.chunks_exact(u8x16::LANES as usize);
-    for chunk in &mut chunks {
-        let values = u8x16::from(chunk);
+    let (chunks, remainder) = bytes.as_chunks::<{ u8x16::LANES as usize }>();
+    for chunk in chunks {
+        let values = u8x16::from(*chunk);
         let c2 = values.simd_eq(u8x16::splat(0xc2));
         let mut special =
             values.simd_lt(u8x16::splat(b' ')) | values.simd_eq(u8x16::splat(0x7f)) | c2;
@@ -66,34 +66,32 @@ fn control_prefix_unicode(text: &str, newline: bool) -> usize {
         offset += u8x16::LANES as usize;
     }
     offset
-        + chunks
-            .remainder()
+        + remainder
             .iter()
             .enumerate()
             .position(|(index, byte)| {
                 (*byte < b' ' || *byte == 0x7f) && !(newline && *byte == b'\n')
                     || (*byte == 0xc2 && bytes[offset + index + 1] < 0xa0)
             })
-            .unwrap_or(chunks.remainder().len())
+            .unwrap_or(remainder.len())
 }
 
 fn prefix(text: &str, special: impl Fn(u8x16) -> u8x16, scalar: impl Fn(u8) -> bool) -> usize {
     let bytes = text.as_bytes();
     let mut offset = 0;
-    let mut chunks = bytes.chunks_exact(u8x16::LANES as usize);
-    for chunk in &mut chunks {
-        let mask = special(u8x16::from(chunk));
+    let (chunks, remainder) = bytes.as_chunks::<{ u8x16::LANES as usize }>();
+    for chunk in chunks {
+        let mask = special(u8x16::from(*chunk));
         if mask.any() {
             return offset + mask.to_bitmask().trailing_zeros() as usize;
         }
         offset += u8x16::LANES as usize;
     }
     offset
-        + chunks
-            .remainder()
+        + remainder
             .iter()
             .position(|byte| scalar(*byte))
-            .unwrap_or(chunks.remainder().len())
+            .unwrap_or(remainder.len())
 }
 
 pub(crate) fn ascii_rows(

@@ -216,9 +216,9 @@ struct Client {
     callbacks: Atom<Callbacks>,
     receipts: Atom<Receipts>,
     answers: Arc<Answers>,
-    running: Atom<HashMap<u64, (String, AbortHandle)>>,
+    running: Atom<imbl::HashMap<u64, (String, AbortHandle)>>,
     next: AtomicU64,
-    turns: Atom<HashMap<String, u64>>,
+    turns: Atom<imbl::HashMap<String, u64>>,
     operation_timeout: Option<Duration>,
     failure: Atom<Option<String>>,
     hands: Atom<Option<Arc<dyn HandCalls>>>,
@@ -334,7 +334,7 @@ impl RemoteActivity {
     #[must_use]
     pub fn busy(&self) -> bool {
         self.0.upgrade().is_some_and(|client| {
-            !client.running.read(HashMap::is_empty)
+            !client.running.read(imbl::HashMap::is_empty)
                 || client.callbacks.read(|callbacks| {
                     callbacks
                         .values()

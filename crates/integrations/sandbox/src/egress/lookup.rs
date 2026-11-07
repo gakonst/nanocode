@@ -4,7 +4,6 @@ use crate::egress::{
 };
 use nanocode_sync::{Atom, Signal};
 use std::{
-    collections::HashMap,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -26,7 +25,7 @@ pub struct Caching {
 
 pub type Key = Arc<Credential>;
 
-type Flights = Arc<Atom<HashMap<Key, Arc<Flight>>>>;
+type Flights = Arc<Atom<imbl::HashMap<Key, Arc<Flight>>>>;
 
 pub struct Client {
     pub credential: Key,
@@ -81,7 +80,7 @@ pub enum Purpose {
 pub struct Lookups<A> {
     caching: Caching,
     asker: Arc<Asker<A>>,
-    known: Atom<HashMap<Key, Answer>>,
+    known: Atom<imbl::HashMap<Key, Answer>>,
     flights: Flights,
 }
 

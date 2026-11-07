@@ -42,6 +42,7 @@ pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
+const EFFORT_UPDATES_BETA: &str = "mid-conversation-output-config-2026-07-01";
 const FIRST_PARTY_HOST: &str = "api.anthropic.com";
 const GZIP_MIN_BODY_BYTES: usize = 4096;
 const INVALID_JSON_MESSAGES: [&str; 2] = [
@@ -170,6 +171,7 @@ fn bad_json(text: &str) -> bool {
 pub enum Role {
     User,
     Assistant,
+    System,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -352,6 +354,8 @@ impl ContentBlock {
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
 }
 
 impl Message {
@@ -359,6 +363,7 @@ impl Message {
         Self {
             role,
             content: vec![ContentBlock::text(text)],
+            output_config: None,
         }
     }
 
@@ -366,7 +371,20 @@ impl Message {
         Self {
             role: Role::User,
             content,
+            output_config: None,
         }
+    }
+
+    pub const fn effort(effort: Effort) -> Self {
+        Self {
+            role: Role::System,
+            content: Vec::new(),
+            output_config: Some(OutputConfig { effort }),
+        }
+    }
+
+    pub const fn is_effort_update(&self) -> bool {
+        matches!(self.role, Role::System) && self.output_config.is_some()
     }
 }
 
@@ -538,6 +556,8 @@ pub struct MessagesRequest {
     pub container: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ClaudeToolSpec>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub effort_updates: bool,
 }
 
 impl CacheControl {
@@ -789,6 +809,7 @@ impl MessagesRequest {
             messages: _,
             container,
             tools,
+            effort_updates,
         } = self;
         Self {
             model: model.clone(),
@@ -804,6 +825,7 @@ impl MessagesRequest {
             messages: Vec::new(),
             container: container.clone(),
             tools: tools.clone(),
+            effort_updates: *effort_updates,
         }
     }
 
@@ -1607,6 +1629,7 @@ impl ClaudeClient {
                 .is_some_and(|thinking| thinking.get("block_binding").is_some()),
             context_management: head.context_management.is_some(),
             speed: head.speed.is_some(),
+            effort_updates: head.effort_updates,
         })
     }
 
@@ -1631,6 +1654,7 @@ impl ClaudeClient {
             thinking_binding: false,
             context_management: false,
             speed: false,
+            effort_updates: false,
         }
         .legacy_durable_input()
     }
@@ -1766,6 +1790,9 @@ impl ClaudeClient {
             }
             if wire.speed && !betas.contains(&FAST_MODE_BETA) {
                 betas.push(FAST_MODE_BETA);
+            }
+            if wire.effort_updates && !betas.contains(&EFFORT_UPDATES_BETA) {
+                betas.push(EFFORT_UPDATES_BETA);
             }
             if wire.thread.is_some() && !betas.contains(&MESSAGE_THREADS_BETA) {
                 betas.push(MESSAGE_THREADS_BETA);
@@ -2036,6 +2063,7 @@ pub struct PreparedWire {
     thinking_binding: bool,
     context_management: bool,
     speed: bool,
+    effort_updates: bool,
 }
 
 impl PreparedWire {
@@ -2296,6 +2324,7 @@ fn api_body<M: WireMessage>(
         messages: _,
         container,
         tools,
+        effort_updates: _,
     } = head;
     #[derive(Serialize)]
     struct Head<'a> {

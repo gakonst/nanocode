@@ -468,6 +468,7 @@ pub(crate) fn messages(prompt: &Prompt) -> Result<Vec<Message>> {
     messages.push(Message {
         role: Role::User,
         content,
+        output_config: None,
     });
     Ok(messages)
 }

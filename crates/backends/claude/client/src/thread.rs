@@ -280,6 +280,7 @@ impl MessageThread {
         let reply = Message {
             role: Role::Assistant,
             content: response.content.clone(),
+            output_config: None,
         };
         let mut digest = turn.digest.clone();
         absorb(&mut digest, &reply)?;
@@ -340,6 +341,7 @@ fn fingerprint(head: &MessagesRequest) -> Result<blake3::Hash, ClaudeError> {
         context_management: Option<&'a Value>,
         system: Option<&'a Value>,
         tools: &'a [ClaudeToolSpec],
+        effort_updates: bool,
     }
     let fixed = serde_json::to_vec(&Fixed {
         model: &head.model,
@@ -351,6 +353,7 @@ fn fingerprint(head: &MessagesRequest) -> Result<blake3::Hash, ClaudeError> {
         context_management: head.context_management.as_ref(),
         system: head.system.as_deref(),
         tools: &head.tools,
+        effort_updates: head.effort_updates,
     })?;
     Ok(blake3::hash(&fixed))
 }

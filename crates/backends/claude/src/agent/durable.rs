@@ -75,11 +75,13 @@ impl Snapshot {
             self.conversation
                 .packed_messages()
                 .into_iter()
+                .filter(|message| !message.is_effort_update())
                 .map(|message| {
                     ResponseItem::message(
                         match message.role {
                             Role::User => MessageRole::User,
                             Role::Assistant => MessageRole::Assistant,
+                            Role::System => MessageRole::Developer,
                         },
                         message.into_message().content.into_iter().filter_map(
                             |block| match block {
@@ -258,6 +260,7 @@ impl Effect<'_> {
         let message = Message {
             role: Role::Assistant,
             content: std::mem::take(&mut response.content),
+            output_config: None,
         };
         let record =
             serde_json::to_string(&message).map(|json| EncodedPayload::from_json(json.into()));
@@ -476,7 +479,7 @@ impl State {
                 .await?;
         }
         drop(update);
-        let template = self.request_template(speed);
+        let template = self.request_template(speed, conversation.effort_pin);
         let static_names = self
             .tools
             .iter()
@@ -1564,6 +1567,7 @@ impl Snapshot {
                     ContentBlock::Text { text, .. } => items.push(match message.role {
                         Role::Assistant => TranscriptItem::Assistant(text.clone()),
                         Role::User => TranscriptItem::User(text.clone()),
+                        Role::System => continue,
                     }),
                     ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty() => {
                         items.push(TranscriptItem::Reasoning(thinking.clone()));

@@ -18,7 +18,7 @@ imbl.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 nanocode-platform.workspace = true

@@ -4,7 +4,6 @@ use crate::egress::{
     audit::{Audit, Kind, Reporting},
     authority::Authority,
     lookup::{Caching, Client, Lookups, Purpose, Verdict},
-    pipe::pipe,
     redact::{self, Failed, Injecting},
     tls::Tls,
     wire::{Credential, Secret},
@@ -24,7 +23,7 @@ use hyper::{
     upgrade::{OnUpgrade, Upgraded, on},
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, pipe};
 use rustls::pki_types::ServerName;
 use std::{
     any::Any,

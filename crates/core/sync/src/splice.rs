@@ -1,13 +1,21 @@
-use futures_util::future::join;
+use futures_util::future::{Either, join, select};
 use std::{
+    pin::pin,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, split},
-    pin,
-    time::Instant,
+    net::TcpStream,
+    time::{Instant, sleep_until},
 };
+
+pub async fn splice(a: TcpStream, b: TcpStream, idle: Duration) -> std::io::Result<()> {
+    a.set_nodelay(true)?;
+    b.set_nodelay(true)?;
+    pipe(a, b, idle).await;
+    Ok(())
+}
 
 pub async fn pipe(a: impl AsyncRead + AsyncWrite, b: impl AsyncRead + AsyncWrite, idle: Duration) {
     let start = Instant::now();
@@ -15,19 +23,15 @@ pub async fn pipe(a: impl AsyncRead + AsyncWrite, b: impl AsyncRead + AsyncWrite
     let quiet = || start + Duration::from_millis(last.load(Ordering::Relaxed)) + idle;
     let (mut ar, mut aw) = split(a);
     let (mut br, mut bw) = split(b);
-    let copy = join(
+    let mut copy = pin!(join(
         half(&mut ar, &mut bw, start, &last),
         half(&mut br, &mut aw, start, &last),
-    );
-    pin!(copy);
+    ));
     loop {
-        tokio::select! {
-            _ = &mut copy => return,
-            () = tokio::time::sleep_until(quiet()) => {
-                if Instant::now() >= quiet() {
-                    return;
-                }
-            }
+        match select(copy.as_mut(), pin!(sleep_until(quiet()))).await {
+            Either::Left(_) => return,
+            Either::Right(_) if Instant::now() >= quiet() => return,
+            Either::Right(_) => {}
         }
     }
 }

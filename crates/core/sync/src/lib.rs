@@ -4,11 +4,14 @@ use std::{future::Future, pin::Pin, sync::Arc};
 mod lanes;
 #[cfg(not(target_family = "wasm"))]
 mod lease;
+mod map;
 #[cfg(not(target_family = "wasm"))]
 mod reentry;
 #[cfg(not(target_family = "wasm"))]
 mod session;
 mod shelf;
+#[cfg(not(target_family = "wasm"))]
+mod splice;
 #[cfg(not(target_family = "wasm"))]
 mod stalled;
 mod wakes;
@@ -17,11 +20,16 @@ mod wakes;
 pub use lanes::{Lanes, NotCommitted, together};
 #[cfg(not(target_family = "wasm"))]
 pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
+pub use map::AtomMap;
+#[cfg(not(target_family = "wasm"))]
+pub use map::Throttle;
 #[cfg(not(target_family = "wasm"))]
 pub use reentry::{Claim, Reentrant, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 pub use shelf::{Armed, Shelf};
+#[cfg(not(target_family = "wasm"))]
+pub use splice::{pipe, splice};
 #[cfg(not(target_family = "wasm"))]
 pub use stalled::StalledWaits;
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
@@ -958,8 +966,7 @@ fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
 type RecentRead<V, E> = Shared<futures_util::future::BoxFuture<'static, Result<V, Arc<E>>>>;
 
 #[cfg(not(target_family = "wasm"))]
-type RecentReads<V, E> =
-    std::collections::HashMap<Arc<str>, (std::time::Instant, RecentRead<V, E>)>;
+type RecentReads<V, E> = map::Aged<Arc<str>, RecentRead<V, E>>;
 
 #[cfg(not(target_family = "wasm"))]
 pub struct Recent<V, E> {
@@ -976,7 +983,7 @@ where
 {
     pub fn new(ttl: std::time::Duration, kept: usize) -> Self {
         Self {
-            reads: Atom::new(std::collections::HashMap::new()),
+            reads: Atom::new(map::Aged::default()),
             ttl,
             kept,
         }
@@ -985,19 +992,29 @@ where
     pub fn peek(&self, key: &str) -> Option<V> {
         let now = std::time::Instant::now();
         self.reads.read(|reads| {
-            let (at, read) = reads.get(key)?;
-            (now.duration_since(*at) < self.ttl).then(|| read.peek()?.as_ref().ok().cloned())?
+            reads
+                .fresh(key, now, self.ttl)?
+                .peek()?
+                .as_ref()
+                .ok()
+                .cloned()
         })
     }
 
     pub fn keep(&self, key: &str, value: V) {
         let read: RecentRead<V, E> = futures_util::future::ready(Ok(value)).boxed().shared();
         let _ = read.clone().now_or_never();
-        self.reads
-            .update(|reads| self.insert(reads, key, std::time::Instant::now(), read.clone()));
+        let now = std::time::Instant::now();
+        let key: Arc<str> = key.into();
+        self.reads.update(|reads| {
+            reads.put(Arc::clone(&key), now, read.clone(), self.ttl, self.kept);
+        });
     }
 
     pub fn forget(&self, key: &str) {
+        if self.reads.read(|reads| reads.held(key).is_none()) {
+            return;
+        }
         self.reads.update(|reads| {
             reads.remove(key);
         });
@@ -1020,14 +1037,10 @@ where
         F: Future<Output = Result<V, E>> + Send + 'static,
     {
         let now = std::time::Instant::now();
-        let fresh =
-            |(at, _): &(std::time::Instant, RecentRead<V, E>)| now.duration_since(*at) < self.ttl;
-        let shared = match self.reads.read(|reads| {
-            reads
-                .get(key)
-                .filter(|entry| fresh(entry))
-                .map(|(_, read)| read.clone())
-        }) {
+        let shared = match self
+            .reads
+            .read(|reads| reads.fresh(key, now, self.ttl).cloned())
+        {
             Some(shared) => shared,
             None => {
                 let reading = read();
@@ -1044,45 +1057,33 @@ where
                 }
                 .boxed()
                 .shared();
+                let owned: Arc<str> = key.into();
                 self.reads.update(|reads| {
-                    if let Some((_, existing)) = reads.get(key).filter(|entry| fresh(entry)) {
+                    if let Some(existing) = reads.fresh(key, now, self.ttl) {
                         return existing.clone();
                     }
-                    self.insert(reads, key, now, started.clone());
+                    reads.put(
+                        Arc::clone(&owned),
+                        now,
+                        started.clone(),
+                        self.ttl,
+                        self.kept,
+                    );
                     started.clone()
                 })
             }
         };
         let value = shared.clone().await;
-        if value.as_ref().map_or(true, |value| !keep(value)) {
+        let ours =
+            |reads: &RecentReads<V, E>| reads.held(key).is_some_and(|held| held.ptr_eq(&shared));
+        if value.as_ref().map_or(true, |value| !keep(value)) && self.reads.read(ours) {
             self.reads.update(|reads| {
-                if reads.get(key).is_some_and(|(_, held)| held.ptr_eq(&shared)) {
+                if ours(reads) {
                     reads.remove(key);
                 }
             });
         }
         value
-    }
-
-    fn insert(
-        &self,
-        reads: &mut RecentReads<V, E>,
-        key: &str,
-        now: std::time::Instant,
-        read: RecentRead<V, E>,
-    ) {
-        if reads.len() >= self.kept {
-            reads.retain(|_, (at, _)| now.duration_since(*at) < self.ttl);
-        }
-        if reads.len() >= self.kept
-            && let Some(oldest) = reads
-                .iter()
-                .min_by_key(|(_, (at, _))| *at)
-                .map(|(key, _)| key.clone())
-        {
-            reads.remove(&oldest);
-        }
-        reads.insert(key.into(), (now, read));
     }
 }
 

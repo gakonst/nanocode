@@ -69,6 +69,14 @@ const MIGRATIONS: [Migration; 2] = [
         adopt: None,
     },
 ];
+const TURN_INDEXES: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS log_turns_tail ON log_turns (scope, tail_last)",
+    "CREATE INDEX IF NOT EXISTS log_turns_status ON log_turns (scope, status)",
+];
+const INDEXES: [Migration; 1] = [Migration {
+    statements: [TURN_INDEXES, TURN_INDEXES],
+    adopt: None,
+}];
 const PART: Dialects = [
     "INSERT INTO log_parts (key, data) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
     "INSERT INTO log_parts (key, data) VALUES ($1::text, $2::text) ON CONFLICT DO NOTHING",
@@ -100,8 +108,8 @@ const TURN: Dialects = [
     "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), result, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND request_id = $2::text",
 ];
 const PENDING: Dialects = [
-    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = ?1 AND status IN ('queued', 'running') ORDER BY first_seq",
-    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND status IN ('queued', 'running') ORDER BY log_turns.first_seq",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = ?1 AND request_id IN (SELECT request_id FROM log_turns WHERE scope = ?1 AND status IN ('queued', 'running')) ORDER BY first_seq",
+    "SELECT request_id, status, digest, prompt, hand, metadata, CAST(cancel_requested AS TEXT), note, CAST(first_seq AS TEXT), CAST(last_seq AS TEXT), NULL, retry, edits, CAST(tail_last AS TEXT) FROM log_turns WHERE scope = $1::text AND request_id IN (SELECT request_id FROM log_turns WHERE scope = $1::text AND status IN ('queued', 'running')) ORDER BY log_turns.first_seq",
 ];
 const EXISTING: Dialects = [
     "SELECT request_id FROM log_turns WHERE scope = ?1 AND request_id IN (SELECT value FROM json_each(?2))",
@@ -794,6 +802,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
 
     pub async fn migrate(&self) -> Result<(), StoreError> {
         migrate_format(&*self.host, "session_log", &MIGRATIONS).await?;
+        migrate_format(&*self.host, "session_log_indexes", &INDEXES).await?;
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -1051,6 +1060,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 .collect();
             let results =
                 migrate_format_then(&*self.host, "session_log", &MIGRATIONS, &prepared).await?;
+            migrate_format(&*self.host, "session_log_indexes", &INDEXES).await?;
             self.ready.store(true, Ordering::Release);
             results
         };

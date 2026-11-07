@@ -884,6 +884,26 @@ impl RunnerProvider {
             })
     }
 
+    fn local_provider(
+        &self,
+        snapshot: &Snapshot,
+        name: &str,
+    ) -> Option<&Arc<dyn crate::DynamicToolProvider>> {
+        if cua(name)
+            || self.pool.replacement().is_some()
+            || classify(&self.policies, &snapshot.effective, name).is_some()
+            || snapshot
+                .effective
+                .iter()
+                .any(|route| route.mode == RemoteMode::Replace)
+        {
+            return None;
+        }
+        self.providers
+            .iter()
+            .find(|provider| provider.contains(name))
+    }
+
     fn routed(&self, definition: ToolDefinition, snapshot: &Snapshot) -> RoutedTool {
         RoutedTool {
             local_desktop: self
@@ -949,5 +969,35 @@ impl crate::DynamicToolProvider for RunnerProvider {
             },
             Err(error) => crate::ToolOutput::error(error.to_string()),
         })
+    }
+    fn resumes(&self, name: &str) -> bool {
+        self.local_provider(&self.snapshot(), name)
+            .is_some_and(|provider| provider.resumes(name))
+    }
+    async fn recover(
+        &self,
+        name: &str,
+        mut input: Value,
+        context: ToolContext<'_>,
+    ) -> Option<crate::ToolOutput> {
+        let snapshot = self.snapshot();
+        let provider = self.local_provider(&snapshot, name)?;
+        let key = ["workdir", "cwd", "path", "file_path"]
+            .into_iter()
+            .find(|key| input.get(key).is_some());
+        if let Some(path) = key.and_then(|key| input.get(key)).and_then(Value::as_str) {
+            let path = normalize(Path::new(path)).ok()?;
+            if snapshot
+                .effective
+                .iter()
+                .any(|route| path.starts_with(route.mount()))
+            {
+                return None;
+            }
+        }
+        if let Some(object) = input.as_object_mut() {
+            object.remove("workdir");
+        }
+        provider.recover(name, input, context).await
     }
 }

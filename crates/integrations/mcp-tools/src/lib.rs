@@ -872,6 +872,25 @@ impl DynamicToolProvider for Mcp {
         }
         Some(execute_mcp_entry(&entry, input, entry.timeout, context).await)
     }
+
+    fn resumes(&self, name: &str) -> bool {
+        self.state
+            .entry(name)
+            .is_some_and(|entry| entry.tool_exposure.is_callable() && entry.resumable)
+    }
+
+    async fn recover(
+        &self,
+        name: &str,
+        input: Value,
+        context: ToolContext<'_>,
+    ) -> Option<ToolOutput> {
+        let entry = self.state.ready_entry(name).await?;
+        if !entry.tool_exposure.is_callable() || !entry.resumable || context.turn_id().is_none() {
+            return None;
+        }
+        resume_mcp_entry(&entry, input, entry.timeout, context).await
+    }
 }
 
 async fn execute_mcp_entry(

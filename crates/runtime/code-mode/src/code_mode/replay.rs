@@ -104,6 +104,10 @@ pub trait CellJournalSink: Send + Sync + 'static {
     fn save(&self, update: CellJournalUpdate) -> HostFuture<'static, Result<(), String>>;
 
     fn forget(&self, session_id: &str, cell_id: u64) -> HostFuture<'static, ()>;
+
+    fn load(&self, _session_id: &str) -> HostFuture<'static, Result<Vec<CellJournal>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 }
 
 impl CellJournal {
@@ -229,6 +233,7 @@ struct Journals {
     restored: Atom<HashMap<String, Arc<Restored>>>,
     finished: Atom<Vec<Arc<CellRecord>>>,
     dormant: Atom<Vec<(Arc<CellJournal>, Arc<Restored>)>>,
+    loaded: Atom<HashSet<String>>,
     sink: Option<Arc<dyn CellJournalSink>>,
 }
 
@@ -318,6 +323,38 @@ impl CellJournals {
         });
         if let Some(sink) = &self.0.sink {
             for (journal, _) in dormant {
+                sink.forget(&journal.session_id, journal.cell_id).await;
+            }
+        }
+    }
+
+    pub(super) async fn load(&self, session_id: &str) {
+        let Some(sink) = &self.0.sink else {
+            return;
+        };
+        let first = self
+            .0
+            .loaded
+            .update(|loaded| loaded.insert(session_id.to_owned()));
+        if !first {
+            return;
+        }
+        match sink.load(session_id).await {
+            Ok(cells) => self.restore(session_id, cells, None, HashMap::new()),
+            Err(error) => tracing::warn!(
+                target: "nanocode_code_mode",
+                %error,
+                "stored Code Mode cell journals could not be loaded"
+            ),
+        }
+    }
+
+    pub(super) async fn discard_restored(&self, session_id: &str) {
+        let Some(restored) = self.take_restored(session_id) else {
+            return;
+        };
+        if let Some(sink) = &self.0.sink {
+            for journal in restored.cells {
                 sink.forget(&journal.session_id, journal.cell_id).await;
             }
         }

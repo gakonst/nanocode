@@ -322,42 +322,48 @@ impl ToolRegistry {
             }
             return ToolOutput::error(format!("unsupported nested tool call: {name}"));
         };
-        let input = match definition {
-            ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. }
-                if !input.is_object() =>
-            {
-                return ToolOutput::error(format!(
-                    "nested function tool {name} requires an object argument"
-                ));
-            }
-            ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. } => {
-                match to_raw_value(&input) {
-                    Ok(input) => ToolInput::Function(input),
-                    Err(error) => {
-                        return ToolOutput::error(format!(
-                            "failed to encode {name} input: {error}"
-                        ));
-                    }
-                }
-            }
-            ToolDefinition::Custom { .. } => match freeform(&input) {
-                Some(input) => ToolInput::Freeform(input.to_owned()),
-                None => {
-                    return ToolOutput::error(format!(
-                        "nested freeform tool {name} requires a string argument or {{ input }}"
-                    ));
-                }
-            },
-            ToolDefinition::Namespace { .. } => {
-                return ToolOutput::error(
-                    "Responses namespace definitions cannot execute as nested Code Mode tools",
-                );
-            }
+        let input = match nested_input(definition, name, &input) {
+            Ok(input) => input,
+            Err(refused) => return refused,
         };
         match handler.execute(input, context).await {
             Ok(execution) => execution,
             Err(error) => ToolOutput::error(error.to_string()),
         }
+    }
+
+    fn recover_nested<'a>(
+        &'a self,
+        name: &'a str,
+        input: Value,
+        context: ToolContext<'a>,
+    ) -> Option<crate::embedded::HostFuture<'a, Option<ToolOutput>>> {
+        let input = match &self.hand_calls {
+            Some(calls) => match take_hand(self.declares_hand(name), input) {
+                Ok((_, Some(hand))) if !calls.here(&hand) => {
+                    return Some(Box::pin(async move { calls.recover(&hand, context).await }));
+                }
+                Ok((input, _)) => input,
+                Err(_) => return None,
+            },
+            None => input,
+        };
+        if let Some((handler, definition)) = self.get(name) {
+            return handler.recover(nested_input(definition, name, &input).ok()?, context);
+        }
+        if self.providers.is_empty() {
+            return None;
+        }
+        Some(Box::pin(async move {
+            if !self.resolve(name).await {
+                return None;
+            }
+            let provider = self.provider_of(name)?;
+            if !provider.resumes(name) {
+                return None;
+            }
+            provider.recover(name, input, context).await
+        }))
     }
 
     pub(crate) fn workspace_tool(&self, name: &str) -> bool {
@@ -710,6 +716,35 @@ fn nested_definition(definition: ToolDefinition) -> ToolDefinition {
     }
 }
 
+fn nested_input(
+    definition: &ToolDefinition,
+    name: &str,
+    input: &Value,
+) -> std::result::Result<ToolInput, ToolOutput> {
+    match definition {
+        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. }
+            if !input.is_object() =>
+        {
+            Err(ToolOutput::error(format!(
+                "nested function tool {name} requires an object argument"
+            )))
+        }
+        ToolDefinition::Function { .. } | ToolDefinition::ToolSearch { .. } => to_raw_value(input)
+            .map(ToolInput::Function)
+            .map_err(|error| ToolOutput::error(format!("failed to encode {name} input: {error}"))),
+        ToolDefinition::Custom { .. } => freeform(input)
+            .map(|input| ToolInput::Freeform(input.to_owned()))
+            .ok_or_else(|| {
+                ToolOutput::error(format!(
+                    "nested freeform tool {name} requires a string argument or {{ input }}"
+                ))
+            }),
+        ToolDefinition::Namespace { .. } => Err(ToolOutput::error(
+            "Responses namespace definitions cannot execute as nested Code Mode tools",
+        )),
+    }
+}
+
 fn freeform(input: &Value) -> Option<&str> {
     match input {
         Value::String(input) => Some(input),
@@ -734,6 +769,15 @@ impl nanocode_code_mode::CodeModeToolset for ToolRegistry {
         context: ToolContext<'a>,
     ) -> crate::embedded::HostFuture<'a, ToolOutput> {
         Box::pin(Self::execute_nested(self, name, input, context))
+    }
+
+    fn recover_nested<'a>(
+        &'a self,
+        name: &'a str,
+        input: Value,
+        context: ToolContext<'a>,
+    ) -> Option<crate::embedded::HostFuture<'a, Option<ToolOutput>>> {
+        Self::recover_nested(self, name, input, context)
     }
 
     fn cell_observed(&self, origin_call_id: &str, observed: bool) {

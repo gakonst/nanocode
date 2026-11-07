@@ -96,6 +96,28 @@ impl DynamicToolProvider for Gated {
             (self.gate)(name, &call_id, self.inner.execute(name, input, context)).await
         })
     }
+
+    fn resumes(&self, name: &str) -> bool {
+        self.inner.resumes(name)
+    }
+
+    fn recover<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
+        input: serde_json::Value,
+        context: crate::ToolContext<'life2>,
+    ) -> Nested<'async_trait>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let call_id = context.call_id().to_owned();
+            (self.gate)(name, &call_id, self.inner.recover(name, input, context)).await
+        })
+    }
 }
 
 #[derive(Clone)]

@@ -99,4 +99,17 @@ impl DynamicToolProvider for Mcp {
     ) -> Option<ToolOutput> {
         self.0.execute(name, input, context).await
     }
+
+    fn resumes(&self, name: &str) -> bool {
+        self.0.resumes(name)
+    }
+
+    async fn recover(
+        &self,
+        name: &str,
+        input: Value,
+        context: ToolContext<'_>,
+    ) -> Option<ToolOutput> {
+        self.0.recover(name, input, context).await
+    }
 }

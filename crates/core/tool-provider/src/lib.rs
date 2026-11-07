@@ -75,4 +75,17 @@ pub trait DynamicToolProvider: Send + Sync {
         input: Value,
         context: ToolContext<'_>,
     ) -> Option<ToolOutput>;
+
+    fn resumes(&self, _name: &str) -> bool {
+        false
+    }
+
+    async fn recover(
+        &self,
+        _name: &str,
+        _input: Value,
+        _context: ToolContext<'_>,
+    ) -> Option<ToolOutput> {
+        None
+    }
 }

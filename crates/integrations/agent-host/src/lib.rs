@@ -21,6 +21,8 @@ pub use nanocode_tool_runtime::attachment::{
     AttachmentError, Runner, RunnerEvent, RunnerHandle, RunnerInfo, RunnerPool, RunnerProtocol,
     RunnerServer, RunnerServerConfig, RunnerSpec, RunnerStatus,
 };
+#[cfg(not(target_family = "wasm"))]
+mod cell_journals;
 mod computer;
 #[cfg(not(target_family = "wasm"))]
 mod process_routes;
@@ -263,6 +265,13 @@ impl HostServices for Services {
                     tools.with_runner_pool(self.pool.clone())
                 };
                 if let Some(store) = store {
+                    if tools.cell_journals().is_none() {
+                        tools = tools.with_cell_journals(
+                            nanocode_tool_host::code_mode::CellJournals::with_sink(
+                                cell_journals::DurableCellJournals::new(store.clone()),
+                            ),
+                        );
+                    }
                     tools = tools.with_default_process_route_store(
                         process_routes::DurableProcessRoutes::new(store),
                     );

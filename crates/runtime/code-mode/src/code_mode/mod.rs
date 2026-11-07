@@ -468,6 +468,7 @@ impl CodeModeRuntime {
         let Some(journals) = &self.journals else {
             return;
         };
+        journals.load(&context.session_id).await;
         if !journals.has_restored(&context.session_id) {
             return;
         }
@@ -771,6 +772,8 @@ impl CodeModeRuntime {
             );
         }
         if let Some(journals) = &self.journals {
+            journals.load(&context.session_id).await;
+            journals.discard_restored(&context.session_id).await;
             journals.release_finished(&context.session_id).await;
         }
         let stored = HashMap::clone(&self.stored.get());

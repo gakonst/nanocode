@@ -321,9 +321,16 @@ pub struct ClaudeTools {
 impl nanocode_tools::ToolCollection for ClaudeTools {
     type Error = NanocodeError;
 
-    fn add_shared_tool(mut self, tool: Arc<dyn nanocode_tools::Tool>) -> Result<Self> {
+    fn add_shared_tool(self, tool: Arc<dyn nanocode_tools::Tool>) -> Result<Self> {
+        self.add_shared_tools([tool])
+    }
+
+    fn add_shared_tools(
+        mut self,
+        tools: impl IntoIterator<Item = Arc<dyn nanocode_tools::Tool>>,
+    ) -> Result<Self> {
         if let Some((catalog, workspace, handle)) = self.shared_catalog.take() {
-            let catalog = catalog.add_shared_tool(tool)?;
+            let catalog = catalog.add_shared_tools(tools)?;
             let replacement = crate::claude_tools::install(&catalog, workspace, &handle)?;
             let names = replacement
                 .tools
@@ -351,7 +358,9 @@ impl nanocode_tools::ToolCollection for ClaudeTools {
             self.shared_catalog = replacement.shared_catalog;
             return Ok(self);
         }
-        self.tools.push(shared::bridge_shared(tool)?);
+        for tool in tools {
+            self.tools.push(shared::bridge_shared(tool)?);
+        }
         Ok(self)
     }
 }

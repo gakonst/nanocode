@@ -1248,16 +1248,25 @@ impl nanocode_tools::ToolCollection for Tools {
     type Error = ToolsBuildError;
 
     fn add_shared_tool(self, tool: Arc<dyn Tool>) -> Result<Self, Self::Error> {
-        let tool = match &self.text_pins {
-            Some(pins) => crate::pins::pin_tool(pins.as_ref(), tool),
-            None => tool,
-        };
-        let mut builder = self.into_builder();
-        builder.tools.registered.push(RegisteredTool {
-            handler: tool,
+        self.add_shared_tools([tool])
+    }
 
-            exposure: None,
-        });
+    fn add_shared_tools(
+        self,
+        tools: impl IntoIterator<Item = Arc<dyn Tool>>,
+    ) -> Result<Self, Self::Error> {
+        let pins = self.text_pins.clone();
+        let mut builder = self.into_builder();
+        builder
+            .tools
+            .registered
+            .extend(tools.into_iter().map(|tool| RegisteredTool {
+                handler: match &pins {
+                    Some(pins) => crate::pins::pin_tool(pins.as_ref(), tool),
+                    None => tool,
+                },
+                exposure: None,
+            }));
         builder.build()
     }
 }

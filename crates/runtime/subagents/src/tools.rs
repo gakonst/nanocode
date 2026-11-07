@@ -1498,25 +1498,23 @@ fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn To
 }
 
 pub fn install_tools<T: ToolCollection>(
-    mut tools: T,
+    tools: T,
     parent: AgentHandle,
     registry: Arc<Registry>,
 ) -> Result<T, T::Error> {
-    for tool in shared_tools(parent, &registry) {
-        tools = tools.add_shared_tool(tool)?;
-    }
-    Ok(tools)
+    tools.add_shared_tools(shared_tools(parent, &registry))
 }
 
 pub fn install_claude_tools<T: nanocode_tool_contracts::ToolCollection>(
-    mut tools: T,
+    tools: T,
     parent: AgentHandle,
     registry: Arc<Registry>,
 ) -> Result<T, T::Error> {
-    for tool in shared_tools(parent, &registry) {
-        tools = tools.add_shared_tool(Arc::new(TurnAuthority(tool)))?;
-    }
-    Ok(tools)
+    tools.add_shared_tools(
+        shared_tools(parent, &registry)
+            .into_iter()
+            .map(|tool| Arc::new(TurnAuthority(tool)) as Arc<dyn nanocode_tool_contracts::Tool>),
+    )
 }
 
 struct TurnAuthority(Arc<dyn Tool>);

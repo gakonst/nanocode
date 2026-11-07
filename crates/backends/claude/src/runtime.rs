@@ -249,15 +249,10 @@ fn claude_tools(
 ) -> Result<crate::ClaudeTools> {
     use nanocode_tool_contracts::ToolCollection as _;
     if let Some(selected) = selected {
-        let selected = additive
-            .into_iter()
-            .try_fold(selected, nanocode_tool_host::Tools::add_shared_tool)?;
+        let selected = selected.add_shared_tools(additive)?;
         return crate::install_shared_tools(workspace, handle, selected);
     }
-    additive.into_iter().try_fold(
-        crate::ClaudeTools::new(),
-        crate::ClaudeTools::add_shared_tool,
-    )
+    crate::ClaudeTools::new().add_shared_tools(additive)
 }
 
 impl nanocode_agent_config::configuration::DefaultRuntimeBackend for ClaudeHarness {

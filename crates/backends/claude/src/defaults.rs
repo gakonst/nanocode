@@ -163,9 +163,7 @@ pub(crate) fn install_default_tools_with_providers(
         .exposure(nanocode_tool_host::ToolExposure::CodeModeOnly)
         .build()
         .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
-    for tool in additive {
-        selected = selected.add_shared_tool(tool)?;
-    }
+    selected = selected.add_shared_tools(additive)?;
     let ends_with_turn = headless || handle.root_session_id() != handle.session_id();
     let bound = jobs.clone();
     let reaped = jobs.clone();

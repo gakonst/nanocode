@@ -317,6 +317,15 @@ pub trait ToolCollection: Sized {
     type Error;
 
     fn add_shared_tool(self, tool: std::sync::Arc<dyn Tool>) -> Result<Self, Self::Error>;
+
+    fn add_shared_tools(
+        self,
+        tools: impl IntoIterator<Item = std::sync::Arc<dyn Tool>>,
+    ) -> Result<Self, Self::Error> {
+        tools
+            .into_iter()
+            .try_fold(self, |collection, tool| collection.add_shared_tool(tool))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

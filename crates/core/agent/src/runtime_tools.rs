@@ -41,12 +41,9 @@ impl RuntimeTools {
 
     pub fn install<T: ToolCollection>(
         &self,
-        mut tools: T,
+        tools: T,
         handle: &AgentHandle,
     ) -> Result<T, T::Error> {
-        for tool in self.for_agent(handle) {
-            tools = tools.add_shared_tool(tool)?;
-        }
-        Ok(tools)
+        tools.add_shared_tools(self.for_agent(handle))
     }
 }

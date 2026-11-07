@@ -172,19 +172,20 @@ impl RuntimeBackend for CodexHarness {
                             .into_source(),
                         );
                     }
-                    if let Some(subagents) = &subagents {
-                        use nanocode_tools::ToolCollection as _;
-                        for tool in subagents.tools(
-                            handle,
-                            nanocode_agent_config::configuration::DelegationAuthority::Session,
-                        ) {
-                            selected = selected.add_shared_tool(tool)?;
-                        }
-                    }
                     use nanocode_tools::ToolCollection as _;
-                    selected = shared
-                        .iter()
-                        .try_fold(selected, |tools, tool| tools.add_shared_tool(tool.clone()))?;
+                    selected = selected.add_shared_tools(
+                        subagents
+                            .as_ref()
+                            .map(|subagents| {
+                                subagents.tools(
+                                    handle,
+                                    nanocode_agent_config::configuration::DelegationAuthority::Session,
+                                )
+                            })
+                            .into_iter()
+                            .flatten()
+                            .chain(shared.iter().cloned()),
+                    )?;
                     let builder = selected.into_builder();
                     #[cfg(not(target_family = "wasm"))]
                     let builder = providers.iter().fold(builder, |builder, provider| {

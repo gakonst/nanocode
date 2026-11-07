@@ -1463,9 +1463,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             logged.push(line.logged());
             self.buffer(&mut writer, line);
         }
-        if writer.buffered >= self.chunk_capacity() {
-            self.flush_locked(&mut writer).await?;
-        }
+        self.flush_locked(&mut writer).await?;
         Ok(logged)
     }
 
@@ -1711,15 +1709,22 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             return Ok(None);
         }
         let previous = found.record.state;
-        let mut record = found.record;
+        let mut record = found.record.clone();
         started(&mut record);
         let line = self.line(&mut writer, request_id, body)?;
         let event = line.logged();
-        self.buffer(&mut writer, line);
-        writer.started.insert(request_id.to_owned());
-        if writer.buffered >= self.chunk_capacity() {
-            self.flush_locked(&mut writer).await?;
-        }
+        let mut change = Self::change(&record);
+        change.note = Some(None);
+        change.retry = Some(None);
+        self.update(
+            &mut writer,
+            "start",
+            &found,
+            change,
+            vec![line],
+            Spill::default(),
+        )
+        .await?;
         Ok(Some(Started {
             previous,
             record,
@@ -2274,7 +2279,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
 
     async fn select(
         &self,
-        writer: &Writer,
+        _writer: &Writer,
         after: u64,
         end: Option<u64>,
         request_id: Option<&str>,
@@ -2386,22 +2391,6 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             .take_while(|(seq, _)| *seq <= frontier)
             .map(|(_, event)| event)
             .collect();
-        if frontier == u64::MAX {
-            events.extend(
-                writer
-                    .buffer
-                    .iter()
-                    .filter(|line| wanted(line.seq, line.request_id.as_deref()))
-                    .map(|line| {
-                        (
-                            line.seq,
-                            line.created_at,
-                            line.request_id.clone(),
-                            line.body.clone(),
-                        )
-                    }),
-            );
-        }
         let complete = frontier == u64::MAX || end.is_some_and(|end| frontier >= end);
         let known = events.len();
         events.truncate(limit);
@@ -2756,6 +2745,14 @@ impl<H: Sql + ?Sized> SessionLog<H> {
     }
 }
 
+#[derive(Serialize)]
+struct Recorded<'a> {
+    #[serde(flatten)]
+    event: &'a Stored<'a>,
+    #[serde(flatten)]
+    annotation: &'a Map<String, Value>,
+}
+
 impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
     async fn recorded(&self, recording: Recording<'_>) -> Result<Vec<LoggedEvent>, String> {
         let unannotated = Map::new();
@@ -2765,25 +2762,28 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
             .iter()
             .zip(recording.request_ids)
             .map(|(event, request_id)| {
-                let mut body = serde_json::value::to_raw_value(&Envelope {
-                    event,
+                let stored = Stored { event, compact };
+                let mut annotation = recording.annotation;
+                let mut body = serde_json::value::to_raw_value(&Recorded {
+                    event: &stored,
                     annotation: recording.annotation,
                 })?;
                 if !recording.annotation.is_empty()
                     && !self.event_fits(request_id.as_deref(), body.get())
                 {
-                    body = serde_json::value::to_raw_value(&Envelope {
-                        event,
+                    annotation = &unannotated;
+                    body = serde_json::value::to_raw_value(&Recorded {
+                        event: &stored,
                         annotation: &unannotated,
                     })?;
                 }
-                let stored = serde_json::value::to_raw_value(&Stored { event, compact })?;
+                let live = serde_json::value::to_raw_value(&Envelope { event, annotation })?;
                 Ok((
                     LogEntry {
                         request_id: request_id.clone(),
-                        event: stored,
+                        event: body,
                     },
-                    body,
+                    live,
                 ))
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()

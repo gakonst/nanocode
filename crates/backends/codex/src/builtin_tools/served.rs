@@ -264,20 +264,25 @@ pub fn proxy_redactions(secrets: Option<PathBuf>) -> Redactions {
             .and_then(|file| fs::read(file).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        let mut forms = Vec::new();
-        for name in PROXY_VARIABLES {
-            let values = std::env::var(name)
-                .ok()
-                .into_iter()
-                .chain(stored.get(name).cloned());
-            for url in values {
-                credential_forms(name, &url, &mut forms);
-            }
-        }
-        forms.sort_by_key(|(form, _)| Reverse(form.len()));
-        forms.dedup_by(|a, b| a.0 == b.0);
-        forms
+        proxy_forms(&stored)
     })
+}
+
+#[must_use]
+pub fn proxy_forms(stored: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let mut forms = Vec::new();
+    for name in PROXY_VARIABLES {
+        let values = std::env::var(name)
+            .ok()
+            .into_iter()
+            .chain(stored.get(name).cloned());
+        for url in values {
+            credential_forms(name, &url, &mut forms);
+        }
+    }
+    forms.sort_by_key(|(form, _)| Reverse(form.len()));
+    forms.dedup_by(|a, b| a.0 == b.0);
+    forms
 }
 
 fn credential_forms(name: &str, url: &str, forms: &mut Vec<(String, String)>) {

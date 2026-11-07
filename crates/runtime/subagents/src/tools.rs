@@ -916,10 +916,13 @@ fn spawn_agent_parameters_for(policy: &SpawnPolicy) -> Value {
     let mut parameters = PARAMETERS.clone();
     let properties = &mut parameters["properties"];
     if let Some(models) = policy.offered_models() {
-        let mut names = models
-            .iter()
-            .map(|model| json!(model.as_str()))
-            .collect::<Vec<_>>();
+        let mut names = Vec::new();
+        for model in models {
+            let name = json!(model.as_str());
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
         names.push(Value::Null);
         let mut families = Vec::new();
         for model in models {

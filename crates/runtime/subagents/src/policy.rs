@@ -29,6 +29,7 @@ impl Default for SpawnPolicy {
 pub enum SpawnPolicyError {
     ModelNotOffered {
         requested: ModelSelection,
+        offered: Vec<ModelSelection>,
     },
     ThinkingBelowMinimum {
         requested: Thinking,
@@ -59,12 +60,24 @@ pub enum SpawnPolicyError {
 impl fmt::Display for SpawnPolicyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ModelNotOffered { requested } => write!(
-                formatter,
-                "model {} ({}) is not offered to subagents",
-                requested.as_str(),
-                requested.family()
-            ),
+            Self::ModelNotOffered { requested, offered } => {
+                write!(
+                    formatter,
+                    "model {} ({}) is not offered to subagents; offered:",
+                    requested.as_str(),
+                    requested.family()
+                )?;
+                for (index, model) in offered.iter().enumerate() {
+                    let separator = if index == 0 { " " } else { ", " };
+                    write!(
+                        formatter,
+                        "{separator}{} ({})",
+                        model.as_str(),
+                        model.family()
+                    )?;
+                }
+                Ok(())
+            }
             Self::ThinkingBelowMinimum { requested, minimum } => write!(
                 formatter,
                 "{requested} thinking is below the subagent minimum of {minimum}"
@@ -143,6 +156,7 @@ impl SpawnPolicy {
         {
             return Err(SpawnPolicyError::ModelNotOffered {
                 requested: model.clone(),
+                offered: models.clone(),
             });
         }
         Ok(())

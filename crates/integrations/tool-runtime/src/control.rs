@@ -44,7 +44,11 @@ where
 {
     let _ = fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o600)) {
+        drop(listener);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
     let (ended, mut ends) = mpsc::unbounded_channel();
     let (mut active, mut failures) = (0, 0);
     while failures < limits.failures {

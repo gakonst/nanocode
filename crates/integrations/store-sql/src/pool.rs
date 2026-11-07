@@ -267,6 +267,10 @@ impl Lent {
         self.current = Some(self.want);
     }
 
+    pub const fn changed(&mut self) {
+        self.current = None;
+    }
+
     pub const fn opened(&mut self) {
         self.open = true;
     }

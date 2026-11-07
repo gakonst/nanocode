@@ -609,6 +609,8 @@ fn model_max_tokens(model: &str) -> Option<u32> {
     }
 }
 
+pub const DEFAULT_COMPACTION_RESERVED_TOKENS: u64 = 20_000 + 13_000;
+
 pub fn default_context_window_tokens(model: &str) -> u64 {
     match model {
         "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-1" | "claude-mythos-5-1"
@@ -5495,7 +5497,7 @@ impl State {
         if let Some(limit) = *self.auto_compact_token_limit.get() {
             return limit.min(self.context_window_tokens);
         }
-        let reserve = 20_000u64 + 13_000;
+        let reserve = DEFAULT_COMPACTION_RESERVED_TOKENS;
         let window = self
             .auto_compact_window_tokens
             .unwrap_or(self.context_window_tokens)

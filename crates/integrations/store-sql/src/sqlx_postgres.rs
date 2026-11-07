@@ -1,15 +1,17 @@
 use std::ops::DerefMut;
 
+use futures_util::TryStreamExt as _;
 use nanocode_durability_core::{
     Collected, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites,
     StoreError, StoreFuture, Unreachable,
 };
 use nanocode_sync::Owned;
-use sqlx::{PgConnection, PgPool, Postgres, Row, pool::PoolConnection};
+use sqlx::{AssertSqlSafe, Either, PgConnection, PgPool, Postgres, Row, pool::PoolConnection};
 
 pub trait PgConnections: Send + Sync {
     type Connection: DerefMut<Target = PgConnection> + Send;
     const IN_TRANSACTION: bool = false;
+    const SIMPLE: Option<&'static str> = None;
 
     fn acquire(&self) -> StoreFuture<'_, Result<Self::Connection, StoreError>>;
 }
@@ -52,6 +54,9 @@ async fn transact<C: PgConnections>(
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
     let mut connection = connections.acquire().await?;
+    if let Some(prelude) = C::SIMPLE {
+        return simple(&mut connection, prelude, statements).await;
+    }
     if C::IN_TRANSACTION {
         return run(&mut connection, statements).await;
     }
@@ -173,6 +178,95 @@ async fn run(
         results.push(rows);
     }
     Ok(results)
+}
+
+async fn simple(
+    connection: &mut PgConnection,
+    prelude: &str,
+    statements: &[SqlStatement<'_>],
+) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+    let mut sql = prelude.to_owned();
+    for statement in statements {
+        sql.push(';');
+        inline(&mut sql, statement)?;
+    }
+    let mut ended = Vec::with_capacity(statements.len() + 1);
+    let mut rows = Vec::new();
+    let mut results = sqlx::raw_sql(AssertSqlSafe(sql)).fetch_many(connection);
+    while let Some(result) = results.try_next().await.map_err(backend)? {
+        match result {
+            Either::Left(_) => ended.push(std::mem::take(&mut rows)),
+            Either::Right(row) => rows.push(
+                (0..row.len())
+                    .map(|column| row.try_get(column))
+                    .collect::<Result<_, _>>()
+                    .map_err(backend)?,
+            ),
+        }
+    }
+    let Some(first) = ended.len().checked_sub(statements.len()) else {
+        return Err(StoreError::Backend(format!(
+            "Postgres ended {} of {} statements",
+            ended.len(),
+            statements.len()
+        )));
+    };
+    Ok(ended.split_off(first))
+}
+
+fn inline(sql: &mut String, statement: &SqlStatement<'_>) -> Result<(), StoreError> {
+    let refused = || {
+        StoreError::Backend(format!(
+            "a statement sent with its parameters inlined holds only $n placeholders outside quotes and comments: {}",
+            statement.sql
+        ))
+    };
+    let mut quote = None;
+    let mut chars = statement.sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(_), '\\') => return Err(refused()),
+            (Some(open), c) => {
+                quote = (c != open).then_some(open);
+                sql.push(c);
+            }
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                sql.push(c);
+            }
+            (None, '-') if chars.peek() == Some(&'-') => return Err(refused()),
+            (None, '/') if chars.peek() == Some(&'*') => return Err(refused()),
+            (None, '$') => {
+                let mut index = 0_usize;
+                while let Some(digit) = chars.peek().and_then(|c| c.to_digit(10)) {
+                    chars.next();
+                    index = index
+                        .checked_mul(10)
+                        .and_then(|index| index.checked_add(digit as usize))
+                        .ok_or_else(refused)?;
+                }
+                let value = index
+                    .checked_sub(1)
+                    .and_then(|at| statement.params.get(at))
+                    .filter(|value| !value.contains('\0'))
+                    .ok_or_else(refused)?;
+                sql.push_str("E'");
+                for c in value.chars() {
+                    match c {
+                        '\\' => sql.push_str("\\\\"),
+                        '\'' => sql.push_str("''"),
+                        c => sql.push(c),
+                    }
+                }
+                sql.push('\'');
+            }
+            (None, c) => sql.push(c),
+        }
+    }
+    match quote {
+        Some(_) => Err(refused()),
+        None => Ok(()),
+    }
 }
 
 fn backend(error: sqlx::Error) -> StoreError {

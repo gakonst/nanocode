@@ -264,11 +264,15 @@ impl Lent {
     }
 
     pub fn switch(&mut self) -> Option<String> {
-        if self.current == Some(self.want) {
+        self.switch_to(self.want)
+    }
+
+    pub fn switch_to(&mut self, side: Side) -> Option<String> {
+        if self.current == Some(side) {
             return None;
         }
         self.current = None;
-        Some(match self.want {
+        Some(match side {
             Side::Default => self.pool.sides.default.clone(),
             Side::Other => self.pool.sides.other.clone(),
         })
@@ -276,6 +280,10 @@ impl Lent {
 
     pub const fn switched(&mut self) {
         self.current = Some(self.want);
+    }
+
+    pub const fn switched_to(&mut self, side: Side) {
+        self.current = Some(side);
     }
 
     pub const fn changed(&mut self) {

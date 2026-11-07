@@ -33,8 +33,8 @@ impl Unresumable {
             return Some(Self::ChangedRequest);
         }
         chain(error).find_map(|cause| {
-            if let Some(missing) = cause.downcast_ref::<Missing>() {
-                return Some(missing.unresumable());
+            if cause.is::<Missing>() {
+                return Some(Self::Missing);
             }
             match cause.downcast_ref::<NanocodeError>()? {
                 NanocodeError::InvalidCheckpoint(_) => Some(Self::Undecodable),
@@ -59,12 +59,6 @@ fn chain<'a>(
 pub enum Missing {
     Prompt,
     Session,
-}
-
-impl Missing {
-    const fn unresumable(self) -> Unresumable {
-        Unresumable::Missing
-    }
 }
 
 impl fmt::Display for Missing {

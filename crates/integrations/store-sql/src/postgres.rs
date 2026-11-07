@@ -531,7 +531,13 @@ impl PostgresSql {
         let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
-        let statement = lane.prepare(sql).await?;
+        let statement = match lane.prepare(sql).await {
+            Ok(statement) => statement,
+            Err(error) => {
+                self.release(index, &mut slot, lane);
+                return Err(error.into());
+            }
+        };
         let ran = self
             .bounded(
                 async { Ok(lane.client.query(&statement, params).await) },
@@ -552,14 +558,21 @@ impl PostgresSql {
         let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
-        let mut fixed = Vec::with_capacity(5);
-        for text in [OPEN, pipelined.setup, LOCKS, pipelined.collected, CLOSE] {
-            fixed.push(lane.prepare(text).await?);
+        let bracket = [OPEN, pipelined.setup, LOCKS, pipelined.collected, CLOSE];
+        let texts = bracket
+            .into_iter()
+            .chain(statements.iter().map(|(text, _)| *text));
+        let mut prepared = Vec::with_capacity(bracket.len() + statements.len());
+        for text in texts {
+            match lane.prepare(text).await {
+                Ok(statement) => prepared.push(statement),
+                Err(error) => {
+                    self.release(index, &mut slot, lane);
+                    return Err(error.into());
+                }
+            }
         }
-        let mut prepared = Vec::with_capacity(statements.len());
-        for (text, _) in statements {
-            prepared.push(lane.prepare(text).await?);
-        }
+        let (fixed, prepared) = prepared.split_at(bracket.len());
         let classes: Vec<i32> = keys.iter().map(|key| key.class).collect();
         let ids: Vec<i32> = keys.iter().map(|key| key.id).collect();
         let shared: Vec<bool> = keys.iter().map(|key| key.shared).collect();

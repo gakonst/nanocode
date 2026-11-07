@@ -2,17 +2,17 @@ use crate::state::Node;
 use atspi_common::{Interface, InterfaceSet, Role, State, StateSet};
 use atspi_proxies::{
     accessible::AccessibleProxy, action::ActionProxy, bus::BusProxy, component::ComponentProxy,
-    text::TextProxy, value::ValueProxy,
+    selection::SelectionProxy, text::TextProxy, value::ValueProxy,
 };
 use futures_util::{StreamExt, stream};
-use std::{future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, time::Duration};
 use tokio::time::{Instant, timeout, timeout_at};
 use zbus::{
     Connection,
     fdo::DBusProxy,
     names::BusName,
     proxy::{Builder, CacheProperties, Defaults},
-    zvariant::OwnedObjectPath,
+    zvariant::{OwnedObjectPath, OwnedValue},
 };
 
 pub const CALL: Duration = Duration::from_secs(1);
@@ -45,7 +45,7 @@ pub struct Info {
     pub name: Option<String>,
     pub states: StateSet,
     pub interfaces: InterfaceSet,
-    pub actions: Vec<String>,
+    pub actionable: bool,
     pub value: Option<String>,
     pub children: Vec<Element>,
     pub shown: bool,
@@ -216,6 +216,19 @@ pub fn textual(role: Role, interfaces: InterfaceSet) -> bool {
             ))
 }
 
+pub async fn selected(bus: &Connection, element: &Element) -> Option<String> {
+    let selection = proxy::<SelectionProxy>(bus, element).await?;
+    let chosen = timed(selection.get_selected_child(0)).await?;
+    let chosen = Element {
+        bus: chosen.name_as_str()?.to_owned(),
+        path: chosen.path_as_str().to_owned(),
+    };
+    let accessible = proxy::<AccessibleProxy>(bus, &chosen).await?;
+    timed(accessible.name())
+        .await
+        .filter(|name| !name.trim().is_empty())
+}
+
 async fn value(
     bus: &Connection,
     element: &Element,
@@ -232,6 +245,21 @@ async fn value(
             .await
             .filter(|text| !text.is_empty());
     }
+    if role == Role::ComboBox {
+        if interfaces.contains(Interface::Selection) {
+            return selected(bus, element).await;
+        }
+        let (kids, _) = children(bus, element, 1).await;
+        let list = kids.first()?;
+        return if self::interfaces(bus, list)
+            .await
+            .contains(Interface::Selection)
+        {
+            selected(bus, list).await
+        } else {
+            None
+        };
+    }
     if interfaces.contains(Interface::Value) {
         let value = proxy::<ValueProxy>(bus, element).await?;
         return timed(value.current_value()).await.map(number);
@@ -239,14 +267,43 @@ async fn value(
     None
 }
 
+async fn summary(
+    bus: &Connection,
+    element: &Element,
+    accessible: &AccessibleProxy<'_>,
+) -> (Option<String>, Option<Option<String>>, Option<i32>) {
+    let all = bus.call_method(
+        Some(element.bus.as_str()),
+        element.path.as_str(),
+        Some("org.freedesktop.DBus.Properties"),
+        "GetAll",
+        &("org.a11y.atspi.Accessible",),
+    );
+    let all: Option<HashMap<String, OwnedValue>> = timed(all)
+        .await
+        .and_then(|reply| reply.body().deserialize().ok());
+    if let Some(all) = all {
+        let text = |key: &str| {
+            all.get(key)
+                .and_then(|value| value.downcast_ref::<&str>().ok())
+                .map(str::to_owned)
+        };
+        let count = all
+            .get("ChildCount")
+            .and_then(|value| value.downcast_ref::<i32>().ok());
+        return (text("Name"), Some(text("Description")), count);
+    }
+    let (name, count) = tokio::join!(timed(accessible.name()), timed(accessible.child_count()));
+    (name, None, count)
+}
+
 pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Info> {
     let accessible = proxy::<AccessibleProxy>(bus, element).await?;
-    let (role, name, states, interfaces, count) = tokio::join!(
+    let (role, states, interfaces, (name, described, count)) = tokio::join!(
         timed(accessible.inner().call::<_, _, u32>("GetRole", &())),
-        timed(accessible.name()),
         timed(accessible.get_state()),
         timed(accessible.get_interfaces()),
-        timed(accessible.child_count()),
+        summary(bus, element, &accessible),
     );
     let role = Role::try_from(role?).unwrap_or(Role::Unknown);
     let states = states.unwrap_or_default();
@@ -259,7 +316,7 @@ pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Inf
         name,
         states,
         interfaces,
-        actions: Vec::new(),
+        actionable: false,
         value: None,
         children: Vec::new(),
         shown,
@@ -269,13 +326,17 @@ pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Inf
         return Some(info);
     }
     let unnamed = info.name.is_none() && interfaces.contains(Interface::Action);
-    let (actions, value, children, description) = tokio::join!(
+    let (actionable, value, children, description) = tokio::join!(
         async {
-            if interfaces.contains(Interface::Action) {
-                actions(bus, element).await
-            } else {
-                Vec::new()
+            if !interfaces.contains(Interface::Action) {
+                return false;
             }
+            let Some(action) = proxy::<ActionProxy>(bus, element).await else {
+                return false;
+            };
+            timed(action.get_actions())
+                .await
+                .is_some_and(|listed| !listed.is_empty())
         },
         value(bus, element, role, interfaces),
         async {
@@ -286,14 +347,14 @@ pub async fn info(bus: &Connection, element: &Element, deep: bool) -> Option<Inf
             }
         },
         async {
-            if unnamed {
-                timed(accessible.description()).await
-            } else {
-                None
+            match described {
+                _ if !unnamed => None,
+                Some(description) => description,
+                None => timed(accessible.description()).await,
             }
         },
     );
-    info.actions = actions;
+    info.actionable = actionable;
     info.value = value;
     (info.children, info.cut) = (children.0, info.cut || children.1);
     if info.name.is_none() {
@@ -350,7 +411,7 @@ pub fn flags(states: StateSet, actionable: bool) -> Vec<&'static str> {
 }
 
 pub fn node(element: Element, info: Info) -> Node<Element> {
-    let actionable = !info.actions.is_empty()
+    let actionable = info.actionable
         || info.interfaces.contains(Interface::EditableText)
         || info.interfaces.contains(Interface::Value)
         || info.states.contains(State::Selectable);
@@ -428,7 +489,11 @@ pub async fn tree(bus: &Connection, window: &Element) -> Tree {
     }
 }
 
-pub async fn registered(bus: &Connection) -> Vec<Registered> {
+pub async fn registered(
+    bus: &Connection,
+    known: &HashMap<String, (u32, String)>,
+    shown: bool,
+) -> Vec<Registered> {
     let root = Element {
         bus: REGISTRY.into(),
         path: ROOT.into(),
@@ -444,16 +509,31 @@ pub async fn registered(bus: &Connection) -> Vec<Registered> {
     let dbus = &builder;
     let found: Vec<Option<Registered>> = stream::iter(apps)
         .map(|element| async move {
-            let name = BusName::try_from(element.bus.as_str()).ok()?;
-            let (pid, accessible, windows) = tokio::join!(
-                timed(dbus.get_connection_unix_process_id(name)),
-                proxy::<AccessibleProxy>(bus, &element),
-                windows(bus, &element),
-            );
-            let name = match accessible {
-                Some(accessible) => timed(accessible.name()).await.unwrap_or_default(),
-                None => String::new(),
+            let windows = async {
+                if shown {
+                    windows(bus, &element).await.unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
             };
+            let (pid, name) = match known.get(&element.bus) {
+                Some((pid, name)) => (Some(*pid), name.clone()),
+                None => {
+                    let pid = async {
+                        timed(dbus.get_connection_unix_process_id(
+                            BusName::try_from(element.bus.as_str()).ok()?,
+                        ))
+                        .await
+                    };
+                    let name = async {
+                        let accessible = proxy::<AccessibleProxy>(bus, &element).await?;
+                        timed(accessible.name()).await
+                    };
+                    let (pid, name) = tokio::join!(pid, name);
+                    (pid, name.unwrap_or_default())
+                }
+            };
+            let windows = windows.await;
             Some(Registered {
                 pid: pid?,
                 name,
@@ -469,8 +549,11 @@ pub async fn registered(bus: &Connection) -> Vec<Registered> {
     found.into_iter().flatten().collect()
 }
 
-pub async fn windows(bus: &Connection, app: &Element) -> Vec<(Element, Role, StateSet)> {
-    let (children, _) = children(bus, app, -1).await;
+pub async fn windows(bus: &Connection, app: &Element) -> Option<Vec<(Element, Role, StateSet)>> {
+    let (children, cut) = children(bus, app, -1).await;
+    if cut && children.is_empty() {
+        return None;
+    }
     let found: Vec<Option<(Element, Role, StateSet)>> = stream::iter(children)
         .map(|element| async move {
             let (role, states) = tokio::join!(role(bus, &element), states(bus, &element));
@@ -480,24 +563,40 @@ pub async fn windows(bus: &Connection, app: &Element) -> Vec<(Element, Role, Sta
         .buffered(PARALLEL)
         .collect()
         .await;
-    found.into_iter().flatten().collect()
+    Some(found.into_iter().flatten().collect())
 }
 
-pub async fn window(bus: &Connection, apps: &[Element]) -> Option<(Element, Option<String>)> {
+pub async fn window(
+    bus: &Connection,
+    apps: &[Element],
+) -> Result<Option<(Element, Option<String>)>, ()> {
     let mut all = Vec::new();
+    let mut answered = apps.is_empty();
     for app in apps {
-        all.extend(windows(bus, app).await);
+        if let Some(windows) = windows(bus, app).await {
+            answered = true;
+            all.extend(windows);
+        }
     }
-    let (window, _, _) = all
+    if !answered {
+        return Err(());
+    }
+    let Some((window, _, _)) = all
         .iter()
         .find(|(_, _, states)| states.contains(State::Active))
         .or_else(|| {
             all.iter()
                 .find(|(_, _, states)| states.contains(State::Showing))
-        })?;
-    let accessible = proxy::<AccessibleProxy>(bus, window).await?;
-    let title = timed(accessible.name())
-        .await
-        .filter(|title| !title.trim().is_empty());
-    Some((window.clone(), title))
+        })
+    else {
+        return Ok(None);
+    };
+    let title = match proxy::<AccessibleProxy>(bus, window).await {
+        Some(accessible) => timed(accessible.name()).await,
+        None => None,
+    };
+    Ok(Some((
+        window.clone(),
+        title.filter(|title| !title.trim().is_empty()),
+    )))
 }

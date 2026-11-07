@@ -7,6 +7,7 @@ use ax::{
     AX_ACTION_UNSUPPORTED, AX_API_DISABLED, AX_ATTRIBUTE_UNSUPPORTED, AX_CANNOT_COMPLETE,
     AX_INVALID, AX_NOT_IMPLEMENTED, AX_SUCCESS, AXError, Element,
 };
+use core_foundation::base::CFType;
 use std::{
     env, fs,
     process::Command,
@@ -20,6 +21,17 @@ const READ_BUDGET: Duration = Duration::from_secs(5);
 const INTERACTIVE: &str = "AXButton AXCheckBox AXRadioButton AXPopUpButton AXMenuButton AXComboBox AXTextField AXTextArea AXSlider AXIncrementor AXLink AXMenuItem AXMenuBarItem AXDisclosureTriangle AXRow AXCell AXScrollArea AXColorWell AXDateField AXTimeField AXSegmentedControl AXTab";
 const ACTIVATING: &str = "AXPress AXShowMenu AXConfirm AXPick AXIncrement AXOpen";
 const SECURE: &str = "AXSecureTextField";
+const NODE: [&str; 9] = [
+    "AXRole",
+    "AXSubrole",
+    "AXTitle",
+    "AXDescription",
+    "AXValue",
+    "AXEnabled",
+    "AXSelected",
+    "AXExpanded",
+    "AXChildren",
+];
 
 #[derive(Default)]
 pub struct Ax {
@@ -337,28 +349,39 @@ fn read_node(
     above: &mut Vec<Element>,
 ) -> Node<Element> {
     budget.nodes += 1;
-    let role = element.text("AXRole").unwrap_or_else(|| "AXUnknown".into());
+    let [
+        role,
+        subrole,
+        title,
+        description,
+        value,
+        enabled,
+        selected,
+        expanded,
+        children,
+    ] = element.many(&NODE);
+    let text = |value: Option<CFType>| value.as_ref().and_then(ax::text_of);
+    let flag = |value: Option<CFType>| value.as_ref().and_then(ax::flag_of);
+    let role = text(role).unwrap_or_else(|| "AXUnknown".into());
     let actions = element.actions();
     let actionable = INTERACTIVE.split(' ').any(|known| known == role)
         || actions
             .iter()
             .any(|a| ACTIVATING.split(' ').any(|known| known == a));
-    let name = element
-        .text("AXTitle")
-        .or_else(|| element.text("AXDescription"));
-    let value = element.text("AXValue");
-    let secure = element.text("AXSubrole").as_deref() == Some(SECURE);
+    let name = text(title).or_else(|| text(description));
+    let value = text(value);
+    let secure = text(subrole).as_deref() == Some(SECURE);
     let mut states = Vec::new();
-    if element.flag("AXEnabled") == Some(false) {
+    if flag(enabled) == Some(false) {
         states.push("disabled");
     }
     if focused.is_some_and(|focused| *focused == element) {
         states.push("focused");
     }
-    if element.flag("AXSelected") == Some(true) {
+    if flag(selected) == Some(true) {
         states.push("selected");
     }
-    match element.flag("AXExpanded") {
+    match flag(expanded) {
         Some(true) => states.push("expanded"),
         Some(false) if actionable => states.push("collapsed"),
         _ => {}
@@ -368,16 +391,19 @@ fn read_node(
         states.push("checked");
     }
     let value = if checkable { None } else { value };
-    let mut children = Vec::new();
+    let mut kids = Vec::new();
     if depth < MAX_DEPTH {
         above.push(element.clone());
-        for child in element.elements("AXChildren", MAX_CHILDREN) {
+        let children = children
+            .map(|children| ax::elements_of(&children, MAX_CHILDREN))
+            .unwrap_or_default();
+        for child in children {
             if budget.nodes >= MAX_NODES || Instant::now() > budget.deadline {
                 budget.complete = false;
                 break;
             }
             if !above.contains(&child) {
-                children.push(read_node(child, depth + 1, focused, budget, above));
+                kids.push(read_node(child, depth + 1, focused, budget, above));
             }
         }
         above.pop();
@@ -390,7 +416,7 @@ fn read_node(
     node.states = states;
     node.actionable = actionable;
     node.secure = secure;
-    node.children = children;
+    node.children = kids;
     node
 }
 

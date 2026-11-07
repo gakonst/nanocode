@@ -10,8 +10,9 @@ use x11rb::{
     errors::ReplyError,
     protocol::{
         xproto::{
-            AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ConnectionExt as _, ImageFormat,
-            ImageOrder, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, MapState, Window,
+            AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ClientMessageEvent,
+            ConnectionExt as _, EventMask, ImageFormat, ImageOrder, KEY_PRESS_EVENT,
+            KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, MapState, Window,
         },
         xtest::ConnectionExt as _,
     },
@@ -31,6 +32,7 @@ pub struct Display {
     pid: u32,
     clients: u32,
     application: u32,
+    active: u32,
 }
 
 pub struct Keymap {
@@ -152,6 +154,7 @@ impl Display {
         };
         let (pid, clients) = (atom(b"_NET_WM_PID")?, atom(b"_NET_CLIENT_LIST")?);
         let application = atom(b"_GTK_APPLICATION_ID")?;
+        let active = atom(b"_NET_ACTIVE_WINDOW")?;
         Ok(Self {
             conn,
             root,
@@ -159,7 +162,34 @@ impl Display {
             pid,
             clients,
             application,
+            active,
         })
+    }
+
+    pub fn active(&self) -> Option<Window> {
+        self.conn
+            .get_property(false, self.root, self.active, AtomEnum::WINDOW, 0, 1)
+            .ok()?
+            .reply()
+            .ok()?
+            .value32()?
+            .next()
+            .filter(|&window| window != 0)
+    }
+
+    pub fn active_pid(&self) -> Option<u32> {
+        self.owner(self.active()?).ok().flatten()
+    }
+
+    pub fn activate(&self, window: Window) -> Result<(), ReplyError> {
+        let event = ClientMessageEvent::new(32, window, self.active, [2, 0, 0, 0, 0]);
+        self.conn.send_event(
+            false,
+            self.root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
+        )?;
+        self.sync()
     }
 
     pub fn alive(&self) -> bool {

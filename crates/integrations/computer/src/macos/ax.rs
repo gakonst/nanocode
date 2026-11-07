@@ -2,6 +2,7 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core_foundation::{
+    array::CFArray,
     base::{CFType, TCFType},
     boolean::CFBoolean,
     dictionary::CFDictionary,
@@ -11,8 +12,8 @@ use core_foundation::{
 use core_foundation_sys::{
     array::{CFArrayGetCount, CFArrayGetTypeID, CFArrayGetValueAtIndex, CFArrayRef},
     base::{
-        CFEqual, CFGetTypeID, CFIndex, CFRange, CFRelease, CFRetain, CFTypeID, CFTypeRef,
-        kCFAllocatorDefault,
+        CFEqual, CFGetTypeID, CFIndex, CFNullGetTypeID, CFRange, CFRelease, CFRetain, CFTypeID,
+        CFTypeRef, kCFAllocatorDefault,
     },
     data::{CFDataCreateMutable, CFDataGetBytePtr, CFDataGetLength, CFMutableDataRef},
     dictionary::{CFDictionaryGetValue, CFDictionaryRef},
@@ -30,6 +31,7 @@ pub const AX_NOT_IMPLEMENTED: AXError = -25208;
 pub const AX_API_DISABLED: AXError = -25211;
 const AX_NO_VALUE: AXError = -25212;
 const AX_RANGE: u32 = 4;
+const AX_ERROR_VALUE: u32 = 5;
 const MESSAGING_TIMEOUT: f32 = 1.0;
 const ACTION_TIMEOUT: f32 = 10.0;
 
@@ -57,6 +59,14 @@ unsafe extern "C" {
         attribute: CFStringRef,
         value: CFTypeRef,
     ) -> AXError;
+    fn AXUIElementCopyMultipleAttributeValues(
+        element: CFTypeRef,
+        attributes: CFArrayRef,
+        options: u32,
+        values: *mut CFArrayRef,
+    ) -> AXError;
+    fn AXValueGetTypeID() -> CFTypeID;
+    fn AXValueGetType(value: CFTypeRef) -> u32;
     fn AXUIElementCopyActionNames(element: CFTypeRef, names: *mut CFArrayRef) -> AXError;
     fn AXUIElementPerformAction(element: CFTypeRef, action: CFStringRef) -> AXError;
     fn AXUIElementSetMessagingTimeout(element: CFTypeRef, seconds: f32) -> AXError;
@@ -149,23 +159,36 @@ impl Element {
         Ok(unsafe { CFType::wrap_under_create_rule(value) })
     }
 
-    pub fn text(&self, attribute: &str) -> Option<String> {
-        let value = self.copy(attribute).ok()?;
-        let text = if let Some(text) = value.downcast::<CFString>() {
-            text.to_string()
-        } else if let Some(number) = value.downcast::<CFNumber>() {
-            let number = number.to_f64()?;
-            if number.fract() == 0.0 {
-                format!("{number:.0}")
-            } else {
-                number.to_string()
-            }
-        } else if bool::from(value.downcast::<CFBoolean>()?) {
-            "1".into()
-        } else {
-            "0".into()
+    pub fn many<const N: usize>(&self, attributes: &[&str; N]) -> [Option<CFType>; N] {
+        let names: Vec<CFString> = attributes.iter().map(|name| CFString::new(name)).collect();
+        let names = CFArray::from_CFTypes(&names);
+        let mut values: CFArrayRef = ptr::null();
+        let error = unsafe {
+            AXUIElementCopyMultipleAttributeValues(
+                self.0,
+                names.as_concrete_TypeRef(),
+                0,
+                &mut values,
+            )
         };
-        (!text.is_empty()).then_some(text)
+        if error != AX_SUCCESS || values.is_null() {
+            return std::array::from_fn(|_| None);
+        }
+        let values = unsafe { CFType::wrap_under_create_rule(values as CFTypeRef) };
+        let items = array_items(values.as_CFTypeRef(), N);
+        std::array::from_fn(|index| {
+            let item = *items.get(index)?;
+            let failed = unsafe {
+                CFGetTypeID(item) == CFNullGetTypeID()
+                    || CFGetTypeID(item) == AXValueGetTypeID()
+                        && AXValueGetType(item) == AX_ERROR_VALUE
+            };
+            (!failed).then(|| unsafe { CFType::wrap_under_get_rule(item) })
+        })
+    }
+
+    pub fn text(&self, attribute: &str) -> Option<String> {
+        text_of(&self.copy(attribute).ok()?)
     }
 
     pub fn numeric(&self, attribute: &str) -> bool {
@@ -174,13 +197,7 @@ impl Element {
     }
 
     pub fn flag(&self, attribute: &str) -> Option<bool> {
-        let value = self.copy(attribute).ok()?;
-        value.downcast::<CFBoolean>().map(bool::from).or_else(|| {
-            value
-                .downcast::<CFNumber>()
-                .and_then(|n| n.to_i64())
-                .map(|n| n != 0)
-        })
+        flag_of(&self.copy(attribute).ok()?)
     }
 
     pub fn element(&self, attribute: &str) -> Option<Self> {
@@ -190,16 +207,48 @@ impl Element {
     }
 
     pub fn elements(&self, attribute: &str, limit: usize) -> Vec<Self> {
-        let Ok(value) = self.copy(attribute) else {
-            return Vec::new();
-        };
-        array_items(value.as_CFTypeRef(), limit)
-            .into_iter()
-            .filter(|&item| unsafe { CFGetTypeID(item) == AXUIElementGetTypeID() })
-            .map(Self::retained)
-            .collect()
+        self.copy(attribute)
+            .map(|value| elements_of(&value, limit))
+            .unwrap_or_default()
     }
+}
 
+pub fn text_of(value: &CFType) -> Option<String> {
+    let text = if let Some(text) = value.downcast::<CFString>() {
+        text.to_string()
+    } else if let Some(number) = value.downcast::<CFNumber>() {
+        let number = number.to_f64()?;
+        if number.fract() == 0.0 {
+            format!("{number:.0}")
+        } else {
+            number.to_string()
+        }
+    } else if bool::from(value.downcast::<CFBoolean>()?) {
+        "1".into()
+    } else {
+        "0".into()
+    };
+    (!text.is_empty()).then_some(text)
+}
+
+pub fn flag_of(value: &CFType) -> Option<bool> {
+    value.downcast::<CFBoolean>().map(bool::from).or_else(|| {
+        value
+            .downcast::<CFNumber>()
+            .and_then(|n| n.to_i64())
+            .map(|n| n != 0)
+    })
+}
+
+pub fn elements_of(value: &CFType, limit: usize) -> Vec<Element> {
+    array_items(value.as_CFTypeRef(), limit)
+        .into_iter()
+        .filter(|&item| unsafe { CFGetTypeID(item) == AXUIElementGetTypeID() })
+        .map(Element::retained)
+        .collect()
+}
+
+impl Element {
     pub fn actions(&self) -> Vec<String> {
         let mut names: CFArrayRef = ptr::null();
         if unsafe { AXUIElementCopyActionNames(self.0, &mut names) } != AX_SUCCESS

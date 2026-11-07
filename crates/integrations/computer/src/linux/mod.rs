@@ -28,6 +28,9 @@ pub struct AtSpi {
     display: Option<x11::Display>,
     apps: HashMap<i64, Vec<Element>>,
     entries: desktop::Index,
+    unwatched: bool,
+    before: Option<u32>,
+    known: HashMap<String, (u32, String)>,
 }
 
 impl AtSpi {
@@ -72,6 +75,93 @@ impl AtSpi {
         let hint = self.extents(window);
         let pid = pid(app)?;
         self.display()?.origin(pid, hint)
+    }
+
+    fn grab(&mut self, element: &Element) -> bool {
+        if self.unwatched {
+            return true;
+        }
+        let pid = self
+            .apps
+            .iter()
+            .find(|(_, elements)| elements.iter().any(|known| known.bus == element.bus))
+            .and_then(|(&pid, _)| u32::try_from(pid).ok());
+        x11::available()
+            && pid.is_some_and(|pid| {
+                self.display()
+                    .ok()
+                    .and_then(|display| display.focused(pid).ok())
+                    .unwrap_or(false)
+            })
+    }
+
+    fn list(&mut self, shown: bool) -> Vec<App> {
+        let Ok(bus) = self.bus() else {
+            return Vec::new();
+        };
+        let known = std::mem::take(&mut self.known);
+        let registered = self
+            .block(atspi::registered(&bus, &known, shown))
+            .unwrap_or_default();
+        for found in &registered {
+            if !found.name.trim().is_empty() {
+                self.known
+                    .insert(found.element.bus.clone(), (found.pid, found.name.clone()));
+            }
+        }
+        let classes = if x11::available() {
+            self.display()
+                .ok()
+                .and_then(|display| display.classes().ok())
+                .unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        let entries = self.entries.entries();
+        let own = std::process::id();
+        self.apps.clear();
+        let mut apps: Vec<App> = Vec::new();
+        for found in registered {
+            if found.pid == own || found.pid == 0 {
+                continue;
+            }
+            let pid = i64::from(found.pid);
+            self.apps.entry(pid).or_default().push(found.element);
+            if let Some(app) = apps.iter_mut().find(|app| app.pid == pid) {
+                app.windows |= found.windows;
+                continue;
+            }
+            let path = desktop::exe(found.pid).unwrap_or_default();
+            let name = if found.name.trim().is_empty() {
+                path.rsplit('/').next().unwrap_or_default().to_owned()
+            } else {
+                found.name
+            };
+            let window = classes.get(&found.pid).map_or(&[][..], Vec::as_slice);
+            let mut aliases = identity::of(found.pid, &path, window, entries);
+            let id = if aliases.is_empty() {
+                name.clone()
+            } else {
+                aliases.remove(0)
+            };
+            apps.push(App {
+                pid,
+                name,
+                id,
+                aliases,
+                path,
+                background: false,
+                windows: found.windows,
+            });
+        }
+        apps
+    }
+
+    fn silent(app: &App) -> String {
+        format!(
+            "{} is not answering accessibility requests, so its state could not be read; it may be busy or hung. Read it again shortly.",
+            app.name
+        )
     }
 
     fn keys_allowed(&mut self, app: &App, what: &str) -> Result<(), String> {
@@ -172,74 +262,64 @@ impl Backend for AtSpi {
     }
 
     fn apps(&mut self) -> Vec<App> {
-        let Ok(bus) = self.bus() else {
-            return Vec::new();
-        };
-        let registered = self.block(atspi::registered(&bus)).unwrap_or_default();
-        let classes = if x11::available() {
-            self.display()
-                .ok()
-                .and_then(|display| display.classes().ok())
-                .unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        let entries = self.entries.entries();
-        let own = std::process::id();
-        self.apps.clear();
-        let mut apps: Vec<App> = Vec::new();
-        for found in registered {
-            if found.pid == own || found.pid == 0 {
-                continue;
-            }
-            let pid = i64::from(found.pid);
-            self.apps.entry(pid).or_default().push(found.element);
-            if let Some(app) = apps.iter_mut().find(|app| app.pid == pid) {
-                app.windows |= found.windows;
-                continue;
-            }
-            let path = desktop::exe(found.pid).unwrap_or_default();
-            let name = if found.name.trim().is_empty() {
-                path.rsplit('/').next().unwrap_or_default().to_owned()
-            } else {
-                found.name
-            };
-            let window = classes.get(&found.pid).map_or(&[][..], Vec::as_slice);
-            let mut aliases = identity::of(found.pid, &path, window, entries);
-            let id = if aliases.is_empty() {
-                name.clone()
-            } else {
-                aliases.remove(0)
-            };
-            apps.push(App {
-                pid,
-                name,
-                id,
-                aliases,
-                path,
-                background: false,
-                windows: found.windows,
-            });
-        }
-        apps
+        self.list(false)
+    }
+
+    fn listing(&mut self) -> Vec<App> {
+        self.list(true)
     }
 
     fn installed(&mut self, wanted: &str) -> Option<App> {
         desktop::installed(self.entries.entries(), wanted)
     }
 
+    fn watched(&mut self, watched: bool) {
+        self.unwatched = !watched;
+    }
+
     fn launch(&mut self, app: &App) -> Result<(), String> {
+        self.before = if self.unwatched || !x11::available() {
+            None
+        } else {
+            self.display().ok().and_then(x11::Display::active)
+        };
         desktop::launch(app)
+    }
+
+    fn launched(&mut self, app: &App) {
+        let (Some(before), Ok(pid)) = (self.before, pid(app)) else {
+            return;
+        };
+        if let Ok(display) = self.display()
+            && display.active() != Some(before)
+            && display.active_pid() == Some(pid)
+        {
+            let _ = display.activate(before);
+        }
+    }
+
+    fn types_into(&mut self, element: &Element) -> bool {
+        let Ok(bus) = self.bus() else {
+            return false;
+        };
+        self.block(atspi::interfaces(&bus, element))
+            .is_some_and(|interfaces| interfaces.contains(atspi_common::Interface::EditableText))
     }
 
     fn read(&mut self, app: &App) -> Result<Read<Element>, String> {
         let bus = self.bus()?;
         let known = self.apps.get(&app.pid).cloned().unwrap_or_default();
-        let mut found = self.block(atspi::window(&bus, &known)).flatten();
+        let mut found = self
+            .block(atspi::window(&bus, &known))
+            .ok_or(NO_BUS)?
+            .map_err(|()| Self::silent(app))?;
         if found.is_none() {
             self.apps();
             let known = self.apps.get(&app.pid).cloned().unwrap_or_default();
-            found = self.block(atspi::window(&bus, &known)).flatten();
+            found = self
+                .block(atspi::window(&bus, &known))
+                .ok_or(NO_BUS)?
+                .map_err(|()| Self::silent(app))?;
         }
         let Some((window, title)) = found else {
             return Ok(Read {
@@ -281,7 +361,9 @@ impl Backend for AtSpi {
 
     fn press(&mut self, element: &Element, press: Press) -> Result<String, String> {
         let bus = self.bus()?;
-        self.block(act::press(&bus, element, press)).ok_or(NO_BUS)?
+        let grab = self.grab(element);
+        self.block(act::press(&bus, element, press, grab))
+            .ok_or(NO_BUS)?
     }
 
     fn set_value(&mut self, element: &Element, value: &str) -> Result<String, String> {

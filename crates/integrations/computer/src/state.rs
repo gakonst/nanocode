@@ -1,5 +1,6 @@
 const MAX_VALUE: usize = 200;
 const MASK: &str = "••••";
+const STATIC: [&str; 3] = ["Label", "Static", "StaticText"];
 
 pub struct Node<E> {
     pub role: String,
@@ -34,13 +35,33 @@ pub fn render<E>(title: &str, root: Option<Node<E>>, complete: bool) -> (String,
     }
     let mut elements = Vec::new();
     match root {
-        Some(root) => walk(root, 0, &mut lines, &mut elements),
+        Some(root) => walk(root, 0, None, &mut lines, &mut elements),
         None => lines.push("(no open window)".into()),
     }
     (lines.join("\n"), elements)
 }
 
-fn walk<E>(node: Node<E>, depth: usize, lines: &mut Vec<String>, elements: &mut Vec<E>) {
+fn redundant<E>(node: &Node<E>, above: Option<&str>) -> bool {
+    node.children.is_empty()
+        && node.value.is_none()
+        && node.states.is_empty()
+        && STATIC.contains(&node.role.as_str())
+        && node.name.as_deref().map(str::trim).is_none_or(|name| {
+            above.is_some_and(|above| above.trim() == name)
+                || !name.chars().any(char::is_alphanumeric)
+        })
+}
+
+fn walk<E>(
+    node: Node<E>,
+    depth: usize,
+    above: Option<&str>,
+    lines: &mut Vec<String>,
+    elements: &mut Vec<E>,
+) {
+    if redundant(&node, above) {
+        return;
+    }
     let Node {
         role,
         name,
@@ -58,7 +79,7 @@ fn walk<E>(node: Node<E>, depth: usize, lines: &mut Vec<String>, elements: &mut 
     };
     if !(actionable || name.is_some() || value.is_some()) {
         for child in children {
-            walk(child, depth, lines, elements);
+            walk(child, depth, above, lines, elements);
         }
         return;
     }
@@ -68,8 +89,8 @@ fn walk<E>(node: Node<E>, depth: usize, lines: &mut Vec<String>, elements: &mut 
         elements.push(element);
     }
     line.push_str(&role);
-    if let Some(name) = name {
-        line.push_str(&format!(" \"{}\"", flat(&name)));
+    if let Some(name) = &name {
+        line.push_str(&format!(" \"{}\"", flat(name)));
     }
     if let Some(value) = value {
         line.push_str(&format!(" value=\"{}\"", flat(&value)));
@@ -79,7 +100,7 @@ fn walk<E>(node: Node<E>, depth: usize, lines: &mut Vec<String>, elements: &mut 
     }
     lines.push(line);
     for child in children {
-        walk(child, depth + 1, lines, elements);
+        walk(child, depth + 1, name.as_deref(), lines, elements);
     }
 }
 

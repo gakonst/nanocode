@@ -27,6 +27,7 @@ struct Snapshot<E> {
     elements: Vec<E>,
     focused: Option<E>,
     window: Option<E>,
+    typing: Option<E>,
 }
 
 pub struct Engine<B: Backend> {
@@ -92,8 +93,9 @@ impl<B: Backend> Engine<B> {
     }
 
     #[must_use]
-    pub const fn pointer(mut self, allowed: bool) -> Self {
+    pub fn pointer(mut self, allowed: bool) -> Self {
         self.pointer = allowed;
+        self.backend.watched(!allowed);
         self
     }
 
@@ -132,7 +134,7 @@ impl<B: Backend> Engine<B> {
             .as_str()
             .filter(|app| !app.trim().is_empty())
             .ok_or("app is required: a display name or the app's identifier")?;
-        let app = self.resolve(wanted)?;
+        let app = self.resolve(wanted, action == "get_app_state")?;
         self.permitted(&app)
             .map_err(|why| format!("{}: {why}", app.name))?;
         let done = if action == "get_app_state" {
@@ -142,7 +144,11 @@ impl<B: Backend> Engine<B> {
             thread::sleep(self.settle);
             Some(done)
         };
-        let (mut text, window) = self.read(&app)?;
+        let (mut text, window) = match (self.read(&app), &done) {
+            (Ok(read), _) => read,
+            (Err(why), Some(_)) => (why, None),
+            (Err(why), None) => return Err(why),
+        };
         if let Some(done) = done {
             text = format!("{done}\n{text}");
         }
@@ -182,7 +188,7 @@ impl<B: Backend> Engine<B> {
     }
 
     fn list_apps(&mut self) -> String {
-        let mut apps = self.backend.apps();
+        let mut apps = self.backend.listing();
         apps.retain(|app| !app.background || app.windows);
         apps.sort_by_key(|app| app.name.to_lowercase());
         let lines: Vec<String> = apps
@@ -203,8 +209,9 @@ impl<B: Backend> Engine<B> {
         }
     }
 
-    fn resolve(&mut self, wanted: &str) -> Result<App, String> {
-        if let Some(app) = find(self.backend.apps(), wanted) {
+    fn resolve(&mut self, wanted: &str, launch: bool) -> Result<App, String> {
+        let running = self.backend.apps();
+        if let Some(app) = find(running.clone(), wanted) {
             return Ok(app);
         }
         let wanted = wanted.trim().trim_end_matches('/');
@@ -213,6 +220,16 @@ impl<B: Backend> Engine<B> {
                 "{wanted} is not running and isn't an installed app, so nothing ran. Give its bundle identifier, path or executable name, or list running apps with list_apps."
             )
         })?;
+        if !installed.id.is_empty()
+            && let Some(app) = find(running, &installed.id)
+        {
+            return Ok(app);
+        }
+        if !launch {
+            return Err(format!(
+                "{wanted} is not running, so nothing ran; it may have quit. Read it with get_app_state, which starts it."
+            ));
+        }
         self.permitted(&installed)
             .map_err(|why| format!("{}: {why}", installed.name))?;
         self.backend.launch(&installed)?;
@@ -223,7 +240,9 @@ impl<B: Backend> Engine<B> {
             if let Some(app) = find(apps.clone(), wanted)
                 .or_else(|| find(apps, &installed.id).filter(|_| !installed.id.is_empty()))
             {
+                self.backend.launched(&app);
                 thread::sleep(LAUNCH_SETTLE.min(self.launch));
+                self.backend.launched(&app);
                 return Ok(app);
             }
         }
@@ -240,12 +259,14 @@ impl<B: Backend> Engine<B> {
             None => app.name.clone(),
         };
         let (text, elements) = render(&title, read.root, read.complete);
+        let typing = self.apps.remove(&app.pid).and_then(|state| state.typing);
         self.apps.insert(
             app.pid,
             Snapshot {
                 elements,
                 focused: read.focused,
                 window: read.window.clone(),
+                typing,
             },
         );
         Ok((text, read.window))
@@ -292,6 +313,20 @@ impl<B: Backend> Engine<B> {
         Ok(then)
     }
 
+    fn typing(&mut self, app: &App, element: Option<&B::Element>) {
+        let typing = element
+            .filter(|element| self.backend.types_into(element))
+            .cloned();
+        if let Some(state) = self.apps.get_mut(&app.pid) {
+            state.typing = typing;
+        }
+    }
+
+    fn typed(&mut self, app: &App) -> Option<B::Element> {
+        let typing = self.apps.get(&app.pid)?.typing.clone()?;
+        self.backend.alive(&typing).then_some(typing)
+    }
+
     fn pointer_allowed(&self) -> bool {
         self.pointer && self.backend.capabilities().pointer
     }
@@ -321,9 +356,14 @@ impl<B: Backend> Engine<B> {
             }
             "set_value" => {
                 let element = self.target(app, input)?;
-                self.backend.set_value(&element, &text("value"))
+                let done = self.backend.set_value(&element, &text("value"))?;
+                self.typing(app, Some(&element));
+                Ok(done)
             }
             "type_text" => {
+                if let Some(target) = self.typed(app) {
+                    return self.backend.type_text(app, &target, &text("text"));
+                }
                 let focused = self.focus_unchanged(app)?.ok_or_else(|| {
                     format!(
                         "No element of {} is focused, so nothing was typed. Click a field first.",
@@ -351,7 +391,9 @@ impl<B: Backend> Engine<B> {
                     &text("suffix"),
                     input["selection_type"].as_str().unwrap_or("text"),
                 )?;
-                self.backend.select(&element, &value, selection)
+                let done = self.backend.select(&element, &value, selection)?;
+                self.typing(app, Some(&element));
+                Ok(done)
             }
             "scroll" => {
                 let element = self.target(app, input)?;
@@ -418,12 +460,12 @@ impl<B: Backend> Engine<B> {
                 },
             );
         }
-        let press = if button == Button::Right {
-            Press::Menu
-        } else {
-            Press::Primary
-        };
-        self.backend.press(&element, press)
+        if button == Button::Right {
+            return self.backend.press(&element, Press::Menu);
+        }
+        let done = self.backend.press(&element, Press::Primary)?;
+        self.typing(app, Some(&element));
+        Ok(done)
     }
 }
 

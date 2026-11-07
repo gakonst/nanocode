@@ -20,6 +20,8 @@ const NOT_SETTABLE: &str =
 const SLOW: &str = "The app did not answer in time; whether it took effect is unknown. Read its state before trying again.";
 const REFUSED: &str = "The app refused it, so nothing ran.";
 const NOTHING: &str = "That element has nothing to scroll, so nothing ran.";
+const FRONT: &str = "Typing into that field needs its window in front of the user's, and it takes no text directly, so nothing ran. For a web page use the browser tool.";
+const KEPT: &str = "Chose it for type_text, which now types into it; its window stays in the background, so the keyboard focus the state shows is unchanged.";
 const CLICK: [&str; 2] = ["click", "press"];
 const PRIMARY: [&str; 4] = ["activate", "toggle", "jump", "open"];
 const MENU: [&str; 4] = ["popup", "menu", "showmenu", "contextmenu"];
@@ -96,7 +98,12 @@ async fn perform_at(
     done(acted(action.do_action(index as i32)).await?, what)
 }
 
-pub async fn press(bus: &Connection, element: &Element, press: Press) -> Result<String, String> {
+pub async fn press(
+    bus: &Connection,
+    element: &Element,
+    press: Press,
+    grab: bool,
+) -> Result<String, String> {
     let actions = atspi::actions(bus, element).await;
     if press == Press::Menu {
         return match chosen(&actions, &MENU) {
@@ -107,14 +114,32 @@ pub async fn press(bus: &Connection, element: &Element, press: Press) -> Result<
             )),
         };
     }
+    let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
+    if !grab && role == Some(Role::ComboBox) {
+        let names: Vec<String> = options(bus, element)
+            .await
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        return Err(format!(
+            "Opening its list would show a menu over the user's windows, so nothing ran. Choose an option with set_value and its text (its options: {}).",
+            list(&names)
+        ));
+    }
+    let entry = interfaces.contains(Interface::EditableText)
+        || interfaces.contains(Interface::Text)
+            && matches!(role, Some(Role::Entry | Role::PasswordText));
+    if entry && !grab {
+        if !interfaces.contains(Interface::EditableText) {
+            return Err(FRONT.into());
+        }
+        caret_to_end(bus, element).await;
+        return Ok(KEPT.into());
+    }
     if let Some(index) = chosen(&actions, &CLICK) {
         return perform_at(bus, element, index, "Clicked").await;
     }
-    let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
-    if interfaces.contains(Interface::EditableText)
-        || interfaces.contains(Interface::Text)
-            && matches!(role, Some(Role::Entry | Role::PasswordText))
-    {
+    if entry {
         let component = proxy::<ComponentProxy>(bus, element).await.ok_or(GONE)?;
         done(acted(component.grab_focus()).await?, "Focused it")?;
         caret_to_end(bus, element).await;
@@ -173,12 +198,78 @@ pub async fn perform(bus: &Connection, element: &Element, wanted: &str) -> Resul
     }
 }
 
+async fn options(bus: &Connection, element: &Element) -> Vec<(Element, String)> {
+    let mut found = Vec::new();
+    let (kids, _) = children(bus, element, -1).await;
+    for kid in kids {
+        let nested = if matches!(role(bus, &kid).await, Some(Role::Menu | Role::List)) {
+            children(bus, &kid, -1).await.0
+        } else {
+            vec![kid]
+        };
+        for item in nested {
+            if let Some(accessible) = proxy::<AccessibleProxy>(bus, &item).await
+                && let Some(name) = timed(accessible.name()).await
+                && !name.trim().is_empty()
+            {
+                found.push((item, name.trim().to_owned()));
+            }
+        }
+    }
+    found
+}
+
+async fn choose(
+    bus: &Connection,
+    element: &Element,
+    interfaces: atspi_common::InterfaceSet,
+    wanted: &str,
+) -> Result<String, String> {
+    let options = options(bus, element).await;
+    let Some((item, name)) = options
+        .iter()
+        .find(|(_, name)| name.eq_ignore_ascii_case(wanted.trim()))
+    else {
+        let names: Vec<String> = options.into_iter().map(|(_, name)| name).collect();
+        return Err(format!(
+            "That list has no option {}, so nothing ran (its options: {}).",
+            wanted.trim(),
+            list(&names)
+        ));
+    };
+    let done = format!("Chose {name}");
+    let list = if interfaces.contains(Interface::Selection) {
+        Some(element.clone())
+    } else {
+        parent(bus, item).await.filter(|list| list != element)
+    };
+    if let Some(list) = list
+        && self::interfaces(bus, &list)
+            .await
+            .contains(Interface::Selection)
+        && let Some(accessible) = proxy::<AccessibleProxy>(bus, item).await
+        && let Some(index) = timed(accessible.get_index_in_parent()).await
+        && let Some(selection) = proxy::<SelectionProxy>(bus, &list).await
+        && acted(selection.select_child(index)).await == Ok(true)
+    {
+        return Ok(format!("{done}."));
+    }
+    let actions = atspi::actions(bus, item).await;
+    match chosen(&actions, &["select", "click", "press", "activate"]) {
+        Some(index) => perform_at(bus, item, index, &done).await,
+        None => Err(UNSUPPORTED.into()),
+    }
+}
+
 pub async fn set_value(
     bus: &Connection,
     element: &Element,
     wanted: &str,
 ) -> Result<String, String> {
     let (interfaces, role) = tokio::join!(interfaces(bus, element), role(bus, element));
+    if role == Some(Role::ComboBox) && !interfaces.contains(Interface::EditableText) {
+        return choose(bus, element, interfaces, wanted).await;
+    }
     if interfaces.contains(Interface::Value)
         && let Ok(number) = wanted.trim().parse::<f64>()
     {

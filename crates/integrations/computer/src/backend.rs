@@ -94,13 +94,30 @@ pub trait Backend: Send + 'static {
 
     fn apps(&mut self) -> Vec<App>;
 
+    fn listing(&mut self) -> Vec<App> {
+        self.apps()
+    }
+
     fn installed(&mut self, wanted: &str) -> Option<App>;
 
     fn keys_by_bundle(&self) -> bool {
         false
     }
 
+    fn watched(&mut self, watched: bool) {
+        let _ = watched;
+    }
+
     fn launch(&mut self, app: &App) -> Result<(), String>;
+
+    fn launched(&mut self, app: &App) {
+        let _ = app;
+    }
+
+    fn types_into(&mut self, element: &Self::Element) -> bool {
+        let _ = element;
+        false
+    }
 
     fn read(&mut self, app: &App) -> Result<Read<Self::Element>, String>;
 

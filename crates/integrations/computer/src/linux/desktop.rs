@@ -355,6 +355,11 @@ pub fn launch(app: &App) -> Result<(), String> {
     };
     command
         .args(rest)
+        .env_remove("XDG_ACTIVATION_TOKEN")
+        .env(
+            "DESKTOP_STARTUP_ID",
+            format!("nanocode-computer-{}_TIME0", std::process::id()),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

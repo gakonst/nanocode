@@ -4,15 +4,25 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
-use std::{collections::HashMap, thread, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 use x11rb::{
     connection::Connection as _,
-    errors::ReplyError,
+    errors::{ReplyError, ReplyOrIdError},
     protocol::{
+        Event,
         xproto::{
-            AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ClientMessageEvent,
-            ConnectionExt as _, EventMask, ImageFormat, ImageOrder, KEY_PRESS_EVENT,
-            KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, MapState, Window,
+            AtomEnum, BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ChangeWindowAttributesAux,
+            ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, ImageFormat,
+            ImageOrder, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, MapState,
+            PropMode, Window, WindowClass,
         },
         xtest::ConnectionExt as _,
     },
@@ -24,15 +34,42 @@ pub type Rect = (i32, i32, i32, i32);
 const POINTER_ROOT: Window = 1;
 const REMAP_SETTLE: Duration = Duration::from_millis(100);
 const DRAG_STEPS: i32 = 12;
+const ORDERED_TIMES: u32 = 1 << 31;
+const STARTUP_CHUNK: usize = 20;
 
 pub struct Display {
     conn: RustConnection,
     root: Window,
+    screen: usize,
     size: (i32, i32),
     pid: u32,
     clients: u32,
+    stacking: u32,
     application: u32,
     active: u32,
+    startup: [u32; 2],
+}
+
+pub struct Guard {
+    display: Arc<Display>,
+    window: Window,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.display.conn.change_property(
+            PropMode::APPEND,
+            self.window,
+            self.display.startup[0],
+            AtomEnum::STRING,
+            8,
+            0,
+            &[],
+        );
+        let _ = self.display.conn.flush();
+    }
 }
 
 pub struct Keymap {
@@ -50,6 +87,18 @@ pub struct Layout {
 
 pub fn available() -> bool {
     std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty())
+}
+
+fn quoted(value: &str) -> String {
+    let mut out = String::from('"');
+    for c in value.chars() {
+        if matches!(c, '"' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
 }
 
 pub fn failed(error: impl std::fmt::Display) -> String {
@@ -154,15 +203,25 @@ impl Display {
         };
         let (pid, clients) = (atom(b"_NET_WM_PID")?, atom(b"_NET_CLIENT_LIST")?);
         let application = atom(b"_GTK_APPLICATION_ID")?;
-        let active = atom(b"_NET_ACTIVE_WINDOW")?;
+        let (active, stacking) = (
+            atom(b"_NET_ACTIVE_WINDOW")?,
+            atom(b"_NET_CLIENT_LIST_STACKING")?,
+        );
+        let startup = [
+            atom(b"_NET_STARTUP_INFO_BEGIN")?,
+            atom(b"_NET_STARTUP_INFO")?,
+        ];
         Ok(Self {
             conn,
             root,
+            screen,
             size,
             pid,
             clients,
+            stacking,
             application,
             active,
+            startup,
         })
     }
 
@@ -179,6 +238,138 @@ impl Display {
 
     pub fn active_pid(&self) -> Option<u32> {
         self.owner(self.active()?).ok().flatten()
+    }
+
+    pub fn guard(user: Window, pid: u32) -> Option<Guard> {
+        let display = Arc::new(Self::open().ok()?);
+        display
+            .conn
+            .change_window_attributes(
+                display.root,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+            )
+            .ok()?
+            .check()
+            .ok()?;
+        let window = display.messenger().ok()?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (watching, stopped) = (display.clone(), stop.clone());
+        thread::spawn(move || {
+            while let Ok(event) = watching.conn.wait_for_event() {
+                if stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                if let Event::PropertyNotify(event) = event
+                    && event.window == watching.root
+                    && (event.atom == watching.active || event.atom == watching.stacking)
+                    && watching.took(user, pid)
+                {
+                    let _ = watching.activate(user);
+                }
+            }
+        });
+        Some(Guard {
+            display,
+            window,
+            stop,
+        })
+    }
+
+    pub fn took(&self, user: Window, pid: u32) -> bool {
+        let active = self.active();
+        active != Some(user) && self.active_pid() == Some(pid)
+            || active == Some(user) && self.top_pid() == Some(pid)
+    }
+
+    pub fn top_pid(&self) -> Option<u32> {
+        let top = self
+            .conn
+            .get_property(false, self.root, self.stacking, AtomEnum::WINDOW, 0, 4096)
+            .ok()?
+            .reply()
+            .ok()?
+            .value32()?
+            .last()?;
+        self.owner(top).ok().flatten()
+    }
+
+    pub fn announce(&self, name: &str, bin: &str, class: &str) -> Option<String> {
+        self.broadcast(|now| {
+            let past = now.wrapping_sub(ORDERED_TIMES / 2);
+            let id = format!("nanocode-computer-{}-{now}_TIME{past}", std::process::id());
+            let fields = [
+                ("ID", id.as_str()),
+                ("NAME", name),
+                ("BIN", bin),
+                ("WMCLASS", class),
+            ]
+            .map(|(key, value)| format!("{key}={}", quoted(value)))
+            .join(" ");
+            let message = format!("new: {fields} SCREEN={} TIMESTAMP={past}", self.screen);
+            (id, message)
+        })
+    }
+
+    pub fn finish(&self, id: &str) -> bool {
+        self.broadcast(|_| ((), format!("remove: ID={}", quoted(id))))
+            .is_some()
+    }
+
+    fn broadcast<T>(&self, message: impl FnOnce(u32) -> (T, String)) -> Option<T> {
+        let window = self.messenger().ok()?;
+        let sent = (|| {
+            let (value, message) = message(self.now(window)?);
+            let mut bytes = message.into_bytes();
+            bytes.push(0);
+            for (at, chunk) in bytes.chunks(STARTUP_CHUNK).enumerate() {
+                let mut data = [0; STARTUP_CHUNK];
+                data[..chunk.len()].copy_from_slice(chunk);
+                let kind = self.startup[usize::from(at > 0)];
+                let event = ClientMessageEvent::new(8, window, kind, data);
+                self.conn
+                    .send_event(false, self.root, EventMask::PROPERTY_CHANGE, event)?;
+            }
+            Ok::<_, ReplyError>(value)
+        })();
+        let _ = self.conn.destroy_window(window);
+        self.sync().ok()?;
+        sent.ok()
+    }
+
+    fn messenger(&self) -> Result<Window, ReplyOrIdError> {
+        let window = self.conn.generate_id()?;
+        self.conn
+            .create_window(
+                0,
+                window,
+                self.root,
+                -1,
+                -1,
+                1,
+                1,
+                0,
+                WindowClass::INPUT_ONLY,
+                0,
+                &CreateWindowAux::new()
+                    .override_redirect(1)
+                    .event_mask(EventMask::PROPERTY_CHANGE),
+            )?
+            .check()?;
+        Ok(window)
+    }
+
+    fn now(&self, window: Window) -> Result<u32, ReplyError> {
+        let kind = self.startup[0];
+        self.conn
+            .change_property(PropMode::APPEND, window, kind, AtomEnum::STRING, 8, 0, &[])?
+            .check()?;
+        loop {
+            if let Event::PropertyNotify(event) = self.conn.wait_for_event()?
+                && event.window == window
+            {
+                return Ok(event.time);
+            }
+        }
     }
 
     pub fn activate(&self, window: Window) -> Result<(), ReplyError> {

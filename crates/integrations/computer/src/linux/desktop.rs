@@ -319,12 +319,15 @@ pub fn installed(entries: &[Listed], wanted: &str) -> Option<App> {
     })
 }
 
-pub fn launch(app: &App) -> Result<(), String> {
+pub fn launch(
+    app: &App,
+    announce: impl FnOnce(&str, &str) -> Option<String>,
+) -> Result<(Option<String>, u32), String> {
     let entry = app.path.ends_with(".desktop");
-    let words = if entry {
+    let (words, class) = if entry {
         read(Path::new(&app.path))
             .and_then(|text| parse(&text))
-            .map(|entry| entry.exec)
+            .map(|entry| (entry.exec, entry.wm_class))
             .ok_or_else(|| {
                 format!(
                     "{}'s desktop entry could not be read, so nothing ran.",
@@ -332,14 +335,16 @@ pub fn launch(app: &App) -> Result<(), String> {
                 )
             })?
     } else {
-        vec![app.path.clone()]
+        (vec![app.path.clone()], None)
     };
     let (program, rest) = words
         .split_first()
         .ok_or_else(|| format!("{} has no program to start, so nothing ran.", app.name))?;
+    let bin = base(program);
     let program = which(program).ok_or_else(|| {
         format!("{program} is not an executable on this computer, so nothing ran.")
     })?;
+    let startup = announce(bin, class.as_deref().unwrap_or(bin));
     let mut command = if entry {
         let mut command = Command::new("/bin/sh");
         command
@@ -358,7 +363,9 @@ pub fn launch(app: &App) -> Result<(), String> {
         .env_remove("XDG_ACTIVATION_TOKEN")
         .env(
             "DESKTOP_STARTUP_ID",
-            format!("nanocode-computer-{}_TIME0", std::process::id()),
+            startup
+                .clone()
+                .unwrap_or_else(|| format!("nanocode-computer-{}_TIME0", std::process::id())),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -373,8 +380,9 @@ pub fn launch(app: &App) -> Result<(), String> {
             app.name
         )
     })?;
+    let pid = child.id();
     thread::spawn(move || child.wait());
-    Ok(())
+    Ok((startup, pid))
 }
 
 pub fn exe(pid: u32) -> Option<String> {

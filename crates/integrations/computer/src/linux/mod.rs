@@ -41,6 +41,8 @@ pub struct AtSpi {
     entries: desktop::Index,
     unwatched: bool,
     before: Option<u32>,
+    startup: Option<String>,
+    guard: Option<(x11::Guard, bool)>,
     known: HashMap<String, (u32, String, Duration)>,
     activations: HashMap<i64, Duration>,
     registered: bool,
@@ -253,6 +255,7 @@ impl Backend for AtSpi {
     }
 
     fn ready(&mut self, _: &str) -> Result<(), String> {
+        self.guard = None;
         self.exec = match (Handle::try_current(), self.exec.take()) {
             (Ok(handle), Some(Exec::Own(runtime))) => {
                 runtime.shutdown_background();
@@ -312,23 +315,43 @@ impl Backend for AtSpi {
     }
 
     fn launch(&mut self, app: &App) -> Result<(), String> {
-        self.before = if self.unwatched || !x11::available() {
+        let display = if self.unwatched || !x11::available() {
             None
         } else {
-            self.display().ok().and_then(x11::Display::active)
+            self.display().ok()
         };
-        desktop::launch(app)
+        let before = display.and_then(x11::Display::active);
+        let (startup, child) =
+            desktop::launch(app, |bin, class| display?.announce(&app.name, bin, class))?;
+        self.guard = before
+            .and_then(|before| x11::Display::guard(before, child))
+            .map(|guard| (guard, false));
+        (self.before, self.startup) = (before, startup);
+        Ok(())
     }
 
     fn launched(&mut self, app: &App) {
-        let (Some(before), Ok(pid)) = (self.before, pid(app)) else {
+        let Ok(pid) = pid(app) else {
             return;
         };
-        if let Ok(display) = self.display()
-            && display.active() != Some(before)
-            && display.active_pid() == Some(pid)
+        self.guard = match self.guard.take() {
+            Some((guard, false)) => Some((guard, true)),
+            _ => None,
+        };
+        let (before, startup) = (self.before, self.startup.take());
+        let Ok(display) = self.display() else {
+            return;
+        };
+        if let Some(before) = before
+            && display.took(before, pid)
         {
             let _ = display.activate(before);
+        }
+        let finished = startup.as_deref().is_some_and(|id| {
+            matches!(display.window(pid, None), Ok(Some(_))) && display.finish(id)
+        });
+        if !finished {
+            self.startup = startup;
         }
     }
 

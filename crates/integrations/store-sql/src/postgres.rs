@@ -611,10 +611,10 @@ impl PostgresSql {
                 async { Ok(run_on(&mut lane, access, statements, self.custom_plans).await) },
                 "a Postgres transaction timed out",
             )
-            .await;
+            .await
+            .map_err(piped)?;
         self.release(index, &mut slot, lane);
-        let replies = ran.map_err(piped)?.map_err(backend)?;
-        text_rows(&replies)
+        text_rows(&ran.map_err(backend)?)
     }
 }
 

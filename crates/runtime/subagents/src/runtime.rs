@@ -774,6 +774,7 @@ enum ScopeLife {
     Open,
     Closing,
     Frozen,
+    Released,
 }
 
 impl ScopeLife {
@@ -782,7 +783,11 @@ impl ScopeLife {
     }
 
     const fn frozen(self) -> bool {
-        matches!(self, Self::Frozen)
+        matches!(self, Self::Frozen | Self::Released)
+    }
+
+    const fn released(self) -> bool {
+        matches!(self, Self::Released)
     }
 }
 
@@ -4853,6 +4858,7 @@ impl Registry {
                 let scope = state.scopes.get_mut(&root)?;
 
                 let detach = scope.life.closing();
+                let announce = !scope.life.released();
                 let session = scope.sessions.get_mut(&id)?;
                 let status = if matches!(session.status, AgentStatus::Closed) {
                     None
@@ -4872,7 +4878,11 @@ impl Registry {
                         Some(AgentStatus::Closed)
                     }
                 };
-                Some((status, detach, session.descriptor.session_id.clone()))
+                Some((
+                    status.filter(|_| announce),
+                    detach,
+                    session.descriptor.session_id.clone(),
+                ))
             })
             .await;
         let Some((status_update, detach, session_id)) = closed else {
@@ -6718,7 +6728,7 @@ impl Registry {
         let request = self
             .state
             .call(move |state| {
-                state.scope_mut(&root).life = ScopeLife::Frozen;
+                state.scope_mut(&root).life = ScopeLife::Released;
                 state.request_close_all(&root)
             })
             .await?;
@@ -6749,18 +6759,28 @@ impl Registry {
             .await?;
 
         drop(closing_result);
-        let ClosedSessions {
-            summaries,
-            harness_tasks,
-            event_tasks,
-        } = {
+        let (
+            ClosedSessions {
+                summaries,
+                harness_tasks,
+                event_tasks,
+            },
+            released,
+        ) = {
             let root = root_session_id.clone();
             let closing = ids.clone();
             self.state
-                .call(move |state| state.finish_close(&root, &closing))
+                .call(move |state| {
+                    let closed = state.finish_close(&root, &closing)?;
+                    let released = state
+                        .scopes
+                        .get(&root)
+                        .is_some_and(|scope| scope.life.released());
+                    Ok::<_, std::io::Error>((closed, released))
+                })
                 .await?
         };
-        for summary in &summaries {
+        for summary in summaries.iter().filter(|_| !released) {
             let _ = send_update(
                 &self.updates,
                 &root_session_id,

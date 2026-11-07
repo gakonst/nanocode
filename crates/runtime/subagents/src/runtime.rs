@@ -547,6 +547,59 @@ pub type ParentResolver = Arc<dyn Fn(&str) -> Option<Agent> + Send + Sync>;
 
 pub type SessionReleased = Arc<dyn Fn(&str) + Send + Sync>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompletionStatus {
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+impl CompletionStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompletionPrompt<'a> {
+    pub agent_id: AgentId,
+    pub status: CompletionStatus,
+    pub detail: &'a str,
+}
+
+pub fn parse_completion_prompt<'a>(
+    request_id: &str,
+    text: &'a str,
+) -> Option<CompletionPrompt<'a>> {
+    if !request_id.starts_with(crate::COMPLETION_REQUEST_PREFIX) {
+        return None;
+    }
+    let marker = "<subagent_completion agent_id=\"";
+    let trimmed = text.trim_end();
+    let start = trimmed.rfind(marker)?;
+    let (id, status) = trimmed[start + marker.len()..]
+        .strip_suffix("\" />")?
+        .split_once("\" status=\"")?;
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let status = match status {
+        "completed" => CompletionStatus::Completed,
+        "failed" => CompletionStatus::Failed,
+        "interrupted" => CompletionStatus::Interrupted,
+        _ => return None,
+    };
+    Some(CompletionPrompt {
+        agent_id: id.parse().ok()?,
+        status,
+        detail: text[..start].trim(),
+    })
+}
+
 pub fn completion_continuation_prompt(id: AgentId, status: &AgentStatus) -> String {
     match status {
         AgentStatus::Failed { error } => format!(

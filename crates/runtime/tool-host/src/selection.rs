@@ -390,6 +390,12 @@ impl Tools {
         &self.attachable_providers
     }
 
+    #[doc(hidden)]
+    #[cfg(not(target_family = "wasm"))]
+    pub fn providers(&self) -> &[Arc<dyn DynamicToolProvider>] {
+        &self.providers
+    }
+
     #[must_use]
     pub const fn into_builder(self) -> ToolsBuilder {
         ToolsBuilder {

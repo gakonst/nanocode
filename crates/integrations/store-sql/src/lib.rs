@@ -1,5 +1,6 @@
 #![cfg(not(target_family = "wasm"))]
 
+mod inspect;
 mod lock;
 mod migrate;
 mod notify;
@@ -9,6 +10,7 @@ mod sqlite;
 mod sqlx_postgres;
 mod statements;
 
+pub use inspect::{Inspected, inspect};
 pub use lock::{begin, begin_exclusive, held};
 pub use migrate::{
     Leadership, after, allowed, applied, drop_replaced, ensure_index, index, locked, try_lock,

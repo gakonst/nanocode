@@ -93,6 +93,7 @@ pub(super) fn emit_replayed_terminal(
     events.emit(
         kind,
         ReplayedTerminal {
+            replayed: true,
             status,
             model: config.model.as_str(),
             reasoning_mode: config.reasoning_mode.as_str(),
@@ -128,6 +129,7 @@ pub(super) fn emit_replayed_terminal(
 
 #[derive(Serialize)]
 struct ReplayedTerminal<'a> {
+    replayed: bool,
     status: &'static str,
     model: &'a str,
     reasoning_mode: &'static str,

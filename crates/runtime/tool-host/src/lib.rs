@@ -42,6 +42,16 @@ pub(crate) use nanocode_tools::ToolOutputContent;
 pub use workspace_runtime::WorkspaceTools;
 mod code_mode_order;
 
+pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => payload.downcast::<&'static str>().map_or_else(
+            |_| "non-string panic payload".to_owned(),
+            |message| (*message).to_owned(),
+        ),
+    }
+}
+
 #[cfg(target_family = "wasm")]
 pub mod runtime {
     pub use crate::embedded::{

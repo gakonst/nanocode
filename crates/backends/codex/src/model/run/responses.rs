@@ -320,16 +320,6 @@ pub(super) fn record_tool_span_terminal(
     span.record("duration_ns", duration_ns);
 }
 
-pub(super) fn panic_payload(payload: Box<dyn Any + Send>) -> String {
-    match payload.downcast::<String>() {
-        Ok(message) => *message,
-        Err(payload) => payload.downcast::<&'static str>().map_or_else(
-            |_| "non-string panic payload".to_owned(),
-            |message| (*message).to_owned(),
-        ),
-    }
-}
-
 pub(super) fn model_tool_span(session_id: &str, call: &CodeCall, call_index: u32) -> tracing::Span {
     let qualified_name = qualified_tool_name(call);
     info_span!(

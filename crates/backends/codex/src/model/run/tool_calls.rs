@@ -1003,7 +1003,7 @@ impl ModelRun {
         active: &ActiveToolCall,
         payload: Box<dyn Any + Send>,
     ) -> CompletedToolCall {
-        let message = panic_payload(payload);
+        let message = nanocode_tool_host::panic_message(payload);
         record_span_content(&active.span, "tool.panic", &message);
         let output = ToolOutputBody::Text("aborted".to_owned());
         let structured_result = output.structured_result();

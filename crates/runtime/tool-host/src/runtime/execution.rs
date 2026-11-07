@@ -1133,19 +1133,9 @@ pub(super) fn panicked_tool_output(
     span: &tracing::Span,
     payload: Box<dyn Any + Send>,
 ) -> ToolOutput {
-    let message = panic_payload(payload);
+    let message = crate::panic_message(payload);
     record_tool_content(span, "tool.panic", &message);
     ToolOutput::error("aborted")
-}
-
-fn panic_payload(payload: Box<dyn Any + Send>) -> String {
-    match payload.downcast::<String>() {
-        Ok(message) => *message,
-        Err(payload) => payload.downcast::<&'static str>().map_or_else(
-            |_| "non-string panic payload".to_owned(),
-            |message| (*message).to_owned(),
-        ),
-    }
 }
 
 pub(super) fn tool_execution_span(

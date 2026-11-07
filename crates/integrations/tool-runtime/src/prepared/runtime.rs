@@ -1,4 +1,4 @@
-use std::{any::Any, panic::AssertUnwindSafe, sync::Arc};
+use std::{panic::AssertUnwindSafe, sync::Arc};
 
 use futures_util::FutureExt;
 use nanocode_tools::ToolOutputWire;
@@ -313,7 +313,7 @@ impl PreparedToolRuntime {
         let output = match AssertUnwindSafe(dispatch).catch_unwind().await {
             Ok(output) => output,
             Err(payload) => {
-                let message = panic_message(payload);
+                let message = nanocode_tool_host::panic_message(payload);
                 tracing::event!(
                     target: "nanocode_code_mode",
                     parent: &span,
@@ -404,16 +404,6 @@ fn catalog_entry(entry: &PreparedToolEntry) -> Result<PreparedToolCatalogEntry, 
             .routing
             .map(nanocode_tool_host::WorkspaceToolRouting::as_str),
     })
-}
-
-fn panic_message(payload: Box<dyn Any + Send>) -> String {
-    match payload.downcast::<String>() {
-        Ok(message) => *message,
-        Err(payload) => payload.downcast::<&'static str>().map_or_else(
-            |_| "non-string panic payload".to_owned(),
-            |message| (*message).to_owned(),
-        ),
-    }
 }
 
 fn input_for_definition(

@@ -231,19 +231,11 @@ impl ProviderState {
             }
         }
         catalog.pending_servers.remove(server_name);
-        if catalog.pending_servers.is_empty() {
-            catalog.search_index = Some(Arc::new(SearchIndex::new(
-                catalog
-                    .entries
-                    .values()
-                    .filter(|entry| entry.tool_exposure.is_deferred())
-                    .cloned(),
-            )));
-            Some(catalog.entries.len())
-        } else {
-            catalog.search_index = None;
-            None
-        }
+        catalog.search_index = None;
+        catalog
+            .pending_servers
+            .is_empty()
+            .then_some(catalog.entries.len())
     }
 
     pub(crate) fn begin_server(&self, server_name: &str) -> u64 {

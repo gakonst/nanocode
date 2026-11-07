@@ -1,30 +1,27 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use nanocode_durability_core::{
     Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
     StateCommit, StateStore, StoreError, StoreFuture, StoreRecord, StoreUpdate, StoredState,
 };
-use nanocode_sync::Actor;
+use nanocode_sync::Atom;
 
 type Key = (Arc<str>, Arc<str>);
 
+#[derive(Clone, Default)]
 struct Records {
-    budget: usize,
     used: usize,
-    values: HashMap<Key, Arc<str>>,
-    order: VecDeque<Key>,
+    values: imbl::HashMap<Key, Arc<str>>,
+    order: imbl::Vector<Key>,
 }
 
 impl Records {
-    fn insert(&mut self, key: Key, value: Arc<str>) {
+    fn insert(&mut self, budget: usize, key: Key, value: Arc<str>) {
         let size = key.0.len() + key.1.len() + value.len();
-        if size > self.budget || self.values.contains_key(&key) {
+        if size > budget || self.values.contains_key(&key) {
             return;
         }
-        while self.used + size > self.budget {
+        while self.used + size > budget {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
@@ -40,55 +37,47 @@ impl Records {
 
 #[derive(Clone)]
 pub struct RecordCache {
-    records: Actor<Records>,
+    records: Arc<Atom<Records>>,
+    budget: usize,
 }
 
 impl RecordCache {
     pub fn new(budget_bytes: usize) -> std::io::Result<Self> {
         Ok(Self {
-            records: Actor::spawn(Records {
-                budget: budget_bytes,
-                used: 0,
-                values: HashMap::new(),
-                order: VecDeque::new(),
-            })?,
+            records: Arc::default(),
+            budget: budget_bytes,
         })
     }
 
-    async fn get(&self, state_id: &str, keys: &[String]) -> Vec<Option<Arc<str>>> {
+    fn get(&self, state_id: &str, keys: &[String]) -> Vec<Option<Arc<str>>> {
         let state: Arc<str> = Arc::from(state_id);
-        let keys = keys
-            .iter()
-            .map(|key| Arc::<str>::from(key.as_str()))
-            .collect::<Vec<_>>();
-        let missed = keys.len();
-        self.records
-            .run(move |records| {
-                Box::pin(async move {
-                    keys.into_iter()
-                        .map(|key| records.values.get(&(Arc::clone(&state), key)).cloned())
-                        .collect::<Vec<_>>()
+        self.records.read(|records| {
+            keys.iter()
+                .map(|key| {
+                    records
+                        .values
+                        .get(&(Arc::clone(&state), Arc::from(key.as_str())))
+                        .cloned()
                 })
-            })
-            .await
-            .unwrap_or_else(|_| vec![None; missed])
+                .collect()
+        })
     }
 
-    async fn put(&self, state_id: &str, records: Vec<(String, Arc<str>)>) {
+    fn put(&self, state_id: &str, records: Vec<(String, Arc<str>)>) {
         if records.is_empty() {
             return;
         }
         let state: Arc<str> = Arc::from(state_id);
-        let _ = self
-            .records
-            .run(move |cached| {
-                Box::pin(async move {
-                    for (key, value) in records {
-                        cached.insert((Arc::clone(&state), Arc::from(key)), value);
-                    }
-                })
-            })
-            .await;
+        let records = records
+            .into_iter()
+            .map(|(key, value)| ((Arc::clone(&state), Arc::<str>::from(key)), value))
+            .collect::<Vec<_>>();
+        let budget = self.budget;
+        self.records.update(|cached| {
+            for (key, value) in &records {
+                cached.insert(budget, key.clone(), Arc::clone(value));
+            }
+        });
     }
 
     pub fn wrap<S: StateStore + 'static>(&self, store: S) -> CachedStore<S> {
@@ -132,7 +121,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
         Box::pin(async move {
-            let cached = self.cache.get(state_id, keys).await;
+            let cached = self.cache.get(state_id, keys);
             let missing = keys
                 .iter()
                 .zip(&cached)
@@ -162,7 +151,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                         .map(|value| (key.clone(), Arc::<str>::from(value)))
                 })
                 .collect::<Vec<_>>();
-            self.cache.put(state_id, found).await;
+            self.cache.put(state_id, found);
             let mut read = read.into_iter();
             Ok(cached
                 .into_iter()
@@ -277,7 +266,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                 .base
                 .replace(state_id, owner, expected_revision, payload, records)
                 .await?;
-            self.cache.put(state_id, written(records)).await;
+            self.cache.put(state_id, written(records));
             Ok(revision)
         })
     }
@@ -304,7 +293,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                 )
                 .await?;
             if replaced.is_some() {
-                self.cache.put(state_id, written(records)).await;
+                self.cache.put(state_id, written(records));
             }
             Ok(replaced)
         })
@@ -318,7 +307,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         Box::pin(async move {
             let stored = self.base.put_records(state_id, records).await?;
             if stored {
-                self.cache.put(state_id, written(records)).await;
+                self.cache.put(state_id, written(records));
             }
             Ok(stored)
         })
@@ -337,7 +326,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                 .base
                 .commit(state_id, owner, expected_revision, commit)
                 .await?;
-            self.cache.put(state_id, written(records)).await;
+            self.cache.put(state_id, written(records));
             Ok(committed)
         })
     }
@@ -354,7 +343,7 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
             let results = self.base.commit_many(commits).await;
             for ((state_id, records), result) in records.into_iter().zip(&results) {
                 if result.is_ok() {
-                    self.cache.put(&state_id, records).await;
+                    self.cache.put(&state_id, records);
                 }
             }
             results

@@ -4,7 +4,10 @@ use std::{
     sync::{Arc, OnceLock},
     time::Duration,
 };
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    task::JoinHandle,
+};
 
 const IDLE: Duration = Duration::from_secs(5);
 const KEPT: usize = 1024;
@@ -23,9 +26,8 @@ impl std::fmt::Display for NotCommitted {
 impl std::error::Error for NotCommitted {}
 
 pub struct Lanes<T> {
-    queue: OnceLock<Sender<(String, T)>>,
+    queue: OnceLock<UnboundedSender<(String, T)>>,
     batch: usize,
-    bound: Option<(usize, fn())>,
 }
 
 impl<T: Send + 'static> Lanes<T> {
@@ -34,16 +36,6 @@ impl<T: Send + 'static> Lanes<T> {
         Self {
             queue: OnceLock::new(),
             batch,
-            bound: None,
-        }
-    }
-
-    #[must_use]
-    pub const fn bounded(batch: usize, queued: usize, refused: fn()) -> Self {
-        Self {
-            queue: OnceLock::new(),
-            batch,
-            bound: Some((queued, refused)),
         }
     }
 
@@ -54,17 +46,11 @@ impl<T: Send + 'static> Lanes<T> {
         commit: impl Fn(String, Vec<T>) -> BoxFuture<'static, ()> + Send + Sync + 'static,
     ) -> Result<(), T> {
         let queue = self.queue.get_or_init(|| {
-            let (queue, items) = channel(self.bound.map(|(queued, _)| queued));
-            let refused = self.bound.map(|(_, refused)| refused);
-            tokio::spawn(route(items, Arc::new(commit), self.batch, refused));
+            let (queue, items) = unbounded_channel();
+            tokio::spawn(route(items, Arc::new(commit), self.batch));
             queue
         });
-        queue.send((key, item)).map_err(|refused| {
-            if let Some((_, count)) = self.bound {
-                count();
-            }
-            refused.into_inner().1
-        })
+        queue.send((key, item)).map_err(|refused| refused.0.1)
     }
 }
 
@@ -91,101 +77,22 @@ where
     }
 }
 
-enum Sender<T> {
-    Bounded(mpsc::Sender<T>),
-    Unbounded(mpsc::UnboundedSender<T>),
-}
-
-enum Receiver<T> {
-    Bounded(mpsc::Receiver<T>),
-    Unbounded(mpsc::UnboundedReceiver<T>),
-}
-
-enum Refused<T> {
-    Full(T),
-    Closed(T),
-}
-
-impl<T> Refused<T> {
-    fn into_inner(self) -> T {
-        match self {
-            Self::Full(item) | Self::Closed(item) => item,
-        }
-    }
-}
-
-fn channel<T>(bound: Option<usize>) -> (Sender<T>, Receiver<T>) {
-    match bound {
-        Some(bound) => {
-            let (sender, receiver) = mpsc::channel(bound);
-            (Sender::Bounded(sender), Receiver::Bounded(receiver))
-        }
-        None => {
-            let (sender, receiver) = mpsc::unbounded_channel();
-            (Sender::Unbounded(sender), Receiver::Unbounded(receiver))
-        }
-    }
-}
-
-impl<T> Sender<T> {
-    fn send(&self, item: T) -> Result<(), Refused<T>> {
-        match self {
-            Self::Bounded(sender) => sender.try_send(item).map_err(|error| match error {
-                mpsc::error::TrySendError::Full(item) => Refused::Full(item),
-                mpsc::error::TrySendError::Closed(item) => Refused::Closed(item),
-            }),
-            Self::Unbounded(sender) => sender.send(item).map_err(|error| Refused::Closed(error.0)),
-        }
-    }
-}
-
-impl<T> Receiver<T> {
-    async fn recv(&mut self) -> Option<T> {
-        match self {
-            Self::Bounded(receiver) => receiver.recv().await,
-            Self::Unbounded(receiver) => receiver.recv().await,
-        }
-    }
-
-    async fn recv_many(&mut self, taken: &mut Vec<T>, limit: usize) -> usize {
-        match self {
-            Self::Bounded(receiver) => receiver.recv_many(taken, limit).await,
-            Self::Unbounded(receiver) => receiver.recv_many(taken, limit).await,
-        }
-    }
-
-    fn close(&mut self) {
-        match self {
-            Self::Bounded(receiver) => receiver.close(),
-            Self::Unbounded(receiver) => receiver.close(),
-        }
-    }
-}
-
 struct Lane<T> {
-    queue: Sender<T>,
+    queue: UnboundedSender<T>,
     worker: JoinHandle<()>,
 }
 
 async fn route<T: Send + 'static>(
-    mut items: Receiver<(String, T)>,
+    mut items: UnboundedReceiver<(String, T)>,
     commit: Commit<T>,
     batch: usize,
-    refused: Option<fn()>,
 ) {
     let mut lanes: HashMap<String, Lane<T>> = HashMap::new();
     while let Some((key, item)) = items.recv().await {
         let item = match lanes.get(&key) {
             Some(lane) => match lane.queue.send(item) {
                 Ok(()) => continue,
-                Err(Refused::Full(item)) => {
-                    if let Some(count) = refused {
-                        count();
-                    }
-                    drop(item);
-                    continue;
-                }
-                Err(Refused::Closed(item)) => item,
+                Err(closed) => closed.0,
             },
             None => item,
         };
@@ -193,7 +100,7 @@ async fn route<T: Send + 'static>(
             lanes.retain(|_, lane| !lane.worker.is_finished());
         }
         let previous = lanes.remove(&key).map(|lane| lane.worker);
-        let (queue, received) = channel(refused.map(|_| batch));
+        let (queue, received) = unbounded_channel();
         drop(queue.send(item));
         let worker = tokio::spawn(work(
             key.clone(),
@@ -208,7 +115,7 @@ async fn route<T: Send + 'static>(
 
 async fn work<T: Send + 'static>(
     key: String,
-    mut items: Receiver<T>,
+    mut items: UnboundedReceiver<T>,
     commit: Commit<T>,
     batch: usize,
     previous: Option<JoinHandle<()>>,

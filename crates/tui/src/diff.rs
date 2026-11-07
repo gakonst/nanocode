@@ -1,10 +1,10 @@
+use crate::markdown::truncate_graphemes;
 use crate::theme::Theme;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use syntect::{easy::HighlightLines, highlighting::Theme as SyntaxTheme, parsing::SyntaxSet};
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 pub fn render(source: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
@@ -405,7 +405,7 @@ fn render_narrow_file(
     theme: &Theme,
 ) {
     rendered.push(Line::from(Span::styled(
-        truncate(label, width),
+        truncate_graphemes(label, width),
         Style::default()
             .fg(theme.accent())
             .add_modifier(Modifier::BOLD),
@@ -413,7 +413,7 @@ fn render_narrow_file(
     let code_width = width.saturating_sub(1);
     for hunk in &file.hunks {
         rendered.push(Line::from(Span::styled(
-            truncate(&hunk_label(hunk), width),
+            truncate_graphemes(&hunk_label(hunk), width),
             Style::default().fg(theme.muted()),
         )));
         for line in &hunk.lines {
@@ -466,7 +466,7 @@ fn change_counts<'a>(lines: impl Iterator<Item = &'a DiffLine>) -> (usize, usize
 }
 
 pub fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static> {
-    let label = truncate(label, width.saturating_sub(5));
+    let label = truncate_graphemes(label, width.saturating_sub(5));
     let label_width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(label_width.saturating_add(5));
     Line::from(vec![
@@ -485,7 +485,7 @@ pub fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static>
 }
 
 pub fn hunk_divider(label: &str, width: u16, theme: &Theme) -> Line<'static> {
-    let label = truncate(label, width.saturating_sub(5));
+    let label = truncate_graphemes(label, width.saturating_sub(5));
     let label_width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(label_width.saturating_add(5));
     Line::from(vec![
@@ -587,21 +587,4 @@ fn hard_wrap(text: &str, width: u16) -> Vec<String> {
         .into_iter()
         .map(|line| line.into_iter().map(|span| span.content).collect())
         .collect()
-}
-
-fn truncate(text: &str, width: u16) -> String {
-    if crate::text::ascii_prefix(text, false) == text.len() {
-        return text[..text.len().min(usize::from(width))].to_owned();
-    }
-    let mut rendered = String::new();
-    let mut used = 0_u16;
-    for grapheme in text.graphemes(true) {
-        let grapheme_width = u16::try_from(UnicodeWidthStr::width(grapheme)).unwrap_or(u16::MAX);
-        if used.saturating_add(grapheme_width) > width {
-            break;
-        }
-        rendered.push_str(grapheme);
-        used = used.saturating_add(grapheme_width);
-    }
-    rendered
 }

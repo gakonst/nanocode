@@ -17,6 +17,8 @@ use crate::client::{
 
 #[cfg(not(target_family = "wasm"))]
 use super::RetryAfter;
+#[cfg(not(target_family = "wasm"))]
+use super::http::map_http_error;
 use super::{
     GatewayHeader, freeform,
     host::{HostConnectRequest, HostHttpBody, HostTransport},
@@ -430,15 +432,6 @@ async fn stall<T>(
     read: impl std::future::Future<Output = T>,
 ) -> Result<T, ResponsesError> {
     Ok(read.await)
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn map_http_error(error: reqwest::Error) -> ResponsesError {
-    ResponsesError::HttpRequest {
-        retryable: nanocode_http::retryable(&error),
-        timeout: error.is_timeout(),
-        detail: error.to_string(),
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]

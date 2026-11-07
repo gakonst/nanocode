@@ -788,7 +788,7 @@ fn direct(prefix: &mut Vec<u8>, script: &str) {
     prefix.extend_from_slice(b"; fi; ");
 }
 
-fn quote(out: &mut Vec<u8>, bytes: &[u8]) {
+pub(super) fn quote(out: &mut Vec<u8>, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     out.extend_from_slice(b"$'");
     for &byte in bytes {
@@ -819,9 +819,9 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Fingerprint(Vec<Option<[i64; 7]>>);
+pub(super) struct Fingerprint(Vec<Option<[i64; 7]>>);
 
-fn fingerprint(files: &[PathBuf]) -> Fingerprint {
+pub(super) fn fingerprint(files: &[PathBuf]) -> Fingerprint {
     Fingerprint(
         files
             .iter()

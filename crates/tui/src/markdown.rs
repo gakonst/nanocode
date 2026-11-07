@@ -1651,7 +1651,7 @@ fn code_block_header(language: Option<&str>, width: u16, theme: &Theme) -> Line<
     ])
 }
 
-fn truncate_graphemes(text: &str, width: u16) -> String {
+pub(crate) fn truncate_graphemes(text: &str, width: u16) -> String {
     if crate::text::ascii_prefix(text, false) == text.len() {
         return text[..text.len().min(usize::from(width))].to_owned();
     }

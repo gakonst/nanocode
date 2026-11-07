@@ -61,6 +61,13 @@ pub fn open(path: &Path) -> Result<File, PrivateError> {
 }
 
 pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
+    write_new_with(path, |file| file.write_all(bytes))
+}
+
+pub fn write_new_with(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<(), PrivateError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -71,12 +78,19 @@ pub fn write_new(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
             path: path.into(),
             error,
         })?;
-    file.write_all(bytes)?;
+    write(&mut file)?;
     file.sync_all()?;
     Ok(())
 }
 
 pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
+    replace_with(path, |file| file.write_all(bytes))
+}
+
+pub fn replace_with(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<(), PrivateError> {
     let own = process::id();
     let temporary = temporary(path, own);
     for (stale, pid) in temporaries(path) {
@@ -85,8 +99,14 @@ pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), PrivateError> {
         }
     }
     let _ = fs::remove_file(&temporary);
-    write_new(&temporary, bytes)?;
-    fs::rename(&temporary, path)?;
+    let replaced = write_new_with(&temporary, write).and_then(|()| {
+        fs::rename(&temporary, path)?;
+        Ok(())
+    });
+    if replaced.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    replaced?;
     Ok(())
 }
 

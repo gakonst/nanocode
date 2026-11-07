@@ -4,6 +4,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use nanocode_code_mode::code_mode::NestedToolCall;
 use nanocode_code_mode::contract::ToolOutputContent;
 use nanocode_sync::Slot;
+use nanocode_types::preview;
 
 #[derive(Clone)]
 pub(super) struct ActiveToolCall {
@@ -248,7 +249,7 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
             } => {
                 let started_at = Instant::now();
                 let (call_id, call_index) = self.event_context(call_id);
-                let logged = logged_arguments(input);
+                let logged = preview::shortened(input);
                 let result = self.events.emit(
                     AgentEventKind::ToolCall,
                     ToolCallEvent {
@@ -333,10 +334,6 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
     }
 }
 
-const LOGGED_RESULT_BYTES: usize = 32 * 1024;
-const LOGGED_PREVIEW_BYTES: usize = 16 * 1024;
-const LOGGED_METADATA_BYTES: usize = 4096;
-
 struct LoggedResult {
     result: ToolOutputBody,
     structured_result: Value,
@@ -344,21 +341,11 @@ struct LoggedResult {
     original_bytes: usize,
 }
 
-fn encoded_len(value: &Value) -> usize {
-    match value {
-        Value::Null => 0,
-        Value::String(text) => text.len(),
-        value => serde_json::to_string(value).map_or(0, |text| text.len()),
-    }
-}
-
-fn utf8_prefix(text: &str, bytes: usize) -> &str {
-    &text[..text.floor_char_boundary(bytes)]
-}
-
 fn output_prefix(output: &ToolOutputBody, bytes: usize) -> ToolOutputBody {
     match output {
-        ToolOutputBody::Text(text) => ToolOutputBody::Text(utf8_prefix(text, bytes).to_owned()),
+        ToolOutputBody::Text(text) => {
+            ToolOutputBody::Text(preview::utf8_prefix(text, bytes).to_owned())
+        }
         ToolOutputBody::Content(content) => {
             let mut budget = bytes;
             ToolOutputBody::Content(
@@ -366,7 +353,7 @@ fn output_prefix(output: &ToolOutputBody, bytes: usize) -> ToolOutputBody {
                     .iter()
                     .map(|item| match item {
                         ToolOutputContent::InputText { text } => {
-                            let kept = utf8_prefix(text, budget);
+                            let kept = preview::utf8_prefix(text, budget);
                             budget -= kept.len();
                             ToolOutputContent::InputText {
                                 text: kept.to_owned(),
@@ -380,40 +367,18 @@ fn output_prefix(output: &ToolOutputBody, bytes: usize) -> ToolOutputBody {
     }
 }
 
-fn structured_reference(structured: &Value) -> Value {
-    match structured {
-        Value::Object(object) => {
-            let reference = ["image_url", "file_id"]
-                .into_iter()
-                .filter_map(|key| {
-                    object
-                        .get(key)
-                        .filter(|field| field.is_string())
-                        .map(|field| (key.to_owned(), field.clone()))
-                })
-                .collect::<serde_json::Map<_, _>>();
-            if reference.is_empty() {
-                Value::Null
-            } else {
-                Value::Object(reference)
-            }
-        }
-        _ => Value::Null,
-    }
-}
-
 fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
     let structured = &call.structured_result;
     let (output_bytes, duplicate) = match &call.output {
         ToolOutputBody::Text(text) => (
             text.len(),
             structured.as_str() == Some(text.as_str())
-                || (text.len() == encoded_len(structured)
+                || (text.len() == preview::encoded_len(structured)
                     && serde_json::from_str::<Value>(text).ok().as_ref() == Some(structured)),
         ),
         ToolOutputBody::Content(content) => {
             let bytes = serde_json::to_string(content).map_or(0, |text| text.len());
-            (bytes, bytes == encoded_len(structured))
+            (bytes, bytes == preview::encoded_len(structured))
         }
     };
     let metadata_bytes = call.metadata.as_deref().map_or(0, |raw| raw.get().len());
@@ -421,16 +386,16 @@ fn logged_nested_result(call: &NestedToolCall) -> Option<LoggedResult> {
         + if duplicate {
             0
         } else {
-            encoded_len(structured)
+            preview::encoded_len(structured)
         }
         + metadata_bytes;
-    if original_bytes <= LOGGED_RESULT_BYTES {
+    if original_bytes <= preview::RESULT_BYTES {
         return None;
     }
     Some(LoggedResult {
-        result: output_prefix(&call.output, LOGGED_PREVIEW_BYTES),
-        structured_result: structured_reference(structured),
-        metadata: metadata_bytes <= LOGGED_METADATA_BYTES,
+        result: output_prefix(&call.output, preview::PREVIEW_BYTES),
+        structured_result: preview::image_reference(structured),
+        metadata: metadata_bytes <= preview::METADATA_BYTES,
         original_bytes,
     })
 }
@@ -499,72 +464,27 @@ fn logged_top_level_result(completed: &CompletedToolCall) -> Option<LoggedResult
             })
             .sum(),
     };
-    let structured_bytes = encoded_len(&completed.structured_result);
+    let structured_bytes = preview::encoded_len(&completed.structured_result);
     let metadata_bytes = completed
         .metadata
         .as_deref()
         .map_or(0, |raw| raw.get().len());
     if visible.is_none()
-        && structured_bytes <= LOGGED_RESULT_BYTES
-        && metadata_bytes <= LOGGED_RESULT_BYTES
+        && structured_bytes <= preview::RESULT_BYTES
+        && metadata_bytes <= preview::RESULT_BYTES
     {
         return None;
     }
     Some(LoggedResult {
         result: visible.unwrap_or_else(|| completed.output.clone()),
-        structured_result: if structured_bytes > LOGGED_RESULT_BYTES {
-            structured_reference(&completed.structured_result)
+        structured_result: if structured_bytes > preview::RESULT_BYTES {
+            preview::image_reference(&completed.structured_result)
         } else {
             completed.structured_result.clone()
         },
-        metadata: metadata_bytes <= LOGGED_RESULT_BYTES,
+        metadata: metadata_bytes <= preview::RESULT_BYTES,
         original_bytes: text_bytes + structured_bytes + metadata_bytes,
     })
-}
-
-fn logged_arguments(input: &Value) -> Option<(Value, usize)> {
-    fn lengths(value: &Value, found: &mut Vec<usize>) {
-        match value {
-            Value::String(text) => found.push(text.len()),
-            Value::Array(items) => items.iter().for_each(|item| lengths(item, found)),
-            Value::Object(fields) => fields.values().for_each(|item| lengths(item, found)),
-            _ => {}
-        }
-    }
-    fn cut(value: &Value, cap: usize) -> Value {
-        match value {
-            Value::String(text) => Value::String(utf8_prefix(text, cap).to_owned()),
-            Value::Array(items) => Value::Array(items.iter().map(|item| cut(item, cap)).collect()),
-            Value::Object(fields) => Value::Object(
-                fields
-                    .iter()
-                    .map(|(key, item)| (key.clone(), cut(item, cap)))
-                    .collect(),
-            ),
-            value => value.clone(),
-        }
-    }
-    let size = encoded_len(input);
-    if size <= LOGGED_RESULT_BYTES {
-        return None;
-    }
-    let mut found = Vec::new();
-    lengths(input, &mut found);
-    let Some(mut left) = LOGGED_PREVIEW_BYTES.checked_sub(size - found.iter().sum::<usize>())
-    else {
-        return Some((Value::Null, size));
-    };
-    found.sort_unstable();
-    let mut cap = usize::MAX;
-    for (index, length) in found.iter().enumerate() {
-        let remaining = found.len() - index;
-        if length * remaining > left {
-            cap = left / remaining;
-            break;
-        }
-        left -= length;
-    }
-    Some((cut(input, cap), size))
 }
 
 pub(super) struct DetachedNestedToolEvents {

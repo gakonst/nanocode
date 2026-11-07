@@ -4,6 +4,7 @@ pub use identity::BackendId;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf, str::FromStr};
 pub mod events;
+pub mod preview;
 pub mod pricing;
 pub mod responses;
 pub mod tools;

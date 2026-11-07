@@ -492,6 +492,10 @@ fn claude_transcript(checkpoint: &Value, prompts: &[AdmittedPrompt]) -> Vec<Tran
     let mut next_prompt = 0;
     let mut index = 0;
     while let Some(message) = messages.get(index) {
+        if message["role"].as_str() == Some("system") {
+            index += 1;
+            continue;
+        }
         if message["role"].as_str() == Some("assistant") {
             claude_assistant_rows(message, &mut items);
             index += 1;

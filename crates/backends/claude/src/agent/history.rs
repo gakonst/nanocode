@@ -358,6 +358,6 @@ pub(super) fn strip_thinking(messages: &mut Vec<HistoryMessage>) {
                 )
             });
         }
-        !message.content.is_empty()
+        !message.content.is_empty() || message.is_effort_update()
     });
 }

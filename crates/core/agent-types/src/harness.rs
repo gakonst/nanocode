@@ -122,6 +122,13 @@ impl ClaudeModel {
             .capabilities(ModelTransport::Native)
             .supports_thinking(thinking)
     }
+
+    pub const fn supports_effort_updates(self) -> bool {
+        matches!(
+            self,
+            Self::Opus55 | Self::Sonnet55 | Self::Haiku55 | Self::Fable51 | Self::Mythos51
+        )
+    }
 }
 
 impl fmt::Display for ClaudeModel {

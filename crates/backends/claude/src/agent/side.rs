@@ -1,5 +1,5 @@
 use super::{
-    Cancellation, ContentBlock, HistoryMessage, Message, MessagesRequest, NanocodeError,
+    Cancellation, ContentBlock, EffortPin, HistoryMessage, Message, MessagesRequest, NanocodeError,
     ResponseContext, Result, Role, State, provider_error,
 };
 use crate::{FrozenWireProfile, ToolResultContent};
@@ -39,6 +39,7 @@ pub(super) fn claude_transcript(messages: &[HistoryMessage]) -> Vec<PromptMessag
                 ContentBlock::Text { text, .. } => match message.role {
                     Role::User => transcript.user(text),
                     Role::Assistant => transcript.assistant(text),
+                    Role::System => {}
                 },
                 ContentBlock::ToolUse {
                     id, name, input, ..
@@ -60,16 +61,19 @@ pub(super) fn claude_transcript(messages: &[HistoryMessage]) -> Vec<PromptMessag
                 ContentBlock::Image { .. } => match message.role {
                     Role::User => transcript.user("[image]"),
                     Role::Assistant => transcript.assistant("[image]"),
+                    Role::System => {}
                 },
                 ContentBlock::Document { .. } => match message.role {
                     Role::User => transcript.user("[document]"),
                     Role::Assistant => transcript.assistant("[document]"),
+                    Role::System => {}
                 },
                 other => {
                     let rendered = serde_json::to_string(other).unwrap_or_default();
                     match message.role {
                         Role::User => transcript.user(&rendered),
                         Role::Assistant => transcript.assistant(&rendered),
+                        Role::System => {}
                     }
                 }
             }
@@ -119,6 +123,7 @@ fn side_messages(mut messages: Vec<HistoryMessage>, question: &str) -> Vec<Histo
             Message {
                 role: Role::User,
                 content: running.into_iter().chain([text]).collect(),
+                output_config: None,
             }
             .into(),
         ),
@@ -153,7 +158,7 @@ impl State {
         if let Some(latest) = latest {
             return SideRequest::clone(&latest);
         }
-        let template = self.request_template(self.speed());
+        let template = self.request_template(self.speed(), EffortPin::Unpinned);
         let wire_profile = self
             .client
             .freeze_wire_profile(template.cache_control.is_some());

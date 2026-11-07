@@ -793,8 +793,11 @@ impl CodeModeRuntime {
                     persistence: journals.persistence(),
                 });
                 journals.register(&record);
-                (record, None)
+                record
             });
+            if let Some(record) = &record {
+                record.persist(Vec::new()).await;
+            }
             let cell = Arc::new(LiveCell::spawn(
                 cell_id,
                 self.current_turn.load(Ordering::Acquire),
@@ -807,7 +810,7 @@ impl CodeModeRuntime {
                 Arc::clone(&self.host),
                 self.prelude.clone(),
                 self.nested_limit,
-                record,
+                record.map(|record| (record, None)),
             ));
             self.cells.update(|registry| {
                 registry.live_cells.insert(cell_id, Arc::clone(&cell));

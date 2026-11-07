@@ -25,6 +25,7 @@ use tokio::{
 };
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const REDIAL: Duration = Duration::from_millis(250);
 const MAX_CONNECTIONS: usize = 8;
 const OUTBOX: usize = 64;
 const MAX_INPUT: usize = 32 * 1024;
@@ -337,7 +338,7 @@ pub fn relay_host(claimed: impl Fn() -> bool, socket: &Path) -> io::Result<()> {
                     if forward(stream, &browser)? {
                         return Ok(());
                     }
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(REDIAL);
                     continue;
                 }
                 Err(_) => "hand_offline",
@@ -351,6 +352,6 @@ pub fn relay_host(claimed: impl Fn() -> bool, socket: &Path) -> io::Result<()> {
             }
         }
         while browser.try_recv().is_ok() {}
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(REDIAL);
     }
 }

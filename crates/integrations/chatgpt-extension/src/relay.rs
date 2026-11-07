@@ -1,4 +1,4 @@
-use crate::{Connection, steps::Tabs};
+use crate::{Connection, link::REDIAL, steps::Tabs};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -21,7 +21,7 @@ impl Connection {
     pub fn relay(mut self, socket: &Path, idle: Duration, title: &str) {
         while self.live() {
             if self.relay_once(socket, idle, title) == Relayed::Retry {
-                thread::sleep(Duration::from_secs(2));
+                thread::sleep(REDIAL);
             }
         }
         self.finish();

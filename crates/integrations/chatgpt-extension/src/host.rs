@@ -70,15 +70,17 @@ impl NativeHost {
     pub fn register(&self, base: &Path) -> io::Result<Vec<&'static str>> {
         let manifest = serde_json::to_vec_pretty(&self.manifest())?;
         let mut registered = Vec::new();
+        let mut written = Vec::new();
         for (browser, root) in browser_dirs(base) {
-            if !root.is_dir() {
+            let path = manifest_path(&root, &self.name);
+            if !root.is_dir() || written.contains(&path) {
                 continue;
             }
-            let path = manifest_path(&root, &self.name);
             if let Some(hosts) = path.parent() {
                 fs::create_dir_all(hosts)?;
             }
-            fs::write(path, &manifest)?;
+            fs::write(&path, &manifest)?;
+            written.push(path);
             registered.push(browser);
         }
         Ok(registered)

@@ -547,6 +547,7 @@ impl CodeModeRuntime {
             journal: nanocode_code_mode_engine::SharedJournal::new(),
             status: nanocode_sync::Atom::new(CellStatus {
                 observer_call_id: journal.observer_call_id.clone(),
+                observer_yield_ms: journal.observer_yield_ms,
                 content_returned: journal.content_returned,
                 ..CellStatus::new(CellLife::started(Replay::Replaying))
             }),
@@ -631,12 +632,19 @@ impl CodeModeRuntime {
         };
         let record = cell.record.clone()?;
         let observation = cell.begin_observation().await.ok()?;
-        record.update(|status| status.observer_call_id = Some(call_id.to_owned()));
+        let yield_time_ms = record.update(|status| {
+            let observer_yield_ms = status
+                .observer_yield_ms
+                .filter(|_| status.observer_call_id.as_deref() == Some(call_id));
+            status.observer_call_id = Some(call_id.to_owned());
+            status.observer_yield_ms = observer_yield_ms;
+            observer_yield_ms.unwrap_or(record.yield_time_ms)
+        });
         record.persist(Vec::new()).await;
         cell.turn_id
             .store(self.current_turn.load(Ordering::Acquire), Ordering::Release);
         cell.tools.cell_observed(&cell.origin_call_id, true);
-        let yield_after = observer_yield_timeout(Duration::from_millis(record.yield_time_ms));
+        let yield_after = observer_yield_timeout(Duration::from_millis(yield_time_ms));
         let (mut execution, running) = observe_cell(
             &cell,
             observation,
@@ -950,7 +958,10 @@ impl CodeModeRuntime {
         };
         cell.tools.cell_observed(&cell.origin_call_id, true);
         if let Some(record) = &cell.record {
-            record.update(|status| status.observer_call_id = Some(call_id.to_owned()));
+            record.update(|status| {
+                status.observer_call_id = Some(call_id.to_owned());
+                status.observer_yield_ms = Some(arguments.yield_time_ms);
+            });
             record.persist(Vec::new()).await;
         }
         let output_token_budget = arguments.max_tokens;

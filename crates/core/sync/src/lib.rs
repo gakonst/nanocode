@@ -1245,12 +1245,13 @@ struct Fetched<T> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-type Fetches<T> = Arc<Atom<imbl::HashMap<Arc<str>, Fetched<T>>>>;
+type Fetches<T> = Arc<Atom<map::Aged<Arc<str>, Fetched<T>>>>;
 
 #[cfg(not(target_family = "wasm"))]
 pub struct Refreshed<T> {
     entries: Fetches<T>,
     max_read: std::time::Duration,
+    kept: usize,
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1258,19 +1259,29 @@ struct Refreshing<T: Clone> {
     entries: Fetches<T>,
     key: Arc<str>,
     value: Option<T>,
+    kept: usize,
 }
 
 #[cfg(not(target_family = "wasm"))]
 impl<T: Clone> Drop for Refreshing<T> {
     fn drop(&mut self) {
         let value = self.value.take();
+        let now = std::time::Instant::now();
         self.entries.update(|entries| {
-            if let Some(entry) = entries.get_mut(&self.key) {
+            if let Some(entry) = entries.held(&self.key) {
+                let mut entry = entry.clone();
                 entry.refreshing = false;
-                entry.at = Some(std::time::Instant::now());
+                entry.at = Some(now);
                 if value.is_some() {
                     entry.value.clone_from(&value);
                 }
+                entries.put(
+                    Arc::clone(&self.key),
+                    now,
+                    entry,
+                    std::time::Duration::MAX,
+                    self.kept,
+                );
             }
         });
     }
@@ -1278,10 +1289,11 @@ impl<T: Clone> Drop for Refreshing<T> {
 
 #[cfg(not(target_family = "wasm"))]
 impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
-    pub fn new(max_read: std::time::Duration) -> Self {
+    pub fn new(max_read: std::time::Duration, kept: usize) -> Self {
         Self {
-            entries: Arc::new(Atom::new(imbl::HashMap::new())),
+            entries: Arc::new(Atom::new(map::Aged::default())),
             max_read,
+            kept,
         }
     }
 
@@ -1301,7 +1313,7 @@ impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
         outdated: impl FnOnce(&T) -> bool,
         read: impl Future<Output = Option<T>> + Send + 'static,
     ) -> Option<T> {
-        let (stale, held) = self.entries.read(|entries| match entries.get(key) {
+        let (stale, held) = self.entries.read(|entries| match entries.held(key) {
             None => (true, None),
             Some(entry) => (
                 entry.at.is_none_or(|at| at.elapsed() >= fresh)
@@ -1315,23 +1327,31 @@ impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
             return value;
         }
         let key: Arc<str> = key.into();
+        let now = std::time::Instant::now();
         let (refresh, value) = self.entries.update(|entries| {
-            let entry = entries.entry(Arc::clone(&key)).or_insert(Fetched {
+            let mut entry = entries.held(&key).cloned().unwrap_or(Fetched {
                 value: None,
                 at: None,
                 refreshing: false,
             });
             let refresh = stale && !entry.refreshing;
-            if refresh {
-                entry.refreshing = true;
-            }
-            (refresh, entry.value.clone())
+            let value = entry.value.clone();
+            entry.refreshing |= refresh;
+            entries.put(
+                Arc::clone(&key),
+                now,
+                entry,
+                std::time::Duration::MAX,
+                self.kept,
+            );
+            (refresh, value)
         });
         if refresh {
             let mut refreshing = Refreshing {
                 entries: Arc::clone(&self.entries),
                 key,
                 value: None,
+                kept: self.kept,
             };
             let max_read = self.max_read;
             drop(tokio::spawn(async move {

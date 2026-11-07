@@ -2745,14 +2745,6 @@ impl<H: Sql + ?Sized> SessionLog<H> {
     }
 }
 
-#[derive(Serialize)]
-struct Recorded<'a> {
-    #[serde(flatten)]
-    event: &'a Stored<'a>,
-    #[serde(flatten)]
-    annotation: &'a Map<String, Value>,
-}
-
 impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
     async fn recorded(&self, recording: Recording<'_>) -> Result<Vec<LoggedEvent>, String> {
         let unannotated = Map::new();
@@ -2762,28 +2754,25 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
             .iter()
             .zip(recording.request_ids)
             .map(|(event, request_id)| {
-                let stored = Stored { event, compact };
-                let mut annotation = recording.annotation;
-                let mut body = serde_json::value::to_raw_value(&Recorded {
-                    event: &stored,
+                let mut body = serde_json::value::to_raw_value(&Envelope {
+                    event,
                     annotation: recording.annotation,
                 })?;
                 if !recording.annotation.is_empty()
                     && !self.event_fits(request_id.as_deref(), body.get())
                 {
-                    annotation = &unannotated;
-                    body = serde_json::value::to_raw_value(&Recorded {
-                        event: &stored,
+                    body = serde_json::value::to_raw_value(&Envelope {
+                        event,
                         annotation: &unannotated,
                     })?;
                 }
-                let live = serde_json::value::to_raw_value(&Envelope { event, annotation })?;
+                let stored = serde_json::value::to_raw_value(&Stored { event, compact })?;
                 Ok((
                     LogEntry {
                         request_id: request_id.clone(),
-                        event: body,
+                        event: stored,
                     },
-                    live,
+                    body,
                 ))
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()

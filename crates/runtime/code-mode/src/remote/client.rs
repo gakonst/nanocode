@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::{Future, poll_fn},
     pin::pin,
     sync::{
@@ -1005,6 +1005,7 @@ async fn drive(
     let mut acks = Vec::new();
     let mut ack_due = None;
     let mut dispatched: HashMap<u64, String> = HashMap::new();
+    let mut controls: HashSet<u64> = HashSet::new();
     let result = {
         let mut receiving = link.receive();
         let mut sending: Option<Sending<'_>> = None;
@@ -1069,6 +1070,9 @@ async fn drive(
                                     let Frame::Request { id, operation, .. } = frame else {
                                         continue;
                                     };
+                                    if works(operation).is_none() {
+                                        controls.insert(*id);
+                                    }
                                     if let Some(session) = works(operation) {
                                         dispatched.insert(*id, session.to_owned());
                                     } else if let Some(session) = stops(operation)
@@ -1127,7 +1131,8 @@ async fn drive(
                         for frame in received {
                             if let Frame::Reply { id, .. } = &frame {
                                 dispatched.remove(id);
-                                if client.resumes.is_some() && !client.settles {
+                                let unawaited = controls.remove(id) || !pending.contains_key(id);
+                                if client.resumes.is_some() && (!client.settles || unawaited) {
                                     acks.push(*id);
                                 }
                             }

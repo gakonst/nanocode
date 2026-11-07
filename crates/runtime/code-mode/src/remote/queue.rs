@@ -398,7 +398,10 @@ async fn settle<Q: CommandQueue>(
                             completed.map_or(Settlement::Unknown, Settlement::Completed),
                         ));
                     }
-                    Ok(None) => settled.push((command, Settlement::Unknown)),
+                    Ok(None) => {
+                        acks.push(request);
+                        settled.push((command, Settlement::Unknown));
+                    }
                     Err(_) if client.failure().is_some() => released.push(command),
                     Err(error) if error.message() == NOT_RECEIVED => match stopped {
                         Some(reason) => settled.push((command, Settlement::Unavailable(reason))),
@@ -408,7 +411,10 @@ async fn settle<Q: CommandQueue>(
                     Err(error) if error.is_unsent() => {
                         settled.push((command, Settlement::Unavailable(error.to_string())));
                     }
-                    Err(_) => settled.push((command, Settlement::Unknown)),
+                    Err(_) => {
+                        acks.push(request);
+                        settled.push((command, Settlement::Unknown));
+                    }
                 },
             }
         }

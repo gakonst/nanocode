@@ -7,8 +7,8 @@ use crate::{
     Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Sql, SqlDialect, SqlRow,
     SqlStatement, SqlStore, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
     sql::{
-        SqlAccess, counter, invalid, keys_json, migrate_format, run_checked, single, statement,
-        text,
+        SqlAccess, counter, invalid, keys_json, limit_param, migrate_format, names, owner_token,
+        run_checked, single, statement, text,
     },
 };
 
@@ -488,14 +488,8 @@ impl<H: Sql + ?Sized> RowStore<H> {
     }
 
     async fn state_ids(&mut self, limit: usize) -> Result<Vec<String>, StoreError> {
-        let limit = u64::try_from(limit)
-            .unwrap_or(u64::MAX)
-            .min(i64::MAX as u64)
-            .to_string();
-        let rows = self.query("list_states", &STATES, vec![&limit]).await?;
-        rows.iter()
-            .map(|row| text(row, 0).map(str::to_owned))
-            .collect()
+        let limit = limit_param(limit);
+        names(&self.query("list_states", &STATES, vec![&limit]).await?)
     }
 
     async fn record_keys(&mut self, state_id: &str) -> Result<Vec<String>, StoreError> {
@@ -512,15 +506,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
     }
 
     async fn current_owner(&mut self, state_id: &str) -> Result<Option<OwnerToken>, StoreError> {
-        let rows = self.query("owner", &OWNER, vec![state_id]).await?;
-        single(&rows)?
-            .map(|row| {
-                Ok(OwnerToken::new(
-                    OwnerId::from(text(row, 0)?.to_owned()),
-                    counter(row, 1)?,
-                ))
-            })
-            .transpose()
+        owner_token(&self.query("owner", &OWNER, vec![state_id]).await?)
     }
 
     async fn acquire_owner(

@@ -429,6 +429,30 @@ pub(crate) fn counter(row: &SqlRow, column: usize) -> Result<u64, StoreError> {
         .map_err(|error| invalid(format!("counter `{value}`: {error}")))
 }
 
+pub(crate) fn limit_param(limit: usize) -> String {
+    u64::try_from(limit)
+        .unwrap_or(u64::MAX)
+        .min(i64::MAX as u64)
+        .to_string()
+}
+
+pub(crate) fn names(rows: &[SqlRow]) -> Result<Vec<String>, StoreError> {
+    rows.iter()
+        .map(|row| text(row, 0).map(str::to_owned))
+        .collect()
+}
+
+pub(crate) fn owner_token(rows: &[SqlRow]) -> Result<Option<OwnerToken>, StoreError> {
+    single(rows)?
+        .map(|row| {
+            Ok(OwnerToken::new(
+                OwnerId::from(text(row, 0)?.to_owned()),
+                counter(row, 1)?,
+            ))
+        })
+        .transpose()
+}
+
 pub(crate) fn single(rows: &[SqlRow]) -> Result<Option<&SqlRow>, StoreError> {
     match rows {
         [] => Ok(None),
@@ -776,35 +800,20 @@ impl<H: Sql + ?Sized> SqlStore<H> {
     }
 
     async fn state_ids(&mut self, limit: usize) -> Result<Vec<String>, StoreError> {
-        let limit = u64::try_from(limit)
-            .unwrap_or(u64::MAX)
-            .min(i64::MAX as u64)
-            .to_string();
-        let rows = self.query("list_states", &STATES, vec![&limit]).await?;
-        rows.iter()
-            .map(|row| text(row, 0).map(str::to_owned))
-            .collect()
+        let limit = limit_param(limit);
+        names(&self.query("list_states", &STATES, vec![&limit]).await?)
     }
 
     async fn record_keys(&mut self, state_id: &str) -> Result<Vec<String>, StoreError> {
-        let rows = self
-            .query("list_records", &RECORD_KEYS, vec![state_id])
-            .await?;
-        rows.iter()
-            .map(|row| text(row, 0).map(str::to_owned))
-            .collect()
+        names(
+            &self
+                .query("list_records", &RECORD_KEYS, vec![state_id])
+                .await?,
+        )
     }
 
     async fn current_owner(&mut self, state_id: &str) -> Result<Option<OwnerToken>, StoreError> {
-        let rows = self.query("owner", &OWNER, vec![state_id]).await?;
-        single(&rows)?
-            .map(|row| {
-                Ok(OwnerToken::new(
-                    OwnerId::from(text(row, 0)?.to_owned()),
-                    counter(row, 1)?,
-                ))
-            })
-            .transpose()
+        owner_token(&self.query("owner", &OWNER, vec![state_id]).await?)
     }
 
     async fn acquire_owner(

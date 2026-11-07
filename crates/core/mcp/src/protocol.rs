@@ -17,6 +17,8 @@ pub const ELICITATION_CREATE: &str = "elicitation/create";
 
 pub type JsonObject = Map<String, Value>;
 
+pub const RESUME_META_KEY: &str = "io.nanocode/resume";
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Implementation {
     pub name: String,
@@ -116,9 +118,20 @@ pub struct Tool {
     pub output_schema: Option<JsonObject>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<ToolAnnotations>,
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<JsonObject>,
 }
 
 impl Tool {
+    #[must_use]
+    pub fn resumable(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.get(RESUME_META_KEY))
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
     #[must_use]
     pub fn is_read_only(&self) -> bool {
         self.annotations
@@ -278,9 +291,30 @@ pub struct CallToolResult {
     pub meta: Option<JsonObject>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Resumption {
+    Answered,
+    NotSeen,
+    Unknown,
+}
+
 impl CallToolResult {
     #[must_use]
     pub fn is_error(&self) -> bool {
         self.is_error.unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn resumption(&self) -> Resumption {
+        match self
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get(RESUME_META_KEY))
+            .and_then(Value::as_str)
+        {
+            Some("not_seen") => Resumption::NotSeen,
+            Some("unknown") => Resumption::Unknown,
+            _ => Resumption::Answered,
+        }
     }
 }

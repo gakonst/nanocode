@@ -191,14 +191,17 @@ impl CodeModeToolset for LocalTools {
         input: Value,
         context: ToolContext<'a>,
     ) -> Option<HostFuture<'a, Option<ToolOutput>>> {
-        let (here, hands) = self.hands.as_ref()?;
-        let declared =
-            find(&self.tools, name).is_some_and(|(_, definition)| declares_hand(definition));
+        let found = find(&self.tools, name);
+        let Some((here, hands)) = &self.hands else {
+            return recover(found, name, input, context);
+        };
+        let declared = found.is_some_and(|(_, definition)| declares_hand(definition));
         match take_hand(declared, input) {
             Ok((_, Some(hand))) if hand != here.as_ref() && !hands.here(&hand) => {
                 Some(Box::pin(async move { hands.recover(&hand, context).await }))
             }
-            _ => None,
+            Ok((input, _)) => recover(found, name, input, context),
+            Err(_) => None,
         }
     }
 }
@@ -213,6 +216,49 @@ fn find<'a>(
         .find(|(_, definition)| definition.name() == name)
 }
 
+fn recover<'a>(
+    found: Option<&'a (Arc<dyn Tool>, ToolDefinition)>,
+    name: &'a str,
+    input: Value,
+    context: ToolContext<'a>,
+) -> Option<HostFuture<'a, Option<ToolOutput>>> {
+    let (tool, definition) = found?;
+    tool.recover(tool_input(definition, name, input).ok()?, context)
+}
+
+fn tool_input(
+    definition: &ToolDefinition,
+    name: &str,
+    input: Value,
+) -> Result<ToolInput, ToolOutput> {
+    match definition {
+        ToolDefinition::Function { .. } if !input.is_object() => Err(ToolOutput::error(format!(
+            "nested function tool {name} requires an object argument"
+        ))),
+        ToolDefinition::Function { .. } => to_raw_value(&input)
+            .map(ToolInput::Function)
+            .map_err(|error| ToolOutput::error(format!("failed to encode {name} input: {error}"))),
+        ToolDefinition::Custom { .. } => match &input {
+            Value::String(input) => Ok(ToolInput::Freeform(input.clone())),
+            Value::Object(fields) if fields.len() == 1 => fields
+                .get("input")
+                .and_then(Value::as_str)
+                .map(|input| ToolInput::Freeform(input.to_owned()))
+                .ok_or_else(|| {
+                    ToolOutput::error(format!(
+                        "nested freeform tool {name} requires a string argument or {{ input }}"
+                    ))
+                }),
+            _ => Err(ToolOutput::error(format!(
+                "nested freeform tool {name} requires a string argument or {{ input }}"
+            ))),
+        },
+        _ => Err(ToolOutput::error(format!(
+            "unsupported nested tool call: {name}"
+        ))),
+    }
+}
+
 fn execute<'a>(
     found: Option<&'a (Arc<dyn Tool>, ToolDefinition)>,
     name: &'a str,
@@ -223,37 +269,9 @@ fn execute<'a>(
         let Some((tool, definition)) = found else {
             return tool_not_available(name);
         };
-        let input = match definition {
-            ToolDefinition::Function { .. } if !input.is_object() => {
-                return ToolOutput::error(format!(
-                    "nested function tool {name} requires an object argument"
-                ));
-            }
-            ToolDefinition::Function { .. } => match to_raw_value(&input) {
-                Ok(input) => ToolInput::Function(input),
-                Err(error) => {
-                    return ToolOutput::error(format!("failed to encode {name} input: {error}"));
-                }
-            },
-            ToolDefinition::Custom { .. } => match &input {
-                Value::String(input) => ToolInput::Freeform(input.clone()),
-                Value::Object(fields) if fields.len() == 1 => {
-                    match fields.get("input").and_then(Value::as_str) {
-                        Some(input) => ToolInput::Freeform(input.to_owned()),
-                        None => {
-                            return ToolOutput::error(format!(
-                                "nested freeform tool {name} requires a string argument or {{ input }}"
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    return ToolOutput::error(format!(
-                        "nested freeform tool {name} requires a string argument or {{ input }}"
-                    ));
-                }
-            },
-            _ => return ToolOutput::error(format!("unsupported nested tool call: {name}")),
+        let input = match tool_input(definition, name, input) {
+            Ok(input) => input,
+            Err(output) => return output,
         };
         match tool.execute(input, context).await {
             Ok(output) => output,

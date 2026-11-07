@@ -37,7 +37,7 @@ use std::{
 use async_trait::async_trait;
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
 use nanocode_mcp::{
-    CallToolParams, CallToolResult, ContentBlock, ContentKind,
+    CallToolParams, CallToolResult, ContentBlock, ContentKind, Resumption,
     jsonrpc::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR},
     protocol::JsonObject,
 };
@@ -325,6 +325,13 @@ impl Mcp {
 }
 
 impl PreparedMcpTool {
+    fn resumable(&self, input: ToolInput, context: &ToolContext<'_>) -> Option<Value> {
+        if !self.entry.resumable || context.turn_id().is_none() {
+            return None;
+        }
+        input.decode_json::<Value>().ok()
+    }
+
     pub fn server(&self) -> &str {
         &self.entry.server_name
     }
@@ -398,6 +405,52 @@ impl Tool for PreparedMcpTool {
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let input = input.decode_json::<Value>()?;
         Ok(execute_mcp_entry(&self.entry, input, self.timeout, context).await)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn recover<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> Option<
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ToolOutput>> + Send + 'async_trait>,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        let input = self.resumable(input, &context)?;
+        Some(Box::pin(resume_mcp_entry(
+            &self.entry,
+            input,
+            self.timeout,
+            context,
+        )))
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn recover<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Option<ToolOutput>> + 'async_trait>>,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        let input = self.resumable(input, &context)?;
+        Some(Box::pin(resume_mcp_entry(
+            &self.entry,
+            input,
+            self.timeout,
+            context,
+        )))
     }
 }
 
@@ -827,11 +880,46 @@ async fn execute_mcp_entry(
     timeout: Duration,
     context: ToolContext<'_>,
 ) -> ToolOutput {
+    match call_mcp_entry(entry, input, timeout, context, false).await {
+        Ok(result) => result_output(entry, result),
+        Err(output) => output,
+    }
+}
+
+async fn resume_mcp_entry(
+    entry: &ToolEntry,
+    input: Value,
+    timeout: Duration,
+    context: ToolContext<'_>,
+) -> Option<ToolOutput> {
+    let result = call_mcp_entry(entry, input.clone(), timeout, context, true)
+        .await
+        .ok()?;
+    match result.resumption() {
+        Resumption::Answered => Some(result_output(entry, result)),
+        Resumption::NotSeen => Some(execute_mcp_entry(entry, input, timeout, context).await),
+        Resumption::Unknown => None,
+    }
+}
+
+fn result_output(entry: &ToolEntry, result: CallToolResult) -> ToolOutput {
+    tool_output(result, &entry.server_name, &entry.remote_name).unwrap_or_else(|error| {
+        ToolOutput::error(format!("failed to encode MCP tool result: {error}"))
+    })
+}
+
+async fn call_mcp_entry(
+    entry: &ToolEntry,
+    input: Value,
+    timeout: Duration,
+    context: ToolContext<'_>,
+    resume: bool,
+) -> Result<CallToolResult, ToolOutput> {
     let Value::Object(arguments) = input else {
-        return ToolOutput::error(format!(
+        return Err(ToolOutput::error(format!(
             "MCP tool {} requires an object argument",
             entry.canonical_name
-        ));
+        )));
     };
     let argument_bytes = serde_json::to_vec(&arguments).map_or(0, |encoded| encoded.len());
     let argument_keys = arguments
@@ -846,6 +934,9 @@ async fn execute_mcp_entry(
             "x-codex-turn-metadata",
             json!({"session_id":context.session_id(), "thread_id":context.session_id(), "turn_id":turn_id, "call_id":context.call_id(), "model":context.model()}),
         );
+    }
+    if resume {
+        params.insert_meta(nanocode_mcp::RESUME_META_KEY, Value::Bool(true));
     }
     let span = info_span!(
         target: "nanocode_code_mode",
@@ -862,10 +953,10 @@ async fn execute_mcp_entry(
     if let Err(error) = entry.client.refresh_oauth().await {
         span.record("status", "failed");
         span.record("otel.status_code", "ERROR");
-        return ToolOutput::error(format!(
+        return Err(ToolOutput::error(format!(
             "MCP tool {}/{} could not refresh OAuth credentials: {error}",
             entry.server_name, entry.remote_name
-        ));
+        )));
     }
     let result = match nanocode_platform::timeout(
         timeout,
@@ -877,33 +968,26 @@ async fn execute_mcp_entry(
         Ok(Err(error)) => {
             span.record("status", "failed");
             span.record("otel.status_code", "ERROR");
-            return ToolOutput::error(format!(
+            return Err(ToolOutput::error(format!(
                 "MCP tool {}/{} failed: {error}",
                 entry.server_name, entry.remote_name
-            ));
+            )));
         }
         Err(_) => {
             span.record("status", "timeout");
             span.record("otel.status_code", "ERROR");
-            return ToolOutput::error(format!(
+            return Err(ToolOutput::error(format!(
                 "MCP tool {}/{} {}",
                 entry.server_name,
                 entry.remote_name,
                 McpCallError::Timeout(timeout)
-            ));
+            )));
         }
     };
     let success = !result.is_error();
     span.record("status", if success { "completed" } else { "failed" });
     span.record("otel.status_code", if success { "OK" } else { "ERROR" });
-    match tool_output(result, &entry.server_name, &entry.remote_name) {
-        Ok(output) => output,
-        Err(error) => {
-            span.record("status", "failed");
-            span.record("otel.status_code", "ERROR");
-            ToolOutput::error(format!("failed to encode MCP tool result: {error}"))
-        }
-    }
+    Ok(result)
 }
 
 pub fn tool_output(

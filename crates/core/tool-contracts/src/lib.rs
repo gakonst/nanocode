@@ -283,6 +283,34 @@ pub trait Tool: Send + Sync + 'static {
         'life0: 'async_trait,
         'life1: 'async_trait,
         Self: 'async_trait;
+
+    #[cfg(not(target_family = "wasm"))]
+    fn recover<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> Option<Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        None
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn recover<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> Option<Pin<Box<dyn Future<Output = Option<ToolOutput>> + 'async_trait>>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        None
+    }
 }
 
 pub trait ToolCollection: Sized {

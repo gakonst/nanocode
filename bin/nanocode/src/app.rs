@@ -40,6 +40,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
     events::{Accepted, EventMapper},
+    focus::Scope,
     host::{Host, Result},
     models, view,
 };
@@ -1184,8 +1185,8 @@ impl App {
                 Redraw::Immediate
             }
             AppEvent::AgentStopped { root, id, result } => {
-                if self.session_id().as_deref() == Some(root.as_str()) {
-                    self.agent_stopped(id, result);
+                if let Some(scope) = self.scope_of(&root) {
+                    self.agent_stopped(scope, id, result);
                 }
                 Redraw::Immediate
             }
@@ -2076,7 +2077,7 @@ impl App {
                     {
                         self.esc_armed = None;
                         match self.focus {
-                            Some(id) => self.interrupt_focused(id),
+                            Some(id) => self.interrupt_focused(Scope::Main, id),
                             None => self.interrupt(),
                         }
                     } else {
@@ -2335,7 +2336,7 @@ impl App {
             if !self.attachments.is_empty() {
                 self.flash("attachments go to the main thread; /agent returns to it");
             }
-            self.message_focused(id, text);
+            self.message_focused(Scope::Main, id, text);
             return;
         }
         if self.moved {
@@ -2486,7 +2487,7 @@ impl App {
             {
                 self.show_panel = !self.show_panel;
             }
-            "stop" | "stop-agent" => self.stop_command(argument),
+            "stop" | "stop-agent" => self.stop_command(Scope::Main, argument),
             "compact" => self.compact(),
             "runner" => self.runner_command(argument),
             "session" | "status" => {
@@ -2522,7 +2523,7 @@ impl App {
                 None => self.flash("no session yet; send a message to start one"),
             },
             "expand" => self.active_transcript().toggle_expanded(),
-            "agent" | "focus" => self.focus_command(argument),
+            "agent" | "focus" => self.focus_command(Scope::Main, argument),
             "theme" if argument.is_empty() => self.open_theme_picker(),
             "theme" => self.set_theme(argument),
             "copy" => self.copy_last_reply(),

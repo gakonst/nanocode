@@ -1,4 +1,7 @@
-use std::{collections::HashSet, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use tokio::task::AbortHandle;
 
@@ -21,6 +24,7 @@ use crate::{
         TOOL_PREVIEW_LINES,
     },
     events::EventMapper,
+    focus::{Scope, SubagentView},
 };
 
 const BTW_BOUNDARY: &str = "You are answering an ephemeral BTW side question.
@@ -97,6 +101,8 @@ pub struct SidePane {
     current: Option<PendingTurn>,
     resumes: Vec<PendingTurn>,
     session_hint: Option<String>,
+    pub(crate) focus: Option<AgentId>,
+    pub(crate) views: HashMap<AgentId, SubagentView>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -223,7 +229,10 @@ fn collapse_prompt(exchanges: &[(bool, String)]) -> String {
 impl App {
     pub(crate) fn pane_transcript(&mut self, side: bool) -> &mut Transcript {
         match self.panes.side.as_mut().filter(|_| side) {
-            Some(pane) => &mut pane.transcript,
+            Some(pane) => match pane.focus.and_then(|id| pane.views.get_mut(&id)) {
+                Some(view) => &mut view.transcript,
+                None => &mut pane.transcript,
+            },
             None => match self.focus.and_then(|id| self.views.get_mut(&id)) {
                 Some(view) => &mut view.transcript,
                 None => &mut self.transcript,
@@ -278,6 +287,9 @@ impl App {
 
     pub(crate) fn btw(&mut self, question: String) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "btw", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
+        if self.btw_agent_command(&question) {
+            return;
+        }
         if self.panes.side.is_none() && !self.open_side() {
             return;
         }
@@ -365,6 +377,8 @@ impl App {
             current: None,
             resumes: Vec::new(),
             session_hint: restore.as_ref().map(|(session, _)| session.clone()),
+            focus: None,
+            views: HashMap::new(),
         });
         self.panes.zoomed = false;
         if owner.is_none() || restore.is_some() {
@@ -746,9 +760,13 @@ impl App {
                 self.command(command.trim());
             } else {
                 self.flash(
-                    "the side pane takes questions, /collapse, /split, /close, /zoom, /copy and /id · tab returns to the chat",
+                    "the side pane takes questions, /btw agent, /btw stop, /collapse, /split, /close, /zoom, /copy and /id · tab returns to the chat",
                 );
             }
+            return;
+        }
+        if let Some(id) = self.focus_of(Scope::Side) {
+            self.message_focused(Scope::Side, id, text);
             return;
         }
         self.side_ask(text);
@@ -759,9 +777,10 @@ impl App {
         let Some(side) = self.panes.side.as_ref() else {
             return;
         };
-        if !side.busy {
+        if !side.busy && side.focus.is_none() {
             return;
         }
+        let focus = side.focus;
         let control = side.control.clone();
         let asking = side.asking.as_ref().map(|(id, task)| (*id, task.clone()));
         if self
@@ -770,6 +789,10 @@ impl App {
             .is_some_and(|armed| armed.elapsed() < QUIT_CONFIRMATION)
         {
             self.panes.armed = None;
+            if let Some(id) = focus {
+                self.interrupt_focused(Scope::Side, id);
+                return;
+            }
             self.flash("cancelling the side turn");
             if let Some((id, task)) = asking {
                 task.abort();
@@ -790,7 +813,11 @@ impl App {
             });
         } else {
             self.panes.armed = Some(Instant::now());
-            self.flash("press esc again to cancel the side turn");
+            self.flash(if focus.is_some() {
+                "press esc again to interrupt"
+            } else {
+                "press esc again to cancel the side turn"
+            });
         }
     }
 
@@ -880,12 +907,12 @@ impl App {
         }
         match side.owner {
             None => self.deliver_to_main(text),
-            Some(child) => self.message_focused(child, text),
+            Some(child) => self.message_focused(Scope::Main, child, text),
         }
         self.flash(format!("collapsed the side pane into {}", side.label));
     }
 
-    fn side_notice(&mut self, level: NoticeLevel, text: impl Into<String>) {
+    pub(crate) fn side_notice(&mut self, level: NoticeLevel, text: impl Into<String>) {
         if let Some(side) = self.panes.side.as_mut() {
             side.transcript.push(CellKind::Notice(level, text.into()));
             side.transcript.scroll_to_bottom();

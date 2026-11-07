@@ -11,7 +11,7 @@ pub const COMMANDS: [(&str, &str); 33] = [
     ),
     (
         "/btw",
-        "open the side pane: a forked side thread that never interrupts the turn",
+        "open the side pane: a forked side thread that never interrupts the turn; /btw agent|stop #id for its subagents",
     ),
     ("/resume", "resume a saved session"),
     (

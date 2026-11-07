@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use nanocode::subagents::AgentId;
 use nanocode_observability::TUI_TARGET;
 use nanocode_tui::{
     keybindings::{self, Binding},
@@ -16,11 +17,14 @@ use nanocode_tui::{
     transcript::Transcript,
 };
 
-use crate::app::{App, Overlay, TurnState};
+use crate::{
+    app::{App, Overlay, TurnState},
+    focus::{Scope, SubagentView},
+};
 
 pub const STATUS_VISIBLE: Duration = Duration::from_secs(4);
 
-pub const BINDINGS: [Binding; 35] = [
+pub const BINDINGS: [Binding; 36] = [
     Binding {
         keys: "enter",
         action: "send · steer into the running turn",
@@ -138,6 +142,10 @@ pub const BINDINGS: [Binding; 35] = [
         action: "side pane: a forked side thread beside the chat",
     },
     Binding {
+        keys: "/btw agent #id · /btw stop #id",
+        action: "side pane: focus or close a subagent the side thread spawned; /btw agent alone returns",
+    },
+    Binding {
         keys: "shift+tab · tab · click",
         action: "switch chat and side pane; tab takes back queued messages first",
     },
@@ -229,7 +237,16 @@ pub fn draw(app: &mut App, frame: &mut Canvas<'_>) {
         ]));
     }
     let tree_lines = if app.show_tree && app.tree.listed() > 0 {
-        let focused = app.focus.map(|id| id.to_string());
+        let focused = match app
+            .panes
+            .side
+            .as_ref()
+            .and_then(|side| side.focus)
+            .filter(|_| app.panes.active)
+        {
+            Some(id) => Some(Scope::Side.tree_id(id)),
+            None => app.focus.map(|id| Scope::Main.tree_id(id)),
+        };
         let selected = focused.and_then(|key| {
             app.tree
                 .ordered()
@@ -521,11 +538,15 @@ fn tab_line(app: &App, theme: &Theme) -> Line<'static> {
             format!(
                 "{}{}",
                 marker(app.panes.active),
-                side.map_or_else(String::new, |side| format!(
-                    "BTW · {} · {}",
-                    side.label(),
-                    side.kind()
-                ))
+                side.map_or_else(String::new, |side| {
+                    match side
+                        .focus
+                        .and_then(|id| side.views.get(&id).map(|view| (id, view)))
+                    {
+                        Some((id, view)) => format!("BTW · {} · #{id} {}", side.label(), view.role),
+                        None => format!("BTW · {} · {}", side.label(), side.kind()),
+                    }
+                })
             ),
             side_style,
         ),
@@ -644,6 +665,43 @@ fn spinning(style: Style, rest: impl IntoIterator<Item = Span<'static>>) -> Line
     Line::from(spans)
 }
 
+fn focus_line(app: &App, scope: Scope, id: AgentId, view: &SubagentView) -> Line<'static> {
+    let theme = &app.theme;
+    let key = scope.tree_id(id);
+    let state = app
+        .tree
+        .nodes()
+        .iter()
+        .find(|node| node.id == key)
+        .map(|node| node.status.label())
+        .unwrap_or_default();
+    let prefix = scope.prefix();
+    Line::from(vec![
+        Span::styled(" ▸ ", Style::default().fg(theme.accent())),
+        Span::styled(
+            format!("{prefix}#{id} {}", view.role),
+            Style::default()
+                .fg(theme.text())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "{}{}{state}",
+                view.model
+                    .as_deref()
+                    .map(|model| format!(" · {model}"))
+                    .unwrap_or_default(),
+                if state.is_empty() { "" } else { " · " }
+            ),
+            Style::default().fg(theme.muted()),
+        ),
+        Span::styled(
+            format!("  enter messages it · esc esc interrupts · /{prefix}agent returns"),
+            Style::default().fg(theme.muted()),
+        ),
+    ])
+}
+
 fn status_line(app: &App, now: Instant, animation: &mut Animation) -> Line<'static> {
     let _span = tracing::info_span!(target: TUI_TARGET, "nc.status.render").entered();
     let theme = &app.theme;
@@ -658,6 +716,12 @@ fn status_line(app: &App, now: Instant, animation: &mut Animation) -> Line<'stat
     if app.panes.side_active()
         && let Some(side) = &app.panes.side
     {
+        if let Some((id, view)) = side
+            .focus
+            .and_then(|id| side.views.get(&id).map(|view| (id, view)))
+        {
+            return focus_line(app, Scope::Side, id, view);
+        }
         let state = match side.since() {
             Some(since) if side.busy() => {
                 animation.clock(since, now);
@@ -699,38 +763,7 @@ fn status_line(app: &App, now: Instant, animation: &mut Animation) -> Line<'stat
     if let Some(id) = app.focus
         && let Some(view) = app.views.get(&id)
     {
-        let key = id.to_string();
-        let state = app
-            .tree
-            .nodes()
-            .iter()
-            .find(|node| node.id == key)
-            .map(|node| node.status.label())
-            .unwrap_or_default();
-        return Line::from(vec![
-            Span::styled(" ▸ ", Style::default().fg(theme.accent())),
-            Span::styled(
-                format!("#{id} {}", view.role),
-                Style::default()
-                    .fg(theme.text())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "{}{}{state}",
-                    view.model
-                        .as_deref()
-                        .map(|model| format!(" · {model}"))
-                        .unwrap_or_default(),
-                    if state.is_empty() { "" } else { " · " }
-                ),
-                Style::default().fg(theme.muted()),
-            ),
-            Span::styled(
-                "  enter messages it · esc esc interrupts · /agent returns",
-                Style::default().fg(theme.muted()),
-            ),
-        ]);
+        return focus_line(app, Scope::Main, id, view);
     }
     if app.interrupting && !matches!(app.turn, TurnState::Idle) {
         return spinning(

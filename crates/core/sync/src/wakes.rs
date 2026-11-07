@@ -13,7 +13,7 @@ pub type Wakeups = broadcast::Receiver<Arc<str>>;
 
 type Hook = Arc<dyn Fn(Option<&'static str>, &str) + Send + Sync>;
 
-type Waiting = imbl::HashMap<Arc<str>, Vec<(u64, Arc<Notify>)>>;
+type Waiting = imbl::HashMap<Arc<str>, imbl::OrdMap<u64, Arc<Notify>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wake {
@@ -52,7 +52,7 @@ impl Drop for Wakeup {
         if let Some(Lane { keyed, .. }) = self.hub.0.lanes.get(self.lane) {
             keyed.shard(&self.key).update(|waiting| {
                 if let Some(list) = waiting.get_mut(&self.key) {
-                    list.retain(|(id, _)| *id != self.id);
+                    list.remove(&self.id);
                     if list.is_empty() {
                         waiting.remove(&self.key);
                     }
@@ -114,7 +114,7 @@ impl WakeHub {
             waiting
                 .entry(Arc::clone(&key))
                 .or_default()
-                .push((id, Arc::clone(&notify)));
+                .insert(id, Arc::clone(&notify));
         });
         Some(Wakeup {
             hub: self.clone(),
@@ -226,9 +226,12 @@ impl Keyed {
             Some(key) => waiting
                 .get(key)
                 .into_iter()
-                .flatten()
-                .for_each(|(_, n)| n.notify_one()),
-            None => waiting.values().flatten().for_each(|(_, n)| n.notify_one()),
+                .flat_map(imbl::OrdMap::values)
+                .for_each(|notify| notify.notify_one()),
+            None => waiting
+                .values()
+                .flat_map(imbl::OrdMap::values)
+                .for_each(|notify| notify.notify_one()),
         };
         match key {
             Some(key) => self.shard(key).read(notify),

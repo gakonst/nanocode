@@ -5814,6 +5814,7 @@ dependencies = [
  "nanocode-code-mode",
  "nanocode-home",
  "nanocode-image",
+ "nanocode-platform",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tool-provider",

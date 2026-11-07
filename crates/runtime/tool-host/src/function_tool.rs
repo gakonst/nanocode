@@ -1,5 +1,6 @@
 use std::{future::Future, marker::PhantomData, sync::Arc};
 
+pub use nanocode_platform::MaybeSend;
 use nanocode_tools::{ToolOutputContent, schema_for};
 use schemars::JsonSchema;
 use serde::de::{DeserializeOwned, Error as _};
@@ -46,15 +47,6 @@ impl From<Failure> for Result<Value, String> {
         }
     }
 }
-
-#[cfg(not(target_family = "wasm"))]
-pub trait MaybeSend: Send {}
-#[cfg(not(target_family = "wasm"))]
-impl<T: Send> MaybeSend for T {}
-#[cfg(target_family = "wasm")]
-pub trait MaybeSend {}
-#[cfg(target_family = "wasm")]
-impl<T> MaybeSend for T {}
 
 struct Typed<H, Args, Error>(H, PhantomData<fn() -> (Args, Error)>);
 

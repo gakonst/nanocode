@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use nanocode_platform::{MaybeSend, MaybeSync};
+
 use crate::{
     OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
 };
@@ -10,40 +12,7 @@ pub struct Versioned {
     pub value: String,
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub trait KeyValue: Send + Sync {
-    fn get<'a>(&'a self, key: &'a str) -> StoreFuture<'a, Result<Option<Versioned>, StoreError>>;
-
-    fn get_values<'a>(
-        &'a self,
-        keys: &'a [String],
-    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
-        Box::pin(get_each(self, keys))
-    }
-
-    fn put_values<'a>(
-        &'a self,
-        entries: &'a [(String, String)],
-    ) -> StoreFuture<'a, Result<(), StoreError>>;
-
-    fn compare_and_swap<'a>(
-        &'a self,
-        key: &'a str,
-        expected_version: Option<&'a str>,
-        version: &'a str,
-        value: &'a str,
-    ) -> StoreFuture<'a, Result<bool, StoreError>>;
-
-    fn list_keys<'a>(
-        &'a self,
-        _prefix: &'a str,
-    ) -> StoreFuture<'a, Result<Vec<String>, StoreError>> {
-        Box::pin(async { Err(listing_unsupported()) })
-    }
-}
-
-#[cfg(target_family = "wasm")]
-pub trait KeyValue {
+pub trait KeyValue: MaybeSend + MaybeSync {
     fn get<'a>(&'a self, key: &'a str) -> StoreFuture<'a, Result<Option<Versioned>, StoreError>>;
 
     fn get_values<'a>(

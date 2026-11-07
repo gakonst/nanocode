@@ -1,5 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
+use nanocode_platform::{MaybeSend, MaybeSync};
+
 use serde::ser::SerializeSeq;
 
 use crate::{
@@ -47,43 +49,7 @@ impl SqlDialect {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub trait Sql: Send + Sync {
-    fn transaction<'a>(
-        &'a self,
-        operation: &'static str,
-        statements: &'a [SqlStatement<'a>],
-    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>>;
-
-    fn run<'a>(
-        &'a self,
-        access: SqlAccess,
-        operation: &'static str,
-        statements: &'a [SqlStatement<'a>],
-    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        let _ = access;
-        self.transaction(operation, statements)
-    }
-
-    fn dialect(&self) -> SqlDialect {
-        SqlDialect::Sqlite
-    }
-
-    fn concurrent(self: Arc<Self>) -> Option<Arc<dyn Sql>> {
-        None
-    }
-
-    fn writers(&self) -> usize {
-        1
-    }
-
-    fn readers(&self) -> usize {
-        1
-    }
-}
-
-#[cfg(target_family = "wasm")]
-pub trait Sql {
+pub trait Sql: MaybeSend + MaybeSync {
     fn transaction<'a>(
         &'a self,
         operation: &'static str,

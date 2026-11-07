@@ -16,6 +16,7 @@ blake3.workspace = true
 nanocode-code-mode.workspace = true
 nanocode-home.workspace = true
 nanocode-image.workspace = true
+nanocode-platform.workspace = true
 nanocode-tool-contracts.workspace = true
 nanocode-tool-provider.workspace = true
 nanocode-sync.workspace = true

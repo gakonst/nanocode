@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use nanocode_platform::{MaybeSend, MaybeSync};
+
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use crate::{StoreError, StoreFuture};
@@ -43,19 +45,7 @@ impl std::fmt::Display for BlobKey {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub trait BlobStore: Send + Sync {
-    fn put<'a>(
-        &'a self,
-        key: &'a BlobKey,
-        bytes: &'a [u8],
-    ) -> StoreFuture<'a, Result<(), StoreError>>;
-
-    fn get<'a>(&'a self, key: &'a BlobKey) -> StoreFuture<'a, Result<Option<Vec<u8>>, StoreError>>;
-}
-
-#[cfg(target_family = "wasm")]
-pub trait BlobStore {
+pub trait BlobStore: MaybeSend + MaybeSync {
     fn put<'a>(
         &'a self,
         key: &'a BlobKey,

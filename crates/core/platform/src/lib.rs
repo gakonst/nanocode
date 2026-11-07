@@ -55,6 +55,14 @@ pub async fn timeout<F: std::future::Future>(
     .await
 }
 
+pub fn unix_millis() -> u64 {
+    system_time()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
     getrandom::fill(bytes).map_err(std::io::Error::other)

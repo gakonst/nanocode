@@ -84,7 +84,7 @@ impl SessionRecord {
         workspace: Option<PathBuf>,
     ) -> Self {
         let session_id = session_id.into();
-        let now = now_ms();
+        let now = nanocode_platform::unix_millis();
         Self {
             lineage: Lineage::root(session_id.clone()),
             session_id,
@@ -139,7 +139,7 @@ impl SessionRecord {
         origin: nanocode_agent_core::Origin,
     ) -> Self {
         let session_id = session_id.into();
-        let now = now_ms();
+        let now = nanocode_platform::unix_millis();
         Self {
             lineage: Lineage::child_of(&self.lineage, self.session_id.clone(), origin),
             session_id,
@@ -162,7 +162,7 @@ impl SessionRecord {
     }
 
     pub(crate) fn touch(&mut self) {
-        let now = now_ms();
+        let now = nanocode_platform::unix_millis();
         if now > self.updated_at_ms {
             self.updated_at_ms = now;
         }
@@ -228,16 +228,6 @@ impl SessionRecord {
 
 pub(crate) fn preview_text(text: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.chars().take(500).collect())
-}
-
-fn now_ms() -> u64 {
-    use nanocode_platform::UNIX_EPOCH;
-
-    nanocode_platform::system_time()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 pub use store::*;

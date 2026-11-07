@@ -89,14 +89,6 @@ struct Login {
     directory: PathBuf,
 }
 
-fn now_millis() -> u64 {
-    nanocode_platform::system_time()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 impl Login {
     async fn load() -> Result<Self, ClaudeAuthUnavailable> {
         let home = nanocode_home::AgentHome::from_env()
@@ -176,7 +168,7 @@ impl Login {
     fn usable(&self, rejected: Option<&HeaderValue>) -> Result<bool, ClaudeAuthUnavailable> {
         let (token, expires_at) = self.access()?;
         let margin = u64::try_from(REFRESH_MARGIN.as_millis()).unwrap_or(u64::MAX);
-        let fresh = expires_at > now_millis().saturating_add(margin);
+        let fresh = expires_at > nanocode_platform::unix_millis().saturating_add(margin);
         let rejected = rejected
             .is_some_and(|rejected| rejected.as_bytes() == format!("Bearer {token}").as_bytes());
         Ok(fresh && !rejected)
@@ -426,7 +418,7 @@ impl ClaudeCodeLogin {
         let expires_in = reply["expires_in"]
             .as_u64()
             .ok_or_else(|| unavailable("Claude Code login refresh response has no expires_in"))?;
-        let now = now_millis();
+        let now = nanocode_platform::unix_millis();
         let oauth = login.document["claudeAiOauth"]
             .as_object_mut()
             .ok_or_else(|| unavailable("Claude Code login has no claudeAiOauth credentials"))?;

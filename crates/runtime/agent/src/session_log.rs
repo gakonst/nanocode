@@ -5,9 +5,9 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::UNIX_EPOCH,
 };
 
+pub(crate) use nanocode_platform::unix_millis as now;
 use nanocode_sync::{Held, Owned};
 use nanocode_tool_host::embedded::HostFuture;
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
@@ -602,14 +602,6 @@ fn decoded_bytes(body: &str) -> Result<usize, StoreError> {
     } else {
         Ok(body.len())
     }
-}
-
-pub(crate) fn now() -> u64 {
-    nanocode_platform::system_time()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 fn decode_lines(body: &str) -> Result<Vec<Event>, StoreError> {

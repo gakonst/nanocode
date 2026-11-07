@@ -33,6 +33,11 @@ impl AssistantText {
         item_id.map_or_else(|| format!("model-{model_call_index}"), str::to_owned)
     }
 
+    #[must_use]
+    pub fn text(&self, key: &str) -> Option<&str> {
+        self.streaming.get(key).map(String::as_str)
+    }
+
     fn shown(&mut self, item_id: Option<&str>, model_call_index: u32) -> (String, bool) {
         let key = Self::key(item_id, model_call_index);
         let attempts = self.calls.entry(model_call_index).or_default();

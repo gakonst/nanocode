@@ -16,7 +16,7 @@ use std::{
         mpsc::{Receiver, RecvTimeoutError, sync_channel},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -29,6 +29,8 @@ pub(crate) const REDIAL: Duration = Duration::from_millis(250);
 const MAX_CONNECTIONS: usize = 8;
 const OUTBOX: usize = 64;
 const MAX_INPUT: usize = 32 * 1024;
+const RECONNECT: Duration = Duration::from_secs(2);
+const RECONNECT_POLL: Duration = Duration::from_millis(25);
 
 type Diagnose = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
@@ -39,6 +41,7 @@ pub struct ExtensionLink {
     live: Atom<Option<Arc<Live>>>,
     unavailable: Atom<Option<String>>,
     diagnose: Option<Diagnose>,
+    gone: Atom<Instant>,
 }
 
 struct Live {
@@ -57,14 +60,7 @@ impl Live {
 
 impl ExtensionLink {
     pub fn new(name: impl Into<String>, absent: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self {
-            name: name.into(),
-            absent: absent.into(),
-            next: AtomicU64::new(0),
-            live: Atom::default(),
-            unavailable: Atom::default(),
-            diagnose: None,
-        })
+        Self::built(name.into(), absent.into(), None)
     }
 
     pub fn diagnosing(
@@ -72,14 +68,32 @@ impl ExtensionLink {
         absent: impl Into<String>,
         diagnose: impl Fn() -> Option<String> + Send + Sync + 'static,
     ) -> Arc<Self> {
+        Self::built(name.into(), absent.into(), Some(Arc::new(diagnose)))
+    }
+
+    fn built(name: String, absent: String, diagnose: Option<Diagnose>) -> Arc<Self> {
         Arc::new(Self {
-            name: name.into(),
-            absent: absent.into(),
+            name,
+            absent,
             next: AtomicU64::new(0),
             live: Atom::default(),
             unavailable: Atom::default(),
-            diagnose: Some(Arc::new(diagnose)),
+            diagnose,
+            gone: Atom::new(Instant::now()),
         })
+    }
+
+    async fn browser(&self) -> Option<Arc<Live>> {
+        let deadline = *self.gone.get() + RECONNECT;
+        loop {
+            if let Some(live) = Option::clone(&self.live.get()) {
+                return Some(live);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(RECONNECT_POLL).await;
+        }
     }
 
     pub fn connected(&self) -> bool {
@@ -179,6 +193,7 @@ impl ExtensionLink {
                 *current = None;
             }
         });
+        self.gone.set(Instant::now());
         live.pending.set(HashMap::new());
         writer.abort();
     }
@@ -203,7 +218,7 @@ impl ExtensionLink {
             "input": input,
         })
         .to_string();
-        let Some(live) = Option::clone(&self.live.get()) else {
+        let Some(live) = self.browser().await else {
             return self.missing().await;
         };
         let (sender, receiver) = oneshot::channel();

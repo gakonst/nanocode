@@ -88,6 +88,7 @@ unsafe extern "C" {
         image_option: u32,
     ) -> CFTypeRef;
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
 }
 
 #[link(name = "ImageIO", kind = "framework")]
@@ -122,6 +123,19 @@ unsafe extern "C" {
 
 pub fn trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
+}
+
+pub fn locked() -> bool {
+    let session = unsafe { CGSessionCopyCurrentDictionary() };
+    if session.is_null() {
+        return false;
+    }
+    let session: CFDictionary<CFString, CFType> =
+        unsafe { CFDictionary::wrap_under_create_rule(session) };
+    session
+        .find(CFString::from_static_string("CGSSessionScreenIsLocked"))
+        .and_then(|locked| locked.downcast::<CFBoolean>())
+        .is_some_and(bool::from)
 }
 
 pub struct Element(CFTypeRef);
@@ -304,6 +318,10 @@ impl Element {
             CFType::wrap_under_create_rule(AXValueCreate(AX_RANGE, (&raw const range).cast()))
         };
         self.set(attribute, value.as_CFTypeRef())
+    }
+
+    pub fn is_window(&self) -> bool {
+        self.text("AXRole").as_deref() == Some("AXWindow")
     }
 
     pub fn alive(&self) -> bool {

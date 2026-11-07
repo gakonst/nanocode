@@ -22,6 +22,8 @@ pub const SENSITIVE: &[&str] = &[
     "com.apple.SecurityAgent",
     "com.apple.LocalAuthentication.UIAgent",
     "com.apple.coreservices.uiagent",
+    "com.apple.loginwindow",
+    "com.apple.ScreenSaver.Engine",
     "gnome-terminal-server",
     "kgx",
     "ptyxis",

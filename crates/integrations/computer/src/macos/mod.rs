@@ -21,6 +21,7 @@ const READ_BUDGET: Duration = Duration::from_secs(5);
 const INTERACTIVE: &str = "AXButton AXCheckBox AXRadioButton AXPopUpButton AXMenuButton AXComboBox AXTextField AXTextArea AXSlider AXIncrementor AXLink AXMenuItem AXMenuBarItem AXDisclosureTriangle AXRow AXCell AXScrollArea AXColorWell AXDateField AXTimeField AXSegmentedControl AXTab";
 const ACTIVATING: &str = "AXPress AXShowMenu AXConfirm AXPick AXIncrement AXOpen";
 const SECURE: &str = "AXSecureTextField";
+const LOCKED: &str = "The screen is locked, and macOS hides every app's windows from accessibility until it is unlocked, so nothing ran. Try again once the Mac is unlocked, or continue without computer use.";
 const NODE: [&str; 9] = [
     "AXRole",
     "AXSubrole",
@@ -72,10 +73,12 @@ impl Backend for Ax {
 
     fn ready(&mut self, host: &str) -> Result<(), String> {
         host.clone_into(&mut self.host);
-        if ax::trusted() {
-            Ok(())
-        } else {
+        if !ax::trusted() {
             Err(self.no_permission())
+        } else if ax::locked() {
+            Err(LOCKED.into())
+        } else {
+            Ok(())
         }
     }
 
@@ -158,10 +161,14 @@ impl Backend for Ax {
     fn read(&mut self, app: &App) -> Result<Read<Element>, String> {
         let ax = Element::application(app.pid as i32)
             .ok_or_else(|| format!("{} could not be reached, so nothing ran.", app.name))?;
-        let window = ax
-            .element("AXFocusedWindow")
-            .or_else(|| ax.element("AXMainWindow"))
-            .or_else(|| ax.elements("AXWindows", 1).into_iter().next());
+        let window = ["AXFocusedWindow", "AXMainWindow"]
+            .into_iter()
+            .find_map(|attribute| ax.element(attribute).filter(Element::is_window))
+            .or_else(|| {
+                ax.elements("AXWindows", MAX_CHILDREN)
+                    .into_iter()
+                    .find(Element::is_window)
+            });
         let focused = ax.element("AXFocusedUIElement");
         let mut budget = Budget {
             nodes: 0,

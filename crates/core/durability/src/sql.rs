@@ -348,8 +348,8 @@ const RELEASE_OWNER: Dialects = [
     "DELETE FROM owners WHERE id = $1::text AND owner = '' AND fence = '0'",
 ];
 const DROP_RECORDS: Dialects = [
-    "DELETE FROM records WHERE key IN (SELECT value FROM json_each(?1)) AND holder IS NULL AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING id",
-    "DELETE FROM records USING jsonb_array_elements_text($1::text::jsonb) AS dead (key) WHERE records.key = dead.key AND records.holder IS NULL AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING CAST(records.id AS TEXT)",
+    "DELETE FROM records WHERE key IN (SELECT value FROM json_each(?3)) AND (holder IS NULL OR (holder = ?1 AND COALESCE((SELECT revision FROM states WHERE id = ?1), '0') = ?2 AND (SELECT CAST(fence AS INTEGER) FROM owners WHERE id = ?1) < 9223372036854775807)) AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING holder",
+    "DELETE FROM records USING jsonb_array_elements_text($3::text::jsonb) AS dead (key) WHERE records.key = dead.key AND (records.holder IS NULL OR (records.holder = $1::text AND COALESCE((SELECT revision FROM states WHERE id = $1::text), '0') = $2::text AND (SELECT CAST(fence AS BIGINT) FROM owners WHERE id = $1::text) < 9223372036854775807)) AND NOT EXISTS (SELECT 1 FROM state_records WHERE state_records.record = records.id) RETURNING records.holder",
 ];
 
 struct Text<T>(T);
@@ -1033,19 +1033,24 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         }
         statements.extend([
             statement(dialect, &RELEASE, vec![state_id, &revision, &dead]),
+            statement(dialect, &DROP_RECORDS, vec![state_id, &revision, &dead]),
             statement(dialect, &UNHOLD, vec![state_id, &revision, &dead]),
             statement(dialect, &FENCE, vec![state_id, &revision]),
             statement(dialect, &RELEASE_OWNER, vec![state_id]),
-            statement(dialect, &DROP_RECORDS, vec![&dead]),
         ]);
         let released = statements.len() - 5;
         let results = self.transaction("collect", statements).await?;
-        if results[released + 2].is_empty() {
+        if results[released + 3].is_empty() {
             return Ok(None);
         }
+        let dropped = &results[released + 1];
+        let unheld = dropped
+            .iter()
+            .filter(|row| row.first().is_some_and(Option::is_some));
         Ok(Some(Collected {
-            released: (results[released].len() + results[released + 1].len()) as u64,
-            deleted: results[released + 4].len() as u64,
+            released: (results[released].len() + unheld.count() + results[released + 2].len())
+                as u64,
+            deleted: dropped.len() as u64,
         }))
     }
 

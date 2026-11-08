@@ -1,6 +1,9 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
-use futures_util::StreamExt;
+use futures_util::{
+    StreamExt,
+    future::{AbortHandle, Abortable},
+};
 use http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode,
     header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, WWW_AUTHENTICATE},
@@ -8,7 +11,7 @@ use http::{
 use nanocode_http::layer::{Body, Request, Sender};
 use nanocode_mcp::{
     Error as SessionError, Inbound, Message, Outgoing, RequestId, TransportError,
-    protocol::{INITIALIZE, INITIALIZED},
+    protocol::{CANCELLED, INITIALIZE, INITIALIZED},
     sse,
 };
 use nanocode_platform::{sleep, timeout};
@@ -151,10 +154,13 @@ type Background = tokio::task::JoinHandle<()>;
 type Background = futures_util::future::AbortHandle;
 
 #[cfg(not(target_family = "wasm"))]
-type Tasks = tokio::task::JoinSet<()>;
+type Tasks = tokio::task::JoinSet<Option<RequestId>>;
 #[cfg(target_family = "wasm")]
-type Tasks =
-    futures_util::stream::FuturesUnordered<futures_util::future::LocalBoxFuture<'static, ()>>;
+type Tasks = futures_util::stream::FuturesUnordered<
+    futures_util::future::LocalBoxFuture<'static, Option<RequestId>>,
+>;
+
+type Flights = HashMap<RequestId, AbortHandle>;
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_background(future: impl Future<Output = ()> + Send + 'static) -> Background {
@@ -171,32 +177,62 @@ fn spawn_background(future: impl Future<Output = ()> + 'static) -> Background {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn run_task(tasks: &mut Tasks, task: impl Future<Output = ()> + Send + 'static) {
+fn run_task(tasks: &mut Tasks, task: impl Future<Output = Option<RequestId>> + Send + 'static) {
     tasks.spawn(task);
 }
 
 #[cfg(target_family = "wasm")]
-fn run_task(tasks: &mut Tasks, task: impl Future<Output = ()> + 'static) {
+fn run_task(tasks: &mut Tasks, task: impl Future<Output = Option<RequestId>> + 'static) {
     tasks.push(Box::pin(task));
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn next_message(outgoing: &mut Outgoing, tasks: &mut Tasks) -> Option<Message> {
+async fn next_message(
+    outgoing: &mut Outgoing,
+    tasks: &mut Tasks,
+    flights: &mut Flights,
+) -> Option<Message> {
     loop {
         tokio::select! {
             message = outgoing.next() => return message,
-            Some(_) = tasks.join_next(), if !tasks.is_empty() => {}
+            Some(landed) = tasks.join_next(), if !tasks.is_empty() => {
+                if let Ok(Some(id)) = landed {
+                    flights.remove(&id);
+                }
+            }
         }
     }
 }
 
 #[cfg(target_family = "wasm")]
-async fn next_message(outgoing: &mut Outgoing, tasks: &mut Tasks) -> Option<Message> {
+async fn next_message(
+    outgoing: &mut Outgoing,
+    tasks: &mut Tasks,
+    flights: &mut Flights,
+) -> Option<Message> {
     std::future::poll_fn(|context| {
-        while let std::task::Poll::Ready(Some(())) = tasks.poll_next_unpin(context) {}
+        while let std::task::Poll::Ready(Some(landed)) = tasks.poll_next_unpin(context) {
+            if let Some(id) = landed {
+                flights.remove(&id);
+            }
+        }
         outgoing.poll_next_unpin(context)
     })
     .await
+}
+
+fn cancelled(message: &Message) -> Option<RequestId> {
+    let Message::Notification {
+        method,
+        params: Some(params),
+    } = message
+    else {
+        return None;
+    };
+    if method != CANCELLED {
+        return None;
+    }
+    serde_json::from_value(params.get("requestId")?.clone()).ok()
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -300,9 +336,10 @@ fn start(
 
 async fn drive(shared: Arc<Shared>, mut outgoing: Outgoing) {
     let mut tasks = Tasks::default();
+    let mut flights = Flights::new();
     let mut initialized = false;
     loop {
-        let Some(message) = next_message(&mut outgoing, &mut tasks).await else {
+        let Some(message) = next_message(&mut outgoing, &mut tasks, &mut flights).await else {
             break;
         };
         if !initialized {
@@ -340,8 +377,22 @@ async fn drive(shared: Arc<Shared>, mut outgoing: Outgoing) {
                 _ => {}
             }
         }
+        if let Some(flight) = cancelled(&message).and_then(|id| flights.remove(&id)) {
+            flight.abort();
+        }
+        let (flight, registration) = AbortHandle::new_pair();
+        let id = match &message {
+            Message::Request { id, .. } => {
+                flights.insert(id.clone(), flight);
+                Some(id.clone())
+            }
+            _ => None,
+        };
         let shared = Arc::clone(&shared);
-        run_task(&mut tasks, async move { shared.dispatch(message).await });
+        run_task(&mut tasks, async move {
+            let _ = Abortable::new(shared.dispatch(message), registration).await;
+            id
+        });
     }
     if let Some(listener) = shared.listener.take() {
         listener.abort();

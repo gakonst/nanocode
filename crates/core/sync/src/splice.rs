@@ -10,6 +10,10 @@ use tokio::{
     time::{Instant, sleep_until},
 };
 
+pub trait Duplex: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Duplex for T {}
+
 pub async fn splice(a: TcpStream, b: TcpStream, idle: Duration) -> std::io::Result<()> {
     a.set_nodelay(true)?;
     b.set_nodelay(true)?;

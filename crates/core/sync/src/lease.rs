@@ -116,7 +116,8 @@ impl Drop for Ended {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Backoff {
-    until: Instant,
+    until: Option<Instant>,
+    first: Duration,
     delay: Duration,
     most: Duration,
 }
@@ -125,10 +126,28 @@ impl Backoff {
     #[must_use]
     pub fn within(within: Duration, first: Duration, most: Duration) -> Self {
         Self {
-            until: Instant::now() + within,
+            until: Some(Instant::now() + within),
+            ..Self::endless(first, most)
+        }
+    }
+
+    #[must_use]
+    pub const fn endless(first: Duration, most: Duration) -> Self {
+        Self {
+            until: None,
+            first,
             delay: first,
             most,
         }
+    }
+
+    #[must_use]
+    pub const fn delay(&self) -> Duration {
+        self.delay
+    }
+
+    pub const fn reset(&mut self) {
+        self.delay = self.first;
     }
 }
 
@@ -136,8 +155,9 @@ impl Iterator for Backoff {
     type Item = Duration;
 
     fn next(&mut self) -> Option<Duration> {
-        let last = self.until.checked_sub(self.delay).unwrap_or(self.until);
-        if Instant::now() >= last {
+        if let Some(until) = self.until
+            && Instant::now() >= until.checked_sub(self.delay).unwrap_or(until)
+        {
             return None;
         }
         let delay = self.delay;

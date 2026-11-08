@@ -28,7 +28,7 @@ pub use reentry::{Claim, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 #[cfg(not(target_family = "wasm"))]
-pub use splice::{pipe, splice};
+pub use splice::{Duplex, pipe, splice};
 #[cfg(target_family = "wasm")]
 pub use swap::{Guard, Swap, SwapOption};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};

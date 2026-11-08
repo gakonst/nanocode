@@ -911,7 +911,7 @@ impl ClaudeBuilder {
         self.conversation_id = Some(conversation_id);
         self.claude.model = stored.model;
         self.session_id = Some(session_id);
-        self.max_tokens = stored.max_tokens;
+        self.max_tokens = stored.max_tokens.or(self.max_tokens);
         self.effort = stored.effort;
         self.thinking_mode = ThinkingMode::of(stored.adaptive_thinking, stored.thinking_disabled);
         self.automatic_cache |= stored.automatic_cache;
@@ -920,7 +920,9 @@ impl ClaudeBuilder {
         self.fast_mode = stored.fast_mode;
         self.message_diagnostics = stored.message_diagnostics;
         self.context_window_tokens = stored.context_window_tokens;
-        self.auto_compact_window_tokens = stored.auto_compact_window_tokens;
+        self.auto_compact_window_tokens = stored
+            .auto_compact_window_tokens
+            .or(self.auto_compact_window_tokens);
         self.restored = Some(stored.snapshot.validated()?);
         Ok(self)
     }

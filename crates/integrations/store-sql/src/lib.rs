@@ -18,8 +18,8 @@ pub use migrate::{
 pub use nanocode_durability_core::{Collected, Unreachable};
 pub use notify::{Forwarding, Trouble, forward, listen};
 pub use pool::{
-    Counts, Lent, LongHold, Owing, PoolSlot, Reach, Reaching, Side, Sided, Sides, Stranded, Warmed,
-    contended, unavailable, warm,
+    Counts, Lending, Lent, LongHold, Owing, PoolSlot, Reach, Reaching, Stranded, Warmed, contended,
+    unavailable, warm,
 };
 pub use postgres::{
     Alive, Locked, PipelineError, Pipelined, PostgresSql, Unavailable, collected_wakes,

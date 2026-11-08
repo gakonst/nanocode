@@ -9053,7 +9053,7 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.9.0"
-source = "git+https://github.com/gakonst/sqlx?rev=00ff1557ee066390d4c4bdadcb967ec0c042c188#00ff1557ee066390d4c4bdadcb967ec0c042c188"
+source = "git+https://github.com/gakonst/sqlx?rev=7667896a183e2597e8bf9df17bbd22c5d1658772#7667896a183e2597e8bf9df17bbd22c5d1658772"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -9122,7 +9122,7 @@ dependencies = [
 [[package]]
 name = "sqlx-postgres"
 version = "0.9.0"
-source = "git+https://github.com/gakonst/sqlx?rev=00ff1557ee066390d4c4bdadcb967ec0c042c188#00ff1557ee066390d4c4bdadcb967ec0c042c188"
+source = "git+https://github.com/gakonst/sqlx?rev=7667896a183e2597e8bf9df17bbd22c5d1658772#7667896a183e2597e8bf9df17bbd22c5d1658772"
 dependencies = [
  "atoi",
  "base64 0.22.1",

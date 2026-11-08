@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
+mod armed;
 #[cfg(not(target_family = "wasm"))]
 mod lanes;
 #[cfg(not(target_family = "wasm"))]
@@ -9,7 +10,6 @@ mod map;
 mod reentry;
 #[cfg(not(target_family = "wasm"))]
 mod session;
-mod shelf;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
 #[cfg(not(target_family = "wasm"))]
@@ -20,6 +20,7 @@ mod wakes;
 
 #[cfg(not(target_family = "wasm"))]
 pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
+pub use armed::Armed;
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Lanes, NotCommitted, together};
 #[cfg(not(target_family = "wasm"))]
@@ -31,7 +32,6 @@ pub use map::Throttle;
 pub use reentry::{Claim, Reentrant, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
-pub use shelf::{Armed, Shelf};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{pipe, splice};
 #[cfg(not(target_family = "wasm"))]

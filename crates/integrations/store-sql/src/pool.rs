@@ -1,8 +1,5 @@
-use nanocode_sync::{Atom, Shelf};
-use sqlx::{
-    AssertSqlSafe, Connection as _, Error, PgConnection, PgPool, Postgres, pool::PoolConnection,
-    postgres::Ahead, raw_sql,
-};
+use nanocode_sync::Atom;
+use sqlx::{AssertSqlSafe, Error, PgConnection, PgPool, Postgres, pool::PoolConnection, raw_sql};
 use std::{
     ops::{Deref, DerefMut},
     sync::{
@@ -16,25 +13,9 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Side {
-    Default,
-    Other,
-}
-
-#[derive(Clone, Debug)]
-pub struct Sides {
-    pub other: String,
-    pub default: String,
-    pub shelved: usize,
-    pub ping: fn(Duration) -> bool,
-    pub within: Duration,
-}
-
-pub struct Sided {
+pub struct Lending {
     pool: PgPool,
-    sides: Sides,
-    shelf: Shelf<(PoolConnection<Postgres>, Instant)>,
+    within: Duration,
     acquiring: AtomicU32,
     out: AtomicU32,
 }
@@ -43,7 +24,6 @@ pub struct Sided {
 pub struct Counts {
     pub open: u32,
     pub idle: u32,
-    pub shelved: u32,
     pub out: u32,
     pub acquiring: u32,
     pub max: u32,
@@ -69,13 +49,12 @@ impl Counts {
     }
 }
 
-impl Sided {
+impl Lending {
     #[must_use]
-    pub fn new(pool: PgPool, sides: Sides) -> Arc<Self> {
+    pub fn new(pool: PgPool, within: Duration) -> Arc<Self> {
         Arc::new(Self {
-            shelf: Shelf::new(sides.shelved),
             pool,
-            sides,
+            within,
             acquiring: AtomicU32::new(0),
             out: AtomicU32::new(0),
         })
@@ -87,14 +66,7 @@ impl Sided {
     }
 
     pub async fn warm(&self, within: Duration, failed: impl FnOnce(&Error)) -> Warmed {
-        let counts = self.counts();
-        warm_more(
-            &self.pool,
-            counts.max.saturating_sub(counts.shelved),
-            within,
-            failed,
-        )
-        .await
+        warm(&self.pool, within, failed).await
     }
 
     #[must_use]
@@ -102,57 +74,22 @@ impl Sided {
         Counts {
             open: self.pool.size(),
             idle: u32::try_from(self.pool.num_idle()).unwrap_or(u32::MAX),
-            shelved: u32::try_from(self.shelf.len()).unwrap_or(u32::MAX),
             out: self.out.load(Ordering::SeqCst),
             acquiring: self.acquiring.load(Ordering::SeqCst),
             max: self.pool.options().get_max_connections(),
         }
     }
 
-    pub async fn acquire(self: &Arc<Self>, want: Side) -> Result<Lent, Error> {
-        if want == Side::Other
-            && let Some(lent) = self.shelved(want).await
-        {
-            return Ok(lent);
-        }
+    pub async fn acquire(self: &Arc<Self>) -> Result<Lent, Error> {
         let waiting = Waiting::new(&self.acquiring);
-        if (want == Side::Other || self.pool.num_idle() == 0)
-            && let Some(lent) = self.shelved(want).await
-        {
-            return Ok(lent);
-        }
         let conn = self.pool.acquire().await?;
         drop(waiting);
         self.out.fetch_add(1, Ordering::SeqCst);
-        Ok(self.lent(conn, Side::Default, want))
-    }
-
-    async fn shelved(self: &Arc<Self>, want: Side) -> Option<Lent> {
-        let idle_timeout = self.pool.options().get_idle_timeout();
-        loop {
-            let (conn, since) = self.shelf.take()?;
-            let idle = since.elapsed();
-            let mut lent = self.lent(conn, Side::Other, want);
-            if idle_timeout.is_some_and(|limit| idle >= limit)
-                || ((self.sides.ping)(idle) && lent.ping().await.is_err())
-            {
-                lent.discard();
-                continue;
-            }
-            return Some(lent);
-        }
-    }
-
-    fn lent(self: &Arc<Self>, conn: PoolConnection<Postgres>, side: Side, want: Side) -> Lent {
-        let queued = conn.ahead() == Ahead::Queued;
-        Lent {
+        Ok(Lent {
             conn: Some(conn),
             pool: Arc::clone(self),
-            want,
-            current: (!queued).then_some(side),
-            pending: queued.then_some(side),
             open: false,
-        }
+        })
     }
 
     fn returned(&self, conn: PoolConnection<Postgres>) {
@@ -165,46 +102,13 @@ impl Sided {
         self.returned(conn);
     }
 
-    fn release(
-        self: &Arc<Self>,
-        conn: PoolConnection<Postgres>,
-        current: Option<Side>,
-        open: bool,
-    ) {
-        match (open, current) {
-            (false, Some(Side::Default)) => self.returned(conn),
-            (false, _) if self.pool.is_closed() => self.closed(conn),
-            (false, Some(Side::Other)) => {
-                if let Some((conn, _)) = self.shelf.put((conn, Instant::now())) {
-                    self.reset(conn);
-                } else if self.acquiring.load(Ordering::SeqCst) > 0
-                    && let Some((conn, _)) = self.shelf.take()
-                {
-                    self.reset(conn);
-                }
-            }
-            (false, None) => self.reset(conn),
-            (true, _) => self.restore(conn),
-        }
-    }
-
-    fn reset(&self, mut conn: PoolConnection<Postgres>) {
-        conn.run_ahead(self.sides.default.split(';'));
-        self.returned(conn);
-    }
-
     fn restore(self: &Arc<Self>, mut conn: PoolConnection<Postgres>) {
         let Ok(runtime) = Handle::try_current() else {
             return self.closed(conn);
         };
         let pool = Arc::clone(self);
         runtime.spawn(async move {
-            let statement = format!("ROLLBACK;{}", pool.sides.default);
-            let restored = timeout(
-                pool.sides.within,
-                raw_sql(AssertSqlSafe(statement)).execute(&mut *conn),
-            )
-            .await;
+            let restored = timeout(pool.within, raw_sql("ROLLBACK").execute(&mut *conn)).await;
             if matches!(restored, Ok(Ok(_))) {
                 pool.returned(conn);
             } else {
@@ -213,25 +117,14 @@ impl Sided {
         });
     }
 
-    pub fn flush(&self) {
-        for (conn, _) in self.shelf.take_all() {
-            self.closed(conn);
-        }
-    }
-
     pub async fn retire(self: Arc<Self>, every: Duration) {
-        loop {
-            self.flush();
-            if self.pool.size() <= u32::try_from(self.pool.num_idle()).unwrap_or(u32::MAX) {
-                break;
-            }
+        while self.pool.size() > u32::try_from(self.pool.num_idle()).unwrap_or(u32::MAX) {
             sleep(every).await;
         }
         self.pool.close().await;
     }
 
     pub async fn close_within(self: Arc<Self>, within: Duration) {
-        self.flush();
         drop(timeout(within, self.pool.close()).await);
     }
 }
@@ -255,80 +148,11 @@ const HELD: &str = "a lent connection is held until the lent value drops";
 
 pub struct Lent {
     conn: Option<PoolConnection<Postgres>>,
-    pool: Arc<Sided>,
-    want: Side,
-    current: Option<Side>,
-    pending: Option<Side>,
+    pool: Arc<Lending>,
     open: bool,
 }
 
 impl Lent {
-    #[must_use]
-    pub fn side(&self) -> Option<Side> {
-        match (self.pending, (**self).ahead()) {
-            (None, _) => self.current,
-            (Some(side), Ahead::Queued | Ahead::Committed) => Some(side),
-            (Some(_), Ahead::Sent | Ahead::Clear) => None,
-        }
-    }
-
-    fn resolve(&mut self) {
-        if self.pending.is_some() && (**self).ahead() != Ahead::Queued {
-            self.current = self.side();
-            self.pending = None;
-        }
-    }
-
-    fn statements(&self, side: Side) -> String {
-        match side {
-            Side::Default => self.pool.sides.default.clone(),
-            Side::Other => self.pool.sides.other.clone(),
-        }
-    }
-
-    pub fn switch(&mut self) -> Option<String> {
-        self.switch_to(self.want)
-    }
-
-    pub fn switch_to(&mut self, side: Side) -> Option<String> {
-        self.resolve();
-        if self.side() == Some(side) {
-            return None;
-        }
-        self.current = None;
-        self.pending = None;
-        Some(self.statements(side))
-    }
-
-    pub fn switch_ahead(&mut self, side: Side) {
-        self.resolve();
-        if self.side() == Some(side) {
-            return;
-        }
-        let statements = self.statements(side);
-        self.run_ahead(statements.split(';'));
-        self.pending = Some(side);
-    }
-
-    pub fn queue(&mut self, statements: &str) {
-        self.resolve();
-        self.run_ahead(statements.split(';'));
-    }
-
-    pub const fn switched(&mut self) {
-        self.switched_to(self.want);
-    }
-
-    pub const fn switched_to(&mut self, side: Side) {
-        self.current = Some(side);
-        self.pending = None;
-    }
-
-    pub const fn changed(&mut self) {
-        self.current = None;
-        self.pending = None;
-    }
-
     pub const fn opened(&mut self) {
         self.open = true;
     }
@@ -344,12 +168,10 @@ impl Lent {
     }
 
     pub async fn begin(&mut self, begin: &str) -> Result<(), Error> {
-        self.switch_ahead(self.want);
         self.open = true;
         raw_sql(AssertSqlSafe(begin.to_owned()))
             .execute(&mut **self)
             .await?;
-        self.switched();
         Ok(())
     }
 
@@ -383,37 +205,37 @@ impl DerefMut for Lent {
 
 impl Drop for Lent {
     fn drop(&mut self) {
-        self.resolve();
-        if let Some(conn) = self.conn.as_deref_mut() {
-            conn.clear_ahead();
-        }
         if let Some(conn) = self.conn.take() {
-            self.pool.release(conn, self.current, self.open);
+            if self.open {
+                self.pool.restore(conn);
+            } else {
+                self.pool.returned(conn);
+            }
         }
     }
 }
 
-pub struct PoolSlot(Atom<Arc<Sided>>);
+pub struct PoolSlot(Atom<Arc<Lending>>);
 
 impl PoolSlot {
     #[must_use]
-    pub fn new(pool: Arc<Sided>) -> Self {
+    pub fn new(pool: Arc<Lending>) -> Self {
         Self(Atom::new(pool))
     }
 
     #[must_use]
-    pub fn get(&self) -> Arc<Sided> {
+    pub fn get(&self) -> Arc<Lending> {
         Arc::clone(&self.0.get())
     }
 
-    pub fn set(&self, pool: Arc<Sided>) -> Arc<Sided> {
+    pub fn set(&self, pool: Arc<Lending>) -> Arc<Lending> {
         Arc::clone(&self.0.set(pool))
     }
 
-    pub async fn acquire(&self, want: Side) -> Result<Lent, Error> {
+    pub async fn acquire(&self) -> Result<Lent, Error> {
         loop {
             let pool = self.get();
-            match pool.acquire(want).await {
+            match pool.acquire().await {
                 Err(Error::PoolClosed) if !self.get().pool.is_closed() && pool.pool.is_closed() => {
                 }
                 acquired => return acquired,
@@ -430,18 +252,11 @@ pub enum Warmed {
 }
 
 pub async fn warm(pool: &PgPool, within: Duration, failed: impl FnOnce(&Error)) -> Warmed {
-    warm_more(pool, pool.options().get_max_connections(), within, failed).await
-}
-
-async fn warm_more(
-    pool: &PgPool,
-    more: u32,
-    within: Duration,
-    failed: impl FnOnce(&Error),
-) -> Warmed {
     let held = timeout(
         within,
-        futures_util::future::try_join_all((0..more).map(|_| pool.acquire())),
+        futures_util::future::try_join_all(
+            (0..pool.options().get_max_connections()).map(|_| pool.acquire()),
+        ),
     )
     .await;
     match held {

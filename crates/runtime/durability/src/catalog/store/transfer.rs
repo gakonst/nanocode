@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use nanocode_agent_core::Origin;
 use serde::{Deserialize, Serialize};
@@ -8,9 +8,9 @@ use super::{
     BranchPoint, SessionStore, SessionSummary, settled_checkpoint, summarize, unknown_turn,
 };
 use crate::{
-    BranchBoundary, DurableState, EncodedPayload, Error, OwnerId, OwnerToken, PagedWriter,
-    PayloadReader, Result, Sequence, SessionRecord, StateCommit, StateStore, StoreRecord,
-    StoredState, SummaryUpdate, Transition, catalog::Importing, load_sequence,
+    BlobKey, BlobUrl, BranchBoundary, DurableState, EncodedPayload, Error, OwnerId, OwnerToken,
+    PagedWriter, PayloadReader, Result, Sequence, SessionRecord, StateCommit, StateStore,
+    StoreRecord, StoredState, SummaryUpdate, Transition, catalog::Importing, load_sequence,
     session::reduce_peeked, shared_store::SharedStore,
 };
 
@@ -227,6 +227,7 @@ fn checkpoints<'a>(
 struct Closure {
     edges: HashMap<String, Vec<String>>,
     absent: HashSet<String>,
+    blobs: BTreeSet<BlobKey>,
 }
 
 impl Closure {
@@ -252,7 +253,7 @@ impl Closure {
                     continue;
                 };
                 let edges = match value.strip_prefix('=') {
-                    Some(content) => references(&key, content)?,
+                    Some(content) => references(&key, content, &mut self.blobs)?,
                     None => {
                         let mut parts = HashSet::new();
                         let payload = EncodedPayload::by_key(&key)
@@ -263,7 +264,7 @@ impl Closure {
                         for part in &edges {
                             self.edges.entry(part.clone()).or_default();
                         }
-                        edges.extend(references(&key, payload.json()?)?);
+                        edges.extend(references(&key, payload.json()?, &mut self.blobs)?);
                         edges
                     }
                 };
@@ -299,12 +300,17 @@ impl Closure {
     }
 }
 
-fn references(key: &str, content: &str) -> Result<Vec<String>> {
-    fn visit(value: &Value, found: &mut Vec<String>) {
+fn references(key: &str, content: &str, blobs: &mut BTreeSet<BlobKey>) -> Result<Vec<String>> {
+    fn visit(value: &Value, found: &mut Vec<String>, blobs: &mut BTreeSet<BlobKey>) {
         match value {
             Value::String(text) if EncodedPayload::is_key(text) => found.push(text.clone()),
-            Value::Array(items) => items.iter().for_each(|item| visit(item, found)),
-            Value::Object(fields) => fields.values().for_each(|item| visit(item, found)),
+            Value::String(text) => {
+                if let Some(blob) = BlobUrl::parse(text) {
+                    blobs.insert(blob.key().clone());
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| visit(item, found, blobs)),
+            Value::Object(fields) => fields.values().for_each(|item| visit(item, found, blobs)),
             _ => {}
         }
     }
@@ -312,7 +318,7 @@ fn references(key: &str, content: &str) -> Result<Vec<String>> {
         Error::InvalidState(format!("record {key} does not hold JSON: {error}"))
     })?;
     let mut found = Vec::new();
-    visit(&value, &mut found);
+    visit(&value, &mut found, blobs);
     found.retain(|reference| reference != key);
     Ok(found)
 }
@@ -400,33 +406,7 @@ impl SessionStore {
                 "a branch page needs a positive byte budget".into(),
             ));
         }
-        let (mut index, roots) = match export.mode {
-            BranchExportMode::AllTurns => {
-                let state = self.require(id).await?;
-                let history = self.history(id, &state).await?;
-                let covered = usize::try_from(export.turns)
-                    .ok()
-                    .filter(|covered| *covered <= history.turns.len())
-                    .ok_or_else(history_changed)?;
-                (
-                    history.index(covered)?,
-                    history.roots(covered, export.checkpoint.as_deref()),
-                )
-            }
-            BranchExportMode::Checkpoint => {
-                let checkpoint = export
-                    .checkpoint
-                    .as_deref()
-                    .ok_or_else(no_settled_checkpoint)?;
-                (
-                    squashed_index(&EncodedPayload::from_key(checkpoint))?,
-                    vec![checkpoint.to_owned()],
-                )
-            }
-        };
-        if index.key() != export.inherited {
-            return Err(history_changed());
-        }
+        let (mut index, roots) = self.exported(id, export).await?;
         let mut index_records = Vec::new();
         index.stage(&mut index_records);
         index_records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
@@ -514,6 +494,50 @@ impl SessionStore {
             entry += 1;
             offset = 0;
         }
+    }
+
+    pub async fn export_blobs(&self, id: &str, export: &BranchExport) -> Result<Vec<BlobKey>> {
+        let (_, roots) = self.exported(id, export).await?;
+        let mut closure = Closure::default();
+        for root in &roots {
+            closure.expand(&self.store, id, root).await?;
+        }
+        Ok(closure.blobs.into_iter().collect())
+    }
+
+    async fn exported(
+        &self,
+        id: &str,
+        export: &BranchExport,
+    ) -> Result<(EncodedPayload, Vec<String>)> {
+        let (index, roots) = match export.mode {
+            BranchExportMode::AllTurns => {
+                let state = self.require(id).await?;
+                let history = self.history(id, &state).await?;
+                let covered = usize::try_from(export.turns)
+                    .ok()
+                    .filter(|covered| *covered <= history.turns.len())
+                    .ok_or_else(history_changed)?;
+                (
+                    history.index(covered)?,
+                    history.roots(covered, export.checkpoint.as_deref()),
+                )
+            }
+            BranchExportMode::Checkpoint => {
+                let checkpoint = export
+                    .checkpoint
+                    .as_deref()
+                    .ok_or_else(no_settled_checkpoint)?;
+                (
+                    squashed_index(&EncodedPayload::from_key(checkpoint))?,
+                    vec![checkpoint.to_owned()],
+                )
+            }
+        };
+        if index.key() != export.inherited {
+            return Err(history_changed());
+        }
+        Ok((index, roots))
     }
 
     pub async fn import_branch(

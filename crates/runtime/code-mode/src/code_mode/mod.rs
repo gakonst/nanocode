@@ -549,6 +549,7 @@ impl CodeModeRuntime {
             status: nanocode_sync::Atom::new(CellStatus {
                 observer_call_id: journal.observer_call_id.clone(),
                 observer_yield_ms: journal.observer_yield_ms,
+                observer_since_ms: journal.observer_since_ms,
                 content_returned: journal.content_returned,
                 ..CellStatus::new(CellLife::started(Replay::Replaying))
             }),
@@ -637,9 +638,19 @@ impl CodeModeRuntime {
             let observer_yield_ms = status
                 .observer_yield_ms
                 .filter(|_| status.observer_call_id.as_deref() == Some(call_id));
+            let since = status
+                .observer_since_ms
+                .filter(|_| match status.observer_call_id.as_deref() {
+                    Some(observer) => observer == call_id,
+                    None => record.origin_call_id == call_id,
+                })
+                .unwrap_or_else(replay::wall_ms);
             status.observer_call_id = Some(call_id.to_owned());
             status.observer_yield_ms = observer_yield_ms;
-            observer_yield_ms.unwrap_or(record.yield_time_ms)
+            status.observer_since_ms = Some(since);
+            observer_yield_ms
+                .unwrap_or(record.yield_time_ms)
+                .saturating_sub(replay::wall_ms().saturating_sub(since))
         });
         record.persist(Vec::new()).await;
         cell.turn_id
@@ -797,9 +808,10 @@ impl CodeModeRuntime {
                     yield_time_ms: source.yield_time_ms.unwrap_or(default_wait_yield_time_ms()),
                     max_output_tokens: Some(output_token_budget),
                     journal: nanocode_code_mode_engine::SharedJournal::new(),
-                    status: nanocode_sync::Atom::new(CellStatus::new(CellLife::started(
-                        Replay::Live,
-                    ))),
+                    status: nanocode_sync::Atom::new(CellStatus {
+                        observer_since_ms: Some(replay::wall_ms()),
+                        ..CellStatus::new(CellLife::started(Replay::Live))
+                    }),
                     hold: watch::channel(journals.holding(&context.session_id)).0,
                     persistence: journals.persistence(),
                 });
@@ -964,6 +976,7 @@ impl CodeModeRuntime {
             record.update(|status| {
                 status.observer_call_id = Some(call_id.to_owned());
                 status.observer_yield_ms = Some(arguments.yield_time_ms);
+                status.observer_since_ms = Some(replay::wall_ms());
             });
             record.persist(Vec::new()).await;
         }

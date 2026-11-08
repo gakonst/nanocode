@@ -20,7 +20,8 @@ use crate::{
         CellTools, ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
         completed_terminal, drain_jobs, install_bootstrap, install_prelude, invoke_timeout,
         new_state, next_due_timeout, next_timeout_wait, prepare_execution, replay_inputs,
-        resolve_tool, send_terminal, send_waiting, start_execution, track_rejections,
+        resolve_tool, send_checkpoint, send_terminal, send_waiting, start_execution,
+        track_rejections,
     },
     journal::CellJournaling,
 };
@@ -716,7 +717,10 @@ impl Worker {
             }
             match settle(&ctx, state, &promise)? {
                 Step::Finished => Ok(None),
-                Step::Pending => Ok(Some(Persistent::save(&ctx, promise))),
+                Step::Pending => {
+                    send_checkpoint(state)?;
+                    Ok(Some(Persistent::save(&ctx, promise)))
+                }
             }
         });
         match started {
@@ -834,6 +838,7 @@ impl Worker {
                         return Ok(Step::Finished);
                     }
                 }
+                send_checkpoint(state)?;
                 Ok(Step::Pending)
             });
             self.after(id, outcome);

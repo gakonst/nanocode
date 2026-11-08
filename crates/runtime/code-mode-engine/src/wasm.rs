@@ -15,7 +15,8 @@ use crate::cell::{
     CellTools, ExecutionState, Rejections, RuntimeEvent, begin_execution, clear_pending,
     completed_terminal, drain_jobs, import_prelude, install_bootstrap, install_prelude,
     invoke_timeout, new_state, next_due_timeout, next_timeout_wait, prepare_execution,
-    replay_inputs, resolve_tool, run_execution, send_terminal, send_waiting, track_rejections,
+    replay_inputs, resolve_tool, run_execution, send_checkpoint, send_terminal, send_waiting,
+    track_rejections,
 };
 
 pub const DEFAULT_INTERRUPT_CHECKS: u64 = 10_000;
@@ -415,7 +416,7 @@ fn settle(
         }),
     };
     let Some(finished) = finished else {
-        return Ok(());
+        return send_checkpoint(&execution.state);
     };
     let finished = match finished {
         Err(_) if exhausted => {

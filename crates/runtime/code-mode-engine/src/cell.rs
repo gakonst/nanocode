@@ -1057,6 +1057,21 @@ pub(crate) fn send_waiting(state: &Rc<RefCell<ExecutionState>>) -> Result<(), St
         .map_err(|_| "embedded QuickJS execution observer closed".to_owned())
 }
 
+pub(crate) fn send_checkpoint(state: &Rc<RefCell<ExecutionState>>) -> Result<(), String> {
+    let state = state.borrow();
+    let Some(journal) = &state.journal else {
+        return Ok(());
+    };
+    if state.replay.is_some() || !journal.borrow().unpublished() {
+        return Ok(());
+    }
+    state
+        .send(RuntimeEvent::Waiting {
+            cell_id: state.execution_id,
+        })
+        .map_err(|_| "embedded QuickJS execution observer closed".to_owned())
+}
+
 pub(crate) fn resolve_tool(
     ctx: &Ctx<'_>,
     state: &Rc<RefCell<ExecutionState>>,

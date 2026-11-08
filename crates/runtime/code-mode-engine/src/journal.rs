@@ -203,6 +203,13 @@ impl JournalWriter {
         *len += 1;
     }
 
+    pub(crate) fn unpublished(&self) -> bool {
+        match &self.state {
+            Writing::Recording { pending, .. } => !pending.is_empty(),
+            Writing::Overflowed { published } => !published,
+        }
+    }
+
     pub(crate) fn publish(&mut self) {
         match &mut self.state {
             Writing::Recording {

@@ -26,6 +26,8 @@ pub struct CellJournal {
     pub observer_call_id: Option<String>,
     #[serde(default)]
     pub observer_yield_ms: Option<u64>,
+    #[serde(default)]
+    pub observer_since_ms: Option<u64>,
     pub script: String,
     pub tools: Vec<Value>,
     #[serde(default)]
@@ -94,6 +96,8 @@ pub struct CellJournalUpdate {
     pub observer_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observer_yield_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observer_since_ms: Option<u64>,
     #[serde(default)]
     pub content_returned: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -126,6 +130,7 @@ impl CellJournal {
             origin_call_id: header.origin_call_id,
             observer_call_id: None,
             observer_yield_ms: None,
+            observer_since_ms: None,
             script: header.script,
             tools: header.tools,
             stored: header.stored,
@@ -157,6 +162,9 @@ impl CellJournal {
             if update.observer_call_id.is_some() {
                 journal.observer_call_id = update.observer_call_id;
                 journal.observer_yield_ms = update.observer_yield_ms;
+            }
+            if update.observer_since_ms.is_some() {
+                journal.observer_since_ms = update.observer_since_ms;
             }
             journal.content_returned = journal.content_returned.max(update.content_returned);
             journal.finished |= update.finished;
@@ -250,6 +258,7 @@ enum Saving {
         calls: BTreeMap<u64, u8>,
         observer_call_id: Option<String>,
         observer_yield_ms: Option<u64>,
+        observer_since_ms: Option<u64>,
         content_returned: u64,
     },
     Stopped,
@@ -571,6 +580,7 @@ pub(super) struct CellRecord {
 pub(super) struct CellStatus {
     pub(super) observer_call_id: Option<String>,
     pub(super) observer_yield_ms: Option<u64>,
+    pub(super) observer_since_ms: Option<u64>,
     pub(super) life: CellLife,
     pub(super) unsupported: bool,
     pub(super) content_returned: u64,
@@ -582,6 +592,7 @@ impl CellStatus {
         Self {
             observer_call_id: None,
             observer_yield_ms: None,
+            observer_since_ms: None,
             life,
             unsupported: false,
             content_returned: 0,
@@ -693,6 +704,14 @@ impl ReplayPlan {
     }
 }
 
+pub(super) fn wall_ms() -> u64 {
+    nanocode_platform::system_time()
+        .duration_since(nanocode_platform::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 pub(super) fn unknown_outcome() -> Value {
     serde_json::json!({
         "error": UNKNOWN_OUTCOME,
@@ -758,24 +777,28 @@ impl CellRecord {
                 .await;
             return;
         };
-        let (observer_call_id, observer_yield_ms, content_returned) = self.status(|status| {
-            (
-                status.observer_call_id.clone(),
-                status.observer_yield_ms,
-                status.content_returned,
-            )
-        });
+        let (observer_call_id, observer_yield_ms, observer_since_ms, content_returned) = self
+            .status(|status| {
+                (
+                    status.observer_call_id.clone(),
+                    status.observer_yield_ms,
+                    status.observer_since_ms,
+                    status.content_returned,
+                )
+            });
         let mut marks = match &*saving {
             Saving::Saved {
                 calls: saved,
                 observer_call_id: saved_observer,
                 observer_yield_ms: saved_yield,
+                observer_since_ms: saved_since,
                 content_returned: saved_content,
                 ..
             } => {
                 if entries.is_empty()
                     && *saved_observer == observer_call_id
                     && *saved_yield == observer_yield_ms
+                    && *saved_since == observer_since_ms
                     && *saved_content == content_returned
                     && calls
                         .iter()
@@ -809,6 +832,7 @@ impl CellRecord {
             calls,
             observer_call_id: observer_call_id.clone(),
             observer_yield_ms,
+            observer_since_ms,
             content_returned,
             finished: false,
         };
@@ -820,6 +844,7 @@ impl CellRecord {
                     calls: marks,
                     observer_call_id,
                     observer_yield_ms,
+                    observer_since_ms,
                     content_returned,
                 };
             }
@@ -860,6 +885,7 @@ impl CellRecord {
             next_seq,
             observer_call_id,
             observer_yield_ms,
+            observer_since_ms,
             content_returned,
             ..
         } = &*saving
@@ -879,6 +905,7 @@ impl CellRecord {
             calls: Vec::new(),
             observer_call_id: observer_call_id.clone(),
             observer_yield_ms: *observer_yield_ms,
+            observer_since_ms: *observer_since_ms,
             content_returned: *content_returned,
             finished: true,
         };
@@ -934,6 +961,7 @@ impl CellRecord {
             origin_call_id: self.origin_call_id.clone(),
             observer_call_id: status.observer_call_id.clone(),
             observer_yield_ms: status.observer_yield_ms,
+            observer_since_ms: status.observer_since_ms,
             script: self.script.clone(),
             tools: self.tools.to_vec(),
             stored: self

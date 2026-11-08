@@ -26,6 +26,7 @@ nanocode-sync.workspace = true
 rcgen.workspace = true
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 rustls-native-certs.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "std"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
@@ -36,7 +37,6 @@ uuid = { workspace = true, features = ["v4"] }
 landlock.workspace = true
 libc.workspace = true
 serde_json.workspace = true
-rustix = { workspace = true, features = ["fs", "process", "std"] }
 seccompiler.workspace = true
 
 [lints]

@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 pub mod bubblewrap;
+pub mod budget;
 #[cfg(target_os = "linux")]
 pub mod confine;
 #[cfg(not(target_os = "linux"))]

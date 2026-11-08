@@ -433,7 +433,7 @@ fn role(event: &SessionEvent) -> Role {
     let streamed = match event.kind {
         AgentEventKind::AssistantDelta | AgentEventKind::AssistantMessage => Streamed::Assistant,
         AgentEventKind::ToolInputDelta | AgentEventKind::ToolCall => Streamed::ToolInput,
-        AgentEventKind::ReasoningSummaryDelta if scope.is_some() => Streamed::Reasoning,
+        AgentEventKind::ReasoningSummaryDelta => Streamed::Reasoning,
         AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
             return Role::Boundary {
                 scope,

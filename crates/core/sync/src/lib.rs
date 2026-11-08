@@ -13,6 +13,7 @@ mod splice;
 #[cfg(target_family = "wasm")]
 mod swap;
 mod wakes;
+mod weighed;
 
 #[cfg(not(target_family = "wasm"))]
 pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
@@ -31,6 +32,7 @@ pub use splice::{pipe, splice};
 #[cfg(target_family = "wasm")]
 pub use swap::{Guard, Swap, SwapOption};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
+pub use weighed::Weighed;
 
 use futures_util::future::{FutureExt, Shared};
 use tokio::sync::{mpsc, oneshot};

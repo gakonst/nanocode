@@ -16,12 +16,20 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchExport {
+    pub mode: BranchExportMode,
     pub record: SessionRecord,
     pub boundary: BranchBoundary,
     pub checkpoint: Option<String>,
     pub inherited: String,
     pub turns: u64,
     pub preview: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchExportMode {
+    AllTurns,
+    Checkpoint,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -89,6 +97,13 @@ impl Start {
 struct Inherited {
     start: Start,
     turns: Sequence,
+}
+
+fn squashed_index(checkpoint: &EncodedPayload) -> Result<EncodedPayload> {
+    EncodedPayload::encode(&Inherited {
+        start: Start::Checkpoint(checkpoint.reference()),
+        turns: Sequence::default(),
+    })
 }
 
 struct History {
@@ -335,19 +350,39 @@ fn successor(state: &DurableState) -> Result<u64> {
 
 impl SessionStore {
     pub async fn export_branch(&self, id: &str, at: BranchPoint) -> Result<BranchExport> {
+        self.export(id, at, BranchExportMode::AllTurns).await
+    }
+
+    pub async fn export_squashed_branch(&self, id: &str, at: BranchPoint) -> Result<BranchExport> {
+        self.export(id, at, BranchExportMode::Checkpoint).await
+    }
+
+    async fn export(
+        &self,
+        id: &str,
+        at: BranchPoint,
+        mode: BranchExportMode,
+    ) -> Result<BranchExport> {
         let state = self.require(id).await?;
         let record = self.source_record(id, &state).await?;
         let history = self.history(id, &state).await?;
         let (checkpoint, covered) = history.select(&state, &at)?;
+        let index = match mode {
+            BranchExportMode::AllTurns => history.index(covered)?,
+            BranchExportMode::Checkpoint => {
+                squashed_index(checkpoint.as_ref().ok_or_else(no_settled_checkpoint)?)?
+            }
+        };
         let preview = match at {
             BranchPoint::Before(_) => None,
             _ => self.first_prompt(id, &state).await?,
         };
         Ok(BranchExport {
+            mode,
             record,
             boundary: history.boundary(id, covered),
             checkpoint: checkpoint.map(|checkpoint| checkpoint.key().to_owned()),
-            inherited: history.index(covered)?.key().to_owned(),
+            inherited: index.key().to_owned(),
             turns: u64::try_from(covered).map_err(|_| history_changed())?,
             preview,
         })
@@ -365,13 +400,30 @@ impl SessionStore {
                 "a branch page needs a positive byte budget".into(),
             ));
         }
-        let state = self.require(id).await?;
-        let history = self.history(id, &state).await?;
-        let covered = usize::try_from(export.turns)
-            .ok()
-            .filter(|covered| *covered <= history.turns.len())
-            .ok_or_else(history_changed)?;
-        let mut index = history.index(covered)?;
+        let (mut index, roots) = match export.mode {
+            BranchExportMode::AllTurns => {
+                let state = self.require(id).await?;
+                let history = self.history(id, &state).await?;
+                let covered = usize::try_from(export.turns)
+                    .ok()
+                    .filter(|covered| *covered <= history.turns.len())
+                    .ok_or_else(history_changed)?;
+                (
+                    history.index(covered)?,
+                    history.roots(covered, export.checkpoint.as_deref()),
+                )
+            }
+            BranchExportMode::Checkpoint => {
+                let checkpoint = export
+                    .checkpoint
+                    .as_deref()
+                    .ok_or_else(no_settled_checkpoint)?;
+                (
+                    squashed_index(&EncodedPayload::from_key(checkpoint))?,
+                    vec![checkpoint.to_owned()],
+                )
+            }
+        };
         if index.key() != export.inherited {
             return Err(history_changed());
         }
@@ -379,7 +431,6 @@ impl SessionStore {
         index.stage(&mut index_records);
         index_records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
         index_records.dedup_by(|a, b| a.key == b.key);
-        let roots = history.roots(covered, export.checkpoint.as_deref());
         let invalid_cursor = || {
             Error::InvalidState(format!(
                 "branch cursor at entry {} offset {} is outside the export",

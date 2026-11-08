@@ -262,7 +262,7 @@ mod store {
 
     pub use nanocode_agent_core::session::TranscriptItem;
     pub use pending::{CancelTo, CancelledPending};
-    pub use transfer::{BranchCursor, BranchExport, BranchImport, BranchPage};
+    pub use transfer::{BranchCursor, BranchExport, BranchExportMode, BranchImport, BranchPage};
 
     pub const LIST_LIMIT: usize = 1000;
 

@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use nanocode_durability_core::{
     Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
-    StateCommit, StateStore, StoreError, StoreFuture, StoreRecord, StoreUpdate, StoredState,
+    StagedWrites, StateCommit, StateStore, StoreError, StoreFuture, StoreRecord, StoreUpdate,
+    StoredState,
 };
 use nanocode_sync::Atom;
 
@@ -78,6 +79,10 @@ impl RecordCache {
                 cached.insert(budget, key.clone(), Arc::clone(value));
             }
         });
+    }
+
+    pub fn remember(&self, writes: &StagedWrites) {
+        writes.written(|state_id, records| self.put(state_id, records));
     }
 
     pub fn wrap<S: StateStore + 'static>(&self, store: S) -> CachedStore<S> {

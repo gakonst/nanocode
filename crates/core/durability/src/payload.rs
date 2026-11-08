@@ -678,6 +678,49 @@ impl EncodedPayload {
         Ok(manifests)
     }
 
+    pub(crate) async fn reachable<S: crate::StateStore + ?Sized>(
+        head: &str,
+        staged: &imbl::OrdMap<String, Arc<str>>,
+        store: &mut S,
+        state_id: &str,
+    ) -> Result<HashSet<String>> {
+        let mut reached = HashSet::new();
+        let mut queued = HashSet::new();
+        let follow = |json: &str, queued: &mut HashSet<String>, level: &mut Vec<Self>| {
+            for key in Self::references(json) {
+                if staged.contains_key(key) && queued.insert(key.to_owned()) {
+                    level.push(Self::by_key(key));
+                }
+            }
+        };
+        let mut level = Vec::new();
+        follow(head, &mut queued, &mut level);
+        while !level.is_empty() {
+            let mut source = Overlay {
+                staged,
+                store: &mut *store,
+                reached: &mut reached,
+            };
+            let keys: Vec<_> = level.iter().map(|value| value.key.to_string()).collect();
+            let records = source
+                .records(state_id, &keys)
+                .await?
+                .into_iter()
+                .zip(&keys)
+                .map(|(record, key)| {
+                    record
+                        .ok_or_else(|| Error::InvalidState(format!("missing payload record {key}")))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let loaded = Self::load_records(&level, &mut source, state_id, records).await?;
+            level.clear();
+            for payload in &loaded {
+                follow(payload.json()?, &mut queued, &mut level);
+            }
+        }
+        Ok(reached)
+    }
+
     async fn load_record<S: RecordSource + ?Sized>(
         &self,
         store: &mut S,
@@ -930,6 +973,44 @@ impl RecordSource for Noting<'_, '_> {
                 }
             }
             Ok(records)
+        })
+    }
+}
+
+struct Overlay<'a, S: ?Sized> {
+    staged: &'a imbl::OrdMap<String, Arc<str>>,
+    store: &'a mut S,
+    reached: &'a mut HashSet<String>,
+}
+
+impl<S: crate::StateStore + ?Sized> RecordSource for Overlay<'_, S> {
+    fn records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> crate::StoreFuture<'a, std::result::Result<Vec<Option<String>>, crate::StoreError>> {
+        Box::pin(async move {
+            let missing: Vec<_> = keys
+                .iter()
+                .filter(|key| !self.staged.contains_key(*key))
+                .cloned()
+                .collect();
+            let mut read = if missing.is_empty() {
+                Vec::new()
+            } else {
+                self.store.read_records(state_id, &missing).await?
+            }
+            .into_iter();
+            Ok(keys
+                .iter()
+                .map(|key| match self.staged.get(key) {
+                    Some(value) => {
+                        self.reached.insert(key.clone());
+                        Some(value.to_string())
+                    }
+                    None => read.next().flatten(),
+                })
+                .collect())
         })
     }
 }

@@ -1,10 +1,13 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use nanocode_sync::Atom;
 
 use crate::{
-    Committed, OwnedState, OwnerId, OwnerToken, StateCommit, StateStore, StoreError, StoreFuture,
-    StoreRecord, StoredState, SummaryUpdate,
+    Committed, EncodedPayload, OwnedState, OwnerId, OwnerToken, StateCommit, StateStore,
+    StoreError, StoreFuture, StoreRecord, StoredState, SummaryUpdate,
 };
 
 #[derive(Clone, Debug)]
@@ -17,6 +20,51 @@ struct Staged {
     payloads: imbl::Vector<Arc<str>>,
     records: imbl::OrdMap<String, Arc<str>>,
     stored: imbl::OrdSet<String>,
+    reached: Option<(u64, Arc<HashSet<String>>)>,
+}
+
+impl Staged {
+    fn unstored(&self, reached: Option<&HashSet<String>>) -> Vec<StoreRecord> {
+        self.records
+            .iter()
+            .filter(|(key, _)| {
+                !self.stored.contains(*key) && reached.is_none_or(|reached| reached.contains(*key))
+            })
+            .map(|(key, value)| StoreRecord {
+                key: key.clone(),
+                value: value.to_string(),
+            })
+            .collect()
+    }
+
+    async fn reached<T: StateStore + ?Sized>(
+        &self,
+        state_id: &str,
+        store: &mut T,
+    ) -> Result<Option<Arc<HashSet<String>>>, StoreError> {
+        if let Some((revision, reached)) = &self.reached
+            && *revision == self.revision
+        {
+            return Ok(Some(Arc::clone(reached)));
+        }
+        let Some(head) = &self.payload else {
+            return Ok(None);
+        };
+        if !self
+            .records
+            .keys()
+            .all(|key| EncodedPayload::is_layout_key(key))
+        {
+            return Ok(None);
+        }
+        match EncodedPayload::reachable(head, &self.records, store, state_id).await {
+            Ok(reached) => Ok(Some(Arc::new(reached))),
+            Err(crate::Error::Store(error)) => Err(error),
+            Err(error) => Err(StoreError::NotCommitted(format!(
+                "records staged for state {state_id}: {error}"
+            ))),
+        }
+    }
 }
 
 type States = BTreeMap<String, Arc<Staged>>;
@@ -49,6 +97,31 @@ impl StagedWrites {
         })
     }
 
+    pub fn written(&self, mut each: impl FnMut(&str, Vec<(String, Arc<str>)>)) {
+        let states = self.0.get();
+        for (state_id, staged) in states
+            .iter()
+            .filter(|(_, staged)| staged.revision != staged.base_revision)
+        {
+            let reached = staged
+                .reached
+                .as_ref()
+                .filter(|(revision, _)| *revision == staged.revision);
+            each(
+                state_id,
+                staged
+                    .records
+                    .iter()
+                    .filter(|(key, _)| {
+                        staged.stored.contains(*key)
+                            || reached.is_some_and(|(_, reached)| reached.contains(*key))
+                    })
+                    .map(|(key, value)| (key.clone(), Arc::clone(value)))
+                    .collect(),
+            );
+        }
+    }
+
     pub fn retain(&self, mut keep: impl FnMut(&str) -> bool) {
         self.0
             .update(|states| states.retain(|state_id, _| keep(state_id)));
@@ -63,19 +136,9 @@ impl StagedWrites {
             .iter()
             .filter(|(_, staged)| staged.revision != staged.base_revision)
         {
-            let records = staged
-                .records
-                .iter()
-                .filter(|(key, _)| !staged.stored.contains(*key))
-                .map(|(key, value)| StoreRecord {
-                    key: key.clone(),
-                    value: value.to_string(),
-                })
-                .collect::<Vec<_>>();
-            if records.is_empty() {
-                continue;
-            }
-            if !store.put_records(state_id, &records).await? {
+            let reached = self.reached(state_id, staged, store).await?;
+            let records = staged.unstored(reached.as_deref());
+            if !records.is_empty() && !store.put_records(state_id, &records).await? {
                 return Ok(());
             }
             self.0.update(|states| {
@@ -108,15 +171,7 @@ impl StagedWrites {
                     actual: acquired.state.revision,
                 });
             }
-            let mut records: Vec<_> = staged
-                .records
-                .iter()
-                .filter(|(key, _)| !staged.stored.contains(*key))
-                .map(|(key, value)| StoreRecord {
-                    key: key.clone(),
-                    value: value.to_string(),
-                })
-                .collect();
+            let reached = self.reached(state_id, staged, store).await?;
             if let Some(payload) = staged.payloads.last()
                 && store
                     .replace_to(
@@ -125,13 +180,14 @@ impl StagedWrites {
                         staged.base_revision,
                         staged.revision,
                         payload,
-                        &records,
+                        &staged.unstored(reached.as_deref()),
                     )
                     .await?
                     .is_some()
             {
                 continue;
             }
+            let mut records = staged.unstored(None);
             let mut revision = staged.base_revision;
             for payload in &staged.payloads {
                 revision = store
@@ -152,6 +208,22 @@ impl StagedWrites {
             }
         }
         Ok(())
+    }
+
+    async fn reached<T: StateStore + ?Sized>(
+        &self,
+        state_id: &str,
+        staged: &Staged,
+        store: &mut T,
+    ) -> Result<Option<Arc<HashSet<String>>>, StoreError> {
+        let reached = staged.reached(state_id, store).await?;
+        self.0.update(|states| {
+            if let Some(entry) = states.get_mut(state_id) {
+                Arc::make_mut(entry).reached =
+                    reached.clone().map(|reached| (staged.revision, reached));
+            }
+        });
+        Ok(reached)
     }
 
     fn get(&self, state_id: &str) -> Option<Arc<Staged>> {
@@ -289,6 +361,7 @@ impl<S: StateStore> StagedStore<S> {
                     payloads: imbl::Vector::new(),
                     records: imbl::OrdMap::new(),
                     stored: imbl::OrdSet::new(),
+                    reached: None,
                 }
             }
         };

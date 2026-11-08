@@ -1,4 +1,4 @@
-use crate::{Atom, Signal};
+use crate::Atom;
 use std::{
     collections::HashMap,
     sync::{
@@ -7,23 +7,8 @@ use std::{
     },
     thread,
     thread::ThreadId,
-    time::{Duration, Instant},
 };
-use tokio::{
-    task::{Id, try_id},
-    time::timeout_at,
-};
-
-#[derive(Clone, Copy, Debug)]
-pub struct Reentrant;
-
-impl std::fmt::Display for Reentrant {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("this task already holds a claim it waited to see released")
-    }
-}
-
-impl std::error::Error for Reentrant {}
+use tokio::task::{Id, try_id};
 
 #[derive(Clone, Default)]
 pub struct Reentry(Arc<Claims>);
@@ -37,53 +22,15 @@ impl Reentry {
             .read(|owners| owners.get(&owner).map(|held| held.claim))
     }
 
-    pub async fn unclaimed(&self, wait: Duration) -> Result<Option<Duration>, Reentrant> {
-        let owner = owner();
-        let started = Instant::now();
-        let mut deadline = started + wait;
-        let mut seen = None;
-        let mut waited = false;
-        loop {
-            let held = self.0.owners.update(|owners| {
-                owners.get_mut(&owner).map(|held| {
-                    let wake = Arc::clone(held.wake.get_or_insert_with(Arc::default));
-                    (held.claim, wake)
-                })
-            });
-            let Some((claim, wake)) = held else {
-                return Ok(waited.then(|| started.elapsed()));
-            };
-            if self.held_here() != Some(claim) {
-                continue;
-            }
-            if seen != Some(claim) {
-                seen = Some(claim);
-                deadline = Instant::now() + wait;
-            } else if Instant::now() >= deadline {
-                return Err(Reentrant);
-            }
-            waited = true;
-            drop(timeout_at(deadline.into(), wake.wait()).await);
-        }
-    }
-
     #[must_use]
     pub fn claim(&self) -> Claim {
         let owner = owner();
         let claim = self.0.next.fetch_add(1, Ordering::Relaxed) + 1;
-        let wake = self.0.owners.update(|owners| {
-            let held = owners.entry(owner).or_insert(Held {
-                claim,
-                count: 0,
-                wake: None,
-            });
+        self.0.owners.update(|owners| {
+            let held = owners.entry(owner).or_insert(Held { claim, count: 0 });
             held.claim = claim;
             held.count += 1;
-            held.wake.take()
         });
-        if let Some(wake) = wake {
-            wake.fire();
-        }
         Claim(self.clone(), owner)
     }
 }
@@ -93,17 +40,14 @@ pub struct Claim(Reentry, Owner);
 impl Drop for Claim {
     fn drop(&mut self) {
         let Self(holder, owner) = self;
-        let released = holder.0.owners.update(|owners| {
-            let held = owners.get_mut(owner)?;
-            held.count = held.count.saturating_sub(1);
-            if held.count > 0 {
-                return None;
+        holder.0.owners.update(|owners| {
+            if let Some(held) = owners.get_mut(owner) {
+                held.count = held.count.saturating_sub(1);
+                if held.count == 0 {
+                    owners.remove(owner);
+                }
             }
-            owners.remove(owner).and_then(|held| held.wake)
         });
-        if let Some(wake) = released {
-            wake.fire();
-        }
     }
 }
 
@@ -117,7 +61,6 @@ enum Owner {
 struct Held {
     claim: u64,
     count: usize,
-    wake: Option<Arc<Signal>>,
 }
 
 #[derive(Default)]

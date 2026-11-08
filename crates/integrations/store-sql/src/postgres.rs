@@ -1,7 +1,5 @@
 use futures_util::future::{select_all, try_join, try_join_all, try_join3};
-use nanocode_durability_core::{
-    LockKey, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, StoreError, StoreFuture,
-};
+use nanocode_durability_core::LockKey;
 use nanocode_sync::{Atom, Held, Owned};
 use percent_encoding::percent_decode_str;
 use rustls::{
@@ -27,17 +25,13 @@ use std::{
     fmt::{self, Display, Formatter},
     future::Future,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 use tokio::{fs::read, spawn, time::timeout};
-use tokio_postgres::{
-    Client, Config, NoTls, Row, Statement,
-    config::SslMode,
-    types::{ToSql, Type},
-};
+use tokio_postgres::{Client, Config, NoTls, Row, Statement, config::SslMode, types::ToSql};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use webpki_roots::TLS_SERVER_ROOTS;
 
@@ -46,7 +40,6 @@ const LOCKS: &str = "SELECT pg_advisory_xact_lock_shared($1::bigint), (SELECT co
     SELECT CASE WHEN s THEN pg_advisory_xact_lock_shared(c,k)::text ELSE pg_advisory_xact_lock(c,k)::text END
     FROM unnest($2::int[],$3::int[],$4::bool[]) WITH ORDINALITY AS u(c,k,s,n) ORDER BY n) taken)";
 const CLOSE: &str = "COMMIT";
-const CUSTOM_PLANS: &str = "SET plan_cache_mode = force_custom_plan";
 
 #[derive(Debug)]
 pub struct Unavailable(String);
@@ -91,13 +84,6 @@ pub enum PipelineError {
     Said(&'static str),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Alive {
-    pub statement: &'static str,
-    pub standby: &'static str,
-    pub lapsed: &'static str,
-}
-
 #[derive(Clone, Debug)]
 pub struct Pipelined {
     pub application: String,
@@ -105,7 +91,6 @@ pub struct Pipelined {
     pub setup: &'static str,
     pub write_lock: i64,
     pub collected: &'static str,
-    pub alive: Option<Alive>,
     pub deadline: Duration,
     pub backoff: Duration,
     pub ping: fn(Duration) -> bool,
@@ -117,12 +102,11 @@ pub struct Locked {
 }
 
 pub struct PostgresSql {
-    dial: Option<Dial>,
-    pipelined: Option<Pipelined>,
+    dial: Dial,
+    pipelined: Pipelined,
     lanes: Box<[Owned<Option<Lane>>]>,
     failed: Atom<Option<Instant>>,
     latest: AtomicUsize,
-    custom_plans: bool,
 }
 
 struct Dial {
@@ -132,9 +116,7 @@ struct Dial {
 
 struct Lane {
     client: Client,
-    typed: HashMap<&'static str, Statement>,
     prepared: HashMap<String, Statement>,
-    planned: bool,
     used: Instant,
 }
 
@@ -142,9 +124,7 @@ impl Lane {
     fn new(client: Client) -> Self {
         Self {
             client,
-            typed: HashMap::new(),
             prepared: HashMap::new(),
-            planned: false,
             used: Instant::now(),
         }
     }
@@ -159,85 +139,7 @@ impl Lane {
     }
 }
 
-fn inferred(statements: &[SqlStatement<'_>]) -> SqlAccess {
-    let starts = |verbs: &[&str]| {
-        statements
-            .iter()
-            .all(|statement| verbs.iter().any(|verb| statement.sql.starts_with(verb)))
-    };
-    if starts(&["SELECT"]) {
-        SqlAccess::Read
-    } else if starts(&["SELECT", "INSERT", "UPDATE", "DELETE", "WITH"]) {
-        SqlAccess::Write
-    } else {
-        SqlAccess::Schema
-    }
-}
-
 impl PostgresSql {
-    #[must_use]
-    pub fn new(client: Client) -> Self {
-        Self::pool(vec![client])
-    }
-
-    #[must_use]
-    pub fn pool(clients: Vec<Client>) -> Self {
-        assert!(!clients.is_empty(), "a Postgres pool needs a connection");
-        Self {
-            dial: None,
-            pipelined: None,
-            lanes: clients
-                .into_iter()
-                .map(|client| Owned::new(Some(Lane::new(client))))
-                .collect(),
-            failed: Atom::new(None),
-            latest: AtomicUsize::new(0),
-            custom_plans: true,
-        }
-    }
-
-    pub async fn connect(config: &str, connections: usize) -> Result<Self, StoreError> {
-        if connections == 0 {
-            return Err(StoreError::Backend(
-                "a Postgres pool needs a connection".to_owned(),
-            ));
-        }
-        static RUNTIME: OnceLock<Option<tokio::runtime::Handle>> = OnceLock::new();
-        let runtime = RUNTIME
-            .get_or_init(|| {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .ok()?;
-                let handle = runtime.handle().clone();
-                std::thread::Builder::new()
-                    .name("nanocode-postgres".into())
-                    .spawn(move || runtime.block_on(std::future::pending::<()>()))
-                    .ok()?;
-                Some(handle)
-            })
-            .as_ref()
-            .ok_or_else(|| {
-                StoreError::Backend("could not start the Postgres connection thread".to_owned())
-            })?;
-        let config = config.to_owned();
-        let clients = runtime
-            .spawn(async move {
-                let mut clients = Vec::with_capacity(connections);
-                for _ in 0..connections {
-                    let (client, connection) = tokio_postgres::connect(&config, NoTls)
-                        .await
-                        .map_err(backend)?;
-                    drop(tokio::spawn(connection));
-                    clients.push(client);
-                }
-                Ok::<_, StoreError>(clients)
-            })
-            .await
-            .map_err(|error| StoreError::Backend(error.to_string()))??;
-        Ok(Self::pool(clients))
-    }
-
     pub fn dialing(
         options: &PgConnectOptions,
         size: u32,
@@ -295,12 +197,11 @@ impl PostgresSql {
             ));
         }
         Ok(Self {
-            dial: Some(Dial { config, tls }),
-            pipelined: Some(pipelined),
+            dial: Dial { config, tls },
+            pipelined,
             lanes: (0..size.max(1)).map(|_| Owned::new(None)).collect(),
             failed: Atom::new(None),
             latest: AtomicUsize::new(0),
-            custom_plans: false,
         })
     }
 
@@ -318,12 +219,9 @@ impl PostgresSql {
         work: impl Future<Output = Result<T, PipelineError>>,
         late: &'static str,
     ) -> Result<T, PipelineError> {
-        match &self.pipelined {
-            Some(pipelined) => timeout(pipelined.deadline, work)
-                .await
-                .unwrap_or(Err(PipelineError::Said(late))),
-            None => work.await,
-        }
+        timeout(self.pipelined.deadline, work)
+            .await
+            .unwrap_or(Err(PipelineError::Said(late)))
     }
 
     async fn tls(&self) -> Result<Option<MakeRustlsConnect>, PipelineError> {
@@ -336,19 +234,12 @@ impl PostgresSql {
                 None => input.as_bytes().to_vec(),
             })
         };
-        let Some(Dial {
-            tls:
-                Tls {
-                    mode,
-                    root,
-                    cert,
-                    key,
-                },
-            ..
-        }) = &self.dial
-        else {
-            return Ok(None);
-        };
+        let Tls {
+            mode,
+            root,
+            cert,
+            key,
+        } = &self.dial.tls;
         if matches!(mode, PgSslMode::Disable | PgSslMode::Allow) {
             return Ok(None);
         }
@@ -404,18 +295,14 @@ impl PostgresSql {
 
     #[must_use]
     pub fn available(&self) -> bool {
-        let backoff = self
-            .pipelined
-            .as_ref()
-            .map_or(Duration::ZERO, |pipelined| pipelined.backoff);
-        self.failed.get().is_none_or(|at| at.elapsed() >= backoff)
+        self.failed
+            .get()
+            .is_none_or(|at| at.elapsed() >= self.pipelined.backoff)
     }
 
     async fn reconnect(&self) -> Result<Lane, PipelineError> {
-        if self.dial.is_none() {
-            return Err(Unavailable("the connection closed".to_owned()).into());
-        }
-        let connected = self.bounded(self.dialed(), "connecting timed out").await;
+        let dialed = async { Ok(Lane::new(self.open().await?)) };
+        let connected = self.bounded(dialed, "connecting timed out").await;
         match connected {
             Ok(lane) => {
                 self.failed.set(None);
@@ -429,11 +316,7 @@ impl PostgresSql {
     }
 
     async fn open(&self) -> Result<Client, PipelineError> {
-        let Some(Dial { config, .. }) = &self.dial else {
-            return Err(PipelineError::Said(
-                "this Postgres host has no dialing options",
-            ));
-        };
+        let config = &self.dial.config;
         let client = match self.tls().await? {
             None => {
                 let (client, connection) = config.connect(NoTls).await?;
@@ -449,40 +332,14 @@ impl PostgresSql {
         Ok(client)
     }
 
-    async fn dialed(&self) -> Result<Lane, PipelineError> {
-        let client = self.open().await?;
-        if let Some(Alive {
-            statement,
-            standby,
-            lapsed,
-        }) = self
-            .pipelined
-            .as_ref()
-            .and_then(|pipelined| pipelined.alive)
-        {
-            let row = client.query_one(statement, &[]).await?;
-            let (alive, replica): (Option<bool>, bool) = (row.try_get(0)?, row.try_get(1)?);
-            if replica {
-                return Err(PipelineError::Said(standby));
-            }
-            if alive != Some(true) {
-                return Err(PipelineError::Said(lapsed));
-            }
-        }
-        Ok(Lane::new(client))
-    }
-
     async fn fresh(&self, lane: &Lane) -> bool {
         if lane.client.is_closed() {
             return false;
         }
-        let Some(pipelined) = &self.pipelined else {
-            return true;
-        };
-        if !(pipelined.ping)(lane.used.elapsed()) {
+        if !(self.pipelined.ping)(lane.used.elapsed()) {
             return true;
         }
-        timeout(pipelined.deadline, lane.client.simple_query(""))
+        timeout(self.pipelined.deadline, lane.client.simple_query(""))
             .await
             .is_ok_and(|pinged| pinged.is_ok())
     }
@@ -514,12 +371,6 @@ impl PostgresSql {
             Some(lane) if self.fresh(&lane).await => Ok(lane),
             _ => self.reconnect().await,
         }
-    }
-
-    fn settings(&self) -> Result<&Pipelined, PipelineError> {
-        self.pipelined.as_ref().ok_or(PipelineError::Said(
-            "this Postgres host has no pipelined settings",
-        ))
     }
 
     pub async fn once<G>(
@@ -554,7 +405,7 @@ impl PostgresSql {
         statements: &[(&str, &[&(dyn ToSql + Sync)])],
         lent: impl FnOnce() -> G,
     ) -> Result<Locked, PipelineError> {
-        let pipelined = self.settings()?;
+        let pipelined = &self.pipelined;
         let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
@@ -611,154 +462,6 @@ impl PostgresSql {
             collected: collected.unwrap_or_default(),
         })
     }
-
-    async fn ran(
-        &self,
-        access: SqlAccess,
-        statements: &[SqlStatement<'_>],
-    ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-        let (index, mut slot) = self.slot().await;
-        let mut lane = self.lane(&mut slot).await.map_err(piped)?;
-        let ran = self
-            .bounded(
-                async { Ok(run_on(&mut lane, access, statements, self.custom_plans).await) },
-                "a Postgres transaction timed out",
-            )
-            .await
-            .map_err(piped)?;
-        self.release(index, &mut slot, lane);
-        text_rows(&ran.map_err(backend)?)
-    }
-}
-
-async fn run_on(
-    lane: &mut Lane,
-    access: SqlAccess,
-    statements: &[SqlStatement<'_>],
-    custom_plans: bool,
-) -> Result<Vec<Vec<Row>>, tokio_postgres::Error> {
-    if access != SqlAccess::Schema {
-        if custom_plans && !lane.planned {
-            lane.client.batch_execute(CUSTOM_PLANS).await?;
-            lane.planned = true;
-        }
-        let missing = statements
-            .iter()
-            .filter(|statement| !lane.typed.contains_key(statement.sql))
-            .map(|statement| (statement.sql, statement.params.len()))
-            .collect::<HashMap<_, _>>();
-        let client = &lane.client;
-        let prepared = try_join_all(missing.iter().map(|(sql, count)| {
-            let types = vec![Type::TEXT; *count];
-            async move {
-                client
-                    .prepare_typed(sql, &types)
-                    .await
-                    .map(|statement| (*sql, statement))
-            }
-        }))
-        .await?;
-        lane.typed.extend(prepared);
-    }
-    let bracket = if access == SqlAccess::Read {
-        None
-    } else {
-        Some((lane.prepare(OPEN).await?, lane.prepare(CLOSE).await?))
-    };
-    let Lane { client, typed, .. } = &*lane;
-    let params = statements
-        .iter()
-        .map(|statement| {
-            statement
-                .params
-                .iter()
-                .map(|param| (param as &(dyn ToSql + Sync), Type::TEXT))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let queries = try_join_all(statements.iter().zip(&params).map(|(statement, params)| {
-        let prepared = typed.get(statement.sql);
-        async move {
-            match prepared {
-                Some(prepared) => {
-                    let values = params.iter().map(|(value, _)| *value).collect::<Vec<_>>();
-                    client.query(prepared, &values).await
-                }
-                None => client.query_typed(statement.sql, params).await,
-            }
-        }
-    }));
-    match &bracket {
-        None => queries.await,
-        Some((open, close)) => {
-            let (_, rows, _) = try_join3(
-                client.execute(open, &[]),
-                queries,
-                client.execute(close, &[]),
-            )
-            .await?;
-            Ok(rows)
-        }
-    }
-}
-
-impl Sql for PostgresSql {
-    fn transaction<'a>(
-        &'a self,
-        _operation: &'static str,
-        statements: &'a [SqlStatement<'a>],
-    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        Box::pin(self.ran(inferred(statements), statements))
-    }
-
-    fn run<'a>(
-        &'a self,
-        access: SqlAccess,
-        _operation: &'static str,
-        statements: &'a [SqlStatement<'a>],
-    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        Box::pin(self.ran(access, statements))
-    }
-
-    fn dialect(&self) -> SqlDialect {
-        SqlDialect::Postgres
-    }
-
-    fn concurrent(self: Arc<Self>) -> Option<Arc<dyn Sql>> {
-        Some(self)
-    }
-
-    fn writers(&self) -> usize {
-        self.lanes.len()
-    }
-
-    fn readers(&self) -> usize {
-        self.lanes.len()
-    }
-}
-
-fn text_rows(replies: &[Vec<Row>]) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-    replies
-        .iter()
-        .map(|rows| {
-            rows.iter()
-                .map(|row| {
-                    (0..row.len())
-                        .map(|column| row.try_get::<_, Option<String>>(column))
-                        .collect::<Result<SqlRow, _>>()
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(backend)
-        })
-        .collect()
-}
-
-fn backend(error: tokio_postgres::Error) -> StoreError {
-    StoreError::Backend(error.to_string())
-}
-
-fn piped(error: PipelineError) -> StoreError {
-    StoreError::Backend(chain(&error))
 }
 
 pub fn collected_wakes(collected: &str) -> impl Iterator<Item = (&str, &str)> {

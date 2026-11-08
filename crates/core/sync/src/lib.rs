@@ -2,8 +2,6 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 mod armed;
 #[cfg(not(target_family = "wasm"))]
-mod lanes;
-#[cfg(not(target_family = "wasm"))]
 mod lease;
 mod map;
 #[cfg(not(target_family = "wasm"))]
@@ -12,8 +10,6 @@ mod reentry;
 mod session;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
-#[cfg(not(target_family = "wasm"))]
-mod stalled;
 #[cfg(target_family = "wasm")]
 mod swap;
 mod wakes;
@@ -22,20 +18,16 @@ mod wakes;
 pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
 pub use armed::Armed;
 #[cfg(not(target_family = "wasm"))]
-pub use lanes::{Lanes, NotCommitted, together};
-#[cfg(not(target_family = "wasm"))]
 pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
 pub use map::AtomMap;
 #[cfg(not(target_family = "wasm"))]
 pub use map::Throttle;
 #[cfg(not(target_family = "wasm"))]
-pub use reentry::{Claim, Reentrant, Reentry};
+pub use reentry::{Claim, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{pipe, splice};
-#[cfg(not(target_family = "wasm"))]
-pub use stalled::StalledWaits;
 #[cfg(target_family = "wasm")]
 pub use swap::{Guard, Swap, SwapOption};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
@@ -1013,15 +1005,6 @@ where
         let key: Arc<str> = key.into();
         self.reads.update(|reads| {
             reads.put(Arc::clone(&key), now, read.clone(), self.ttl, self.kept);
-        });
-    }
-
-    pub fn forget(&self, key: &str) {
-        if self.reads.read(|reads| reads.held(key).is_none()) {
-            return;
-        }
-        self.reads.update(|reads| {
-            reads.remove(key);
         });
     }
 

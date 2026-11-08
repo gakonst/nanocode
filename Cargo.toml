@@ -153,7 +153,6 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 rustix = { version = "1.1.4", features = ["thread"] }
 rustls-native-certs = "0.8.4"
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
-rusqlite = { version = "0.38", features = ["bundled"] }
 tokio-postgres = "0.7"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 rquickjs = "0.14.0"

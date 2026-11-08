@@ -5731,7 +5731,6 @@ dependencies = [
  "nanocode-durability-core",
  "nanocode-sync",
  "percent-encoding",
- "rusqlite",
  "rustls",
  "sqlx",
  "thiserror 2.0.18",

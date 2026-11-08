@@ -6,46 +6,24 @@ use nanocode_durability_core::{
     StoreError, StoreFuture, Unreachable,
 };
 use nanocode_sync::Owned;
-use sqlx::{AssertSqlSafe, Either, PgConnection, PgPool, Postgres, Row, pool::PoolConnection};
+use sqlx::{AssertSqlSafe, Either, PgConnection, Row};
 
 pub trait PgConnections: Send + Sync {
     type Connection: DerefMut<Target = PgConnection> + Send;
-    const IN_TRANSACTION: bool = false;
     const SIMPLE: Option<&'static str> = None;
 
     fn acquire(&self) -> StoreFuture<'_, Result<Self::Connection, StoreError>>;
 }
 
-impl PgConnections for PgPool {
-    type Connection = PoolConnection<Postgres>;
-
-    fn acquire(&self) -> StoreFuture<'_, Result<Self::Connection, StoreError>> {
-        Box::pin(async move { Self::acquire(self).await.map_err(backend) })
-    }
-}
-
-pub struct SqlxSql<C, R = C> {
+pub struct SqlxSql<C, R> {
     writes: C,
-    reads: Option<R>,
-}
-
-impl<C: PgConnections> SqlxSql<C> {
-    #[must_use]
-    pub const fn new(connections: C) -> Self {
-        Self {
-            writes: connections,
-            reads: None,
-        }
-    }
+    reads: R,
 }
 
 impl<C: PgConnections, R: PgConnections> SqlxSql<C, R> {
     #[must_use]
     pub const fn reading(writes: C, reads: R) -> Self {
-        Self {
-            writes,
-            reads: Some(reads),
-        }
+        Self { writes, reads }
     }
 }
 
@@ -56,9 +34,6 @@ async fn transact<C: PgConnections>(
     let mut connection = connections.acquire().await?;
     if let Some(prelude) = C::SIMPLE {
         return simple(&mut connection, prelude, statements).await;
-    }
-    if C::IN_TRANSACTION {
-        return run(&mut connection, statements).await;
     }
     let mut transaction = sqlx::Connection::begin(&mut *connection)
         .await
@@ -83,8 +58,8 @@ impl<C: PgConnections, R: PgConnections> Sql for SqlxSql<C, R> {
         _operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        match (access, &self.reads) {
-            (SqlAccess::Read, Some(reads)) => Box::pin(transact(reads, statements)),
+        match access {
+            SqlAccess::Read => Box::pin(transact(&self.reads, statements)),
             _ => Box::pin(transact(&self.writes, statements)),
         }
     }
@@ -94,11 +69,10 @@ impl<C: PgConnections, R: PgConnections> Sql for SqlxSql<C, R> {
     }
 }
 
-pub struct SqlxTransaction<'c>(Owned<&'c mut PgConnection>);
+struct SqlxTransaction<'c>(Owned<&'c mut PgConnection>);
 
 impl<'c> SqlxTransaction<'c> {
-    #[must_use]
-    pub fn new(connection: &'c mut PgConnection) -> Self {
+    fn new(connection: &'c mut PgConnection) -> Self {
         Self(Owned::new(connection))
     }
 }

@@ -33,35 +33,8 @@ impl<K: Hash + Eq + Clone, V: Clone> AtomMap<K, V> {
         self.0.read(|map| map.contains_key(key))
     }
 
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.read(imbl::HashMap::len)
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.read(imbl::HashMap::is_empty)
-    }
-
-    #[must_use]
-    pub fn snapshot(&self) -> imbl::HashMap<K, V> {
-        self.0.read(Clone::clone)
-    }
-
-    pub fn read<R>(&self, read: impl FnOnce(&imbl::HashMap<K, V>) -> R) -> R {
-        self.0.read(read)
-    }
-
     pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.0.update(|map| map.insert(key.clone(), value.clone()))
-    }
-
-    pub fn remove<Q>(&self, key: &Q) -> Option<V>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        self.remove_if(key, |_| true)
     }
 
     pub fn remove_if<Q>(&self, key: &Q, remove: impl Fn(&V) -> bool) -> Option<V>
@@ -81,33 +54,8 @@ impl<K: Hash + Eq + Clone, V: Clone> AtomMap<K, V> {
         })
     }
 
-    pub fn get_or_insert_with(&self, key: K, make: impl FnOnce() -> V) -> V {
-        if let Some(value) = self.get(&key) {
-            return value;
-        }
-        let made = make();
-        self.0.update(|map| {
-            if let Some(value) = map.get(&key) {
-                return value.clone();
-            }
-            map.insert(key.clone(), made.clone());
-            made.clone()
-        })
-    }
-
     pub fn update<R>(&self, change: impl FnMut(&mut imbl::HashMap<K, V>) -> R) -> R {
         self.0.update(change)
-    }
-
-    pub fn retain(&self, keep: impl Fn(&K, &V) -> bool) {
-        if self
-            .0
-            .read(|map| map.iter().all(|(key, value)| keep(key, value)))
-        {
-            return;
-        }
-        self.0
-            .update(|map| map.retain(|key, value| keep(key, value)));
     }
 }
 

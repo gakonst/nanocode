@@ -16,14 +16,6 @@ pub fn begin(prelude: &[&str], write_lock: i64, keys: &[LockKey]) -> String {
     statements
 }
 
-#[must_use]
-pub fn begin_exclusive(prelude: &[&str], write_lock: i64) -> String {
-    format!(
-        "BEGIN;{}SELECT pg_advisory_xact_lock({write_lock});",
-        prelude.concat()
-    )
-}
-
 pub async fn held(
     connection: &mut PgConnection,
     key: LockKey,

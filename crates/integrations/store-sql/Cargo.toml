@@ -9,13 +9,12 @@ publish.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SQLite and Postgres hosts for Nanocode's SQL stores: rusqlite, tokio-postgres, and a host's own sqlx pool or transaction"
+description = "Postgres hosts for Nanocode's SQL stores: a host's own sqlx connections, and pipelined tokio-postgres lanes"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 futures-util.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-sync.workspace = true
-rusqlite.workspace = true
 sqlx.workspace = true
 percent-encoding = "2"
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }

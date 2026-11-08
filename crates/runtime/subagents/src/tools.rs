@@ -658,6 +658,7 @@ pub async fn start_fork_agent(
         host_context,
         true,
         None,
+        None,
     )
     .await
 }
@@ -680,6 +681,7 @@ async fn start_agent_with_host_context(
         host_context,
         false,
         None,
+        None,
     )
     .await
 }
@@ -695,6 +697,7 @@ async fn start_child(
     host_context: Option<Arc<str>>,
     fork: bool,
     capacity: Option<TurnCapacity>,
+    call_id: Option<&str>,
 ) -> AgentToolResult<AgentStartReport> {
     if fork && parent.session_id() != session_id {
         return Err("child caller identity must match its native parent handle".into());
@@ -787,6 +790,7 @@ async fn start_child(
         let _ = child.shutdown().await;
         return Err(error.into());
     }
+    let caller = session_id;
     let session_id = child.session_id().to_string();
     let descriptor = AgentDescriptor {
         id,
@@ -820,6 +824,11 @@ async fn start_child(
         )
         .await?;
     startup.track(&reservation.root_session_id, id);
+    if let Some(call_id) = call_id {
+        registry
+            .mark_spawned(&reservation.root_session_id, id, caller, call_id)
+            .await;
+    }
     registry.send(&reservation.root_session_id, AgentUpdate::Added(descriptor));
     let _ = start_events.send(());
 
@@ -900,7 +909,38 @@ impl Tool for SpawnAgent {
         })
     }
 
+    recovers!(self, input, context, self.spawn(input, context, true));
+
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.spawn(input, context, false).await
+    }
+}
+
+impl SpawnAgent {
+    async fn spawn(&self, input: ToolInput, context: ToolContext<'_>, resumed: bool) -> ToolResult {
+        if resumed {
+            let registry = self
+                .registry
+                .upgrade()
+                .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+            if let Some(descriptor) = registry
+                .respawned(context.session_id(), context.call_id())
+                .await?
+            {
+                registry
+                    .spawned_in_turn(context.session_id(), descriptor.id)
+                    .await;
+                return json_output(&AgentStartReport {
+                    agent_id: descriptor.id,
+                    role: descriptor.role,
+                    status: AgentStatus::Running,
+                    model: descriptor.model,
+                    thinking: descriptor.thinking,
+                    reasoning_mode: descriptor.reasoning_mode,
+                    budget_usd: descriptor.budget_usd,
+                });
+            }
+        }
         let (task, options, budget) = input
             .decode_json::<SpawnAgentTask>()?
             .into_parts_with_parent(Some(self.parent.harness_family()))?;
@@ -914,6 +954,7 @@ impl Tool for SpawnAgent {
         let report = {
             let parent = self.parent.clone();
             let session_id = context.session_id().to_owned();
+            let call_id = context.call_id().to_owned();
             let pending = super::platform::spawn(async move {
                 start_child(
                     &parent,
@@ -925,6 +966,7 @@ impl Tool for SpawnAgent {
                     host_context,
                     false,
                     Some(capacity),
+                    Some(&call_id),
                 )
                 .await
             });
@@ -1234,7 +1276,15 @@ impl Tool for SendAgentMessage {
         })
     }
 
+    recovers!(self, input, context, self.send(input, context, true));
+
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.send(input, context, false).await
+    }
+}
+
+impl SendAgentMessage {
+    async fn send(&self, input: ToolInput, context: ToolContext<'_>, resumed: bool) -> ToolResult {
         let SendMessageTask {
             agent_id,
             message,
@@ -1246,10 +1296,18 @@ impl Tool for SendAgentMessage {
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+        if resumed
+            && let Some(receipt) = registry
+                .resent(context.session_id(), context.call_id())
+                .await?
+        {
+            return json_output(&receipt);
+        }
         #[cfg(not(target_family = "wasm"))]
         let receipt = registry
             .send_message(
                 context.session_id(),
+                Some(context.call_id()),
                 agent_id,
                 priority,
                 purpose,
@@ -1260,10 +1318,12 @@ impl Tool for SendAgentMessage {
         #[cfg(target_family = "wasm")]
         let receipt = {
             let session_id = context.session_id().to_owned();
+            let call_id = context.call_id().to_owned();
             let pending = super::platform::spawn(async move {
                 registry
                     .send_message(
                         &session_id,
+                        Some(&call_id),
                         agent_id,
                         priority,
                         purpose,

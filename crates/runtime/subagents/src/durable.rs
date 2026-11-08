@@ -1,6 +1,6 @@
 use super::{
     message::MAX_MESSAGE_BYTES,
-    model::{AgentDescriptor, AgentId, AgentStatus},
+    model::{AgentDescriptor, AgentId, AgentStatus, MessageDisposition, MessageId},
     runtime::{ChildSession, Completion, OutputContract, StoredRuntime},
 };
 use nanocode_agent_core::{AgentUsage, Lineage, ModelSelection, SessionCheckpoint, Thinking};
@@ -667,6 +667,10 @@ struct AgentRecord {
     conversation: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     waited: Vec<Waited>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sent: Vec<Sent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spawned: Option<Spawned>,
 }
 
 fn agent_record(
@@ -711,6 +715,8 @@ fn agent_record(
         cancelled_revision: agent.cancelled_revision,
         conversation: agent.conversation,
         waited: agent.waited,
+        sent: agent.sent,
+        spawned: agent.spawned,
     })
 }
 
@@ -858,6 +864,8 @@ fn agent_from(
         cancelled_revision: record.cancelled_revision,
         conversation: record.conversation,
         waited: record.waited,
+        sent: record.sent,
+        spawned: record.spawned,
     };
     agent.expand();
     Ok(agent)
@@ -1089,6 +1097,12 @@ pub(super) struct PersistedAgent {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) waited: Vec<Waited>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) sent: Vec<Sent>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) spawned: Option<Spawned>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1097,6 +1111,27 @@ pub(super) struct Waited {
     pub(super) session: String,
     pub(super) call: String,
     pub(super) mark: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Sent {
+    pub(super) session: String,
+    pub(super) call: String,
+    pub(super) message: MessageId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) disposition: Option<MessageDisposition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Spawned {
+    pub(super) session: String,
+    pub(super) call: String,
+}
+
+pub(super) fn cell_of(call: &str) -> &str {
+    call.rsplit_once("/code-").map_or(call, |(cell, _)| cell)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1635,6 +1670,8 @@ pub(super) fn persist_agent(
         cancelled_revision: session.cancelled_revision,
         conversation: session.conversation,
         waited: session.waited.clone(),
+        sent: session.sent.clone(),
+        spawned: session.spawned.clone(),
     }
 }
 
@@ -1810,6 +1847,8 @@ pub(super) fn restored_session(
     session.usage = usage;
     session.conversation = agent.conversation;
     session.waited = agent.waited;
+    session.sent = agent.sent;
+    session.spawned = agent.spawned;
 
     let accepted_revision = accepted_revision.unwrap_or(agent.next_instruction_revision);
     session.settled_revision = if completed_by_acceptance {

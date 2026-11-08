@@ -208,6 +208,10 @@ pub(super) struct ChildSession {
     pub(super) conversation: bool,
 
     pub(super) waited: Vec<durable::Waited>,
+
+    pub(super) sent: Vec<durable::Sent>,
+
+    pub(super) spawned: Option<durable::Spawned>,
 }
 
 pub(super) struct ActiveTurn {
@@ -362,6 +366,10 @@ impl Sessions {
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &AgentId> {
         self.sessions.keys()
+    }
+
+    pub(super) fn values(&self) -> impl Iterator<Item = &ChildSession> {
+        self.sessions.values().map(Box::as_ref)
     }
 
     fn is_empty(&self) -> bool {
@@ -1735,8 +1743,42 @@ impl RegistryState {
 
     fn rollback_message(&mut self, root_session_id: &str, id: MessageId) {
         if let Some(scope) = self.scopes.get_mut(root_session_id) {
+            let to = scope.messages.message(id).map(|message| message.to);
             scope.messages.rollback(id);
+            let recorded = to.and_then(|to| {
+                scope
+                    .sessions
+                    .get(&to)
+                    .is_some_and(|session| session.sent.iter().any(|sent| sent.message == id))
+                    .then_some(to)
+            });
+            if let Some(session) = recorded.and_then(|to| scope.sessions.get_mut(&to)) {
+                session.sent.retain(|sent| sent.message != id);
+            }
         }
+    }
+
+    fn record_sent(&mut self, root_session_id: &str, session_id: &str, call: &str, id: MessageId) {
+        let Some(scope) = self.scopes.get_mut(root_session_id) else {
+            return;
+        };
+        let Some(to) = scope.messages.message(id).map(|message| message.to) else {
+            return;
+        };
+        let Some(target) = scope.sessions.get_mut(&to) else {
+            return;
+        };
+        let cell = durable::cell_of(call);
+        target.sent.retain(|sent| {
+            sent.session != session_id
+                || (durable::cell_of(&sent.call) == cell && sent.call != call)
+        });
+        target.sent.push(durable::Sent {
+            session: session_id.to_owned(),
+            call: call.to_owned(),
+            message: id,
+            disposition: None,
+        });
     }
 
     fn begin_delegation(
@@ -1790,6 +1832,22 @@ impl RegistryState {
     ) {
         if let Some(scope) = self.scopes.get_mut(root_session_id) {
             scope.messages.mark_admitted(id, disposition);
+            let Some(to) = scope.messages.message(id).map(|message| message.to) else {
+                return;
+            };
+            let recorded = scope.sessions.get(&to).is_some_and(|session| {
+                session
+                    .sent
+                    .iter()
+                    .any(|sent| sent.message == id && sent.disposition.is_none())
+            });
+            if recorded && let Some(session) = scope.sessions.get_mut(&to) {
+                for sent in &mut session.sent {
+                    if sent.message == id {
+                        sent.disposition = Some(disposition);
+                    }
+                }
+            }
         }
     }
 
@@ -4514,6 +4572,8 @@ impl Registry {
                         journal_generation: 0,
                         conversation: false,
                         waited: Vec::new(),
+                        sent: Vec::new(),
+                        spawned: None,
                     },
                 )
             })
@@ -5615,6 +5675,61 @@ impl Registry {
             .await
     }
 
+    pub(super) async fn mark_spawned(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        session_id: &str,
+        call_id: &str,
+    ) {
+        let root = root_session_id.to_owned();
+        let spawned = durable::Spawned {
+            session: session_id.to_owned(),
+            call: call_id.to_owned(),
+        };
+        self.state
+            .call(move |state| {
+                if let Some(child) = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                {
+                    child.spawned = Some(spawned);
+                }
+            })
+            .await;
+    }
+
+    pub(super) async fn respawned(
+        &self,
+        session_id: &str,
+        call_id: &str,
+    ) -> std::io::Result<Option<AgentDescriptor>> {
+        self.await_restored(session_id).await?;
+        let session = session_id.to_owned();
+        let call = call_id.to_owned();
+        Ok(self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                state
+                    .scopes
+                    .get(&root)?
+                    .sessions
+                    .values()
+                    .find_map(|child| {
+                        child
+                            .spawned
+                            .as_ref()
+                            .is_some_and(|spawned| {
+                                spawned.session == session && spawned.call == call
+                            })
+                            .then(|| child.descriptor.clone())
+                    })
+            })
+            .await)
+    }
+
     pub(super) async fn spawned_in_turn(self: &Arc<Self>, session_id: &str, id: AgentId) {
         let session = session_id.to_owned();
         let root = self
@@ -6141,9 +6256,11 @@ impl Registry {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message(
         self: &Arc<Self>,
         session_id: &str,
+        call_id: Option<&str>,
         to: AgentId,
         priority: MessagePriority,
         purpose: MessagePurpose,
@@ -6151,8 +6268,17 @@ impl Registry {
         body: String,
     ) -> std::io::Result<MessageReceipt> {
         self.await_restored(session_id).await?;
-        self.send_message_restored(session_id, to, priority, purpose, in_reply_to, body)
-            .await
+        self.deliver_message(
+            session_id,
+            call_id,
+            to,
+            priority,
+            purpose,
+            in_reply_to,
+            body,
+            false,
+        )
+        .await
     }
 
     async fn send_message_restored(
@@ -6164,14 +6290,56 @@ impl Registry {
         in_reply_to: Option<MessageId>,
         body: String,
     ) -> std::io::Result<MessageReceipt> {
-        self.deliver_message(session_id, to, priority, purpose, in_reply_to, body, false)
-            .await
+        self.deliver_message(
+            session_id,
+            None,
+            to,
+            priority,
+            purpose,
+            in_reply_to,
+            body,
+            false,
+        )
+        .await
+    }
+
+    pub async fn resent(
+        self: &Arc<Self>,
+        session_id: &str,
+        call_id: &str,
+    ) -> std::io::Result<Option<MessageReceipt>> {
+        self.await_restored(session_id).await?;
+        let session = session_id.to_owned();
+        let call = call_id.to_owned();
+        Ok(self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                let scope = state.scopes.get(&root)?;
+                let sent = scope.sessions.values().find_map(|child| {
+                    child
+                        .sent
+                        .iter()
+                        .find(|sent| sent.session == session && sent.call == call)
+                        .cloned()
+                })?;
+                let message = scope.messages.message(sent.message)?;
+                Some(MessageReceipt {
+                    message_id: message.id,
+                    thread_id: message.thread_id,
+                    from: message.from,
+                    to_agent_id: message.to,
+                    disposition: sent.disposition.unwrap_or(MessageDisposition::Queued),
+                })
+            })
+            .await)
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn deliver_message(
         self: &Arc<Self>,
         session_id: &str,
+        call_id: Option<&str>,
         to: AgentId,
         priority: MessagePriority,
         purpose: MessagePurpose,
@@ -6181,6 +6349,7 @@ impl Registry {
     ) -> std::io::Result<MessageReceipt> {
         let target = self.rehydrate(session_id, to, purpose).await?;
         let session = session_id.to_owned();
+        let call = call_id.map(str::to_owned);
         let (prepared, delivery) = self
             .when_messages_flow(session_id, move |state| -> std::io::Result<_> {
                 let prepared = state.prepare_message(
@@ -6196,6 +6365,14 @@ impl Registry {
                     .harness
                     .enqueue_delivery(prepared.message.clone())?;
                 state.commit_message(&prepared.root_session_id, prepared.message.clone())?;
+                if let Some(call) = &call {
+                    state.record_sent(
+                        &prepared.root_session_id,
+                        &session,
+                        call,
+                        prepared.message.id,
+                    );
+                }
                 Ok((prepared, delivery))
             })
             .await??;
@@ -7246,6 +7423,8 @@ impl ChildSession {
             journal_generation: 0,
             conversation: false,
             waited: Vec::new(),
+            sent: Vec::new(),
+            spawned: None,
         }
     }
 

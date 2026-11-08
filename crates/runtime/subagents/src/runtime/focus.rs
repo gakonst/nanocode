@@ -37,6 +37,7 @@ impl SubagentControl {
         self.registry
             .deliver_message(
                 root_session_id,
+                None,
                 id,
                 priority,
                 MessagePurpose::Coordinate,

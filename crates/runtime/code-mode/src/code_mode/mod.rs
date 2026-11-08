@@ -5,7 +5,7 @@ mod replay;
 use crate::code_mode_spec as spec;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU8, AtomicU64, Ordering},
@@ -90,9 +90,24 @@ const CELL_TERMINATING: u8 = 1;
 const CELL_COMPLETION_CLAIMED: u8 = 2;
 const CELL_CLOSED: u8 = 3;
 const LOGGED_NESTED_CALLS_PER_TOOL: u64 = 100;
+const CALL_LIMIT: &str = "call_limit";
 const STREAM_OUTPUT_AFTER: Duration = Duration::from_millis(500);
 const STREAMED_OUTPUT_BYTES: usize = 64 * 1024;
 const TERMINATED_OUTPUT_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub struct CellGuard {
+    pub calls_per_tool: u64,
+    pub refused_before_stop: usize,
+    pub failing_streak: usize,
+    pub failing_stall: Duration,
+}
+
+#[derive(Clone, Copy)]
+struct Limits {
+    nested: usize,
+    guard: Option<CellGuard>,
+}
 
 pub struct CodeModeRuntime {
     admission: Sequencer,
@@ -106,7 +121,7 @@ pub struct CodeModeRuntime {
     preempt_consumed: Arc<AtomicU64>,
     prelude: Option<Arc<str>>,
     journals: Option<CellJournals>,
-    nested_limit: usize,
+    limits: Limits,
     catalog: Atom<Option<Arc<NestedCatalog>>>,
 }
 
@@ -301,11 +316,117 @@ struct UnloggedCalls {
 }
 
 impl UnloggedCalls {
-    fn admit(&mut self, name: &str) -> bool {
+    fn admit(&mut self, name: &str) -> u64 {
         let count = self.counts.entry(name.to_owned()).or_default();
         *count += 1;
-        *count <= LOGGED_NESTED_CALLS_PER_TOOL
+        *count
     }
+}
+
+struct CellWatch {
+    guard: Option<CellGuard>,
+    refused: usize,
+    streak: Option<(String, String, usize)>,
+    failed: BTreeMap<(String, String), usize>,
+    succeeded: usize,
+    noted: bool,
+    stall: Option<Instant>,
+}
+
+enum Watched {
+    Quiet,
+    Note(String),
+    Stop(String),
+}
+
+impl CellWatch {
+    const fn new(guard: Option<CellGuard>) -> Self {
+        Self {
+            guard,
+            refused: 0,
+            streak: None,
+            failed: BTreeMap::new(),
+            succeeded: 0,
+            noted: false,
+            stall: None,
+        }
+    }
+
+    fn settled(&mut self, call: &NestedToolCall, now: Instant) -> Watched {
+        let Some(guard) = self.guard else {
+            return Watched::Quiet;
+        };
+        let value = &call.structured_result;
+        if call.success && value.get("isError") != Some(&Value::Bool(true)) {
+            self.succeeded += 1;
+            self.streak = None;
+            if self.noted {
+                self.stall = now.checked_add(guard.failing_stall);
+            }
+            return Watched::Quiet;
+        }
+        let code = value
+            .get("code")
+            .and_then(Value::as_str)
+            .filter(|code| {
+                !code.is_empty()
+                    && code.len() <= 40
+                    && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+            })
+            .unwrap_or("failed");
+        *self
+            .failed
+            .entry((call.name.clone(), code.to_owned()))
+            .or_default() += 1;
+        if code == CALL_LIMIT {
+            self.refused += 1;
+            if self.refused >= guard.refused_before_stop {
+                return Watched::Stop(format!(
+                    "This cell called {} more than {} times and kept calling after {} calls were refused, so it was stopped. Batch the work into fewer calls or split it across cells.",
+                    call.name, guard.calls_per_tool, guard.refused_before_stop
+                ));
+            }
+        }
+        let retryable = value.get("retryable").and_then(Value::as_bool) == Some(true);
+        self.streak = match self.streak.take() {
+            _ if retryable => None,
+            Some((streak, _, n)) if streak == code => Some((streak, call.name.clone(), n + 1)),
+            _ => Some((code.to_owned(), call.name.clone(), 1)),
+        };
+        let Some((code, tool, streak)) = &self.streak else {
+            return Watched::Quiet;
+        };
+        if *streak < guard.failing_streak || self.noted {
+            return Watched::Quiet;
+        }
+        self.noted = true;
+        self.stall = now.checked_add(guard.failing_stall);
+        let failed = self
+            .failed
+            .iter()
+            .map(|((tool, code), count)| format!("{tool} {code} ×{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Watched::Note(format!(
+            "This cell is still running, but its latest {streak} nested calls all failed with `{code}` (the last one {tool}), and calling again won't fix that. Its failed calls so far: {failed}. {} succeeded. Its later calls will most likely fail the same way. End it with `wait` and `terminate: true`, read the error, and change course: don't start the same calls again. If it runs on for {} seconds without a call succeeding, it is stopped.",
+            self.succeeded,
+            guard.failing_stall.as_secs()
+        ))
+    }
+
+    fn stalled(&self) -> String {
+        let stall = self.guard.map_or(0, |guard| guard.failing_stall.as_secs());
+        format!(
+            "This cell ran {stall} seconds after its nested calls kept failing without one succeeding, so it was stopped."
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Nested {
+    Run,
+    Recover,
+    Refuse(u64),
 }
 
 impl Drop for UnloggedCalls {
@@ -380,6 +501,9 @@ enum CellTerminal {
     Diverged {
         message: String,
     },
+    Stopped {
+        message: String,
+    },
 }
 
 struct HostFailure {
@@ -403,7 +527,10 @@ impl CodeModeRuntime {
             preempt_consumed: Arc::new(AtomicU64::new(0)),
             prelude: None,
             journals: None,
-            nested_limit: usize::MAX,
+            limits: Limits {
+                nested: usize::MAX,
+                guard: None,
+            },
             catalog: Atom::new(None),
         }
     }
@@ -446,7 +573,11 @@ impl CodeModeRuntime {
     }
 
     pub const fn set_nested_call_limit(&mut self, limit: usize) {
-        self.nested_limit = limit;
+        self.limits.nested = limit;
+    }
+
+    pub const fn set_cell_guard(&mut self, guard: CellGuard) {
+        self.limits.guard = Some(guard);
     }
 
     #[must_use]
@@ -575,7 +706,7 @@ impl CodeModeRuntime {
             Arc::clone(&self.stored),
             Arc::clone(&self.host),
             self.prelude.clone(),
-            self.nested_limit,
+            self.limits,
             Some((record, Some(plan))),
         ));
         self.cells.update(|registry| {
@@ -832,7 +963,7 @@ impl CodeModeRuntime {
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
                 self.prelude.clone(),
-                self.nested_limit,
+                self.limits,
                 record.map(|record| (record, None)),
             ));
             self.cells.update(|registry| {
@@ -1294,7 +1425,7 @@ impl LiveCell {
         shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
         host: Arc<Slot<EmbeddedHost>>,
         prelude: Option<Arc<str>>,
-        nested_limit: usize,
+        limits: Limits,
         journaling: Option<(Arc<CellRecord>, Option<ReplayPlan>)>,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
@@ -1336,7 +1467,7 @@ impl LiveCell {
                 id,
                 source,
                 prelude,
-                nested_limit,
+                limits,
                 Arc::clone(&tools),
                 catalog,
                 context,
@@ -2034,7 +2165,7 @@ struct CellCalls<'a, 'b> {
     pending_receipts: &'b mut PendingCallReceipts,
     unlogged: &'b mut UnloggedCalls,
     deferred: &'b mut std::collections::VecDeque<(u64, String, Box<str>, bool)>,
-    limit: usize,
+    limits: Limits,
     updates: &'b mpsc::UnboundedSender<CellUpdate>,
     record: Option<&'b CellRecord>,
     journal: Option<Arc<CellRecord>>,
@@ -2045,7 +2176,7 @@ struct CellCalls<'a, 'b> {
 
 impl CellCalls<'_, '_> {
     fn dispatch(&mut self, id: u64, name: String, input: Value, host: bool) {
-        if self.pending_calls.len() >= self.limit {
+        if self.pending_calls.len() >= self.limits.nested {
             let text = input.to_string().into_boxed_str();
             if self.record.is_some() {
                 self.queue(id, name.clone(), input, host);
@@ -2057,7 +2188,7 @@ impl CellCalls<'_, '_> {
     }
 
     fn resume_deferred(&mut self) {
-        while self.pending_calls.len() < self.limit
+        while self.pending_calls.len() < self.limits.nested
             && let Some((id, name, text, host)) = self.deferred.pop_front()
         {
             let input = serde_json::from_str(&text).expect("a JSON value's text parses");
@@ -2091,7 +2222,13 @@ impl CellCalls<'_, '_> {
         }
         let started = Instant::now();
         let input = Arc::new(input);
-        let logged = self.unlogged.admit(&name);
+        let admitted = self.unlogged.admit(&name);
+        let logged = admitted <= LOGGED_NESTED_CALLS_PER_TOOL;
+        let how = match self.limits.guard {
+            _ if recovering => Nested::Recover,
+            Some(guard) if admitted > guard.calls_per_tool => Nested::Refuse(guard.calls_per_tool),
+            _ => Nested::Run,
+        };
         self.pending_receipts.calls.insert(
             id,
             PendingCall {
@@ -2124,7 +2261,7 @@ impl CellCalls<'_, '_> {
                 input,
                 self.context,
                 self.actor_started_at,
-                recovering,
+                how,
             ),
         )));
     }
@@ -2240,7 +2377,7 @@ impl EmbeddedHost {
         record: Option<Arc<CellRecord>>,
         mut plan: Option<ReplayPlan>,
         mut hold: Option<watch::Receiver<bool>>,
-        limit: usize,
+        limits: Limits,
     ) -> Result<CellTerminal, HostFailure> {
         let mut pending_calls: FuturesUnordered<CallFuture<'_>> = FuturesUnordered::new();
         let mut deferred = std::collections::VecDeque::new();
@@ -2253,6 +2390,7 @@ impl EmbeddedHost {
             calls: HashMap::new(),
             updates: updates.clone(),
         };
+        let mut watch = CellWatch::new(limits.guard);
         let mut event_count = 0_u64;
         let mut replaying = plan.is_some();
         let mut suppressed = plan.as_ref().map_or(0, |plan| plan.content_returned);
@@ -2293,7 +2431,7 @@ impl EmbeddedHost {
                                 pending_receipts: &mut pending_receipts,
                                 unlogged: &mut unlogged,
                                 deferred: &mut deferred,
-                                limit,
+                                limits,
                                 updates,
                                 record: Some(record),
                                 journal: journal.clone(),
@@ -2309,7 +2447,19 @@ impl EmbeddedHost {
                     let Some(completed) = completed else {
                         continue;
                     };
-
+                    match watch.settled(&completed.call, Instant::now()) {
+                        Watched::Note(text) if !replaying => {
+                            let _ = updates.send(CellUpdate::Notification {
+                                notification: CodeModeNotification::new(parent_call_id, text),
+                                delivered: false,
+                            });
+                            let _ = updates.send(CellUpdate::Yielded);
+                        }
+                        Watched::Stop(message) if !held && !replaying => {
+                            return Ok(CellTerminal::Stopped { message });
+                        }
+                        Watched::Quiet | Watched::Note(_) | Watched::Stop(_) => {}
+                    }
                     if self.send_completed_call(
                         cell_id,
                         completed,
@@ -2325,7 +2475,7 @@ impl EmbeddedHost {
                             pending_receipts: &mut pending_receipts,
                             unlogged: &mut unlogged,
                             deferred: &mut deferred,
-                            limit,
+                            limits,
                             updates,
                             record: record.as_deref(),
                             journal: journal.clone(),
@@ -2335,6 +2485,16 @@ impl EmbeddedHost {
                         };
                         calls.resume_deferred();
                     }
+                }
+                () = async {
+                    match watch.stall {
+                        Some(stall) => nanocode_platform::sleep(stall.saturating_duration_since(Instant::now())).await,
+                        None => std::future::pending().await,
+                    }
+                }, if watch.stall.is_some() && !held && !replaying => {
+                    return Ok(CellTerminal::Stopped {
+                        message: watch.stalled(),
+                    });
                 }
                 () = async {
                     match flushing.as_mut() {
@@ -2368,7 +2528,7 @@ impl EmbeddedHost {
                         pending_receipts: &mut pending_receipts,
                         unlogged: &mut unlogged,
                         deferred: &mut deferred,
-                        limit,
+                        limits,
                         updates,
                         record: record.as_deref(),
                         journal: journal.clone(),
@@ -2547,7 +2707,7 @@ async fn run_cell_actor(
     cell_id: u64,
     source: String,
     prelude: Option<Arc<str>>,
-    nested_limit: usize,
+    limits: Limits,
     tools: Arc<dyn CodeModeToolset>,
     catalog: Arc<CellTools>,
     context: OwnedToolContext,
@@ -2626,7 +2786,7 @@ async fn run_cell_actor(
             record.clone(),
             plan,
             hold,
-            nested_limit,
+            limits,
         )
         .await
     };
@@ -2649,9 +2809,12 @@ async fn run_cell_actor(
     let (status, otel_status) = match &terminal {
         Ok(CellTerminal::Completed { .. }) => ("completed", "OK"),
         Ok(CellTerminal::Terminated) => ("cancelled", "ERROR"),
-        Ok(CellTerminal::ScriptFailed { .. } | CellTerminal::Diverged { .. }) | Err(_) => {
-            ("failed", "ERROR")
-        }
+        Ok(
+            CellTerminal::ScriptFailed { .. }
+            | CellTerminal::Diverged { .. }
+            | CellTerminal::Stopped { .. },
+        )
+        | Err(_) => ("failed", "ERROR"),
     };
     tracing::Span::current().record("status", status);
     tracing::Span::current().record("otel.status_code", otel_status);
@@ -2665,7 +2828,9 @@ async fn run_cell_actor(
     if let Some(record) = &record
         && matches!(
             &terminal,
-            Ok(CellTerminal::Completed { .. } | CellTerminal::ScriptFailed { .. })
+            Ok(CellTerminal::Completed { .. }
+                | CellTerminal::ScriptFailed { .. }
+                | CellTerminal::Stopped { .. })
         )
     {
         record.update(|status| status.life = status.life.finished());
@@ -2700,6 +2865,9 @@ async fn run_cell_actor(
         }
         Ok(CellTerminal::Terminated) => {
             let _ = updates.send(CellUpdate::Terminated);
+        }
+        Ok(CellTerminal::Stopped { message }) => {
+            let _ = updates.send(CellUpdate::ScriptFailed { message });
         }
         Err(failure) => {
             let _ = updates.send(CellUpdate::HostFailed(failure.message));
@@ -2762,7 +2930,7 @@ async fn execute_nested_call(
     input: Arc<Value>,
     context: &OwnedToolContext,
     cell_started_at: Instant,
-    recovering: bool,
+    how: Nested,
 ) -> CompletedNestedCall {
     let started_at = Instant::now();
     let started_after_ns =
@@ -2781,23 +2949,35 @@ async fn execute_nested_call(
     .with_instruction_revision(context.instruction_revision())
     .with_host_context(context.host_context())
     .with_turn_id(context.turn_id());
-    let mut execution = if recovering {
-        let recovered = match tools.recover_nested(&name, Value::clone(&input), context) {
-            Some(recovered) => recovered.await,
-            None => None,
-        };
-        recovered.unwrap_or_else(|| {
-            ToolOutput::error(replay::UNKNOWN_OUTCOME)
-                .with_structured_result(replay::unknown_outcome())
-        })
-    } else if host {
-        tools
-            .execute_host_nested(&name, Value::clone(&input), context)
-            .await
-    } else {
-        tools
-            .execute_nested(&name, Value::clone(&input), context)
-            .await
+    let mut execution = match how {
+        Nested::Recover => {
+            let recovered = match tools.recover_nested(&name, Value::clone(&input), context) {
+                Some(recovered) => recovered.await,
+                None => None,
+            };
+            recovered.unwrap_or_else(|| {
+                ToolOutput::error(replay::UNKNOWN_OUTCOME)
+                    .with_structured_result(replay::unknown_outcome())
+            })
+        }
+        Nested::Refuse(cap) => {
+            let text = format!(
+                "This cell already called {name} {cap} times, so this call didn't run. Batch the work into fewer calls or split it across cells, or the cell is stopped."
+            );
+            ToolOutput::error(text.clone()).with_structured_result(serde_json::json!({
+                "isError": true, "code": CALL_LIMIT, "retryable": false, "error": text,
+            }))
+        }
+        Nested::Run if host => {
+            tools
+                .execute_host_nested(&name, Value::clone(&input), context)
+                .await
+        }
+        Nested::Run => {
+            tools
+                .execute_nested(&name, Value::clone(&input), context)
+                .await
+        }
     };
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let value = execution.take_structured_result();

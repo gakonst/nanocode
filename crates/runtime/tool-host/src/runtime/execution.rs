@@ -535,6 +535,9 @@ impl NativeToolRuntime {
         if let Some(limit) = tools.nested_call_limit {
             self.code_mode.set_nested_call_limit(limit);
         }
+        if let Some(guard) = tools.cell_guard {
+            self.code_mode.set_cell_guard(guard);
+        }
         registry.hand_calls = tools.hand_calls.clone().or_else(|| {
             tools
                 .code_mode_executors

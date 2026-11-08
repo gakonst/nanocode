@@ -1461,6 +1461,32 @@ impl Driver {
         }
     }
 
+    async fn same_input(
+        &mut self,
+        stored: &EncodedPayload,
+        input: &EncodedPayload,
+    ) -> Result<bool> {
+        if stored == input {
+            return Ok(true);
+        }
+        let Ok(given) = input.json() else {
+            return Ok(false);
+        };
+        let recorded = stored.load(&mut *self.store, &self.state_id).await?;
+        let same = serde_json::from_str::<serde_json::Value>(recorded.json()?)
+            .ok()
+            .zip(serde_json::from_str::<serde_json::Value>(given).ok())
+            .is_some_and(|(recorded, given)| recorded == given);
+        if same {
+            tracing::warn!(
+                stored = stored.key(),
+                given = input.key(),
+                "a durable input encodes the stored one differently; its JSON is the same"
+            );
+        }
+        Ok(same)
+    }
+
     async fn admit(
         &mut self,
         caller: &Caller,
@@ -1469,7 +1495,8 @@ impl Driver {
     ) -> Result<StoredAdmission> {
         self.abandon_stale(&operation_id).await?;
         if let Some(operation) = self.state.operation(&operation_id) {
-            if operation.input != input {
+            let stored = operation.input.clone();
+            if !self.same_input(&stored, &input).await? {
                 return Err(Error::OperationConflict { operation_id });
             }
             if self.claimed.contains_key(&operation_id) {
@@ -1545,15 +1572,15 @@ impl Driver {
             .state
             .first_pending_operation_where(|pending_id| !self.claimed.contains_key(pending_id))
         {
-            if operation.input != input {
+            let (recovered_operation_id, stored) = (pending_id.to_owned(), operation.input.clone());
+            if !self.same_input(&stored, &input).await? {
                 return Err(Error::OperationBlocked {
                     operation_id: candidate_operation_id,
-                    pending_id: pending_id.to_owned(),
+                    pending_id: recovered_operation_id,
                 });
             }
-            let recovered_operation_id = pending_id.to_owned();
             let admission = self
-                .admit(caller, recovered_operation_id.clone(), input)
+                .admit(caller, recovered_operation_id.clone(), stored)
                 .await?;
             return Ok((recovered_operation_id, admission));
         }
@@ -1745,8 +1772,9 @@ impl Driver {
             .state
             .operation(&operation_id)
             .and_then(|operation| operation.steps.get(&step_id))
+            .cloned()
         {
-            if step.kind != kind || step.input != input {
+            if step.kind != kind || !self.same_input(&step.input, &input).await? {
                 return Err(Error::StepChanged {
                     operation_id: operation_id.to_string(),
                     step_id: step_id.to_string(),

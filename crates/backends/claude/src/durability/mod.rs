@@ -833,8 +833,7 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                 )
                 .await;
             let begun = match committed {
-                Ok(begun) => Ok(begun),
-                Err(nanocode_durability::Error::InvalidState(message))
+                Err(error @ nanocode_durability::Error::StepChanged { .. })
                     if let Some(wire) = begin.wire =>
                 {
                     if !writes.is_empty() {
@@ -849,21 +848,17 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
                         .and_then(|operation| operation.steps.get(&begin.step_id))
                         .filter(|step| step.kind == begin.kind)
                     else {
-                        return Err(agent_error(nanocode_durability::Error::InvalidState(
-                            message,
-                        )));
+                        return Err(agent_error(error));
                     };
                     let Some(earlier) = self.earlier_input(wire, &begin.step_id, step).await?
                     else {
-                        return Err(agent_error(nanocode_durability::Error::InvalidState(
-                            message,
-                        )));
+                        return Err(agent_error(error));
                     };
                     self.owner
                         .begin_step(id, begin.step_id, begin.kind.clone(), &*earlier)
                         .await
                 }
-                Err(error) => Err(error),
+                begun => begun,
             };
             self.admitted(begun, &begin.kind).await.map(Some)
         })
@@ -1090,28 +1085,38 @@ impl ClaudeExecution {
                 return Ok(Some(earlier));
             }
         }
-        if !matches!(step.status, StepStatus::Completed(_)) {
-            return Ok(None);
-        }
         let recorded = self
             .owner
             .load_payload(step.input.clone())
             .await
             .map_err(agent_error)?;
         let recorded = recorded.json().map_err(agent_error)?;
-        if !wire.same_conversation(recorded) {
-            return Ok(None);
+        if matches!(step.status, StepStatus::Completed(_)) {
+            if !wire.same_conversation(recorded) {
+                return Ok(None);
+            }
+            tracing::warn!(
+                target: "nanocode_claude",
+                step_id,
+                "replaying a completed model step whose tools or system prompt changed since it was recorded"
+            );
+            tracing::event!(
+                target: "nc_metrics",
+                tracing::Level::INFO,
+                { monotonic_counter.nc.claude.steps_replayed_across_prefix = 1_u64 }
+            );
+        } else {
+            tracing::warn!(
+                target: "nanocode_claude",
+                step_id,
+                "sending again a model step that recorded no result although its request changed since it was recorded"
+            );
+            tracing::event!(
+                target: "nc_metrics",
+                tracing::Level::INFO,
+                { monotonic_counter.nc.claude.steps_rerun_across_request = 1_u64 }
+            );
         }
-        tracing::warn!(
-            target: "nanocode_claude",
-            step_id,
-            "replaying a completed model step whose tools or system prompt changed since it was recorded"
-        );
-        tracing::event!(
-            target: "nc_metrics",
-            tracing::Level::INFO,
-            { monotonic_counter.nc.claude.steps_replayed_across_prefix = 1_u64 }
-        );
         RawValue::from_string(recorded.to_owned())
             .map(Some)
             .map_err(|error| agent_error(nanocode_durability::Error::InvalidPayload(error)))

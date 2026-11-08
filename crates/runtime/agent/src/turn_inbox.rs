@@ -10,7 +10,7 @@ use std::{
 };
 
 use futures_util::future::{Either, select};
-use nanocode_subagents::{AgentUpdate, ScopedAgentUpdate};
+use nanocode_subagents::{AgentId, AgentUpdate, ScopedAgentUpdate};
 use nanocode_sync::{Atom, Owned};
 use nanocode_tool_host::embedded::HostFuture;
 use serde::{Deserialize, Serialize};
@@ -312,22 +312,98 @@ struct Shared<L: ?Sized> {
 enum Streamed {
     Assistant,
     ToolInput,
+    Reasoning,
+}
+
+type Scope = Option<(String, AgentId)>;
+
+enum Origin {
+    Agent {
+        timing: AgentEventTiming,
+        received_ns: u64,
+    },
+    Subagent {
+        detach: bool,
+        root_session_id: String,
+        id: AgentId,
+        parent: Option<AgentId>,
+    },
+}
+
+impl Origin {
+    fn of(event: SessionEvent) -> Result<(Self, AgentEvent), SessionEvent> {
+        match event {
+            SessionEvent::Agent {
+                event,
+                timing,
+                received_ns,
+            } => Ok((
+                Self::Agent {
+                    timing,
+                    received_ns,
+                },
+                event,
+            )),
+            SessionEvent::Subagent(ScopedAgentUpdate {
+                detach,
+                root_session_id,
+                update: AgentUpdate::Event { id, parent, event },
+            }) => Ok((
+                Self::Subagent {
+                    detach,
+                    root_session_id,
+                    id,
+                    parent,
+                },
+                event,
+            )),
+            event @ SessionEvent::Subagent(_) => Err(event),
+        }
+    }
+
+    fn event(&self, event: AgentEvent) -> SessionEvent {
+        match self {
+            Self::Agent {
+                timing,
+                received_ns,
+            } => SessionEvent::Agent {
+                event,
+                timing: *timing,
+                received_ns: *received_ns,
+            },
+            Self::Subagent {
+                detach,
+                root_session_id,
+                id,
+                parent,
+            } => SessionEvent::Subagent(ScopedAgentUpdate {
+                detach: *detach,
+                root_session_id: root_session_id.clone(),
+                update: AgentUpdate::Event {
+                    id: *id,
+                    parent: *parent,
+                    event,
+                },
+            }),
+        }
+    }
 }
 
 struct Stream {
+    scope: Scope,
     kind: Streamed,
     key: String,
+    origin: Origin,
     event: AgentEvent,
-    timing: AgentEventTiming,
-    received_ns: u64,
     text: String,
     offset: usize,
 }
 
 enum Role {
-    Delta(Streamed, String, String),
-    Final(Streamed, String),
-    Boundary { ends_run: bool },
+    Delta(Scope, Streamed, String, String),
+    Final(Scope, Streamed, String),
+    Settled(Scope),
+    Boundary { scope: Scope, ends_run: bool },
     Progress,
     Other,
 }
@@ -339,24 +415,42 @@ struct StreamFields {
     #[serde(default)]
     call_id: Option<String>,
     #[serde(default)]
+    model_call_index: Option<u64>,
+    #[serde(default)]
     text: Option<String>,
 }
 
 fn role(event: &SessionEvent) -> Role {
-    let SessionEvent::Agent { event, .. } = event else {
-        return Role::Other;
+    let (scope, event) = match event {
+        SessionEvent::Agent { event, .. } => (None, event),
+        SessionEvent::Subagent(ScopedAgentUpdate {
+            root_session_id,
+            update: AgentUpdate::Event { id, event, .. },
+            ..
+        }) => (Some((root_session_id.clone(), *id)), event),
+        SessionEvent::Subagent(_) => return Role::Other,
     };
     let streamed = match event.kind {
         AgentEventKind::AssistantDelta | AgentEventKind::AssistantMessage => Streamed::Assistant,
         AgentEventKind::ToolInputDelta | AgentEventKind::ToolCall => Streamed::ToolInput,
+        AgentEventKind::ReasoningSummaryDelta if scope.is_some() => Streamed::Reasoning,
         AgentEventKind::RunCompleted | AgentEventKind::RunFailed => {
-            return Role::Boundary { ends_run: true };
+            return Role::Boundary {
+                scope,
+                ends_run: true,
+            };
         }
         AgentEventKind::RunError
         | AgentEventKind::RunSteered
         | AgentEventKind::ModelCallFailed
         | AgentEventKind::ModelAttemptFailed
-        | AgentEventKind::ModelAttemptRetrying => return Role::Boundary { ends_run: false },
+        | AgentEventKind::ModelAttemptRetrying => {
+            return Role::Boundary {
+                scope,
+                ends_run: false,
+            };
+        }
+        AgentEventKind::ModelCallCompleted => return Role::Settled(scope),
         AgentEventKind::ModelCallStarted | AgentEventKind::ModelAttemptStarted => {
             return Role::Progress;
         }
@@ -366,16 +460,29 @@ fn role(event: &SessionEvent) -> Role {
     let key = match streamed {
         Streamed::Assistant => fields.item_id,
         Streamed::ToolInput => fields.call_id,
+        Streamed::Reasoning => fields.item_id.or_else(|| {
+            fields
+                .model_call_index
+                .map(|index| format!("model-call-{index}"))
+        }),
     };
     let Some(key) = key else {
         return Role::Other;
     };
     match (event.kind, fields.text) {
-        (AgentEventKind::AssistantDelta | AgentEventKind::ToolInputDelta, Some(text)) => {
-            Role::Delta(streamed, key, text)
-        }
-        (AgentEventKind::AssistantDelta | AgentEventKind::ToolInputDelta, None) => Role::Other,
-        _ => Role::Final(streamed, key),
+        (
+            AgentEventKind::AssistantDelta
+            | AgentEventKind::ToolInputDelta
+            | AgentEventKind::ReasoningSummaryDelta,
+            Some(text),
+        ) => Role::Delta(scope, streamed, key, text),
+        (
+            AgentEventKind::AssistantDelta
+            | AgentEventKind::ToolInputDelta
+            | AgentEventKind::ReasoningSummaryDelta,
+            None,
+        ) => Role::Other,
+        _ => Role::Final(scope, streamed, key),
     }
 }
 
@@ -400,41 +507,36 @@ fn rewritten(
 
 impl Stream {
     fn merged(&self) -> Result<SessionEvent, serde_json::Error> {
-        Ok(SessionEvent::Agent {
-            event: rewritten(&self.event, Some(&self.text), self.offset)?,
-            timing: self.timing,
-            received_ns: self.received_ns,
-        })
+        Ok(self
+            .origin
+            .event(rewritten(&self.event, Some(&self.text), self.offset)?))
     }
 }
 
 fn stream(
     streams: &mut Vec<Stream>,
+    scope: Scope,
     kind: Streamed,
     key: String,
     text: &str,
     event: SessionEvent,
 ) -> Result<SessionEvent, serde_json::Error> {
-    let SessionEvent::Agent {
-        event,
-        timing,
-        received_ns,
-    } = event
-    else {
-        return Ok(event);
+    let (origin, event) = match Origin::of(event) {
+        Ok(split) => split,
+        Err(event) => return Ok(event),
     };
     let index = match streams
         .iter()
-        .position(|stream| stream.kind == kind && stream.key == key)
+        .position(|stream| stream.scope == scope && stream.kind == kind && stream.key == key)
     {
         Some(index) => index,
         None => {
             streams.push(Stream {
+                scope,
                 kind,
                 key,
+                origin,
                 event: event.clone(),
-                timing,
-                received_ns,
                 text: String::new(),
                 offset: 0,
             });
@@ -444,28 +546,29 @@ fn stream(
     let entry = &mut streams[index];
     let offset = entry.offset + utf16_len(&entry.text);
     entry.text.push_str(text);
-    entry.event = event.clone();
-    entry.timing = timing;
-    entry.received_ns = received_ns;
-    Ok(SessionEvent::Agent {
-        event: rewritten(&event, None, offset)?,
-        timing,
-        received_ns,
-    })
+    let live = rewritten(&event, None, offset)?;
+    entry.event = event;
+    Ok(entry.origin.event(live))
 }
 
 fn flush(
     streams: &mut Vec<Stream>,
+    scope: &Scope,
+    kind: Option<Streamed>,
     ends_run: bool,
 ) -> Result<Vec<SessionEvent>, serde_json::Error> {
     let mut merged = Vec::new();
-    for entry in streams.iter_mut().filter(|entry| !entry.text.is_empty()) {
+    for entry in streams.iter_mut().filter(|entry| {
+        entry.scope == *scope
+            && kind.is_none_or(|kind| entry.kind == kind)
+            && !entry.text.is_empty()
+    }) {
         merged.push(entry.merged()?);
         entry.offset += utf16_len(&entry.text);
         entry.text.clear();
     }
     if ends_run {
-        streams.clear();
+        streams.retain(|entry| entry.scope != *scope);
     }
     Ok(merged)
 }
@@ -671,19 +774,34 @@ impl<L: EventLog + ?Sized> LogSink<L> {
         };
         for event in events {
             match role(&event) {
-                Role::Delta(kind, key, text) if deltas => {
+                Role::Delta(scope, kind, key, text) if deltas => {
                     push(
                         true,
-                        stream(streams, kind, key, &text, event).map_err(encode)?,
+                        stream(streams, scope, kind, key, &text, event).map_err(encode)?,
                     );
                 }
                 Role::Progress if progress => push(true, event),
-                Role::Final(kind, key) => {
-                    streams.retain(|entry| entry.kind != kind || entry.key != key);
+                Role::Final(scope, kind, key) => {
+                    for merged in
+                        flush(streams, &scope, Some(Streamed::Reasoning), false).map_err(encode)?
+                    {
+                        push(false, merged);
+                    }
+                    streams.retain(|entry| {
+                        entry.scope != scope || entry.kind != kind || entry.key != key
+                    });
                     push(false, event);
                 }
-                Role::Boundary { ends_run } => {
-                    for merged in flush(streams, ends_run).map_err(encode)? {
+                Role::Settled(scope) => {
+                    for merged in
+                        flush(streams, &scope, Some(Streamed::Reasoning), false).map_err(encode)?
+                    {
+                        push(false, merged);
+                    }
+                    push(false, event);
+                }
+                Role::Boundary { scope, ends_run } => {
+                    for merged in flush(streams, &scope, None, ends_run).map_err(encode)? {
                         push(false, merged);
                     }
                     push(false, event);

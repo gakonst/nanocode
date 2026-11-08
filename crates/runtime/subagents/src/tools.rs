@@ -32,6 +32,48 @@ use std::{
 use tokio::sync::oneshot;
 
 const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+macro_rules! recovers {
+    ($this:ident, $input:ident, $context:ident, $answer:expr) => {
+        #[cfg(not(target_family = "wasm"))]
+        fn recover<'life0, 'life1, 'async_trait>(
+            &'life0 $this,
+            $input: ToolInput,
+            $context: ToolContext<'life1>,
+        ) -> Option<
+            std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<ToolOutput>> + Send + 'async_trait>,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Some(Box::pin(async move { Some(answered($answer.await)) }))
+        }
+
+        #[cfg(target_family = "wasm")]
+        fn recover<'life0, 'life1, 'async_trait>(
+            &'life0 $this,
+            $input: ToolInput,
+            $context: ToolContext<'life1>,
+        ) -> Option<
+            std::pin::Pin<Box<dyn std::future::Future<Output = Option<ToolOutput>> + 'async_trait>>,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Some(Box::pin(async move { Some(answered($answer.await)) }))
+        }
+    };
+}
+
+fn answered(result: ToolResult) -> ToolOutput {
+    result.unwrap_or_else(|error| ToolOutput::error(error.to_string()))
+}
 const SPAWN_AGENT_TOOL: &str = "spawn_agent";
 const SUBMIT_RESULT_TOOL: &str = "submit_result";
 const SEND_AGENT_MESSAGE_TOOL: &str = "send_agent_message";
@@ -1283,6 +1325,8 @@ impl Tool for ListAgents {
         })
     }
 
+    recovers!(self, input, context, self.execute(input, context));
+
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let DirectoryTask {
             include_completed,
@@ -1367,7 +1411,15 @@ impl Tool for WaitAgent {
         })
     }
 
+    recovers!(self, input, context, self.wait(input, context, true));
+
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.wait(input, context, false).await
+    }
+}
+
+impl WaitAgent {
+    async fn wait(&self, input: ToolInput, context: ToolContext<'_>, resumed: bool) -> ToolResult {
         let WaitTask {
             agent_ids,
             timeout_ms,
@@ -1379,14 +1431,26 @@ impl Tool for WaitAgent {
         let duration = timeout_ms
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_WAIT_TIMEOUT);
-        let (agents, delivered, timed_out, receipt) = registry
-            .wait(
-                context.session_id(),
-                context.call_id(),
-                &agent_ids,
-                duration,
-            )
-            .await?;
+        let answered = if resumed {
+            registry
+                .rewait(context.session_id(), context.call_id(), &agent_ids)
+                .await?
+        } else {
+            None
+        };
+        let (agents, delivered, timed_out, receipt) = match answered {
+            Some(answered) => answered,
+            None => {
+                registry
+                    .wait(
+                        context.session_id(),
+                        context.call_id(),
+                        &agent_ids,
+                        duration,
+                    )
+                    .await?
+            }
+        };
         let output = json_output(&WaitReport {
             agents: agent_reports(agents, &delivered)?,
             timed_out,
@@ -1451,6 +1515,8 @@ impl Tool for ChangeAgentLifecycle {
             )
         })
     }
+
+    recovers!(self, input, context, self.execute(input, context));
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let TargetAgent { agent_id } = input.decode_json()?;
@@ -1533,6 +1599,44 @@ impl Tool for TurnAuthority {
         self.0
             .execute(input, context.with_host_context(host_context))
             .await
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn recover<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> Option<
+        std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ToolOutput>> + Send + 'async_trait>,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        let host_context = context.host_context().or(context.turn_id());
+        self.0
+            .recover(input, context.with_host_context(host_context))
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn recover<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Option<ToolOutput>> + 'async_trait>>,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        let host_context = context.host_context().or(context.turn_id());
+        self.0
+            .recover(input, context.with_host_context(host_context))
     }
 }
 

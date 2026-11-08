@@ -206,6 +206,8 @@ pub(super) struct ChildSession {
     journal_generation: u64,
 
     pub(super) conversation: bool,
+
+    pub(super) waited: Vec<durable::Waited>,
 }
 
 pub(super) struct ActiveTurn {
@@ -3600,11 +3602,12 @@ impl Registry {
         let registry = self.shared();
         let root = root_session_id.to_owned();
         let records_sessions = store.records_sessions();
-        let (report, restored_sessions) = self
+        let (report, restored_sessions, waited) = self
             .state
             .call(move |state| -> std::io::Result<_> {
                 let root_session_id = root.as_str();
                 let mut report = RestoreReport::default();
+                let mut waited = Vec::new();
                 if state
                     .scopes
                     .get(root_session_id)
@@ -3650,6 +3653,12 @@ impl Registry {
                         (None, None) => {}
                     }
                     restored_sessions.push(session.descriptor.session_id.clone());
+                    waited.extend(
+                        session
+                            .waited
+                            .iter()
+                            .map(|waited| ((waited.session.clone(), id), waited.mark)),
+                    );
                     state.insert_restored(root_session_id, session)?;
                     report.restored += 1;
                     if resume {
@@ -3664,7 +3673,7 @@ impl Registry {
                     .entry(root_session_id.to_owned())
                     .or_default()
                     .messages = messages;
-                Ok((report, restored_sessions))
+                Ok((report, restored_sessions, waited))
             })
             .await?;
         self.roots.update(|roots| {
@@ -3672,6 +3681,10 @@ impl Registry {
                 roots.insert(session_id.clone(), root_session_id.to_owned());
             }
         });
+        if !waited.is_empty() {
+            self.wait_reported
+                .update(|reported| reported.extend(waited.iter().cloned()));
+        }
 
         if !report.interrupted.is_empty() || !report.completed.is_empty() {
             self.save_scope(root_session_id).await.map_err(|error| {
@@ -4500,6 +4513,7 @@ impl Registry {
                         announce: false,
                         journal_generation: 0,
                         conversation: false,
+                        waited: Vec::new(),
                     },
                 )
             })
@@ -6500,6 +6514,8 @@ impl Registry {
             };
             if fresh {
                 self.forget_idle_wait(session_id);
+                self.record_waited(session_id, call_id, &terminal, &delivered)
+                    .await;
                 let receipt = if root == session_id {
                     let ids = terminal.iter().map(|(id, _)| *id).collect::<Vec<_>>();
                     self.observe_completions(&root, &ids, call_id).await
@@ -6565,6 +6581,108 @@ impl Registry {
                 return Ok((summaries, delivered, true, None));
             }
         }
+    }
+
+    async fn record_waited(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        terminal: &[(AgentId, u64)],
+        delivered: &HashSet<AgentId>,
+    ) {
+        let reported = terminal
+            .iter()
+            .filter(|(id, _)| !delivered.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        let session = session_id.to_owned();
+        let call = call_id.to_owned();
+        let root = self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return root;
+                };
+                for (id, mark) in reported {
+                    let Some(child) = scope.sessions.get_mut(&id) else {
+                        continue;
+                    };
+                    child.waited.retain(|waited| waited.session != session);
+                    child.waited.push(durable::Waited {
+                        session: session.clone(),
+                        call: call.clone(),
+                        mark,
+                    });
+                }
+                root
+            })
+            .await;
+        self.changed();
+        if self.store_for(&root).is_some()
+            && let Err(error) = self.persist_durably(&root).await
+        {
+            tracing::warn!(%error, session_id, call_id, "the results this wait delivers are not journaled; a restart waits afresh");
+        }
+    }
+
+    pub async fn rewait(
+        self: &Arc<Self>,
+        session_id: &str,
+        call_id: &str,
+        ids: &[AgentId],
+    ) -> std::io::Result<Option<AgentWait>> {
+        self.await_restored(session_id).await?;
+        let session = session_id.to_owned();
+        let call = call_id.to_owned();
+        let wanted = ids.to_vec();
+        let (snapshot, root, answered) = self
+            .state
+            .call(move |state| -> std::io::Result<_> {
+                let root = state.root_session_id(&session).to_owned();
+                let snapshot = state.wait_snapshot(&session, &wanted)?;
+                let answered = state.scopes.get(&root).map_or_else(Vec::new, |scope| {
+                    snapshot
+                        .iter()
+                        .filter(|(summary, revision)| {
+                            let mark = wait_mark(&summary.status, *revision);
+                            summary.status.is_wait_terminal()
+                                && scope.sessions.get(&summary.agent_id).is_some_and(|child| {
+                                    child.waited.iter().any(|waited| {
+                                        waited.session == session
+                                            && waited.call == call
+                                            && waited.mark == mark
+                                    })
+                                })
+                        })
+                        .map(|(summary, _)| summary.agent_id)
+                        .collect()
+                });
+                Ok((snapshot, root, answered))
+            })
+            .await?;
+        if answered.is_empty() {
+            return Ok(None);
+        }
+        let delivered = self.wait_reported.read(|reported| {
+            snapshot
+                .iter()
+                .filter(|(summary, revision)| {
+                    !answered.contains(&summary.agent_id)
+                        && summary.status.is_wait_terminal()
+                        && reported.get(&(session_id.to_owned(), summary.agent_id))
+                            == Some(&wait_mark(&summary.status, *revision))
+                })
+                .map(|(summary, _)| summary.agent_id)
+                .collect::<HashSet<_>>()
+        });
+        let summaries = snapshot.into_iter().map(|(summary, _)| summary).collect();
+        let receipt = if root == session_id {
+            self.observe_completions(&root, &answered, call_id).await
+        } else {
+            None
+        };
+        Ok(Some((summaries, delivered, false, receipt)))
     }
 
     fn forget_idle_wait(&self, session_id: &str) {
@@ -7127,6 +7245,7 @@ impl ChildSession {
             announce: true,
             journal_generation: 0,
             conversation: false,
+            waited: Vec::new(),
         }
     }
 

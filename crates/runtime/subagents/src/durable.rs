@@ -665,6 +665,8 @@ struct AgentRecord {
     cancelled_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     conversation: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    waited: Vec<Waited>,
 }
 
 fn agent_record(
@@ -708,6 +710,7 @@ fn agent_record(
         completion_parked: agent.completion_parked,
         cancelled_revision: agent.cancelled_revision,
         conversation: agent.conversation,
+        waited: agent.waited,
     })
 }
 
@@ -854,6 +857,7 @@ fn agent_from(
         completion_parked: record.completion_parked,
         cancelled_revision: record.cancelled_revision,
         conversation: record.conversation,
+        waited: record.waited,
     };
     agent.expand();
     Ok(agent)
@@ -1082,6 +1086,17 @@ pub(super) struct PersistedAgent {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) cancelled_revision: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) waited: Vec<Waited>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Waited {
+    pub(super) session: String,
+    pub(super) call: String,
+    pub(super) mark: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1619,6 +1634,7 @@ pub(super) fn persist_agent(
         completion_parked: session.completion.parked(),
         cancelled_revision: session.cancelled_revision,
         conversation: session.conversation,
+        waited: session.waited.clone(),
     }
 }
 
@@ -1793,6 +1809,7 @@ pub(super) fn restored_session(
     session.resume_attempts = resume_attempts;
     session.usage = usage;
     session.conversation = agent.conversation;
+    session.waited = agent.waited;
 
     let accepted_revision = accepted_revision.unwrap_or(agent.next_instruction_revision);
     session.settled_revision = if completed_by_acceptance {

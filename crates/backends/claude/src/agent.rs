@@ -33,6 +33,7 @@ pub use durable::{
 };
 use durable::{Cursor, Effect, Journal, Snapshot};
 use history::HistoryMessage;
+use nanocode_http::layer::retry;
 use nanocode_image::ImageHistory;
 use nanocode_platform::Instant;
 #[cfg(target_family = "wasm")]
@@ -5209,13 +5210,17 @@ impl State {
                 continue;
             }
 
-            let uncertain = accepted
-                || matches!(&error, ClaudeError::Transport(error) if !error.is_unsent())
-                || matches!(
-                    &error,
-                    ClaudeError::StreamError { .. } | ClaudeError::IncompleteStream
-                )
-                || matches!(&error, ClaudeError::Http { status, .. } if *status >= 500);
+            let patient = !accepted
+                && !context.disable_tools
+                && matches!(&error, ClaudeError::Http { status, .. } if retry::patient_status(*status));
+            let uncertain = !patient
+                && (accepted
+                    || matches!(&error, ClaudeError::Transport(error) if !error.is_unsent())
+                    || matches!(
+                        &error,
+                        ClaudeError::StreamError { .. } | ClaudeError::IncompleteStream
+                    )
+                    || matches!(&error, ClaudeError::Http { status, .. } if *status >= 500));
             let retry_after = match &error {
                 ClaudeError::Http { retry_after, .. } => *retry_after,
                 _ => None,
@@ -5223,7 +5228,11 @@ impl State {
             let jitter = 100
                 + (u64::from(index) * 31 + u64::from(attempt) * 17) % (RETRY_JITTER_PERCENT + 1);
             let backoff = Duration::from_millis(
-                (RETRY_BASE_MS * 2_u64.pow(attempt - 1)).min(RETRY_CAP_MS) * jitter / 100,
+                RETRY_BASE_MS
+                    .saturating_mul(2_u64.saturating_pow(attempt - 1))
+                    .min(RETRY_CAP_MS)
+                    * jitter
+                    / 100,
             );
             let delay = retry_after.map_or(backoff, |delay| delay.max(backoff));
             let throttled = error.is_throttled() && !context.disable_tools;
@@ -5233,12 +5242,15 @@ impl State {
                 max_attempts
             };
 
-            if attempt >= attempts
-                || !error.is_transient()
-                || (uncertain && recovery.is_some())
-                || delay > Duration::from_secs(60)
-                || (throttled && waited + delay > THROTTLED_WAIT)
-            {
+            let exhausted = if patient {
+                waited + delay > retry::PATIENCE
+            } else {
+                attempt >= attempts
+                    || delay > Duration::from_secs(60)
+                    || (throttled && waited + delay > THROTTLED_WAIT)
+            };
+
+            if exhausted || !error.is_transient() || (uncertain && recovery.is_some()) {
                 telemetry::fail_attempt(&attempt_span, &error, None, retry_after.is_some());
                 return Err(ResponseFailure {
                     error: NanocodeError::Response(nanocode_agent_core::BackendError(Box::new(

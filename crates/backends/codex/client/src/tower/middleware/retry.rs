@@ -173,23 +173,30 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
         if !checkpoint_missing && advice.is_none() {
             return None;
         }
-        if request.attempt >= request.max_attempts {
-            return None;
-        }
+        let patient = !checkpoint_missing
+            && failure
+                .responses_error()
+                .is_some_and(ResponsesError::is_patient);
+        let server_delay = advice
+            .and_then(|advice| advice.server_delay)
+            .map(crate::client::RetryAfter::remaining_delay);
+        let backoff = || {
+            retry_delay(
+                request.attempt,
+                request.call_index,
+                request.profile.thread_id(),
+            )
+        };
         let delay = if checkpoint_missing {
             Duration::ZERO
+        } else if patient {
+            server_delay.map_or_else(backoff, |delay| delay.max(backoff()))
         } else {
-            advice
-                .and_then(|advice| advice.server_delay)
-                .map(crate::client::RetryAfter::remaining_delay)
-                .unwrap_or_else(|| {
-                    retry_delay(
-                        request.attempt,
-                        request.call_index,
-                        request.profile.thread_id(),
-                    )
-                })
+            server_delay.unwrap_or_else(backoff)
         };
+        if !request.may_retry(patient, delay) {
+            return None;
+        }
         let error_class = if checkpoint_missing {
             "checkpoint_missing"
         } else {
@@ -237,7 +244,7 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
             server_requested_delay = advice.is_some_and(|advice| advice.server_delay.is_some()),
             "retrying Responses attempt"
         );
-        if !request.prepare_retry() {
+        if !request.prepare_retry(patient, delay) {
             return None;
         }
         let stats = Arc::clone(&request.observer.stats);
@@ -247,7 +254,7 @@ impl Policy<ResponsesAttempt, ResponsesServiceResponse, ResponsesServiceError>
             delay_runtime,
             thread_id,
             stats,
-            if checkpoint_missing {
+            if checkpoint_missing || patient {
                 None
             } else {
                 server_deadline

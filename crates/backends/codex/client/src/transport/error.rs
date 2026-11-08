@@ -221,6 +221,17 @@ impl ResponsesError {
         }
     }
 
+    pub(crate) fn is_patient(&self) -> bool {
+        match self {
+            Self::HttpRejected { status, .. } | Self::HandshakeRejected { status, .. } => {
+                retry::patient_status(*status)
+            }
+            Self::Api { event, .. } => retryable_api_error(event)
+                .is_some_and(|(class, _)| matches!(class, "api_rate_limit" | "api_overload")),
+            _ => false,
+        }
+    }
+
     #[must_use]
     pub fn class(&self) -> &'static str {
         match self {

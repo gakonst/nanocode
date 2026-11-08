@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use crate::client::{
@@ -15,6 +16,7 @@ use crate::client::{
     session::state::RequestHistory,
     tower::transport_policy::SessionTransport,
 };
+use nanocode_http::layer::retry;
 use nanocode_platform::Instant;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -171,6 +173,7 @@ pub struct ResponsesAttempt {
     pub(crate) logical_turn: u64,
     session_transport: Arc<SessionTransport>,
     pub(crate) model_call_started_at: Option<Instant>,
+    first_attempt_at: Instant,
     input_trace: Option<InputTrace>,
     pub(crate) origin: nanocode_http::layer::origin::Origin,
 }
@@ -224,6 +227,7 @@ impl ResponsesAttempt {
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
+            first_attempt_at: Instant::now(),
             input_trace: None,
             origin: nanocode_http::layer::origin::captured(),
         }
@@ -261,6 +265,7 @@ impl ResponsesAttempt {
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
+            first_attempt_at: Instant::now(),
             input_trace: None,
             origin: nanocode_http::layer::origin::captured(),
         }
@@ -299,6 +304,7 @@ impl ResponsesAttempt {
             logical_turn: 0,
             session_transport,
             model_call_started_at: None,
+            first_attempt_at: Instant::now(),
             input_trace: None,
             origin: nanocode_http::layer::origin::captured(),
         }
@@ -461,8 +467,13 @@ impl ResponsesAttempt {
         }
     }
 
-    pub(crate) fn prepare_retry(&mut self) -> bool {
-        if self.attempt >= self.max_attempts {
+    pub(crate) fn may_retry(&self, patient: bool, delay: Duration) -> bool {
+        self.attempt < self.max_attempts
+            || (patient && self.first_attempt_at.elapsed() + delay <= retry::PATIENCE)
+    }
+
+    pub(crate) fn prepare_retry(&mut self, patient: bool, delay: Duration) -> bool {
+        if !self.may_retry(patient, delay) {
             return false;
         }
         self.attempt += 1;

@@ -15,9 +15,16 @@ pub fn should_retry(headers: &HeaderMap) -> Option<bool> {
     }
 }
 
+pub const PATIENCE: Duration = Duration::from_secs(600);
+
 #[must_use]
 pub const fn retryable_status(status: u16) -> bool {
     matches!(status, 408 | 409 | 429 | 500..=599)
+}
+
+#[must_use]
+pub const fn patient_status(status: u16) -> bool {
+    matches!(status, 429 | 502 | 503 | 504 | 529)
 }
 
 #[must_use]

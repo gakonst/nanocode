@@ -2,18 +2,18 @@ use nanocode_durability_core::LockKey;
 use sqlx::{PgConnection, query_scalar};
 
 #[must_use]
-pub fn begin(prelude: &[&str], write_lock: i64, keys: &[LockKey]) -> String {
-    let mut statements = format!(
-        "BEGIN;{}SELECT pg_advisory_xact_lock_shared({write_lock});",
-        prelude.concat()
-    );
-    for &LockKey { class, id, shared } in keys {
+pub fn begin(setup: &[&str], write_lock: i64, keys: &[LockKey]) -> String {
+    let locks = keys.iter().map(|&LockKey { class, id, shared }| {
         let kind = if shared { "_shared" } else { "" };
-        statements.push_str(&format!(
-            "SELECT pg_advisory_xact_lock{kind}({class},{id});"
-        ));
-    }
-    statements
+        format!("pg_advisory_xact_lock{kind}({class},{id})")
+    });
+    let targets: Vec<String> = setup
+        .iter()
+        .map(|target| (*target).to_owned())
+        .chain([format!("pg_advisory_xact_lock_shared({write_lock})")])
+        .chain(locks)
+        .collect();
+    format!("BEGIN;SELECT {};", targets.join(","))
 }
 
 pub async fn held(

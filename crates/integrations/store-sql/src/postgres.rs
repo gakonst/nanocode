@@ -36,7 +36,7 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 const OPEN: &str = "BEGIN";
-const LOCKS: &str = "SELECT pg_advisory_xact_lock_shared($1::bigint), (SELECT count(*) FROM (
+const LOCKS: &str = "pg_advisory_xact_lock_shared($1::bigint), (SELECT count(*) FROM (
     SELECT CASE WHEN s THEN pg_advisory_xact_lock_shared(c,k)::text ELSE pg_advisory_xact_lock(c,k)::text END
     FROM unnest($2::int[],$3::int[],$4::bool[]) WITH ORDINALITY AS u(c,k,s,n) ORDER BY n) taken)";
 const CLOSE: &str = "COMMIT";
@@ -104,6 +104,7 @@ pub struct Locked {
 pub struct PostgresSql {
     dial: Dial,
     pipelined: Pipelined,
+    locks: String,
     lanes: Box<[Owned<Option<Lane>>]>,
     failed: Atom<Option<Instant>>,
     latest: AtomicUsize,
@@ -196,9 +197,14 @@ impl PostgresSql {
                 "sslcert and sslkey must be given together",
             ));
         }
+        let locks = match pipelined.setup {
+            "" => format!("SELECT {LOCKS}"),
+            setup => format!("SELECT {setup},{LOCKS}"),
+        };
         Ok(Self {
             dial: Dial { config, tls },
             pipelined,
+            locks,
             lanes: (0..size.max(1)).map(|_| Owned::new(None)).collect(),
             failed: Atom::new(None),
             latest: AtomicUsize::new(0),
@@ -409,7 +415,7 @@ impl PostgresSql {
         let (index, mut slot) = self.slot().await;
         let mut lane = self.lane(&mut slot).await?;
         let _lent = lent();
-        let bracket = [OPEN, pipelined.setup, LOCKS, pipelined.collected, CLOSE];
+        let bracket = [OPEN, self.locks.as_str(), pipelined.collected, CLOSE];
         let texts = bracket
             .into_iter()
             .chain(statements.iter().map(|(text, _)| *text));
@@ -432,10 +438,9 @@ impl PostgresSql {
         let ran = timeout(
             pipelined.deadline,
             try_join3(
-                try_join3(
+                try_join(
                     client.execute(&fixed[0], &[]),
-                    client.execute(&fixed[1], &[]),
-                    client.execute(&fixed[2], &[&write_lock, &classes, &ids, &shared]),
+                    client.execute(&fixed[1], &[&write_lock, &classes, &ids, &shared]),
                 ),
                 try_join_all(
                     prepared
@@ -444,8 +449,8 @@ impl PostgresSql {
                         .map(|(statement, (_, params))| client.query(statement, params)),
                 ),
                 try_join(
-                    client.query_one(&fixed[3], &[]),
-                    client.execute(&fixed[4], &[]),
+                    client.query_one(&fixed[2], &[]),
+                    client.execute(&fixed[3], &[]),
                 ),
             ),
         )

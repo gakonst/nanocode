@@ -2,6 +2,10 @@
 
 pub use nanocode_home::SessionEnvironment;
 
+#[cfg(unix)]
+mod bounded;
+#[cfg(unix)]
+pub use bounded::{Bounded, Input, bounded};
 mod foreground;
 pub use foreground::{ForegroundOutput, run_bash};
 #[cfg(unix)]

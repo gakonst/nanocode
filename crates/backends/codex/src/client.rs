@@ -310,20 +310,6 @@ impl OpenAiBuilder<StandardServiceFactory> {
         self.factory.set_http_client(client);
         self
     }
-
-    #[cfg(not(target_family = "wasm"))]
-    pub fn http_timeouts(
-        self,
-        connect_timeout: std::time::Duration,
-        idle_timeout: std::time::Duration,
-    ) -> Result<Self, reqwest::Error> {
-        nanocode_tls::install_default_rustls_crypto_provider();
-        let client = reqwest::Client::builder()
-            .connect_timeout(connect_timeout)
-            .read_timeout(idle_timeout)
-            .build()?;
-        Ok(self.http_client(client))
-    }
 }
 
 impl<F> OpenAiBuilder<F>

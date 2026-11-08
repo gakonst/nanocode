@@ -847,13 +847,6 @@ impl RemoteCatalog {
     }
 
     #[must_use]
-    pub fn moves(&self) -> bool {
-        self.capabilities
-            .iter()
-            .any(|capability| capability.name == MOVE_CAPABILITY)
-    }
-
-    #[must_use]
     pub fn publishes(&self, name: &str) -> bool {
         self.definitions
             .iter()

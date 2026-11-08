@@ -118,7 +118,7 @@ pub enum OperationStatus {
     Completed {
         checkpoint: EncodedPayload,
 
-        #[serde(with = "crate::payload::receipt")]
+        #[serde(with = "crate::payload::step")]
         output: EncodedPayload,
     },
 
@@ -205,7 +205,7 @@ pub struct OperationState {
 
     pub retired_steers: u32,
 
-    #[serde(with = "crate::payload::receipt")]
+    #[serde(with = "crate::payload::step")]
     pub input: EncodedPayload,
 
     pub status: OperationStatus,
@@ -230,14 +230,14 @@ impl OperationState {
     }
 
     fn stage_unless(&mut self, records: &mut Vec<StoreRecord>, known: &dyn Fn(&str) -> bool) {
-        self.input.stage_receipt_unless(records, known);
+        self.input.stage_step_unless(records, known);
         if let Some(value) = &mut self.continuation {
             value.stage_head_unless(records, known);
         }
         match &mut self.status {
             OperationStatus::Completed { checkpoint, output } => {
                 checkpoint.stage_unless(records, known);
-                output.stage_receipt_unless(records, known);
+                output.stage_step_unless(records, known);
             }
             OperationStatus::Failed { checkpoint, .. } => {
                 checkpoint.stage_unless(records, known);
@@ -411,7 +411,6 @@ pub struct JournalState {
     sealed: SealedReceipts,
     unloaded: u64,
     staged: Vec<StoreRecord>,
-    inline: crate::payload::Inline,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -459,32 +458,20 @@ impl JournalState {
         &mut self,
         known: &dyn Fn(&str) -> bool,
     ) -> Vec<crate::StoreRecord> {
-        crate::payload::inlining(self.inline, || {
-            let mut records: Vec<_> = self
-                .staged
-                .drain(..)
-                .filter(|record| !known(&record.key))
-                .collect();
-            for operation in self.operations.values_mut() {
-                operation.stage_unless(&mut records, known);
-            }
-            if let Some((_, value)) = &mut self.latest_checkpoint {
-                value.stage_unless(&mut records, known);
-            }
-            records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-            records.dedup_by(|a, b| a.key == b.key);
-            records
-        })
-    }
-
-    pub fn write_format(&mut self, format: u8) -> Result<()> {
-        if !(STATE_FORMAT..=RECEIPT_STATE_FORMAT).contains(&format) {
-            return Err(Error::InvalidState(format!(
-                "state format {format} is not one this build writes ({STATE_FORMAT} to {RECEIPT_STATE_FORMAT})"
-            )));
+        let mut records: Vec<_> = self
+            .staged
+            .drain(..)
+            .filter(|record| !known(&record.key))
+            .collect();
+        for operation in self.operations.values_mut() {
+            operation.stage_unless(&mut records, known);
         }
-        self.inline = crate::payload::Inline::for_format(format);
-        Ok(())
+        if let Some((_, value)) = &mut self.latest_checkpoint {
+            value.stage_unless(&mut records, known);
+        }
+        records.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        records.dedup_by(|a, b| a.key == b.key);
+        records
     }
 
     #[must_use]
@@ -571,10 +558,6 @@ impl JournalState {
     }
 
     pub fn seal_receipts(&mut self) -> Result<()> {
-        crate::payload::inlining(self.inline, || self.seal_inlined())
-    }
-
-    fn seal_inlined(&mut self) -> Result<()> {
         if self.unloaded != 0 {
             return Err(Error::InvalidState(
                 "receipts cannot be sealed before the sealed pages are loaded".to_owned(),
@@ -690,10 +673,10 @@ impl JournalState {
     }
 
     fn inlines_receipts(&self) -> bool {
-        (self.inline.receipts && !self.sealed.is_empty())
+        !self.sealed.is_empty()
             || self.operations.values().any(|operation| {
-                operation.input.is_receipt_inline()
-                    || matches!(&operation.status, OperationStatus::Completed { output, .. } if output.is_receipt_inline())
+                operation.input.is_step_inline()
+                    || matches!(&operation.status, OperationStatus::Completed { output, .. } if output.is_step_inline())
             })
     }
 
@@ -707,28 +690,24 @@ impl JournalState {
     }
 
     pub fn checkpoint_payload<R: serde::Serialize>(&self, session: Option<&R>) -> Result<String> {
-        crate::payload::inlining(self.inline, || {
-            serde_json::to_string(&RetainedCheckpointRef {
-                nanocode_durable_state: DurableCheckpointRef {
-                    format: if self.inlines_receipts() {
-                        RECEIPT_STATE_FORMAT
-                    } else if self.inlines_continuations() {
-                        HEAD_STATE_FORMAT
-                    } else if self.inlines_steps() {
-                        INLINE_STATE_FORMAT
-                    } else if self.sealed.is_empty() {
-                        STATE_FORMAT
-                    } else {
-                        SEALED_STATE_FORMAT
-                    },
-                    operations: &self.operations,
-                    latest_checkpoint: self.latest_checkpoint(),
-                    sealed: &self.sealed,
+        serde_json::to_string(&RetainedCheckpointRef {
+            nanocode_durable_state: DurableCheckpointRef {
+                format: if self.inlines_receipts() {
+                    RECEIPT_STATE_FORMAT
+                } else if self.inlines_continuations() {
+                    HEAD_STATE_FORMAT
+                } else if self.inlines_steps() {
+                    INLINE_STATE_FORMAT
+                } else {
+                    STATE_FORMAT
                 },
-                nanocode_session: session,
-            })
-            .map_err(Error::InvalidPayload)
+                operations: &self.operations,
+                latest_checkpoint: self.latest_checkpoint(),
+                sealed: &self.sealed,
+            },
+            nanocode_session: session,
         })
+        .map_err(Error::InvalidPayload)
     }
 
     pub fn retain_terminal_receipts(&mut self, limit: usize) -> bool {
@@ -829,7 +808,6 @@ impl JournalState {
             unloaded: sealed.count,
             sealed,
             staged: Vec::new(),
-            inline: crate::payload::Inline::ALL,
         };
         for (operation_id, operation) in &state.operations {
             if matches!(

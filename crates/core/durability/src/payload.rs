@@ -1,5 +1,4 @@
 use std::{
-    cell::Cell,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -11,77 +10,6 @@ use crate::{Error, Result};
 const INLINE_BYTES: usize = 16 * 1024;
 
 const STEP_INLINE_BYTES: usize = 1024;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Inline {
-    steps: bool,
-    heads: bool,
-    pub(crate) receipts: bool,
-}
-
-impl Inline {
-    pub(crate) const ALL: Self = Self {
-        steps: true,
-        heads: true,
-        receipts: true,
-    };
-
-    pub(crate) const fn for_format(format: u8) -> Self {
-        Self {
-            steps: format >= 6,
-            heads: format >= 7,
-            receipts: format >= 8,
-        }
-    }
-}
-
-impl Default for Inline {
-    fn default() -> Self {
-        Self::ALL
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Placement {
-    Step,
-    Head,
-    Receipt,
-}
-
-impl Placement {
-    const fn limit(self) -> usize {
-        match self {
-            Self::Step | Self::Receipt => STEP_INLINE_BYTES,
-            Self::Head => INLINE_BYTES,
-        }
-    }
-
-    fn allowed(self) -> bool {
-        let inline = INLINE.get();
-        match self {
-            Self::Step => inline.steps,
-            Self::Head => inline.heads,
-            Self::Receipt => inline.receipts,
-        }
-    }
-}
-
-thread_local! {
-    static INLINE: Cell<Inline> = const { Cell::new(Inline::ALL) };
-}
-
-struct Restore(Inline);
-
-impl Drop for Restore {
-    fn drop(&mut self) {
-        INLINE.set(self.0);
-    }
-}
-
-pub(crate) fn inlining<T>(inline: Inline, run: impl FnOnce() -> T) -> T {
-    let _restore = Restore(INLINE.replace(inline));
-    run()
-}
 
 const CHUNK_MIN: usize = 2 * 1024;
 const CHUNK_AVG: usize = 8 * 1024;
@@ -442,25 +370,18 @@ impl EncodedPayload {
         });
     }
 
-    fn inline_as(&self, placement: Placement) -> Option<&str> {
+    fn inline_within(&self, limit: usize) -> Option<&str> {
         self.content.as_deref().filter(|content| {
-            placement.allowed()
-                && content.len() < placement.limit()
-                && self.layout.is_none()
-                && self.key.starts_with(KEY_PREFIX)
+            content.len() < limit && self.layout.is_none() && self.key.starts_with(KEY_PREFIX)
         })
     }
 
     pub(crate) fn is_step_inline(&self) -> bool {
-        self.inline_as(Placement::Step).is_some()
+        self.inline_within(STEP_INLINE_BYTES).is_some()
     }
 
     pub(crate) fn is_head_inline(&self) -> bool {
-        self.inline_as(Placement::Head).is_some()
-    }
-
-    pub(crate) fn is_receipt_inline(&self) -> bool {
-        self.inline_as(Placement::Receipt).is_some()
+        self.inline_within(INLINE_BYTES).is_some()
     }
 
     pub(crate) fn stage_step_unless(
@@ -468,7 +389,7 @@ impl EncodedPayload {
         records: &mut Vec<crate::StoreRecord>,
         known: &dyn Fn(&str) -> bool,
     ) {
-        self.stage_inline_unless(Placement::Step, records, known);
+        self.stage_inline_unless(STEP_INLINE_BYTES, records, known);
     }
 
     pub(crate) fn stage_head_unless(
@@ -476,24 +397,16 @@ impl EncodedPayload {
         records: &mut Vec<crate::StoreRecord>,
         known: &dyn Fn(&str) -> bool,
     ) {
-        self.stage_inline_unless(Placement::Head, records, known);
-    }
-
-    pub(crate) fn stage_receipt_unless(
-        &mut self,
-        records: &mut Vec<crate::StoreRecord>,
-        known: &dyn Fn(&str) -> bool,
-    ) {
-        self.stage_inline_unless(Placement::Receipt, records, known);
+        self.stage_inline_unless(INLINE_BYTES, records, known);
     }
 
     fn stage_inline_unless(
         &mut self,
-        placement: Placement,
+        limit: usize,
         records: &mut Vec<crate::StoreRecord>,
         known: &dyn Fn(&str) -> bool,
     ) {
-        if self.inline_as(placement).is_none() {
+        if self.inline_within(limit).is_none() {
             self.stage_unless(records, known);
             return;
         }
@@ -1060,10 +973,10 @@ impl Eq for EncodedPayload {}
 
 fn serialize_within<S: serde::Serializer>(
     payload: &EncodedPayload,
-    placement: Placement,
+    limit: usize,
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
-    match payload.inline_as(placement) {
+    match payload.inline_within(limit) {
         Some(content) => serializer.collect_str(&format_args!("={content}")),
         None => serializer.serialize_str(&payload.key),
     }
@@ -1088,32 +1001,13 @@ fn deserialize_within<'de, D: serde::Deserializer<'de>>(
 pub(crate) mod step {
     use serde::{Deserializer, Serializer};
 
-    use super::{EncodedPayload, Placement, STEP_INLINE_BYTES};
+    use super::{EncodedPayload, STEP_INLINE_BYTES};
 
     pub fn serialize<S: Serializer>(
         payload: &EncodedPayload,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        super::serialize_within(payload, Placement::Step, serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<EncodedPayload, D::Error> {
-        super::deserialize_within(deserializer, STEP_INLINE_BYTES)
-    }
-}
-
-pub(crate) mod receipt {
-    use serde::{Deserializer, Serializer};
-
-    use super::{EncodedPayload, Placement, STEP_INLINE_BYTES};
-
-    pub fn serialize<S: Serializer>(
-        payload: &EncodedPayload,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        super::serialize_within(payload, Placement::Receipt, serializer)
+        super::serialize_within(payload, STEP_INLINE_BYTES, serializer)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(
@@ -1126,7 +1020,7 @@ pub(crate) mod receipt {
 pub(crate) mod head {
     use serde::{Deserialize, Deserializer, Serializer};
 
-    use super::{EncodedPayload, INLINE_BYTES, Placement};
+    use super::{EncodedPayload, INLINE_BYTES};
 
     #[allow(clippy::ref_option)]
     pub fn serialize<S: Serializer>(
@@ -1134,7 +1028,7 @@ pub(crate) mod head {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match payload {
-            Some(payload) => super::serialize_within(payload, Placement::Head, serializer),
+            Some(payload) => super::serialize_within(payload, INLINE_BYTES, serializer),
             None => serializer.serialize_none(),
         }
     }

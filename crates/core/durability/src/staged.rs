@@ -86,17 +86,6 @@ impl StagedWrites {
         self.0.set(BTreeMap::new());
     }
 
-    #[must_use]
-    pub fn changed_states(&self) -> Vec<String> {
-        self.0.read(|states| {
-            states
-                .iter()
-                .filter(|(_, staged)| staged.revision != staged.base_revision)
-                .map(|(state_id, _)| state_id.clone())
-                .collect()
-        })
-    }
-
     pub fn written(&self, mut each: impl FnMut(&str, Vec<(String, Arc<str>)>)) {
         let states = self.0.get();
         for (state_id, staged) in states

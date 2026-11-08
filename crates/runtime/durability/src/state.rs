@@ -87,10 +87,6 @@ impl DurableState {
         self.journal.stage_records_unless(known)
     }
 
-    pub(crate) fn write_format(&mut self, format: u8) -> Result<()> {
-        self.journal.write_format(format)
-    }
-
     pub(crate) fn checkpoint_payload(&self) -> Result<String> {
         self.journal.checkpoint_payload(self.session.as_ref())
     }

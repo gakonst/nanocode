@@ -169,7 +169,6 @@ pub struct SharedStore {
     supports_summaries: bool,
     pub(crate) terminal_receipt_limit: Option<usize>,
     pub(crate) logged_prompts: bool,
-    pub(crate) state_format: Option<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -215,7 +214,6 @@ impl SharedStore {
             supports_summaries,
             terminal_receipt_limit: None,
             logged_prompts: false,
-            state_format: None,
         })
     }
 }

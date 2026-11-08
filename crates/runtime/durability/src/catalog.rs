@@ -1473,7 +1473,7 @@ mod store {
     }
 
     fn is_auxiliary_state(id: &str) -> bool {
-        id.ends_with(":subagents") || id.ends_with(":process-routes")
+        id.ends_with(":subagents") || id.ends_with(":process-routes") || id.ends_with(":cells")
     }
 
     pub(crate) fn is_listed(state: &DurableState) -> bool {

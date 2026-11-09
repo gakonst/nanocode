@@ -2,10 +2,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use nanocode::{
     ClaudeClient, ClaudeModel, HarnessFamily, HarnessRequest, Model, ModelSelection, OpenAi,
+    SubagentControl,
     codex::{
         OpenAiAuth, OpenAiBuilder,
         transport::{ResponsesGateway, ResponsesTransport},
     },
+    subagents::SpawnGateway,
 };
 use nanocode_sync::{Atom, SingleFlight};
 use serde_json::Value;
@@ -598,6 +600,36 @@ impl Routes {
         Ok((model, index))
     }
 
+    pub(crate) fn offer(&self, subagents: &SubagentControl) {
+        if self.0.gateways.iter().all(|gateway| gateway.login) {
+            return;
+        }
+        let catalog = self.catalog();
+        subagents.update_spawn_policy(|policy| policy.gateways = Some(catalog.clone()));
+        let (routes, subagents) = (self.clone(), subagents.clone());
+        tokio::spawn(async move {
+            listed(routes.gateways()).await;
+            let catalog = routes.catalog();
+            subagents.update_spawn_policy(|policy| policy.gateways = Some(catalog.clone()));
+        });
+    }
+
+    fn catalog(&self) -> Vec<SpawnGateway> {
+        self.0
+            .gateways
+            .iter()
+            .map(|gateway| {
+                let (models, note) = gateway.models();
+                SpawnGateway {
+                    name: gateway.name.clone(),
+                    about: gateway.about.clone(),
+                    models,
+                    note,
+                }
+            })
+            .collect()
+    }
+
     fn route(&self, request: &HarnessRequest) -> Option<usize> {
         let session = request
             .durable_state
@@ -609,11 +641,17 @@ impl Routes {
         {
             return Some(index);
         }
-        let parent = request
-            .parent
-            .as_ref()
-            .and_then(|parent| self.of_session(parent.session_id()));
-        let index = self.resolve(&request.model, parent)?;
+        let hint = request
+            .options
+            .selected_gateway()
+            .and_then(|name| self.find(name))
+            .or_else(|| {
+                request
+                    .parent
+                    .as_ref()
+                    .and_then(|parent| self.of_session(parent.session_id()))
+            });
+        let index = self.resolve(&request.model, hint)?;
         if let Some(session) = session {
             self.0.sessions.update(|sessions| {
                 sessions.insert(session.clone(), index);

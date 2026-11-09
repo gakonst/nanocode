@@ -16,7 +16,7 @@ mod roster;
 mod routing;
 mod runtime;
 pub use authority::{AuthorityError, RootAgentAuthority};
-pub use policy::{SpawnPolicy, SpawnPolicyError};
+pub use policy::{SpawnGateway, SpawnPolicy, SpawnPolicyError};
 pub use roster::{SubagentNode, SubagentRoster};
 pub use routing::{SpawnDecision, SpawnRoute, SpawnRouter};
 mod task_tree;

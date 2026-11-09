@@ -322,6 +322,7 @@ pub struct SpawnOptions {
     #[doc(hidden)]
     pub thinking: Option<Thinking>,
     pub reasoning_mode: Option<crate::ReasoningMode>,
+    pub gateway: Option<String>,
     #[doc(hidden)]
     pub stateless_http: bool,
 }
@@ -335,8 +336,20 @@ impl SpawnOptions {
             harness_model: None,
             thinking: None,
             reasoning_mode: None,
+            gateway: None,
             stateless_http: false,
         }
+    }
+
+    #[must_use]
+    pub fn gateway(mut self, gateway: impl Into<String>) -> Self {
+        self.gateway = Some(gateway.into());
+        self
+    }
+
+    #[must_use]
+    pub fn selected_gateway(&self) -> Option<&str> {
+        self.gateway.as_deref()
     }
 
     #[must_use]

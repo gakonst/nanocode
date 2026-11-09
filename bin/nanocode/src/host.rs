@@ -408,9 +408,13 @@ impl Host {
             }
             _ => return Err(format!("unsupported model {model}").into()),
         };
+        let runtime = builder?;
+        if let Some(subagents) = runtime.subagents() {
+            config.routes.offer(subagents);
+        }
         Ok(Self {
             config,
-            runtime: builder?,
+            runtime,
             hand,
         })
     }

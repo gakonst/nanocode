@@ -255,7 +255,7 @@ pub struct GatewayArgs {
         long,
         value_enum,
         env = "NANOCODE_GATEWAY",
-        help = "Gateway to prefer for the models it serves. Every gateway is offered at once and /model groups the models by gateway: your ChatGPT and Claude logins, Tempo's proxies, the Tempo gateway and Boundless (paid from the Tempo wallet), and OpenRouter, Vercel and Cloudflare when their keys are in the environment (read from there, never saved); a subagent runs on its parent's gateway when it serves the subagent's model"
+        help = "Gateway to prefer for the models it serves. Every gateway is offered at once and /model groups the models by gateway: your ChatGPT and Claude logins, Tempo's proxies, the Tempo gateway and Boundless (paid from the Tempo wallet), and OpenRouter, Vercel and Cloudflare when their keys are in the environment (read from there, never saved); agents see every gateway's models (list_models) and can run a subagent on any of them (spawn_agent's gateway), paid as that gateway charges"
     )]
     pub gateway: Option<GatewayArg>,
 

@@ -366,7 +366,9 @@ impl AgentFactory for RoutedFactory {
                 .tracked_one(async move {
                     parent.ensure_available().await?;
                     options.validate_harness()?;
-                    if resolve_family(&parent, &options) == parent.harness_family() {
+                    if options.selected_gateway().is_none()
+                        && resolve_family(&parent, &options) == parent.harness_family()
+                    {
                         return parent
                             .spawn_native_with_host_context(options, host_context)
                             .await;

@@ -15,6 +15,8 @@ const HEAD_STATE_FORMAT: u8 = 7;
 
 const RECEIPT_STATE_FORMAT: u8 = 8;
 
+const STEER_STATE_FORMAT: u8 = 9;
+
 const RECEIPT_PAGE: usize = 16;
 
 const RECEIPT_LEAF: usize = 1;
@@ -214,12 +216,157 @@ pub struct OperationState {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steers: Vec<SteerState>,
+
+    #[serde(default, skip_serializing_if = "SealedSteers::is_empty")]
+    steered: SealedSteers,
     accepted_order: u64,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct SealedSteers {
+    count: u32,
+    levels: Vec<Vec<EncodedPayload>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    withdrawn: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bound: Vec<(u32, u32)>,
+    #[serde(skip)]
+    loaded: bool,
+}
+
+impl SealedSteers {
+    const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct SealedSteer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    input: EncodedPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_key: Option<String>,
+    accepted_after_model_call_index: u32,
 }
 
 impl OperationState {
     pub const fn accepted_order(&self) -> u64 {
         self.accepted_order
+    }
+
+    #[must_use]
+    pub const fn steers_loaded(&self) -> bool {
+        self.steered.count == 0 || self.steered.loaded
+    }
+
+    fn seals_steers(&self) -> bool {
+        self.steered.count > 0
+            || (self.retired_steers == 0
+                && self.steers.is_empty()
+                && self.steer_receipts.is_empty())
+    }
+
+    fn wire(&self) -> std::borrow::Cow<'_, Self> {
+        if self.steered.count == 0 {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut bound = Vec::<(u32, u32)>::new();
+        for (index, steer) in (self.retired_steers + 1..).zip(&self.steers) {
+            let Some(call) = steer.model_call_index else {
+                break;
+            };
+            match bound.last_mut() {
+                Some((through, last)) if *last == call => *through = index,
+                _ => bound.push((index, call)),
+            }
+        }
+        std::borrow::Cow::Owned(Self {
+            steer_receipts: BTreeMap::new(),
+            continuation: self.continuation.clone(),
+            retired_model_calls: self.retired_model_calls,
+            retired_steers: self.retired_steers,
+            input: self.input.clone(),
+            status: self.status.clone(),
+            steps: self.steps.clone(),
+            steers: Vec::new(),
+            steered: SealedSteers {
+                bound: if self.steered.loaded {
+                    bound
+                } else {
+                    self.steered.bound.clone()
+                },
+                ..self.steered.clone()
+            },
+            accepted_order: self.accepted_order,
+        })
+    }
+
+    fn absorb_steers(&mut self, operation_id: &str, slots: &[EncodedPayload]) -> Result<()> {
+        if self.steered.loaded {
+            return Ok(());
+        }
+        if slots.len() != self.steered.count as usize
+            || !self.steers.is_empty()
+            || !self.steer_receipts.is_empty()
+        {
+            return Err(Error::InvalidState(format!(
+                "operation `{operation_id}` seals {} steers and its records hold {}",
+                self.steered.count,
+                slots.len()
+            )));
+        }
+        let bound = std::mem::take(&mut self.steered.bound);
+        let mut index = 0_u32;
+        for (position, slot) in (0_u32..).zip(slots) {
+            let SealedSteer {
+                message_id,
+                input,
+                input_key,
+                accepted_after_model_call_index,
+            } = slot.decode()?;
+            let order = &self.steered.withdrawn;
+            let withdrawal = order.iter().position(|slot| *slot == position);
+            let accepted_at = match withdrawal {
+                None => {
+                    index += 1;
+                    index
+                }
+                Some(withdrawal) => {
+                    let later = order[withdrawal..]
+                        .iter()
+                        .filter(|slot| **slot < position)
+                        .count();
+                    index + 1 + u32::try_from(later).unwrap_or(u32::MAX)
+                }
+            };
+            let withdrawn = withdrawal.is_some();
+            if let Some(id) = &message_id {
+                self.steer_receipts.insert(
+                    id.clone(),
+                    IdentifiedSteerReceipt {
+                        input_key: input_key.unwrap_or_else(|| input.key().to_owned()),
+                        index: accepted_at,
+                        withdrawn,
+                    },
+                );
+            }
+            if !withdrawn && index > self.retired_steers {
+                self.steers.push(SteerState {
+                    message_id,
+                    input,
+                    accepted_after_model_call_index,
+                    model_call_index: bound
+                        .iter()
+                        .find(|(through, _)| index <= *through)
+                        .map(|(_, call)| *call),
+                });
+            }
+        }
+        self.steered.loaded = true;
+        Ok(())
     }
 
     pub fn cancellation_requires_checkpoint(&self) -> bool {
@@ -256,6 +403,14 @@ impl OperationState {
         for steer in &mut self.steers {
             steer.input.stage_unless(records, known);
         }
+    }
+
+    fn settle(&mut self, status: OperationStatus) {
+        if self.continuation.take().is_some() {
+            self.retire_steps();
+        }
+        self.status = status;
+        self.steered = SealedSteers::default();
     }
 
     fn retire_steps(&mut self) {
@@ -433,10 +588,43 @@ pub struct RetainedCheckpoint<R> {
     pub nanocode_session: Option<R>,
 }
 
+struct WireOperations<'a>(&'a BTreeMap<String, OperationState>);
+
+impl serde::Serialize for WireOperations<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.iter().map(|(id, operation)| (id, operation.wire())))
+    }
+}
+
+fn seal_page(
+    levels: &mut Vec<Vec<EncodedPayload>>,
+    staged: &mut Vec<StoreRecord>,
+    mut page: EncodedPayload,
+) -> Result<()> {
+    let mut level = 0;
+    loop {
+        page.stage(staged);
+        if levels.len() == level {
+            levels.push(Vec::new());
+        }
+        let entries = &mut levels[level];
+        entries.push(page.reference());
+        if entries.len() < RECEIPT_PAGE {
+            return Ok(());
+        }
+        let pages = std::mem::take(entries);
+        page = EncodedPayload::encode(&NodePage { pages: &pages })?;
+        level += 1;
+    }
+}
+
 #[derive(serde::Serialize)]
 struct DurableCheckpointRef<'a> {
     format: u8,
-    operations: &'a BTreeMap<String, OperationState>,
+    operations: WireOperations<'a>,
     latest_checkpoint: Option<&'a EncodedPayload>,
     #[serde(skip_serializing_if = "SealedReceipts::is_empty")]
     sealed: &'a SealedReceipts,
@@ -606,22 +794,46 @@ impl JournalState {
         Ok(())
     }
 
-    fn push_receipt_page(&mut self, mut page: EncodedPayload) -> Result<()> {
-        let mut level = 0;
-        loop {
-            page.stage(&mut self.staged);
-            if self.sealed.levels.len() == level {
-                self.sealed.levels.push(Vec::new());
+    fn push_receipt_page(&mut self, page: EncodedPayload) -> Result<()> {
+        seal_page(&mut self.sealed.levels, &mut self.staged, page)
+    }
+
+    #[must_use]
+    pub fn steers_loaded(&self) -> bool {
+        self.operations.values().all(OperationState::steers_loaded)
+    }
+
+    #[must_use]
+    pub fn steer_pages(&self) -> Vec<(String, Vec<Vec<EncodedPayload>>)> {
+        self.operations
+            .iter()
+            .filter(|(_, operation)| !operation.steers_loaded())
+            .map(|(id, operation)| (id.clone(), operation.steered.levels.clone()))
+            .collect()
+    }
+
+    pub fn steer_page_children(pages: &[EncodedPayload]) -> Result<Vec<EncodedPayload>> {
+        let mut children = Vec::new();
+        for page in pages {
+            let ReceiptPage { operations, pages } = page.decode()?;
+            if !operations.is_empty() || pages.is_empty() {
+                return Err(Error::InvalidState(format!(
+                    "sealed steer page {} must hold pages",
+                    page.key()
+                )));
             }
-            let entries = &mut self.sealed.levels[level];
-            entries.push(page.reference());
-            if entries.len() < RECEIPT_PAGE {
-                return Ok(());
-            }
-            let pages = std::mem::take(entries);
-            page = EncodedPayload::encode(&NodePage { pages: &pages })?;
-            level += 1;
+            children.extend(pages);
         }
+        Ok(children)
+    }
+
+    pub fn absorb_steers(&mut self, operation_id: &str, slots: &[EncodedPayload]) -> Result<()> {
+        let revision = self.revision;
+        let operation = self.operations.get_mut(operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
+        })?;
+        operation.absorb_steers(operation_id, slots)?;
+        validate_operation(operation_id, operation, revision)
     }
 
     #[must_use]
@@ -680,6 +892,12 @@ impl JournalState {
             })
     }
 
+    fn seals_steers(&self) -> bool {
+        self.operations
+            .values()
+            .any(|operation| !operation.steered.is_empty())
+    }
+
     fn inlines_steps(&self) -> bool {
         self.operations.values().any(|operation| {
             operation.steps.values().any(|step| {
@@ -692,7 +910,9 @@ impl JournalState {
     pub fn checkpoint_payload<R: serde::Serialize>(&self, session: Option<&R>) -> Result<String> {
         serde_json::to_string(&RetainedCheckpointRef {
             nanocode_durable_state: DurableCheckpointRef {
-                format: if self.inlines_receipts() {
+                format: if self.seals_steers() {
+                    STEER_STATE_FORMAT
+                } else if self.inlines_receipts() {
                     RECEIPT_STATE_FORMAT
                 } else if self.inlines_continuations() {
                     HEAD_STATE_FORMAT
@@ -701,7 +921,7 @@ impl JournalState {
                 } else {
                     STATE_FORMAT
                 },
-                operations: &self.operations,
+                operations: WireOperations(&self.operations),
                 latest_checkpoint: self.latest_checkpoint(),
                 sealed: &self.sealed,
             },
@@ -759,7 +979,8 @@ impl JournalState {
             || checkpoint.format == SEALED_STATE_FORMAT
             || checkpoint.format == INLINE_STATE_FORMAT
             || checkpoint.format == HEAD_STATE_FORMAT
-            || checkpoint.format == RECEIPT_STATE_FORMAT)
+            || checkpoint.format == RECEIPT_STATE_FORMAT
+            || checkpoint.format == STEER_STATE_FORMAT)
         {
             return Err(Error::InvalidState(format!(
                 "unsupported state format {}",
@@ -1156,6 +1377,7 @@ impl JournalState {
                         status: OperationStatus::Pending,
                         steps: BTreeMap::new(),
                         steers: Vec::new(),
+                        steered: SealedSteers::default(),
                         accepted_order: revision,
                     },
                 );
@@ -1206,7 +1428,24 @@ impl JournalState {
                 input_key,
                 message_id,
             } => {
+                let mut staged = Vec::new();
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if operation.seals_steers() {
+                    let slot = EncodedPayload::encode(&SealedSteer {
+                        message_id: message_id.clone(),
+                        input: input.reference(),
+                        input_key: input_key.clone(),
+                        accepted_after_model_call_index,
+                    })?;
+                    seal_page(&mut operation.steered.levels, &mut staged, slot)?;
+                    operation.steered.count =
+                        operation.steered.count.checked_add(1).ok_or_else(|| {
+                            Error::InvalidState(format!(
+                                "operation `{operation_id}` exceeded the steer counter range"
+                            ))
+                        })?;
+                    operation.steered.loaded = true;
+                }
                 if let Some(id) = &message_id {
                     operation.steer_receipts.insert(
                         id.clone(),
@@ -1223,6 +1462,7 @@ impl JournalState {
                     accepted_after_model_call_index,
                     model_call_index: None,
                 });
+                self.staged.extend(staged);
             }
             Transition::SteerBound {
                 operation_id,
@@ -1240,6 +1480,12 @@ impl JournalState {
             }
             Transition::SteerWithdrawn { operation_id, .. } => {
                 let operation = self.pending_operation_mut(&operation_id)?;
+                if let Some(latest) = (0..operation.steered.count)
+                    .rev()
+                    .find(|position| !operation.steered.withdrawn.contains(position))
+                {
+                    operation.steered.withdrawn.push(latest);
+                }
                 if let Some(steer) = operation.steers.pop()
                     && let Some(id) = steer.message_id
                     && let Some(receipt) = operation.steer_receipts.get_mut(&id)
@@ -1252,14 +1498,11 @@ impl JournalState {
                 checkpoint,
                 output,
             } => {
-                let operation = self.pending_operation_mut(&operation_id)?;
-                if operation.continuation.take().is_some() {
-                    operation.retire_steps();
-                }
-                operation.status = OperationStatus::Completed {
-                    checkpoint: checkpoint.clone(),
-                    output,
-                };
+                self.pending_operation_mut(&operation_id)?
+                    .settle(OperationStatus::Completed {
+                        checkpoint: checkpoint.clone(),
+                        output,
+                    });
                 self.latest_checkpoint = Some((revision, checkpoint));
             }
             Transition::OperationFailed {
@@ -1267,27 +1510,21 @@ impl JournalState {
                 checkpoint,
                 error,
             } => {
-                let operation = self.pending_operation_mut(&operation_id)?;
-                if operation.continuation.take().is_some() {
-                    operation.retire_steps();
-                }
-                operation.status = OperationStatus::Failed {
-                    checkpoint: checkpoint.clone(),
-                    error,
-                };
+                self.pending_operation_mut(&operation_id)?
+                    .settle(OperationStatus::Failed {
+                        checkpoint: checkpoint.clone(),
+                        error,
+                    });
                 self.latest_checkpoint = Some((revision, checkpoint));
             }
             Transition::OperationCancelled {
                 operation_id,
                 checkpoint,
             } => {
-                let operation = self.pending_operation_mut(&operation_id)?;
-                if operation.continuation.take().is_some() {
-                    operation.retire_steps();
-                }
-                operation.status = OperationStatus::Cancelled {
-                    checkpoint: checkpoint.clone(),
-                };
+                self.pending_operation_mut(&operation_id)?
+                    .settle(OperationStatus::Cancelled {
+                        checkpoint: checkpoint.clone(),
+                    });
                 if let Some(checkpoint) = checkpoint {
                     self.latest_checkpoint = Some((revision, checkpoint));
                 }
@@ -1313,6 +1550,7 @@ impl JournalState {
                 "terminal operation `{operation_id}` was changed"
             )));
         }
+        ensure_steers_loaded(operation_id, operation)?;
         Ok(operation)
     }
 
@@ -1325,6 +1563,7 @@ impl JournalState {
                 "terminal operation `{operation_id}` was changed"
             )));
         }
+        ensure_steers_loaded(operation_id, operation)?;
         Ok(operation)
     }
 
@@ -1343,6 +1582,15 @@ impl JournalState {
         }
         Ok(())
     }
+}
+
+fn ensure_steers_loaded(operation_id: &str, operation: &OperationState) -> Result<()> {
+    if operation.steers_loaded() {
+        return Ok(());
+    }
+    Err(Error::InvalidState(format!(
+        "operation `{operation_id}` was changed before its sealed steers were loaded"
+    )))
 }
 
 fn sort_accepted(operations: &mut [(&str, &OperationState)]) {
@@ -1377,6 +1625,21 @@ fn validate_operation(operation_id: &str, operation: &OperationState, revision: 
                 "step `{step_id}` in operation `{operation_id}` has no committed start"
             )));
         }
+    }
+    let sealed = &operation.steered;
+    if !sealed.is_empty()
+        && (operation.status.is_terminal()
+            || sealed.levels.iter().all(Vec::is_empty)
+            || sealed
+                .withdrawn
+                .iter()
+                .any(|position| *position >= sealed.count)
+            || (!sealed.loaded
+                && !(operation.steers.is_empty() && operation.steer_receipts.is_empty())))
+    {
+        return Err(Error::InvalidState(format!(
+            "operation `{operation_id}` has invalid sealed steers"
+        )));
     }
     let mut previous_model_call_index = None;
     let mut saw_unbound_steer = false;

@@ -111,6 +111,17 @@ impl DurableState {
             let loaded = EncodedPayload::load_many_noting(&pages, store, state_id, read).await?;
             pages = self.journal.absorb_receipt_pages(loaded)?;
         }
+        for (operation_id, mut levels) in self.journal.steer_pages() {
+            let mut pages = Vec::new();
+            while let Some(level) = levels.pop() {
+                let loaded =
+                    EncodedPayload::load_many_noting(&pages, store, state_id, read).await?;
+                pages = JournalState::steer_page_children(&loaded)?;
+                pages.extend(level);
+            }
+            let slots = EncodedPayload::load_many_noting(&pages, store, state_id, read).await?;
+            self.journal.absorb_steers(&operation_id, &slots)?;
+        }
         Ok(())
     }
 
@@ -123,6 +134,16 @@ impl DurableState {
         while !pages.is_empty() {
             let loaded = EncodedPayload::read_many(&pages, reader, state_id).await?;
             pages = self.journal.absorb_receipt_pages(loaded)?;
+        }
+        for (operation_id, mut levels) in self.journal.steer_pages() {
+            let mut pages = Vec::new();
+            while let Some(level) = levels.pop() {
+                let loaded = EncodedPayload::read_many(&pages, reader, state_id).await?;
+                pages = JournalState::steer_page_children(&loaded)?;
+                pages.extend(level);
+            }
+            let slots = EncodedPayload::read_many(&pages, reader, state_id).await?;
+            self.journal.absorb_steers(&operation_id, &slots)?;
         }
         Ok(())
     }

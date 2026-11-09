@@ -504,13 +504,11 @@ impl Host {
             })
         });
         let described = std::sync::Arc::clone(&hand);
-        let claude = ClaudeHarness::new(
-            config
-                .clients
-                .claude
-                .as_ref()
-                .map_or_else(ClaudeClient::default, |claude| claude()),
-        )
+        let claude = ClaudeHarness::new(match &config.clients.claude {
+            Some(claude) => claude(),
+            None => nanocode::claude::ClaudeWorkloadIdentity::from_env()?
+                .map_or_else(ClaudeClient::default, ClaudeClient::workload_identity),
+        })
         .headless(config.headless)
         .configure(move |builder| {
             Ok(match &*described.get() {

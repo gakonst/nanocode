@@ -41,9 +41,15 @@ const MAX_BUSY_DELAY: Duration = Duration::from_secs(10);
 
 struct HostSearch {
     endpoint: String,
-    model_prefix: Option<&'static str>,
+    auth: Auth,
     fallback_model: Model,
     transport: Arc<dyn HostTransport>,
+}
+
+#[derive(Clone, Copy)]
+enum Auth {
+    ApiKey { model_prefix: Option<&'static str> },
+    ChatGpt,
 }
 
 #[must_use]
@@ -62,13 +68,35 @@ pub fn web_search_tool_with_model(
     fallback_model: Model,
     transport: Arc<dyn HostTransport>,
 ) -> FunctionTool {
+    search_tool(
+        api_base_url,
+        Auth::ApiKey { model_prefix },
+        fallback_model,
+        transport,
+    )
+}
+
+#[must_use]
+pub fn chatgpt_web_search_tool(
+    api_base_url: &str,
+    transport: Arc<dyn HostTransport>,
+) -> FunctionTool {
+    search_tool(api_base_url, Auth::ChatGpt, Model::Luna, transport)
+}
+
+fn search_tool(
+    api_base_url: &str,
+    auth: Auth,
+    fallback_model: Model,
+    transport: Arc<dyn HostTransport>,
+) -> FunctionTool {
     FunctionTool::new(
         "web__run",
         DESCRIPTION,
         commands_schema(),
         Arc::new(HostSearch {
             endpoint: format!("{}/responses", api_base_url.trim_end_matches('/')),
-            model_prefix,
+            auth,
             fallback_model,
             transport,
         }),
@@ -116,8 +144,12 @@ impl FunctionHandler for HostSearch {
                     Ok(response) => break response,
                 }
             };
-            let response: Value = serde_json::from_slice(&response)
-                .map_err(|error| format!("failed to decode the web search response: {error}"))?;
+            let response = match self.auth {
+                Auth::ApiKey { .. } => serde_json::from_slice(&response).map_err(|error| {
+                    format!("failed to decode the web search response: {error}")
+                })?,
+                Auth::ChatGpt => streamed(&response)?,
+            };
             Ok(Value::String(answer(&response)?))
         })
     }
@@ -126,8 +158,10 @@ impl FunctionHandler for HostSearch {
 impl HostSearch {
     fn request(&self, commands: &SearchCommands, model: &str) -> Result<String, String> {
         let model = search_model(model, self.fallback_model);
-        let model = match self.model_prefix {
-            Some(prefix) if !model.contains('/') => format!("{prefix}/{model}"),
+        let model = match self.auth {
+            Auth::ApiKey {
+                model_prefix: Some(prefix),
+            } if !model.contains('/') => format!("{prefix}/{model}"),
             _ => model.to_owned(),
         };
         let mut tool = json!({ "type": "web_search" });
@@ -148,17 +182,24 @@ impl HostSearch {
             Some(SearchResponseLength::Medium) | None => 4_096,
         };
         let commands = serde_json::to_string(commands).map_err(|error| error.to_string())?;
-        serde_json::to_string(&json!({
+        let mut request = json!({
             "model": model,
             "instructions": INSTRUCTIONS,
-            "input": commands,
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": commands }],
+            }],
             "tools": [tool],
             "include": ["web_search_call.action.sources"],
-            "max_tool_calls": calls,
             "max_output_tokens": output,
             "store": false,
-        }))
-        .map_err(|error| error.to_string())
+        });
+        match self.auth {
+            Auth::ApiKey { .. } => request["max_tool_calls"] = json!(calls),
+            Auth::ChatGpt => request["stream"] = json!(true),
+        }
+        serde_json::to_string(&request).map_err(|error| error.to_string())
     }
 
     async fn send(&self, session: &str, body: &str) -> Result<Vec<u8>, HostError> {
@@ -193,6 +234,38 @@ fn calls(commands: &SearchCommands) -> usize {
     .flatten()
     .sum::<usize>()
     .max(1)
+}
+
+fn streamed(body: &[u8]) -> Result<Value, String> {
+    let body = std::str::from_utf8(body)
+        .map_err(|error| format!("failed to decode the web search stream: {error}"))?;
+    let mut data = String::new();
+    let mut output = Vec::new();
+    for line in body.lines().chain([""]) {
+        if let Some(chunk) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(chunk.strip_prefix(' ').unwrap_or(chunk));
+            continue;
+        }
+        if !line.is_empty() || data.is_empty() {
+            continue;
+        }
+        let mut event: Value = serde_json::from_str(&std::mem::take(&mut data))
+            .map_err(|error| format!("failed to decode a web search stream event: {error}"))?;
+        match event["type"].as_str() {
+            Some("response.output_item.done") => output.push(event["item"].take()),
+            Some("response.completed" | "response.incomplete" | "response.failed") => {
+                let mut response = event["response"].take();
+                response["output"] = Value::Array(output);
+                return Ok(response);
+            }
+            Some("error") => return Err(format!("web search failed: {event}")),
+            _ => {}
+        }
+    }
+    Err("the web search stream ended before its response did".to_owned())
 }
 
 fn answer(response: &Value) -> Result<String, String> {

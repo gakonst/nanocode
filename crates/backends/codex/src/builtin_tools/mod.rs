@@ -36,7 +36,7 @@ pub use image_generation::{image_generation_tool, image_generation_tool_with_ima
 pub mod web_search;
 #[path = "web_search/host.rs"]
 mod web_search_host;
-pub use web_search_host::{web_search_tool, web_search_tool_with_model};
+pub use web_search_host::{chatgpt_web_search_tool, web_search_tool, web_search_tool_with_model};
 
 pub use nanocode_tools::tool;
 

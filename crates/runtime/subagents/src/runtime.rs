@@ -1085,29 +1085,41 @@ impl AgentScope {
         checkpoints: &AgentMap<durable::JournalCheckpoint>,
         cache: &durable::JournalCache,
     ) -> std::io::Result<durable::JournalSnapshot> {
-        let leaves = cache.tracked_leaves(|| {
+        let (next_message_id, messages, logged, pending) = self.messages.snapshot(cache);
+        let fold = cache.folds(messages.kept.is_some());
+        let groups = match cache.tracked(fold, || {
             let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
             ids.sort_unstable();
             ids
-        });
+        }) {
+            durable::Tracked::Leaves(leaves) => leaves
+                .into_iter()
+                .map(|leaf| (leaf, durable::leaf_agents(leaf).collect::<Vec<_>>()))
+                .collect::<Vec<_>>(),
+            durable::Tracked::Agents(ids) => vec![(0, ids)],
+        };
         let mut records = Vec::new();
         let mut acknowledged = Vec::new();
-        let mut agents = Vec::with_capacity(leaves.len());
+        let mut agents = Vec::with_capacity(groups.len());
         let root = root_session_id.to_owned();
-        for leaf in leaves {
+        for (leaf, ids) in groups {
             let mut entries = Vec::new();
-            for id in durable::leaf_agents(leaf) {
+            for id in ids {
                 let Some(session) = self.sessions.get(&id) else {
                     continue;
                 };
                 let checkpoint = checkpoints.get(&(root.clone(), id));
+                let pending = checkpoint.is_some_and(|checkpoint| checkpoint.pending.is_some());
+                let checkpoint_key = checkpoint.map(|checkpoint| &checkpoint.key);
+                let cached = cache.agent(id, session.journal_generation, checkpoint_key);
+                if !fold && !pending && cached.is_some() {
+                    continue;
+                }
                 if let Some(checkpoint) = checkpoint
-                    && checkpoint.pending.is_some()
+                    && pending
                 {
                     acknowledged.push((id, Arc::clone(&checkpoint.key)));
                 }
-                let checkpoint_key = checkpoint.map(|checkpoint| &checkpoint.key);
-                let cached = cache.agent(id, session.journal_generation, checkpoint_key);
                 let checkpoint_ref = match cached {
                     Some(cached) => {
                         if let Some(checkpoint) = checkpoint
@@ -1131,8 +1143,8 @@ impl AgentScope {
             }
             agents.push((leaf, entries));
         }
-        let (next_message_id, messages, logged, pending) = self.messages.snapshot(cache);
         Ok(durable::JournalSnapshot {
+            fold,
             agents,
             messages,
             logged,
@@ -3604,9 +3616,10 @@ impl Registry {
                 journal.version
             )));
         }
+        let deltas = durable::load_deltas(store.as_ref(), root_session_id, journal.deltas).await?;
         let messages = journal
             .messages
-            .hydrate(store.as_ref(), root_session_id)
+            .hydrate(store.as_ref(), root_session_id, deltas.messages)
             .await?;
         let mut records = journal.agent_records;
         if let Some(pages) = journal.agent_pages {
@@ -3614,9 +3627,15 @@ impl Registry {
         }
         let mut agents = journal.agents;
         agents.extend(durable::load_agents(store.as_ref(), root_session_id, records).await?);
-        if let Some(leaves) = journal.agent_leaves {
-            agents.extend(durable::load_leaves(store.as_ref(), root_session_id, leaves).await?);
-        }
+        agents.extend(
+            durable::load_leaves(
+                store.as_ref(),
+                root_session_id,
+                journal.agent_leaves,
+                deltas.agents,
+            )
+            .await?,
+        );
         agents.sort_by_key(|agent| agent.descriptor.id);
         let spawning_turns = agents
             .iter()

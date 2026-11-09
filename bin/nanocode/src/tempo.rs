@@ -1151,7 +1151,9 @@ fn endpoint(
         vec![host],
     )?;
     let closing = Closing {
-        session: (!args.tempo_keep_session).then(|| (session, format!("{endpoint}/responses"))),
+        session: args
+            .tempo_close_session
+            .then(|| (session, format!("{endpoint}/responses"))),
         certificates,
     };
     let (notices, status) = (payments.clone(), payments.clone());
@@ -1195,7 +1197,7 @@ pub(crate) async fn close(closing: Closing) {
             }
             Err(error) => {
                 return eprintln!(
-                    "nanocode: closing the session: {error}; --tempo-keep-session keeps it open"
+                    "nanocode: closing the session: {error}; it stays open for the next run"
                 );
             }
         }

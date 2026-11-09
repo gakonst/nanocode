@@ -309,8 +309,16 @@ pub struct GatewayArgs {
 
     #[arg(
         long,
+        env = "NANOCODE_TEMPO_CLOSE_SESSION",
+        help = "Close --gateway tempo's --gateway-base-url session cooperatively on exit, which returns the unspent deposit at once, instead of keeping it open for the next run to reuse"
+    )]
+    pub tempo_close_session: bool,
+
+    #[arg(
+        long,
+        hide = true,
         env = "NANOCODE_TEMPO_KEEP_SESSION",
-        help = "Keep --gateway tempo's --gateway-base-url session open on exit for later runs instead of closing it cooperatively, which returns the unspent deposit at once"
+        conflicts_with = "tempo_close_session"
     )]
     pub tempo_keep_session: bool,
 
@@ -376,6 +384,8 @@ impl SessionArgs {
                     .tempo_fee_token
                     .or(root.gateway.tempo_fee_token),
                 tempo_session: self.gateway.tempo_session.or(root.gateway.tempo_session),
+                tempo_close_session: self.gateway.tempo_close_session
+                    || root.gateway.tempo_close_session,
                 tempo_keep_session: self.gateway.tempo_keep_session
                     || root.gateway.tempo_keep_session,
                 tempo_deposit: self.gateway.tempo_deposit.or(root.gateway.tempo_deposit),

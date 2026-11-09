@@ -59,6 +59,7 @@ const OWN_PROXY_SETTINGS: [&str; 10] = [
 ];
 const TESTNET_CHAIN_ID: u64 = 42431;
 const OUSD: &str = "0x20c0000000000000000000006a37DA5C996874BE";
+const USDT0: &str = "0x20c00000000000000000000014f22ca97301eb73";
 const MACH: u128 = 1_000_000;
 const PREPAID_REQUESTS: u32 = 2;
 const SESSION_SLOTS: usize = 64;
@@ -1100,6 +1101,11 @@ fn endpoint(
             .into());
         }
     };
+    let gas = args
+        .tempo_fee_token
+        .as_deref()
+        .map(|token| gas_token(token, chain))
+        .transpose()?;
     let deposit = args.tempo_deposit.unwrap_or(MACH);
     let host = reqwest::Url::parse(&endpoint)?
         .host_str()
@@ -1126,6 +1132,10 @@ fn endpoint(
         .with_session_default_deposit(deposit)
         .with_session_top_up_amount(deposit)
         .with_session_store(Arc::new(payments.store(origin, &endpoint)?));
+    let wallet = match gas {
+        Some(token) => wallet.with_session_fee_token(token),
+        None => wallet,
+    };
     let session = wallet.session_for(&endpoint)?;
     payments.ledger.update(|ledger| {
         ledger.sessions.insert(host.clone(), session.clone());
@@ -1191,6 +1201,28 @@ pub(crate) async fn close(closing: Closing) {
         }
     }
     eprintln!("nanocode: the session stayed busy; the next run closes it");
+}
+
+fn gas_token(token: &str, chain: u64) -> Result<Address> {
+    let token = token.trim().to_lowercase();
+    let address: Address = match token.as_str() {
+        "usdc.e" | "usdc" if chain == CHAIN_ID => USDC.parse()?,
+        "usdt0" if chain == CHAIN_ID => USDT0.parse()?,
+        "pathusd" => PATH_USD.parse()?,
+        address if address.starts_with("0x") => address.parse()?,
+        other => {
+            return Err(format!(
+                "--tempo-fee-token must be usdc.e or usdt0 (mainnet), pathusd or a token address, not {other}"
+            )
+            .into());
+        }
+    };
+    if machine_token::token(chain) == Some(address) || OUSD.parse() == Ok(address) {
+        return Err(
+            format!("--tempo-fee-token {token} cannot pay gas; MACH and OUSD do not").into(),
+        );
+    }
+    Ok(address)
 }
 
 fn endpoint_terms(endpoint: &str, network: Option<TempoNetworkArg>) -> Result<(Vec<Model>, u64)> {

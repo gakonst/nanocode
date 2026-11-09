@@ -293,6 +293,14 @@ pub struct GatewayArgs {
 
     #[arg(
         long,
+        env = "NANOCODE_TEMPO_FEE_TOKEN",
+        value_name = "TOKEN",
+        help = "Token to pay the gas of --gateway tempo's --gateway-base-url session opens and top-ups in, instead of the fee token its payment challenge names: usdc.e or usdt0 (mainnet), pathusd or a token address; MACH and OUSD cannot pay gas"
+    )]
+    pub tempo_fee_token: Option<String>,
+
+    #[arg(
+        long,
         env = "NANOCODE_TEMPO_SESSION",
         value_name = "NAME",
         help = "Pay each Tempo service (--gateway tempo's endpoint or proxies, the paid tools and the services shell commands reach) from this named session instead of the lowest of 64 slots no other process holds"
@@ -363,6 +371,10 @@ impl SessionArgs {
                     .or(root.gateway.gateway_base_url),
                 tempo_network: self.gateway.tempo_network.or(root.gateway.tempo_network),
                 tempo_currency: self.gateway.tempo_currency.or(root.gateway.tempo_currency),
+                tempo_fee_token: self
+                    .gateway
+                    .tempo_fee_token
+                    .or(root.gateway.tempo_fee_token),
                 tempo_session: self.gateway.tempo_session.or(root.gateway.tempo_session),
                 tempo_keep_session: self.gateway.tempo_keep_session
                     || root.gateway.tempo_keep_session,

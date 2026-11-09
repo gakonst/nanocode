@@ -29,7 +29,7 @@ pub mod thread;
 mod wire_cache;
 pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
 #[cfg(not(target_family = "wasm"))]
-pub use federation::{ClaudeIdentityToken, ClaudeWorkloadIdentity};
+pub use federation::{ClaudeIdentityTokenSource, ClaudeWorkloadIdentity};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
 pub use thread::{

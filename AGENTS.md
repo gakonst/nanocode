@@ -11,4 +11,4 @@
 - Validate with focused builds (`cargo check --locked --lib -p <crate>`, again with `--target wasm32-unknown-unknown`) and back performance changes with reproducible before/after measurements.
 - Check behavior with harnesses in ignored `output/`, such as `output/hand-wiring`: a crate with its own `[workspace]` and path dependencies on these crates, one binary per check or benchmark, run against local mocks, with builds compared by interleaved runs. Keep every artifact there; never commit them, credentials or personal data.
 - Work on master in the main checkout, commit only your own changes and push each one; no pull requests. There is no CI: build, release and deploy by hand. Use subagents only when asked.
-- This file holds principles only; history belongs in commit messages.
+- This file holds principles only and rarely changes. DECISIONS.md is the growing log: add what each change establishes and why, with the commands, dates and measurements behind it.

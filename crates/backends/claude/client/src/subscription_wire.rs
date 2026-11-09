@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const CLAUDE_CODE_VERSION: &str = "2.1.283";
+pub const CLAUDE_CODE_VERSION: &str = "2.1.304";
 pub const CLAUDE_CODE_SDK_VERSION: &str = "0.112.1";
 pub const IDENTITY: &str = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const LEGACY_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";

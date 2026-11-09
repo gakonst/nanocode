@@ -15,6 +15,8 @@ mod auth;
 #[cfg(not(target_family = "wasm"))]
 mod claude_code;
 #[cfg(not(target_family = "wasm"))]
+mod federation;
+#[cfg(not(target_family = "wasm"))]
 mod home;
 mod subscription_identity;
 #[doc(hidden)]
@@ -26,6 +28,8 @@ pub mod subscription;
 pub mod thread;
 mod wire_cache;
 pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
+#[cfg(not(target_family = "wasm"))]
+pub use federation::{ClaudeIdentityToken, ClaudeWorkloadIdentity};
 #[cfg(not(target_family = "wasm"))]
 pub use home::ClaudeHomeLogin;
 pub use thread::{

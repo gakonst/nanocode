@@ -208,16 +208,24 @@ impl ExtensionLink {
         }
     }
 
-    async fn step(&self, context: ToolContext<'_>, input: Value) -> ToolOutput {
+    async fn step(
+        &self,
+        context: ToolContext<'_>,
+        input: Value,
+        authorization: Option<Value>,
+    ) -> ToolOutput {
         let call = context.call_id().to_owned();
-        let frame = json!({
+        let mut frame = json!({
             "type": "call",
             "id": call,
             "session": context.session_id(),
             "turn": context.turn_id(),
             "input": input,
-        })
-        .to_string();
+        });
+        if let Some(authorization) = authorization {
+            frame["authorization"] = authorization;
+        }
+        let frame = frame.to_string();
         let Some(live) = self.browser().await else {
             return self.missing().await;
         };
@@ -278,11 +286,22 @@ impl ExtensionLink {
 pub struct ExtensionTool {
     link: Arc<ExtensionLink>,
     definition: ToolDefinition,
+    authorization: Option<&'static str>,
 }
 
 impl ExtensionTool {
     pub const fn new(link: Arc<ExtensionLink>, definition: ToolDefinition) -> Self {
-        Self { link, definition }
+        Self {
+            link,
+            definition,
+            authorization: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn relaying(mut self, key: &'static str) -> Self {
+        self.authorization = Some(key);
+        self
     }
 }
 
@@ -293,13 +312,19 @@ impl Tool for ExtensionTool {
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input: Value = input.decode_json()?;
+        let mut input: Value = input.decode_json()?;
+        let authorization = self.authorization.map(|key| {
+            input
+                .as_object_mut()
+                .and_then(|object| object.remove(key))
+                .unwrap_or(Value::Null)
+        });
         if !input.is_object() || input.to_string().len() > MAX_INPUT {
             return Ok(ToolOutput::error(
                 "expected browser arguments of at most 32 KiB",
             ));
         }
-        Ok(self.link.step(context, input).await)
+        Ok(self.link.step(context, input, authorization).await)
     }
 
     async fn end_turn(

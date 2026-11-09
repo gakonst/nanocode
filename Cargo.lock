@@ -5165,6 +5165,7 @@ dependencies = [
  "nanocode-tool-contracts",
  "nanocode-tool-host",
  "nanocode-tool-runtime",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

@@ -21,13 +21,20 @@ impl App {
         model: ModelSelection,
         thinking: Thinking,
         tier: ServiceTier,
+        gateway: Option<usize>,
     ) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "request_switch", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
-        if self.session_started && model != self.model {
+        if self.session_started
+            && (model != self.model
+                || gateway.is_some_and(|gateway| Some(gateway) != self.gateway()))
+        {
             self.flash(
                 "the model is fixed for this thread; use /new before choosing another model",
             );
             return;
+        }
+        if let Some(gateway) = gateway {
+            self.host.config.routes.choose(&model, gateway);
         }
         if !matches!(self.turn, TurnState::Idle) || self.starting {
             self.pending_switch = Some((model, thinking, tier));
@@ -69,7 +76,9 @@ impl App {
         let model_changed = model != self.model;
         let thinking_changed = thinking != self.thinking;
         let tier_changed = tier != self.tier;
-        let in_place = model.family() == self.model.family()
+        let routes = &self.host.config.routes;
+        let in_place = routes.of_session(agent.session_id()) == routes.resolve(&model, None)
+            && model.family() == self.model.family()
             && (!model_changed || mutable(mutability.model))
             && (!thinking_changed || mutable(mutability.thinking))
             && (!tier_changed || mutable(mutability.service_tier));
@@ -117,6 +126,15 @@ impl App {
                     drop(next.shutdown().await);
                     return Err(error);
                 }
+                let routes = &host.config.routes;
+                let via = |session: &str| {
+                    routes
+                        .of_session(session)
+                        .map_or_else(String::new, |gateway| {
+                            format!(" via {}", routes.gateway(gateway).name)
+                        })
+                };
+                let (before, after) = (via(&session_id), via(next.session_id()));
                 drop(agent.flush().await);
                 drop(agent.shutdown().await);
                 let carried = if started {
@@ -126,7 +144,7 @@ impl App {
                 };
                 Ok::<_, crate::host::Error>(Ready {
                     notice: format!(
-                        "switched {} {previous_model} → {} {model} · thinking {thinking} · {} · new session {}{carried}",
+                        "switched {} {previous_model}{before} → {} {model}{after} · thinking {thinking} · {} · new session {}{carried}",
                         family_label(&previous_model.family()),
                         family_label(&model.family()),
                         tier.as_str(),
@@ -431,14 +449,16 @@ impl App {
             self.flash("wait for the turn to finish before compacting");
             return;
         }
-        if let Some(gateway) = &self.host.config.gateway
-            && !gateway.compacts(&self.model)
+        if let Some(gateway) = self
+            .gateway()
+            .map(|gateway| self.host.config.routes.gateway(gateway))
+            .filter(|gateway| !gateway.compacts(&self.model))
+            .map(|gateway| gateway.name.clone())
         {
             self.notice(
                 NoticeLevel::Warning,
                 format!(
-                    "the {} gateway does not support compaction; use /new to start a fresh thread",
-                    gateway.name()
+                    "the {gateway} gateway does not support compaction; use /new to start a fresh thread"
                 ),
             );
             return;

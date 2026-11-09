@@ -1,6 +1,7 @@
 use crate::{CodexBuilder, OpenAi};
-use nanocode_agent_config::configuration::{
-    AgentResult, AgentTools, RuntimeBackend, RuntimeRequest, Settings,
+use nanocode_agent_config::{
+    HarnessRequest,
+    configuration::{AgentResult, AgentTools, RuntimeBackend, RuntimeRequest, Settings},
 };
 use nanocode_agent_core::{
     AgentHandle, BackendId, HarnessFamily, ModelSelection, ModelTransport, NanocodeError, Result,
@@ -8,11 +9,13 @@ use nanocode_agent_core::{
 };
 use std::sync::Arc;
 type Hook = Arc<dyn Fn(CodexBuilder) -> Result<CodexBuilder> + Send + Sync>;
+type Route = Arc<dyn Fn(&HarnessRequest) -> Option<OpenAi> + Send + Sync>;
 #[derive(Clone)]
 pub struct CodexHarness {
     client: OpenAi,
     settings: Settings,
     configure: Option<Hook>,
+    client_for: Option<Route>,
 }
 
 impl CodexHarness {
@@ -22,6 +25,7 @@ impl CodexHarness {
             client,
             settings: Settings::default(),
             configure: None,
+            client_for: None,
         }
     }
 
@@ -58,6 +62,15 @@ impl CodexHarness {
         F: Fn(CodexBuilder) -> Result<CodexBuilder> + Send + Sync + 'static,
     {
         self.configure = Some(Arc::new(configure));
+        self
+    }
+
+    #[must_use]
+    pub fn client_for<F>(mut self, client_for: F) -> Self
+    where
+        F: Fn(&HarnessRequest) -> Option<OpenAi> + Send + Sync + 'static,
+    {
+        self.client_for = Some(Arc::new(client_for));
         self
     }
 }
@@ -100,7 +113,11 @@ impl RuntimeBackend for CodexHarness {
             subagents,
             services,
         } = request;
-        let client = self.client.clone();
+        let client = self
+            .client_for
+            .as_ref()
+            .and_then(|client_for| client_for(&spec))
+            .unwrap_or_else(|| self.client.clone());
         let settings = settings.or(&self.settings.clone().or(&defaults));
         let configure = self.configure.clone();
         Box::pin(async move {

@@ -1,32 +1,13 @@
-use nanocode::{HarnessFamily, ModelSelection, ModelTransport, ServiceTier, Thinking};
+use nanocode::{ModelSelection, ModelTransport, ServiceTier, Thinking};
 use nanocode_tui::{
     effort::{EffortDial, Level},
-    picker::{ItemKind, Picker, PickerItem},
+    picker::{Picker, PickerItem},
     theme::Theme,
 };
 
-pub fn catalog(clients: &crate::host::ModelClients) -> Vec<(HarnessFamily, Vec<ModelSelection>)> {
-    HarnessFamily::builtin()
-        .into_iter()
-        .map(|family| {
-            let models = match clients.codex_models() {
-                Some(served) if family == HarnessFamily::Codex => {
-                    served.iter().copied().map(ModelSelection::Codex).collect()
-                }
-                _ => family.models().collect(),
-            };
-            (family, models)
-        })
-        .collect()
-}
+use crate::gateways::Routes;
 
-fn harness_title(family: &HarnessFamily) -> String {
-    if *family == HarnessFamily::Claude {
-        "Claude".into()
-    } else {
-        "Codex".into()
-    }
-}
+pub type Choices = Vec<Option<(usize, ModelSelection)>>;
 
 pub fn features(model: &ModelSelection) -> String {
     let capabilities = model.capabilities(ModelTransport::Native);
@@ -42,44 +23,51 @@ pub fn features(model: &ModelSelection) -> String {
 
 pub fn model_picker(
     current: &ModelSelection,
-    gateway: Option<&crate::host::Gateway>,
-    clients: &crate::host::ModelClients,
-) -> Picker {
+    gateway: Option<usize>,
+    routes: &Routes,
+) -> (Picker, Choices) {
     let mut items = Vec::new();
-    for (family, models) in catalog(clients) {
-        items.push(PickerItem::header(harness_title(&family)));
+    let mut choices = Vec::new();
+    let mut footer = vec!["type to filter · enter select · esc cancel".to_owned()];
+    for (index, offered) in routes.gateways().iter().enumerate() {
+        let (models, note) = offered.models();
+        if let Some(note) = note {
+            footer.push(format!("{}: {note}", offered.name));
+        }
+        if models.is_empty() {
+            continue;
+        }
+        items.push(PickerItem::header(offered.title()));
+        choices.push(None);
         for model in models {
-            if gateway.is_some_and(|gateway| !gateway.serves(&model)) {
-                continue;
-            }
             let capabilities = model.capabilities(ModelTransport::Native);
             let thinking = capabilities
                 .thinking()
                 .map(Thinking::as_str)
                 .collect::<Vec<_>>()
                 .join("/");
-            let mut item = PickerItem::choice(model.to_string())
-                .detail(format!("{} · thinking {thinking}", model.display_name()))
-                .current(model == *current);
+            let label = model.to_string();
+            let detail = match model.display_name() {
+                name if name == label => format!("thinking {thinking}"),
+                name => format!("{name} · thinking {thinking}"),
+            };
+            let mut item = PickerItem::choice(label)
+                .detail(detail)
+                .current(model == *current && gateway == Some(index));
             let features = features(&model);
             if !features.is_empty() {
                 item = item.badge(features);
             }
             items.push(item);
+            choices.push(Some((index, model)));
         }
     }
-    Picker::new("Model", items)
-        .filterable()
-        .footer("type to filter · enter select · esc cancel")
-}
-
-pub fn model_at(
-    picker: &Picker,
-    index: usize,
-    clients: &crate::host::ModelClients,
-) -> Option<ModelSelection> {
-    let item = picker.items().get(index)?;
-    (item.kind == ItemKind::Choice).then(|| clients.parse_model(&item.label).ok())?
+    (
+        Picker::new("Model", items)
+            .filterable()
+            .footer(footer.join(" · ")),
+        choices,
+    )
 }
 
 pub fn thinking_picker(model: &ModelSelection, current: Thinking) -> Picker {

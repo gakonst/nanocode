@@ -146,10 +146,14 @@ impl Picker {
         };
         let mut visible = Vec::new();
         let mut header = None;
+        let mut grouped = false;
         for (index, item) in self.items.iter().enumerate() {
             match item.kind {
-                ItemKind::Header => header = Some(index),
-                ItemKind::Choice if matches(item) => {
+                ItemKind::Header => {
+                    header = Some(index);
+                    grouped = !query.is_empty() && item.label.to_lowercase().contains(&query);
+                }
+                ItemKind::Choice if grouped || matches(item) => {
                     if let Some(header) = header.take() {
                         visible.push(header);
                     }

@@ -1,6 +1,7 @@
 use crate::{ClaudeBuilder, ClaudeClient};
-use nanocode_agent_config::configuration::{
-    AgentResult, AgentTools, RuntimeBackend, RuntimeRequest, Settings,
+use nanocode_agent_config::{
+    HarnessRequest,
+    configuration::{AgentResult, AgentTools, RuntimeBackend, RuntimeRequest, Settings},
 };
 use nanocode_agent_core::{
     AgentHandle, BackendId, HarnessFamily, ModelSelection, NanocodeError, Result,
@@ -10,11 +11,13 @@ use nanocode_agent_core::{
 use std::path::PathBuf;
 use std::sync::Arc;
 type Hook = Arc<dyn Fn(ClaudeBuilder) -> Result<ClaudeBuilder> + Send + Sync>;
+type Route = Arc<dyn Fn(&HarnessRequest) -> Option<ClaudeClient> + Send + Sync>;
 #[derive(Clone)]
 pub struct ClaudeHarness {
     client: ClaudeClient,
     settings: Settings,
     configure: Option<Hook>,
+    client_for: Option<Route>,
     headless: bool,
 }
 impl ClaudeHarness {
@@ -24,6 +27,7 @@ impl ClaudeHarness {
             client,
             settings: Settings::default(),
             configure: None,
+            client_for: None,
             headless: false,
         }
     }
@@ -69,6 +73,15 @@ impl ClaudeHarness {
         self.configure = Some(Arc::new(configure));
         self
     }
+
+    #[must_use]
+    pub fn client_for<F>(mut self, client_for: F) -> Self
+    where
+        F: Fn(&HarnessRequest) -> Option<ClaudeClient> + Send + Sync + 'static,
+    {
+        self.client_for = Some(Arc::new(client_for));
+        self
+    }
 }
 impl From<ClaudeClient> for ClaudeHarness {
     fn from(client: ClaudeClient) -> Self {
@@ -108,7 +121,11 @@ impl RuntimeBackend for ClaudeHarness {
             subagents,
             services,
         } = request;
-        let client = self.client.clone();
+        let client = self
+            .client_for
+            .as_ref()
+            .and_then(|client_for| client_for(&spec))
+            .unwrap_or_else(|| self.client.clone());
         let settings = settings.or(&self.settings.clone().or(&defaults));
         let configure = self.configure.clone();
         #[cfg(not(target_family = "wasm"))]

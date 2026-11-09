@@ -845,11 +845,13 @@ fn footer(app: &App) -> Line<'static> {
             Style::default().fg(theme.thinking_high()),
         ));
     }
-    if let Some(gateway) = &app.host.config.gateway
-        && app.model.as_codex().is_some()
+    if let Some(gateway) = app
+        .gateway()
+        .map(|gateway| app.host.config.routes.gateway(gateway))
+        .filter(|gateway| !gateway.login)
     {
         spans.push(Span::styled(
-            format!(" · via {}", gateway.name()),
+            format!(" · via {}", gateway.name),
             Style::default().fg(theme.muted()),
         ));
     }

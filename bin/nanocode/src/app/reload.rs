@@ -35,6 +35,8 @@ pub(crate) struct State {
     pub(super) executor: SavedExecutor,
     #[serde(default)]
     pub(super) hands: Vec<SavedHand>,
+    #[serde(default)]
+    gateway: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -184,6 +186,9 @@ impl App {
             focus: self.focus,
             executor: self.reload_executor(),
             hands: self.reload_hands(),
+            gateway: self
+                .gateway()
+                .map(|gateway| self.host.config.routes.gateway(gateway).name.clone()),
         }
     }
 
@@ -233,6 +238,10 @@ impl App {
     }
 
     pub(super) fn restore_reload(&mut self, state: State) {
+        let routes = &self.host.config.routes;
+        if let Some(gateway) = state.gateway.as_deref().and_then(|name| routes.find(name)) {
+            routes.choose(&state.model, gateway);
+        }
         if let Some(session) = &state.session {
             let selection = match state.executor {
                 SavedExecutor::Names(names) => names

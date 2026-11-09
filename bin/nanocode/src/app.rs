@@ -216,9 +216,9 @@ pub enum TurnState {
 }
 
 pub enum PickerPurpose {
-    Model,
-    Thinking(ModelSelection),
-    Tier(ModelSelection, Thinking),
+    Model(models::Choices),
+    Thinking(ModelSelection, Option<usize>),
+    Tier(ModelSelection, Thinking, Option<usize>),
     Session(Vec<SessionSummary>),
     Recent(Vec<String>),
     Theme,
@@ -229,6 +229,7 @@ pub enum Overlay {
     Picker(PickerPurpose, Picker),
     Dial {
         model: ModelSelection,
+        gateway: Option<usize>,
         levels: Vec<Thinking>,
         then_tier: bool,
         dial: EffortDial,
@@ -2412,39 +2413,29 @@ impl App {
                 );
             }
             "model" | "m" if argument.is_empty() => {
-                self.overlay = Some(Overlay::Picker(
-                    PickerPurpose::Model,
-                    models::model_picker(
-                        &self.model,
-                        self.host.config.gateway.as_ref(),
-                        &self.host.config.clients,
-                    ),
-                ));
-            }
-            "model" | "m" => {
-                match self
-                    .host
-                    .config
-                    .clients
-                    .parse_model(argument)
-                    .and_then(|model| match &self.host.config.gateway {
-                        Some(gateway) => gateway.check(&model).map(|()| model),
-                        None => Ok(model),
-                    }) {
-                    Ok(model) => {
-                        let picker = models::thinking_picker(&model, self.thinking);
-                        self.overlay =
-                            Some(Overlay::Picker(PickerPurpose::Thinking(model), picker));
-                    }
-                    Err(error) => self.notice(NoticeLevel::Error, error.to_string()),
+                let routes = &self.host.config.routes;
+                for listing in crate::gateways::listings(routes.gateways()) {
+                    tokio::spawn(async move { listing.load().await });
                 }
+                let (picker, choices) = models::model_picker(&self.model, self.gateway(), routes);
+                self.overlay = Some(Overlay::Picker(PickerPurpose::Model(choices), picker));
             }
+            "model" | "m" => match self.parse_model(argument) {
+                Ok((model, gateway)) => {
+                    let picker = models::thinking_picker(&model, self.thinking);
+                    self.overlay = Some(Overlay::Picker(
+                        PickerPurpose::Thinking(model, Some(gateway)),
+                        picker,
+                    ));
+                }
+                Err(error) => self.notice(NoticeLevel::Error, error.to_string()),
+            },
             "thinking" | "effort" | "reasoning" if argument.is_empty() => {
                 let model = self.model.clone();
-                self.open_dial(model, self.thinking, false);
+                self.open_dial(model, None, self.thinking, false);
             }
             "thinking" | "effort" | "reasoning" => match crate::host::parse_thinking(argument) {
-                Ok(thinking) => self.request_switch(self.model.clone(), thinking, self.tier),
+                Ok(thinking) => self.request_switch(self.model.clone(), thinking, self.tier, None),
                 Err(error) => self.notice(NoticeLevel::Error, error.to_string()),
             },
             "fast" | "tier" => {
@@ -2465,7 +2456,7 @@ impl App {
                         }
                     }
                 };
-                self.request_switch(self.model.clone(), self.thinking, tier);
+                self.request_switch(self.model.clone(), self.thinking, tier, None);
             }
             "btw" => self.btw(argument.to_owned()),
             "collapse" => self.collapse_side(),
@@ -2498,12 +2489,9 @@ impl App {
                     "ephemeral"
                 };
                 let remote = self.runner_status();
-                let route = self
-                    .host
-                    .config
-                    .gateway
-                    .as_ref()
-                    .map_or_else(String::new, |gateway| format!(" · {}", gateway.describe()));
+                let route = self.gateway().map_or_else(String::new, |gateway| {
+                    format!(" · {}", self.host.config.routes.gateway(gateway).title())
+                });
                 self.notice(
                     NoticeLevel::Info,
                     format!(
@@ -2771,6 +2759,7 @@ impl App {
                     DialAction::Selected(index) => {
                         let Some(Overlay::Dial {
                             model,
+                            gateway,
                             levels,
                             then_tier,
                             ..
@@ -2782,9 +2771,9 @@ impl App {
                             return;
                         };
                         if then_tier {
-                            self.after_thinking(model, thinking);
+                            self.after_thinking(model, thinking, gateway);
                         } else {
-                            self.request_switch(model, thinking, self.tier);
+                            self.request_switch(model, thinking, self.tier, gateway);
                         }
                     }
                     DialAction::Changed | DialAction::Ignored => {}
@@ -2815,12 +2804,19 @@ impl App {
         }
     }
 
-    pub(crate) fn open_dial(&mut self, model: ModelSelection, thinking: Thinking, then_tier: bool) {
+    pub(crate) fn open_dial(
+        &mut self,
+        model: ModelSelection,
+        gateway: Option<usize>,
+        thinking: Thinking,
+        then_tier: bool,
+    ) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "open_dial", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match models::thinking_dial(&model, thinking, &self.theme) {
             Some((dial, levels)) => {
                 self.overlay = Some(Overlay::Dial {
                     model,
+                    gateway,
                     levels,
                     then_tier,
                     dial,
@@ -2833,24 +2829,60 @@ impl App {
         }
     }
 
-    fn after_thinking(&mut self, model: ModelSelection, thinking: Thinking) {
+    fn after_thinking(
+        &mut self,
+        model: ModelSelection,
+        thinking: Thinking,
+        gateway: Option<usize>,
+    ) {
         let tiers = models::tier_options(&model);
         if tiers.len() > 1 {
             let picker = models::tier_picker(&model, &tiers, self.tier);
             self.overlay = Some(Overlay::Picker(
-                PickerPurpose::Tier(model, thinking),
+                PickerPurpose::Tier(model, thinking, gateway),
                 picker,
             ));
         } else {
-            self.request_switch(model, thinking, ServiceTier::Standard);
+            self.request_switch(model, thinking, ServiceTier::Standard, gateway);
         }
+    }
+
+    pub(crate) fn gateway(&self) -> Option<usize> {
+        let routes = &self.host.config.routes;
+        self.agent
+            .as_ref()
+            .and_then(|agent| routes.of_session(agent.session_id()))
+            .or_else(|| routes.resolve(&self.model, None))
+    }
+
+    fn parse_model(&self, argument: &str) -> Result<(ModelSelection, usize)> {
+        let routes = &self.host.config.routes;
+        let mut words = argument.split_whitespace();
+        let model = words.next().unwrap_or_default();
+        let Some(name) = words.next() else {
+            return routes.parse(model, self.gateway());
+        };
+        let gateway = routes.find(name).ok_or_else(|| {
+            let names = routes
+                .gateways()
+                .iter()
+                .map(|gateway| gateway.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("no gateway is named {name}; the gateways are {names}")
+        })?;
+        let (model, served) = routes.parse(model, Some(gateway))?;
+        if served != gateway {
+            return Err(format!("the {name} gateway does not serve {model}").into());
+        }
+        Ok((model, gateway))
     }
 
     fn picked(&mut self, purpose: PickerPurpose, picker: &Picker, index: usize) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "picked", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         match purpose {
-            PickerPurpose::Model => {
-                let Some(model) = models::model_at(picker, index, &self.host.config.clients) else {
+            PickerPurpose::Model(choices) => {
+                let Some((gateway, model)) = choices.get(index).cloned().flatten() else {
                     return;
                 };
                 let thinking = if model.supports_thinking(self.thinking) {
@@ -2858,20 +2890,20 @@ impl App {
                 } else {
                     model.default_thinking()
                 };
-                self.open_dial(model, thinking, true);
+                self.open_dial(model, Some(gateway), thinking, true);
             }
-            PickerPurpose::Thinking(model) => {
+            PickerPurpose::Thinking(model, gateway) => {
                 let Some(thinking) = models::thinking_at(&model, picker, index) else {
                     return;
                 };
-                self.after_thinking(model, thinking);
+                self.after_thinking(model, thinking, gateway);
             }
-            PickerPurpose::Tier(model, thinking) => {
+            PickerPurpose::Tier(model, thinking, gateway) => {
                 let tiers = models::tier_options(&model);
                 let Some(tier) = tiers.get(index).copied() else {
                     return;
                 };
-                self.request_switch(model, thinking, tier);
+                self.request_switch(model, thinking, tier, gateway);
             }
             PickerPurpose::Theme => {
                 if let Some(item) = picker.items().get(index) {

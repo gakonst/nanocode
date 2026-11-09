@@ -37,6 +37,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     cli::{GatewayArg, GatewayArgs, TempoNetworkArg},
+    gateways::{self, Gateway, Listing},
     host::{ModelClients, Panel, Result},
 };
 
@@ -44,6 +45,16 @@ const OPENAI: &str = "https://openai.mpp.tempo.xyz/v1";
 const ANTHROPIC: &str = "https://anthropic.mpp.tempo.xyz/v1/messages";
 const MERCATOR: &str = "https://mercator.sh/mcp";
 const GATEWAY: &str = "https://gateway.tempo-dev.workers.dev/mcp";
+const TEMPO_GATEWAY: &str = "https://gateway.tempo-dev.workers.dev";
+const BOUNDLESS: &str = "https://api.inference.boundless.network/mpp";
+const ENDPOINTS: [(GatewayArg, &str, &str); 2] = [
+    (
+        GatewayArg::TempoGateway,
+        TEMPO_GATEWAY,
+        "the Tempo gateway's models",
+    ),
+    (GatewayArg::Boundless, BOUNDLESS, "Boundless inference"),
+];
 const TEMPO_SERVICES: &str = "*.mpp.tempo.xyz";
 const OWN_PROXY_SETTINGS: [&str; 10] = [
     "HTTP_PROXY",
@@ -74,7 +85,7 @@ const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 struct Mpp {
     wallet: Wallet,
     client: reqwest::Client,
-    probe: (String, &'static str),
+    probe: (String, Option<&'static str>),
     warm: Arc<Warm>,
 }
 
@@ -85,18 +96,16 @@ struct Warm {
 }
 
 impl Mpp {
-    fn new(wallet: Wallet, probe: (String, &'static str)) -> Result<Self> {
-        Ok(Self {
+    fn new(wallet: Wallet, probe: (String, Option<&'static str>)) -> Self {
+        Self {
+            client: wallet.payments.client.clone(),
             wallet,
-            client: reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
             probe,
             warm: Arc::default(),
-        })
+        }
     }
 
-    async fn preconnect(&self) {
+    async fn preconnect(&self, request: &[u8]) {
         if self.warm.done.is_fired() {
             return;
         }
@@ -107,6 +116,13 @@ impl Mpp {
                     return;
                 };
                 let (url, model) = &self.probe;
+                let model = match model {
+                    Some(model) => Value::from(*model),
+                    None => match serde_json::from_slice::<Value>(request) {
+                        Ok(request) if request["model"].is_string() => request["model"].clone(),
+                        _ => return,
+                    },
+                };
                 let body = serde_json::json!({ "model": model }).to_string();
                 let _ = wallet.preconnect(&self.client, url, body).await;
                 self.warm.done.fire();
@@ -122,7 +138,7 @@ impl Layer for Mpp {
         next: Next<'a>,
     ) -> BoxFuture<'a, std::result::Result<layer::Response, layer::Error>> {
         Box::pin(async move {
-            self.preconnect().await;
+            self.preconnect(&request.body).await;
             let url = reqwest::Url::parse(&request.url)
                 .map_err(|error| layer::Error::new(error.to_string()).unsent(true))?;
             let mut paid = reqwest::Request::new(request.method, url);
@@ -224,6 +240,7 @@ type Listeners = Atom<Vec<UnboundedSender<String>>>;
 
 #[derive(Clone)]
 struct Payments {
+    client: reqwest::Client,
     ledger: Arc<Atom<Ledger>>,
     listeners: Arc<Listeners>,
     events: ClientEvents,
@@ -231,6 +248,7 @@ struct Payments {
     session: Option<String>,
     wallets: Arc<Atom<HashMap<String, Wallet>>>,
     slots: Arc<Atom<HashMap<String, String>>>,
+    closing: Arc<Atom<Vec<(TempoSessionProvider, String)>>>,
     short: Arc<Atom<bool>>,
     _observers: Arc<[ClientEventSubscription; 3]>,
 }
@@ -296,7 +314,7 @@ struct Paid<'a> {
 }
 
 impl Payments {
-    fn new(machine: Address, models: Vec<String>, session: Option<String>) -> Self {
+    fn new(machine: Address, models: Vec<String>, session: Option<String>) -> Result<Self> {
         let events = ClientEvents::default();
         let ledger = Arc::new(Atom::new(Ledger {
             machine,
@@ -341,7 +359,10 @@ impl Payments {
                 async {}
             }),
         ];
-        Self {
+        Ok(Self {
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
             ledger,
             listeners,
             events,
@@ -349,19 +370,20 @@ impl Payments {
             session,
             wallets: Arc::default(),
             slots: Arc::default(),
+            closing: Arc::default(),
             short,
             _observers: Arc::new(observers),
-        }
+        })
     }
 
-    fn wallet(&self, url: &reqwest::Url, deposit: Option<u128>) -> Wallet {
+    fn wallet(&self, url: &reqwest::Url, terms: &Terms) -> Wallet {
         let origin = url.origin().ascii_serialization();
         self.wallets.update(|wallets| {
             wallets
                 .entry(origin.clone())
                 .or_insert_with(|| Wallet {
                     url: url.clone(),
-                    deposit,
+                    terms: terms.clone(),
                     payments: self.clone(),
                     loaded: Arc::default(),
                     loading: Arc::default(),
@@ -397,27 +419,38 @@ impl Payments {
         &self,
         wallet: &TempoAccountsProvider,
         service: &reqwest::Url,
+        terms: &Terms,
     ) -> Result<TempoAccountsProvider> {
-        let store = self.store(service.origin().ascii_serialization(), service.as_str())?;
+        let origin = service.origin().ascii_serialization();
+        let origin = match &terms.variant {
+            Some(variant) => format!("{origin}~{variant}"),
+            None => origin,
+        };
+        let store = self.store(origin, service.as_str())?;
         let wallet = wallet.clone().with_session_store(Arc::new(store));
         let host = service.host_str().unwrap_or_default().to_owned();
         let session = wallet.session_for(service.as_str())?;
         self.ledger.update(|ledger| {
             ledger.sessions.insert(host.clone(), session.clone());
         });
+        if terms.closes {
+            self.closing.update(|closing| {
+                closing.push((session.clone(), format!("{service}/responses")));
+            });
+        }
         Ok(wallet)
     }
 
     fn pay_tools(
         &self,
-        deposit: u128,
+        terms: Terms,
         bypass: Vec<String>,
         policy: impl Future<Output = AcceptPaymentPolicy> + Send + 'static,
     ) -> Result<(Vec<(&'static str, String)>, PathBuf)> {
         nanocode::codex::transport::install_default_rustls_crypto_provider();
         let payments = self.clone();
         let proxy = ForwardProxy::bind(move |url| {
-            Ok::<_, std::convert::Infallible>(payments.wallet(url, Some(deposit)))
+            Ok::<_, std::convert::Infallible>(payments.wallet(url, &terms))
         })?
         .bypass(bypass)
         .events(self.events.clone());
@@ -432,11 +465,11 @@ impl Payments {
         Ok(paying)
     }
 
-    fn mcp(&self, url: &str, deposit: Option<u128>) -> Result<McpServer> {
+    fn mcp(&self, url: &str, terms: &Terms) -> Result<McpServer> {
         let url: reqwest::Url = url.parse()?;
         Ok(
             McpServer::http(url.as_str()).payment_provider(Arc::new(McpPayments {
-                wallet: self.wallet(&url, deposit),
+                wallet: self.wallet(&url, terms),
                 url,
             })),
         )
@@ -612,20 +645,85 @@ struct McpPayments {
 }
 
 #[derive(Clone)]
+struct Terms {
+    chain: u64,
+    currency: Address,
+    fee: Option<Address>,
+    deposit: Option<u128>,
+    variant: Option<String>,
+    closes: bool,
+}
+
+impl Terms {
+    fn mainnet(deposit: Option<u128>) -> Result<Self> {
+        Ok(Self {
+            chain: CHAIN_ID,
+            currency: machine_token::token(CHAIN_ID)
+                .ok_or("MACH is not deployed on Tempo mainnet")?,
+            fee: None,
+            deposit,
+            variant: None,
+            closes: false,
+        })
+    }
+
+    fn endpoint(endpoint: &str, chain: u64, args: &GatewayArgs) -> Result<Self> {
+        let default = match chain {
+            CHAIN_ID => USDC,
+            TESTNET_CHAIN_ID => PATH_USD,
+            other => {
+                return Err(format!(
+                    "{endpoint} takes payment on chain {other}, neither Tempo mainnet nor testnet"
+                )
+                .into());
+            }
+        };
+        let default: Address = default.parse()?;
+        let wanted = args
+            .tempo_currency
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        let currency: Address = match wanted.as_str() {
+            "" => default,
+            "mach" => machine_token::token(chain).ok_or("MACH is not deployed on this network")?,
+            "usdc.e" | "usdc" if chain == CHAIN_ID => USDC.parse()?,
+            "ousd" if chain == CHAIN_ID => OUSD.parse()?,
+            "pathusd" if chain != CHAIN_ID => PATH_USD.parse()?,
+            address if address.starts_with("0x") => address.parse()?,
+            other => {
+                return Err(format!(
+                    "--tempo-currency must be mach, usdc.e or ousd (mainnet), pathusd (testnet) or a token address, not {other}"
+                )
+                .into());
+            }
+        };
+        Ok(Self {
+            chain,
+            currency,
+            fee: args
+                .tempo_fee_token
+                .as_deref()
+                .map(|token| gas_token(token, chain))
+                .transpose()?,
+            deposit: Some(args.tempo_deposit.unwrap_or(MACH)),
+            variant: (currency != default).then_some(wanted),
+            closes: args.tempo_close_session,
+        })
+    }
+}
+
+#[derive(Clone)]
 struct Wallet {
     url: reqwest::Url,
-    deposit: Option<u128>,
+    terms: Terms,
     payments: Payments,
     loaded: Arc<Atom<Option<TempoAccountsProvider>>>,
     loading: Arc<SingleFlight<std::result::Result<TempoAccountsProvider, String>>>,
 }
 
 impl Wallet {
-    fn holding(self, wallet: TempoAccountsProvider) -> Self {
-        self.loaded.set(Some(wallet));
-        self
-    }
-
     fn ready(&self) -> Option<TempoAccountsProvider> {
         self.loaded.read(Clone::clone)
     }
@@ -654,8 +752,6 @@ impl Wallet {
     }
 
     fn open(&self) -> std::result::Result<TempoAccountsProvider, String> {
-        let machine =
-            machine_token::token(CHAIN_ID).ok_or("MACH is not deployed on Tempo mainnet")?;
         let wallet = TempoAccountsProvider::from_default_store()
             .map_err(|error| {
                 let error = match error {
@@ -667,19 +763,23 @@ impl Wallet {
                     self.url.host_str().unwrap_or_default()
                 )
             })?
-            .with_expected_chain_id(CHAIN_ID)
-            .with_preferred_currency(machine)
+            .with_expected_chain_id(self.terms.chain)
+            .with_preferred_currency(self.terms.currency)
             .with_autoswap(AutoswapConfig::default())
             .with_session_prepaid_requests(PREPAID_REQUESTS)
             .with_session_events(self.payments.events.clone());
-        let wallet = match self.deposit {
+        let wallet = match self.terms.deposit {
             Some(deposit) => wallet
                 .with_session_default_deposit(deposit)
                 .with_session_top_up_amount(deposit),
             None => wallet,
         };
+        let wallet = match self.terms.fee {
+            Some(token) => wallet.with_session_fee_token(token),
+            None => wallet,
+        };
         self.payments
-            .sessions(&wallet, &self.url)
+            .sessions(&wallet, &self.url, &self.terms)
             .map_err(|error| error.to_string())
     }
 
@@ -1012,7 +1112,11 @@ fn deposit_notice(context: &DepositContext, machine: Address) -> String {
 
 fn symbol(currency: &str, machine: Address) -> String {
     match currency.parse::<Address>() {
-        Ok(currency) if currency == machine => "MACH".to_owned(),
+        Ok(currency)
+            if currency == machine || machine_token::token(TESTNET_CHAIN_ID) == Some(currency) =>
+        {
+            "MACH".to_owned()
+        }
         Ok(currency) if USDC.parse() == Ok(currency) => "USDC.e".to_owned(),
         Ok(currency) if PATH_USD.parse() == Ok(currency) => "pathUSD".to_owned(),
         Ok(currency) if OUSD.parse() == Ok(currency) => "OUSD".to_owned(),
@@ -1058,120 +1162,129 @@ fn priced(amount: u128, symbol: &str) -> String {
     }
 }
 
-fn endpoint(
-    clients: ModelClients,
-    url: &str,
-    args: &GatewayArgs,
-) -> Result<(ModelClients, Option<Closing>)> {
-    nanocode::codex::transport::install_default_rustls_crypto_provider();
-    let url = url.trim_end_matches('/');
-    let endpoint = match url.contains("://") {
+struct Endpoint {
+    name: String,
+    about: String,
+    url: String,
+    chain: u64,
+    listing: Arc<Listing>,
+}
+
+fn endpoint_url(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    match url.contains("://") {
         true => format!("{url}/v1"),
         false => format!("https://{url}/v1"),
+    }
+}
+
+const fn chain_of(network: TempoNetworkArg) -> u64 {
+    match network {
+        TempoNetworkArg::Mainnet => CHAIN_ID,
+        TempoNetworkArg::Testnet => TESTNET_CHAIN_ID,
+    }
+}
+
+fn endpoints(args: &GatewayArgs) -> Result<(Vec<Endpoint>, Option<String>)> {
+    let custom = match (args.gateway, &args.gateway_base_url) {
+        (Some(GatewayArg::Tempo), Some(url)) => Some(endpoint_url(url)),
+        _ => None,
     };
-    let (models, chain) = endpoint_terms(&endpoint, args.tempo_network)?;
-    let default = match chain {
-        CHAIN_ID => USDC,
-        TESTNET_CHAIN_ID => PATH_USD,
-        other => {
-            return Err(format!(
-                "{endpoint} takes payment on chain {other}, neither Tempo mainnet nor testnet"
-            )
-            .into());
+    let mut preferred = match (args.gateway, &custom) {
+        (Some(GatewayArg::Tempo), None) => Some("tempo".to_owned()),
+        _ => None,
+    };
+    let mut endpoints = Vec::new();
+    for (kind, base, about) in ENDPOINTS {
+        let url = match (args.gateway, &args.gateway_base_url) {
+            (Some(selected), Some(url)) if selected == kind => endpoint_url(url),
+            _ => endpoint_url(base),
+        };
+        let selected = args.gateway == Some(kind) || custom.as_deref() == Some(url.as_str());
+        if selected {
+            preferred = Some(gateways::kind_name(kind).to_owned());
         }
-    };
-    let default: Address = default.parse()?;
-    let wanted = args
-        .tempo_currency
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    let currency: Address = match wanted.as_str() {
-        "" => default,
-        "mach" => machine_token::token(chain).ok_or("MACH is not deployed on this network")?,
-        "usdc.e" | "usdc" if chain == CHAIN_ID => USDC.parse()?,
-        "ousd" if chain == CHAIN_ID => OUSD.parse()?,
-        "pathusd" if chain != CHAIN_ID => PATH_USD.parse()?,
-        address if address.starts_with("0x") => address.parse()?,
-        other => {
-            return Err(format!(
-                "--tempo-currency must be mach, usdc.e or ousd (mainnet), pathusd (testnet) or a token address, not {other}"
-            )
-            .into());
-        }
-    };
-    let gas = args
-        .tempo_fee_token
-        .as_deref()
-        .map(|token| gas_token(token, chain))
-        .transpose()?;
-    let deposit = args.tempo_deposit.unwrap_or(MACH);
-    let host = reqwest::Url::parse(&endpoint)?
-        .host_str()
-        .unwrap_or_default()
-        .to_owned();
-    let payments = Payments::new(
-        machine_token::token(chain).unwrap_or(Address::ZERO),
-        vec![host.clone()],
-        args.tempo_session.clone(),
-    );
-    let service = reqwest::Url::parse(&endpoint)?;
-    let origin = service.origin().ascii_serialization();
-    let origin = match currency == default {
-        true => origin,
-        false => format!("{origin}~{wanted}"),
-    };
-    let wallet = TempoAccountsProvider::from_default_store()
-        .map_err(|error| format!("{error}; log in with `tempo wallet login` or /login tempo"))?
-        .with_expected_chain_id(chain)
-        .with_preferred_currency(currency)
-        .with_autoswap(AutoswapConfig::default())
-        .with_session_prepaid_requests(PREPAID_REQUESTS)
-        .with_session_events(payments.events.clone())
-        .with_session_default_deposit(deposit)
-        .with_session_top_up_amount(deposit)
-        .with_session_store(Arc::new(payments.store(origin, &endpoint)?));
-    let wallet = match gas {
-        Some(token) => wallet.with_session_fee_token(token),
-        None => wallet,
-    };
-    let session = wallet.session_for(&endpoint)?;
-    payments.ledger.update(|ledger| {
-        ledger.sessions.insert(host.clone(), session.clone());
-    });
+        let chain = match (selected, args.tempo_network) {
+            (true, Some(network)) => chain_of(network),
+            _ => CHAIN_ID,
+        };
+        endpoints.push(Endpoint {
+            name: gateways::kind_name(kind).to_owned(),
+            about: format!("{about}, paid from the Tempo wallet"),
+            listing: Listing::remote(format!("{url}/models")),
+            url,
+            chain,
+        });
+    }
+    if let Some(url) = custom.filter(|url| endpoints.iter().all(|endpoint| endpoint.url != *url)) {
+        let (models, chain) = endpoint_terms(&url, args.tempo_network)?;
+        let name = reqwest::Url::parse(&url)?
+            .host_str()
+            .unwrap_or_default()
+            .to_owned();
+        preferred = Some(name.clone());
+        endpoints.push(Endpoint {
+            name,
+            about: "MPP endpoint, paid from the Tempo wallet".to_owned(),
+            listing: Listing::fixed(models),
+            url,
+            chain,
+        });
+    }
+    Ok((endpoints, preferred))
+}
+
+fn attach(
+    clients: ModelClients,
+    payments: &Payments,
+    endpoint: &Endpoint,
+    args: &GatewayArgs,
+) -> Result<ModelClients> {
+    let terms = Terms::endpoint(&endpoint.url, endpoint.chain, args)?;
     let layer = Mpp::new(
-        payments.wallet(&service, None).holding(wallet),
-        (format!("{endpoint}/responses"), models[0].as_str()),
-    )?;
-    let (clients, certificates) = shell(
-        tools(clients, &payments, args)?,
-        &payments,
-        args,
-        vec![host],
-    )?;
-    let closing = Closing {
-        session: args
-            .tempo_close_session
-            .then(|| (session, format!("{endpoint}/responses"))),
-        certificates,
-    };
-    let (notices, status) = (payments.clone(), payments.clone());
-    let clients = clients
-        .openai_endpoint(&endpoint, layer)
-        .models(models)
-        .notices(move || notices.notices())
-        .status(move || status.status())
-        .panel(
-            "/spend",
-            "show or hide what models and tools have spent",
-            move || payments.panel(),
-        );
-    Ok((clients, Some(closing)))
+        payments.wallet(&reqwest::Url::parse(&endpoint.url)?, &terms),
+        (format!("{}/responses", endpoint.url), None),
+    );
+    Ok(
+        clients.gateway(Gateway::new(&endpoint.name, &endpoint.about).listed(
+            gateways::openai_endpoint(&endpoint.url, layer),
+            endpoint.listing.clone(),
+        )),
+    )
+}
+
+fn proxies(clients: ModelClients, payments: &Payments, args: &GatewayArgs) -> Result<ModelClients> {
+    let terms = Terms::mainnet(Some(args.tempo_deposit.unwrap_or(2 * MACH)))?;
+    let openai = Mpp::new(
+        payments.wallet(&OPENAI.parse()?, &terms),
+        (format!("{OPENAI}/responses"), Some(Model::Luna.as_str())),
+    );
+    let claude = Mpp::new(
+        payments.wallet(&ANTHROPIC.parse()?, &terms),
+        (ANTHROPIC.to_owned(), Some(ClaudeModel::Haiku55.as_str())),
+    );
+    let warm = (openai.clone(), claude.clone());
+    let clients = clients.gateway(
+        Gateway::new(
+            "tempo",
+            "Codex and Claude through Tempo's MPP proxies, paid from the Tempo wallet",
+        )
+        .known(gateways::openai_endpoint(OPENAI, openai))
+        .claude(gateways::claude_endpoint(ANTHROPIC, claude)),
+    );
+    if args.gateway != Some(GatewayArg::Tempo) || args.gateway_base_url.is_some() {
+        return Ok(clients);
+    }
+    Ok(clients.warm_up(move || {
+        let (openai, claude) = warm.clone();
+        async move {
+            futures_util::future::join(openai.preconnect(&[]), claude.preconnect(&[])).await;
+        }
+    }))
 }
 
 pub(crate) struct Closing {
-    session: Option<(TempoSessionProvider, String)>,
+    payments: Payments,
     certificates: Option<PathBuf>,
 }
 
@@ -1179,15 +1292,22 @@ pub(crate) async fn close(closing: Closing) {
     if let Some(certificates) = closing.certificates {
         let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(certificates)).await;
     }
-    let Some((session, url)) = closing.session else {
-        return;
-    };
     let client = reqwest::Client::new();
+    for (session, url) in closing.payments.closing.get().iter() {
+        close_session(&client, session, url).await;
+    }
+}
+
+async fn close_session(client: &reqwest::Client, session: &TempoSessionProvider, url: &str) {
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_default();
     for _ in 0..CLOSE_ATTEMPTS {
-        match session.close(&client, &url).await {
+        match session.close(client, url).await {
             Ok(Some(receipt)) => {
                 return eprintln!(
-                    "nanocode: closed the session cooperatively (receipt {})",
+                    "nanocode: closed the {host} session cooperatively (receipt {})",
                     receipt.reference
                 );
             }
@@ -1197,12 +1317,12 @@ pub(crate) async fn close(closing: Closing) {
             }
             Err(error) => {
                 return eprintln!(
-                    "nanocode: closing the session: {error}; it stays open for the next run"
+                    "nanocode: closing the {host} session: {error}; it stays open for the next run"
                 );
             }
         }
     }
-    eprintln!("nanocode: the session stayed busy; the next run closes it");
+    eprintln!("nanocode: the {host} session stayed busy; the next run closes it");
 }
 
 fn gas_token(token: &str, chain: u64) -> Result<Address> {
@@ -1228,18 +1348,14 @@ fn gas_token(token: &str, chain: u64) -> Result<Address> {
 }
 
 fn endpoint_terms(endpoint: &str, network: Option<TempoNetworkArg>) -> Result<(Vec<Model>, u64)> {
-    let pinned = network.map(|network| match network {
-        TempoNetworkArg::Mainnet => CHAIN_ID,
-        TempoNetworkArg::Testnet => TESTNET_CHAIN_ID,
-    });
     let client = reqwest::Client::new();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            let models = served_models(&client, endpoint).await?;
-            let chain = match pinned {
-                Some(chain) => chain,
+            let models = gateways::list(&client, &format!("{endpoint}/models")).await?;
+            let chain = match network {
+                Some(network) => chain_of(network),
                 None => challenge_chain(&client, endpoint, models[0]).await?,
             };
             Ok((models, chain))
@@ -1272,39 +1388,6 @@ async fn challenge_chain(client: &reqwest::Client, endpoint: &str, model: Model)
         .ok_or_else(|| format!("{url}'s payment challenge names no chain").into())
 }
 
-async fn served_models(client: &reqwest::Client, endpoint: &str) -> Result<Vec<Model>> {
-    let url = format!("{endpoint}/models");
-    let body = async {
-        client
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await
-    }
-    .await
-    .map_err(|error| format!("listing models at {url}: {error}"))?;
-    let listing: Value = serde_json::from_slice(&body)?;
-    let mut models = Vec::new();
-    for entry in listing["data"]
-        .as_array()
-        .ok_or_else(|| format!("{url} returned no data list"))?
-    {
-        let model = entry["id"]
-            .as_str()
-            .ok_or_else(|| format!("{url} listed a model without an id"))?
-            .parse::<Model>()?;
-        if !models.contains(&model) {
-            models.push(model);
-        }
-    }
-    if models.is_empty() {
-        return Err(format!("{url} lists no models").into());
-    }
-    Ok(models)
-}
-
 fn session_slot(origin: &str, named: Option<&str>) -> Result<String> {
     if let Some(name) = named.map(str::trim).filter(|name| !name.is_empty()) {
         return Ok(name.to_owned());
@@ -1330,65 +1413,6 @@ fn session_slot(origin: &str, named: Option<&str>) -> Result<String> {
     Err(format!("{SESSION_SLOTS} agents already pay this endpoint from this wallet").into())
 }
 
-fn proxies(clients: ModelClients, args: &GatewayArgs) -> Result<(ModelClients, Option<Closing>)> {
-    nanocode::codex::transport::install_default_rustls_crypto_provider();
-    let deposit = args.tempo_deposit.unwrap_or(2 * MACH);
-    let machine = machine_token::token(CHAIN_ID).ok_or("MACH is not deployed on Tempo mainnet")?;
-    let mut models = Vec::new();
-    for url in [OPENAI, ANTHROPIC] {
-        models.extend(reqwest::Url::parse(url)?.host_str().map(str::to_owned));
-    }
-    let payments = Payments::new(machine, models.clone(), args.tempo_session.clone());
-    let (client, failed) = (reqwest::Client::new(), payments.failure.clone());
-    let paid = paid_origins()?;
-    let (tool_environment, certificates) =
-        payments.pay_tools(tool_deposit(args), models, async move {
-            let services = directory::service_urls(&client, MPP_DIRECTORY_URL)
-                .await
-                .unwrap_or_else(|error| {
-                    failed.update(|failure| {
-                        failure.get_or_insert_with(|| error.to_string());
-                    });
-                    Vec::new()
-                });
-            AcceptPaymentPolicy::Origins(services.into_iter().chain(paid).collect())
-        })?;
-    let openai = Mpp::new(
-        payments.wallet(&OPENAI.parse()?, Some(deposit)),
-        (format!("{OPENAI}/responses"), Model::Luna.as_str()),
-    )?;
-    let claude = Mpp::new(
-        payments.wallet(&ANTHROPIC.parse()?, Some(deposit)),
-        (ANTHROPIC.to_owned(), ClaudeModel::Haiku55.as_str()),
-    )?;
-    let warm = (openai.clone(), claude.clone());
-    let (notices, status) = (payments.clone(), payments.clone());
-    let clients = tools(clients, &payments, args)?
-        .openai_endpoint(OPENAI, openai)
-        .claude_endpoint(ANTHROPIC, claude)
-        .warm_up(move || {
-            let (openai, claude) = warm.clone();
-            async move {
-                futures_util::future::join(openai.preconnect(), claude.preconnect()).await;
-            }
-        })
-        .tool_environment(tool_environment)
-        .notices(move || notices.notices())
-        .status(move || status.status())
-        .panel(
-            "/spend",
-            "show or hide what models and tools have spent",
-            move || payments.panel(),
-        );
-    Ok((
-        clients,
-        Some(Closing {
-            session: None,
-            certificates: Some(certificates),
-        }),
-    ))
-}
-
 fn tool_deposit(args: &GatewayArgs) -> u128 {
     args.tempo_tool_deposit.unwrap_or(MACH / 10)
 }
@@ -1403,8 +1427,11 @@ fn paid_origins() -> Result<Vec<String>> {
 
 fn tools(clients: ModelClients, payments: &Payments, args: &GatewayArgs) -> Result<ModelClients> {
     Ok(clients
-        .mcp_server("mercator", payments.mcp(MERCATOR, None)?)
-        .mcp_server("gateway", payments.mcp(GATEWAY, Some(tool_deposit(args)))?))
+        .mcp_server("mercator", payments.mcp(MERCATOR, &Terms::mainnet(None)?)?)
+        .mcp_server(
+            "gateway",
+            payments.mcp(GATEWAY, &Terms::mainnet(Some(tool_deposit(args)))?)?,
+        ))
 }
 
 fn shell(
@@ -1412,6 +1439,7 @@ fn shell(
     payments: &Payments,
     args: &GatewayArgs,
     bypass: Vec<String>,
+    directory: bool,
 ) -> Result<(ModelClients, Option<PathBuf>)> {
     if OWN_PROXY_SETTINGS
         .iter()
@@ -1419,8 +1447,23 @@ fn shell(
     {
         return Ok((clients, None));
     }
-    let policy = AcceptPaymentPolicy::Origins(paid_origins()?);
-    match payments.pay_tools(tool_deposit(args), bypass, std::future::ready(policy)) {
+    let paid = paid_origins()?;
+    let (client, failed) = (reqwest::Client::new(), payments.failure.clone());
+    let policy = async move {
+        if !directory {
+            return AcceptPaymentPolicy::Origins(paid);
+        }
+        let services = directory::service_urls(&client, MPP_DIRECTORY_URL)
+            .await
+            .unwrap_or_else(|error| {
+                failed.update(|failure| {
+                    failure.get_or_insert_with(|| error.to_string());
+                });
+                Vec::new()
+            });
+        AcceptPaymentPolicy::Origins(services.into_iter().chain(paid).collect())
+    };
+    match payments.pay_tools(Terms::mainnet(Some(tool_deposit(args)))?, bypass, policy) {
         Ok((environment, certificates)) => {
             Ok((clients.tool_environment(environment), Some(certificates)))
         }
@@ -1431,44 +1474,82 @@ fn shell(
     }
 }
 
-fn offered(clients: ModelClients, args: &GatewayArgs) -> Result<(ModelClients, Option<Closing>)> {
+pub(crate) fn apply(
+    clients: ModelClients,
+    args: &GatewayArgs,
+) -> Result<(ModelClients, Option<Closing>)> {
+    if let Some(kind) = args.gateway.filter(|kind| {
+        matches!(
+            kind,
+            GatewayArg::Tempo | GatewayArg::TempoGateway | GatewayArg::Boundless
+        )
+    }) && clients.supplies_openai()
+    {
+        return Err(format!(
+            "this binary supplies its own Codex client; --gateway {} is unavailable",
+            gateways::kind_name(kind)
+        )
+        .into());
+    }
+    let merged = !clients.supplies_openai();
+    if clients.reports_spend() || !merged && args.no_tempo_tools {
+        return Ok((clients, None));
+    }
+    nanocode::codex::transport::install_default_rustls_crypto_provider();
     let machine = machine_token::token(CHAIN_ID).ok_or("MACH is not deployed on Tempo mainnet")?;
-    let payments = Payments::new(machine, Vec::new(), args.tempo_session.clone());
-    let (clients, certificates) = shell(
-        tools(clients, &payments, args)?,
-        &payments,
-        args,
-        Vec::new(),
-    )?;
-    let (notices, status) = (payments.clone(), payments.clone());
+    let (endpoints, preferred) = match merged {
+        true => endpoints(args)?,
+        false => (Vec::new(), None),
+    };
+    let mut models = Vec::new();
+    if merged {
+        for url in [OPENAI, ANTHROPIC] {
+            models.extend(reqwest::Url::parse(url)?.host_str().map(str::to_owned));
+        }
+    }
+    for endpoint in &endpoints {
+        models.extend(
+            reqwest::Url::parse(&endpoint.url)?
+                .host_str()
+                .map(str::to_owned),
+        );
+    }
+    let payments = Payments::new(machine, models.clone(), args.tempo_session.clone())?;
+    let mut clients = clients;
+    if merged {
+        clients = proxies(clients, &payments, args)?;
+        for endpoint in &endpoints {
+            clients = attach(clients, &payments, endpoint, args)?;
+        }
+    }
+    if let Some(name) = preferred {
+        clients = clients.prefer(name);
+    }
+    let mut certificates = None;
+    if !args.no_tempo_tools {
+        let directory = args.gateway == Some(GatewayArg::Tempo) && args.gateway_base_url.is_none();
+        (clients, certificates) = shell(
+            tools(clients, &payments, args)?,
+            &payments,
+            args,
+            models,
+            directory,
+        )?;
+    }
+    let (notices, status, panel) = (payments.clone(), payments.clone(), payments.clone());
     let clients = clients
         .notices(move || notices.notices())
         .status(move || status.status())
         .panel(
             "/spend",
-            "show or hide what Tempo's paid tools and services have spent",
-            move || payments.panel(),
+            "show or hide what models and tools have spent",
+            move || panel.panel(),
         );
     Ok((
         clients,
-        certificates.map(|certificates| Closing {
-            session: None,
-            certificates: Some(certificates),
+        Some(Closing {
+            payments,
+            certificates,
         }),
     ))
-}
-
-pub(crate) fn apply(
-    clients: ModelClients,
-    args: &GatewayArgs,
-) -> Result<(ModelClients, Option<Closing>)> {
-    match (args.gateway, &args.gateway_base_url) {
-        (Some(GatewayArg::Tempo), _) if clients.supplies_openai() => {
-            Err("this binary supplies its own Codex client; --gateway tempo is unavailable".into())
-        }
-        (Some(GatewayArg::Tempo), Some(url)) => endpoint(clients, url, args),
-        (Some(GatewayArg::Tempo), None) => proxies(clients, args),
-        _ if args.no_tempo_tools || clients.reports_spend() => Ok((clients, None)),
-        _ => offered(clients, args),
-    }
 }

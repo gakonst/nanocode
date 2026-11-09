@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-release="${NANOCODE_RELEASE:-https://github.com/gakonst/nanocode/releases/download/nanocode-cli}"
+release="${NANOCODE_RELEASE:-https://github.com/nanocodexyz/nanocode/releases/download/nanocode-cli}"
 bin="${NANOCODE_BIN:-$HOME/.nanocode/bin}"
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) target=aarch64-apple-darwin ;;

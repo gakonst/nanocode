@@ -159,7 +159,7 @@ rquickjs = "0.14.0"
 schemars = "0.8.22"
 seccompiler = "0.5.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
-serde_json = { version = "1.0.149", features = ["raw_value"] }
+serde_json = { version = "1.0.149", features = ["float_roundtrip", "raw_value"] }
 sha1 = "0.11.0"
 sha2 = { version = "0.11.0", default-features = false }
 blake3 = { version = "1.8.7", default-features = false }

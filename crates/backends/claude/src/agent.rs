@@ -595,9 +595,11 @@ pub(crate) fn claude_selection(model: &str) -> ModelSelection {
 
 fn model_max_tokens(model: &str) -> Option<u32> {
     match model {
-        "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-1" | "claude-mythos-5-1"
-        | "claude-sonnet-5-5" | "claude-haiku-5-5" | "claude-opus-5" | "claude-sonnet-5"
-        | "claude-opus-4-6" | "claude-sonnet-4-6" => Some(128_000),
+        "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-2" | "claude-mythos-5-2"
+        | "claude-fable-5-1" | "claude-mythos-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
+        | "claude-opus-5" | "claude-sonnet-5" | "claude-opus-4-6" | "claude-sonnet-4-6" => {
+            Some(128_000)
+        }
         "claude-haiku-4-5"
         | "claude-haiku-4-5-20251001"
         | "claude-sonnet-4-5"
@@ -610,8 +612,9 @@ fn model_max_tokens(model: &str) -> Option<u32> {
 
 pub fn default_context_window_tokens(model: &str) -> u64 {
     match model {
-        "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-1" | "claude-mythos-5-1"
-        | "claude-sonnet-5-5" | "claude-haiku-5-5" | "claude-sonnet-5" => 1_000_000,
+        "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-2" | "claude-mythos-5-2"
+        | "claude-fable-5-1" | "claude-mythos-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
+        | "claude-sonnet-5" => 1_000_000,
         _ => 200_000,
     }
 }
@@ -2619,6 +2622,8 @@ fn recovery_thinking(model: &str) -> RecoveryThinking {
         Some(
             nanocode_agent_core::ClaudeModel::Opus55
             | nanocode_agent_core::ClaudeModel::Fable55
+            | nanocode_agent_core::ClaudeModel::Fable52
+            | nanocode_agent_core::ClaudeModel::Mythos52
             | nanocode_agent_core::ClaudeModel::Fable51
             | nanocode_agent_core::ClaudeModel::Mythos51,
         ) => RecoveryThinking::AdaptiveLow,
@@ -4552,7 +4557,12 @@ impl State {
     fn run_labels(&self) -> (&'static str, String) {
         let reasoning_mode = if matches!(
             self.model().as_str(),
-            "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-1" | "claude-mythos-5-1"
+            "claude-opus-5-5"
+                | "claude-fable-5-5"
+                | "claude-fable-5-2"
+                | "claude-mythos-5-2"
+                | "claude-fable-5-1"
+                | "claude-mythos-5-1"
         ) {
             "adaptive"
         } else {
@@ -4616,6 +4626,8 @@ impl State {
                         | nanocode_agent_core::ClaudeModel::Sonnet55
                         | nanocode_agent_core::ClaudeModel::Haiku55
                         | nanocode_agent_core::ClaudeModel::Fable55
+                        | nanocode_agent_core::ClaudeModel::Fable52
+                        | nanocode_agent_core::ClaudeModel::Mythos52
                         | nanocode_agent_core::ClaudeModel::Fable51
                         | nanocode_agent_core::ClaudeModel::Mythos51
                 )

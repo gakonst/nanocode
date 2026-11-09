@@ -74,6 +74,8 @@ impl ClaudeModel {
             (Self::Fable55 | Self::Fable51 | Self::Mythos51, false) => {
                 rates(10_000, 50_000, 12_500, 20_000, 250)
             }
+            (Self::Fable52 | Self::Mythos52, false) => rates(8_000, 40_000, 10_000, 16_000, 200),
+            (Self::Fable52 | Self::Mythos52, true) => rates(16_000, 80_000, 20_000, 32_000, 400),
             (Self::Opus55, false) => rates(4_000, 20_000, 5_000, 8_000, 200),
             (Self::Opus55, true) => rates(8_000, 40_000, 10_000, 16_000, 400),
             (Self::Sonnet55, false) => rates(2_000, 10_000, 2_500, 4_000, 100),

@@ -38,6 +38,7 @@ pub enum Route {
     #[default]
     Native,
     Tempo,
+    Boundless,
 }
 
 impl Route {
@@ -45,6 +46,7 @@ impl Route {
         match self {
             Self::Native => None,
             Self::Tempo => Some(Tempo::NAME),
+            Self::Boundless => Some(Tempo::BOUNDLESS),
         }
     }
 
@@ -52,6 +54,7 @@ impl Route {
         match provider {
             None => Ok(Self::Native),
             Some(Tempo::NAME) => Ok(Self::Tempo),
+            Some(Tempo::BOUNDLESS) => Ok(Self::Boundless),
             Some(other) => Err(format!("this build does not route models through {other}").into()),
         }
     }
@@ -60,6 +63,7 @@ impl Route {
         match self {
             Self::Native => model.to_string(),
             Self::Tempo => format!("{}{model}", Tempo::PREFIX),
+            Self::Boundless => format!("{}{}/{model}", Tempo::PREFIX, Tempo::BOUNDLESS),
         }
     }
 }
@@ -289,7 +293,8 @@ impl ModelClients {
             )
             .into());
         }
-        if id.trim().is_empty() {
+        let id = id.trim();
+        if id.is_empty() {
             return Err(format!(
                 "name a model after {}, such as {}claude-opus-5-5",
                 Tempo::PREFIX,
@@ -297,7 +302,23 @@ impl ModelClients {
             )
             .into());
         }
-        Ok((Route::Tempo, Tempo::model(id.trim())))
+        if let Some(id) = id
+            .strip_prefix(Tempo::BOUNDLESS)
+            .and_then(|id| id.strip_prefix('/'))
+        {
+            if id.trim().is_empty() {
+                return Err(format!(
+                    "name a model after {}{}/, such as {}{}/z-ai/glm-5.3-flash",
+                    Tempo::PREFIX,
+                    Tempo::BOUNDLESS,
+                    Tempo::PREFIX,
+                    Tempo::BOUNDLESS
+                )
+                .into());
+            }
+            return Ok((Route::Boundless, Tempo::boundless_model(id.trim())));
+        }
+        Ok((Route::Tempo, Tempo::model(id)))
     }
 
     pub fn parse_model(&self, value: &str) -> Result<ModelSelection> {
@@ -586,20 +607,25 @@ impl Host {
         .raw_api_events(false)
         .cyber_access_program(config.cyber_access_program)
         .build()?;
-        let (tempo_openai, tempo_claude) = match &config.clients.tempo {
+        let (tempo_openai, tempo_claude, boundless) = match &config.clients.tempo {
             Some(tempo) => (
                 Some(tempo.openai().raw_api_events(false).build()?),
                 Some(tempo.claude()),
+                Some(tempo.boundless().raw_api_events(false).build()?),
             ),
-            None => (None, None),
+            None => (None, None, None),
         };
-        let tempo = |request: &nanocode::HarnessRequest| {
-            request.options.selected_provider() == Route::Tempo.provider()
+        let route = |request: &nanocode::HarnessRequest| {
+            Route::of(request.options.selected_provider()).ok()
         };
         let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
         let described = std::sync::Arc::clone(&hand);
         let codex = CodexHarness::new(openai)
-            .client_for(move |request| tempo_openai.clone().filter(|_| tempo(request)))
+            .client_for(move |request| match route(request) {
+                Some(Route::Tempo) => tempo_openai.clone(),
+                Some(Route::Boundless) => boundless.clone(),
+                _ => None,
+            })
             .configure(move |builder| {
                 Ok(match &*described.get() {
                     Some(hand) => builder.execution_environment(codex_environment(hand)),
@@ -614,7 +640,11 @@ impl Host {
                 .as_ref()
                 .map_or_else(ClaudeClient::default, |claude| claude()),
         )
-        .client_for(move |request| tempo_claude.clone().filter(|_| tempo(request)))
+        .client_for(move |request| {
+            tempo_claude
+                .clone()
+                .filter(|_| route(request) == Some(Route::Tempo))
+        })
         .headless(config.headless)
         .configure(move |builder| {
             let builder = match builder.knows_max_tokens() {

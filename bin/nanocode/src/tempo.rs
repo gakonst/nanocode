@@ -36,12 +36,13 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     cli::GatewayArgs,
-    host::{ModelClients, Panel, Result},
+    host::{ModelClients, Panel, Result, Route},
 };
 
 const MERCATOR: &str = "https://mercator.sh/mcp";
 const GATEWAY: &str = "https://gateway.tempo-dev.workers.dev/mcp";
 const TEMPO_GATEWAY: &str = "https://gateway.tempo-dev.workers.dev";
+const BOUNDLESS: &str = "https://api.inference.boundless.network/mpp/v1";
 const TEMPO_SERVICES: &str = "*.mpp.tempo.xyz";
 const OWN_PROXY_SETTINGS: [&str; 10] = [
     "HTTP_PROXY",
@@ -1144,8 +1145,11 @@ fn priced(amount: u128, symbol: &str) -> String {
     }
 }
 
+type Read = fn(&str, &Value) -> std::result::Result<Vec<Offer>, String>;
+
 pub(crate) struct Listing {
     url: String,
+    read: Read,
     state: Atom<Listed>,
     flight: SingleFlight<()>,
 }
@@ -1174,9 +1178,10 @@ impl Offer {
 }
 
 impl Listing {
-    fn remote(url: String) -> Arc<Self> {
+    fn remote(url: String, read: Read) -> Arc<Self> {
         Arc::new(Self {
             url,
+            read,
             state: Atom::new(Listed::Loading),
             flight: SingleFlight::default(),
         })
@@ -1189,7 +1194,7 @@ impl Listing {
         self.flight
             .run(|| async {
                 let listed = match payments.client() {
-                    Ok(client) => list(&client, &self.url).await,
+                    Ok(client) => list(&client, &self.url, self.read).await,
                     Err(error) => Err(error),
                 };
                 self.state.set(match listed {
@@ -1199,9 +1204,21 @@ impl Listing {
             })
             .await;
     }
+
+    fn read<T>(&self, rows: impl FnOnce(&[Offer]) -> T) -> std::result::Result<T, String> {
+        self.state.read(|state| match state {
+            Listed::Loading => Err("listing models…".to_owned()),
+            Listed::Failed(error) => Err(error.clone()),
+            Listed::Offers(offers) => Ok(rows(offers)),
+        })
+    }
 }
 
-async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Offer>, String> {
+async fn list(
+    client: &reqwest::Client,
+    url: &str,
+    read: Read,
+) -> std::result::Result<Vec<Offer>, String> {
     let body = async {
         client
             .get(url)
@@ -1215,6 +1232,40 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Of
     .map_err(|error| format!("listing models at {url}: {error}"))?;
     let listing: Value = serde_json::from_slice(&body)
         .map_err(|error| format!("{url} did not return a model list: {error}"))?;
+    let offers = read(url, &listing)?;
+    if offers.is_empty() {
+        return Err(format!("{url} lists no models"));
+    }
+    Ok(offers)
+}
+
+fn price(rates: &Value) -> Option<String> {
+    match (&rates["input"], &rates["output"]) {
+        (Value::Number(input), Value::Number(output)) => Some(format!("${input}/${output}")),
+        _ => None,
+    }
+}
+
+fn boundless_offers(url: &str, listing: &Value) -> std::result::Result<Vec<Offer>, String> {
+    let mut offers = Vec::new();
+    for entry in listing["data"]
+        .as_array()
+        .ok_or_else(|| format!("{url} returned no model list"))?
+    {
+        let id = entry["id"]
+            .as_str()
+            .ok_or_else(|| format!("{url} listed a model without an id"))?;
+        offers.push(Offer {
+            model: id.parse::<Model>()?,
+            provider: Tempo::BOUNDLESS.to_owned(),
+            upstream: id.to_owned(),
+            price: price(&entry["pricing"]),
+        });
+    }
+    Ok(offers)
+}
+
+fn gateway_offers(url: &str, listing: &Value) -> std::result::Result<Vec<Offer>, String> {
     let mut offers: Vec<Offer> = Vec::new();
     for entry in listing["models"]
         .as_array()
@@ -1233,19 +1284,11 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Of
                 .ok_or_else(|| format!("{url} names no provider for {id}"))?
                 .to_owned(),
             upstream: entry["upstream"].as_str().unwrap_or(id).to_owned(),
-            price: match (&entry["house"]["input"], &entry["house"]["output"]) {
-                (Value::Number(input), Value::Number(output)) => {
-                    Some(format!("${input}/${output}"))
-                }
-                _ => None,
-            },
+            price: price(&entry["house"]),
         };
         if offers.iter().all(|known| known.model != offer.model) {
             offers.push(offer);
         }
-    }
-    if offers.is_empty() {
-        return Err(format!("{url} lists no models"));
     }
     Ok(offers)
 }
@@ -1259,20 +1302,29 @@ pub(crate) type Offered = Vec<(ModelSelection, Option<String>)>;
 pub(crate) struct Tempo {
     openai: OpenAiSource,
     claude: ClaudeSource,
+    boundless: OpenAiSource,
     payments: Payments,
     listing: Arc<Listing>,
+    catalog: Arc<Listing>,
 }
 
 impl Tempo {
     pub(crate) const NAME: &str = "tempo";
     pub(crate) const OUTPUT_TOKENS: u32 = 32_768;
     pub(crate) const PREFIX: &str = "tempo/";
-    pub(crate) const ABOUT: &str = "models the Tempo gateway serves (OpenAI, Anthropic, Workers AI, Vercel, OpenRouter, Boundless), paid from the Tempo wallet";
+    pub(crate) const ABOUT: &str = "models the Tempo gateway serves (OpenAI, Anthropic, Workers AI, Vercel, OpenRouter), paid from the Tempo wallet";
+    pub(crate) const BOUNDLESS: &str = "boundless";
+    pub(crate) const BOUNDLESS_ABOUT: &str = "models Boundless serves at api.inference.boundless.network, paid directly from the Tempo wallet";
 
     fn new(payments: &Payments, args: &GatewayArgs) -> Result<Self> {
+        let terms = Terms::tempo(args)?;
         let wallet = payments.wallet(
             &reqwest::Url::parse(&format!("{TEMPO_GATEWAY}/v1"))?,
-            &Terms::tempo(args)?,
+            &terms,
+        );
+        let boundless = Mpp::new(
+            payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &terms),
+            (format!("{BOUNDLESS}/responses"), None),
         );
         let responses = Mpp::new(
             wallet.clone(),
@@ -1294,8 +1346,18 @@ impl Tempo {
                 )
                 .with_http_layer(messages.clone())
             }),
+            boundless: Arc::new(move || {
+                nanocode::OpenAi::builder(nanocode::codex::OpenAiAuth::gateway_managed())
+                    .api_base_url(BOUNDLESS)
+                    .transport(nanocode::codex::transport::ResponsesTransport::Https)
+                    .http_layer(boundless.clone())
+            }),
             payments: payments.clone(),
-            listing: Listing::remote(format!("{TEMPO_GATEWAY}/api/auction/models")),
+            listing: Listing::remote(
+                format!("{TEMPO_GATEWAY}/api/auction/models"),
+                gateway_offers,
+            ),
+            catalog: Listing::remote(format!("{BOUNDLESS}/models"), boundless_offers),
         })
     }
 
@@ -1307,23 +1369,35 @@ impl Tempo {
         (self.claude)()
     }
 
+    pub(crate) fn boundless(&self) -> nanocode::codex::OpenAiBuilder {
+        (self.boundless)()
+    }
+
     pub(crate) async fn load(&self) {
-        self.listing.load(&self.payments).await;
+        futures_util::join!(
+            self.listing.load(&self.payments),
+            self.catalog.load(&self.payments)
+        );
     }
 
     pub(crate) fn offer(&self, subagents: &nanocode::SubagentControl) {
         let catalog = |tempo: &Self| {
             let (groups, note) = tempo.groups();
-            vec![nanocode::subagents::SpawnProvider {
-                name: Self::NAME.to_owned(),
-                about: Self::ABOUT.to_owned(),
+            [
+                (Route::Tempo, Self::NAME, Self::ABOUT),
+                (Route::Boundless, Self::BOUNDLESS, Self::BOUNDLESS_ABOUT),
+            ]
+            .map(|(route, name, about)| nanocode::subagents::SpawnProvider {
+                name: name.to_owned(),
+                about: about.to_owned(),
                 models: groups
-                    .into_iter()
-                    .flat_map(|(_, offered)| offered)
-                    .map(|(model, _)| model)
+                    .iter()
+                    .filter(|(_, offered, _)| *offered == route)
+                    .flat_map(|(_, _, models)| models.iter().map(|(model, _)| model.clone()))
                     .collect(),
-                note,
-            }]
+                note: note.clone(),
+            })
+            .to_vec()
         };
         let providers = catalog(self);
         subagents.update_spawn_policy(|policy| policy.providers = Some(providers.clone()));
@@ -1343,12 +1417,35 @@ impl Tempo {
         }
     }
 
-    pub(crate) fn groups(&self) -> (Vec<(String, Offered)>, Option<String>) {
-        self.listing.state.read(|state| match state {
-            Listed::Loading => (Vec::new(), Some("listing models…".to_owned())),
-            Listed::Failed(error) => (Vec::new(), Some(error.clone())),
-            Listed::Offers(offers) => (rows(offers), None),
-        })
+    pub(crate) fn boundless_model(id: &str) -> ModelSelection {
+        ModelSelection::Codex(Model::Custom(nanocode::CustomModel::new(id)))
+    }
+
+    pub(crate) fn groups(&self) -> (Vec<(String, Route, Offered)>, Option<String>) {
+        let mut groups = Vec::new();
+        let mut notes = Vec::new();
+        match self.catalog.read(|offers| {
+            offers
+                .iter()
+                .map(|offer| {
+                    (
+                        Self::boundless_model(offer.model.as_str()),
+                        offer.price.clone(),
+                    )
+                })
+                .collect::<Offered>()
+        }) {
+            Ok(models) => groups.push((Self::BOUNDLESS.to_owned(), Route::Boundless, models)),
+            Err(note) => notes.push(format!("{}: {note}", Self::BOUNDLESS)),
+        }
+        match self.listing.read(rows) {
+            Ok(rows) => groups.extend(
+                rows.into_iter()
+                    .map(|(provider, models)| (provider, Route::Tempo, models)),
+            ),
+            Err(note) => notes.push(note),
+        }
+        (groups, (!notes.is_empty()).then(|| notes.join("; ")))
     }
 }
 
@@ -1454,11 +1551,15 @@ pub(crate) async fn close(closing: Closing) {
 }
 
 async fn close_session(client: &reqwest::Client, session: &TempoSessionProvider, url: &str) {
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| url.to_owned());
     for _ in 0..CLOSE_ATTEMPTS {
         match session.close(client, url).await {
             Ok(Some(receipt)) => {
                 return eprintln!(
-                    "nanocode: closed the Tempo gateway session cooperatively (receipt {})",
+                    "nanocode: closed the {host} session cooperatively (receipt {})",
                     receipt.reference
                 );
             }
@@ -1468,12 +1569,12 @@ async fn close_session(client: &reqwest::Client, session: &TempoSessionProvider,
             }
             Err(error) => {
                 return eprintln!(
-                    "nanocode: closing the Tempo gateway session: {error}; it stays open for the next run"
+                    "nanocode: closing the {host} session: {error}; it stays open for the next run"
                 );
             }
         }
     }
-    eprintln!("nanocode: the Tempo gateway session stayed busy; the next run closes it");
+    eprintln!("nanocode: the {host} session stayed busy; the next run closes it");
 }
 
 fn gas_token(token: &str) -> Result<Address> {
@@ -1584,6 +1685,7 @@ pub(crate) fn apply(
         true => vec![
             format!("{TEMPO_GATEWAY}/v1/responses"),
             format!("{TEMPO_GATEWAY}/v1/messages"),
+            format!("{BOUNDLESS}/responses"),
         ],
         false => Vec::new(),
     };

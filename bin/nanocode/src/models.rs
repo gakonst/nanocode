@@ -45,13 +45,13 @@ pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
                 models: Vec::new(),
             });
         }
-        for (provider, models) in offered {
+        for (provider, route, models) in offered {
             groups.push(Group {
                 title: format!("Tempo · {provider} · $ per 1M input/output tokens"),
                 note: None,
                 models: models
                     .into_iter()
-                    .map(|(model, about)| (Route::Tempo, model, about))
+                    .map(|(model, about)| (route, model, about))
                     .collect(),
             });
         }

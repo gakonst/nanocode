@@ -2439,7 +2439,8 @@ impl App {
             }
             "harness" if argument.is_empty() => {
                 let picker = models::harness_picker(&self.model.family(), |family| {
-                    self.route.label(&self.harness_model(family))
+                    let (route, model) = self.harness_model(family);
+                    route.label(&model)
                 });
                 self.overlay = Some(Overlay::Picker(PickerPurpose::Harness, picker));
             }
@@ -2881,11 +2882,14 @@ impl App {
         }
     }
 
-    fn harness_model(&self, family: &nanocode::HarnessFamily) -> ModelSelection {
+    fn harness_model(&self, family: &nanocode::HarnessFamily) -> (Route, ModelSelection) {
         match self.route {
-            _ if *family == self.model.family() => self.model.clone(),
-            Route::Tempo => crate::host::on_harness(&self.model, family),
-            Route::Native => self.host.config.clients.default_model(family),
+            _ if *family == self.model.family() => (self.route, self.model.clone()),
+            Route::Tempo => (Route::Tempo, crate::host::on_harness(&self.model, family)),
+            Route::Native | Route::Boundless => (
+                Route::Native,
+                self.host.config.clients.default_model(family),
+            ),
         }
     }
 
@@ -2894,11 +2898,11 @@ impl App {
             self.flash(format!("already on the {} harness", family_label(family)));
             return;
         }
-        let model = self.harness_model(family);
+        let (route, model) = self.harness_model(family);
         let capabilities = model.capabilities(nanocode::ModelTransport::Native);
         let thinking = capabilities.normalize_thinking(self.thinking);
         let tier = capabilities.normalize_service_tier(self.tier);
-        self.request_switch(model, thinking, tier, self.route);
+        self.request_switch(model, thinking, tier, route);
     }
 
     fn after_thinking(&mut self, model: ModelSelection, thinking: Thinking, route: Route) {
@@ -3008,9 +3012,9 @@ pub async fn open_session(
     .await?;
     let model = stored.summary.record.model.clone();
     let route = Route::of(stored.summary.record.provider.as_deref())?;
-    if route == Route::Tempo && host.config.clients.tempo_models().is_none() {
+    if route != Route::Native && host.config.clients.tempo_models().is_none() {
         return Err(format!(
-            "session {session_id} runs {} on the Tempo gateway, which this build does not offer",
+            "session {session_id} runs {}, paid from the Tempo wallet, which this build does not offer",
             route.label(&model)
         )
         .into());

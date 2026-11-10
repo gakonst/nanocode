@@ -66,6 +66,7 @@ const RETRY_CAP_MS: u64 = 32_000;
 const RETRY_JITTER_PERCENT: u64 = 25;
 const THROTTLED_ATTEMPTS: u32 = 10;
 const THROTTLED_WAIT: Duration = Duration::from_secs(180);
+const CACHE_LIFETIME: Duration = Duration::from_secs(5 * 60);
 
 fn truncate_middle(text: &str, max_tokens: u64) -> String {
     let total = estimate_text_tokens(text);
@@ -1702,7 +1703,8 @@ impl ClaudeBuilder {
             max_tokens: self.max_tokens,
             effort: Atom::new(self.effort),
             automatic_cache: self.automatic_cache,
-            cache_one_hour: self.cache_one_hour,
+            cache_one_hour: AtomicBool::new(self.cache_one_hour),
+            requested: Atom::default(),
             thinking_mode: AtomicThinkingMode::new(self.thinking_mode),
             keep_thinking: self.keep_thinking,
             fast_mode: AtomicBool::new(self.fast_mode),
@@ -3280,7 +3282,8 @@ struct State {
     max_tokens: Option<u32>,
     effort: Atom<Option<crate::Effort>>,
     automatic_cache: bool,
-    cache_one_hour: bool,
+    cache_one_hour: AtomicBool,
+    requested: Atom<Option<Instant>>,
     thinking_mode: AtomicThinkingMode,
     keep_thinking: bool,
     fast_mode: AtomicBool,
@@ -3981,7 +3984,7 @@ impl State {
             adaptive_thinking: thinking_mode.adaptive(),
             thinking_disabled: thinking_mode.disabled(),
             automatic_cache: self.automatic_cache,
-            cache_one_hour: self.cache_one_hour,
+            cache_one_hour: self.cache_one_hour.load(Ordering::SeqCst),
             keep_thinking: self.keep_thinking,
             fast_mode: self.fast_mode.load(Ordering::SeqCst),
             message_diagnostics: self.message_diagnostics,
@@ -4460,8 +4463,22 @@ impl State {
     }
 
     fn cache_ttl(&self) -> Option<crate::CacheTtl> {
-        (self.cache_one_hour || (self.lineage.depth == 0 && self.client.uses_subscription()))
-            .then_some(crate::CacheTtl::OneHour)
+        (self.cache_one_hour.load(Ordering::SeqCst)
+            || (self.lineage.depth == 0 && self.client.uses_subscription()))
+        .then_some(crate::CacheTtl::OneHour)
+    }
+
+    fn outlived_cache(&self) -> bool {
+        let outlived = self.automatic_cache
+            && self.client.uses_subscription()
+            && self.cache_ttl().is_none()
+            && self
+                .requested
+                .read(|requested| requested.is_some_and(|at| at.elapsed() > CACHE_LIFETIME));
+        if outlived {
+            self.cache_one_hour.store(true, Ordering::SeqCst);
+        }
+        outlived
     }
 
     fn estimate_cost(
@@ -5031,6 +5048,7 @@ impl State {
             if opened.is_ok() {
                 response_headers_ns = Some(elapsed_ns());
                 send_ns = Some(telemetry::elapsed_ns(attempt_started));
+                self.requested.set(Some(attempt_started));
             }
             let result = match opened {
                 Err(error) => Err(error),
@@ -7035,6 +7053,12 @@ impl State {
             }
             if self.system_resolver.is_some() {
                 cursor.template.system = self.current_system();
+            }
+            if self.outlived_cache()
+                && let Some(control) = &mut cursor.template.cache_control
+            {
+                control.ttl = self.cache_ttl();
+                cursor.template.apply_cache_ttl();
             }
             if interrupted {
                 for (position, (id, _, _, _)) in tool_calls.iter().enumerate() {

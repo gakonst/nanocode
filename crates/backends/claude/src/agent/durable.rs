@@ -479,6 +479,7 @@ impl State {
                 .await?;
         }
         drop(update);
+        self.outlived_cache();
         let template = self.request_template(speed, conversation.effort_pin);
         let static_names = self
             .tools

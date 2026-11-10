@@ -15,8 +15,10 @@ use nanocode_sync::Swap;
 mod history;
 mod metadata;
 mod pam;
+mod resample;
 
 pub use history::{DEFAULT_INLINE_IMAGES, ImageHistory, SharedBlobStore};
+pub use resample::lanczos3;
 
 pub use nanocode_types_core::ImageDetail;
 use nanocode_types_core::{PromptInput, UserInput, responses::ContentItem};
@@ -97,6 +99,8 @@ struct ImageCache {
     entries: HashMap<ImageCacheKey, EncodedImage>,
     order: VecDeque<ImageCacheKey>,
     bytes: usize,
+    sizes: HashMap<[u8; 20], (u32, u32)>,
+    decoded: VecDeque<[u8; 20]>,
 }
 
 impl ImageCache {
@@ -137,6 +141,18 @@ impl ImageCache {
             }
         }
     }
+
+    fn remember(&mut self, digest: [u8; 20], size: (u32, u32)) {
+        if self.sizes.insert(digest, size).is_some() {
+            return;
+        }
+        self.decoded.push_back(digest);
+        if self.decoded.len() > MAX_IMAGE_CACHE_ENTRIES
+            && let Some(oldest) = self.decoded.pop_front()
+        {
+            self.sizes.remove(&oldest);
+        }
+    }
 }
 
 static IMAGE_CACHE: LazyLock<Swap<ImageCache>> = LazyLock::new(Swap::default);
@@ -157,6 +173,18 @@ fn cache_image(key: ImageCacheKey, image: EncodedImage) {
         cache.insert(key, image.clone());
         cache
     });
+}
+
+fn remember_size(digest: [u8; 20], size: (u32, u32)) {
+    IMAGE_CACHE.rcu(|cache| {
+        let mut cache = ImageCache::clone(cache);
+        cache.remember(digest, size);
+        cache
+    });
+}
+
+pub fn remember(bytes: &[u8], width: u32, height: u32) {
+    remember_size(Sha1::digest(bytes).into(), (width, height));
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -611,16 +639,25 @@ fn load_for_prompt_bytes(
             path.display()
         ))
     })?;
+    let preserved_format = match guessed_format {
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => Some(guessed_format),
+        _ => None,
+    };
+    if let Some(format) = preserved_format
+        && let Some(&(width, height)) = IMAGE_CACHE.load().sizes.get(&key.digest)
+        && prompt_image_output_dimensions_for_limits(width, height, limits) == (width, height)
+    {
+        return Ok(EncodedImage {
+            bytes: file_bytes.into(),
+            mime: format_to_mime(format),
+        });
+    }
     let gif_icc_profile = if guessed_format == ImageFormat::Gif {
         let profile = metadata::gif_icc(&file_bytes);
         metadata::normalize_gif_header(&mut file_bytes)?;
         profile
     } else {
         None
-    };
-    let preserved_format = match guessed_format {
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => Some(guessed_format),
-        _ => None,
     };
     let (dynamic, metadata) = if let Some(dynamic) = pam::decode_alpha(&file_bytes)? {
         (
@@ -672,6 +709,9 @@ fn load_for_prompt_bytes(
         (dynamic, metadata)
     };
     let (width, height) = dynamic.dimensions();
+    if preserved_format.is_some() {
+        remember_size(key.digest, (width, height));
+    }
     let (target_width, target_height) =
         prompt_image_output_dimensions_for_limits(width, height, limits);
 

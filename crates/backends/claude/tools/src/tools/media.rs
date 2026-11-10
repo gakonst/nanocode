@@ -118,10 +118,10 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
         .min((1_150_000.0 / pixels).sqrt())
         .min(1.0);
     let resized = if scale < 1.0 {
-        decoded.resize_exact(
+        nanocode_image::lanczos3(
+            &decoded,
             (f64::from(decoded.width()) * scale).floor().max(1.0) as u32,
             (f64::from(decoded.height()) * scale).floor().max(1.0) as u32,
-            image::imageops::FilterType::Lanczos3,
         )
     } else {
         decoded
@@ -158,6 +158,7 @@ fn image_block(bytes: &[u8]) -> Result<ToolResultBlock, String> {
     if encoded.len() > MAX_IMAGE {
         return Err("normalized image exceeds 5 MiB".into());
     }
+    nanocode_image::remember(&encoded, resized.width(), resized.height());
     Ok(ToolResultBlock::Image {
         source: ImageSource::Base64 {
             media_type: mime.into(),

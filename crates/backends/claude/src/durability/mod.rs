@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod format;
+pub(crate) use format::{Prefix, keep_prefix, prefix};
 
 pub use format::ClaudeCheckpointFormat;
 

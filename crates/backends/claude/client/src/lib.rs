@@ -48,6 +48,7 @@ const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 const EFFORT_UPDATES_BETA: &str = "mid-conversation-output-config-2026-07-01";
 const COMPACTION_BETA: &str = "compact-2026-09-04";
+const INLINE_TOOLS_BETA: &str = "inline-tools-2026-09-15";
 const FIRST_PARTY_HOST: &str = "api.anthropic.com";
 const GZIP_MIN_BODY_BYTES: usize = 4096;
 const INVALID_JSON_MESSAGES: [&str; 2] = [
@@ -292,6 +293,16 @@ pub enum ContentBlock {
     Compaction {
         content: String,
         signature: String,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    ToolAddition {
+        tool: Value,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    ToolRemoval {
+        tool: Value,
         #[serde(flatten)]
         extra: BTreeMap<String, Value>,
     },
@@ -1131,7 +1142,9 @@ impl ContentBlock {
             | Self::McpToolUse { extra, .. }
             | Self::McpToolResult { extra, .. }
             | Self::McpToolListing { extra, .. }
-            | Self::Compaction { extra, .. } => (extra.get("cache_control"), true),
+            | Self::Compaction { extra, .. }
+            | Self::ToolAddition { extra, .. }
+            | Self::ToolRemoval { extra, .. } => (extra.get("cache_control"), true),
         }
     }
     const fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
@@ -1153,7 +1166,9 @@ impl ContentBlock {
             | Self::ToolResult { extra, .. }
             | Self::Thinking { extra, .. }
             | Self::RedactedThinking { extra, .. }
-            | Self::Compaction { extra, .. } => extra,
+            | Self::Compaction { extra, .. }
+            | Self::ToolAddition { extra, .. }
+            | Self::ToolRemoval { extra, .. } => extra,
         }
     }
 }
@@ -1795,6 +1810,16 @@ impl ClaudeClient {
                         .iter()
                         .any(|block| matches!(block, ContentBlock::Compaction { .. }))
                 }),
+            tool_changes: messages.iter().any(|message| {
+                let message = message.message();
+                message.role == Role::System
+                    && message.content.iter().any(|block| {
+                        matches!(
+                            block,
+                            ContentBlock::ToolAddition { .. } | ContentBlock::ToolRemoval { .. }
+                        )
+                    })
+            }),
             speed: head.speed.is_some(),
             effort_updates: head.effort_updates,
         })
@@ -1821,6 +1846,7 @@ impl ClaudeClient {
             thinking_binding: false,
             context_management: false,
             compaction: false,
+            tool_changes: false,
             speed: false,
             effort_updates: false,
         }
@@ -1964,6 +1990,9 @@ impl ClaudeClient {
             }
             if wire.compaction && !betas.contains(&COMPACTION_BETA) {
                 betas.push(COMPACTION_BETA);
+            }
+            if wire.tool_changes && !betas.contains(&INLINE_TOOLS_BETA) {
+                betas.push(INLINE_TOOLS_BETA);
             }
             if wire.thread.is_some() && !betas.contains(&MESSAGE_THREADS_BETA) {
                 betas.push(MESSAGE_THREADS_BETA);
@@ -2243,6 +2272,7 @@ pub struct PreparedWire {
     thinking_binding: bool,
     context_management: bool,
     compaction: bool,
+    tool_changes: bool,
     speed: bool,
     effort_updates: bool,
 }
@@ -2959,6 +2989,8 @@ impl BlockAccumulator {
                 ContentBlock::Thinking { .. } => "thinking",
                 ContentBlock::RedactedThinking { .. } => "redacted_thinking",
                 ContentBlock::Compaction { .. } => "compaction",
+                ContentBlock::ToolAddition { .. } => "tool_addition",
+                ContentBlock::ToolRemoval { .. } => "tool_removal",
             },
         }
     }

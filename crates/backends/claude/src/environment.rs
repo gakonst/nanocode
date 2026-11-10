@@ -216,6 +216,27 @@ const fn host_lines() -> Vec<String> {
 }
 
 #[cfg(not(target_family = "wasm"))]
+pub(crate) fn build() -> Option<String> {
+    static BUILD: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    BUILD
+        .get_or_init(|| {
+            let executable = std::fs::metadata(std::env::current_exe().ok()?).ok()?;
+            let modified = executable
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some(format!("{}-{}", executable.len(), modified.as_nanos()))
+        })
+        .clone()
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) const fn build() -> Option<String> {
+    None
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn current_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }

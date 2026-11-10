@@ -1660,6 +1660,26 @@ impl ClaudeBuilder {
         restored
             .developer_notices
             .extend(std::mem::take(&mut self.initial_developer_notices));
+        let kept_prefix = restored
+            .context
+            .as_ref()
+            .filter(|kept| kept.build.is_some() && kept.build == crate::environment::build())
+            .filter(|_| {
+                restored
+                    .model
+                    .as_deref()
+                    .is_none_or(|model| model == self.claude.model)
+            })
+            .and_then(|kept| {
+                kept.prefix
+                    .clone()
+                    .or_else(|| kept.template.as_deref().and_then(crate::durability::prefix))
+            })
+            .filter(|kept| durable::is_code_only_catalog(&kept.tools) == self.code_only);
+        match &mut restored.context {
+            Some(kept) if kept_prefix.is_some() => kept.prefix.clone_from(&kept_prefix),
+            _ => strip_tool_changes(&mut restored.conversation.messages),
+        }
 
         let accepted_turns = u64::from(
             !restored.conversation.messages.is_empty()
@@ -1785,6 +1805,9 @@ impl ClaudeBuilder {
             given_context,
             fixed_date,
             kept_context,
+            kept_prefix: Atom::new(kept_prefix),
+            sent_prefix: Atom::default(),
+            offered: std::sync::OnceLock::new(),
             boundary_stale: AtomicBool::new(false),
             summary_refused: AtomicBool::new(false),
             policy: self.policy,
@@ -2888,12 +2911,22 @@ fn wire_messages(
     suffix: &[HistoryMessage],
     effort_updates: bool,
 ) -> Vec<HistoryMessage> {
-    messages
+    let mut sent = messages
         .iter()
         .chain(suffix)
         .filter(|message| effort_updates || !message.is_effort_update())
         .map(separated_result_companions)
-        .collect()
+        .collect::<Vec<_>>();
+    let changes =
+        |message: &HistoryMessage| message.role == Role::System && !message.is_effort_update();
+    for index in (0..sent.len().saturating_sub(1)).rev() {
+        let mut at = index;
+        while at + 1 < sent.len() && changes(&sent[at]) && sent[at + 1].role == Role::User {
+            sent.swap(at, at + 1);
+            at += 1;
+        }
+    }
+    sent
 }
 
 fn separated_result_companions(message: &HistoryMessage) -> HistoryMessage {
@@ -3475,6 +3508,9 @@ struct State {
     given_context: Option<(String, Option<String>)>,
     fixed_date: bool,
     kept_context: Option<durable::SystemContext>,
+    kept_prefix: Atom<Option<Arc<crate::durability::Prefix>>>,
+    sent_prefix: Atom<Option<Arc<crate::durability::Prefix>>>,
+    offered: std::sync::OnceLock<std::collections::BTreeMap<String, Value>>,
 
     boundary_stale: AtomicBool,
     summary_refused: AtomicBool,
@@ -4321,6 +4357,54 @@ const DATE_CHANGED: &str = "The date has changed. Today's date is now ";
 const DATE_CHANGED_END: &str =
     ". No need to announce the new date \u{2014} the user's own clock shows it.";
 const INSTRUCTIONS_CHANGED: &str = "The following changed since it was first sent in this conversation. The earlier text above stays as sent; where they differ, the current version below is the one in effect.\nA section of your instructions was updated:\n";
+const INSTRUCTIONS_SECTION: &str = "\nA section of your instructions was updated:\n";
+
+const fn tool_change(block: &ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::ToolAddition { .. } | ContentBlock::ToolRemoval { .. }
+    )
+}
+
+fn strip_tool_changes(messages: &mut Vec<HistoryMessage>) {
+    messages.retain_mut(|message| {
+        if message.role == Role::System && message.content.iter().any(tool_change) {
+            message
+                .make_mut()
+                .content
+                .retain(|block| !tool_change(block));
+            return !message.content.is_empty();
+        }
+        true
+    });
+}
+
+fn offered_tools(tools: &[ClaudeToolSpec]) -> std::collections::BTreeMap<String, Value> {
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let mut tool = serde_json::to_value(tool).ok()?;
+            let fields = tool.as_object_mut()?;
+            fields.remove("cache_control");
+            let name = fields.get("name")?.as_str()?.to_owned();
+            Some((name, tool))
+        })
+        .collect()
+}
+
+fn refused_tool_changes(error: &NanocodeError) -> bool {
+    let text = error.to_string();
+    refused_summary(error)
+        && [
+            "tool_addition",
+            "tool_removal",
+            "tool_reference",
+            "inline-tools",
+            "system",
+        ]
+        .iter()
+        .any(|name| text.contains(name))
+}
 
 fn delivered_notice<'a>(conversation: &'a Conversation, prefix: &str) -> Option<&'a str> {
     conversation
@@ -4501,11 +4585,9 @@ impl State {
             instructions,
             key,
         };
-        let Some(kept) = self
-            .kept_context
-            .as_ref()
-            .filter(|kept| self.cache_holds(kept.requested))
-        else {
+        let Some(kept) = self.kept_context.as_ref().filter(|kept| {
+            self.kept_prefix.read(Option::is_some) || self.cache_holds(kept.requested)
+        }) else {
             return current;
         };
         let instructions = if current.key == kept.instructions {
@@ -4519,6 +4601,7 @@ impl State {
         {
             Some(Arc::clone(text))
         } else {
+            self.kept_prefix.set(None);
             return current;
         };
         SystemText {
@@ -4542,9 +4625,31 @@ impl State {
                 notices.push(format!("{DATE_CHANGED}{today}{DATE_CHANGED_END}"));
             }
         }
+        let mut sections = Vec::new();
+        if context.fresh_key != context.key {
+            sections.push(context.fresh.as_deref().unwrap_or_default());
+        }
+        let kept = self.kept_prefix.get();
+        if let (Some(kept), Some(blocks)) = (kept.as_ref(), &self.system_blocks)
+            && let Some(Value::Array(sent)) = kept.system.as_deref()
+        {
+            sections.extend(
+                blocks
+                    .iter()
+                    .filter_map(|block| block["text"].as_str())
+                    .filter(|text| !sent.iter().any(|sent| sent["text"].as_str() == Some(*text))),
+            );
+        }
         let told = delivered_notice(conversation, INSTRUCTIONS_CHANGED);
-        if told.is_some() || context.fresh_key != context.key {
-            let now = format!("```\n{}\n```", context.fresh.as_deref().unwrap_or_default());
+        if told.is_some() && sections.is_empty() {
+            sections.push(context.fresh.as_deref().unwrap_or_default());
+        }
+        if !sections.is_empty() {
+            let now = sections
+                .iter()
+                .map(|section| format!("```\n{section}\n```"))
+                .collect::<Vec<_>>()
+                .join(INSTRUCTIONS_SECTION);
             if told != Some(now.as_str()) {
                 notices.push(format!("{INSTRUCTIONS_CHANGED}{now}"));
             }
@@ -4579,6 +4684,75 @@ impl State {
             instructions: context.key.clone(),
             text: context.instructions.clone(),
             requested,
+            build: crate::environment::build(),
+            template: None,
+            prefix: Some(self.sent_prefix()),
+        })
+    }
+    fn sent_prefix(&self) -> Arc<crate::durability::Prefix> {
+        if let Some(kept) = Option::clone(&self.kept_prefix.get()) {
+            return kept;
+        }
+        if let Some(sent) = Option::clone(&self.sent_prefix.get()) {
+            return sent;
+        }
+        let template = self.request_template(None, EffortPin::Unpinned);
+        let sent = Arc::new(crate::durability::Prefix {
+            system: template.system,
+            tools: template.tools,
+        });
+        self.sent_prefix.set(Some(Arc::clone(&sent)));
+        sent
+    }
+    fn tool_changes(&self, messages: &[HistoryMessage]) -> Option<HistoryMessage> {
+        let kept = Option::clone(&self.kept_prefix.get())?;
+        let fresh = self
+            .offered
+            .get_or_init(|| offered_tools(&self.fresh_tools()));
+        let mut offered = offered_tools(&kept.tools);
+        for block in messages
+            .iter()
+            .filter(|message| message.role == Role::System)
+            .flat_map(|message| &message.content)
+        {
+            match block {
+                ContentBlock::ToolAddition { tool, .. } => {
+                    if let Some(name) = tool["definition"]["name"].as_str() {
+                        offered.insert(name.to_owned(), tool["definition"].clone());
+                    }
+                }
+                ContentBlock::ToolRemoval { tool, .. } => {
+                    if let Some(name) = tool["name"].as_str() {
+                        offered.remove(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let content = fresh
+            .iter()
+            .filter(|(name, definition)| offered.get(*name) != Some(*definition))
+            .map(|(_, definition)| ContentBlock::ToolAddition {
+                tool: json!({"type": "tool_definition", "definition": definition}),
+                extra: std::collections::BTreeMap::new(),
+            })
+            .chain(
+                offered
+                    .keys()
+                    .filter(|name| !fresh.contains_key(*name))
+                    .map(|name| ContentBlock::ToolRemoval {
+                        tool: json!({"type": "tool_reference", "name": name}),
+                        extra: std::collections::BTreeMap::new(),
+                    }),
+            )
+            .collect::<Vec<_>>();
+        (!content.is_empty()).then(|| {
+            Message {
+                role: Role::System,
+                content,
+                output_config: None,
+            }
+            .into()
         })
     }
     fn share_system_context(&self, recipe: &mut ClaudeBuilder) {
@@ -4602,6 +4776,13 @@ impl State {
             std::sync::LazyLock::new(Atom::default);
         self.system_value
             .get_or_init(|| {
+                self.system_context();
+                if let Some(system) = self
+                    .kept_prefix
+                    .read(|kept| kept.as_ref().and_then(|kept| kept.system.clone()))
+                {
+                    return Some(system);
+                }
                 let system = self.build_system()?;
                 if let Some(last) = LAST.read(Clone::clone).filter(|last| **last == system) {
                     return Some(last);
@@ -5679,7 +5860,12 @@ impl State {
                 if (unsigned_thinking(&error)
                     || (refused_summary(&error)
                         && (request.compaction.is_some()
-                            || error.to_string().contains("compaction"))))
+                            || error.to_string().contains("compaction")))
+                    || (refused_tool_changes(&error)
+                        && sent
+                            .iter()
+                            .flat_map(|message| &message.content)
+                            .any(tool_change)))
                     && let Some(effect) = active_effect
                 {
                     effect.refuse(&error).await?;
@@ -5875,6 +6061,13 @@ impl State {
         }
     }
     fn available_tools(&self) -> Vec<ClaudeToolSpec> {
+        self.system_context();
+        match self.kept_prefix.get().as_ref() {
+            Some(kept) => kept.tools.clone(),
+            None => self.fresh_tools(),
+        }
+    }
+    fn fresh_tools(&self) -> Vec<ClaudeToolSpec> {
         self.tools
             .iter()
             .cloned()
@@ -7086,6 +7279,7 @@ impl State {
                 }
             }
             pending.extend(prompt.into_iter().map(HistoryMessage::from));
+            pending.extend(self.tool_changes(&pending));
             cursor.prepared = true;
             self.retain_pending(&mut cursor, &pending);
             cursor.usage = usage.clone();
@@ -7130,6 +7324,7 @@ impl State {
                 );
                 self.emit_compacted(&request.events, index, compaction_started);
                 pending = conversation.packed_messages();
+                pending.extend(self.tool_changes(&pending));
                 previous_message_id = conversation.previous_message_id.clone();
                 self.retain_pending(&mut cursor, &pending);
                 cursor.usage = usage.clone();
@@ -7150,8 +7345,19 @@ impl State {
             let step = format!("model-{}", index.saturating_add(cursor.model_step_offset));
             let mut stripped_thinking = false;
             let mut plain_summary = false;
+            let mut fresh_tools = false;
             let response = loop {
                 let effect = cursor.effect(self, &step);
+                let scope = [
+                    (stripped_thinking, "unsigned-thinking"),
+                    (plain_summary, "plain-summary"),
+                    (fresh_tools, "fresh-tools"),
+                ]
+                .iter()
+                .filter(|(retried, _)| *retried)
+                .map(|(_, name)| *name)
+                .collect::<Vec<_>>()
+                .join("-");
                 let response = self
                     .response(
                         &pending,
@@ -7167,16 +7373,10 @@ impl State {
                             previous_message_id: previous_message_id.as_deref(),
                             template: Some(&cursor.template),
                             wire_profile: cursor.wire_profile.as_ref(),
-                            effect: match (stripped_thinking, plain_summary) {
-                                (false, false) => effect,
-                                (true, false) => {
-                                    effect.map(|effect| effect.scoped("unsigned-thinking"))
-                                }
-                                (false, true) => {
-                                    effect.map(|effect| effect.scoped("plain-summary"))
-                                }
-                                (true, true) => effect
-                                    .map(|effect| effect.scoped("unsigned-thinking-plain-summary")),
+                            effect: if scope.is_empty() {
+                                effect
+                            } else {
+                                effect.map(|effect| effect.scoped(&scope))
                             },
                             journal: Some(&mut *journal),
                             threaded: true,
@@ -7229,6 +7429,42 @@ impl State {
                         plain_summaries(&mut pending);
                         plain_summaries(&mut conversation.messages);
                         plain_summary = true;
+                    }
+                    Err(failure)
+                        if !fresh_tools
+                            && failure.recovery.is_none()
+                            && refused_tool_changes(&failure.error)
+                            && pending
+                                .iter()
+                                .flat_map(|message| &message.content)
+                                .any(tool_change) =>
+                    {
+                        tracing::warn!(
+                            target: "nanocode_claude",
+                            session_id = %self.session_id,
+                            model_call_index = index.saturating_add(1),
+                            error = %failure.error,
+                            "Claude refused the tool changes appended to the history; sending the current tool list instead and retrying once"
+                        );
+                        self.kept_prefix.set(None);
+                        self.sent_prefix.set(None);
+                        strip_tool_changes(&mut pending);
+                        strip_tool_changes(&mut conversation.messages);
+                        cursor.template.tools = self.available_tools();
+                        cursor.dynamic_tool_names = cursor
+                            .template
+                            .tools
+                            .iter()
+                            .filter_map(|tool| match tool {
+                                ClaudeToolSpec::Client(tool)
+                                    if !self.tools.iter().any(|fixed| fixed.name == tool.name) =>
+                                {
+                                    Some(tool.name.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        fresh_tools = true;
                     }
                     response => break response,
                 }
@@ -7374,12 +7610,21 @@ impl State {
                                 ));
                             }
 
-                            let definition =
-                                cursor.template.tools.iter().find_map(|tool| match tool {
+                            let definition = cursor
+                                .template
+                                .tools
+                                .iter()
+                                .find_map(|tool| match tool {
                                     ClaudeToolSpec::Client(tool) if tool.name == *name => {
                                         Some(tool)
                                     }
                                     _ => None,
+                                })
+                                .or_else(|| {
+                                    self.kept_prefix
+                                        .read(Option::is_some)
+                                        .then(|| self.tools.iter().find(|tool| tool.name == *name))
+                                        .flatten()
                                 });
                             if definition.is_some_and(|tool| tool.defer_loading)
                                 && !discovered.contains(name)
@@ -7421,6 +7666,9 @@ impl State {
                             return Err(provider_error(
                                 "assistant emitted a compaction block outside a compaction request",
                             ));
+                        }
+                        ContentBlock::ToolAddition { .. } | ContentBlock::ToolRemoval { .. } => {
+                            return Err(provider_error("assistant emitted a tool change"));
                         }
                     }
                 }

@@ -47,6 +47,12 @@ pub(super) struct SystemContext {
     #[serde(default, skip_serializing)]
     pub(super) text: Option<Arc<str>>,
     pub(super) requested: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) build: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(super) template: Option<String>,
+    #[serde(skip)]
+    pub(super) prefix: Option<Arc<crate::durability::Prefix>>,
 }
 
 pub(super) fn instructions_key(instructions: Option<&str>) -> Option<String> {
@@ -508,10 +514,17 @@ impl State {
         drop(update);
         self.outlived_cache();
         let template = self.request_template(speed, conversation.effort_pin);
+        let kept = self.kept_prefix.get();
         let static_names = self
             .tools
             .iter()
             .map(|tool| tool.name.as_str())
+            .chain(kept.iter().flat_map(|kept| {
+                kept.tools.iter().filter_map(|tool| match tool {
+                    ClaudeToolSpec::Client(tool) => Some(tool.name.as_str()),
+                    ClaudeToolSpec::Server(_) => None,
+                })
+            }))
             .collect::<HashSet<_>>();
         let dynamic_tool_names = template
             .tools
@@ -959,6 +972,8 @@ struct PagedSnapshot<'a> {
     conversation: PagedConversation,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<EncodedPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template: Option<EncodedPayload>,
     snapshot: &'a RawValue,
 }
 
@@ -1320,16 +1335,34 @@ fn paged_snapshot(
         .map(EncodedPayload::encode)
         .transpose()
         .map_err(provider_error)?;
+    let template = snapshot
+        .context
+        .as_ref()
+        .and_then(|context| context.prefix.as_ref())
+        .map(|prefix| {
+            let template = template_record(
+                &TemplatePrompt {
+                    system: prefix.system.as_deref(),
+                    tools: &prefix.tools,
+                },
+                paging,
+            )?;
+            crate::durability::keep_prefix(template.key(), prefix);
+            Ok::<_, NanocodeError>(template)
+        })
+        .transpose()?;
     let inner = serde_json::value::to_raw_value(snapshot).map_err(provider_error)?;
     let json = serde_json::value::to_raw_value(&PagedSnapshot {
         provider: &snapshot.provider,
         version: PAGED_VERSION,
         conversation,
         instructions: instructions.as_ref().map(EncodedPayload::reference),
+        template: template.as_ref().map(EncodedPayload::reference),
         snapshot: &inner,
     })
     .map_err(provider_error)?;
     records.extend(instructions);
+    records.extend(template.filter(|template| paging.pooled.as_deref() != Some(template.key())));
     Ok(EncodedState { json, records })
 }
 

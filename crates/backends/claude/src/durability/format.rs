@@ -11,6 +11,27 @@ use nanocode_durability::{
 use serde::Deserialize;
 use serde_json::Value;
 
+#[derive(Debug, PartialEq, Deserialize)]
+pub(crate) struct Prefix {
+    #[serde(default)]
+    pub(crate) system: Option<std::sync::Arc<Value>>,
+    #[serde(default)]
+    pub(crate) tools: Vec<crate::ClaudeToolSpec>,
+}
+
+static PREFIXES: std::sync::LazyLock<nanocode_sync::AtomMap<String, std::sync::Arc<Prefix>>> =
+    std::sync::LazyLock::new(nanocode_sync::AtomMap::default);
+
+pub(crate) fn prefix(key: &str) -> Option<std::sync::Arc<Prefix>> {
+    PREFIXES.get(key)
+}
+
+pub(crate) fn keep_prefix(key: &str, prefix: &std::sync::Arc<Prefix>) {
+    if PREFIXES.get(key).is_none() {
+        PREFIXES.insert(key.to_owned(), std::sync::Arc::clone(prefix));
+    }
+}
+
 pub struct ClaudeCheckpointFormat;
 
 #[derive(Deserialize)]
@@ -83,6 +104,8 @@ struct PagedSnapshot {
     conversation: PagedConversation,
     #[serde(default)]
     instructions: Option<EncodedPayload>,
+    #[serde(default)]
+    template: Option<EncodedPayload>,
     snapshot: Value,
 }
 
@@ -135,6 +158,15 @@ pub(super) async fn hydrate_snapshot(
         read.insert(instructions.key().to_owned());
         let text: String = reader.load_payload(instructions).await?.decode()?;
         object(&mut snapshot, "/context")?.insert("text".into(), Value::String(text));
+    }
+    if let Some(template) = paged.template {
+        let key = template.key().to_owned();
+        read.insert(key.clone());
+        if prefix(&key).is_none() {
+            let loaded: Prefix = reader.load_payload(template).await?.decode()?;
+            keep_prefix(&key, &std::sync::Arc::new(loaded));
+        }
+        object(&mut snapshot, "/context")?.insert("template".into(), Value::String(key));
     }
     Ok(snapshot)
 }

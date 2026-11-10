@@ -980,6 +980,7 @@ impl MessagesRequest {
         &mut self,
         messages: &mut [M],
         floors: [Option<usize>; 2],
+        subscription: bool,
         owned: impl Fn(&mut M) -> &mut Message,
     ) -> Result<(), ClaudeError> {
         let Some(control) = self.cache_control.clone() else {
@@ -997,9 +998,24 @@ impl MessagesRequest {
                 blocks.push(at);
             }
         }
-        let mut spare = CACHE_BREAKPOINTS.saturating_sub(self.cache_breakpoints_with(messages)?);
-        if spare > 0 && blocks.len() > spare && self.release_system_marker() {
-            spare += 1;
+        let room = |request: &Self| {
+            let added = if subscription {
+                subscription_wire::added_breakpoints(request.system.as_deref())
+            } else {
+                0
+            };
+            request
+                .cache_breakpoints_with(messages)
+                .map(|used| CACHE_BREAKPOINTS.saturating_sub(used + added))
+        };
+        let mut spare = room(self)?;
+        if spare > 0 && blocks.len() > spare {
+            let system = self.system.clone();
+            if self.release_system_marker() && room(self)? > spare {
+                spare += 1;
+            } else {
+                self.system = system;
+            }
         }
         for (message, block) in blocks.into_iter().take(spare) {
             owned(&mut messages[message]).content[block].set_cache_control(&control)?;

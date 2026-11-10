@@ -148,6 +148,27 @@ fn fingerprint<M: WireMessage>(messages: &[M], version: &str) -> String {
     );
     hex_digest(seed.as_bytes())[..3].into()
 }
+pub(crate) fn added_breakpoints(system: Option<&Value>) -> usize {
+    let blocks = match system {
+        Some(Value::Array(blocks)) => blocks.as_slice(),
+        _ => &[],
+    };
+    fn text(block: &Value) -> Option<&str> {
+        block.get("text").and_then(Value::as_str)
+    }
+    let billed = |block: &Value| text(block).is_some_and(|text| text.starts_with(BILLING));
+    let identity = |block: &&Value| matches!(text(block), Some(IDENTITY | LEGACY_IDENTITY));
+    let replaced = if blocks.first().is_some_and(billed) {
+        blocks.get(1).filter(identity)
+    } else {
+        blocks.first().filter(identity)
+    };
+    if replaced.is_none() && blocks.iter().any(billed) {
+        return 0;
+    }
+    usize::from(replaced.is_none_or(|block| block.get("cache_control").is_none()))
+}
+
 pub fn prepare(request: &mut MessagesRequest, identity: &SubscriptionIdentity) {
     let messages = std::mem::take(&mut request.messages);
     prepare_with(request, &messages, identity);

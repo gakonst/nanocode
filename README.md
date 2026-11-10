@@ -36,6 +36,7 @@ The same code runs in other languages:
 | --- | --- |
 | TypeScript, as one WebAssembly module | [nanocode-ts](https://github.com/nanocodexyz/nanocode-ts) |
 | Swift, for macOS and iOS | [nanocode-swift](https://github.com/nanocodexyz/nanocode-swift) |
+| C, for a game engine or any other host | [libnanocode](https://github.com/nanocodexyz/libnanocode) |
 
 [The crate layout](crates/README.md) describes the workspace, and `DECISIONS.md` records what each change established.
 

@@ -32,6 +32,13 @@ pub fn title(session: &SessionSummary) -> String {
         .unwrap_or_else(|| "(no prompt yet)".into())
 }
 
+pub fn model(record: &nanocode::durability::SessionRecord) -> String {
+    match &record.provider {
+        Some(provider) => format!("{provider}/{}", record.model),
+        None => record.model.to_string(),
+    }
+}
+
 pub fn picker(sessions: &[SessionSummary]) -> Picker {
     let items = sessions
         .iter()
@@ -39,7 +46,7 @@ pub fn picker(sessions: &[SessionSummary]) -> Picker {
             PickerItem::choice(title(session)).detail(format!(
                 "{} · {} · {}",
                 age(session.record.updated_at_ms),
-                session.record.model,
+                model(&session.record),
                 session.record.session_id
             ))
         })

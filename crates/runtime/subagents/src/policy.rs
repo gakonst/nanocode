@@ -10,12 +10,12 @@ pub struct SpawnPolicy {
     pub bounded_by_parent_thinking: bool,
     pub max_reasoning_mode: Option<ReasoningMode>,
     pub budgets: bool,
-    pub gateways: Option<Vec<SpawnGateway>>,
+    pub providers: Option<Vec<SpawnProvider>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SpawnGateway {
+pub struct SpawnProvider {
     pub name: String,
     pub about: String,
     pub models: Vec<ModelSelection>,
@@ -32,7 +32,7 @@ impl Default for SpawnPolicy {
             bounded_by_parent_thinking: false,
             max_reasoning_mode: None,
             budgets: false,
-            gateways: None,
+            providers: None,
         }
     }
 }

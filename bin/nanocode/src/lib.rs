@@ -10,7 +10,6 @@ mod custom_endpoint;
 mod events;
 mod extras;
 mod focus;
-mod gateways;
 mod history;
 mod host;
 mod login;
@@ -119,9 +118,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
         }
     };
     let (clients, closing) = match session_gateway(&cli) {
-        Some(gateway) => match gateways::keyed(clients, &gateway)
-            .and_then(|clients| tempo::apply(clients, &gateway))
-        {
+        Some(gateway) => match tempo::apply(clients, &gateway) {
             Ok(applied) => applied,
             Err(error) => {
                 eprintln!("nanocode: {error}");
@@ -177,13 +174,9 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     if matches!(
         cli.command,
         None | Some(Command::Exec(_) | Command::Resume { .. })
-    ) {
-        if let Some(warming) = clients.warming() {
-            runtime.spawn(warming);
-        }
-        for listing in gateways::listings(&clients.catalog()) {
-            runtime.spawn(async move { listing.load().await });
-        }
+    ) && let Some(warming) = clients.warming()
+    {
+        runtime.spawn(warming);
     }
     let outcome = runtime.block_on(async move {
         match cli.command {
@@ -228,6 +221,7 @@ async fn on_worker(work: impl Future<Output = Result<()>> + Send + 'static) -> R
 struct Prepared {
     host: Host,
     model: ModelSelection,
+    route: host::Route,
     thinking: Thinking,
     tier: ServiceTier,
     home: PathBuf,
@@ -245,35 +239,18 @@ async fn prepare(
         None => std::env::current_dir()?,
     };
     let home = host::home_dir(args.home.as_deref())?;
-    if args.cyber_access_program.is_some() && args.gateway.gateway.is_some() {
+    let gateway = host::gateway(&args.gateway)?;
+    if args.cyber_access_program.is_some() && gateway.is_some() {
         return Err(
             "--cyber-access-program needs OpenAI itself; it is unavailable with --gateway".into(),
         );
     }
-    if args.gateway.gateway.is_some() && clients.supplies_openai() {
+    if gateway.is_some() && clients.supplies_openai() {
         return Err("this binary supplies its own Codex client; --gateway is unavailable".into());
     }
-    let cyber_access_program = args.cyber_access_program.map(Into::into);
-    let routes = tracing::info_span!(target: "nanocode", "nc.gateways.build").in_scope(|| {
-        gateways::Routes::build(clients.catalog(), clients.preferred(), |gateway, openai| {
-            let openai = openai.raw_api_events(false);
-            match gateway.login {
-                true => openai.cyber_access_program(cyber_access_program),
-                false => openai,
-            }
-        })
-    })?;
-    let preferred = routes.preferred();
-    let mut listed = None;
-    let (model, gateway) = match (&args.model, args.harness) {
+    let (route, model) = match (&args.model, args.harness) {
         (Some(model), harness) => {
-            let (model, gateway) = match routes.parse(model, preferred) {
-                Ok(parsed) => parsed,
-                Err(_) => {
-                    gateways::listed(routes.gateways()).await;
-                    routes.parse(model, preferred)?
-                }
-            };
+            let (route, model) = clients.resolve(model)?;
             if let Some(harness) = harness
                 && family(harness) != model.family()
             {
@@ -283,64 +260,32 @@ async fn prepare(
                 )
                 .into());
             }
-            (model, gateway)
+            (route, model)
         }
         (None, harness) => {
             let requested = harness.map(family);
-            let first = routes.gateway(preferred.unwrap_or(0));
-            if requested
-                .as_ref()
-                .is_none_or(|family| *family == nanocode::HarnessFamily::Codex)
-                && first.listing().is_some()
-            {
-                gateways::listed(std::slice::from_ref(first)).await;
-                let (models, note) = first.models();
-                listed = Some(
-                    models
-                        .into_iter()
-                        .find(|model| model.as_codex().is_some())
-                        .ok_or_else(|| {
-                            format!(
-                                "the {} gateway offers no model: {}",
-                                first.name,
-                                note.unwrap_or_default()
-                            )
-                        })?,
-                );
-            }
-            let model = listed.clone().unwrap_or_else(|| {
-                requested
+            let model = match clients.codex_models().and_then(<[_]>::first) {
+                Some(model)
+                    if requested
+                        .as_ref()
+                        .is_none_or(|family| *family == nanocode::HarnessFamily::Codex) =>
+                {
+                    nanocode::ModelSelection::Codex(*model)
+                }
+                _ => requested
                     .unwrap_or(nanocode::HarnessFamily::Claude)
-                    .default_model()
-            });
-            let gateway = routes
-                .resolve(&model, preferred)
-                .ok_or_else(|| format!("no gateway serves {model}"))?;
-            (model, gateway)
+                    .default_model(),
+            };
+            (host::Route::Native, model)
         }
     };
-    if let Some(preferred) =
-        preferred.filter(|preferred| *preferred != gateway && args.reload_state.is_none())
+    if let Some(gateway) = &gateway
+        && route == host::Route::Native
     {
-        let preferred = routes.gateway(preferred);
-        if preferred.offers(&model.family()) {
-            let served = preferred
-                .models()
-                .0
-                .iter()
-                .filter(|candidate| candidate.family() == model.family())
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(format!(
-                "{model} is not available through the {} gateway; choose one of {served}",
-                preferred.name
-            )
-            .into());
-        }
+        gateway.check(&model)?;
     }
-    routes.choose(&model, gateway);
-    let defaulted = args.model.is_none() && args.harness.is_none() && listed.is_none();
+    let defaulted =
+        args.model.is_none() && args.harness.is_none() && clients.codex_models().is_none();
     let capabilities = model.capabilities(nanocode::ModelTransport::Native);
     let thinking = match &args.thinking {
         Some(value) => host::parse_thinking(value)?,
@@ -370,9 +315,10 @@ async fn prepare(
         runners: runner_configs.runners,
         runner_servers: runner_configs.servers,
         tab: runner_configs.tab,
-        routes,
+        gateway,
         clients,
         headless,
+        cyber_access_program: args.cyber_access_program.map(Into::into),
     };
     let host = tracing::Instrument::instrument(
         Host::build(config, &model, thinking),
@@ -393,6 +339,7 @@ async fn prepare(
     Ok(Prepared {
         host,
         model,
+        route,
         thinking,
         tier,
         home,
@@ -419,7 +366,7 @@ async fn interactive(mut args: SessionArgs, clients: ModelClients) -> Result<()>
         };
         args.prompt = None;
         args.continue_last = false;
-        args.model = Some(state.model.to_string());
+        args.model = Some(host::Route::of(state.provider.as_deref())?.label(&state.model));
         args.harness = None;
         args.thinking = Some(state.thinking.to_string());
         args.tier = Some(state.tier.as_str().to_owned());
@@ -464,6 +411,7 @@ async fn interactive(mut args: SessionArgs, clients: ModelClients) -> Result<()>
         app::Launch {
             host: prepared.host,
             model: prepared.model,
+            route: prepared.route,
             thinking: prepared.thinking,
             tier: prepared.tier,
             resume,
@@ -539,7 +487,9 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
             (ready.agent, ready.events, ready.pending)
         }
         None => {
-            let (agent, events) = host.start(&prepared.model, prepared.thinking).await?;
+            let (agent, events) = host
+                .start(&prepared.model, prepared.thinking, prepared.route)
+                .await?;
             app::apply_tier(&agent, &prepared.model, prepared.tier).await?;
             (agent, events, Vec::new())
         }
@@ -648,7 +598,7 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
             "{}  {:>8}  {:<20}  {}",
             record.session_id,
             sessions::age(record.updated_at_ms),
-            record.model.to_string(),
+            sessions::model(record),
             sessions::title(&session)
         );
     }
@@ -657,34 +607,32 @@ async fn list_sessions(args: SessionsArgs) -> Result<()> {
 }
 
 async fn print_models(clients: &ModelClients) {
-    let gateways = clients.catalog();
-    gateways::listed(&gateways).await;
-    let width = gateways
+    if let Some(tempo) = clients.tempo_models() {
+        tempo.load().await;
+    }
+    let groups = models::catalog(clients);
+    let width = groups
         .iter()
-        .flat_map(|gateway| gateway.models().0)
-        .map(|model| model.as_str().chars().count())
+        .flat_map(|group| &group.models)
+        .map(|(route, model)| route.label(model).chars().count())
         .max()
         .unwrap_or_default();
-    for gateway in &gateways {
-        let (models, note) = gateway.models();
-        if models.is_empty() && note.is_none() {
-            continue;
-        }
-        println!("{}", gateway.title());
-        if let Some(note) = note {
+    for group in groups {
+        println!("{}", group.title);
+        if let Some(note) = &group.note {
             println!("  {note}");
         }
-        for model in models {
+        for (route, model) in &group.models {
             let capabilities = model.capabilities(nanocode::ModelTransport::Native);
             let thinking = capabilities
                 .thinking()
                 .map(Thinking::as_str)
                 .collect::<Vec<_>>()
                 .join("/");
-            let features = models::features(&model);
+            let features = models::features(model);
             println!(
                 "  {:<width$} thinking {:<30} default {:<7} {}",
-                model.to_string(),
+                route.label(model),
                 thinking,
                 capabilities.default_thinking().as_str(),
                 features

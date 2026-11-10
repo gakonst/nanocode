@@ -829,7 +829,7 @@ fn footer(app: &App) -> Line<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" {}", app.model),
+            format!(" {}", app.route.label(&app.model)),
             Style::default()
                 .fg(theme.text())
                 .add_modifier(Modifier::BOLD),
@@ -845,13 +845,12 @@ fn footer(app: &App) -> Line<'static> {
             Style::default().fg(theme.thinking_high()),
         ));
     }
-    if let Some(gateway) = app
-        .gateway()
-        .map(|gateway| app.host.config.routes.gateway(gateway))
-        .filter(|gateway| !gateway.login)
+    if let Some(gateway) = &app.host.config.gateway
+        && app.route == crate::host::Route::Native
+        && app.model.as_codex().is_some()
     {
         spans.push(Span::styled(
-            format!(" · via {}", gateway.name),
+            format!(" · via {}", gateway.name()),
             Style::default().fg(theme.muted()),
         ));
     }
@@ -861,9 +860,9 @@ fn footer(app: &App) -> Line<'static> {
             Style::default().fg(theme.accent()),
         ));
     }
-    if let Some((model, thinking, _)) = &app.pending_switch {
+    if let Some((model, thinking, _, route)) = &app.pending_switch {
         spans.push(Span::styled(
-            format!(" → {model} {thinking} after turn"),
+            format!(" → {} {thinking} after turn", route.label(model)),
             Style::default().fg(theme.thinking_medium()),
         ));
     }

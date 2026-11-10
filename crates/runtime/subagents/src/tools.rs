@@ -5,7 +5,7 @@ use super::{
         AgentDescriptor, AgentId, AgentStatus, AgentUpdate, MessageId, MessagePriority,
         MessagePurpose, agent_prompt,
     },
-    policy::{SpawnGateway, SpawnParent, SpawnPolicy, SpawnPolicyError},
+    policy::{SpawnParent, SpawnPolicy, SpawnPolicyError, SpawnProvider},
     runtime::{
         AgentDirectoryEntry, AgentSummary, OutputContract, Registry, SubmissionOutcome,
         forward_events,
@@ -170,8 +170,6 @@ struct SpawnAgentTask {
     reasoning_mode: Option<ReasoningMode>,
     #[serde(default, with = "usd_number")]
     budget_usd: Option<UsdAmount>,
-    #[serde(default)]
-    gateway: Option<String>,
 
     #[serde(default)]
     output_schema: Option<Value>,
@@ -183,7 +181,7 @@ impl SpawnAgentTask {
     fn into_parts_with_parent(
         self,
         parent: Option<HarnessFamily>,
-        gateways: Option<&[SpawnGateway]>,
+        providers: Option<&[SpawnProvider]>,
     ) -> std::io::Result<(AgentTask, SpawnOptions, Option<UsdAmount>)> {
         let output_schema = match (self.output_contract, self.output_schema) {
             (Some(contract), None) => contract.into_schema()?,
@@ -196,34 +194,20 @@ impl SpawnAgentTask {
         };
         let mut options =
             SpawnOptions::new().reasoning_mode(self.reasoning_mode.unwrap_or_default());
-        let gateway = match (self.gateway, gateways) {
-            (None, _) => None,
-            (Some(name), Some(gateways)) => Some(
-                gateways
-                    .iter()
-                    .find(|gateway| gateway.name == name)
-                    .ok_or_else(|| {
-                        let names = gateways
-                            .iter()
-                            .map(|gateway| gateway.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        std::io::Error::other(format!(
-                            "no gateway is named {name}; the gateways are {names}"
-                        ))
-                    })?,
-            ),
-            (Some(_), None) => {
-                return Err(std::io::Error::other(
-                    "gateway is not offered here: this host runs subagents on one gateway",
-                ));
-            }
-        };
         if let Some(model) = self.model {
-            let listed = gateway.map_or(gateways.unwrap_or_default(), std::slice::from_ref);
+            let routed = providers.unwrap_or_default().iter().find_map(|provider| {
+                let id = model
+                    .strip_prefix(provider.name.as_str())?
+                    .strip_prefix('/')?;
+                Some((provider, id.to_owned()))
+            });
+            let (provider, model) = match routed {
+                Some((provider, id)) => (Some(provider), id),
+                None => (None, model),
+            };
             let backend = match self.harness.clone() {
                 Some(harness) => harness,
-                None => match listed_family(listed, &model) {
+                None => match provider.and_then(|provider| listed_family(provider, &model)) {
                     Some(family) => family,
                     None => inferred_harness(parent, &model)?,
                 },
@@ -236,32 +220,10 @@ impl SpawnAgentTask {
             } else {
                 model
             };
-            match gateway {
-                Some(gateway) if !gateway.models.contains(&model) => {
-                    return Err(std::io::Error::other(format!(
-                        "the {} gateway does not serve {} on the {} harness; list_models lists the models each gateway serves",
-                        gateway.name,
-                        model.as_str(),
-                        model.family()
-                    )));
-                }
-                Some(gateway) => options = options.gateway(&gateway.name),
-                None => {
-                    let mut serving = gateways
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|gateway| gateway.models.contains(&model));
-                    if let (Some(gateway), None) = (serving.next(), serving.next()) {
-                        options = options.gateway(&gateway.name);
-                    }
-                }
+            if let Some(provider) = provider {
+                options = options.provider(&provider.name);
             }
             options = options.harness_model(model);
-        } else if let Some(gateway) = gateway {
-            return Err(std::io::Error::other(format!(
-                "name the model to run on the {} gateway",
-                gateway.name
-            )));
         }
         if let Some(harness) = self.harness {
             options = options.harness(harness);
@@ -299,14 +261,12 @@ pub struct AgentStartReport {
     pub budget_usd: Option<UsdAmount>,
 }
 
-fn listed_family(gateways: &[SpawnGateway], model: &str) -> Option<HarnessFamily> {
-    let mut families = gateways
+fn listed_family(provider: &SpawnProvider, model: &str) -> Option<HarnessFamily> {
+    provider
+        .models
         .iter()
-        .flat_map(|gateway| &gateway.models)
-        .filter(|listed| listed.as_str() == model)
-        .map(ModelSelection::family);
-    let family = families.next()?;
-    families.all(|other| other == family).then_some(family)
+        .find(|listed| listed.as_str() == model)
+        .map(ModelSelection::family)
 }
 
 fn inferred_harness(parent: Option<HarnessFamily>, model: &str) -> std::io::Result<HarnessFamily> {
@@ -966,9 +926,9 @@ impl Tool for SpawnAgent {
             .unwrap_or_default();
         memoized(format!("{SPAWN_AGENT_TOOL} {policy:?}"), || {
             let description = "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.";
-            let description = match policy.gateways {
+            let description = match policy.providers {
                 Some(_) => format!(
-                    "{description} A subagent can run on any gateway this host offers (gateway): each serves and pays for its own models, which list_models lists, so a question about models or providers can be answered by spawning a subagent on each."
+                    "{description} A model a provider serves runs as <provider>/<model>, paid as that provider charges (list_models lists them), so a question about models or providers can be answered by spawning a subagent on each."
                 ),
                 None => description.to_owned(),
             };
@@ -1023,7 +983,7 @@ impl SpawnAgent {
             .decode_json::<SpawnAgentTask>()?
             .into_parts_with_parent(
                 Some(self.parent.harness_family()),
-                policy.gateways.as_deref(),
+                policy.providers.as_deref(),
             )?;
         let host_context = context.host_context().map(Arc::<str>::from);
         let lineage = Arc::clone(&registry);
@@ -1114,25 +1074,19 @@ fn spawn_agent_parameters_for(policy: &SpawnPolicy) -> Value {
         );
         properties["thinking"]["description"] = json!(description);
     }
-    if let Some(gateways) = &policy.gateways {
-        let mut names = gateways
+    if let Some(providers) = &policy.providers {
+        let offered = providers
             .iter()
-            .map(|gateway| json!(gateway.name))
-            .collect::<Vec<_>>();
-        names.push(Value::Null);
-        let offered = gateways
-            .iter()
-            .map(|gateway| format!("{} ({})", gateway.name, gateway.about))
+            .map(|provider| format!("{}/ ({})", provider.name, provider.about))
             .collect::<Vec<_>>()
             .join("; ");
-        parameters["properties"]["gateway"] = json!({
-            "type": ["string", "null"],
-            "enum": names,
-            "description": format!("The gateway to run the subagent on, with model naming one of the models it serves (list_models): {offered}. Null runs it on the only gateway that serves model, otherwise on the spawning agent's own gateway, or, for a model of another harness, on a gateway that serves it.")
-        });
-        if let Some(required) = parameters["required"].as_array_mut() {
-            required.push(json!("gateway"));
-        }
+        let description = format!(
+            "{} A model reached through a provider is named <provider>/<model>: {offered}; list_models lists their models.",
+            parameters["properties"]["model"]["description"]
+                .as_str()
+                .unwrap_or_default()
+        );
+        parameters["properties"]["model"]["description"] = json!(description);
     }
     if policy.budgets {
         parameters["properties"]["budget_usd"] = json!({
@@ -1444,21 +1398,21 @@ struct ListModels {
 
 #[derive(Serialize)]
 struct ModelCatalog<'a> {
-    gateways: Vec<CatalogGateway<'a>>,
+    providers: Vec<CatalogProvider<'a>>,
 }
 
 #[derive(Serialize)]
-struct CatalogGateway<'a> {
+struct CatalogProvider<'a> {
     name: &'a str,
     about: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<&'a str>,
-    models: Vec<CatalogModel<'a>>,
+    models: Vec<CatalogModel>,
 }
 
 #[derive(Serialize)]
-struct CatalogModel<'a> {
-    model: &'a str,
+struct CatalogModel {
+    model: String,
     harness: HarnessFamily,
 }
 
@@ -1469,7 +1423,7 @@ impl Tool for ListModels {
         memoized(LIST_MODELS_TOOL.to_owned(), || {
             ToolDefinition::function(
                 LIST_MODELS_TOOL,
-                "Lists the gateways subagents can run on, what each is and how it is paid, and the models each serves with the harness that runs them. Pass a gateway with one of its models and that harness to spawn_agent to run a subagent there.",
+                "Lists the models this host reaches through providers, each named <provider>/<model> with the harness that runs it, and what each provider is and how it is paid. Pass one as spawn_agent's model to run a subagent on it.",
                 schema(
                     r##"{
                 "type": "object",
@@ -1490,19 +1444,19 @@ impl Tool for ListModels {
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         let policy = registry.spawn_policy();
         json_output(&ModelCatalog {
-            gateways: policy
-                .gateways
+            providers: policy
+                .providers
                 .iter()
                 .flatten()
-                .map(|gateway| CatalogGateway {
-                    name: &gateway.name,
-                    about: &gateway.about,
-                    note: gateway.note.as_deref(),
-                    models: gateway
+                .map(|provider| CatalogProvider {
+                    name: &provider.name,
+                    about: &provider.about,
+                    note: provider.note.as_deref(),
+                    models: provider
                         .models
                         .iter()
                         .map(|model| CatalogModel {
-                            model: model.as_str(),
+                            model: format!("{}/{}", provider.name, model.as_str()),
                             harness: model.family(),
                         })
                         .collect(),
@@ -1795,7 +1749,7 @@ fn shared_tools(parent: AgentHandle, registry: &Arc<Registry>) -> Vec<Arc<dyn To
             operation: LifecycleOperation::Close,
         }),
     ];
-    if registry.spawn_policy().gateways.is_some() {
+    if registry.spawn_policy().providers.is_some() {
         tools.push(Arc::new(ListModels {
             registry: Arc::downgrade(registry),
         }));

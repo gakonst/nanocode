@@ -127,26 +127,6 @@ pub enum GatewayArg {
         help = "Cloudflare AI Gateway OpenAI proxy; OPENAI_API_KEY, CF_AIG_TOKEN for stored keys, or CLOUDFLARE_API_TOKEN for Unified Billing; needs --cloudflare-account and --cloudflare-gateway"
     )]
     CloudflareGateway,
-    #[value(
-        help = "Tempo wallet (tempo wallet login): pay Codex and Claude per request over MPP sessions through Tempo's proxies, or with --gateway-base-url one MPP endpoint"
-    )]
-    Tempo,
-    #[value(
-        help = "The Tempo gateway's models (gateway.tempo-dev.workers.dev), paid from the Tempo wallet"
-    )]
-    TempoGateway,
-    #[value(
-        help = "Boundless inference (api.inference.boundless.network/mpp), paid from the Tempo wallet"
-    )]
-    Boundless,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum TempoNetworkArg {
-    #[value(help = "Tempo mainnet (chain 4217), paid in USDC.e by default")]
-    Mainnet,
-    #[value(help = "Tempo testnet (chain 42431), paid in pathUSD by default")]
-    Testnet,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -167,7 +147,7 @@ pub struct SessionArgs {
         short,
         long,
         env = "NANOCODE_MODEL",
-        help = "Model id or alias (see 'nanocode models'); defaults to claude-opus-5-5 at xhigh thinking"
+        help = "Model id or alias (see 'nanocode models'); tempo/<model> runs it on the Tempo gateway, paid from the Tempo wallet; defaults to claude-opus-5-5 at xhigh thinking"
     )]
     pub model: Option<String>,
 
@@ -255,7 +235,7 @@ pub struct GatewayArgs {
         long,
         value_enum,
         env = "NANOCODE_GATEWAY",
-        help = "Gateway to prefer for the models it serves. Every gateway is offered at once and /model groups the models by gateway: your ChatGPT and Claude logins, Tempo's proxies, the Tempo gateway and Boundless (paid from the Tempo wallet), and OpenRouter, Vercel and Cloudflare when their keys are in the environment (read from there, never saved); agents see every gateway's models (list_models) and can run a subagent on any of them (spawn_agent's gateway), paid as that gateway charges"
+        help = "Route Codex models (gpt-6.1-sol, terra, luna, astra) through a Responses gateway for this process, including /new, /model and resumed sessions; keys are read from the provider's environment variable and never saved; Claude models keep their own login, and models named tempo/<model> run on the Tempo gateway; restart to change"
     )]
     pub gateway: Option<GatewayArg>,
 
@@ -279,23 +259,15 @@ pub struct GatewayArgs {
         long,
         value_name = "URL",
         requires = "gateway",
-        help = "Override the preferred gateway's base URL, for example a Cloudflare custom domain; with --gateway tempo, an MPP endpoint to pay, offering the models it lists, as one more gateway named by its host"
+        help = "Override the gateway base URL, for example a Cloudflare custom domain"
     )]
     pub gateway_base_url: Option<String>,
 
     #[arg(
         long,
-        value_enum,
-        env = "NANOCODE_TEMPO_NETWORK",
-        help = "Chain to pay --gateway tempo's --gateway-base-url on, instead of the one its payment challenge names"
-    )]
-    pub tempo_network: Option<TempoNetworkArg>,
-
-    #[arg(
-        long,
         env = "NANOCODE_TEMPO_CURRENCY",
         value_name = "TOKEN",
-        help = "Token to prefer paying MPP endpoints (Boundless, the Tempo gateway and --gateway tempo's --gateway-base-url) in: mach, usdc.e or ousd (mainnet), pathusd (testnet) or a token address; an endpoint that does not offer it is paid in one it does, in sessions of their own"
+        help = "Token to prefer paying the Tempo gateway in: mach (the default), ousd, usdc.e or a token address; when the gateway does not take it, it is paid in one it does, in a session of its own"
     )]
     pub tempo_currency: Option<String>,
 
@@ -303,7 +275,7 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_FEE_TOKEN",
         value_name = "TOKEN",
-        help = "Token to pay the gas of MPP endpoint (Boundless, the Tempo gateway and --gateway tempo's --gateway-base-url) session opens and top-ups in, instead of the fee token its payment challenge names: usdc.e or usdt0 (mainnet), pathusd or a token address; MACH and OUSD cannot pay gas"
+        help = "Token to pay the gas of Tempo gateway session opens and top-ups in, instead of the fee token its payment challenge names: usdc.e, usdt0 or a token address; MACH and OUSD cannot pay gas"
     )]
     pub tempo_fee_token: Option<String>,
 
@@ -311,14 +283,14 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_SESSION",
         value_name = "NAME",
-        help = "Pay each Tempo service (--gateway tempo's endpoint or proxies, the paid tools and the services shell commands reach) from this named session instead of the lowest of 64 slots no other process holds"
+        help = "Pay each Tempo service (the Tempo gateway's models and tools, Mercator and the services shell commands reach) from this named session instead of the lowest of 64 slots no other process holds"
     )]
     pub tempo_session: Option<String>,
 
     #[arg(
         long,
         env = "NANOCODE_TEMPO_CLOSE_SESSION",
-        help = "Close the sessions of the MPP endpoints this run paid cooperatively on exit, which returns the unspent deposits at once, instead of keeping them open for the next run to reuse"
+        help = "Close the Tempo gateway session cooperatively on exit, which returns the unspent deposit at once, instead of keeping it open for the next run to reuse"
     )]
     pub tempo_close_session: bool,
 
@@ -334,7 +306,7 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_DEPOSIT",
         value_name = "BASE_UNITS",
-        help = "Model session deposit and top-up for the gateways the Tempo wallet pays, in the token's base units (6 decimals), when the service suggests no deposit of its own: 2000000 (2 MACH) on Tempo's proxies and 1000000 (1 of the token) on an MPP endpoint unless set"
+        help = "Session deposit and top-up for the Tempo gateway's models and tools, in the token's base units (6 decimals), when it suggests no deposit of its own: 2000000 (2 MACH) unless set"
     )]
     pub tempo_deposit: Option<u128>,
 
@@ -385,7 +357,6 @@ impl SessionArgs {
                     .gateway
                     .gateway_base_url
                     .or(root.gateway.gateway_base_url),
-                tempo_network: self.gateway.tempo_network.or(root.gateway.tempo_network),
                 tempo_currency: self.gateway.tempo_currency.or(root.gateway.tempo_currency),
                 tempo_fee_token: self
                     .gateway

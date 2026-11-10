@@ -1,16 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use nanocode::{
-    Claude, ClaudeHarness, Codex, CodexHarness, Model, ModelSelection, Nanocode, Runner,
-    RunnerServerConfig, ServiceTier, Thinking,
+    Claude, ClaudeHarness, ClaudeModel, Codex, CodexHarness, Model, ModelSelection, Nanocode,
+    OpenAi, Runner, RunnerServerConfig, ServiceTier, Thinking,
     agent::{Agent, AgentEvents},
     claude::ClaudeClient,
     durability::SessionStore,
 };
 
 use crate::{
-    cli::{RemoteArgs, RunnerModeArg},
-    gateways::{self, Gateway, Routes},
+    cli::{GatewayArg, GatewayArgs, RemoteArgs, RunnerModeArg},
+    tempo::Tempo,
 };
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -30,8 +30,38 @@ pub struct ModelClients {
     tool_environment: Vec<(String, String)>,
     mcp_servers: Vec<(String, nanocode::tools::mcp::McpServer)>,
     models: Option<std::sync::Arc<[Model]>>,
-    gateways: Vec<Gateway>,
-    preferred: Option<String>,
+    tempo: Option<Tempo>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Route {
+    #[default]
+    Native,
+    Tempo,
+}
+
+impl Route {
+    pub const fn provider(self) -> Option<&'static str> {
+        match self {
+            Self::Native => None,
+            Self::Tempo => Some(Tempo::NAME),
+        }
+    }
+
+    pub fn of(provider: Option<&str>) -> Result<Self> {
+        match provider {
+            None => Ok(Self::Native),
+            Some(Tempo::NAME) => Ok(Self::Tempo),
+            Some(other) => Err(format!("this build does not route models through {other}").into()),
+        }
+    }
+
+    pub fn label(self, model: &ModelSelection) -> String {
+        match self {
+            Self::Native => model.to_string(),
+            Self::Tempo => format!("{}{model}", Tempo::PREFIX),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -110,22 +140,34 @@ impl ModelClients {
 
     #[must_use]
     pub fn openai_endpoint(
-        mut self,
+        self,
         base_url: impl Into<String>,
         layer: impl nanocode::http::Layer + Clone,
     ) -> Self {
-        self.openai = Some(gateways::openai_endpoint(base_url, layer));
-        self
+        let base_url = base_url.into();
+        self.openai(move || {
+            OpenAi::builder(nanocode::codex::OpenAiAuth::gateway_managed())
+                .api_base_url(base_url.clone())
+                .transport(nanocode::codex::transport::ResponsesTransport::Https)
+                .http_layer(layer.clone())
+        })
     }
 
     #[must_use]
     pub fn claude_endpoint(
-        mut self,
+        self,
         messages_url: impl Into<String>,
         layer: impl nanocode::http::Layer + Clone,
     ) -> Self {
-        self.claude = Some(gateways::claude_endpoint(messages_url, layer));
-        self
+        let messages_url = messages_url.into();
+        self.claude(move || {
+            ClaudeClient::with_auth_headers(
+                Default::default(),
+                messages_url.clone(),
+                Default::default(),
+            )
+            .with_http_layer(layer.clone())
+        })
     }
 
     #[must_use]
@@ -196,38 +238,57 @@ impl ModelClients {
         self
     }
 
-    #[must_use]
-    pub(crate) fn gateway(mut self, gateway: Gateway) -> Self {
-        self.gateways.push(gateway);
-        self
+    pub(crate) fn codex_models(&self) -> Option<&[Model]> {
+        self.models.as_deref()
     }
 
     #[must_use]
-    pub(crate) fn prefer(mut self, name: impl Into<String>) -> Self {
-        self.preferred = Some(name.into());
+    pub(crate) fn tempo(mut self, tempo: Tempo) -> Self {
+        self.tempo = Some(tempo);
         self
     }
 
-    pub(crate) fn preferred(&self) -> Option<&str> {
-        self.preferred.as_deref()
+    pub(crate) const fn tempo_models(&self) -> Option<&Tempo> {
+        self.tempo.as_ref()
     }
 
-    pub(crate) fn catalog(&self) -> Vec<Gateway> {
-        gateways::native(
-            self.openai.clone(),
-            self.claude.clone(),
-            self.models.as_deref(),
-        )
-        .into_iter()
-        .chain(self.gateways.iter().cloned())
-        .collect()
+    pub(crate) fn resolve(&self, value: &str) -> Result<(Route, ModelSelection)> {
+        let value = value.trim();
+        let Some(id) = value.strip_prefix(Tempo::PREFIX) else {
+            return Ok((Route::Native, self.parse_model(value)?));
+        };
+        if self.tempo.is_none() {
+            return Err(format!(
+                "{value} runs on the Tempo gateway, which this build does not offer"
+            )
+            .into());
+        }
+        if id.trim().is_empty() {
+            return Err(format!(
+                "name a model after {}, such as {}claude-opus-5-5",
+                Tempo::PREFIX,
+                Tempo::PREFIX
+            )
+            .into());
+        }
+        Ok((Route::Tempo, Tempo::model(id.trim())))
     }
 
     pub fn parse_model(&self, value: &str) -> Result<ModelSelection> {
-        let gateways = self.catalog();
-        gateways::parse(&gateways, value)
-            .filter(|model| gateways.iter().any(|gateway| gateway.serves(model)))
-            .ok_or_else(|| gateways::unknown(&gateways, value))
+        let Some(served) = &self.models else {
+            return parse_model(value);
+        };
+        let value = value.trim();
+        if let Some(model) = served
+            .iter()
+            .find(|model| model.as_str() == value || Model::known(value) == Some(**model))
+        {
+            return Ok(ModelSelection::Codex(*model));
+        }
+        if let Ok(model) = value.parse::<ClaudeModel>() {
+            return Ok(ModelSelection::Claude(model));
+        }
+        Err(unknown_model(value, self))
     }
 
     pub(crate) fn panel_command(&self) -> Option<(&'static str, &'static str)> {
@@ -269,9 +330,166 @@ pub struct HostConfig {
     pub runners: Vec<Runner>,
     pub runner_servers: Vec<RunnerServerConfig>,
     pub tab: Option<String>,
-    pub routes: Routes,
+    pub gateway: Option<Gateway>,
     pub clients: ModelClients,
     pub headless: bool,
+    pub cyber_access_program: Option<nanocode::codex::CyberAccessProgram>,
+}
+
+#[derive(Clone)]
+pub struct Gateway {
+    route: nanocode::codex::transport::ResponsesGateway,
+    auth: nanocode::codex::OpenAiAuth,
+    credential: &'static str,
+    base_url: String,
+}
+
+impl Gateway {
+    pub fn serves(&self, model: &ModelSelection) -> bool {
+        model
+            .as_codex()
+            .is_none_or(|model| self.route.serves(model))
+    }
+
+    pub fn check(&self, model: &ModelSelection) -> Result<()> {
+        if self.serves(model) {
+            return Ok(());
+        }
+        let served = ModelSelection::for_family(nanocode::HarnessFamily::Codex)
+            .filter(|candidate| self.serves(candidate))
+            .map(|candidate| candidate.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(format!(
+            "{model} is not available through the {} gateway; choose one of {served} or a Claude model",
+            self.route.name()
+        )
+        .into())
+    }
+
+    pub const fn name(&self) -> &'static str {
+        self.route.name()
+    }
+
+    pub fn compacts(&self, model: &ModelSelection) -> bool {
+        model.as_codex().is_none() || self.route.supports_inline_compaction()
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "Codex via {} {} · credential {}",
+            self.route.name(),
+            self.base_url,
+            self.credential
+        )
+    }
+}
+
+fn env_secret(name: &'static str) -> Option<(&'static str, String)> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| (name, value))
+}
+
+pub fn gateway(args: &GatewayArgs) -> Result<Option<Gateway>> {
+    use nanocode::codex::{OpenAiAuth, transport::ResponsesGateway};
+    let Some(kind) = args.gateway else {
+        return Ok(None);
+    };
+    let account = || {
+        args.cloudflare_account
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "--gateway {} needs --cloudflare-account or CLOUDFLARE_ACCOUNT_ID",
+                    kind_name(kind)
+                )
+            })
+    };
+    let missing = |names: &str| -> Error {
+        format!(
+            "--gateway {} needs {names} in the environment",
+            kind_name(kind)
+        )
+        .into()
+    };
+    let (mut route, auth, credential) = match kind {
+        GatewayArg::Openrouter => {
+            let (name, key) =
+                env_secret("OPENROUTER_API_KEY").ok_or_else(|| missing("OPENROUTER_API_KEY"))?;
+            (
+                ResponsesGateway::openrouter(),
+                OpenAiAuth::api_key(key),
+                name,
+            )
+        }
+        GatewayArg::Vercel => {
+            let (name, key) = env_secret("AI_GATEWAY_API_KEY")
+                .or_else(|| env_secret("VERCEL_OIDC_TOKEN"))
+                .ok_or_else(|| missing("AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN"))?;
+            (ResponsesGateway::vercel(), OpenAiAuth::api_key(key), name)
+        }
+        GatewayArg::Cloudflare => {
+            let (name, key) = env_secret("CLOUDFLARE_API_TOKEN")
+                .ok_or_else(|| missing("CLOUDFLARE_API_TOKEN"))?;
+            let mut route = ResponsesGateway::cloudflare(account()?);
+            if let Some(gateway) = args
+                .cloudflare_gateway
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+            {
+                route = route.gateway_id(gateway);
+            }
+            (route, OpenAiAuth::api_key(key), name)
+        }
+        GatewayArg::CloudflareGateway => {
+            let gateway = args
+                .cloudflare_gateway
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or("--gateway cloudflare-gateway needs --cloudflare-gateway or CLOUDFLARE_GATEWAY_ID")?;
+            let mut route = ResponsesGateway::cloudflare_gateway(account()?, gateway);
+            let gateway_token = env_secret("CF_AIG_TOKEN");
+            if let Some((_, token)) = &gateway_token {
+                route = route.gateway_token(token.clone());
+            }
+            match (
+                env_secret("OPENAI_API_KEY"),
+                gateway_token,
+                env_secret("CLOUDFLARE_API_TOKEN"),
+            ) {
+                (Some((name, key)), _, _) => (route, OpenAiAuth::api_key(key), name),
+                (None, Some(_), _) => (route, OpenAiAuth::gateway_managed(), "CF_AIG_TOKEN"),
+                (None, None, Some((name, key))) => (route, OpenAiAuth::api_key(key), name),
+                (None, None, None) => {
+                    return Err(missing(
+                        "OPENAI_API_KEY, CF_AIG_TOKEN or CLOUDFLARE_API_TOKEN",
+                    ));
+                }
+            }
+        }
+    };
+    if let Some(url) = &args.gateway_base_url {
+        route = route.base_url(url.clone());
+    }
+    let base_url = route.api_base_url().to_owned();
+    Ok(Some(Gateway {
+        route,
+        auth,
+        credential,
+        base_url,
+    }))
+}
+
+const fn kind_name(kind: GatewayArg) -> &'static str {
+    match kind {
+        GatewayArg::Openrouter => "openrouter",
+        GatewayArg::Vercel => "vercel",
+        GatewayArg::Cloudflare => "cloudflare",
+        GatewayArg::CloudflareGateway => "cloudflare-gateway",
+    }
 }
 
 #[derive(Clone)]
@@ -331,18 +549,31 @@ impl Host {
         model: &ModelSelection,
         thinking: Thinking,
     ) -> Result<Self> {
-        let routes = config.routes.clone();
-        let openai = routes
-            .default_openai()
-            .ok_or("no gateway offers Codex models")?;
-        let claude = routes
-            .default_claude()
-            .ok_or("no gateway offers Claude models")?;
+        let openai = match (&config.clients.openai, &config.gateway) {
+            (Some(openai), _) => openai(),
+            (None, Some(gateway)) => {
+                gateway.check(model)?;
+                OpenAi::builder(gateway.auth.clone()).responses_gateway(gateway.route.clone())
+            }
+            (None, None) => OpenAi::builder(nanocode::codex::OpenAiAuth::chatgpt()),
+        }
+        .raw_api_events(false)
+        .cyber_access_program(config.cyber_access_program)
+        .build()?;
+        let (tempo_openai, tempo_claude) = match &config.clients.tempo {
+            Some(tempo) => (
+                Some(tempo.openai().raw_api_events(false).build()?),
+                Some(tempo.claude()),
+            ),
+            None => (None, None),
+        };
+        let tempo = |request: &nanocode::HarnessRequest| {
+            request.options.selected_provider() == Route::Tempo.provider()
+        };
         let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
         let described = std::sync::Arc::clone(&hand);
-        let routed = routes.clone();
         let codex = CodexHarness::new(openai)
-            .client_for(move |request| routed.openai(request))
+            .client_for(move |request| tempo_openai.clone().filter(|_| tempo(request)))
             .configure(move |builder| {
                 Ok(match &*described.get() {
                     Some(hand) => builder.execution_environment(codex_environment(hand)),
@@ -350,15 +581,21 @@ impl Host {
                 })
             });
         let described = std::sync::Arc::clone(&hand);
-        let claude = ClaudeHarness::new(claude)
-            .client_for(move |request| routes.claude(request))
-            .headless(config.headless)
-            .configure(move |builder| {
-                Ok(match &*described.get() {
-                    Some(hand) => builder.environment(claude_environment(hand)),
-                    None => builder,
-                })
-            });
+        let claude = ClaudeHarness::new(
+            config
+                .clients
+                .claude
+                .as_ref()
+                .map_or_else(ClaudeClient::default, |claude| claude()),
+        )
+        .client_for(move |request| tempo_claude.clone().filter(|_| tempo(request)))
+        .headless(config.headless)
+        .configure(move |builder| {
+            Ok(match &*described.get() {
+                Some(hand) => builder.environment(claude_environment(hand)),
+                None => builder,
+            })
+        });
         let mut builder = Nanocode::builder()
             .openai(codex)
             .claude(claude)
@@ -409,8 +646,8 @@ impl Host {
             _ => return Err(format!("unsupported model {model}").into()),
         };
         let runtime = builder?;
-        if let Some(subagents) = runtime.subagents() {
-            config.routes.offer(subagents);
+        if let (Some(subagents), Some(tempo)) = (runtime.subagents(), &config.clients.tempo) {
+            tempo.offer(subagents);
         }
         Ok(Self {
             config,
@@ -430,12 +667,16 @@ impl Host {
         &self,
         model: &ModelSelection,
         thinking: Thinking,
+        route: Route,
     ) -> Result<(Agent, AgentEvents)> {
         self.replacement_hand().await;
+        let spawn = match route.provider() {
+            Some(provider) => self.runtime.spawn().provider(provider),
+            None => self.runtime.spawn(),
+        };
         let started = match (model.as_codex(), model.as_claude()) {
             (Some(model), _) => {
-                self.runtime
-                    .spawn()
+                spawn
                     .backend::<Codex>()
                     .model(model)
                     .thinking(thinking)
@@ -443,8 +684,7 @@ impl Host {
                     .await
             }
             (_, Some(model)) => {
-                self.runtime
-                    .spawn()
+                spawn
                     .backend::<Claude>()
                     .model(model)
                     .thinking(thinking)
@@ -464,6 +704,28 @@ impl Host {
         self.replacement_hand().await;
         Ok(self.runtime.open_loaded(store, stored).await?)
     }
+}
+
+pub fn parse_model(value: &str) -> Result<ModelSelection> {
+    let value = value.trim();
+    if let Some(model) = Model::known(value) {
+        return Ok(ModelSelection::Codex(model));
+    }
+    if let Ok(model) = value.parse::<ClaudeModel>() {
+        return Ok(ModelSelection::Claude(model));
+    }
+    Err(unknown_model(value, &ModelClients::default()))
+}
+
+fn unknown_model(value: &str, clients: &ModelClients) -> Error {
+    let known = crate::models::catalog(clients)
+        .into_iter()
+        .flat_map(|group| group.models)
+        .filter(|(route, _)| *route == Route::Native)
+        .map(|(_, model)| model.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("unknown model {value:?}; known models: {known}; models the Tempo gateway serves are named {}<model> ('nanocode models' lists them)", Tempo::PREFIX).into()
 }
 
 pub fn parse_thinking(value: &str) -> Result<Thinking> {

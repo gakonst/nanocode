@@ -36,7 +36,9 @@ pub(crate) struct State {
     #[serde(default)]
     pub(super) hands: Vec<SavedHand>,
     #[serde(default)]
-    gateway: Option<String>,
+    pub provider: Option<String>,
+    #[serde(default)]
+    pending_provider: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,15 +182,21 @@ impl App {
             next_local: self.next_local,
             hold_queue: self.hold_queue,
             stashed_draft: self.stashed_draft.clone(),
-            pending_switch: self.pending_switch.clone(),
+            pending_switch: self
+                .pending_switch
+                .clone()
+                .map(|(model, thinking, tier, _)| (model, thinking, tier)),
             theme: self.theme.clone(),
             side: self.panes.saved(),
             focus: self.focus,
             executor: self.reload_executor(),
             hands: self.reload_hands(),
-            gateway: self
-                .gateway()
-                .map(|gateway| self.host.config.routes.gateway(gateway).name.clone()),
+            provider: self.route.provider().map(str::to_owned),
+            pending_provider: self
+                .pending_switch
+                .as_ref()
+                .and_then(|(_, _, _, route)| route.provider())
+                .map(str::to_owned),
         }
     }
 
@@ -238,10 +246,6 @@ impl App {
     }
 
     pub(super) fn restore_reload(&mut self, state: State) {
-        let routes = &self.host.config.routes;
-        if let Some(gateway) = state.gateway.as_deref().and_then(|name| routes.find(name)) {
-            routes.choose(&state.model, gateway);
-        }
         if let Some(session) = &state.session {
             let selection = match state.executor {
                 SavedExecutor::Names(names) => names
@@ -264,7 +268,15 @@ impl App {
         self.next_local = state.next_local;
         self.hold_queue = state.hold_queue;
         self.stashed_draft = state.stashed_draft;
-        self.pending_switch = state.pending_switch;
+        let pending = crate::host::Route::of(state.pending_provider.as_deref());
+        self.pending_switch = match (state.pending_switch, pending) {
+            (Some((model, thinking, tier)), Ok(route)) => Some((model, thinking, tier, route)),
+            (Some(_), Err(error)) => {
+                self.notice(NoticeLevel::Error, error.to_string());
+                None
+            }
+            (None, _) => None,
+        };
         self.theme = state.theme;
         self.reload_side = state.side;
         self.reload_focus = state.focus;

@@ -366,7 +366,7 @@ impl AgentFactory for RoutedFactory {
                 .tracked_one(async move {
                     parent.ensure_available().await?;
                     options.validate_harness()?;
-                    if options.selected_gateway().is_none()
+                    if options.selected_provider().is_none()
                         && resolve_family(&parent, &options) == parent.harness_family()
                     {
                         return parent
@@ -437,17 +437,26 @@ impl AgentFactory for RoutedFactory {
                             .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?,
                         None => checkpoint,
                     };
-                    if checkpoint.family() == parent.harness_family() {
+                    let provider = match &inner.recovery_store {
+                        Some(store) => store
+                            .record(checkpoint.session_id())
+                            .await
+                            .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?
+                            .and_then(|record| record.provider),
+                        None => None,
+                    };
+                    if provider.is_none() && checkpoint.family() == parent.harness_family() {
                         return parent
                             .restore_native_runtime(checkpoint, host_context)
                             .await;
                     }
                     let model = checkpoint.model();
-                    let options = SpawnOptions::new()
+                    let mut options = SpawnOptions::new()
                         .harness(model.family())
                         .harness_model(model)
                         .thinking(checkpoint.thinking())
                         .reasoning_mode(checkpoint.reasoning_mode());
+                    options.provider = provider;
                     options.validate_harness()?;
                     inner
                         .construct(

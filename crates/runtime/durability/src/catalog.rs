@@ -10,6 +10,9 @@ pub struct SessionRecord {
     pub model: ModelSelection,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<PathBuf>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,6 +92,7 @@ impl SessionRecord {
             lineage: Lineage::root(session_id.clone()),
             session_id,
             model,
+            provider: None,
             workspace,
             title: None,
             created_at_ms: now,
@@ -144,6 +148,7 @@ impl SessionRecord {
             lineage: Lineage::child_of(&self.lineage, self.session_id.clone(), origin),
             session_id,
             model: self.model.clone(),
+            provider: self.provider.clone(),
             workspace: self.workspace.clone(),
             title: self.title.clone(),
             created_at_ms: now,
@@ -180,6 +185,7 @@ impl SessionRecord {
         Self {
             session_id: next.session_id,
             model: next.model,
+            provider: next.provider.or_else(|| self.provider.clone()),
             workspace: next.workspace.or_else(|| self.workspace.clone()),
             title: next.title.or_else(|| self.title.clone()),
             lineage,
@@ -1304,6 +1310,7 @@ mod store {
             Ok(SessionRecord {
                 session_id: id.to_owned(),
                 model,
+                provider: None,
                 workspace,
                 title: None,
                 lineage: Lineage::root(id),

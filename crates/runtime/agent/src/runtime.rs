@@ -735,6 +735,9 @@ fn persistent_recipe(
                                 "checkpoint identity differs from the stored session".into(),
                             ));
                         }
+                        if spec.options.provider.is_none() {
+                            spec.options.provider.clone_from(&record.provider);
+                        }
                         spec.durable_state = Some(
                             store
                                 .prepare_resume(checkpoint.session_id())
@@ -776,12 +779,13 @@ fn persistent_recipe(
                     };
                     (id, lineage)
                 };
-                let record = crate::durability::SessionRecord::root(
+                let mut record = crate::durability::SessionRecord::root(
                     id,
                     spec.model.clone(),
                     Some(workspace.to_path_buf()),
                 )
                 .with_lineage(lineage);
+                record.provider.clone_from(&spec.options.provider);
                 spec.durable_state =
                     Some(store.prepare_session(record).await.map_err(catalog_error)?);
             }
@@ -988,11 +992,13 @@ impl AgentRuntime {
                 .map_err(catalog_error)?,
             None => None,
         };
+        let mut options = SpawnOptions::new()
+            .harness_model(model.clone())
+            .thinking(thinking);
+        options.provider.clone_from(&stored.summary.record.provider);
         let spec = AgentSpec {
             parent: None,
-            options: SpawnOptions::new()
-                .harness_model(model.clone())
-                .thinking(thinking),
+            options,
             model,
             thinking,
             settings: Settings::default(),
@@ -1072,20 +1078,26 @@ impl AgentRuntime {
             }
         }
         let transcript = agent.transcript().await?;
+        let mut options = SpawnOptions::new()
+            .harness_model(model.clone())
+            .thinking(thinking);
         let durable_state = match &self.inner.durability {
             Some(store) => {
                 let parent = agent.session_id();
                 let (lineage, workspace) = match store.load(parent).await {
-                    Ok(stored) => (
-                        stored.summary.record.lineage,
-                        stored.summary.record.workspace,
-                    ),
+                    Ok(stored) => {
+                        options.provider = stored.summary.record.provider;
+                        (
+                            stored.summary.record.lineage,
+                            stored.summary.record.workspace,
+                        )
+                    }
                     Err(crate::durability::Error::SessionNotFound { .. }) => {
                         (crate::Lineage::root(parent), None)
                     }
                     Err(error) => return Err(catalog_error(error)),
                 };
-                let record = crate::durability::SessionRecord::root(
+                let mut record = crate::durability::SessionRecord::root(
                     nanocode_platform::uuid_v7().to_string(),
                     model.clone(),
                     workspace,
@@ -1096,6 +1108,7 @@ impl AgentRuntime {
                     crate::Origin::Fork,
                 ))
                 .with_inherited_transcript(transcript.clone());
+                record.provider.clone_from(&options.provider);
                 Some(store.prepare_session(record).await.map_err(catalog_error)?)
             }
             None => None,
@@ -1103,9 +1116,7 @@ impl AgentRuntime {
         let (switched, events) = self
             .construct(AgentSpec {
                 parent: None,
-                options: SpawnOptions::new()
-                    .harness_model(model.clone())
-                    .thinking(thinking),
+                options,
                 model,
                 thinking,
                 settings: Settings::default(),
@@ -1184,6 +1195,11 @@ impl<B> SpawnBuilder<'_, B> {
 
     pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.options = self.options.provider(provider);
         self
     }
 

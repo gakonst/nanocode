@@ -1,13 +1,61 @@
-use nanocode::{ModelSelection, ModelTransport, ServiceTier, Thinking};
+use nanocode::{HarnessFamily, ModelSelection, ModelTransport, ServiceTier, Thinking};
 use nanocode_tui::{
     effort::{EffortDial, Level},
     picker::{Picker, PickerItem},
     theme::Theme,
 };
 
-use crate::gateways::Routes;
+use crate::{host::Route, tempo::Tempo};
 
-pub type Choices = Vec<Option<(usize, ModelSelection)>>;
+pub type Choices = Vec<Option<(Route, ModelSelection)>>;
+
+pub struct Group {
+    pub title: String,
+    pub note: Option<String>,
+    pub models: Vec<(Route, ModelSelection)>,
+}
+
+pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
+    let mut groups = HarnessFamily::builtin()
+        .into_iter()
+        .map(|family| {
+            let models: Vec<ModelSelection> = match clients.codex_models() {
+                Some(served) if family == HarnessFamily::Codex => {
+                    served.iter().copied().map(ModelSelection::Codex).collect()
+                }
+                _ => family.models().collect(),
+            };
+            Group {
+                title: harness_title(&family),
+                note: None,
+                models: models
+                    .into_iter()
+                    .map(|model| (Route::Native, model))
+                    .collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if let Some(tempo) = clients.tempo_models() {
+        let (models, note) = tempo.models();
+        groups.push(Group {
+            title: format!("Tempo · {}", Tempo::ABOUT),
+            note: note.map(|note| format!("Tempo: {note}")),
+            models: models
+                .into_iter()
+                .map(|model| (Route::Tempo, model))
+                .collect(),
+        });
+    }
+    groups
+}
+
+fn harness_title(family: &HarnessFamily) -> String {
+    if *family == HarnessFamily::Claude {
+        "Claude".into()
+    } else {
+        "Codex".into()
+    }
+}
 
 pub fn features(model: &ModelSelection) -> String {
     let capabilities = model.capabilities(ModelTransport::Native);
@@ -23,43 +71,47 @@ pub fn features(model: &ModelSelection) -> String {
 
 pub fn model_picker(
     current: &ModelSelection,
-    gateway: Option<usize>,
-    routes: &Routes,
+    route: Route,
+    gateway: Option<&crate::host::Gateway>,
+    clients: &crate::host::ModelClients,
 ) -> (Picker, Choices) {
     let mut items = Vec::new();
     let mut choices = Vec::new();
     let mut footer = vec!["type to filter · enter select · esc cancel".to_owned()];
-    for (index, offered) in routes.gateways().iter().enumerate() {
-        let (models, note) = offered.models();
-        if let Some(note) = note {
-            footer.push(format!("{}: {note}", offered.name));
-        }
+    for group in catalog(clients) {
+        footer.extend(group.note);
+        let models = group
+            .models
+            .into_iter()
+            .filter(|(offered, model)| {
+                *offered != Route::Native || gateway.is_none_or(|gateway| gateway.serves(model))
+            })
+            .collect::<Vec<_>>();
         if models.is_empty() {
             continue;
         }
-        items.push(PickerItem::header(offered.title()));
+        items.push(PickerItem::header(group.title));
         choices.push(None);
-        for model in models {
+        for (offered, model) in models {
             let capabilities = model.capabilities(ModelTransport::Native);
             let thinking = capabilities
                 .thinking()
                 .map(Thinking::as_str)
                 .collect::<Vec<_>>()
                 .join("/");
-            let label = model.to_string();
             let detail = match model.display_name() {
-                name if name == label => format!("thinking {thinking}"),
+                name if name == model.as_str() => format!("thinking {thinking}"),
                 name => format!("{name} · thinking {thinking}"),
             };
-            let mut item = PickerItem::choice(label)
+            let mut item = PickerItem::choice(offered.label(&model))
                 .detail(detail)
-                .current(model == *current && gateway == Some(index));
+                .current(model == *current && offered == route);
             let features = features(&model);
             if !features.is_empty() {
                 item = item.badge(features);
             }
             items.push(item);
-            choices.push(Some((index, model)));
+            choices.push(Some((offered, model)));
         }
     }
     (

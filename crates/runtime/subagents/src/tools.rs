@@ -599,6 +599,7 @@ pub async fn start_agents_observed(
                 child,
                 event_task,
                 contract,
+                None,
             )
             .await
         {
@@ -847,14 +848,13 @@ async fn start_child(
             child,
             event_task,
             contract,
+            call_id.map(|call| super::durable::Spawned {
+                session: caller.to_owned(),
+                call: call.to_owned(),
+            }),
         )
         .await?;
     startup.track(&reservation.root_session_id, id);
-    if let Some(call_id) = call_id {
-        registry
-            .mark_spawned(&reservation.root_session_id, id, caller, call_id)
-            .await;
-    }
     registry.send(&reservation.root_session_id, AgentUpdate::Added(descriptor));
     let _ = start_events.send(());
 

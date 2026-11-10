@@ -4557,6 +4557,7 @@ impl Registry {
             .send(move |state| state.finish_turn_steer(&root, steer, committed));
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn insert(
         self: &Arc<Self>,
         root_session_id: String,
@@ -4565,6 +4566,7 @@ impl Registry {
         agent: Agent,
         event_task: Task<()>,
         contract: OutputContract,
+        spawned: Option<durable::Spawned>,
     ) -> std::io::Result<()> {
         let OutputContract {
             validator,
@@ -4642,7 +4644,7 @@ impl Registry {
                         conversation: false,
                         waited: Vec::new(),
                         sent: Vec::new(),
-                        spawned: None,
+                        spawned,
                     },
                 )
             })
@@ -5787,31 +5789,6 @@ impl Registry {
                     .is_some_and(|scope| scope.sessions.holds_root_watch())
             })
             .await
-    }
-
-    pub(super) async fn mark_spawned(
-        &self,
-        root_session_id: &str,
-        id: AgentId,
-        session_id: &str,
-        call_id: &str,
-    ) {
-        let root = root_session_id.to_owned();
-        let spawned = durable::Spawned {
-            session: session_id.to_owned(),
-            call: call_id.to_owned(),
-        };
-        self.state
-            .call(move |state| {
-                if let Some(child) = state
-                    .scopes
-                    .get_mut(&root)
-                    .and_then(|scope| scope.sessions.get_mut(&id))
-                {
-                    child.spawned = Some(spawned);
-                }
-            })
-            .await;
     }
 
     pub(super) async fn respawned(

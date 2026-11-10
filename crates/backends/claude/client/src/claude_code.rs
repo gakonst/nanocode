@@ -252,28 +252,44 @@ async fn write_keychain(
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let command =
         format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{hex}\"\n");
-    if command.len() > KEYCHAIN_COMMAND_LIMIT {
-        return Err(unavailable(&format!(
-            "the refreshed Claude Code login ({} bytes) exceeds the {KEYCHAIN_COMMAND_LIMIT}-byte security -i command limit",
-            bytes.len()
-        )));
+    let interactive = command.len() <= KEYCHAIN_COMMAND_LIMIT;
+    let mut security = tokio::process::Command::new("security");
+    if interactive {
+        security.arg("-i").stdin(std::process::Stdio::piped());
+    } else {
+        tracing::warn!(
+            target: "nanocode_claude",
+            bytes = bytes.len(),
+            "the Claude Code login exceeds the security -i command limit; passing it as arguments"
+        );
+        security
+            .args([
+                "add-generic-password",
+                "-U",
+                "-a",
+                account,
+                "-s",
+                service,
+                "-X",
+                &hex,
+            ])
+            .stdin(std::process::Stdio::null());
     }
-    let mut child = tokio::process::Command::new("security")
-        .arg("-i")
-        .stdin(std::process::Stdio::piped())
+    let mut child = security
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|error| unavailable(&format!("keychain update failed to start: {error}")))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| unavailable("keychain update has no stdin"))?;
-    stdin
-        .write_all(command.as_bytes())
-        .await
-        .map_err(|error| unavailable(&format!("keychain update failed: {error}")))?;
-    drop(stdin);
+    if interactive {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| unavailable("keychain update has no stdin"))?;
+        stdin
+            .write_all(command.as_bytes())
+            .await
+            .map_err(|error| unavailable(&format!("keychain update failed: {error}")))?;
+    }
     let output = child
         .wait_with_output()
         .await

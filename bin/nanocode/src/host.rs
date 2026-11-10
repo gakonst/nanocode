@@ -721,8 +721,8 @@ fn unknown_model(value: &str, clients: &ModelClients) -> Error {
     let known = crate::models::catalog(clients)
         .into_iter()
         .flat_map(|group| group.models)
-        .filter(|(route, _)| *route == Route::Native)
-        .map(|(_, model)| model.to_string())
+        .filter(|(route, _, _)| *route == Route::Native)
+        .map(|(_, model, _)| model.to_string())
         .collect::<Vec<_>>()
         .join(", ");
     format!("unknown model {value:?}; known models: {known}; models the Tempo gateway serves are named {}<model> ('nanocode models' lists them)", Tempo::PREFIX).into()

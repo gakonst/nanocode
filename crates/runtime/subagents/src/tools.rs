@@ -919,11 +919,15 @@ struct SpawnAgent {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
-        let policy = self
+        let mut policy = self
             .registry
             .upgrade()
             .map(|registry| registry.spawn_policy())
             .unwrap_or_default();
+        for provider in policy.providers.iter_mut().flatten() {
+            provider.models.clear();
+            provider.note = None;
+        }
         memoized(format!("{SPAWN_AGENT_TOOL} {policy:?}"), || {
             let description = "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.";
             let description = match policy.providers {
@@ -1396,6 +1400,13 @@ struct ListModels {
     registry: Weak<Registry>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelQuery {
+    #[serde(default)]
+    query: Option<String>,
+}
+
 #[derive(Serialize)]
 struct ModelCatalog<'a> {
     providers: Vec<CatalogProvider<'a>>,
@@ -1427,7 +1438,12 @@ impl Tool for ListModels {
                 schema(
                     r##"{
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Lists only the models whose name contains this, ignoring case."
+                    }
+                },
                 "additionalProperties": false
             }"##,
                 ),
@@ -1437,7 +1453,9 @@ impl Tool for ListModels {
 
     recovers!(self, input, context, self.execute(input, context));
 
-    async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+        let ModelQuery { query } = input.decode_json()?;
+        let query = query.unwrap_or_default().to_lowercase();
         let registry = self
             .registry
             .upgrade()
@@ -1459,6 +1477,7 @@ impl Tool for ListModels {
                             model: format!("{}/{}", provider.name, model.as_str()),
                             harness: model.family(),
                         })
+                        .filter(|model| model.model.to_lowercase().contains(&query))
                         .collect(),
                 })
                 .collect(),

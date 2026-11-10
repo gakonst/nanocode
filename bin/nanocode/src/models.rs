@@ -12,7 +12,7 @@ pub type Choices = Vec<Option<(Route, ModelSelection)>>;
 pub struct Group {
     pub title: String,
     pub note: Option<String>,
-    pub models: Vec<(Route, ModelSelection)>,
+    pub models: Vec<(Route, ModelSelection, Option<String>)>,
 }
 
 pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
@@ -30,21 +30,34 @@ pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
                 note: None,
                 models: models
                     .into_iter()
-                    .map(|model| (Route::Native, model))
+                    .map(|model| (Route::Native, model, None))
                     .collect(),
             }
         })
         .collect::<Vec<_>>();
     if let Some(tempo) = clients.tempo_models() {
-        let (models, note) = tempo.models();
-        groups.push(Group {
-            title: format!("Tempo · {}", Tempo::ABOUT),
-            note: note.map(|note| format!("Tempo: {note}")),
-            models: models
-                .into_iter()
-                .map(|model| (Route::Tempo, model))
-                .collect(),
-        });
+        let (offered, note) = tempo.groups();
+        let note = note.map(|note| format!("Tempo: {note}"));
+        if offered.is_empty() {
+            groups.push(Group {
+                title: format!("Tempo · {}", Tempo::ABOUT),
+                note,
+                models: Vec::new(),
+            });
+        }
+        for (prefix, models) in offered {
+            groups.push(Group {
+                title: match prefix {
+                    Some(prefix) => format!("Tempo · {}{prefix}/", Tempo::PREFIX),
+                    None => "Tempo · Codex and Claude models through the Tempo gateway, paid from the Tempo wallet".to_owned(),
+                },
+                note: None,
+                models: models
+                    .into_iter()
+                    .map(|(model, about)| (Route::Tempo, model, about))
+                    .collect(),
+            });
+        }
     }
     groups
 }
@@ -83,7 +96,7 @@ pub fn model_picker(
         let models = group
             .models
             .into_iter()
-            .filter(|(offered, model)| {
+            .filter(|(offered, model, _)| {
                 *offered != Route::Native || gateway.is_none_or(|gateway| gateway.serves(model))
             })
             .collect::<Vec<_>>();
@@ -92,17 +105,23 @@ pub fn model_picker(
         }
         items.push(PickerItem::header(group.title));
         choices.push(None);
-        for (offered, model) in models {
+        for (offered, model, about) in models {
             let capabilities = model.capabilities(ModelTransport::Native);
             let thinking = capabilities
                 .thinking()
                 .map(Thinking::as_str)
                 .collect::<Vec<_>>()
                 .join("/");
-            let detail = match model.display_name() {
-                name if name == model.as_str() => format!("thinking {thinking}"),
-                name => format!("{name} · thinking {thinking}"),
-            };
+            let name = model.display_name();
+            let detail = [
+                (name != model.as_str()).then(|| name.to_owned()),
+                about,
+                Some(format!("thinking {thinking}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
             let mut item = PickerItem::choice(offered.label(&model))
                 .detail(detail)
                 .current(model == *current && offered == route);

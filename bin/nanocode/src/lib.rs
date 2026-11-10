@@ -614,7 +614,7 @@ async fn print_models(clients: &ModelClients) {
     let width = groups
         .iter()
         .flat_map(|group| &group.models)
-        .map(|(route, model)| route.label(model).chars().count())
+        .map(|(route, model, _)| route.label(model).chars().count())
         .max()
         .unwrap_or_default();
     for group in groups {
@@ -622,7 +622,7 @@ async fn print_models(clients: &ModelClients) {
         if let Some(note) = &group.note {
             println!("  {note}");
         }
-        for (route, model) in &group.models {
+        for (route, model, about) in &group.models {
             let capabilities = model.capabilities(nanocode::ModelTransport::Native);
             let thinking = capabilities
                 .thinking()
@@ -630,12 +630,17 @@ async fn print_models(clients: &ModelClients) {
                 .collect::<Vec<_>>()
                 .join("/");
             let features = models::features(model);
+            let detail = [features.as_str(), about.as_deref().unwrap_or_default()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
             println!(
                 "  {:<width$} thinking {:<30} default {:<7} {}",
                 route.label(model),
                 thinking,
                 capabilities.default_thinking().as_str(),
-                features
+                detail
             );
         }
     }

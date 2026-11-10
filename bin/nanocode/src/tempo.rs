@@ -1152,8 +1152,13 @@ pub(crate) struct Listing {
 
 enum Listed {
     Loading,
-    Models(Vec<Model>),
+    Offers(Vec<Offer>),
     Failed(String),
+}
+
+struct Offer {
+    model: Model,
+    about: Option<String>,
 }
 
 impl Listing {
@@ -1166,7 +1171,7 @@ impl Listing {
     }
 
     async fn load(&self, payments: &Payments) {
-        if self.state.read(|state| matches!(state, Listed::Models(_))) {
+        if self.state.read(|state| matches!(state, Listed::Offers(_))) {
             return;
         }
         self.flight
@@ -1176,7 +1181,7 @@ impl Listing {
                     Err(error) => Err(error),
                 };
                 self.state.set(match listed {
-                    Ok(models) => Listed::Models(models),
+                    Ok(offers) => Listed::Offers(offers),
                     Err(error) => Listed::Failed(error),
                 });
             })
@@ -1184,7 +1189,7 @@ impl Listing {
     }
 }
 
-async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Model>, String> {
+async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Offer>, String> {
     let body = async {
         client
             .get(url)
@@ -1198,11 +1203,8 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Mo
     .map_err(|error| format!("listing models at {url}: {error}"))?;
     let listing: Value = serde_json::from_slice(&body)
         .map_err(|error| format!("{url} did not return a model list: {error}"))?;
-    let mut models = Vec::new();
-    for entry in listing
-        .get("data")
-        .or_else(|| listing.get("models"))
-        .unwrap_or(&listing)
+    let mut offers: Vec<Offer> = Vec::new();
+    for entry in listing["models"]
         .as_array()
         .ok_or_else(|| format!("{url} returned no model list"))?
     {
@@ -1210,26 +1212,42 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Mo
             .as_str()
             .ok_or_else(|| format!("{url} listed a model without an id"))?
             .parse::<Model>()?;
-        if !models.contains(&model) {
-            models.push(model);
+        if offers.iter().any(|offer| offer.model == model) {
+            continue;
         }
+        let price = match (&entry["house"]["input"], &entry["house"]["output"]) {
+            (Value::Number(input), Value::Number(output)) => {
+                Some(format!("${input}/${output} per 1M"))
+            }
+            _ => None,
+        };
+        let about = [entry["provider"].as_str().map(str::to_owned), price]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        offers.push(Offer {
+            model,
+            about: (!about.is_empty()).then_some(about),
+        });
     }
-    if models.is_empty() {
+    if offers.is_empty() {
         return Err(format!("{url} lists no models"));
     }
-    Ok(models)
+    Ok(offers)
 }
 
 type OpenAiSource = Arc<dyn Fn() -> nanocode::codex::OpenAiBuilder + Send + Sync>;
 type ClaudeSource = Arc<dyn Fn() -> nanocode::claude::ClaudeClient + Send + Sync>;
+
+pub(crate) type Offered = Vec<(ModelSelection, Option<String>)>;
 
 #[derive(Clone)]
 pub(crate) struct Tempo {
     openai: OpenAiSource,
     claude: ClaudeSource,
     payments: Payments,
-    callable: Arc<Listing>,
-    listed: Arc<Listing>,
+    listing: Arc<Listing>,
 }
 
 impl Tempo {
@@ -1263,8 +1281,7 @@ impl Tempo {
                 .with_http_layer(messages.clone())
             }),
             payments: payments.clone(),
-            callable: Listing::remote(format!("{TEMPO_GATEWAY}/api/auction/models")),
-            listed: Listing::remote(format!("{TEMPO_GATEWAY}/v1/models")),
+            listing: Listing::remote(format!("{TEMPO_GATEWAY}/api/auction/models")),
         })
     }
 
@@ -1277,20 +1294,20 @@ impl Tempo {
     }
 
     pub(crate) async fn load(&self) {
-        futures_util::future::join(
-            self.callable.load(&self.payments),
-            self.listed.load(&self.payments),
-        )
-        .await;
+        self.listing.load(&self.payments).await;
     }
 
     pub(crate) fn offer(&self, subagents: &nanocode::SubagentControl) {
         let catalog = |tempo: &Self| {
-            let (models, note) = tempo.models();
+            let (groups, note) = tempo.groups();
             vec![nanocode::subagents::SpawnProvider {
                 name: Self::NAME.to_owned(),
                 about: Self::ABOUT.to_owned(),
-                models,
+                models: groups
+                    .into_iter()
+                    .flat_map(|(_, offered)| offered)
+                    .map(|(model, _)| model)
+                    .collect(),
                 note,
             }]
         };
@@ -1312,41 +1329,38 @@ impl Tempo {
         }
     }
 
-    pub(crate) fn models(&self) -> (Vec<ModelSelection>, Option<String>) {
-        let note = |listing: &Listing| {
-            listing.state.read(|state| match state {
-                Listed::Loading => Some("listing models…".to_owned()),
-                Listed::Models(_) => None,
-                Listed::Failed(error) => Some(error.clone()),
-            })
-        };
-        let aliases = |listing: &Listing| {
-            listing.state.read(|state| match state {
-                Listed::Models(models) => models
+    pub(crate) fn groups(&self) -> (Vec<(Option<String>, Offered)>, Option<String>) {
+        self.listing.state.read(|state| match state {
+            Listed::Loading => (Vec::new(), Some("listing models…".to_owned())),
+            Listed::Failed(error) => (Vec::new(), Some(error.clone())),
+            Listed::Offers(offers) => {
+                let aliases = offers
                     .iter()
-                    .filter_map(|model| alias(model.as_str()))
-                    .collect(),
-                _ => Vec::new(),
-            })
-        };
-        let callable = aliases(&self.callable);
-        let mut models = Model::ALL
-            .map(ModelSelection::Codex)
-            .into_iter()
-            .chain(ClaudeModel::ALL.map(ModelSelection::Claude))
-            .filter(|model| callable.contains(model))
-            .collect::<Vec<_>>();
-        self.listed.state.read(|state| {
-            if let Listed::Models(listed) = state {
-                models.extend(
-                    listed
-                        .iter()
-                        .filter(|model| alias(model.as_str()).is_none())
-                        .map(|model| ModelSelection::Codex(*model)),
-                );
+                    .filter_map(|offer| alias(offer.model.as_str()))
+                    .collect::<Vec<_>>();
+                let builtin = Model::ALL
+                    .map(ModelSelection::Codex)
+                    .into_iter()
+                    .chain(ClaudeModel::ALL.map(ModelSelection::Claude))
+                    .filter(|model| aliases.contains(model))
+                    .map(|model| (model, None))
+                    .collect();
+                let mut groups: Vec<(Option<String>, Offered)> = vec![(None, builtin)];
+                for offer in offers {
+                    let id = offer.model.as_str();
+                    let prefix = id.split_once('/').map_or(id, |(prefix, _)| prefix);
+                    let offered = (ModelSelection::Codex(offer.model), offer.about.clone());
+                    match groups
+                        .iter_mut()
+                        .find(|(group, _)| group.as_deref() == Some(prefix))
+                    {
+                        Some((_, models)) => models.push(offered),
+                        None => groups.push((Some(prefix.to_owned()), vec![offered])),
+                    }
+                }
+                (groups, None)
             }
-        });
-        (models, note(&self.callable).or_else(|| note(&self.listed)))
+        })
     }
 }
 

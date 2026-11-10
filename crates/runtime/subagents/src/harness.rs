@@ -418,6 +418,15 @@ impl Harness {
         } = hibernated;
         self.pending_urgent = urgent;
         self.pending_deferred = deferred;
+        let interrupted = match self.registry.upgrade() {
+            Some(registry) => {
+                interrupted
+                    || registry
+                        .turn_interrupted(&self.root_session_id, self.id)
+                        .await
+            }
+            None => interrupted,
+        };
         let resumed = self
             .resume_turn((!interrupted).then_some(call), capacity)
             .await;

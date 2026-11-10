@@ -5085,6 +5085,20 @@ impl Registry {
             .await
     }
 
+    pub(super) async fn turn_interrupted(&self, root_session_id: &str, id: AgentId) -> bool {
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .and_then(|session| session.turn.as_ref())
+                    .is_some_and(|turn| turn.interrupted)
+            })
+            .await
+    }
+
     pub(super) async fn finish_turn_steer(
         &self,
         root_session_id: &str,

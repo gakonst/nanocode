@@ -1703,6 +1703,10 @@ impl ClaudeBuilder {
                 .is_empty()
                 .then(|| crate::instructions::default_system_blocks(self.code_only))
         });
+        let fixed_date = self
+            .environment
+            .as_ref()
+            .is_some_and(crate::ClaudeEnvironment::fixes_date);
         let given_context = self
             .system_context
             .or_else(|| self.environment.map(crate::ClaudeEnvironment::render));
@@ -1772,6 +1776,7 @@ impl ClaudeBuilder {
             side_request: Atom::default(),
             context: std::sync::OnceLock::new(),
             given_context,
+            fixed_date,
             kept_context,
             boundary_stale: AtomicBool::new(false),
             policy: self.policy,
@@ -3208,6 +3213,8 @@ struct SystemText {
     environment: String,
     instructions: Option<Arc<str>>,
     key: Option<String>,
+    fresh: Option<Arc<str>>,
+    fresh_key: Option<String>,
 }
 
 struct StartedToolCall<'a> {
@@ -3367,6 +3374,7 @@ struct State {
 
     context: std::sync::OnceLock<SystemText>,
     given_context: Option<(String, Option<String>)>,
+    fixed_date: bool,
     kept_context: Option<durable::SystemContext>,
 
     boundary_stale: AtomicBool,
@@ -4209,6 +4217,26 @@ struct ResponseContext<'a> {
 }
 const DEVELOPER_NOTICE_OPEN: &str = "<system-reminder>\n";
 const DEVELOPER_NOTICE_CLOSE: &str = "\n</system-reminder>";
+const DATE_CHANGED: &str = "The date has changed. Today's date is now ";
+const DATE_CHANGED_END: &str =
+    ". No need to announce the new date \u{2014} the user's own clock shows it.";
+const INSTRUCTIONS_CHANGED: &str = "The following changed since it was first sent in this conversation. The earlier text above stays as sent; where they differ, the current version below is the one in effect.\nA section of your instructions was updated:\n";
+
+fn delivered_notice<'a>(conversation: &'a Conversation, prefix: &str) -> Option<&'a str> {
+    conversation
+        .messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == Role::User)
+        .flat_map(|message| message.content.iter().rev())
+        .find_map(|block| match block {
+            ContentBlock::Text { text, .. } => text
+                .strip_prefix(DEVELOPER_NOTICE_OPEN)?
+                .strip_suffix(DEVELOPER_NOTICE_CLOSE)?
+                .strip_prefix(prefix),
+            _ => None,
+        })
+}
 
 fn latest_developer_notice<'a>(snapshot: &'a Snapshot, prefix: &str) -> Option<&'a str> {
     let delivered = snapshot
@@ -4365,9 +4393,12 @@ impl State {
             )
         });
         let key = durable::instructions_key(instructions.as_deref());
+        let instructions = instructions.map(Arc::<str>::from);
         let current = SystemText {
             environment,
-            instructions: instructions.map(Arc::from),
+            fresh: instructions.clone(),
+            fresh_key: key.clone(),
+            instructions,
             key,
         };
         let Some(kept) = self
@@ -4379,6 +4410,8 @@ impl State {
         };
         let instructions = if current.key == kept.instructions {
             current.instructions.clone()
+        } else if kept.instructions.is_none() {
+            None
         } else if let Some(text) = kept
             .text
             .as_ref()
@@ -4392,7 +4425,31 @@ impl State {
             environment: crate::environment::dated(&current.environment, &kept.date),
             instructions,
             key: kept.instructions.clone(),
+            fresh: current.fresh,
+            fresh_key: current.fresh_key,
         }
+    }
+    fn context_notices(&self, conversation: &Conversation) -> Vec<String> {
+        let context = self.context.get_or_init(|| self.resolve_context());
+        let mut notices = Vec::new();
+        let shown = crate::environment::date_of(&context.environment);
+        if !self.fixed_date && !shown.is_empty() {
+            let today = crate::environment::current_date();
+            let told = delivered_notice(conversation, DATE_CHANGED)
+                .and_then(|rest| rest.strip_suffix(DATE_CHANGED_END))
+                .unwrap_or(shown);
+            if told != today {
+                notices.push(format!("{DATE_CHANGED}{today}{DATE_CHANGED_END}"));
+            }
+        }
+        let told = delivered_notice(conversation, INSTRUCTIONS_CHANGED);
+        if told.is_some() || context.fresh_key != context.key {
+            let now = format!("```\n{}\n```", context.fresh.as_deref().unwrap_or_default());
+            if told != Some(now.as_str()) {
+                notices.push(format!("{INSTRUCTIONS_CHANGED}{now}"));
+            }
+        }
+        notices
     }
     fn lend_instructions(&self, kept: &mut durable::SystemContext) {
         let context = self.context.get_or_init(|| self.resolve_context());
@@ -6729,20 +6786,19 @@ impl State {
                 self.emit_compacted(&request.events, 0, compaction_started);
             }
             let _update = self.persistence_update.enter().await;
-            let notices = {
-                self.developer_notices.update(|queued| {
-                    let mut notices = Vec::new();
-                    queued.retain(|(id, text)| {
-                        if cursor.developer_notice_ids.contains(id) {
-                            notices.push(text.clone());
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                    notices
-                })
-            };
+            let mut notices = self.context_notices(conversation);
+            notices.extend(self.developer_notices.update(|queued| {
+                let mut notices = Vec::new();
+                queued.retain(|(id, text)| {
+                    if cursor.developer_notice_ids.contains(id) {
+                        notices.push(text.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+                notices
+            }));
             prompt.splice(
                 0..0,
                 notices.into_iter().map(|text| {

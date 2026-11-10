@@ -89,6 +89,10 @@ impl ClaudeEnvironment {
         self
     }
 
+    pub(crate) const fn fixes_date(&self) -> bool {
+        self.date.is_some()
+    }
+
     pub(crate) fn render(self) -> (String, Option<String>) {
         let mut lines = vec![
             "# Environment".to_owned(),

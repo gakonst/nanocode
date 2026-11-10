@@ -505,6 +505,8 @@ pub struct Registry {
     journal_writer: std::sync::atomic::AtomicBool,
 
     journal_writers: Atom<HashMap<String, mpsc::UnboundedSender<JournalRequest>>>,
+
+    steer_watchers: Atom<HashMap<String, mpsc::UnboundedSender<SteerWatch>>>,
     checkpoints: Atom<AgentMap<durable::JournalCheckpoint>>,
 
     checkpoint_changes: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
@@ -638,6 +640,12 @@ fn completion_retry_delay(attempt: u32) -> Duration {
     Duration::from_millis(1000_u64 << attempt.clamp(1, 9)).min(Duration::from_secs(300))
 }
 
+struct SteerWatch {
+    request_id: String,
+    prompt: String,
+    outcome: oneshot::Sender<NoticeOutcome>,
+}
+
 #[derive(Clone, Copy)]
 enum NoticeOutcome {
     Read,
@@ -663,14 +671,27 @@ impl NoticeOutcome {
         }
     }
 
-    async fn of_steer(
+    async fn of_steers(
         mut events: AgentEvents,
-        request_id: &str,
-        prompt: String,
-        parent: &WeakAgent,
-    ) -> Self {
-        let mut carrier = None;
-        while let Some(event) = events.recv().await {
+        parent: WeakAgent,
+        mut steers: mpsc::UnboundedReceiver<SteerWatch>,
+    ) {
+        let mut watched = HashMap::<String, (SteerWatch, Option<String>)>::new();
+        loop {
+            let event = tokio::select! {
+                biased;
+                steer = steers.recv() => match steer {
+                    Some(steer) => {
+                        watched.insert(steer.request_id.clone(), (steer, None));
+                        continue;
+                    }
+                    None => return,
+                },
+                event = events.recv() => match event {
+                    Some(event) => event,
+                    None => return,
+                },
+            };
             let steered = event.kind == AgentEventKind::RunSteered;
             if !steered
                 && !matches!(
@@ -684,32 +705,51 @@ impl NoticeOutcome {
                 continue;
             };
             if steered {
-                if run.message_id.as_deref() == Some(request_id) {
-                    carrier = run.turn_id;
+                if let Some((_, carrier)) =
+                    run.message_id.as_deref().and_then(|id| watched.get_mut(id))
+                {
+                    *carrier = run.turn_id;
                 }
                 continue;
             }
-            if carrier.is_some() && carrier != run.turn_id {
-                continue;
-            }
-            return match run.status {
-                Some(RunStatus::Completed) if carrier.is_some() => Self::Read,
-                Some(RunStatus::Completed) => match parent.upgrade() {
-                    Some(parent)
-                        if matches!(
-                            parent.steer_receipt(request_id.to_owned(), prompt).await,
-                            Ok(SteerReceiptStatus::Accepted)
-                        ) =>
-                    {
-                        Self::Read
+            let ended = watched
+                .iter()
+                .filter(|(_, (_, carrier))| carrier.is_none() || *carrier == run.turn_id)
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            for id in ended {
+                let Some((steer, carrier)) = watched.remove(&id) else {
+                    continue;
+                };
+                if steer.outcome.is_closed() {
+                    continue;
+                }
+                let outcome = match run.status {
+                    Some(RunStatus::Completed) if carrier.is_some() => Self::Read,
+                    Some(RunStatus::Completed) => {
+                        let parent = parent.clone();
+                        drop(platform::spawn(async move {
+                            let outcome = match parent.upgrade() {
+                                Some(parent)
+                                    if matches!(
+                                        parent.steer_receipt(steer.request_id, steer.prompt).await,
+                                        Ok(SteerReceiptStatus::Accepted)
+                                    ) =>
+                                {
+                                    Self::Read
+                                }
+                                _ => Self::Unread,
+                            };
+                            let _ = steer.outcome.send(outcome);
+                        }));
+                        continue;
                     }
+                    Some(RunStatus::Cancelled) => Self::Cancelled,
                     _ => Self::Unread,
-                },
-                Some(RunStatus::Cancelled) => Self::Cancelled,
-                _ => Self::Unread,
-            };
+                };
+                let _ = steer.outcome.send(outcome);
+            }
         }
-        Self::Stopped
     }
 
     async fn of_tool_output(mut events: AgentEvents, readers: &Readers) -> Self {
@@ -2210,6 +2250,7 @@ impl Registry {
             spawn_admission: Atom::default(),
             journal_writer: std::sync::atomic::AtomicBool::new(false),
             journal_writers: Atom::default(),
+            steer_watchers: Atom::default(),
             checkpoints: Atom::default(),
             checkpoint_changes: Atom::default(),
             pending_checkpoints: Atom::default(),
@@ -4692,11 +4733,11 @@ impl Registry {
                     };
 
                     let delegated = std::mem::take(&mut session.delegated_turn);
-                    if !recovering {
-                        session.follow_up_output = (!delegated
-                            && matches!(session.status, AgentStatus::Completed { .. }))
-                        .then(|| session.last_output.clone())
-                        .flatten();
+                    let completed =
+                        !delegated && matches!(session.status, AgentStatus::Completed { .. });
+                    if completed || !recovering {
+                        session.follow_up_output =
+                            completed.then(|| session.last_output.clone()).flatten();
                     }
                     if !matches!(session.status, AgentStatus::Interrupted) {
                         session.in_flight_calls = Vec::new();
@@ -5232,6 +5273,55 @@ impl Registry {
         Ok(())
     }
 
+    fn watch_steer(
+        &self,
+        root_session_id: &str,
+        parent: &Agent,
+        request_id: &str,
+        prompt: &str,
+    ) -> oneshot::Receiver<NoticeOutcome> {
+        let (outcome, steered) = oneshot::channel();
+        let mut steer = SteerWatch {
+            request_id: request_id.to_owned(),
+            prompt: prompt.to_owned(),
+            outcome,
+        };
+        loop {
+            let watcher = self
+                .steer_watchers
+                .read(|watchers| watchers.get(root_session_id).cloned())
+                .filter(|watcher| !watcher.is_closed());
+            let watcher = match watcher {
+                Some(watcher) => watcher,
+                None => {
+                    let (watcher, steers) = mpsc::unbounded_channel();
+                    let installed = self.steer_watchers.try_update(|watchers| {
+                        match watchers.get(root_session_id) {
+                            Some(existing) if !existing.is_closed() => None,
+                            _ => {
+                                watchers.insert(root_session_id.to_owned(), watcher.clone());
+                                Some(())
+                            }
+                        }
+                    });
+                    if installed.is_none() {
+                        continue;
+                    }
+                    drop(platform::spawn(NoticeOutcome::of_steers(
+                        parent.subscribe(),
+                        parent.downgrade(),
+                        steers,
+                    )));
+                    watcher
+                }
+            };
+            match watcher.send(steer) {
+                Ok(()) => return steered,
+                Err(mpsc::error::SendError(returned)) => steer = returned,
+            }
+        }
+    }
+
     async fn route_completions(
         self: &Arc<Self>,
         parent: &Agent,
@@ -5271,7 +5361,7 @@ impl Registry {
             .map(|(id, _, status, _, _)| completion_continuation_prompt(*id, status))
             .collect::<Vec<_>>()
             .join("\n\n");
-        let events = parent.subscribe();
+        let steered = self.watch_steer(root_session_id, parent, &request_id, &prompt);
         match parent
             .route_prompt_request(
                 nanocode_agent_core::PromptRequest::new(prompt.clone())
@@ -5295,12 +5385,10 @@ impl Registry {
                 drop(platform::spawn(async move {
                     let outcome = match route {
                         PromptRoute::Started(turn) => {
-                            drop(events);
+                            drop(steered);
                             NoticeOutcome::of_turn(turn.result().await)
                         }
-                        PromptRoute::Steered => {
-                            NoticeOutcome::of_steer(events, &request_id, prompt, &parent).await
-                        }
+                        PromptRoute::Steered => steered.await.unwrap_or(NoticeOutcome::Stopped),
                     };
                     let Some(registry) = registry.upgrade() else {
                         return;
@@ -5403,7 +5491,7 @@ impl Registry {
             ),
         };
         let prompt = completion_continuation_prompt(id, &status);
-        let events = parent.subscribe();
+        let steered = self.watch_steer(root_session_id, parent, &request_id, &prompt);
         match parent
             .route_prompt_request(
                 nanocode_agent_core::PromptRequest::new(prompt.clone())
@@ -5426,12 +5514,10 @@ impl Registry {
                 drop(platform::spawn(async move {
                     let outcome = match route {
                         PromptRoute::Started(turn) => {
-                            drop(events);
+                            drop(steered);
                             NoticeOutcome::of_turn(turn.result().await)
                         }
-                        PromptRoute::Steered => {
-                            NoticeOutcome::of_steer(events, &request_id, prompt, &parent).await
-                        }
+                        PromptRoute::Steered => steered.await.unwrap_or(NoticeOutcome::Stopped),
                     };
                     let Some(registry) = registry.upgrade() else {
                         return;

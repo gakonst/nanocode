@@ -800,6 +800,8 @@ pub(super) struct AgentRecord {
     cancelled_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     conversation: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    keeps_result: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     waited: Vec<Waited>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -849,6 +851,7 @@ fn agent_record(
         completion_parked: agent.completion_parked,
         cancelled_revision: agent.cancelled_revision,
         conversation: agent.conversation,
+        keeps_result: agent.keeps_result,
         waited: agent.waited,
         sent: agent.sent,
         spawned: agent.spawned,
@@ -1015,6 +1018,7 @@ fn agent_from(
         completion_parked: record.completion_parked,
         cancelled_revision: record.cancelled_revision,
         conversation: record.conversation,
+        keeps_result: record.keeps_result,
         waited: record.waited,
         sent: record.sent,
         spawned: record.spawned,
@@ -1339,6 +1343,9 @@ pub(super) struct PersistedAgent {
 
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) conversation: bool,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) keeps_result: bool,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) cancelled_revision: Option<u64>,
@@ -1917,6 +1924,7 @@ pub(super) fn persist_agent(
         completion_parked: session.completion.parked(),
         cancelled_revision: session.cancelled_revision,
         conversation: session.conversation,
+        keeps_result: session.follow_up_output.is_some(),
         waited: session.waited.clone(),
         sent: session.sent.clone(),
         spawned: session.spawned.clone(),
@@ -2042,6 +2050,9 @@ pub(super) fn restored_session(
 
     let accepted = running.then_some(agent.accepted_output).flatten();
     let in_flight = running && accepted.is_none();
+    let kept = (in_flight && agent.keeps_result)
+        .then(|| agent.last_output.clone())
+        .flatten();
     let completed_by_acceptance = accepted.is_some();
     let evidence = in_flight_evidence(&agent.in_flight_calls, agent.in_flight_omitted);
     let status = if terminal {
@@ -2094,6 +2105,7 @@ pub(super) fn restored_session(
     session.resume_attempts = resume_attempts;
     session.usage = usage;
     session.conversation = agent.conversation;
+    session.follow_up_output = kept;
     session.waited = agent.waited;
     session.sent = agent.sent;
     session.spawned = agent.spawned;

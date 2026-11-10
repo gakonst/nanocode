@@ -41,6 +41,7 @@ opentelemetry.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 serde.workspace = true
+tempo-alloy.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true

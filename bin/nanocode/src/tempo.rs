@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use futures_util::Stream;
 use mpp::{
-    Address, MppError, PaymentChallenge, PaymentCredential, Receipt,
+    Address, MppError, PaymentChallenge, PaymentCredential, Receipt, U256,
     client::{
         AcceptPaymentPolicy, AutoswapConfig, ClientEventSubscription, ClientEvents,
         DEFAULT_MAX_PAYMENT_RETRIES, DepositContext, Exchange, FlowError, ForwardProxy,
@@ -21,7 +21,7 @@ use mpp::{
     mcp::client::McpPayment,
     protocol::{
         intents::{INTENT_CHARGE, INTENT_SESSION},
-        methods::tempo::{CHAIN_ID, METHOD_NAME, PATH_USD, USDC, machine_token},
+        methods::tempo::{CHAIN_ID, DEFAULT_RPC_URL, METHOD_NAME, PATH_USD, USDC, machine_token},
     },
 };
 use nanocode::{
@@ -650,10 +650,17 @@ struct McpPayments {
     url: reqwest::Url,
 }
 
+#[derive(Clone, Copy)]
+enum Gas {
+    Challenge,
+    Token(Address),
+    Held,
+}
+
 #[derive(Clone)]
 struct Terms {
     currency: Address,
-    fee: Option<Address>,
+    gas: Gas,
     deposit: Option<u128>,
     variant: Option<String>,
     closes: bool,
@@ -664,7 +671,7 @@ impl Terms {
         Ok(Self {
             currency: machine_token::token(CHAIN_ID)
                 .ok_or("MACH is not deployed on Tempo mainnet")?,
-            fee: None,
+            gas: Gas::Challenge,
             deposit,
             variant: None,
             closes: false,
@@ -693,7 +700,10 @@ impl Terms {
         };
         Ok(Self {
             currency,
-            fee: args.tempo_fee_token.as_deref().map(gas_token).transpose()?,
+            gas: match args.tempo_fee_token.as_deref() {
+                Some(token) => Gas::Token(gas_token(token)?),
+                None => Gas::Challenge,
+            },
             deposit: Some(args.tempo_deposit.unwrap_or(2 * MACH)),
             variant: (currency != machine).then_some(wanted),
             closes: args.tempo_close_session,
@@ -724,8 +734,13 @@ impl Wallet {
                 if let Some(wallet) = self.ready() {
                     return Ok(wallet);
                 }
+                let fee = match self.terms.gas {
+                    Gas::Challenge => None,
+                    Gas::Token(token) => Some(token),
+                    Gas::Held => Some(self.held().await?),
+                };
                 let opening = self.clone();
-                let wallet = tokio::task::spawn_blocking(move || opening.open())
+                let wallet = tokio::task::spawn_blocking(move || opening.open(fee))
                     .await
                     .map_err(|error| error.to_string())??;
                 self.loaded.set(Some(wallet.clone()));
@@ -738,7 +753,31 @@ impl Wallet {
         self.get().await.map_err(MppError::InvalidConfig)
     }
 
-    fn open(&self) -> std::result::Result<TempoAccountsProvider, String> {
+    async fn held(&self) -> std::result::Result<Address, String> {
+        let host = self.url.host_str().unwrap_or_default().to_owned();
+        let account = tokio::task::spawn_blocking(|| {
+            tempo_alloy::accounts::TempoAccountsWallet::from_default_store()?.active_account()
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| {
+            format!("{error}; sign in to a Tempo wallet with /login tempo to pay {host}")
+        })?;
+        let client = self.payments.client()?;
+        let mut held = (U256::ZERO, None);
+        for token in [USDC, USDT0, PATH_USD] {
+            let balance = balance(&client, token, account).await?;
+            if balance > held.0 {
+                held = (balance, Some(token));
+            }
+        }
+        held.1
+            .ok_or_else(|| format!("{host} sponsors no gas, and the Tempo wallet holds no USDC.e, USDT0 or pathUSD to pay it in; --tempo-fee-token names another token"))?
+            .parse()
+            .map_err(|error| format!("{error}"))
+    }
+
+    fn open(&self, fee: Option<Address>) -> std::result::Result<TempoAccountsProvider, String> {
         let wallet = TempoAccountsProvider::from_default_store()
             .map_err(|error| {
                 let error = match error {
@@ -761,7 +800,7 @@ impl Wallet {
                 .with_session_top_up_amount(deposit),
             None => wallet,
         };
-        let wallet = match self.terms.fee {
+        let wallet = match fee {
             Some(token) => wallet.with_session_fee_token(token),
             None => wallet,
         };
@@ -1322,8 +1361,15 @@ impl Tempo {
             &reqwest::Url::parse(&format!("{TEMPO_GATEWAY}/v1"))?,
             &terms,
         );
+        let unsponsored = Terms {
+            gas: match terms.gas {
+                Gas::Challenge => Gas::Held,
+                gas => gas,
+            },
+            ..terms
+        };
         let boundless = Mpp::new(
-            payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &terms),
+            payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &unsponsored),
             (format!("{BOUNDLESS}/responses"), None),
         );
         let responses = Mpp::new(
@@ -1575,6 +1621,43 @@ async fn close_session(client: &reqwest::Client, session: &TempoSessionProvider,
         }
     }
     eprintln!("nanocode: the {host} session stayed busy; the next run closes it");
+}
+
+async fn balance(
+    client: &reqwest::Client,
+    token: &str,
+    account: Address,
+) -> std::result::Result<U256, String> {
+    let account = format!("{account:x}");
+    let call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_call",
+        "params": [
+            { "to": token, "data": format!("0x70a08231{:0>64}", account.trim_start_matches("0x")) },
+            "latest",
+        ],
+    });
+    let reading = async {
+        client
+            .post(DEFAULT_RPC_URL)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(call.to_string())
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await
+    }
+    .await
+    .map_err(|error| {
+        format!("reading the wallet's {token} balance from {DEFAULT_RPC_URL}: {error}")
+    })?;
+    let answer: Value = serde_json::from_slice(&reading).map_err(|error| error.to_string())?;
+    let result = answer["result"]
+        .as_str()
+        .ok_or_else(|| format!("{DEFAULT_RPC_URL} answered no balance of {token}: {answer}"))?;
+    U256::from_str_radix(result.trim_start_matches("0x"), 16).map_err(|error| error.to_string())
 }
 
 fn gas_token(token: &str) -> Result<Address> {

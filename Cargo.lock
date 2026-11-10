@@ -5391,6 +5391,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tempo-alloy",
  "tracing-opentelemetry",
  "uuid",
 ]

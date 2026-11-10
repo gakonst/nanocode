@@ -3022,6 +3022,9 @@ impl AgentFactory for ClaudeNativeFactory {
             snapshot.conversation.previous_message_id = None;
             snapshot.conversation.container = None;
             snapshot.conversation.lifecycle_started = false;
+            if origin == Origin::SideConversation {
+                snapshot.conversation.auto_compaction_suppressed = true;
+            }
             recipe.claude.model = state.model();
             recipe.effort = state.effort();
             recipe.thinking_mode = state.thinking_mode.get();
@@ -4323,7 +4326,10 @@ impl State {
         };
         if workspace == self.workspace() {
             let (environment, instructions) = self.system_context();
-            if environment.ends_with(&crate::environment::current_date()) {
+            let forked = recipe.lineage.as_ref().is_some_and(|lineage| {
+                matches!(lineage.origin, Origin::Fork | Origin::SideConversation)
+            });
+            if forked || environment.ends_with(&crate::environment::current_date()) {
                 recipe.system_context =
                     Some((environment.to_owned(), instructions.map(str::to_owned)));
             }

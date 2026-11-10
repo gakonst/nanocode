@@ -812,6 +812,8 @@ pub(super) struct AgentRecord {
     sent: Vec<Sent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spawned: Option<Spawned>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unstarted: Option<Unstarted>,
 }
 
 fn agent_record(
@@ -859,6 +861,7 @@ fn agent_record(
         waited: agent.waited,
         sent: agent.sent,
         spawned: agent.spawned,
+        unstarted: agent.unstarted,
     })
 }
 
@@ -1026,6 +1029,7 @@ fn agent_from(
         waited: record.waited,
         sent: record.sent,
         spawned: record.spawned,
+        unstarted: record.unstarted,
     };
     agent.expand();
     Ok(agent)
@@ -1371,6 +1375,9 @@ pub(super) struct PersistedAgent {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) spawned: Option<Spawned>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) unstarted: Option<Unstarted>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1389,6 +1396,67 @@ pub(super) struct Sent {
     pub(super) message: MessageId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) disposition: Option<MessageDisposition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Unstarted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness: Option<nanocode_agent_core::HarnessFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<ModelSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_mode: Option<nanocode_agent_core::ReasoningMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    stateless_http: bool,
+    #[serde(skip)]
+    pub(super) restored: bool,
+}
+
+impl Unstarted {
+    pub(super) fn of(options: &nanocode_agent_core::SpawnOptions) -> Self {
+        Self {
+            harness: options.selected_harness(),
+            model: options.selected_harness_model(),
+            thinking: options.selected_thinking(),
+            reasoning_mode: options.selected_reasoning_mode(),
+            provider: options.selected_provider().map(str::to_owned),
+            stateless_http: options.stateless_http,
+            restored: false,
+        }
+    }
+
+    pub(super) fn reissued(&self) -> Self {
+        Self {
+            restored: false,
+            ..self.clone()
+        }
+    }
+
+    pub(super) fn options(&self, session_id: &str) -> nanocode_agent_core::SpawnOptions {
+        let mut options = nanocode_agent_core::SpawnOptions::new().session_id(session_id);
+        if let Some(harness) = self.harness.clone() {
+            options = options.harness(harness);
+        }
+        if let Some(model) = self.model.clone() {
+            options = options.harness_model(model);
+        }
+        if let Some(thinking) = self.thinking {
+            options = options.thinking(thinking);
+        }
+        if let Some(reasoning_mode) = self.reasoning_mode {
+            options = options.reasoning_mode(reasoning_mode);
+        }
+        if let Some(provider) = &self.provider {
+            options = options.provider(provider);
+        }
+        options.stateless_http = self.stateless_http;
+        options
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1869,6 +1937,8 @@ pub struct RestoreReport {
     pub unrecoverable: Vec<AgentId>,
 
     pub completed: Vec<AgentId>,
+
+    pub unstarted: Vec<AgentId>,
 }
 
 pub(super) const RESUME_MESSAGE: &str = "The sub-agent runtime restarted while your previous \
@@ -1942,6 +2012,10 @@ pub(super) fn persist_agent(
         waited: session.waited.clone(),
         sent: session.sent.clone(),
         spawned: session.spawned.clone(),
+        unstarted: match &session.stored_runtime {
+            StoredRuntime::Unstarted(unstarted) => Some(Unstarted::clone(unstarted)),
+            _ => None,
+        },
     }
 }
 
@@ -2052,6 +2126,20 @@ pub(super) fn restored_session(
     snapshot: Option<SessionCheckpoint>,
 ) -> std::io::Result<(ChildSession, bool, bool)> {
     let contract = OutputContract::compile(&agent.output_schema)?;
+    if let (Some(mut unstarted), AgentStatus::Pending) = (agent.unstarted.clone(), &agent.status) {
+        unstarted.restored = true;
+        let mut session = ChildSession::restored(
+            agent.descriptor,
+            agent.host_context.map(Arc::from),
+            AgentStatus::Pending,
+            contract,
+            StoredRuntime::Unstarted(Arc::new(unstarted)),
+            agent.next_instruction_revision,
+            None,
+        );
+        session.spawned = agent.spawned;
+        return Ok((session, false, false));
+    }
     let accepted_revision = agent.accepted_revision;
     let pending_completion = agent.pending_completion;
     let settled_revision = agent.settled_revision;

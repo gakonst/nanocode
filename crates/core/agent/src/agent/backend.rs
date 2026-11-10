@@ -105,7 +105,9 @@ pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 pub type JournalFill = tokio::sync::oneshot::Sender<(String, Vec<Arc<str>>)>;
 
-pub type DeferredJournal = tokio::sync::oneshot::Receiver<JournalFill>;
+pub type JournalCommit = tokio::sync::oneshot::Receiver<std::io::Result<()>>;
+
+pub type DeferredJournal = tokio::sync::oneshot::Receiver<(JournalFill, JournalCommit)>;
 
 #[cfg(target_family = "wasm")]
 pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + 'static>>;

@@ -3096,7 +3096,10 @@ impl AgentFactory for ClaudeNativeFactory {
             let mut recipe = recipe;
             let lineage =
                 Lineage::child_of(&state.lineage, state.session_id.as_str(), Origin::Subagent);
-            let child_id = nanocode_platform::uuid_v7().to_string();
+            let child_id = options
+                .session_id
+                .clone()
+                .unwrap_or_else(|| nanocode_platform::uuid_v7().to_string());
             state.durable_child(&mut recipe, &child_id, &lineage, "spawn", journal_backed)?;
             recipe.session_id = Some(child_id);
             recipe.lineage = Some(lineage);

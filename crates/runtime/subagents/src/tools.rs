@@ -881,6 +881,188 @@ async fn start_child(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn enqueue_child(
+    parent: &AgentHandle,
+    registry: &Arc<Registry>,
+    session_id: &str,
+    task: AgentTask,
+    options: SpawnOptions,
+    budget: Option<UsdAmount>,
+    host_context: Option<Arc<str>>,
+    call_id: &str,
+) -> AgentToolResult<AgentStartReport> {
+    if let Some(budget) = budget {
+        admit_budget(registry, session_id, budget).await?;
+    }
+    registry.register_handle(parent.clone());
+    let policy_parent = spawn_parent(parent, registry, session_id).await?;
+    registry.spawn_policy().admit_reasoning_mode(
+        &policy_parent,
+        options.selected_reasoning_mode().unwrap_or_default(),
+    )?;
+    let AgentTask {
+        role,
+        task,
+        output_schema,
+    } = task;
+    let contract = OutputContract::compile(&output_schema)?;
+    let admitted = match registry.spawn_router() {
+        Some(_) => options.clone(),
+        None => admit_options(&registry.spawn_policy(), &policy_parent, options.clone())?,
+    };
+    let admission = registry.admit_spawn(session_id).await?;
+    let reservation = registry.reserve(session_id).await?;
+    drop(admission);
+    let id = reservation.id;
+    let host_context = match host_context {
+        Some(host_context) => Some(host_context),
+        None => registry.host_context_for_session(session_id).await,
+    };
+    let descriptor = AgentDescriptor {
+        id,
+        session_id: nanocode_platform::uuid_v7().to_string(),
+        role: role.clone(),
+        task,
+        parent: reservation.parent,
+        model: admitted.selected_harness_model(),
+        thinking: admitted.selected_thinking(),
+        reasoning_mode: admitted.selected_reasoning_mode().unwrap_or_default(),
+        budget_usd: budget,
+    };
+    registry
+        .insert_unstarted(
+            reservation.root_session_id.clone(),
+            descriptor.clone(),
+            host_context,
+            contract,
+            Some(super::durable::Spawned {
+                session: session_id.to_owned(),
+                call: call_id.to_owned(),
+            }),
+            super::durable::Unstarted::of(&options),
+        )
+        .await?;
+    registry.send(
+        &reservation.root_session_id,
+        AgentUpdate::Added(descriptor.clone()),
+    );
+    Ok(AgentStartReport {
+        agent_id: id,
+        role,
+        status: AgentStatus::Running,
+        model: descriptor.model,
+        thinking: descriptor.thinking,
+        reasoning_mode: descriptor.reasoning_mode,
+        budget_usd: budget,
+    })
+}
+
+pub(super) async fn start_unstarted(
+    registry: &Arc<Registry>,
+    root_session_id: &str,
+    id: AgentId,
+    capacity: TurnCapacity,
+) {
+    if let Err(error) = build_unstarted(registry, root_session_id, id, capacity).await {
+        registry
+            .fail_unstarted(
+                root_session_id,
+                id,
+                format!("subagent {id} could not start: {error}"),
+            )
+            .await;
+    }
+}
+
+async fn build_unstarted(
+    registry: &Arc<Registry>,
+    root_session_id: &str,
+    id: AgentId,
+    capacity: TurnCapacity,
+) -> AgentToolResult<()> {
+    let Some(child) = registry.unstarted(root_session_id, id).await else {
+        return Ok(());
+    };
+    let _resident = child.lock.enter().await;
+    if let Some(parent) = child.descriptor.parent {
+        registry.ensure_resident(root_session_id, parent).await?;
+    }
+    let parent = registry
+        .session_handle(&child.parent_session)
+        .ok_or("the runtime of the agent that spawned it is unavailable")?;
+    let policy_parent = spawn_parent(&parent, registry, &child.parent_session).await?;
+    let options = child.unstarted.options(&child.descriptor.session_id);
+    let router = registry.spawn_router();
+    let route = if let Some(router) = &router {
+        let route = router
+            .resolve_spawn(
+                &child.parent_session,
+                &child.descriptor.role,
+                &child.descriptor.task,
+                options.clone(),
+                child.host_context.as_deref(),
+            )
+            .await?;
+        route.validate(options.clone())?;
+        Some(route)
+    } else {
+        None
+    };
+    let options = admit_options(
+        &registry.spawn_policy(),
+        &policy_parent,
+        route
+            .as_ref()
+            .map_or_else(|| options.clone(), |route| route.options(options.clone())),
+    )?
+    .session_id(&child.descriptor.session_id);
+    let schema = OutputContract::compile(&child.output_schema)?.into_schema();
+    let (agent, events) = parent
+        .spawn_with_host_context(options, child.host_context.clone())
+        .await?;
+    let (model, thinking, reasoning_mode) =
+        match child_settings(&agent, Some((registry.as_ref(), &policy_parent))).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                agent.abandon_created().await;
+                return Err(error.into());
+            }
+        };
+    if let (Some(router), Some(route)) = (&router, &route)
+        && let Err(error) = router.bind(
+            &child.parent_session,
+            agent.session_id(),
+            route.reference(),
+            child.host_context.as_deref(),
+        )
+    {
+        let _ = agent.shutdown().await;
+        return Err(error.into());
+    }
+    registry
+        .attach_started(
+            root_session_id,
+            id,
+            agent,
+            events,
+            model,
+            thinking,
+            reasoning_mode,
+            schema,
+        )
+        .await?;
+    registry
+        .launch_initial_turn(
+            root_session_id,
+            id,
+            agent_prompt(id, &child.descriptor.task, child.descriptor.budget_usd),
+            capacity,
+        )
+        .await?;
+    Ok(())
+}
+
 async fn admit_budget(
     registry: &Registry,
     session_id: &str,
@@ -991,6 +1173,23 @@ impl SpawnAgent {
             )?;
         let host_context = context.host_context().map(Arc::<str>::from);
         let lineage = Arc::clone(&registry);
+        if registry.queues_spawns() {
+            let report = enqueue_child(
+                &self.parent,
+                &registry,
+                context.session_id(),
+                task,
+                options,
+                budget,
+                host_context,
+                context.call_id(),
+            )
+            .await?;
+            lineage
+                .spawned_in_turn(context.session_id(), report.agent_id)
+                .await;
+            return json_output(&report);
+        }
         let capacity = registry.reserve_turn().await?;
         let report = {
             let parent = self.parent.clone();

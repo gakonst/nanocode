@@ -1770,11 +1770,11 @@ fn spawn_driver(driver: impl Future<Output = ()> + 'static) -> crate::Result<()>
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn spawn_operation(operation: impl Future<Output = ()> + Send + 'static) {
+pub(crate) fn spawn_operation(operation: impl Future<Output = ()> + Send + 'static) {
     drop(tokio::spawn(operation));
 }
 
 #[cfg(target_family = "wasm")]
-fn spawn_operation(operation: impl Future<Output = ()> + 'static) {
+pub(crate) fn spawn_operation(operation: impl Future<Output = ()> + 'static) {
     nanocode_platform::spawn_local(operation);
 }

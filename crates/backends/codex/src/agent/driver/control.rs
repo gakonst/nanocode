@@ -430,6 +430,7 @@ pub(super) fn handle_idle_command(
             result,
         } => {
             let stateless_http = options.stateless_http;
+            let child = options.session_id.clone();
             let outcome = options
                 .validate_harness()
                 .and_then(|()| {
@@ -483,6 +484,7 @@ pub(super) fn handle_idle_command(
                         stateless_http,
                         host_context.or_else(|| spawner.host_context.as_ref().map(Arc::clone)),
                         execution,
+                        child.as_deref(),
                     )
                 });
             drop(result.send(outcome));

@@ -167,8 +167,14 @@ impl BranchSpawner {
         stateless_http: bool,
         host_context: Option<Arc<str>>,
         parent: &execution::Execution,
+        child: Option<&str>,
     ) -> Result<(Agent, AgentEvents)> {
-        let session_id = SessionId::new();
+        let session_id = match child {
+            Some(child) => child.parse::<SessionId>().map_err(|error| {
+                NanocodeError::InvalidRequest(format!("child session id {child}: {error}"))
+            })?,
+            None => SessionId::new(),
+        };
         let session_id_text = session_id.to_string();
         let lineage = Lineage::child_of(&self.lineage, parent_session_id, crate::Origin::Subagent);
 
@@ -344,6 +350,7 @@ impl BranchSpawner {
                     .or(self.host_context.as_ref())
                     .map(Arc::clone),
                 parent,
+                None,
             )?;
             children.push(child);
         }

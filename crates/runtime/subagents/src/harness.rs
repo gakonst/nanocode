@@ -672,6 +672,15 @@ impl Harness {
         let pending = registry
             .pending_turn(&self.root_session_id, agent.session_id())
             .await?;
+        let pending = match pending {
+            Some((id, input)) => Some((
+                id,
+                agent
+                    .decode_durable_prompt(input)
+                    .map_err(std::io::Error::other)?,
+            )),
+            None => None,
+        };
         let recovering = pending.is_some();
         let recovery_request_id = pending.as_ref().map(|(id, _)| id.clone());
         if !recovering {
@@ -686,7 +695,9 @@ impl Harness {
             .harness_turn_started(
                 &self.root_session_id,
                 self.id,
-                recovering,
+                pending
+                    .as_ref()
+                    .map(|(_, recovered)| recovered.instruction_revision().unwrap_or(0)),
                 if recovering {
                     None
                 } else {
@@ -719,10 +730,7 @@ impl Harness {
         };
         let prompt = format!("{prompt}\n\n{contract}");
         let request = match pending {
-            Some((id, input)) => {
-                let recovered = agent
-                    .decode_durable_prompt(input)
-                    .map_err(std::io::Error::other)?;
+            Some((id, recovered)) => {
                 nanocode_agent_core::PromptRequest::new(recovered).request_id(id)
             }
             None => {

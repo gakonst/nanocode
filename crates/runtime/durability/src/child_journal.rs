@@ -8,7 +8,7 @@ use std::{
 };
 
 use nanocode_agent_core::backend::{
-    BackendFuture, ChildJournal, ChildJournalStore, DeferredJournal, JournalFill,
+    BackendFuture, ChildJournal, ChildJournalStore, DeferredJournal, JournalCommit, JournalFill,
 };
 use nanocode_sync::SwapOption;
 
@@ -225,7 +225,8 @@ impl Fenced {
             .filter(|key| !self.committed.contains(key))
             .filter_map(|key| self.pending.read(|pending| pending.get(&key).cloned()))
             .collect::<Vec<_>>();
-        let (deliver, fill) = oneshot::channel::<JournalFill>();
+        let (deliver, fill) = oneshot::channel::<(JournalFill, JournalCommit)>();
+        let (committed, commit) = oneshot::channel::<std::io::Result<()>>();
         let keys = Arc::new(nanocode_sync::Slot::default());
         let filled = Arc::clone(&keys);
         let pending = Arc::clone(&self.pending);
@@ -233,7 +234,7 @@ impl Fenced {
             let stopped =
                 || StoreError::NotCommitted("the subagent journal writer stopped".to_owned());
             let (send, receive) = oneshot::channel();
-            deliver.send(send).map_err(|_| stopped())?;
+            deliver.send((send, commit)).map_err(|_| stopped())?;
             let (payload, records) = receive.await.map_err(|_| stopped())?;
             let mut staged = Vec::new();
             let mut known = Vec::with_capacity(records.len() + retry.len());
@@ -254,9 +255,22 @@ impl Fenced {
             filled.put(known.into_iter().map(|(key, _)| key).collect());
             Ok((payload, staged))
         });
-        let done = store
+        let replaced = store
             .replace_deferred(state_id, &owner, self.next, content)
             .map_err(std::io::Error::other)?;
+        let (settle, done) = oneshot::channel();
+        crate::shared_store::spawn_operation(async move {
+            let result = replaced.await.unwrap_or_else(|_| {
+                Err(StoreError::NotCommitted(
+                    "the durability store stopped".to_owned(),
+                ))
+            });
+            let _ = committed.send(match &result {
+                Ok(_) => Ok(()),
+                Err(error) => Err(std::io::Error::other(error.to_string())),
+            });
+            let _ = settle.send(result);
+        });
         self.next = self.next.saturating_add(1);
         self.inflight.push_back(InFlight {
             write: None,

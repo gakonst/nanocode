@@ -325,6 +325,8 @@ pub struct SpawnOptions {
     pub provider: Option<String>,
     #[doc(hidden)]
     pub stateless_http: bool,
+    #[doc(hidden)]
+    pub session_id: Option<String>,
 }
 
 impl SpawnOptions {
@@ -338,7 +340,14 @@ impl SpawnOptions {
             reasoning_mode: None,
             provider: None,
             stateless_http: false,
+            session_id: None,
         }
+    }
+
+    #[must_use]
+    pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     #[must_use]

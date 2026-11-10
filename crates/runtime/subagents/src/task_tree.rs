@@ -63,6 +63,13 @@ impl TaskTree {
         Ok(())
     }
 
+    pub(super) fn rebind(&mut self, id: AgentId, previous: &str, session_id: String) {
+        if self.sessions.get(previous) == Some(&id) {
+            self.sessions.remove(previous);
+            self.sessions.insert(session_id, id);
+        }
+    }
+
     pub(super) fn contains(&self, id: AgentId) -> bool {
         self.nodes.contains_key(&id)
     }

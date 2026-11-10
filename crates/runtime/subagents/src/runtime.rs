@@ -71,6 +71,7 @@ pub(super) enum StoredRuntime {
     None,
     Checkpoint(Box<SessionCheckpoint>),
     Journaled,
+    Unstarted(Arc<durable::Unstarted>),
 }
 
 impl StoredRuntime {
@@ -81,7 +82,7 @@ impl StoredRuntime {
     pub(super) const fn checkpoint(&self) -> Option<&SessionCheckpoint> {
         match self {
             Self::Checkpoint(checkpoint) => Some(checkpoint),
-            Self::None | Self::Journaled => None,
+            Self::None | Self::Journaled | Self::Unstarted(_) => None,
         }
     }
 }
@@ -158,6 +159,15 @@ impl Completion {
             _ => None,
         }
     }
+}
+
+pub(super) struct UnstartedChild {
+    pub(super) lock: Sequencer,
+    pub(super) descriptor: AgentDescriptor,
+    pub(super) parent_session: String,
+    pub(super) host_context: Option<Arc<str>>,
+    pub(super) output_schema: Arc<Value>,
+    pub(super) unstarted: Arc<durable::Unstarted>,
 }
 
 pub(super) struct ChildSession {
@@ -402,6 +412,10 @@ pub(super) struct OutputContract {
 type CompiledContract = (std::sync::Weak<Validator>, std::sync::Weak<Value>);
 
 impl OutputContract {
+    pub(super) fn into_schema(self) -> String {
+        self.schema
+    }
+
     pub(super) fn compile(schema: &Value) -> std::io::Result<Self> {
         static COMPILED: std::sync::OnceLock<Atom<HashMap<String, CompiledContract>>> =
             std::sync::OnceLock::new();
@@ -499,6 +513,8 @@ pub struct Registry {
     revision: watch::Sender<u64>,
     capacity: Capacity,
     queue_spawns: AtomicBool,
+    unstarted: mpsc::UnboundedSender<(Arc<str>, AgentId)>,
+    unstarted_queue: nanocode_sync::Slot<mpsc::UnboundedReceiver<(Arc<str>, AgentId)>>,
     max_resident: AtomicUsize,
 
     max_resident_explicit: std::sync::atomic::AtomicBool,
@@ -1004,6 +1020,28 @@ enum JournalSave {
     Fenced,
 }
 
+fn acknowledge_deferred(
+    waiters: Vec<oneshot::Sender<std::io::Result<()>>>,
+    commit: Option<nanocode_agent_core::backend::JournalCommit>,
+) {
+    if waiters.is_empty() {
+        return;
+    }
+    drop(platform::spawn(async move {
+        let interrupted = || std::io::Error::other("subagent journal write was interrupted");
+        let result = match commit {
+            Some(commit) => commit.await.unwrap_or_else(|_| Err(interrupted())),
+            None => Err(interrupted()),
+        };
+        for done in waiters {
+            let _ = done.send(match &result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(copy_error(error)),
+            });
+        }
+    }));
+}
+
 async fn journal_writer(
     registry: Weak<Registry>,
     root_session_id: String,
@@ -1024,6 +1062,7 @@ async fn journal_writer(
     let mut fenced = false;
     let mut slot: Option<nanocode_agent_core::backend::DeferredJournal> = None;
     let mut deferrable = true;
+    let mut deferred = Vec::new();
     loop {
         for _ in 0..requests.len() {
             if let Ok(request) = requests.try_recv() {
@@ -1043,6 +1082,7 @@ async fn journal_writer(
                 fenced,
                 &mut slot,
                 &mut deferrable,
+                &mut deferred,
             )
             .await;
         match save {
@@ -1067,14 +1107,16 @@ async fn journal_writer(
             }
             if pending.is_empty() {
                 if let Some(open) = slot.take() {
-                    live.fill_journal(
-                        &root_session_id,
-                        open,
-                        &mut saved,
-                        &mut recorded,
-                        &mut cache,
-                    )
-                    .await;
+                    let commit = live
+                        .fill_journal(
+                            &root_session_id,
+                            open,
+                            &mut saved,
+                            &mut recorded,
+                            &mut cache,
+                        )
+                        .await;
+                    acknowledge_deferred(std::mem::take(&mut deferred), commit);
                 }
                 requests.close();
                 live.journal_writers.update(|writers| {
@@ -1123,10 +1165,14 @@ async fn journal_writer(
                 },
                 fill = taken => {
                     slot = None;
-                    if let (Some(fill), Some(live)) = (fill, registry.upgrade()) {
-                        live.fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
-                            .await;
-                    }
+                    let commit = match (fill, registry.upgrade()) {
+                        (Some((fill, commit)), Some(live)) => live
+                            .fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
+                            .await
+                            .then_some(commit),
+                        _ => None,
+                    };
+                    acknowledge_deferred(std::mem::take(&mut deferred), commit);
                 }
                 () = &mut retry => break,
             }
@@ -2259,6 +2305,7 @@ impl Registry {
         max_concurrency: usize,
     ) -> Self {
         let (revision, _) = watch::channel(0);
+        let (unstarted, unstarted_queue) = mpsc::unbounded_channel();
         Self {
             id: SubagentRuntimeId::next(),
             spawn_router: Atom::default(),
@@ -2267,6 +2314,8 @@ impl Registry {
             revision,
             capacity: Capacity::new(max_concurrency),
             queue_spawns: AtomicBool::new(false),
+            unstarted,
+            unstarted_queue: nanocode_sync::Slot::new(Some(unstarted_queue)),
             session_handles: Atom::default(),
             roots: Atom::default(),
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
@@ -2395,6 +2444,7 @@ impl Registry {
         let registry = Arc::clone(self);
         drop(platform::spawn(async move {
             let mut completed = Vec::new();
+            let mut unstarted = Vec::new();
             match registry.restore(&root).await {
                 Ok(report) if report.restored > 0 => {
                     tracing::info!(
@@ -2406,6 +2456,7 @@ impl Registry {
                         "restored durable subagent task tree"
                     );
                     completed = report.completed;
+                    unstarted = report.unstarted;
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -2438,6 +2489,9 @@ impl Registry {
                 }
             }
             registry.redeliver_messages(&root, pending).await;
+            for id in unstarted {
+                registry.enqueue_unstarted(&root, id);
+            }
             let resolver = Option::clone(&registry.parent_resolver.get());
             if registry.needs_root_watch(&root).await
                 && let Some(parent) = resolver.and_then(|resolver| resolver(&root))
@@ -2698,6 +2752,7 @@ impl Registry {
         fenced: bool,
         slot: &mut Option<nanocode_agent_core::backend::DeferredJournal>,
         deferrable: &mut bool,
+        awaiting: &mut Vec<oneshot::Sender<std::io::Result<()>>>,
     ) -> (bool, JournalSave) {
         let (restoring, background) = {
             let gate = self.claims.read(|claims| {
@@ -2813,13 +2868,13 @@ impl Registry {
             };
             match deferred {
                 Ok(true) => {
-                    for (_, done) in waiters {
-                        let _ = done.send(Ok(()));
-                    }
+                    awaiting.extend(waiters.into_iter().map(|(_, done)| done));
                     let closed = !finals.is_empty();
                     if closed && let Some(open) = slot.take() {
-                        self.fill_journal(root_session_id, open, saved, recorded, cache)
+                        let commit = self
+                            .fill_journal(root_session_id, open, saved, recorded, cache)
                             .await;
+                        acknowledge_deferred(std::mem::take(awaiting), commit);
                     }
                     for (write, done) in finals {
                         *saved = None;
@@ -2850,6 +2905,7 @@ impl Registry {
                         fenced,
                         slot,
                         deferrable,
+                        awaiting,
                     ))
                     .await;
                 }
@@ -2966,11 +3022,11 @@ impl Registry {
         saved: &mut Option<String>,
         recorded: &mut HashMap<String, Arc<str>>,
         cache: &mut durable::JournalCache,
-    ) {
-        if let Ok(fill) = open.await {
-            self.fill_with(root_session_id, fill, saved, recorded, cache)
-                .await;
-        }
+    ) -> Option<nanocode_agent_core::backend::JournalCommit> {
+        let (fill, commit) = open.await.ok()?;
+        self.fill_with(root_session_id, fill, saved, recorded, cache)
+            .await
+            .then_some(commit)
     }
 
     async fn fill_with(
@@ -2980,9 +3036,9 @@ impl Registry {
         saved: &mut Option<String>,
         recorded: &mut HashMap<String, Arc<str>>,
         cache: &mut durable::JournalCache,
-    ) {
+    ) -> bool {
         let (Some(store), Some(registry)) = (self.store_for(root_session_id), self.shared()) else {
-            return;
+            return false;
         };
         let root = root_session_id.to_owned();
         let mut owned_cache = std::mem::take(cache);
@@ -3021,7 +3077,7 @@ impl Registry {
             if let Some(Err(error)) = encoded {
                 tracing::warn!(%error, %root_session_id, "could not encode subagent journal");
             }
-            return;
+            return false;
         };
         let contents = encoded
             .records
@@ -3030,7 +3086,7 @@ impl Registry {
             .collect();
         let payload = encoded.payload.clone();
         if fill.send((payload.clone(), contents)).is_err() {
-            return;
+            return false;
         }
         self.acknowledge(root_session_id, &encoded.acknowledged);
         cache.committed(encoded);
@@ -3039,6 +3095,7 @@ impl Registry {
                 .await;
         }
         *saved = Some(payload);
+        true
     }
 
     async fn record_children(
@@ -3806,6 +3863,9 @@ impl Registry {
                             .iter()
                             .map(|waited| ((waited.session.clone(), id), waited.mark)),
                     );
+                    if matches!(session.stored_runtime, StoredRuntime::Unstarted(_)) {
+                        report.unstarted.push(id);
+                    }
                     state.insert_restored(root_session_id, session)?;
                     report.restored += 1;
                     if resume {
@@ -4707,6 +4767,284 @@ impl Registry {
         Ok(())
     }
 
+    pub(super) fn queues_spawns(&self) -> bool {
+        self.queue_spawns.load(Ordering::Relaxed)
+    }
+
+    pub(super) async fn ensure_resident(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> std::io::Result<()> {
+        self.rehydrate(root_session_id, id, MessagePurpose::Coordinate)
+            .await
+            .map(drop)
+    }
+
+    pub(super) fn session_handle(&self, session_id: &str) -> Option<AgentHandle> {
+        self.session_handles
+            .read(|handles| handles.get(session_id).cloned())
+    }
+
+    pub(super) async fn insert_unstarted(
+        self: &Arc<Self>,
+        root_session_id: String,
+        descriptor: AgentDescriptor,
+        host_context: Option<Arc<str>>,
+        contract: OutputContract,
+        spawned: Option<durable::Spawned>,
+        unstarted: durable::Unstarted,
+    ) -> std::io::Result<()> {
+        let id = descriptor.id;
+        let child_session_id = descriptor.session_id.clone();
+        let root = root_session_id.clone();
+        self.state
+            .call(move |state| -> std::io::Result<()> {
+                state.validate_insert(&root, &descriptor)?;
+                let mut session = ChildSession::restored(
+                    descriptor.clone(),
+                    host_context,
+                    AgentStatus::Pending,
+                    contract,
+                    StoredRuntime::Unstarted(Arc::new(unstarted)),
+                    0,
+                    None,
+                );
+                session.announce = false;
+                session.spawned = spawned;
+                let (id, session_id) = (descriptor.id, descriptor.session_id);
+                state.insert(root, id, session_id, session)
+            })
+            .await?;
+        self.roots.update(|roots| {
+            roots.insert(child_session_id.clone(), root_session_id.clone());
+        });
+        self.changed();
+        if self.store_for(&root_session_id).is_some()
+            && let Err(error) = self.save_scope(&root_session_id).await
+        {
+            return match self.close_batch(&root_session_id, vec![id]).await {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(std::io::Error::other(format!(
+                    "{error}; subagent startup cleanup failed: {cleanup}"
+                ))),
+            };
+        }
+        self.enqueue_unstarted(&root_session_id, id);
+        Ok(())
+    }
+
+    fn enqueue_unstarted(self: &Arc<Self>, root_session_id: &str, id: AgentId) {
+        let _ = self.unstarted.send((Arc::from(root_session_id), id));
+        let Some(mut queue) = self.unstarted_queue.take() else {
+            return;
+        };
+        let capacity = self.capacity.clone();
+        let registry = Arc::downgrade(self);
+        drop(platform::spawn(async move {
+            while let Some((root, id)) = queue.recv().await {
+                let turn = capacity.acquire(Waiter::Spawn).await;
+                let Some(registry) = registry.upgrade() else {
+                    return;
+                };
+                drop(platform::spawn(async move {
+                    super::tools::start_unstarted(&registry, &root, id, turn).await;
+                }));
+            }
+        }));
+    }
+
+    pub(super) async fn unstarted(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> Option<UnstartedChild> {
+        let root = root_session_id.to_owned();
+        let (child, reissued) = self
+            .state
+            .call(move |state| {
+                let scope = state.scopes.get_mut(&root)?;
+                let session = scope.sessions.get(&id)?;
+                let StoredRuntime::Unstarted(unstarted) = &session.stored_runtime else {
+                    return None;
+                };
+                if !matches!(session.status, AgentStatus::Pending) || session.harness().is_some() {
+                    return None;
+                }
+                let unstarted = Arc::clone(unstarted);
+                let parent_session = session
+                    .descriptor
+                    .parent
+                    .and_then(|parent| scope.sessions.get(&parent))
+                    .map_or_else(
+                        || root.clone(),
+                        |parent| parent.descriptor.session_id.clone(),
+                    );
+                let reissued = if unstarted.restored {
+                    let previous = session.descriptor.session_id.clone();
+                    let issued = nanocode_platform::uuid_v7().to_string();
+                    scope.topology.rebind(id, &previous, issued.clone());
+                    let session = scope.sessions.get_mut(&id)?;
+                    session.descriptor.session_id.clone_from(&issued);
+                    session.stored_runtime =
+                        StoredRuntime::Unstarted(Arc::new(unstarted.reissued()));
+                    state.root_by_session.remove(&previous);
+                    state.root_by_session.insert(issued.clone(), root.clone());
+                    Some((previous, issued))
+                } else {
+                    None
+                };
+                let session = state.scopes.get(&root)?.sessions.get(&id)?;
+                Some((
+                    UnstartedChild {
+                        lock: session.residency_lock.clone(),
+                        descriptor: session.descriptor.clone(),
+                        parent_session,
+                        host_context: session.host_context.clone(),
+                        output_schema: session.output_schema.clone(),
+                        unstarted,
+                    },
+                    reissued,
+                ))
+            })
+            .await?;
+        if let Some((previous, issued)) = reissued {
+            self.roots.update(|roots| {
+                roots.remove(&previous);
+                roots.insert(issued.clone(), root_session_id.to_owned());
+            });
+        }
+        Some(child)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn attach_started(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        id: AgentId,
+        agent: Agent,
+        events: nanocode_agent_core::AgentEvents,
+        model: Option<nanocode_agent_core::ModelSelection>,
+        thinking: Option<nanocode_agent_core::Thinking>,
+        reasoning_mode: nanocode_agent_core::ReasoningMode,
+        schema: String,
+    ) -> std::io::Result<()> {
+        let checkpoint = if self.store_for(root_session_id).is_some() {
+            match agent.checkpoint().await {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    let _ = agent.shutdown().await;
+                    return Err(std::io::Error::other(error));
+                }
+            }
+        } else {
+            None
+        };
+        let registry = Arc::clone(self);
+        let root = root_session_id.to_owned();
+        let updates = self.updates.clone();
+        let (start, ready) = oneshot::channel();
+        let attached = self
+            .state
+            .call(move |state| {
+                let Some(session) = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))
+                    .filter(|session| {
+                        matches!(session.status, AgentStatus::Pending)
+                            && matches!(session.stored_runtime, StoredRuntime::Unstarted(_))
+                    })
+                else {
+                    return Err(agent);
+                };
+                session.descriptor.model = model;
+                session.descriptor.thinking = thinking;
+                session.descriptor.reasoning_mode = reasoning_mode;
+                let event_task = forward_events(
+                    root.clone(),
+                    id,
+                    session.descriptor.parent,
+                    events,
+                    ready,
+                    Arc::downgrade(&registry),
+                    updates,
+                );
+                let (harness, harness_task) = harness::spawn(
+                    root.clone(),
+                    id,
+                    session.descriptor.context(),
+                    agent,
+                    registry.capacity.clone(),
+                    Arc::downgrade(&registry),
+                    schema,
+                    None,
+                );
+                if let Some(snapshot) = checkpoint {
+                    registry.record_checkpoint(&root, id, snapshot);
+                }
+                session.residency = Residency::Resident(harness);
+                session.harness_task = Some(harness_task);
+                session.event_task = Some(event_task);
+                session.stored_runtime = StoredRuntime::None;
+                Ok(())
+            })
+            .await;
+        match attached {
+            Ok(()) => {
+                let _ = start.send(());
+                self.changed();
+                Ok(())
+            }
+            Err(agent) => {
+                let _ = agent.shutdown().await;
+                Err(std::io::Error::other(format!(
+                    "subagent {id} was stopped before it started"
+                )))
+            }
+        }
+    }
+
+    pub(super) async fn fail_unstarted(&self, root_session_id: &str, id: AgentId, error: String) {
+        let root = root_session_id.to_owned();
+        let settled = self.state.call(move |state| {
+            let session = state
+                .scopes
+                .get_mut(&root)
+                .and_then(|scope| scope.sessions.get_mut(&id))
+                .filter(|session| {
+                    !session.active() && matches!(session.status, AgentStatus::Pending)
+                })?;
+            let harness = match std::mem::replace(&mut session.residency, Residency::Evicted) {
+                Residency::Resident(harness) => Some(harness),
+                Residency::Detached | Residency::Evicted => None,
+            };
+            session.status = AgentStatus::Failed { error };
+            session.stored_runtime = StoredRuntime::None;
+            let settled = session.next_instruction_revision.saturating_add(1);
+            session.next_instruction_revision = settled;
+            session.settled_revision = Some(settled);
+            let completion = session.descriptor.parent.is_none().then_some(settled);
+            if let Some(revision) = completion {
+                session.settle_completion(revision);
+            }
+            Some((session.status.clone(), completion, harness))
+        });
+        let Some((status, completion, harness)) = settled.await else {
+            return;
+        };
+        self.enqueue_status(
+            root_session_id,
+            id,
+            OrderedJob::Settle {
+                status,
+                completion,
+                harness,
+            },
+        );
+        self.changed();
+    }
+
     pub(super) async fn launch_initial_turn(
         self: &Arc<Self>,
         root_session_id: &str,
@@ -4737,9 +5075,10 @@ impl Registry {
         &self,
         root_session_id: &str,
         id: AgentId,
-        recovering: bool,
+        recovered: Option<u64>,
         context: Option<&AgentContext>,
     ) -> Option<StartedTurn> {
+        let recovering = recovered.is_some();
         let root = root_session_id.to_owned();
         let context = context.cloned();
         let (started, descriptor) = self
@@ -4757,8 +5096,8 @@ impl Registry {
                 let started = if !session.status.can_start_turn() || session.active() {
                     None
                 } else {
-                    let revision = if recovering {
-                        session.next_instruction_revision
+                    let revision = if let Some(recovered) = recovered {
+                        session.next_instruction_revision.max(recovered)
                     } else {
                         let Some(next) = session.next_instruction_revision.checked_add(1) else {
                             return (None, None);
@@ -6242,7 +6581,7 @@ impl Registry {
             let snapshot = match &session.stored_runtime {
                 StoredRuntime::Checkpoint(snapshot) => Some(SessionCheckpoint::clone(snapshot)),
                 StoredRuntime::Journaled => None,
-                StoredRuntime::None => break,
+                StoredRuntime::None | StoredRuntime::Unstarted(_) => break,
             };
             let parent_session = session
                 .descriptor

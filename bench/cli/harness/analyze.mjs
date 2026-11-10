@@ -43,13 +43,13 @@ export function streamMetrics(rec, marks, n, extra = {}) {
     tokens: n,
     missing,
     ttft_overhead_ms: Number.isFinite(firstClient) ? firstClient - s[0] : null,
-    lag_p50_ms: q(lags, 0.5), lag_p90_ms: q(lags, 0.9), lag_p99_ms: q(lags, 0.99), lag_max_ms: lags.length ? Math.max(...lags) : null,
+    lag_p50_ms: q(lags, 0.5), lag_p90_ms: q(lags, 0.9), lag_p99_ms: q(lags, 0.99), lag_max_ms: lags.length ? lags.reduce((a, b) => (b > a ? b : a), -Infinity) : null,
     lag_mean_ms: lags.length ? lags.reduce((a, b) => a + b, 0) / lags.length : null,
     last_token_lag_ms: Number.isFinite(lastClient) ? lastClient - s[n - 1] : null,
     observed_tok_s: Number.isFinite(lastClient) && lastClient > firstClient ? (n - 1) / ((lastClient - firstClient) / 1000) : null,
     server_tok_s: rec.schedule?.length ? (n - 1) / ((s[n - 1] - s[0]) / 1000) : null,
     updates: marks.length,
-    max_update_gap_ms: gaps.length ? Math.max(...gaps) : null,
+    max_update_gap_ms: gaps.length ? gaps.reduce((a, b) => (b > a ? b : a), -Infinity) : null,
     server_drains: rec.drains,
     server_bytes_out: rec.bytes_out,
     request_bytes: rec.request_bytes,
@@ -59,3 +59,17 @@ export function streamMetrics(rec, marks, n, extra = {}) {
 }
 
 export const msBetween = (a, b) => (a == null || b == null ? null : Number(BigInt(b) - BigInt(a)) / 1e6);
+
+const megabytes = (bytes) => (bytes == null ? null : bytes / 1048576);
+
+export function usageOf(rs) {
+  const cpu = rs.user_us == null ? null : (rs.user_us + rs.sys_us) / 1000;
+  return {
+    cpu_ms: cpu, user_ms: rs.user_us == null ? null : rs.user_us / 1000, sys_ms: rs.sys_us == null ? null : rs.sys_us / 1000,
+    max_rss_mb: megabytes(rs.maxrss_bytes), max_footprint_mb: megabytes(rs.lifetime_max_footprint), instructions: rs.instructions ?? null,
+    tree_cpu_ms: rs.cgroup_cpu_us != null ? rs.cgroup_cpu_us / 1000 : rs.tree_cpu_us != null ? rs.tree_cpu_us / 1000 : cpu,
+    tree_max_rss_mb: rs.cgroup_memory_peak_bytes != null ? megabytes(rs.cgroup_memory_peak_bytes) : rs.tree_max_rss_bytes != null ? megabytes(rs.tree_max_rss_bytes) : megabytes(rs.maxrss_bytes),
+    tree_source: rs.cgroup_cpu_us != null ? "cgroup" : rs.tree_cpu_us != null ? "proc-sampler" : "rusage",
+    helpers_max: rs.helpers_max ?? null, helpers_left: rs.helpers_left ?? null,
+  };
+}

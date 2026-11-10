@@ -192,7 +192,7 @@ const sleepUntil = (targetNs) => new Promise((resolve) => {
   tick();
 });
 
-function toolFor(harness, kind, step) {
+function toolFor(harness, kind, step, names) {
   const id = "call_" + step;
   if (kind === "read") {
     if (harness === "fx") return { id, name: "read_file", input: { path: "evidence.txt" } };
@@ -205,17 +205,24 @@ function toolFor(harness, kind, step) {
     if (harness === "nc") return { id, name: "exec", custom: true, input: "const r = await tools.exec_command({ cmd: 'ls' }); text(r.output ?? JSON.stringify(r))" };
     if (harness === "ncdirect") return { id, name: "exec_command", input: { cmd: "ls" } };
   }
+  if (kind === "shell" && Array.isArray(names)) {
+    if (names.includes("exec_command")) return { id, name: "exec_command", input: { cmd: "ls" } };
+    if (names.includes("Bash")) return { id, name: "Bash", input: { command: "ls", description: "List files" } };
+    if (names.includes("bash")) return { id, name: "bash", input: { command: "ls", description: "List files" } };
+    if (names.includes("shell")) return { id, name: "shell", input: { command: ["bash", "-lc", "ls"] } };
+  }
   if (kind === "bridge") {
     if (harness === "ncexec") return { id, name: "exec", custom: true, input: "text(JSON.stringify(await tools.bridge_echo({ value: '" + step + "' })))" };
     return { id, name: "bridge_echo", input: { value: String(step) } };
   }
-  throw new Error("no tool for " + harness + " " + kind);
+  throw new Error("no tool for " + harness + " " + kind + " among " + JSON.stringify(names));
 }
 
 function sideRequest(body) {
   try {
     const parsed = JSON.parse(body);
-    return { side: !(Array.isArray(parsed.tools) && parsed.tools.length > 0), stream: parsed.stream === true };
+    const names = Array.isArray(parsed.tools) ? parsed.tools.map((t) => t.name ?? t.function?.name ?? t.type).filter(Boolean) : [];
+    return { side: !(Array.isArray(parsed.tools) && parsed.tools.length > 0), stream: parsed.stream === true, tools: names };
   } catch {
     return { side: false, stream: true };
   }
@@ -245,7 +252,7 @@ async function respond(protocol, body, sink, record) {
     if (sc.kind === "read" && sc.file) fs.writeFileSync(sc.file.replaceAll("~", "/"), (record.step + 1) + " " + "x".repeat(Number(sc.bytes ?? 1024)) + "\n");
     record.first_token_ns = record.last_token_ns = now();
     await enc.begin("tool");
-    await enc.toolCall(toolFor(sc.h, sc.kind, record.step + 1));
+    await enc.toolCall(toolFor(sc.h, sc.kind, record.step + 1, sideRequest(body).tools));
     record.done_ns = now();
     return;
   }

@@ -1,0 +1,15 @@
+{
+  "name": "nanocode-cli-bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node harness/smoke.mjs",
+    "suite": "node harness/suite.mjs",
+    "sweep:cli": "node harness/sweep.mjs --mode=cli --rates=1000,10000",
+    "sweep:tui": "node harness/sweep.mjs --mode=tui --rates=1000,10000",
+    "report": "node harness/report.mjs"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  }
+}

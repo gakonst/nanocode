@@ -1,0 +1,6 @@
+node_modules/
+work/
+results/
+tools/runstat
+tools/install/
+.venv/

@@ -47,7 +47,7 @@ use crate::{
 
 pub(crate) mod reload;
 
-pub const DISPLAY_FRAME: Duration = Duration::from_micros(16_667);
+pub const DISPLAY_FRAME: Duration = Duration::from_micros(8_333);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Redraw {

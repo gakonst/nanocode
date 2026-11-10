@@ -6213,6 +6213,8 @@ impl State {
                 .update(|discovered| discovered.retain(|name| references.contains(name.as_str())));
         }
 
+        self.kept.set(None);
+        self.kept_changed.notify_waiters();
         context.messages = kept;
         context.previous_message_id = Some(response.id);
         context.summary = continued;

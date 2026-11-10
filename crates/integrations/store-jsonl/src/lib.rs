@@ -1750,6 +1750,10 @@ impl Journal {
         let mut fresh = Vec::with_capacity(records.len());
         let (mut encoded, mut stored) = (Vec::new(), Vec::new());
         for record in records {
+            if record.value.is_empty() {
+                fresh.push(false);
+                continue;
+            }
             let retained = match self.matches(id, record, &mut encoded, &mut stored)? {
                 Some(equal) => Some(equal),
                 None => staged

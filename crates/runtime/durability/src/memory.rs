@@ -128,7 +128,7 @@ impl Tables {
             StoreError::NotCommitted("in-memory durability revision overflow".to_owned())
         })?;
         let mut staged = HashMap::new();
-        for record in &records {
+        for record in records.iter().filter(|record| !record.value.is_empty()) {
             let retained = self
                 .records
                 .get(&(state_id.to_owned(), record.key.clone()))
@@ -152,9 +152,12 @@ impl Tables {
             })?;
         drop(staged);
         for record in records {
-            self.records
-                .entry((state_id.to_owned(), record.key))
-                .or_insert(record.value);
+            let key = (state_id.to_owned(), record.key);
+            if record.value.is_empty() {
+                self.records.remove(&key);
+            } else {
+                self.records.entry(key).or_insert(record.value);
+            }
         }
         let state = self.states.entry(state_id.to_owned()).or_default();
         if state.payload.is_none() {

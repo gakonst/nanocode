@@ -36,6 +36,29 @@ def replies(chunk, rows, cols):
             else: out += reply
     return out
 
+def tree_memory(root, skip_root):
+    kids = {}
+    for name in os.listdir("/proc"):
+        if not name.isdigit(): continue
+        try:
+            with open("/proc/" + name + "/stat") as f: ppid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError): continue
+        kids.setdefault(ppid, []).append(int(name))
+    pids, todo = [], [root]
+    while todo:
+        pid = todo.pop()
+        pids.append(pid); todo += kids.get(pid, [])
+    total = {"rss": 0, "pss": 0, "anon": 0, "uss": 0, "procs": 0}
+    for pid in pids:
+        if skip_root and pid == root: continue
+        try:
+            with open("/proc/%d/smaps_rollup" % pid) as f: lines = f.read().splitlines()
+        except OSError: continue
+        v = {l.split(":")[0]: int(l.split()[1]) for l in lines[1:] if l.endswith("kB")}
+        total["rss"] += v.get("Rss", 0); total["pss"] += v.get("Pss", 0); total["anon"] += v.get("Anonymous", 0)
+        total["uss"] += v.get("Private_Clean", 0) + v.get("Private_Dirty", 0); total["procs"] += 1
+    return {k: (x * 1024 if k != "procs" else x) for k, x in total.items()}
+
 def main():
     spec = json.loads(sys.argv[1])
     for flag, value in zip(sys.argv[2::2], sys.argv[3::2]):
@@ -84,8 +107,12 @@ def main():
     key_log = []
     key_pending = None
     key_next_at = None
+    mem_at = spec.get("memory_after_ms")
+    mem = None
     while True:
         t = ns()
+        if mem_at is not None and mem is None and frame_at is not None and t - frame_at >= mem_at * 1e6 and sys.platform.startswith("linux"):
+            mem = tree_memory(proc.pid, use_runstat)
         if send is not None and sent_at is None and frame_at is not None and t - frame_at >= send_delay_ns:
             for k, piece in enumerate(send):
                 os.write(master, piece.encode())
@@ -200,7 +227,7 @@ def main():
         "start_ns": start, "first_byte_ms": ms(first_byte), "first_frame_ms": ms(first_frame), "sent_ns": sent_at, "done_ns": done_at,
         "exit_after_ms": None if exit_sent is None else (exited - exit_sent) / 1e6, "status": status,
         "cpu_ms": cpu_ms, "user_ms": user_ms, "sys_ms": sys_ms, "max_rss": max_rss, **tree, "rows": rows, "cols": cols,
-        "bytes_total": total, "bytes_after_send": after_send, "chunks_after_send": chunks_after, "sync_frames_after_send": frames_after, "max_token": maxi, "marks": marks, "key_latency_ms": key_log,
+        "bytes_total": total, "bytes_after_send": after_send, "chunks_after_send": chunks_after, "sync_frames_after_send": frames_after, "max_token": maxi, "marks": marks, "key_latency_ms": key_log, "memory": mem,
     }
     if dump is not None:
         with open(spec["dump"], "wb") as f: f.write(bytes(dump))

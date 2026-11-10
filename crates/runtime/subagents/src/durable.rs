@@ -231,10 +231,17 @@ fn key_matches(json: &str, key: &str) -> bool {
 }
 
 #[derive(Clone)]
+pub(super) enum Payload {
+    Unsaved(Arc<str>),
+    Saving(Arc<str>),
+    Stored,
+}
+
+#[derive(Clone)]
 pub(super) struct JournalCheckpoint {
     pub(super) key: Arc<str>,
 
-    pub(super) pending: Option<Arc<str>>,
+    pub(super) payload: Payload,
 
     pub(super) checkpoint: Option<Arc<SessionCheckpoint>>,
 }
@@ -244,7 +251,7 @@ impl JournalCheckpoint {
         let (key, json) = encoded(&checkpoint)?;
         Ok(Self {
             key,
-            pending: Some(json),
+            payload: Payload::Unsaved(json),
             checkpoint: retain.then(|| Arc::new(checkpoint)),
         })
     }
@@ -252,8 +259,22 @@ impl JournalCheckpoint {
     pub(super) fn stored(key: Arc<str>, checkpoint: Option<SessionCheckpoint>) -> Self {
         Self {
             key,
-            pending: None,
+            payload: Payload::Stored,
             checkpoint: checkpoint.map(Arc::new),
+        }
+    }
+
+    pub(super) const fn unsaved(&self) -> Option<&Arc<str>> {
+        match &self.payload {
+            Payload::Unsaved(json) => Some(json),
+            Payload::Saving(_) | Payload::Stored => None,
+        }
+    }
+
+    pub(super) const fn held(&self) -> Option<&Arc<str>> {
+        match &self.payload {
+            Payload::Unsaved(json) | Payload::Saving(json) => Some(json),
+            Payload::Stored => None,
         }
     }
 }
@@ -2198,7 +2219,7 @@ pub(super) fn checkpoint_ref(
 ) -> std::io::Result<Option<Arc<str>>> {
     Ok(match (checkpoint, session.stored_runtime.checkpoint()) {
         (Some(checkpoint), _) => {
-            if let Some(json) = &checkpoint.pending {
+            if let Some(json) = checkpoint.unsaved() {
                 records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
             }
             Some(Arc::clone(&checkpoint.key))

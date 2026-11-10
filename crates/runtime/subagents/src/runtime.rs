@@ -1029,17 +1029,31 @@ enum JournalSave {
     Fenced,
 }
 
+type Filled = (
+    nanocode_agent_core::backend::JournalCommit,
+    Vec<(AgentId, Arc<str>)>,
+);
+
 fn acknowledge_deferred(
+    registry: Weak<Registry>,
+    root_session_id: &str,
     waiters: Vec<oneshot::Sender<std::io::Result<()>>>,
-    commit: Option<nanocode_agent_core::backend::JournalCommit>,
+    filled: Option<Filled>,
 ) {
-    if waiters.is_empty() {
+    if waiters.is_empty() && filled.as_ref().is_none_or(|(_, saving)| saving.is_empty()) {
         return;
     }
+    let root_session_id = root_session_id.to_owned();
     drop(platform::spawn(async move {
         let interrupted = || std::io::Error::other("subagent journal write was interrupted");
-        let result = match commit {
-            Some(commit) => commit.await.unwrap_or_else(|_| Err(interrupted())),
+        let result = match filled {
+            Some((commit, saving)) => {
+                let result = commit.await.unwrap_or_else(|_| Err(interrupted()));
+                if let Some(registry) = registry.upgrade() {
+                    registry.settle_saving(&root_session_id, &saving, result.is_ok());
+                }
+                result
+            }
             None => Err(interrupted()),
         };
         for done in waiters {
@@ -1116,7 +1130,7 @@ async fn journal_writer(
             }
             if pending.is_empty() {
                 if let Some(open) = slot.take() {
-                    let commit = live
+                    let filled = live
                         .fill_journal(
                             &root_session_id,
                             open,
@@ -1125,7 +1139,12 @@ async fn journal_writer(
                             &mut cache,
                         )
                         .await;
-                    acknowledge_deferred(std::mem::take(&mut deferred), commit);
+                    acknowledge_deferred(
+                        registry.clone(),
+                        &root_session_id,
+                        std::mem::take(&mut deferred),
+                        filled,
+                    );
                 }
                 requests.close();
                 live.journal_writers.update(|writers| {
@@ -1174,14 +1193,19 @@ async fn journal_writer(
                 },
                 fill = taken => {
                     slot = None;
-                    let commit = match (fill, registry.upgrade()) {
+                    let filled = match (fill, registry.upgrade()) {
                         (Some((fill, commit)), Some(live)) => live
                             .fill_with(&root_session_id, fill, &mut saved, &mut recorded, &mut cache)
                             .await
-                            .then_some(commit),
+                            .map(|saving| (commit, saving)),
                         _ => None,
                     };
-                    acknowledge_deferred(std::mem::take(&mut deferred), commit);
+                    acknowledge_deferred(
+                        registry.clone(),
+                        &root_session_id,
+                        std::mem::take(&mut deferred),
+                        filled,
+                    );
                 }
                 () = &mut retry => break,
             }
@@ -1220,7 +1244,7 @@ impl AgentScope {
                     continue;
                 };
                 let checkpoint = checkpoints.get(&(root.clone(), id));
-                let pending = checkpoint.is_some_and(|checkpoint| checkpoint.pending.is_some());
+                let pending = checkpoint.is_some_and(|checkpoint| checkpoint.unsaved().is_some());
                 let checkpoint_key = checkpoint.map(|checkpoint| &checkpoint.key);
                 let cached = cache.agent(id, session.journal_generation, checkpoint_key);
                 if !fold && !pending && cached.is_some() {
@@ -1234,7 +1258,7 @@ impl AgentScope {
                 let checkpoint_ref = match cached {
                     Some(cached) => {
                         if let Some(checkpoint) = checkpoint
-                            && let Some(json) = &checkpoint.pending
+                            && let Some(json) = checkpoint.unsaved()
                         {
                             records.push((Arc::clone(&checkpoint.key), Arc::clone(json)));
                         }
@@ -2896,10 +2920,15 @@ impl Registry {
                     awaiting.extend(waiters.into_iter().map(|(_, done)| done));
                     let closed = !finals.is_empty();
                     if closed && let Some(open) = slot.take() {
-                        let commit = self
+                        let filled = self
                             .fill_journal(root_session_id, open, saved, recorded, cache)
                             .await;
-                        acknowledge_deferred(std::mem::take(awaiting), commit);
+                        acknowledge_deferred(
+                            self.this.get().cloned().unwrap_or_default(),
+                            root_session_id,
+                            std::mem::take(awaiting),
+                            filled,
+                        );
                     }
                     for (write, done) in finals {
                         *saved = None;
@@ -3027,8 +3056,15 @@ impl Registry {
         };
         let closed = !finals.is_empty();
         if closed && let Some(open) = slot.take() {
-            self.fill_journal(root_session_id, open, saved, recorded, cache)
+            let filled = self
+                .fill_journal(root_session_id, open, saved, recorded, cache)
                 .await;
+            acknowledge_deferred(
+                self.this.get().cloned().unwrap_or_default(),
+                root_session_id,
+                Vec::new(),
+                filled,
+            );
         }
         for (write, done) in finals {
             *saved = None;
@@ -3047,11 +3083,11 @@ impl Registry {
         saved: &mut Option<String>,
         recorded: &mut HashMap<String, Arc<str>>,
         cache: &mut durable::JournalCache,
-    ) -> Option<nanocode_agent_core::backend::JournalCommit> {
+    ) -> Option<Filled> {
         let (fill, commit) = open.await.ok()?;
         self.fill_with(root_session_id, fill, saved, recorded, cache)
             .await
-            .then_some(commit)
+            .map(|saving| (commit, saving))
     }
 
     async fn fill_with(
@@ -3061,9 +3097,9 @@ impl Registry {
         saved: &mut Option<String>,
         recorded: &mut HashMap<String, Arc<str>>,
         cache: &mut durable::JournalCache,
-    ) -> bool {
+    ) -> Option<Vec<(AgentId, Arc<str>)>> {
         let (Some(store), Some(registry)) = (self.store_for(root_session_id), self.shared()) else {
-            return false;
+            return None;
         };
         let root = root_session_id.to_owned();
         let mut owned_cache = std::mem::take(cache);
@@ -3102,7 +3138,7 @@ impl Registry {
             if let Some(Err(error)) = encoded {
                 tracing::warn!(%error, %root_session_id, "could not encode subagent journal");
             }
-            return false;
+            return None;
         };
         let contents = encoded
             .records
@@ -3111,16 +3147,20 @@ impl Registry {
             .collect();
         let payload = encoded.payload.clone();
         if fill.send((payload.clone(), contents)).is_err() {
-            return false;
+            return None;
         }
-        self.acknowledge(root_session_id, &encoded.acknowledged);
+        let saving = encoded.acknowledged.clone();
+        self.settle(root_session_id, &saving, |payload| match payload {
+            durable::Payload::Unsaved(json) => durable::Payload::Saving(Arc::clone(json)),
+            other => other.clone(),
+        });
         cache.committed(encoded);
         if store.records_sessions() {
             self.record_children(root_session_id, store.as_ref(), recorded)
                 .await;
         }
         *saved = Some(payload);
-        true
+        Some(saving)
     }
 
     async fn record_children(
@@ -3266,7 +3306,7 @@ impl Registry {
             .read(|checkpoints| {
                 checkpoints
                     .get(&(root_session_id.to_owned(), id))
-                    .map(|checkpoint| (Arc::clone(&checkpoint.key), checkpoint.pending.clone()))
+                    .map(|checkpoint| (Arc::clone(&checkpoint.key), checkpoint.held().cloned()))
             })
             .ok_or_else(|| {
                 std::io::Error::other(format!("subagent {id} has no journaled checkpoint"))
@@ -3312,7 +3352,7 @@ impl Registry {
         let retained = |root: &String, checkpoint: &durable::JournalCheckpoint| {
             root == root_session_id
                 && checkpoint.key == *key
-                && checkpoint.pending.is_none()
+                && matches!(checkpoint.payload, durable::Payload::Stored)
                 && checkpoint.checkpoint.is_some()
         };
         if !self.checkpoints.read(|checkpoints| {
@@ -3332,15 +3372,32 @@ impl Registry {
     }
 
     fn acknowledge(&self, root_session_id: &str, acknowledged: &[(AgentId, Arc<str>)]) {
-        if acknowledged.is_empty() {
+        self.settle(root_session_id, acknowledged, |_| durable::Payload::Stored);
+    }
+
+    fn settle_saving(&self, root_session_id: &str, saving: &[(AgentId, Arc<str>)], stored: bool) {
+        self.settle(root_session_id, saving, |payload| match payload {
+            durable::Payload::Saving(_) if stored => durable::Payload::Stored,
+            durable::Payload::Saving(json) => durable::Payload::Unsaved(Arc::clone(json)),
+            other => other.clone(),
+        });
+    }
+
+    fn settle(
+        &self,
+        root_session_id: &str,
+        settled: &[(AgentId, Arc<str>)],
+        next: impl Fn(&durable::Payload) -> durable::Payload,
+    ) {
+        if settled.is_empty() {
             return;
         }
         self.checkpoints.update(|checkpoints| {
-            for (id, key) in acknowledged {
+            for (id, key) in settled {
                 if let Some(checkpoint) = checkpoints.get_mut(&(root_session_id.to_owned(), *id))
                     && checkpoint.key == *key
                 {
-                    checkpoint.pending = None;
+                    checkpoint.payload = next(&checkpoint.payload);
                 }
             }
         });

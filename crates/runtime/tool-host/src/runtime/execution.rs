@@ -327,6 +327,14 @@ impl ToolRuntime {
 }
 
 impl ToolRuntimeControl {
+    #[must_use]
+    pub fn quiet(&self) -> bool {
+        match &self.inner {
+            RuntimeControl::Native(control) => control.quiet(),
+            RuntimeControl::Host(control) => control.quiet(),
+        }
+    }
+
     pub fn settle_preempt(&self) {
         match &self.inner {
             RuntimeControl::Native(control) => control.settle_preempt(),
@@ -1002,6 +1010,19 @@ impl NativeToolRuntimeControl {
                 executors.settle_cells(&session);
             }
         }
+    }
+
+    pub fn quiet(&self) -> bool {
+        self.code_mode.quiet()
+            && self
+                .remote()
+                .iter()
+                .all(|(session, host)| host.quiet(session))
+            && self
+                .workspace
+                .iter()
+                .flat_map(|workspace| workspace.tools())
+                .all(|tool| tool.running_tasks().is_empty())
     }
 
     pub fn settle_preempt(&self) {

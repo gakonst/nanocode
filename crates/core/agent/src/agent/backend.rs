@@ -103,6 +103,12 @@ pub trait BuilderBackend {
 #[cfg(not(target_family = "wasm"))]
 pub type BackendFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
+pub trait ParkedCall: Send + Sync + 'static {
+    fn finished(&self) -> BackendFuture<()>;
+
+    fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
+}
+
 pub type JournalFill = tokio::sync::oneshot::Sender<(String, Vec<Arc<str>>)>;
 
 pub type JournalCommit = tokio::sync::oneshot::Receiver<std::io::Result<()>>;
@@ -446,6 +452,18 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     }
 
     fn shutdown(&self) -> BackendFuture<Result<()>>;
+
+    fn set_parking(&self, _parking: bool) {}
+
+    fn parked(&self, _after: u64) -> BackendFuture<u64> {
+        Box::pin(std::future::pending())
+    }
+
+    fn park(&self) -> BackendFuture<Result<Option<Arc<dyn ParkedCall>>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn unpark(&self, _call: Arc<dyn ParkedCall>) {}
 
     fn is_stopped(&self) -> bool {
         false

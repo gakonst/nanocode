@@ -801,6 +801,22 @@ impl Agent {
         self.backend.shutdown().await
     }
 
+    pub fn set_parking(&self, parking: bool) {
+        self.backend.set_parking(parking);
+    }
+
+    pub async fn parked(&self, after: u64) -> u64 {
+        self.backend.parked(after).await
+    }
+
+    pub async fn park(&self) -> Result<Option<Arc<dyn super::backend::ParkedCall>>> {
+        self.backend.park().await
+    }
+
+    pub fn unpark(&self, call: Arc<dyn super::backend::ParkedCall>) {
+        self.backend.unpark(call);
+    }
+
     pub fn decode_durable_prompt(&self, input: serde_json::Value) -> Result<Prompt> {
         self.backend.decode_durable_prompt(input)
     }

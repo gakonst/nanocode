@@ -81,6 +81,11 @@ impl Capacity {
         Ok((0..count).map(|_| self.turn()).collect())
     }
 
+    pub(super) fn overdraw(&self) -> TurnCapacity {
+        self.state.update(|state| state.active += 1);
+        self.turn()
+    }
+
     pub(super) fn acquire(&self, waiter: Waiter) -> Acquire {
         let (grant, granted) = oneshot::channel();
         let state = Arc::clone(&self.state);
@@ -119,6 +124,16 @@ impl Capacity {
 }
 
 fn hand_over(state: &Atom<CapacityState>, queue: &mut Waiting) {
+    let overdrawn = state.update(|state| {
+        let overdrawn = state.active > state.limit;
+        if overdrawn {
+            state.active -= 1;
+        }
+        overdrawn
+    });
+    if overdrawn {
+        return;
+    }
     while let Some(waiter) = queue
         .resident
         .pop_front()

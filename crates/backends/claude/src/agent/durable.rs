@@ -182,6 +182,10 @@ pub(super) struct Effect<'a> {
     model_call: bool,
 }
 impl Effect<'_> {
+    pub(super) fn key(&self) -> (&str, &str) {
+        (self.operation, &self.step)
+    }
+
     pub(super) fn scoped(&self, scope: &str) -> Self {
         Effect {
             policy: self.policy,

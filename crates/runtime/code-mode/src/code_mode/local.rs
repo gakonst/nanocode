@@ -289,6 +289,11 @@ impl CodeModeHost for LocalCells {
         true
     }
 
+    fn quiet(&self, session_id: &str) -> bool {
+        self.existing(session_id)
+            .is_none_or(|session| session.runtime.quiet())
+    }
+
     fn tool_definitions(&self, _: &str) -> Result<Vec<ToolDefinition>, CodeModeHostError> {
         Ok(Vec::new())
     }

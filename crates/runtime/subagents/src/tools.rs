@@ -630,7 +630,7 @@ pub async fn start_agents_observed(
 
     for (root_session_id, descriptor, start_events) in additions {
         registry.send(&root_session_id, AgentUpdate::Added(descriptor));
-        let _ = start_events.send(());
+        let _ = start_events.send(0);
     }
 
     let launches = launches
@@ -856,7 +856,7 @@ async fn start_child(
         .await?;
     startup.track(&reservation.root_session_id, id);
     registry.send(&reservation.root_session_id, AgentUpdate::Added(descriptor));
-    let _ = start_events.send(());
+    let _ = start_events.send(0);
 
     if let Err(error) = registry
         .launch_initial_turn(

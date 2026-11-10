@@ -94,6 +94,10 @@ pub(super) fn install(
         let guard = Arc::clone(&preempt);
         Box::pin(async move { guard.control.preempt_turn().await })
     }));
+    let quiet = Arc::clone(&guard);
+    native
+        .code_quiet
+        .push(Arc::new(move || quiet.control.quiet()));
     let settle = Arc::clone(&guard);
     native.code_turn_settle.push(Arc::new(move || {
         let guard = Arc::clone(&settle);

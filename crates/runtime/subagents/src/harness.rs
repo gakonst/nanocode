@@ -6,7 +6,7 @@ use super::{
     },
     platform::{self, Task, TaskError},
     runtime::{
-        DelegationChange, Registry, completion_instructions, completion_reminder,
+        DelegationChange, Hibernated, Registry, completion_instructions, completion_reminder,
         follow_up_reminder,
     },
 };
@@ -92,6 +92,12 @@ enum HarnessCommand {
     Close {
         response: oneshot::Sender<std::io::Result<()>>,
     },
+    Resume {
+        hibernated: Hibernated,
+        capacity: TurnCapacity,
+        interrupted: bool,
+        response: oneshot::Sender<std::io::Result<()>>,
+    },
 }
 
 struct Harness {
@@ -110,6 +116,7 @@ struct Harness {
     capacity: Capacity,
     waiting: Option<Acquire>,
     registry: Weak<Registry>,
+    parked: u64,
 }
 
 enum Contract {
@@ -129,6 +136,7 @@ enum HarnessEvent {
     Urgent(Option<Box<DeliveryCommand>>),
     CapacityAcquired(TurnCapacity),
     TurnFinished(Result<AgentResult<TurnResult>, TaskError>),
+    Parked(u64),
 }
 
 impl HarnessHandle {
@@ -184,6 +192,21 @@ impl HarnessHandle {
     pub(super) async fn close(&self) -> std::io::Result<()> {
         self.request(|response| HarnessCommand::Close { response })
             .await
+    }
+
+    pub(super) async fn resume(
+        &self,
+        hibernated: Hibernated,
+        capacity: TurnCapacity,
+        interrupted: bool,
+    ) -> std::io::Result<()> {
+        self.request(|response| HarnessCommand::Resume {
+            hibernated,
+            capacity,
+            interrupted,
+            response,
+        })
+        .await
     }
 
     pub(super) fn enqueue_delivery(
@@ -289,6 +312,7 @@ pub(super) fn spawn(
             capacity,
             waiting: None,
             registry,
+            parked: 0,
         }
         .run()
         .instrument(span),
@@ -324,8 +348,132 @@ impl Harness {
                     self.start_pending(Some(capacity)).await;
                 }
                 HarnessEvent::TurnFinished(result) => self.turn_finished(result).await,
+                HarnessEvent::Parked(entries) => {
+                    self.parked = entries;
+                    if self.hibernate().await {
+                        return;
+                    }
+                }
             }
         }
+    }
+
+    async fn hibernate(&mut self) -> bool {
+        if !self.deferred.is_empty() || !self.urgent.is_empty() || !self.commands.is_empty() {
+            return false;
+        }
+        let (Some(registry), Some(agent)) = (self.registry.upgrade(), self.agent.clone()) else {
+            return false;
+        };
+        let Some(lock) = registry
+            .begin_hibernation(&self.root_session_id, self.id)
+            .await
+        else {
+            return false;
+        };
+        if !self.deferred.is_empty() || !self.urgent.is_empty() || !self.commands.is_empty() {
+            return false;
+        }
+        let Some(stored) = registry.hibernation_runtime(&self.root_session_id, self.id) else {
+            return false;
+        };
+        let Ok(Some(call)) = agent.park().await else {
+            return false;
+        };
+        let Some(mut active) = self.active.take() else {
+            return false;
+        };
+        drop((&mut active.result).await);
+        drop(active);
+        self.agent = None;
+        drop(agent);
+        registry
+            .hibernated(
+                &self.root_session_id,
+                self.id,
+                stored,
+                Hibernated {
+                    call,
+                    capacity: None,
+                    urgent: std::mem::take(&mut self.pending_urgent),
+                    deferred: std::mem::take(&mut self.pending_deferred),
+                },
+                lock,
+            )
+            .await;
+        true
+    }
+
+    async fn resume(
+        &mut self,
+        hibernated: Hibernated,
+        capacity: TurnCapacity,
+        interrupted: bool,
+    ) -> std::io::Result<()> {
+        let Hibernated {
+            call,
+            capacity: _,
+            urgent,
+            deferred,
+        } = hibernated;
+        self.pending_urgent = urgent;
+        self.pending_deferred = deferred;
+        let resumed = self
+            .resume_turn((!interrupted).then_some(call), capacity)
+            .await;
+        if let Err(error) = &resumed {
+            self.publish_turn_result(Ok(Err(NanocodeError::InvalidRequest(format!(
+                "agent {} could not wake: {error}",
+                self.id
+            )))))
+            .await;
+            self.start_pending(None).await;
+            return resumed;
+        }
+        if interrupted {
+            self.reject_waiting_deliveries("message rejected by agent interruption")
+                .await;
+            self.fail_pending("message cancelled by agent interruption")
+                .await;
+            return self.stop_active().await;
+        }
+        resumed
+    }
+
+    async fn resume_turn(
+        &mut self,
+        call: Option<Arc<dyn nanocode_agent_core::backend::ParkedCall>>,
+        capacity: TurnCapacity,
+    ) -> std::io::Result<()> {
+        let registry = self
+            .registry
+            .upgrade()
+            .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+        let agent = self
+            .agent
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
+        let (id, input) = registry
+            .pending_turn(&self.root_session_id, agent.session_id())
+            .await?
+            .ok_or_else(|| std::io::Error::other("the hibernated turn is not pending"))?;
+        let recovered = agent
+            .decode_durable_prompt(input)
+            .map_err(std::io::Error::other)?;
+        if let Some(call) = call {
+            agent.unpark(call);
+        }
+        let turn = agent
+            .prompt(nanocode_agent_core::PromptRequest::new(recovered).request_id(id))
+            .await
+            .map_err(std::io::Error::other)?;
+        self.contract = Contract::Delivered;
+        self.active = Some(ActiveTurn {
+            control: turn.control(),
+            result: platform::spawn(turn.result()),
+            _capacity: capacity,
+        });
+        Ok(())
     }
 
     async fn next_event(&mut self) -> HarnessEvent {
@@ -349,6 +497,18 @@ impl Harness {
                 capacity = waiting => HarnessEvent::CapacityAcquired(capacity),
             };
         };
+        let parked = match (&self.agent, self.registry.upgrade()) {
+            (Some(agent), Some(registry)) if registry.hibernates() => {
+                Some(agent.parked(self.parked))
+            }
+            _ => None,
+        };
+        let parked = async {
+            match parked {
+                Some(parked) => parked.await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             biased;
             command = self.commands.recv() => HarnessEvent::Command(command),
@@ -356,6 +516,7 @@ impl Harness {
 
             result = &mut active.result => HarnessEvent::TurnFinished(result),
             deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
+            entries = parked => HarnessEvent::Parked(entries),
         }
     }
 
@@ -404,6 +565,15 @@ impl Harness {
                 let result = self.close().await;
                 let _ = response.send(result);
                 true
+            }
+            HarnessCommand::Resume {
+                hibernated,
+                capacity,
+                interrupted,
+                response,
+            } => {
+                let _ = response.send(self.resume(hibernated, capacity, interrupted).await);
+                false
             }
         }
     }
@@ -743,6 +913,7 @@ impl Harness {
                 nanocode_agent_core::PromptRequest::new(prompt)
             }
         };
+        agent.set_parking(registry.hibernates() && !recovering);
         let turn = match agent.prompt(request).await {
             Ok(turn) => turn,
             Err(error) => {

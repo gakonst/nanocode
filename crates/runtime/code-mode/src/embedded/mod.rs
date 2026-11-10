@@ -272,6 +272,10 @@ pub trait CodeModeHost: Send + Sync + 'static {
         true
     }
 
+    fn quiet(&self, _session_id: &str) -> bool {
+        false
+    }
+
     fn capabilities(
         &self,
     ) -> HostFuture<'_, Result<Vec<crate::remote::HandCapability>, CodeModeHostError>> {

@@ -546,6 +546,15 @@ impl CodeModeObserver for IgnoreUpdates {
 }
 
 impl EmbeddedToolRuntimeControl {
+    #[must_use]
+    pub fn quiet(&self) -> bool {
+        match (&self.host, &self.session_id) {
+            (Some(host), Some(session_id)) => host.quiet(session_id),
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    }
+
     pub async fn preempt_turn(&self) {
         if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
             && let Err(error) = host.preempt_turn(session_id).await

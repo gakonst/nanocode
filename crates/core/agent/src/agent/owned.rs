@@ -527,4 +527,27 @@ impl LifecycleBackend for Owned {
             result
         })
     }
+    fn set_parking(&self, parking: bool) {
+        self.0.backend().set_parking(parking);
+    }
+    fn parked(&self, after: u64) -> BackendFuture<u64> {
+        self.0.backend().parked(after)
+    }
+    fn park(&self) -> BackendFuture<Result<Option<Arc<dyn super::backend::ParkedCall>>>> {
+        let shared = Arc::clone(&self.0);
+        let parking = shared.backend().park();
+        Box::pin(async move {
+            let parked = parking.await?;
+            if parked.is_some() {
+                shared.life.close();
+                if let Some(owner) = shared.owner.upgrade() {
+                    owner.release(shared.key);
+                }
+            }
+            Ok(parked)
+        })
+    }
+    fn unpark(&self, call: Arc<dyn super::backend::ParkedCall>) {
+        self.0.backend().unpark(call);
+    }
 }

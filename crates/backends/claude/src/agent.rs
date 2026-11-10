@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 mod durable;
 mod history;
 mod images;
+mod parked;
 mod shared;
 mod side;
 mod telemetry;
@@ -216,6 +217,7 @@ type AgentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 type ToolResultFuture = AgentFuture<'static, std::result::Result<ClaudeToolReply, String>>;
 type Handler = Arc<dyn Fn(Value, ClaudeToolInvocation) -> ToolResultFuture + Send + Sync>;
 type ToolCleanup = Arc<dyn Fn() -> BackendFuture<()> + Send + Sync>;
+type CodeQuiet = Arc<dyn Fn() -> bool + Send + Sync>;
 type CodeTurnCleanup = Arc<dyn Fn(ClaudeToolProgress) -> BackendFuture<()> + Send + Sync>;
 type NestedToolLookup = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 type ToolRecovery = Arc<dyn Fn(&str, ClaudeToolInvocation) -> ToolResultFuture + Send + Sync>;
@@ -313,6 +315,7 @@ pub struct ClaudeTools {
     pub(crate) code_turn_cleanup: Vec<CodeTurnCleanup>,
     pub(crate) code_turn_preempt: Vec<ToolCleanup>,
     pub(crate) code_turn_settle: Vec<ToolCleanup>,
+    pub(crate) code_quiet: Vec<CodeQuiet>,
     pub(crate) nested_tools: Option<NestedToolLookup>,
     pub(crate) recovery: Option<ToolRecovery>,
     pub(crate) shared_catalog: Option<(nanocode_tool_host::Tools, std::path::PathBuf, AgentHandle)>,
@@ -355,6 +358,7 @@ impl nanocode_tools::ToolCollection for ClaudeTools {
             self.code_turn_cleanup = replacement.code_turn_cleanup;
             self.code_turn_preempt = replacement.code_turn_preempt;
             self.code_turn_settle = replacement.code_turn_settle;
+            self.code_quiet = replacement.code_quiet;
             self.nested_tools = replacement.nested_tools;
             self.recovery = replacement.recovery;
             self.shared_catalog = replacement.shared_catalog;
@@ -405,6 +409,14 @@ impl ClaudeTools {
     {
         self.code_turn_settle
             .push(Arc::new(move || Box::pin(settle())));
+        self
+    }
+
+    pub fn code_quiet<F>(mut self, quiet: F) -> Self
+    where
+        F: Fn() -> bool + Send + Sync + 'static,
+    {
+        self.code_quiet.push(Arc::new(quiet));
         self
     }
 
@@ -1385,6 +1397,7 @@ impl ClaudeBuilder {
         let mut code_turn_cleanup = Vec::new();
         let mut code_turn_preempt = Vec::new();
         let mut code_turn_settle = Vec::new();
+        let mut code_quiet = Vec::new();
         let mut agent_bound = Vec::new();
         let mut nested_tools = None;
         let mut recovery = None;
@@ -1401,6 +1414,7 @@ impl ClaudeBuilder {
             code_turn_cleanup.extend(native.code_turn_cleanup);
             code_turn_preempt.extend(native.code_turn_preempt);
             code_turn_settle.extend(native.code_turn_settle);
+            code_quiet.extend(native.code_quiet);
             agent_bound.extend(native.agent_bound);
         }
 
@@ -1588,6 +1602,7 @@ impl ClaudeBuilder {
                 code_turn_cleanup: Vec::new(),
                 code_turn_preempt: Vec::new(),
                 code_turn_settle: Vec::new(),
+                code_quiet: Vec::new(),
                 nested_tools: nested_tools.clone(),
                 recovery: recovery.clone(),
                 shared_catalog: None,
@@ -1613,6 +1628,7 @@ impl ClaudeBuilder {
             code_turn_cleanup.extend(adapted.code_turn_cleanup);
             code_turn_preempt.extend(adapted.code_turn_preempt);
             code_turn_settle.extend(adapted.code_turn_settle);
+            code_quiet.extend(adapted.code_quiet);
             agent_bound.extend(adapted.agent_bound);
             self.client_tool_search = false;
         }
@@ -1705,6 +1721,7 @@ impl ClaudeBuilder {
             automatic_cache: self.automatic_cache,
             cache_one_hour: AtomicBool::new(self.cache_one_hour),
             requested: Atom::default(),
+            parking: parked::Parking::default(),
             thinking_mode: AtomicThinkingMode::new(self.thinking_mode),
             keep_thinking: self.keep_thinking,
             fast_mode: AtomicBool::new(self.fast_mode),
@@ -1733,6 +1750,7 @@ impl ClaudeBuilder {
             code_turn_cleanup,
             code_turn_preempt,
             code_turn_settle,
+            code_quiet,
             nested_tools,
             recovery,
             dynamic_tools: self.dynamic_tools,
@@ -3272,6 +3290,7 @@ struct State {
     code_turn_cleanup: Vec<CodeTurnCleanup>,
     code_turn_preempt: Vec<ToolCleanup>,
     code_turn_settle: Vec<ToolCleanup>,
+    code_quiet: Vec<CodeQuiet>,
     lifecycle_opened: Atom<Option<String>>,
     subagent_type: Option<String>,
     subagent_type_resolver: Option<SubagentTypeResolver>,
@@ -3287,6 +3306,7 @@ struct State {
     automatic_cache: bool,
     cache_one_hour: AtomicBool,
     requested: Atom<Option<Instant>>,
+    parking: parked::Parking,
     thinking_mode: AtomicThinkingMode,
     keep_thinking: bool,
     fast_mode: AtomicBool,
@@ -5060,8 +5080,35 @@ impl State {
             };
             dispatched.get_or_insert_with(&elapsed_ns);
 
+            let parked = active_effect
+                .filter(|_| {
+                    self.parking.enabled() && matches!(self.lineage.origin, Origin::Subagent)
+                })
+                .and_then(|effect| {
+                    let request = wire.durable_input().ok()?;
+                    let (operation, step) = effect.key();
+                    let key = parked::Key {
+                        operation: operation.to_owned(),
+                        step: step.to_owned(),
+                        request: request.get().into(),
+                    };
+                    self.parking.enter(key, |key| {
+                        parked::ModelCall::start(
+                            client.clone(),
+                            wire.clone(),
+                            key,
+                            attempt_span.clone(),
+                        )
+                    })
+                });
+            let opening = async {
+                match &parked {
+                    Some((call, _)) => call.opened().await.map(|()| call.stream()),
+                    None => client.stream_prepared(&wire).await,
+                }
+            };
             let opened = tokio::select! {
-                result = client.stream_prepared(&wire).instrument(attempt_span.clone()) => result,
+                result = opening.instrument(attempt_span.clone()) => result,
                 () = cancel.cancelled() => {
                     telemetry::cancel_attempt(&attempt_span);
                     return Err(ResponseFailure { error: NanocodeError::TurnCancelled, recovery });
@@ -5244,6 +5291,16 @@ impl State {
                     }
                 }
             };
+            if let Some((_, parked)) = parked
+                && !parked.leave()
+            {
+                cancel.cancelled().await;
+                telemetry::cancel_attempt(&attempt_span);
+                return Err(ResponseFailure {
+                    error: NanocodeError::TurnCancelled,
+                    recovery,
+                });
+            }
             telemetry::record_attempt(
                 &attempt_span,
                 &telemetry::AttemptTiming {
@@ -8092,6 +8149,32 @@ impl LifecycleBackend for Driver {
             spawn_task(Box::pin(release));
             Ok(())
         })
+    }
+    fn set_parking(&self, parking: bool) {
+        self.state.parking.set(parking);
+    }
+    fn parked(&self, after: u64) -> BackendFuture<u64> {
+        let state = self.state.clone();
+        Box::pin(async move { state.parking.parked(after).await })
+    }
+    fn park(
+        &self,
+    ) -> BackendFuture<Result<Option<Arc<dyn nanocode_agent_core::backend::ParkedCall>>>> {
+        let quiet =
+            !self.state.code_quiet.is_empty() && self.state.code_quiet.iter().all(|quiet| quiet());
+        let Some(flight) = quiet.then(|| self.state.parking.claim()).flatten() else {
+            return Box::pin(async { Ok(None) });
+        };
+        let stopped = self.shutdown();
+        Box::pin(async move {
+            stopped.await?;
+            Ok(Some(
+                flight as Arc<dyn nanocode_agent_core::backend::ParkedCall>,
+            ))
+        })
+    }
+    fn unpark(&self, call: Arc<dyn nanocode_agent_core::backend::ParkedCall>) {
+        self.state.parking.adopt(call);
     }
     fn shutdown(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();

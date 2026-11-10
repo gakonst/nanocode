@@ -29,7 +29,7 @@ use nanocode_tool_contracts::ToolReceipt;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -207,6 +207,10 @@ pub(super) struct ChildSession {
 
     pub(super) in_flight_progress: durable::OmittedProgress,
 
+    pub(super) hibernated: Option<Hibernated>,
+
+    pub(super) hibernations: u64,
+
     residency_lock: Sequencer,
 
     changes: Option<watch::Sender<u64>>,
@@ -227,6 +231,7 @@ pub(super) struct ChildSession {
 pub(super) struct ActiveTurn {
     pub(super) revision: u64,
     pub(super) stage: TurnStage,
+    pub(super) interrupted: bool,
 }
 
 pub(super) enum TurnStage {
@@ -526,6 +531,8 @@ pub struct Registry {
     max_resident: AtomicUsize,
 
     max_resident_explicit: std::sync::atomic::AtomicBool,
+
+    hibernation: AtomicBool,
     scope_locks: Atom<HashMap<String, Arc<ScopeLocks>>>,
     store: Atom<Option<Arc<dyn SubagentStore>>>,
 
@@ -1214,6 +1221,24 @@ async fn journal_writer(
 }
 
 impl AgentScope {
+    fn holds_descendants(&self, id: AgentId) -> Option<bool> {
+        Some(
+            self.topology.has_children(id)
+                && self
+                    .topology
+                    .subtree_postorder(id)
+                    .ok()?
+                    .into_iter()
+                    .any(|descendant| {
+                        descendant != id
+                            && (self.sessions.resident.contains(&descendant)
+                                || self.sessions.get(&descendant).is_some_and(|session| {
+                                    matches!(session.status, AgentStatus::Pending)
+                                }))
+                    }),
+        )
+    }
+
     fn journal_snapshot(
         &self,
         root_session_id: &str,
@@ -1466,6 +1491,13 @@ pub(super) struct TurnSteer {
     id: AgentId,
     previous_revision: u64,
     revision: u64,
+}
+
+pub(super) struct Hibernated {
+    pub(super) call: Arc<dyn nanocode_agent_core::backend::ParkedCall>,
+    pub(super) capacity: Option<TurnCapacity>,
+    pub(super) urgent: VecDeque<AgentMessage>,
+    pub(super) deferred: VecDeque<AgentMessage>,
 }
 
 struct ResidentEviction {
@@ -2171,6 +2203,9 @@ impl RegistryState {
             if closing && !matches!(session.status, AgentStatus::Closed) {
                 session.status = AgentStatus::Closing;
             }
+            if !closing && let Some(turn) = session.turn.as_mut() {
+                turn.interrupted = true;
+            }
             harnesses.extend(session.harness().into_iter().cloned());
         }
         Ok(harnesses)
@@ -2249,14 +2284,7 @@ impl RegistryState {
                 {
                     return None;
                 }
-                let holding =
-                    scope.topology.has_children(id)
-                        && scope.topology.subtree_postorder(id).ok()?.into_iter().any(
-                            |descendant| {
-                                descendant != id && sessions.resident.contains(&descendant)
-                            },
-                        );
-                if holding {
+                if scope.holds_descendants(id)? {
                     return None;
                 }
                 Some((id, session.residency_lock.try_enter()?))
@@ -2368,6 +2396,7 @@ impl Registry {
             roots: Atom::default(),
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             max_resident_explicit: std::sync::atomic::AtomicBool::new(false),
+            hibernation: AtomicBool::new(false),
             scope_locks: Atom::default(),
             store: Atom::default(),
             journals: Atom::default(),
@@ -4257,6 +4286,231 @@ impl Registry {
         self.max_resident.store(limit, Ordering::Relaxed);
     }
 
+    pub fn set_hibernation(&self, hibernation: bool) {
+        self.hibernation.store(hibernation, Ordering::Relaxed);
+    }
+
+    pub(super) fn hibernates(&self) -> bool {
+        self.hibernation.load(Ordering::Relaxed)
+    }
+
+    pub(super) async fn begin_hibernation(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> Option<Turn> {
+        let root = root_session_id.to_owned();
+        self.state
+            .call(move |state| {
+                let scope = state.scopes.get_mut(&root)?;
+                if scope.life.frozen() {
+                    return None;
+                }
+                scope.sessions.refresh();
+                let session = scope.sessions.get(&id)?;
+                if session.turn.as_ref().is_none_or(|turn| turn.interrupted)
+                    || !session
+                        .harness()
+                        .is_some_and(|harness| !harness.answering_side_questions())
+                {
+                    return None;
+                }
+                if scope.holds_descendants(id)? {
+                    return None;
+                }
+                session.residency_lock.try_enter()
+            })
+            .await
+    }
+
+    pub(super) fn hibernation_runtime(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> Option<StoredRuntime> {
+        let journaled = self.store_for(root_session_id).is_some()
+            && self
+                .checkpoints
+                .read(|checkpoints| checkpoints.contains_key(&(root_session_id.to_owned(), id)));
+        journaled.then_some(StoredRuntime::Journaled)
+    }
+
+    pub(super) async fn hibernated(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        id: AgentId,
+        stored: StoredRuntime,
+        hibernated: Hibernated,
+        lock: Turn,
+    ) {
+        let finished = hibernated.call.finished();
+        let root = root_session_id.to_owned();
+        let asleep = self
+            .state
+            .call(move |state| {
+                let session = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id))?;
+                session.residency = Residency::Evicted;
+                session.stored_runtime = stored;
+                session.hibernated = Some(hibernated);
+                session.hibernations += 1;
+                drop(session.harness_task.take());
+                drop(session.event_task.take());
+                Some((
+                    session.descriptor.session_id.clone(),
+                    session.turn.as_ref().is_some_and(|turn| turn.interrupted),
+                ))
+            })
+            .await;
+        let interrupted = asleep.as_ref().is_some_and(|(_, interrupted)| *interrupted);
+        if let Some((session_id, _)) = asleep {
+            self.session_handles.update(|handles| {
+                handles.remove(&session_id);
+            });
+            if let Some(released) = Option::clone(&self.session_released.get()) {
+                released(&session_id);
+            }
+        }
+        drop(lock);
+        self.changed();
+        let registry = Arc::downgrade(self);
+        let root = root_session_id.to_owned();
+        let capacity = self.capacity.clone();
+        drop(platform::spawn(async move {
+            if !interrupted {
+                finished.await;
+                let granted = capacity.acquire(Waiter::Resident).await;
+                let Some(registry) = registry.upgrade() else {
+                    return;
+                };
+                let scoped = root.clone();
+                registry
+                    .state
+                    .call(move |state| {
+                        if let Some(hibernated) = state
+                            .scopes
+                            .get_mut(&scoped)
+                            .and_then(|scope| scope.sessions.get_mut(&id))
+                            .and_then(|session| session.hibernated.as_mut())
+                        {
+                            hibernated.capacity = Some(granted);
+                        }
+                    })
+                    .await;
+            }
+            if let Some(registry) = registry.upgrade() {
+                Box::pin(registry.wake(&root, id)).await;
+            }
+        }));
+    }
+
+    async fn wake(self: &Arc<Self>, root_session_id: &str, id: AgentId) {
+        let root = root_session_id.to_owned();
+        let asleep = self
+            .state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .is_some_and(|session| session.hibernated.is_some())
+            })
+            .await;
+        if !asleep {
+            return;
+        }
+        if let Err(error) = self
+            .rehydrate(root_session_id, id, MessagePurpose::Coordinate)
+            .instrument(tracing::info_span!(
+                "subagent.wake",
+                session.root_id = root_session_id
+            ))
+            .await
+        {
+            tracing::warn!(%id, %error, "could not wake a hibernated subagent");
+            let failure = format!("agent {id} could not wake: {error}");
+            self.settle_hibernated(
+                root_session_id,
+                &[id],
+                || NanocodeError::InvalidRequest(failure.clone()),
+                &failure,
+            )
+            .await;
+        }
+    }
+
+    async fn wake_interrupted(self: &Arc<Self>, root_session_id: &str, ids: &[AgentId]) {
+        let root = root_session_id.to_owned();
+        let interrupted = ids.to_vec();
+        let asleep = self
+            .state
+            .call(move |state| {
+                let scope = state.scopes.get(&root);
+                interrupted
+                    .into_iter()
+                    .filter(|id| {
+                        scope
+                            .and_then(|scope| scope.sessions.get(id))
+                            .is_some_and(|session| session.hibernated.is_some())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        join_all(asleep.iter().map(|id| self.wake(root_session_id, *id))).await;
+    }
+
+    async fn settle_hibernated(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        ids: &[AgentId],
+        error: impl Fn() -> NanocodeError,
+        undelivered: &str,
+    ) {
+        let root = root_session_id.to_owned();
+        let asleep = ids.to_vec();
+        let stopped = self
+            .state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return Vec::new();
+                };
+                let mut stopped = Vec::new();
+                for id in asleep {
+                    let asleep = scope
+                        .sessions
+                        .get(&id)
+                        .is_some_and(|session| session.hibernated.is_some());
+                    if asleep
+                        && let Some(hibernated) = scope
+                            .sessions
+                            .get_mut(&id)
+                            .and_then(|session| session.hibernated.take())
+                    {
+                        stopped.push((id, hibernated));
+                    }
+                }
+                stopped
+            })
+            .await;
+        for (id, hibernated) in stopped {
+            let Hibernated {
+                call,
+                capacity,
+                urgent,
+                deferred,
+            } = hibernated;
+            drop((call, capacity));
+            for message in urgent.into_iter().chain(deferred) {
+                self.message_failed(root_session_id, message.id, undelivered.to_owned())
+                    .await;
+            }
+            self.harness_turn_finished(root_session_id, id, Err(error()))
+                .await;
+        }
+    }
+
     pub async fn is_root_session(&self, session_id: &str) -> bool {
         let session_id = session_id.to_owned();
         !self
@@ -4865,6 +5119,8 @@ impl Registry {
                         settled_revision: None,
                         usage: AgentUsage::default(),
                         in_flight_progress: durable::OmittedProgress::default(),
+                        hibernated: None,
+                        hibernations: 0,
                         residency_lock: Sequencer::new(),
                         changes: None,
                         announce: false,
@@ -5138,7 +5394,7 @@ impl Registry {
             .await;
         match attached {
             Ok(()) => {
-                let _ = start.send(());
+                let _ = start.send(0);
                 self.changed();
                 Ok(())
             }
@@ -5267,6 +5523,7 @@ impl Registry {
                     session.turn = Some(ActiveTurn {
                         revision,
                         stage: TurnStage::Working,
+                        interrupted: false,
                     });
                     session.last_used = last_used;
                     session.status = AgentStatus::Running;
@@ -5580,6 +5837,13 @@ impl Registry {
 
                 let detach = scope.life.closing();
                 let announce = !scope.life.released();
+                if scope
+                    .sessions
+                    .get(&id)
+                    .is_some_and(|session| session.hibernated.is_some())
+                {
+                    return None;
+                }
                 let session = scope.sessions.get_mut(&id)?;
                 let status = if matches!(session.status, AgentStatus::Closed) {
                     None
@@ -5626,21 +5890,30 @@ impl Registry {
         self.changed();
     }
 
-    async fn runtime_closed(&self, root_session_id: &str, id: AgentId) {
+    async fn runtime_closed(&self, root_session_id: &str, id: AgentId, hibernations: u64) {
         let root = root_session_id.to_owned();
         let harness = self
             .state
             .call(move |state| {
-                state
+                let session = state
                     .scopes
                     .get(&root)
-                    .and_then(|scope| scope.sessions.get(&id))
-                    .filter(|session| {
-                        !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
-                    })
-                    .and_then(|session| session.harness().cloned())
+                    .and_then(|scope| scope.sessions.get(&id));
+                if session.is_some_and(|session| session.hibernations != hibernations) {
+                    return None;
+                }
+                Some(
+                    session
+                        .filter(|session| {
+                            !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
+                        })
+                        .and_then(|session| session.harness().cloned()),
+                )
             })
             .await;
+        let Some(harness) = harness else {
+            return;
+        };
         let Some(harness) = harness else {
             self.harness_closed(root_session_id, id).await;
             return;
@@ -6687,6 +6960,7 @@ impl Registry {
             })
             .await?;
         let guard = target.enter().await;
+        let hibernates = self.hibernates();
         let mut ancestors = HashMap::new();
         let mut missing = loop {
             let held = ancestors.keys().copied().collect::<HashSet<_>>();
@@ -6699,11 +6973,29 @@ impl Registry {
                             std::io::Error::other(format!("unknown agent_id {to}"))
                         })?;
                         let missing = Self::missing_runtimes(scope, &root, to)?;
+                        let parents = std::iter::successors(
+                            scope
+                                .sessions
+                                .get(&to)
+                                .and_then(|session| session.descriptor.parent),
+                            |id| {
+                                scope
+                                    .sessions
+                                    .get(id)
+                                    .and_then(|session| session.descriptor.parent)
+                            },
+                        )
+                        .filter(|_| hibernates);
                         let locks = missing
                             .iter()
-                            .filter(|(id, ..)| *id != to && !held.contains(id))
-                            .filter_map(|(id, ..)| {
-                                Some((*id, scope.sessions.get(id)?.residency_lock.clone()))
+                            .map(|(id, ..)| *id)
+                            .filter(|id| *id != to)
+                            .chain(parents)
+                            .filter(|id| !held.contains(id))
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .filter_map(|id| {
+                                Some((id, scope.sessions.get(&id)?.residency_lock.clone()))
                             })
                             .collect::<Vec<_>>();
                         Ok((missing, locks))
@@ -6831,6 +7123,7 @@ impl Registry {
                 contract.schema,
                 needs_assignment.then(|| super::model::agent_prompt(id, &task, budget)),
             );
+            let resident = harness.clone();
             let scoped = root.clone();
             let announce = self
                 .state
@@ -6845,21 +7138,34 @@ impl Registry {
                     session.descriptor.model = Some(context.model);
                     session.descriptor.thinking = Some(context.thinking);
                     session.descriptor.reasoning_mode = context.reasoning_mode;
-                    session.residency = Residency::Resident(harness);
+                    session.residency = Residency::Resident(resident);
                     session.harness_task = Some(task);
                     session.event_task = Some(event_task);
 
-                    std::mem::take(&mut session.announce).then(|| {
-                        let mut descriptor = session.descriptor.clone();
-                        descriptor.task = session.binding_task.clone();
-                        descriptor
-                    })
+                    (
+                        std::mem::take(&mut session.announce).then(|| {
+                            let mut descriptor = session.descriptor.clone();
+                            descriptor.task = session.binding_task.clone();
+                            descriptor
+                        }),
+                        session.hibernated.take(),
+                        session.hibernations,
+                        session.turn.as_ref().is_some_and(|turn| turn.interrupted),
+                    )
                 })
                 .await;
+            let (announce, hibernated, hibernations, interrupted) = announce;
             if let Some(descriptor) = announce {
                 self.send(&root, AgentUpdate::Added(descriptor));
             }
-            let _ = start.send(());
+            let _ = start.send(hibernations);
+            if let Some(mut hibernated) = hibernated {
+                let capacity = hibernated
+                    .capacity
+                    .take()
+                    .unwrap_or_else(|| self.capacity.overdraw());
+                harness.resume(hibernated, capacity, interrupted).await?;
+            }
         }
         Ok(())
     }
@@ -7715,6 +8021,16 @@ impl Registry {
         }
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
         let closing_result = self.close_harnesses(harnesses, deadline).await;
+        if let Some(registry) = self.shared() {
+            registry
+                .settle_hibernated(
+                    &root_session_id,
+                    &ids,
+                    || NanocodeError::TurnStopped,
+                    "message cancelled because the agent closed",
+                )
+                .await;
+        }
         self.wait_until_inactive(&root_session_id, &ids, deadline)
             .await?;
 
@@ -7829,6 +8145,16 @@ impl Registry {
                 "timed out interrupting subagent harnesses",
             )
         })?;
+        if let Some(registry) = self.shared() {
+            timeout_at(deadline, registry.wake_interrupted(root_session_id, ids))
+                .await
+                .map_err(|()| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "timed out waking hibernated subagents to interrupt them",
+                    )
+                })?;
+        }
         self.wait_until_inactive(root_session_id, ids, deadline)
             .await?;
         drop(interruption_result);
@@ -8029,6 +8355,8 @@ impl ChildSession {
             settled_revision: None,
             usage: AgentUsage::default(),
             in_flight_progress: durable::OmittedProgress::default(),
+            hibernated: None,
+            hibernations: 0,
             residency_lock: Sequencer::new(),
             changes: None,
             announce: true,
@@ -8136,6 +8464,10 @@ impl SubagentControl {
 
     pub fn set_max_resident(&self, limit: usize) {
         self.registry.set_max_resident(limit);
+    }
+
+    pub fn set_hibernation(&self, hibernation: bool) {
+        self.registry.set_hibernation(hibernation);
     }
 
     pub async fn cancel_all(&self, root_session_id: &str) {
@@ -8265,14 +8597,14 @@ pub(super) fn forward_events(
     id: AgentId,
     parent: Option<AgentId>,
     mut events: AgentEvents,
-    start: oneshot::Receiver<()>,
+    start: oneshot::Receiver<u64>,
     registry: Weak<Registry>,
     updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
 ) -> Task<()> {
     platform::spawn(async move {
-        if start.await.is_err() {
+        let Ok(hibernations) = start.await else {
             return;
-        }
+        };
         while let Some(first) = events.recv().await {
             let mut tracked = Vec::new();
             let mut progress = false;
@@ -8316,7 +8648,9 @@ pub(super) fn forward_events(
             }
         }
         if let Some(registry) = registry.upgrade() {
-            registry.runtime_closed(&root_session_id, id).await;
+            registry
+                .runtime_closed(&root_session_id, id, hibernations)
+                .await;
         }
     })
 }

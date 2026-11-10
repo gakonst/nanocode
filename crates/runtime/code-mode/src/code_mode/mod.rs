@@ -819,6 +819,11 @@ impl CodeModeRuntime {
         self
     }
 
+    #[must_use]
+    pub fn quiet(&self) -> bool {
+        self.cells.read(|registry| registry.live_cells.is_empty())
+    }
+
     pub fn control(&self) -> CodeModeControl {
         CodeModeControl {
             current_turn: Arc::clone(&self.current_turn),
@@ -1206,6 +1211,11 @@ fn observer_yield_timeout(yield_time: Duration) -> Duration {
 }
 
 impl CodeModeControl {
+    #[must_use]
+    pub fn quiet(&self) -> bool {
+        self.cells.read(|registry| registry.live_cells.is_empty())
+    }
+
     pub fn preempt_turn(&self) {
         let turn = self.current_turn.load(Ordering::Acquire);
         self.preempt

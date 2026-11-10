@@ -4847,12 +4847,15 @@ impl State {
         }
         request.tool_choice = context.force_text.then(|| json!({"type":"none"}));
 
-        let mut sent = images::evict_images(
+        let (mut sent, kept) = images::evict_images(
             &self.images,
             wire_messages(messages, &suffix, request.effort_updates),
         );
         request
             .cache_system_prefix_with(&sent)
+            .map_err(provider_error)?;
+        request
+            .cache_floors_with(&mut sent, kept, HistoryMessage::make_mut)
             .map_err(provider_error)?;
         telemetry::record_prompt(
             &tracing::Span::current(),
@@ -4941,10 +4944,14 @@ impl State {
         if let Some(upgrade) = &upgrade {
             request.tools = upgrade.code_only_tools.clone();
             suffix.push(Message::text(Role::User, &upgrade.notice).into());
-            sent = images::evict_images(
+            let kept;
+            (sent, kept) = images::evict_images(
                 &self.images,
                 wire_messages(messages, &suffix, request.effort_updates),
             );
+            request
+                .cache_floors_with(&mut sent, kept, HistoryMessage::make_mut)
+                .map_err(provider_error)?;
             wire = client
                 .prepare_cached_wire(&request, &sent, true, Some(&self.wire_cache))
                 .map_err(provider_error)?;

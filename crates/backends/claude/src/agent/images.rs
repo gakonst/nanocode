@@ -128,12 +128,25 @@ fn rewrite(message: &mut HistoryMessage, mut replace: impl FnMut(&Value) -> Opti
 pub(super) fn evict_images(
     images: &ImageHistory,
     mut messages: Vec<HistoryMessage>,
-) -> Vec<HistoryMessage> {
-    let total = messages
+) -> (Vec<HistoryMessage>, [Option<usize>; 2]) {
+    let counts: Vec<usize> = messages
         .iter()
         .map(|message| message.image_count(|message| image_sources(message).count()))
-        .sum();
+        .collect();
+    let total: usize = counts.iter().sum();
     let evicted = images.evicted(total);
+    let earlier = images.evicted(total - counts.iter().rev().take(2).sum::<usize>());
+    let holder = |skipped: usize| {
+        let mut seen = 0;
+        counts.iter().position(|count| {
+            seen += count;
+            seen > skipped
+        })
+    };
+    let kept = [
+        (earlier < evicted).then(|| holder(earlier)).flatten(),
+        holder(evicted),
+    ];
     let mut ordinal = 0;
     for message in &mut messages {
         if ordinal >= evicted {
@@ -144,7 +157,7 @@ pub(super) fn evict_images(
             (ordinal <= evicted).then(|| Rewrite::Omit(images.omitted(&reference(source))))
         });
     }
-    messages
+    (messages, kept)
 }
 
 pub(super) async fn inline_images(

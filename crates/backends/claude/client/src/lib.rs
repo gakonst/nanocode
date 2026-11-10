@@ -573,6 +573,8 @@ impl CacheControl {
     }
 }
 
+const CACHE_BREAKPOINTS: usize = 4;
+
 #[derive(Default)]
 struct CacheLayout {
     explicit: Vec<CacheTtl>,
@@ -617,7 +619,7 @@ impl CacheLayout {
             }
         }
         let breakpoints = self.explicit.len();
-        if breakpoints > 4 {
+        if breakpoints > CACHE_BREAKPOINTS {
             return Err(ClaudeError::Protocol(
                 "at most four cache breakpoints are allowed".into(),
             ));
@@ -971,6 +973,59 @@ impl MessagesRequest {
             self.system = previous;
         }
         Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn cache_floors_with<M: WireMessage>(
+        &mut self,
+        messages: &mut [M],
+        floors: [Option<usize>; 2],
+        owned: impl Fn(&mut M) -> &mut Message,
+    ) -> Result<(), ClaudeError> {
+        let Some(control) = self.cache_control.clone() else {
+            return Ok(());
+        };
+        let mut blocks = Vec::new();
+        for floor in floors.into_iter().flatten() {
+            if let Some(at) = cache_tail(&messages[..floor])
+                && !blocks.contains(&at)
+                && messages[at.0].message().content[at.1]
+                    .cache_slot()
+                    .0
+                    .is_none()
+            {
+                blocks.push(at);
+            }
+        }
+        let mut spare = CACHE_BREAKPOINTS.saturating_sub(self.cache_breakpoints_with(messages)?);
+        if spare > 0 && blocks.len() > spare && self.release_system_marker() {
+            spare += 1;
+        }
+        for (message, block) in blocks.into_iter().take(spare) {
+            owned(&mut messages[message]).content[block].set_cache_control(&control)?;
+        }
+        Ok(())
+    }
+
+    fn release_system_marker(&mut self) -> bool {
+        let marked = matches!(
+            self.system.as_deref(),
+            Some(Value::Array(blocks)) if blocks.iter().any(|block| block.get("cache_control").is_some())
+        );
+        if let Some(Value::Array(blocks)) = self
+            .system
+            .as_mut()
+            .filter(|_| marked)
+            .map(std::sync::Arc::make_mut)
+            && let Some(block) = blocks
+                .iter_mut()
+                .rev()
+                .filter_map(Value::as_object_mut)
+                .find(|block| block.contains_key("cache_control"))
+        {
+            block.remove("cache_control");
+        }
+        marked
     }
 
     pub fn explicit_cache_tail(&mut self) -> Result<(), ClaudeError> {

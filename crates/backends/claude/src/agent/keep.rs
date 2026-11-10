@@ -2,8 +2,7 @@ use super::{
     CACHE_LIFETIME, HOUR_CACHE_LIFETIME, HistoryMessage, MessagesRequest, Result, State, images,
     provider_error, spawn_task,
 };
-use crate::{FrozenWireProfile, StreamEvent};
-use futures_util::StreamExt as _;
+use crate::FrozenWireProfile;
 use nanocode_agent_core::{ClaudeModel, Origin};
 use nanocode_platform::{Instant, sleep};
 use std::{
@@ -154,7 +153,7 @@ impl State {
             .prepare_cached_wire(
                 &request,
                 inlined.as_deref().unwrap_or(&kept.sent),
-                true,
+                false,
                 Some(&self.wire_cache),
             )
             .map_err(provider_error)?;
@@ -163,36 +162,10 @@ impl State {
             session: Some(Arc::from(self.session_id.as_str())),
         };
         origin
-            .scope(async {
-                let mut stream = client
-                    .stream_prepared(&wire)
-                    .await
-                    .map_err(provider_error)?;
-                let mut usage = crate::Usage::default();
-                while let Some(event) = stream.next().await {
-                    match event.map_err(provider_error)? {
-                        StreamEvent::MessageStart { message } => usage = message.usage,
-                        StreamEvent::MessageDelta { usage: delta, .. } => {
-                            if let Some(tokens) = delta.input_tokens {
-                                usage.input_tokens = tokens;
-                            }
-                            if let Some(tokens) = delta.cache_read_input_tokens {
-                                usage.cache_read_input_tokens = tokens;
-                            }
-                            if let Some(tokens) = delta.cache_creation_input_tokens {
-                                usage.cache_creation_input_tokens = tokens;
-                            }
-                        }
-                        StreamEvent::MessageStop => break,
-                        StreamEvent::Error { error } => {
-                            return Err(provider_error(format!("{error:?}")));
-                        }
-                        _ => {}
-                    }
-                }
-                Ok(usage)
-            })
+            .scope(client.create_prepared(&wire))
             .await
+            .map(|response| response.usage)
+            .map_err(provider_error)
     }
 }
 

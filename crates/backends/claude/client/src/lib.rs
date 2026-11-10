@@ -2042,7 +2042,15 @@ impl ClaudeClient {
 
     pub async fn create(&self, request: &MessagesRequest) -> Result<MessageResponse, ClaudeError> {
         let wire = self.prepare_wire(request, &request.messages, false)?;
-        let mut response: MessageResponse = self.post(&wire).await?.0.json().await?;
+        self.create_prepared(&wire).await
+    }
+
+    #[doc(hidden)]
+    pub async fn create_prepared(
+        &self,
+        wire: &PreparedWire,
+    ) -> Result<MessageResponse, ClaudeError> {
+        let mut response: MessageResponse = self.post(wire).await?.0.json().await?;
         for block in &mut response.content {
             self.decode_block(block);
         }

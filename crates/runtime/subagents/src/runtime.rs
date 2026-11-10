@@ -243,6 +243,7 @@ pub(super) struct Sessions {
     active_direct: HashSet<AgentId>,
     spawning: HashSet<AgentId>,
     by_context: HashMap<Arc<str>, Vec<AgentId>>,
+    by_spawn: HashMap<durable::Spawned, AgentId>,
 }
 
 impl Sessions {
@@ -287,7 +288,14 @@ impl Sessions {
                 children.push(id);
             }
         }
+        if let Some(spawned) = &session.spawned {
+            self.by_spawn.insert(spawned.clone(), id);
+        }
         self.sessions.insert(id, Box::new(session));
+    }
+
+    fn spawned_by(&self, spawned: &durable::Spawned) -> Option<&ChildSession> {
+        self.get(self.by_spawn.get(spawned)?)
     }
 
     fn take_changed(&mut self) -> HashSet<AgentId> {
@@ -5797,26 +5805,20 @@ impl Registry {
         call_id: &str,
     ) -> std::io::Result<Option<AgentDescriptor>> {
         self.await_restored(session_id).await?;
-        let session = session_id.to_owned();
-        let call = call_id.to_owned();
+        let spawned = durable::Spawned {
+            session: session_id.to_owned(),
+            call: call_id.to_owned(),
+        };
         Ok(self
             .state
             .call(move |state| {
-                let root = state.root_session_id(&session).to_owned();
+                let root = state.root_session_id(&spawned.session).to_owned();
                 state
                     .scopes
                     .get(&root)?
                     .sessions
-                    .values()
-                    .find_map(|child| {
-                        child
-                            .spawned
-                            .as_ref()
-                            .is_some_and(|spawned| {
-                                spawned.session == session && spawned.call == call
-                            })
-                            .then(|| child.descriptor.clone())
-                    })
+                    .spawned_by(&spawned)
+                    .map(|child| child.descriptor.clone())
             })
             .await)
     }

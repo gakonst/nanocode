@@ -1391,7 +1391,7 @@ pub(super) struct Sent {
     pub(super) disposition: Option<MessageDisposition>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Spawned {
     pub(super) session: String,

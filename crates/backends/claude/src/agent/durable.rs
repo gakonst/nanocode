@@ -583,11 +583,31 @@ impl State {
             cursor.snapshot = self.snapshot(&Conversation::default()).await?;
             cursor.snapshot.conversation = std::mem::take(conversation);
             let mut paging = self.paging.take().unwrap_or_default();
-            let encoded = encode_cursor(cursor, self.pages_messages(), &mut paging);
+            let pooled = self.pool_template(cursor, &mut paging).await;
+            let encoded =
+                pooled.and_then(|()| encode_cursor(cursor, self.pages_messages(), &mut paging));
             self.paging.put(paging);
             *conversation = std::mem::take(&mut cursor.snapshot).conversation;
             journal.operation.clone_from(&cursor.operation);
             journal.advance(encoded?);
+        }
+        Ok(())
+    }
+    async fn pool_template(&self, cursor: &Cursor, paging: &mut Paging) -> Result<()> {
+        let Some(policy) = self
+            .policy
+            .as_ref()
+            .filter(|policy| policy.pages_messages())
+        else {
+            return Ok(());
+        };
+        let prompt = TemplatePrompt {
+            system: cursor.template.system.as_deref(),
+            tools: &cursor.template.tools,
+        };
+        let record = template_record(&prompt, paging)?;
+        if paging.pooled.as_deref() != Some(record.key()) && policy.pool(record.clone()).await? {
+            paging.pooled = Some(record.key().to_owned());
         }
         Ok(())
     }
@@ -1186,6 +1206,7 @@ pub(super) struct Paging {
     pending: Pages<HistoryMessage>,
     tools: ToolIds,
     template: Option<Arc<EncodedTemplate>>,
+    pooled: Option<String>,
 }
 
 struct EncodedTemplate {
@@ -1288,7 +1309,9 @@ fn paged_cursor(
         cursor: &inner,
     })
     .map_err(provider_error)?;
-    records.push(template);
+    if paging.pooled.as_deref() != Some(template.key()) {
+        records.push(template);
+    }
     Ok(EncodedState { json, records })
 }
 

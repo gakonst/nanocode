@@ -503,6 +503,10 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         true
     }
 
+    fn pool(&self, payload: EncodedPayload) -> PolicyFuture<'_, bool> {
+        Box::pin(async move { self.get().await?.pool(payload).await })
+    }
+
     fn settle_encoded(
         &self,
         id: String,
@@ -991,6 +995,13 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
 
     fn pages_messages(&self) -> bool {
         true
+    }
+
+    fn pool(&self, payload: EncodedPayload) -> PolicyFuture<'_, bool> {
+        Box::pin(async move {
+            self.session.pool(payload).await.map_err(agent_error)?;
+            Ok(true)
+        })
     }
 
     fn settle_encoded(

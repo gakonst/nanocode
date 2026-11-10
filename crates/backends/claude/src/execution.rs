@@ -249,6 +249,11 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     }
 
     #[doc(hidden)]
+    fn pool(&self, _payload: nanocode_durability::EncodedPayload) -> PolicyFuture<'_, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
+    #[doc(hidden)]
     fn settle_encoded(
         &self,
         id: String,

@@ -20,11 +20,6 @@ enum Command {
         keys: Vec<String>,
         result: oneshot::Sender<Result<Vec<Option<String>>, StoreError>>,
     },
-    ReadRecord {
-        state_id: String,
-        key: String,
-        result: oneshot::Sender<Result<Option<String>, StoreError>>,
-    },
     Acquire {
         state_id: String,
         owner_id: OwnerId,
@@ -171,6 +166,7 @@ pub struct SharedStore {
     pub(crate) terminal_receipt_limit: Option<usize>,
     pub(crate) logged_prompts: bool,
     pub(crate) state_format: Option<u8>,
+    pools: std::sync::Arc<crate::pool::Pools>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,7 +215,82 @@ impl SharedStore {
             terminal_receipt_limit: None,
             logged_prompts: false,
             state_format: None,
+            pools: std::sync::Arc::default(),
         })
+    }
+
+    pub fn adopt(&self, state_id: &str, root: &str) {
+        self.pools.adopt(state_id, root);
+    }
+
+    pub async fn pool(
+        &self,
+        state_id: &str,
+        records: Vec<crate::StoreRecord>,
+    ) -> Result<(), StoreError> {
+        match self.pools.of(state_id) {
+            Some(pool) => pool.ensure(self, records).await,
+            None => Err(StoreError::NotCommitted(format!(
+                "state {state_id} is a record pool and has none of its own"
+            ))),
+        }
+    }
+
+    async fn stored_records(
+        &self,
+        state_id: &str,
+        keys: &[String],
+    ) -> Result<Vec<Option<String>>, StoreError> {
+        let span = tracing::info_span!(
+            "durability.store",
+            operation = "read_records",
+            state.id = state_id,
+            record.count = keys.len(),
+            queue.duration_ms = tracing::field::Empty
+        );
+        let (result, receiver) = oneshot::channel();
+        self.commands
+            .send(StoreRequest {
+                command: Command::ReadRecords {
+                    state_id: state_id.to_owned(),
+                    keys: keys.to_vec(),
+                    result,
+                },
+                span,
+                queued: Instant::now(),
+            })
+            .map_err(|_| stopped())?;
+        receiver.await.map_err(|_| stopped())?
+    }
+
+    async fn pooled_records(
+        &self,
+        state_id: &str,
+        keys: &[String],
+    ) -> Result<Vec<Option<String>>, StoreError> {
+        let Some(pool) = self.pools.of(state_id) else {
+            return self.stored_records(state_id, keys).await;
+        };
+        let mut values = pool
+            .held(keys)
+            .into_iter()
+            .map(|held| held.map(|value| value.to_string()))
+            .collect::<Vec<_>>();
+        let wanted = keys
+            .iter()
+            .zip(&values)
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        if wanted.is_empty() {
+            return Ok(values);
+        }
+        let mut stored = self.stored_records(state_id, &wanted).await?.into_iter();
+        for value in values.iter_mut().filter(|value| value.is_none()) {
+            *value = stored.next().flatten();
+        }
+        pool.fill(self, keys, &mut values).await?;
+        Ok(values)
     }
 }
 
@@ -928,13 +999,6 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
             } => {
                 drop(result.send(store.read_records(&state_id, &keys).await));
             }
-            Command::ReadRecord {
-                state_id,
-                key,
-                result,
-            } => {
-                drop(result.send(store.read_record(&state_id, &key).await));
-            }
 
             Command::Acquire {
                 state_id,
@@ -1250,7 +1314,10 @@ impl StateStore for SharedStore {
                     queued: Instant::now(),
                 })
                 .map_err(|_| stopped())?;
-            receiver.await.map_err(|_| stopped())?
+            let acquired = receiver.await.map_err(|_| stopped())??;
+            self.pools
+                .observe(state_id, acquired.state.payload.as_deref());
+            Ok(acquired)
         })
     }
 
@@ -1286,7 +1353,10 @@ impl StateStore for SharedStore {
                     queued: Instant::now(),
                 })
                 .map_err(|_| stopped())?;
-            receiver.await.map_err(|_| stopped())?
+            let (acquired, companion) = receiver.await.map_err(|_| stopped())??;
+            self.pools
+                .observe(state_id, acquired.state.payload.as_deref());
+            Ok((acquired, companion))
         })
     }
 
@@ -1295,28 +1365,7 @@ impl StateStore for SharedStore {
         state_id: &'a str,
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
-        let span = tracing::info_span!(
-            "durability.store",
-            operation = "read_records",
-            state.id = state_id,
-            record.count = keys.len(),
-            queue.duration_ms = tracing::field::Empty
-        );
-        Box::pin(async move {
-            let (result, receiver) = oneshot::channel();
-            self.commands
-                .send(StoreRequest {
-                    command: Command::ReadRecords {
-                        state_id: state_id.to_owned(),
-                        keys: keys.to_vec(),
-                        result,
-                    },
-                    span,
-                    queued: Instant::now(),
-                })
-                .map_err(|_| stopped())?;
-            receiver.await.map_err(|_| stopped())?
-        })
+        Box::pin(self.pooled_records(state_id, keys))
     }
 
     fn read_record<'a>(
@@ -1324,26 +1373,12 @@ impl StateStore for SharedStore {
         state_id: &'a str,
         key: &'a str,
     ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
-        let span = tracing::info_span!(
-            "durability.store",
-            operation = "read_record",
-            state.id = state_id,
-            queue.duration_ms = tracing::field::Empty
-        );
         Box::pin(async move {
-            let (result, receiver) = oneshot::channel();
-            self.commands
-                .send(StoreRequest {
-                    command: Command::ReadRecord {
-                        state_id: state_id.to_owned(),
-                        key: key.to_owned(),
-                        result,
-                    },
-                    span,
-                    queued: Instant::now(),
-                })
-                .map_err(|_| stopped())?;
-            receiver.await.map_err(|_| stopped())?
+            Ok(self
+                .pooled_records(state_id, std::slice::from_ref(&key.to_owned()))
+                .await?
+                .pop()
+                .flatten())
         })
     }
 
@@ -1371,7 +1406,10 @@ impl StateStore for SharedStore {
                     queued: Instant::now(),
                 })
                 .map_err(|_| stopped())?;
-            receiver.await.map_err(|_| stopped())?
+            let acquired = receiver.await.map_err(|_| stopped())??;
+            self.pools
+                .observe(state_id, acquired.state.payload.as_deref());
+            Ok(acquired)
         })
     }
 
@@ -1433,7 +1471,9 @@ impl StateStore for SharedStore {
                     queued: Instant::now(),
                 })
                 .map_err(|_| stopped())?;
-            receiver.await.map_err(|_| stopped())?
+            let stored = receiver.await.map_err(|_| stopped())??;
+            self.pools.observe(state_id, stored.payload.as_deref());
+            Ok(stored)
         })
     }
 

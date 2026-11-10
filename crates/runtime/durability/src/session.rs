@@ -2671,6 +2671,11 @@ impl DurableSession {
         }
         let terminal_receipt_limit = terminal_receipt_limit.or(store.terminal_receipt_limit);
         let described = seed.record().cloned();
+        if let Some(record) = &described
+            && record.lineage.origin == nanocode_agent_core::Origin::Subagent
+        {
+            store.adopt(&state_id, &record.lineage.root_session_id);
+        }
         let state_id = Arc::<str>::from(state_id);
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (releases, release_receiver) = mpsc::unbounded_channel();
@@ -2802,6 +2807,12 @@ impl DurableSession {
     #[must_use]
     pub fn shared_store(&self) -> SharedStore {
         self.store.clone()
+    }
+
+    pub async fn pool(&self, mut payload: EncodedPayload) -> Result<()> {
+        let mut records = Vec::new();
+        payload.stage(&mut records);
+        Ok(self.store.pool(&self.state_id, records).await?)
     }
 
     pub fn child_journal(&self) -> nanocode_agent_core::backend::ChildJournal {

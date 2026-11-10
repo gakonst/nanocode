@@ -257,7 +257,12 @@ impl CellJournalSink for DurableCellJournals {
                     let mut catalog = EncodedPayload::encode(&std::mem::take(&mut header.tools))
                         .map_err(|error| error.to_string())?;
                     if catalogs.insert(catalog.key().to_owned()) {
-                        catalog.stage(&mut records);
+                        let mut pooled = Vec::new();
+                        catalog.stage(&mut pooled);
+                        store
+                            .pool(&state_id(&update.session_id), pooled)
+                            .await
+                            .map_err(|error| error.to_string())?;
                     }
                     (Vec::new(), Some(catalog.key().to_owned()))
                 }

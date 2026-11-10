@@ -48,6 +48,30 @@ if not args.offline:
         executable = package.extractfile('package/claude').read()
     if sha256(executable) != manifest['executable_sha256']:
         raise ValueError('Official executable digest differs')
+    source = executable.decode('utf-8', 'replace')
+
+    def literal(start, values):
+        at = source.index(start)
+        text = source[at + 1:source.index(start[0], at + 1)].replace('\\u2014', '\u2014')
+        for value in values:
+            head, _, tail = text.partition('${')
+            text = head + value + tail.partition('}')[2]
+        return text
+
+    shape = literal('"an <analysis> block followed by a <summary> block"', [])
+    constraints = literal('"Note any security-relevant instructions or constraints the user stated', [])
+    voices = literal("' Only messages that actually came from the user (user-role turns)", [])
+    analysis = literal('`Before providing your final summary, wrap your analysis', [constraints])
+    scratchpad = literal('`<analysis>\n[Your thought process', [])
+    compact = (literal('`CRITICAL: Respond with TEXT ONLY.', [shape])
+               + literal('`Your task is to create a detailed summary of the conversation so far,',
+                         ['', '', analysis, voices, scratchpad])
+               + literal('`\n\nREMINDER: Do NOT call any tools.', [])
+               + literal('`${e}. Tool calls will be rejected and you will fail the task.', [shape]))
+    if args.write:
+        (backend / 'prompts/compact.md').write_text(compact)
+    if (backend / 'prompts/compact.md').read_text() != compact:
+        raise ValueError('Upstream compaction prompt differs')
     if args.capture:
         installed = Path(args.claude).resolve()
         if sha256(installed.read_bytes()) != manifest['executable_sha256']:

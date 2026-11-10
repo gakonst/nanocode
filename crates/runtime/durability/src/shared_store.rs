@@ -372,7 +372,11 @@ async fn drive_grouped<S: StateStore>(
                         drop(completion);
                     });
                 }
-                None => run_grouped(&mut store, group).await,
+                None => {
+                    run_grouped(&mut store, group).await;
+                    scanned = 0;
+                    skipped.clear();
+                }
             }
             continue;
         }

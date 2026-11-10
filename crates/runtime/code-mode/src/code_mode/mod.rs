@@ -2277,6 +2277,7 @@ impl CellCalls<'_, '_> {
                 state: JournaledCallState::Queued,
             });
             record.update(|status| status.calls.insert(id, Arc::clone(&queued)));
+            record.journal(id);
         }
     }
 }
@@ -2304,13 +2305,16 @@ impl EmbeddedHost {
             status.life = status.life.holding(Hold::Running);
             let (running, undelivered) = std::mem::take(&mut status.calls)
                 .into_iter()
-                .partition::<std::collections::BTreeMap<_, _>, _>(
-                |(_, call)| matches!(call.state, JournaledCallState::Running),
-            );
+                .partition::<imbl::OrdMap<_, _>, _>(|(_, call)| {
+                    matches!(call.state, JournaledCallState::Running)
+                });
             status.calls = running;
             undelivered
         });
-        for call in undelivered.into_values().map(Arc::unwrap_or_clone) {
+        for call in undelivered
+            .into_iter()
+            .map(|(_, call)| Arc::unwrap_or_clone(call))
+        {
             match call.state {
                 JournaledCallState::Completed { encoded, success } => self
                     .worker
@@ -2355,6 +2359,7 @@ impl EmbeddedHost {
                     journaled.state = JournaledCallState::Completed { encoded, success };
                     let journaled = Arc::new(journaled);
                     record.update(|status| status.calls.insert(call.id, Arc::clone(&journaled)));
+                    record.journal(call.id);
                 }
             } else {
                 self.worker
@@ -2685,6 +2690,7 @@ impl EmbeddedHost {
                 true
             });
             if kept {
+                record.journal(id);
                 return Ok(true);
             }
         }

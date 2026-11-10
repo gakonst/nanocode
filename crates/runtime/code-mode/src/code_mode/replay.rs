@@ -8,7 +8,7 @@ use serde_json::{Value, value::RawValue};
 use tokio::sync::watch;
 
 use nanocode_code_mode_engine::{JournalEntry, SharedJournal};
-use nanocode_sync::{Atom, Owned};
+use nanocode_sync::{Atom, Inbox, Owned};
 
 use crate::embedded::HostFuture;
 
@@ -177,6 +177,25 @@ impl CellJournal {
                 _ => None,
             })
             .collect::<HashSet<_>>();
+        for entry in &journal.entries {
+            if let JournalEntry::Call {
+                id,
+                name,
+                input,
+                host,
+            } = entry
+                && !delivered.contains(id)
+            {
+                calls.entry(*id).or_insert_with(|| JournaledCall {
+                    id: *id,
+                    call_id: format!("{}/code-{id}", journal.origin_call_id),
+                    name: name.clone(),
+                    input: input.clone(),
+                    host: *host,
+                    state: JournaledCallState::Queued,
+                });
+            }
+        }
         journal.calls = calls
             .into_values()
             .filter(|call| !delivered.contains(&call.id))
@@ -248,6 +267,7 @@ struct Journals {
 pub(super) struct Persistence {
     sink: Arc<dyn CellJournalSink>,
     saving: Owned<Saving>,
+    queued: Inbox<Arc<JournaledCall>>,
 }
 
 enum Saving {
@@ -255,7 +275,7 @@ enum Saving {
     Saved {
         persisted: usize,
         next_seq: u64,
-        calls: BTreeMap<u64, u8>,
+        calls: imbl::OrdMap<u64, u8>,
         observer_call_id: Option<String>,
         observer_yield_ms: Option<u64>,
         observer_since_ms: Option<u64>,
@@ -297,6 +317,7 @@ impl CellJournals {
         self.0.sink.as_ref().map(|sink| Persistence {
             sink: Arc::clone(sink),
             saving: Owned::new(Saving::Unsaved),
+            queued: Inbox::default(),
         })
     }
 
@@ -584,11 +605,11 @@ pub(super) struct CellStatus {
     pub(super) life: CellLife,
     pub(super) unsupported: bool,
     pub(super) content_returned: u64,
-    pub(super) calls: BTreeMap<u64, Arc<JournaledCall>>,
+    pub(super) calls: imbl::OrdMap<u64, Arc<JournaledCall>>,
 }
 
 impl CellStatus {
-    pub(super) const fn new(life: CellLife) -> Self {
+    pub(super) fn new(life: CellLife) -> Self {
         Self {
             observer_call_id: None,
             observer_yield_ms: None,
@@ -596,7 +617,7 @@ impl CellStatus {
             life,
             unsupported: false,
             content_returned: 0,
-            calls: BTreeMap::new(),
+            calls: imbl::OrdMap::new(),
         }
     }
 }
@@ -755,7 +776,27 @@ impl CellRecord {
         let Some(persistence) = &self.persistence else {
             return;
         };
+        for call in calls {
+            persistence.queued.push(Arc::new(call));
+        }
         let mut saving = persistence.saving.acquire().await;
+        let mut latest = match &*saving {
+            Saving::Unsaved => self.status(|status| {
+                status
+                    .calls
+                    .iter()
+                    .map(|(id, call)| (*id, Arc::clone(call)))
+                    .collect::<BTreeMap<_, _>>()
+            }),
+            _ => BTreeMap::new(),
+        };
+        for call in persistence.queued.drain() {
+            match latest.get(&call.id) {
+                Some(queued) if call_mark(&queued.state) > call_mark(&call.state) => {}
+                _ => drop(latest.insert(call.id, call)),
+            }
+        }
+        let calls: Vec<_> = latest.into_values().map(Arc::unwrap_or_clone).collect();
         let (from, seq) = match &*saving {
             Saving::Stopped => return,
             Saving::Unsaved => (0, 0),
@@ -808,7 +849,7 @@ impl CellRecord {
                 }
                 saved.clone()
             }
-            _ => BTreeMap::new(),
+            _ => imbl::OrdMap::new(),
         };
         marks.extend(calls.iter().map(|call| (call.id, call_mark(&call.state))));
         let header = matches!(*saving, Saving::Unsaved).then(|| CellJournalHeader {
@@ -864,15 +905,16 @@ impl CellRecord {
         }
     }
 
+    pub(super) fn journal(&self, id: u64) {
+        if let Some(persistence) = &self.persistence
+            && let Some(call) = self.status(|status| status.calls.get(&id).cloned())
+        {
+            persistence.queued.push(call);
+        }
+    }
+
     pub(super) async fn flush(&self) {
-        let calls = self.status(|status| {
-            status
-                .calls
-                .values()
-                .map(|call| JournaledCall::clone(call))
-                .collect()
-        });
-        self.persist(calls).await;
+        self.persist(Vec::new()).await;
     }
 
     async fn mark_finished(&self) {

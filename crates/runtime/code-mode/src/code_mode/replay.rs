@@ -776,10 +776,22 @@ impl CellRecord {
         let Some(persistence) = &self.persistence else {
             return;
         };
+        let started = calls
+            .iter()
+            .map(|call| (call.id, call_mark(&call.state)))
+            .collect::<Vec<_>>();
         for call in calls {
             persistence.queued.push(Arc::new(call));
         }
         let mut saving = persistence.saving.acquire().await;
+        if let Saving::Saved { calls: saved, .. } = &*saving
+            && !started.is_empty()
+            && started
+                .iter()
+                .all(|(id, mark)| saved.get(id).is_some_and(|saved| saved >= mark))
+        {
+            return;
+        }
         let mut latest = match &*saving {
             Saving::Unsaved => self.status(|status| {
                 status

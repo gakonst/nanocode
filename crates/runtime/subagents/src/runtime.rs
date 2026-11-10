@@ -284,7 +284,7 @@ impl Sessions {
             && let Some(context) = &session.host_context
         {
             let children = self.by_context.entry(Arc::clone(context)).or_default();
-            if !children.contains(&id) {
+            if !self.sessions.contains_key(&id) || !children.contains(&id) {
                 children.push(id);
             }
         }

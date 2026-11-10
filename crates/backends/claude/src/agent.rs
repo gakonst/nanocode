@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 mod durable;
 mod history;
 mod images;
+mod keep;
 mod parked;
 mod shared;
 mod side;
@@ -1774,6 +1775,11 @@ impl ClaudeBuilder {
             round_boundary: Atom::new(round_boundary),
             side_view: Atom::default(),
             side_request: Atom::default(),
+            kept: Atom::default(),
+            keeping: AtomicBool::new(false),
+            kept_changed: Arc::new(Notify::new()),
+            refreshes: AtomicU64::new(0),
+            this: std::sync::OnceLock::new(),
             context: std::sync::OnceLock::new(),
             given_context,
             fixed_date,
@@ -1796,6 +1802,7 @@ impl ClaudeBuilder {
             code_call_summaries: Atom::default(),
         });
         native_factory.state.set(Arc::downgrade(&state));
+        let _ = state.this.set(Arc::downgrade(&state));
         let steering = Arc::downgrade(&state);
         let steer: Steer = Arc::new(move |text| {
             let state = steering.clone();
@@ -3432,6 +3439,12 @@ struct State {
 
     side_view: Atom<Option<Arc<[HistoryMessage]>>>,
     side_request: Atom<Option<Arc<side::SideRequest>>>,
+
+    kept: Atom<Option<Arc<keep::KeptRequest>>>,
+    keeping: AtomicBool,
+    kept_changed: Arc<Notify>,
+    refreshes: AtomicU64,
+    this: std::sync::OnceLock<Weak<Self>>,
 
     context: std::sync::OnceLock<SystemText>,
     given_context: Option<(String, Option<String>)>,
@@ -5317,6 +5330,15 @@ impl State {
                 self.requested.set(Some(attempt_started));
                 self.requested_at
                     .store(nanocode_platform::unix_millis() / 1000, Ordering::SeqCst);
+                if events.is_some() && request.cache_control.is_some() && turn.is_none() {
+                    self.keep(keep::KeptRequest {
+                        request: request.clone(),
+                        sent: sent.clone(),
+                        wire_profile: context.wire_profile.cloned(),
+                        origin: context.origin.clone(),
+                        reach: attempt_started.elapsed(),
+                    });
+                }
             }
             let result = match opened {
                 Err(error) => Err(error),
@@ -8391,6 +8413,8 @@ impl LifecycleBackend for Driver {
         let state = self.state.clone();
         Box::pin(async move {
             let first_shutdown = state.life.close();
+            state.kept.set(None);
+            state.kept_changed.notify_waiters();
             if let Some(cancel) = state.compaction_cancel.get().as_ref() {
                 cancel.cancel();
             }

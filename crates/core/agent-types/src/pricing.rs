@@ -69,6 +69,21 @@ impl ClaudeModel {
         ))
     }
 
+    #[must_use]
+    pub const fn cache_refreshes(self, one_hour: bool, fast_mode: bool) -> Option<u64> {
+        match self.rates(0, fast_mode) {
+            Some(rates) => {
+                let write = if one_hour {
+                    rates.cache_write_1h
+                } else {
+                    rates.cache_write_5m
+                };
+                write.checked_div(rates.cache_read)
+            }
+            None => None,
+        }
+    }
+
     const fn rates(self, prompt_tokens: u64, fast_mode: bool) -> Option<Rates> {
         Some(match (self, fast_mode) {
             (Self::Fable55 | Self::Fable51 | Self::Mythos51, false) => {

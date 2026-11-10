@@ -1,0 +1,229 @@
+use super::{
+    CACHE_LIFETIME, HOUR_CACHE_LIFETIME, HistoryMessage, MessagesRequest, Result, State, images,
+    provider_error, spawn_task,
+};
+use crate::{FrozenWireProfile, StreamEvent};
+use futures_util::StreamExt as _;
+use nanocode_agent_core::{ClaudeModel, Origin};
+use nanocode_platform::{Instant, sleep};
+use std::{
+    sync::{Arc, Weak, atomic::Ordering},
+    time::Duration,
+};
+use tokio::sync::Notify;
+use tracing::Instrument as _;
+
+pub(super) struct KeptRequest {
+    pub(super) request: MessagesRequest,
+    pub(super) sent: Vec<HistoryMessage>,
+    pub(super) wire_profile: Option<FrozenWireProfile>,
+    pub(super) origin: Option<Arc<str>>,
+    pub(super) reach: Duration,
+}
+
+impl State {
+    pub(super) fn keep(&self, kept: KeptRequest) {
+        self.kept.set(Some(Arc::new(kept)));
+        self.refreshes.store(0, Ordering::SeqCst);
+        self.kept_changed.notify_waiters();
+        self.keep_watching();
+    }
+
+    fn kept_wait(&self) -> Option<Duration> {
+        let kept = Option::clone(&self.kept.get())?;
+        let wait = self.refresh_due(&kept);
+        if wait.is_none() {
+            self.kept.update(|current| {
+                if current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &kept))
+                {
+                    *current = None;
+                }
+            });
+        }
+        wait
+    }
+
+    fn keep_watching(&self) {
+        if self.keeping.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        match self.this.get() {
+            Some(state) => spawn_task(Box::pin(keep_cache(
+                Weak::clone(state),
+                Arc::clone(&self.kept_changed),
+            ))),
+            None => self.keeping.store(false, Ordering::SeqCst),
+        }
+    }
+
+    fn refresh_due(&self, kept: &KeptRequest) -> Option<Duration> {
+        let one_hour = kept.request.cache_control.as_ref()?.ttl == Some(crate::CacheTtl::OneHour);
+        let continues = self.lineage.depth == 0
+            || matches!(self.lineage.origin, Origin::Fork | Origin::SideConversation);
+        if !continues && self.conversation.try_acquire().is_some() {
+            return None;
+        }
+        let allowed = kept
+            .request
+            .model
+            .parse::<ClaudeModel>()
+            .ok()?
+            .cache_refreshes(one_hour, kept.request.speed == Some(crate::Speed::Fast))?;
+        if self.refreshes.load(Ordering::SeqCst) >= allowed {
+            return None;
+        }
+        let lifetime = if one_hour {
+            HOUR_CACHE_LIFETIME
+        } else {
+            CACHE_LIFETIME
+        };
+        let elapsed = self.requested.read(|requested| *requested)?.elapsed();
+        if elapsed >= lifetime {
+            return None;
+        }
+        Some(
+            lifetime
+                .saturating_sub(kept.reach.saturating_mul(2))
+                .saturating_sub(elapsed),
+        )
+    }
+
+    async fn refresh_kept(&self) {
+        let Some(kept) = Option::clone(&self.kept.get()) else {
+            return;
+        };
+        if self.refresh_due(&kept).is_none_or(|wait| !wait.is_zero()) {
+            return;
+        }
+        let started = Instant::now();
+        let span = tracing::info_span!(
+            "claude.cache.refresh",
+            session.id = self.session_id.as_str(),
+            model = kept.request.model.as_str(),
+            cached_input_tokens = tracing::field::Empty,
+            cache_write_input_tokens = tracing::field::Empty,
+            input_tokens = tracing::field::Empty,
+        );
+        let refreshed = self.refresh(&kept).instrument(span.clone()).await;
+        match refreshed {
+            Ok(usage) => {
+                span.record("cached_input_tokens", usage.cache_read_input_tokens);
+                span.record(
+                    "cache_write_input_tokens",
+                    usage.cache_creation_input_tokens,
+                );
+                span.record("input_tokens", usage.input_tokens);
+                if usage.cache_read_input_tokens == 0 || usage.cache_creation_input_tokens > 0 {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        read = usage.cache_read_input_tokens,
+                        written = usage.cache_creation_input_tokens,
+                        "a prompt cache refresh arrived after the cache lapsed; refreshing stops until the next request"
+                    );
+                    self.refreshes.store(u64::MAX, Ordering::SeqCst);
+                    return;
+                }
+                self.requested.update(|requested| {
+                    if requested.is_none_or(|at| at < started) {
+                        *requested = Some(started);
+                    }
+                });
+                self.requested_at
+                    .store(nanocode_platform::unix_millis() / 1000, Ordering::SeqCst);
+                self.refreshes.fetch_add(1, Ordering::SeqCst);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    %error,
+                    "a prompt cache refresh failed; refreshing stops until the next request"
+                );
+                self.refreshes.store(u64::MAX, Ordering::SeqCst);
+            }
+        }
+    }
+
+    async fn refresh(&self, kept: &KeptRequest) -> Result<crate::Usage> {
+        let client = self.client.restore_wire_profile(kept.wire_profile.as_ref());
+        let mut request = kept.request.clone();
+        request.max_tokens = 0;
+        let inlined = images::inline_images(&self.images, &kept.sent).await?;
+        let wire = client
+            .prepare_cached_wire(
+                &request,
+                inlined.as_deref().unwrap_or(&kept.sent),
+                true,
+                Some(&self.wire_cache),
+            )
+            .map_err(provider_error)?;
+        let origin = nanocode_http::layer::origin::Origin {
+            context: kept.origin.clone(),
+            session: Some(Arc::from(self.session_id.as_str())),
+        };
+        origin
+            .scope(async {
+                let mut stream = client
+                    .stream_prepared(&wire)
+                    .await
+                    .map_err(provider_error)?;
+                let mut usage = crate::Usage::default();
+                while let Some(event) = stream.next().await {
+                    match event.map_err(provider_error)? {
+                        StreamEvent::MessageStart { message } => usage = message.usage,
+                        StreamEvent::MessageDelta { usage: delta, .. } => {
+                            if let Some(tokens) = delta.input_tokens {
+                                usage.input_tokens = tokens;
+                            }
+                            if let Some(tokens) = delta.cache_read_input_tokens {
+                                usage.cache_read_input_tokens = tokens;
+                            }
+                            if let Some(tokens) = delta.cache_creation_input_tokens {
+                                usage.cache_creation_input_tokens = tokens;
+                            }
+                        }
+                        StreamEvent::MessageStop => break,
+                        StreamEvent::Error { error } => {
+                            return Err(provider_error(format!("{error:?}")));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(usage)
+            })
+            .await
+    }
+}
+
+async fn keep_cache(state: Weak<State>, changed: Arc<Notify>) {
+    loop {
+        let notified = changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let wait = match state.upgrade() {
+            Some(state) if !state.life.stopped() => match state.kept_wait() {
+                Some(wait) => wait,
+                None => {
+                    state.keeping.store(false, Ordering::SeqCst);
+                    if state.kept_wait().is_some() && !state.keeping.swap(true, Ordering::SeqCst) {
+                        continue;
+                    }
+                    return;
+                }
+            },
+            _ => return,
+        };
+        tokio::select! {
+            () = &mut notified => continue,
+            () = sleep(wait) => {}
+        }
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        if state.life.stopped() {
+            return;
+        }
+        state.refresh_kept().await;
+    }
+}

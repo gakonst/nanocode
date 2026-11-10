@@ -4956,15 +4956,15 @@ impl State {
             wire_messages(messages, &suffix, request.effort_updates),
         );
         request
-            .cache_system_prefix_with(&sent)
-            .map_err(provider_error)?;
-        request
             .cache_floors_with(
                 &mut sent,
                 kept,
                 client.uses_subscription(),
                 HistoryMessage::make_mut,
             )
+            .map_err(provider_error)?;
+        request
+            .cache_prefix_with(&sent, client.uses_subscription())
             .map_err(provider_error)?;
         telemetry::record_prompt(
             &tracing::Span::current(),

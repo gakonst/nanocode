@@ -135,7 +135,15 @@ pub(super) fn evict_images(
         .collect();
     let total: usize = counts.iter().sum();
     let evicted = images.evicted(total);
-    let earlier = images.evicted(total - counts.iter().rev().take(2).sum::<usize>());
+    let earlier = images.evicted(
+        total
+            - counts
+                .iter()
+                .rev()
+                .find(|count| **count > 0)
+                .copied()
+                .unwrap_or_default(),
+    );
     let holder = |skipped: usize| {
         let mut seen = 0;
         counts.iter().position(|count| {

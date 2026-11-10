@@ -893,11 +893,40 @@ impl MessagesRequest {
         &mut self,
         messages: &[M],
     ) -> Result<(), ClaudeError> {
-        self.cache_system_tail_with(messages)?;
-        self.cache_tools_tail_with(messages)
+        self.cache_system_tail_with(messages, false)?;
+        self.cache_tools_tail_with(messages, false, CACHE_BREAKPOINTS - 1)
     }
 
-    fn cache_tools_tail_with<M: WireMessage>(&mut self, messages: &[M]) -> Result<(), ClaudeError> {
+    #[doc(hidden)]
+    pub fn cache_prefix_with<M: WireMessage>(
+        &mut self,
+        messages: &[M],
+        subscription: bool,
+    ) -> Result<(), ClaudeError> {
+        self.cache_system_tail_with(messages, subscription)?;
+        self.cache_tools_tail_with(messages, subscription, CACHE_BREAKPOINTS)
+    }
+
+    fn wire_cache_breakpoints_with<M: WireMessage>(
+        &self,
+        messages: &[M],
+        subscription: bool,
+    ) -> Result<usize, ClaudeError> {
+        self.cache_breakpoints_with(messages).map(|used| {
+            used + if subscription {
+                subscription_wire::added_breakpoints(self.system.as_deref())
+            } else {
+                0
+            }
+        })
+    }
+
+    fn cache_tools_tail_with<M: WireMessage>(
+        &mut self,
+        messages: &[M],
+        subscription: bool,
+        limit: usize,
+    ) -> Result<(), ClaudeError> {
         let Some(control) = self.cache_control.clone() else {
             return Ok(());
         };
@@ -922,8 +951,8 @@ impl MessagesRequest {
             }
         }
         if !self
-            .cache_breakpoints_with(messages)
-            .is_ok_and(|count| count <= 3)
+            .wire_cache_breakpoints_with(messages, subscription)
+            .is_ok_and(|count| count <= limit)
         {
             match &mut self.tools[at] {
                 ClaudeToolSpec::Client(tool) => tool.cache_control = None,
@@ -938,6 +967,7 @@ impl MessagesRequest {
     fn cache_system_tail_with<M: WireMessage>(
         &mut self,
         messages: &[M],
+        subscription: bool,
     ) -> Result<(), ClaudeError> {
         self.validate_cache_with(messages)?;
         let Some(control) = self.cache_control.as_ref() else {
@@ -969,7 +999,10 @@ impl MessagesRequest {
         let previous = self
             .system
             .replace(std::sync::Arc::new(Value::Array(blocks)));
-        if self.validate_cache_with(messages).is_err() {
+        if !self
+            .wire_cache_breakpoints_with(messages, subscription)
+            .is_ok_and(|count| count <= CACHE_BREAKPOINTS)
+        {
             self.system = previous;
         }
         Ok(())
@@ -999,17 +1032,13 @@ impl MessagesRequest {
             }
         }
         let room = |request: &Self| {
-            let added = if subscription {
-                subscription_wire::added_breakpoints(request.system.as_deref())
-            } else {
-                0
-            };
-            request
-                .cache_breakpoints_with(messages)
-                .map(|used| CACHE_BREAKPOINTS.saturating_sub(used + added))
+            let used = request.wire_cache_breakpoints_with(messages, subscription)?;
+            CACHE_BREAKPOINTS.checked_sub(used).ok_or_else(|| {
+                ClaudeError::Protocol("at most four cache breakpoints are allowed".into())
+            })
         };
         let mut spare = room(self)?;
-        if spare > 0 && blocks.len() > spare {
+        if blocks.len() > spare {
             let system = self.system.clone();
             if self.release_system_marker() && room(self)? > spare {
                 spare += 1;

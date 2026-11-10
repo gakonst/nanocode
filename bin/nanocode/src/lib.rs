@@ -261,7 +261,8 @@ async fn prepare(
                 && family(harness) != model.family()
             {
                 return Err(format!(
-                    "model {model} does not belong to the {} harness",
+                    "model {} does not belong to the {} harness",
+                    route.label(&model),
                     family(harness)
                 )
                 .into());
@@ -490,6 +491,17 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
                 args.tier.as_deref().map(host::parse_tier).transpose()?,
             )
             .await?;
+            let (asked, runs) = (
+                prepared.route.label(&prepared.model),
+                ready.route.label(&ready.model),
+            );
+            if args.model.is_some() && asked != runs {
+                drop(ready.agent.shutdown().await);
+                return Err(format!(
+                    "session {id} runs {runs}, and a session keeps its model; resume it without --model {asked}, or start a new session"
+                )
+                .into());
+            }
             (ready.agent, ready.events, ready.pending)
         }
         None => {

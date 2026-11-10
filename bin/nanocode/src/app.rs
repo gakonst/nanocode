@@ -2469,7 +2469,7 @@ impl App {
                             true => crate::host::on_harness(&model, &self.model.family()),
                             false => model,
                         };
-                        let picker = models::thinking_picker(&model, self.thinking);
+                        let picker = models::thinking_picker(&model, route, self.thinking);
                         self.overlay = Some(Overlay::Picker(
                             PickerPurpose::Thinking(model, route),
                             picker,
@@ -2865,7 +2865,7 @@ impl App {
         then_tier: bool,
     ) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "open_dial", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
-        match models::thinking_dial(&model, thinking, &self.theme) {
+        match models::thinking_dial(&model, route, thinking, &self.theme) {
             Some((dial, levels)) => {
                 self.overlay = Some(Overlay::Dial {
                     model,

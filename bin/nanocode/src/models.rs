@@ -167,7 +167,14 @@ pub fn harness_at(index: usize) -> Option<HarnessFamily> {
     HarnessFamily::builtin().into_iter().nth(index)
 }
 
-pub fn thinking_picker(model: &ModelSelection, current: Thinking) -> Picker {
+fn titled(model: &ModelSelection, route: Route) -> String {
+    match route {
+        Route::Native => model.display_name().to_owned(),
+        route => route.label(model),
+    }
+}
+
+pub fn thinking_picker(model: &ModelSelection, route: Route, current: Thinking) -> Picker {
     let capabilities = model.capabilities(ModelTransport::Native);
     let items = capabilities
         .thinking()
@@ -179,7 +186,8 @@ pub fn thinking_picker(model: &ModelSelection, current: Thinking) -> Picker {
             item
         })
         .collect();
-    Picker::new(format!("Thinking · {model}"), items).footer("enter select · esc cancel")
+    Picker::new(format!("Thinking · {}", titled(model, route)), items)
+        .footer("enter select · esc cancel")
 }
 
 pub fn thinking_at(model: &ModelSelection, picker: &Picker, index: usize) -> Option<Thinking> {
@@ -229,6 +237,7 @@ pub const fn thinking_color(
 
 pub fn thinking_dial(
     model: &ModelSelection,
+    route: Route,
     current: Thinking,
     theme: &Theme,
 ) -> Option<(EffortDial, Vec<Thinking>)> {
@@ -241,7 +250,7 @@ pub fn thinking_dial(
         .position(|level| *level == current)
         .unwrap_or(0);
     let dial = EffortDial::new(
-        format!("Thinking · {}", model.display_name()),
+        format!("Thinking · {}", titled(model, route)),
         levels
             .iter()
             .map(|level| Level {

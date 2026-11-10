@@ -33,9 +33,13 @@ pub fn title(session: &SessionSummary) -> String {
 }
 
 pub fn model(record: &nanocode::durability::SessionRecord) -> String {
-    match &record.provider {
-        Some(provider) => format!("{provider}/{}", record.model),
-        None => record.model.to_string(),
+    match (
+        crate::host::Route::of(record.provider.as_deref()),
+        &record.provider,
+    ) {
+        (Ok(route), _) => route.label(&record.model),
+        (Err(_), Some(provider)) => format!("{provider}/{}", record.model),
+        (Err(_), None) => record.model.to_string(),
     }
 }
 

@@ -98,7 +98,7 @@ impl EffortDial {
             .map(|level| level.label.width())
             .sum::<usize>()
             + 3 * self.levels.len().saturating_sub(1);
-        let width = u16::try_from(HINT.width().max(scale_width) + 4)
+        let width = u16::try_from(HINT.width().max(scale_width).max(self.title.width()) + 4)
             .unwrap_or(u16::MAX)
             .max(DIAL_WIDTH + 4);
         let height = DIAL_HEIGHT + 5;

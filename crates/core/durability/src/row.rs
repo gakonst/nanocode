@@ -1,7 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+use nanocode_sync::{Mailbox, Sequencer};
 
 use crate::{
     Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Sql, SqlDialect, SqlRow,
@@ -136,6 +141,25 @@ struct Index {
     tails: HashMap<Arc<str>, Tail>,
 }
 
+type Asked = (String, Vec<(String, usize)>);
+
+enum Found {
+    Value(Arc<str>),
+    Page(Arc<str>, u64),
+}
+
+enum Applied {
+    Sealed {
+        state: Arc<str>,
+        keys: Vec<Arc<str>>,
+    },
+    Appended {
+        state: Arc<str>,
+        bytes: usize,
+        records: Vec<(Arc<str>, Arc<str>)>,
+    },
+}
+
 impl Index {
     fn current(&self, state: &str, bytes: usize, pages: u64) -> bool {
         self.tails
@@ -143,6 +167,107 @@ impl Index {
             .is_some_and(|tail| tail.bytes == bytes && tail.pages == pages)
             || (bytes == 0 && pages == 0 && !self.tails.contains_key(state))
     }
+
+    fn find(&self, key: &str) -> Option<Found> {
+        match self.locations.get(key)? {
+            Location::Tail(state) => self
+                .tails
+                .get(state)
+                .and_then(|tail| tail.values.get(key))
+                .cloned()
+                .map(Found::Value),
+            Location::Page(state, page) => Some(Found::Page(Arc::clone(state), *page)),
+        }
+    }
+
+    fn plan(
+        &self,
+        state: &str,
+        records: &[(String, usize)],
+    ) -> (Vec<usize>, Option<Vec<Arc<str>>>) {
+        let mut seen = HashSet::new();
+        let mut bytes = 0;
+        let mut fresh = Vec::new();
+        for (at, (key, length)) in records.iter().enumerate() {
+            if !self.locations.contains_key(key.as_str()) && seen.insert(key.as_str()) {
+                bytes += record_bytes(key, *length);
+                fresh.push(at);
+            }
+        }
+        let tail = self.tails.get(state);
+        let seal = tail.map_or(0, |tail| tail.bytes) + bytes > SEAL_BYTES;
+        (
+            fresh,
+            seal.then(|| tail.map_or_else(Vec::new, |tail| tail.keys.clone())),
+        )
+    }
+
+    fn apply(&mut self, applied: Applied) {
+        match applied {
+            Applied::Sealed { state, keys } => {
+                let tail = self.tails.entry(Arc::clone(&state)).or_default();
+                let page = tail.pages;
+                let sealed = std::mem::take(&mut tail.keys);
+                tail.values.clear();
+                tail.bytes = 0;
+                tail.pages += 1;
+                for key in sealed.into_iter().chain(keys) {
+                    self.locations
+                        .insert(key, Location::Page(Arc::clone(&state), page));
+                }
+            }
+            Applied::Appended {
+                state,
+                bytes,
+                records,
+            } => {
+                let tail = self.tails.entry(Arc::clone(&state)).or_default();
+                tail.bytes += bytes;
+                for (key, value) in records {
+                    tail.keys.push(Arc::clone(&key));
+                    tail.values.insert(Arc::clone(&key), value);
+                    self.locations
+                        .insert(key, Location::Tail(Arc::clone(&state)));
+                }
+            }
+        }
+    }
+
+    fn reloaded(
+        &mut self,
+        state: Arc<str>,
+        body: &str,
+        pages: u64,
+        sealed: Vec<(u64, Vec<String>)>,
+    ) -> Result<(), StoreError> {
+        if let Some(old) = self.tails.remove(&state) {
+            for key in old.keys {
+                if matches!(self.locations.get(&key), Some(Location::Tail(owner)) if *owner == state)
+                {
+                    self.locations.remove(&key);
+                }
+            }
+        }
+        let tail = Tail::decode(&mut self.locations, &state, body, pages)?;
+        for (page, keys) in sealed {
+            for key in keys {
+                self.locations
+                    .insert(key.into(), Location::Page(Arc::clone(&state), page));
+            }
+        }
+        self.tails.insert(state, tail);
+        Ok(())
+    }
+}
+
+fn record_bytes(key: &str, value: usize) -> usize {
+    key.len()
+        + 1
+        + value
+            .checked_ilog10()
+            .map_or(1, |digits| digits as usize + 1)
+        + 1
+        + value
 }
 
 impl Tail {
@@ -173,8 +298,9 @@ fn page_keys(text: &str) -> Result<Vec<String>, StoreError> {
 
 pub struct RowStore<H: ?Sized> {
     host: Arc<H>,
-    ready: bool,
-    index: Index,
+    ready: Arc<AtomicBool>,
+    index: Mailbox<Index>,
+    loading: Sequencer,
 }
 
 fn encode_records<'a>(records: impl Iterator<Item = (&'a str, &'a str)>) -> String {
@@ -223,8 +349,9 @@ impl<H: Sql + ?Sized> RowStore<H> {
     pub fn shared(host: Arc<H>) -> Self {
         Self {
             host,
-            ready: false,
-            index: Index::default(),
+            ready: Arc::new(AtomicBool::new(false)),
+            index: Mailbox::default(),
+            loading: Sequencer::default(),
         }
     }
 
@@ -251,7 +378,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
                 .collect();
             run_checked(&*self.host, SqlAccess::Schema, "rows_convert", &statements).await?;
         }
-        self.ready = true;
+        self.ready.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -269,7 +396,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
         operation: &'static str,
         statements: Vec<SqlStatement<'_>>,
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-        if !self.ready {
+        if !self.ready.load(Ordering::Acquire) {
             self.migrate().await?;
         }
         run_checked(&*self.host, access, operation, &statements).await
@@ -327,24 +454,31 @@ impl<H: Sql + ?Sized> RowStore<H> {
                     .or_insert_with(|| Location::Page(Arc::clone(&state), page));
             }
         }
-        self.index = index;
+        self.index.call(move |current| *current = index).await;
         Ok(())
     }
 
     async fn refresh(&mut self) -> Result<(), StoreError> {
-        if !self.index.loaded {
-            return self.load().await;
+        if !self.index.call(|index| index.loaded).await {
+            return self.ensure_loaded().await;
         }
         let rows = self.query("row_sizes", &SIZES, Vec::new()).await?;
-        let mut changed = Vec::new();
+        let mut sizes = Vec::with_capacity(rows.len());
         for row in &rows {
             let state: Arc<str> = text(row, 0)?.into();
             let bytes = usize::try_from(counter(row, 1)?).unwrap_or(usize::MAX);
-            let pages = counter(row, 2)?;
-            if !self.index.current(&state, bytes, pages) {
-                changed.push(state);
-            }
+            sizes.push((state, bytes, counter(row, 2)?));
         }
+        let changed = self
+            .index
+            .call(move |index| {
+                sizes
+                    .into_iter()
+                    .filter(|(state, bytes, pages)| !index.current(state, *bytes, *pages))
+                    .map(|(state, ..)| state)
+                    .collect::<Vec<_>>()
+            })
+            .await;
         for state in changed {
             self.reload(state).await?;
         }
@@ -352,11 +486,11 @@ impl<H: Sql + ?Sized> RowStore<H> {
     }
 
     async fn reload(&mut self, state: Arc<str>) -> Result<(), StoreError> {
+        let known = Arc::clone(&state);
         let first = self
             .index
-            .tails
-            .get(&state)
-            .map_or(0, |tail| tail.pages)
+            .call(move |index| index.tails.get(&known).map_or(0, |tail| tail.pages))
+            .await
             .to_string();
         let dialect = self.host.dialect();
         let results = self
@@ -371,50 +505,46 @@ impl<H: Sql + ?Sized> RowStore<H> {
         let Some(row) = single(&results[0])? else {
             return Ok(());
         };
-        if let Some(old) = self.index.tails.remove(&state) {
-            for key in old.keys {
-                if matches!(self.index.locations.get(&key), Some(Location::Tail(owner)) if *owner == state)
-                {
-                    self.index.locations.remove(&key);
-                }
-            }
-        }
-        let tail = Tail::decode(
-            &mut self.index.locations,
-            &state,
-            text(row, 0)?,
-            counter(row, 1)?,
-        )?;
+        let body = text(row, 0)?.to_owned();
+        let pages = counter(row, 1)?;
+        let mut sealed = Vec::with_capacity(results[1].len());
         for row in &results[1] {
-            let page = counter(row, 0)?;
-            for key in page_keys(text(row, 1)?)? {
-                self.index
-                    .locations
-                    .insert(key.into(), Location::Page(Arc::clone(&state), page));
-            }
+            sealed.push((counter(row, 0)?, page_keys(text(row, 1)?)?));
         }
-        self.index.tails.insert(state, tail);
-        Ok(())
+        self.index
+            .call(move |index| index.reloaded(state, &body, pages, sealed))
+            .await
     }
 
     async fn ensure_loaded(&mut self) -> Result<(), StoreError> {
-        if !self.index.loaded {
-            self.load().await?;
+        if self.index.call(|index| index.loaded).await {
+            return Ok(());
         }
-        Ok(())
+        let loading = self.loading.clone();
+        let _turn = loading.enter().await;
+        if self.index.call(|index| index.loaded).await {
+            return Ok(());
+        }
+        self.load().await
+    }
+
+    async fn locate(&self, keys: &[String]) -> Vec<Option<Found>> {
+        let keys = keys.to_vec();
+        self.index
+            .call(move |index| keys.iter().map(|key| index.find(key)).collect())
+            .await
     }
 
     async fn records(&mut self, keys: &[String]) -> Result<Vec<Option<String>>, StoreError> {
         self.ensure_loaded().await?;
-        if keys
-            .iter()
-            .any(|key| !self.index.locations.contains_key(key.as_str()))
-        {
+        let mut found = self.locate(keys).await;
+        if found.iter().any(Option::is_none) {
             self.refresh().await?;
+            found = self.locate(keys).await;
         }
         let mut wanted: Vec<(Arc<str>, u64)> = Vec::new();
-        for key in keys {
-            if let Some(Location::Page(state, page)) = self.index.locations.get(key.as_str())
+        for located in &found {
+            if let Some(Found::Page(state, page)) = located
                 && !wanted
                     .iter()
                     .any(|(known, number)| known == state && number == page)
@@ -427,7 +557,8 @@ impl<H: Sql + ?Sized> RowStore<H> {
         let results = if wanted.is_empty() {
             Vec::new()
         } else {
-            self.transaction(
+            self.run(
+                SqlAccess::Read,
                 "row_pages",
                 wanted
                     .iter()
@@ -448,16 +579,12 @@ impl<H: Sql + ?Sized> RowStore<H> {
             decoded.push(decode_records(body)?.into_iter().collect());
         }
         keys.iter()
-            .map(|key| {
-                Ok(match self.index.locations.get(key.as_str()) {
+            .zip(&found)
+            .map(|(key, located)| {
+                Ok(match located {
                     None => None,
-                    Some(Location::Tail(state)) => self
-                        .index
-                        .tails
-                        .get(state)
-                        .and_then(|tail| tail.values.get(key.as_str()))
-                        .map(|value| value.to_string()),
-                    Some(Location::Page(state, page)) => {
+                    Some(Found::Value(value)) => Some(value.to_string()),
+                    Some(Found::Page(state, page)) => {
                         let at = wanted
                             .iter()
                             .position(|(known, number)| known == state && number == page)
@@ -494,15 +621,20 @@ impl<H: Sql + ?Sized> RowStore<H> {
 
     async fn record_keys(&mut self, state_id: &str) -> Result<Vec<String>, StoreError> {
         self.refresh().await?;
+        let state_id = state_id.to_owned();
         Ok(self
             .index
-            .locations
-            .iter()
-            .filter(|(_, location)| match location {
-                Location::Tail(state) | Location::Page(state, _) => &**state == state_id,
+            .call(move |index| {
+                index
+                    .locations
+                    .iter()
+                    .filter(|(_, location)| match location {
+                        Location::Tail(state) | Location::Page(state, _) => **state == *state_id,
+                    })
+                    .map(|(key, _)| key.to_string())
+                    .collect()
             })
-            .map(|(key, _)| key.to_string())
-            .collect())
+            .await)
     }
 
     async fn current_owner(&mut self, state_id: &str) -> Result<Option<OwnerToken>, StoreError> {
@@ -535,10 +667,12 @@ impl<H: Sql + ?Sized> RowStore<H> {
         let bytes = counter(row, 3)?;
         let pages = counter(row, 4)?;
         let state: Arc<str> = state_id.into();
-        if self.index.loaded
-            && !self
-                .index
-                .current(&state, usize::try_from(bytes).unwrap_or(usize::MAX), pages)
+        let known = Arc::clone(&state);
+        let bytes = usize::try_from(bytes).unwrap_or(usize::MAX);
+        if self
+            .index
+            .call(move |index| index.loaded && !index.current(&known, bytes, pages))
+            .await
         {
             self.reload(state).await?;
         }
@@ -577,51 +711,70 @@ impl<H: Sql + ?Sized> RowStore<H> {
         examine().unwrap_or_else(|error| error)
     }
 
-    fn plan<'a>(&self, write: &'a Write<'a>) -> Planned<'a> {
-        let mut seen = HashSet::new();
-        let fresh: Vec<&StoreRecord> = write
-            .records
+    async fn plan(&self, writes: &[Option<&Write<'_>>]) -> Vec<Option<Planned>> {
+        let asked: Vec<Option<Asked>> = writes
             .iter()
-            .filter(|record| {
-                !self.index.locations.contains_key(record.key.as_str())
-                    && seen.insert(record.key.as_str())
+            .map(|write| {
+                write.map(|write| {
+                    (
+                        write.state_id.to_owned(),
+                        write
+                            .records
+                            .iter()
+                            .map(|record| (record.key.clone(), record.value.len()))
+                            .collect(),
+                    )
+                })
             })
             .collect();
-        let encoded = encode_records(
-            fresh
-                .iter()
-                .map(|record| (record.key.as_str(), record.value.as_str())),
-        );
-        let tail = self.index.tails.get(write.state_id);
-        let held = tail.map_or(0, |tail| tail.bytes);
-        let seal = held + encoded.len() > SEAL_BYTES;
-        let keys = seal.then(|| {
-            tail.map_or_else(Vec::new, |tail| {
-                tail.keys
+        let planned = self
+            .index
+            .call(move |index| {
+                asked
                     .iter()
-                    .map(|key| key.to_string())
+                    .map(|asked| {
+                        asked
+                            .as_ref()
+                            .map(|(state, records)| index.plan(state, records))
+                    })
                     .collect::<Vec<_>>()
             })
-            .into_iter()
-            .chain(fresh.iter().map(|record| record.key.clone()))
-            .collect::<Vec<_>>()
-        });
-        Planned {
-            fresh,
-            encoded,
-            keys: keys.map(|keys| keys_json(keys.iter())),
-            counters: [
-                write.owner.fence().to_string(),
-                write.expected.to_string(),
-                write.revision.to_string(),
-            ],
-        }
+            .await;
+        writes
+            .iter()
+            .zip(planned)
+            .map(|(write, planned)| {
+                let (write, (fresh, sealed)) = (*write).zip(planned)?;
+                let encoded = encode_records(fresh.iter().map(|at| {
+                    let record = &write.records[*at];
+                    (record.key.as_str(), record.value.as_str())
+                }));
+                let keys = sealed.map(|sealed| {
+                    keys_json(
+                        sealed
+                            .iter()
+                            .map(|key| &**key)
+                            .chain(fresh.iter().map(|at| write.records[*at].key.as_str())),
+                    )
+                });
+                Some(Planned {
+                    fresh,
+                    encoded,
+                    keys,
+                    counters: [
+                        write.owner.fence().to_string(),
+                        write.expected.to_string(),
+                        write.revision.to_string(),
+                    ],
+                })
+            })
+            .collect()
     }
 
     fn statements<'a>(
         dialect: SqlDialect,
         write: &'a Write<'a>,
-        planned: &'a Planned<'a>,
+        planned: &'a Planned,
         out: &mut Vec<SqlStatement<'a>>,
     ) -> Result<(), StoreError> {
         let owner = write.owner.owner_id().as_str();
@@ -671,37 +824,31 @@ impl<H: Sql + ?Sized> RowStore<H> {
         Ok(())
     }
 
-    fn applied(&mut self, write: &Write<'_>, planned: &Planned<'_>) {
+    fn applied(write: &Write<'_>, planned: &Planned) -> Applied {
         let state: Arc<str> = write.state_id.into();
-        let tail = self.index.tails.entry(Arc::clone(&state)).or_default();
+        let fresh = planned.fresh.iter().map(|at| &write.records[*at]);
         if planned.keys.is_some() {
-            let page = tail.pages;
-            let sealed = std::mem::take(&mut tail.keys);
-            tail.values.clear();
-            tail.bytes = 0;
-            tail.pages += 1;
-            for key in sealed.into_iter().chain(
-                planned
-                    .fresh
-                    .iter()
-                    .map(|record| record.key.as_str().into()),
-            ) {
-                self.index
-                    .locations
-                    .insert(key, Location::Page(Arc::clone(&state), page));
-            }
+            return Applied::Sealed {
+                state,
+                keys: fresh.map(|record| record.key.as_str().into()).collect(),
+            };
+        }
+        Applied::Appended {
+            state,
+            bytes: planned.encoded.len(),
+            records: fresh
+                .map(|record| (record.key.as_str().into(), record.value.as_str().into()))
+                .collect(),
+        }
+    }
+
+    async fn apply(&self, applied: Vec<Applied>) {
+        if applied.is_empty() {
             return;
         }
-        tail.bytes += planned.encoded.len();
-        for record in &planned.fresh {
-            let key: Arc<str> = record.key.as_str().into();
-            tail.keys.push(Arc::clone(&key));
-            tail.values
-                .insert(Arc::clone(&key), record.value.as_str().into());
-            self.index
-                .locations
-                .insert(key, Location::Tail(Arc::clone(&state)));
-        }
+        self.index
+            .call(move |index| applied.into_iter().for_each(|applied| index.apply(applied)))
+            .await;
     }
 
     async fn replace_state(&mut self, write: Write<'_>) -> Result<u64, StoreError> {
@@ -713,7 +860,12 @@ impl<H: Sql + ?Sized> RowStore<H> {
         }
         self.ensure_loaded().await?;
         let dialect = self.host.dialect();
-        let planned = self.plan(&write);
+        let planned = self
+            .plan(&[Some(&write)])
+            .await
+            .pop()
+            .flatten()
+            .ok_or_else(|| invalid("a row store write was not planned"))?;
         let mut statements = Vec::with_capacity(2);
         Self::statements(dialect, &write, &planned, &mut statements)?;
         let results = self.transaction("replace", statements).await?;
@@ -726,7 +878,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
             .transpose()?;
         match replaced {
             Some(revision) => {
-                self.applied(&write, &planned);
+                self.apply(vec![Self::applied(&write, &planned)]).await;
                 Ok(revision)
             }
             None => Err(self
@@ -763,10 +915,9 @@ impl<H: Sql + ?Sized> RowStore<H> {
                 })
             })
             .collect();
-        let planned: Vec<Option<Planned<'_>>> = writes
-            .iter()
-            .map(|write| write.as_ref().ok().map(|write| self.plan(write)))
-            .collect();
+        let asked: Vec<Option<&Write<'_>>> =
+            writes.iter().map(|write| write.as_ref().ok()).collect();
+        let planned = self.plan(&asked).await;
         let mut statements = Vec::new();
         let mut ends = Vec::with_capacity(writes.len());
         let mut failures: Vec<Option<StoreError>> = Vec::with_capacity(writes.len());
@@ -793,6 +944,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
             self.transaction("commit_many", statements).await
         };
         let mut outcomes = Vec::with_capacity(writes.len());
+        let mut applied = Vec::new();
         for (index, write) in writes.iter().enumerate() {
             let write = match write {
                 Ok(write) => write,
@@ -820,7 +972,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
             match replaced {
                 Ok(Some(revision)) => {
                     if let Some(planned) = &planned[index] {
-                        self.applied(write, planned);
+                        applied.push(Self::applied(write, planned));
                     }
                     outcomes.push(Ok(Committed {
                         revision,
@@ -835,6 +987,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
                 Err(error) => outcomes.push(Err(error)),
             }
         }
+        self.apply(applied).await;
         outcomes
     }
 }
@@ -848,8 +1001,8 @@ struct Write<'a> {
     records: &'a [StoreRecord],
 }
 
-struct Planned<'a> {
-    fresh: Vec<&'a StoreRecord>,
+struct Planned {
+    fresh: Vec<usize>,
     encoded: String,
     keys: Option<Result<String, StoreError>>,
     counters: [String; 3],
@@ -965,5 +1118,42 @@ impl<H: Sql + ?Sized + 'static> StateStore for RowStore<H> {
         commits: Vec<OwnedCommit>,
     ) -> StoreFuture<'_, Vec<Result<Committed, StoreError>>> {
         Box::pin(self.commit_all(commits))
+    }
+
+    fn group_writers(&self) -> usize {
+        self.host.writers()
+    }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
+        let host = Arc::clone(&self.host).concurrent()?;
+        Some(Box::new(RowStore {
+            host,
+            ready: Arc::clone(&self.ready),
+            index: self.index.clone(),
+            loading: self.loading.clone(),
+        }))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn handles(&self) -> Option<Arc<dyn crate::StoreHandles>> {
+        let host = Arc::clone(&self.host).concurrent()?;
+        Some(Arc::new(RowStore {
+            host,
+            ready: Arc::clone(&self.ready),
+            index: self.index.clone(),
+            loading: self.loading.clone(),
+        }))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<H: Sql + ?Sized + 'static> crate::StoreHandles for RowStore<H> {
+    fn handle(&self) -> Box<dyn StateStore> {
+        Box::new(Self {
+            host: Arc::clone(&self.host),
+            ready: Arc::clone(&self.ready),
+            index: self.index.clone(),
+            loading: self.loading.clone(),
+        })
     }
 }

@@ -160,7 +160,7 @@ if (parts.includes("tools")) {
         if (!x?.toolHeadless) { emit({ part: "tools", harness: name, steps, round: r, error: "no tool lane" }); continue; }
         const { home, env } = prepared(name, "tools");
         const run = "tl-" + name + "-" + seq++;
-        const res = await measured(...x.toolHeadless(home, server.base, "Run ls, step by step BENCH[run=" + run + ",mode=steps,steps=" + steps + ",kind=shell,h=" + name + "]"), env, { timeoutMs: 300000 });
+        const res = await measured(...x.toolHeadless(home, server.base, "Run ls, step by step BENCH[run=" + run + ",mode=steps,steps=" + steps + ",kind=shell,h=" + (lanes[name].version()[0] === lanes.nc?.version()[0] || name.startsWith("nc") ? "nc" : name) + "]"), env, { timeoutMs: 300000 });
         const records = (await server.log(run)).filter((record) => record.mode !== "side");
         const busy = records.reduce((sum, record) => sum + (msBetween(record.arrive_ns, record.done_ns) ?? 0), 0);
         const gaps = records.slice(1).map((record, i) => msBetween(records[i].done_ns, record.arrive_ns)).filter((g) => g != null).sort((a, b) => a - b);

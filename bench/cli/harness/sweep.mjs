@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { ROOT, WORK, RESULTS, WORKSPACE, PYTHON, fresh, startServer, runstat, tokenTracker, newRow, now } from "./common.mjs";
 import { lanes, selected } from "./lanes.mjs";
+import "./lanes-extra.mjs";
 import { streamMetrics, msBetween, usageOf } from "./analyze.mjs";
 
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, "").split("=")));

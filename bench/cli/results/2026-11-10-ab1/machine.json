@@ -1,0 +1,19 @@
+{
+ "name": "ab1",
+ "cpu": "AMD EPYC 4245P 6-Core Processor",
+ "cores": 12,
+ "memory_gb": 46,
+ "os": "Ubuntu 24.04.5 LTS",
+ "kernel": "6.8.0-147-generic",
+ "arch": "x64",
+ "governor": "powersave",
+ "node": "v24.22.2",
+ "load_at_start": [
+  1.24,
+  1.1,
+  0.8
+ ],
+ "virtualization": null,
+ "at": "2026-11-10T20:14:33.932Z",
+ "commit": null
+}

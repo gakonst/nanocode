@@ -1,0 +1,19 @@
+{
+ "name": "scout",
+ "cpu": "AMD EPYC 4245P 6-Core Processor",
+ "cores": 12,
+ "memory_gb": 46,
+ "os": "Ubuntu 24.04.5 LTS",
+ "kernel": "6.8.0-147-generic",
+ "arch": "x64",
+ "governor": "powersave",
+ "node": "v24.22.2",
+ "load_at_start": [
+  0.13,
+  1.06,
+  0.72
+ ],
+ "virtualization": null,
+ "at": "2026-11-10T19:49:30.183Z",
+ "commit": null
+}

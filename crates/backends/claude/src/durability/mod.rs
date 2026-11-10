@@ -145,6 +145,7 @@ impl DurableAgentExt for ClaudeBuilder {
                 owner,
                 session: state,
                 branches,
+                hydrated: nanocode_sync::Slot::default(),
             }),
             checkpoint,
         )
@@ -190,6 +191,7 @@ struct ClaudeExecution {
     owner: DurableOwner,
     session: DurableSession,
     branches: Branches,
+    hydrated: nanocode_sync::Slot<(String, Value)>,
 }
 
 struct Deferred {
@@ -334,6 +336,7 @@ impl LazyClaudeExecution {
                             store: self.store.clone(),
                             record: Some(record),
                         },
+                        hydrated: nanocode_sync::Slot::default(),
                     },
                     reopened,
                 })
@@ -769,15 +772,23 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
     fn continuation(&self, id: String) -> PolicyFuture<'_, Option<Value>> {
         Box::pin(async move {
             let Some(value) = self.owner.continuation(id).await.map_err(agent_error)? else {
+                self.hydrated.take();
                 return Ok(None);
             };
-            format::hydrate_cursor(
+            if let Some((key, hydrated)) = self.hydrated.take()
+                && key == value.key()
+            {
+                return Ok(Some(hydrated));
+            }
+            let hydrated = format::hydrate_cursor(
                 PayloadReader::from(&self.owner),
                 value.decode().map_err(agent_error)?,
             )
             .await
-            .map(Some)
-            .map_err(agent_error)
+            .map_err(agent_error)?;
+            self.hydrated
+                .put((value.key().to_owned(), hydrated.clone()));
+            Ok(Some(hydrated))
         })
     }
 

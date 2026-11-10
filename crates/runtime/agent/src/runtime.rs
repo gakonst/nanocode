@@ -724,15 +724,14 @@ fn persistent_recipe(
             if spec.durable_state.is_none()
                 && let Some(checkpoint) = &spec.checkpoint
             {
-                match store.load(checkpoint.session_id()).await {
-                    Ok(stored) => {
+                match store.resumable(checkpoint.session_id()).await {
+                    Ok(Some(stored)) => {
                         interrupted = stored
-                            .turns
+                            .pending
                             .iter()
-                            .filter(|turn| turn.status == crate::durability::TurnStatus::Pending)
                             .map(|turn| (turn.id.clone(), turn.input.clone()))
                             .collect();
-                        let record = &stored.summary.record;
+                        let record = &stored.record;
                         let automatic_restore = spec.parent.is_some();
                         if record.family() != checkpoint.family()
                             || (!automatic_restore && record.model != spec.model)
@@ -751,11 +750,11 @@ fn persistent_recipe(
                                 .await
                                 .map_err(catalog_error)?,
                         );
-                        if automatic_restore && stored.checkpoint.is_some() {
+                        if automatic_restore && stored.checkpointed {
                             spec.checkpoint = None;
                         }
                     }
-                    Err(crate::durability::Error::SessionNotFound { .. }) => {}
+                    Ok(None) => {}
                     Err(error) => return Err(catalog_error(error)),
                 }
             }

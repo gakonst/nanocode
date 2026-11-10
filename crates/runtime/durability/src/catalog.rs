@@ -425,6 +425,15 @@ mod store {
     }
 
     #[derive(Clone, Debug)]
+    pub struct Resumable {
+        pub record: SessionRecord,
+
+        pub pending: Vec<StoredTurn>,
+
+        pub checkpointed: bool,
+    }
+
+    #[derive(Clone, Debug)]
     pub struct StoredSession {
         pub summary: SessionSummary,
 
@@ -471,34 +480,40 @@ mod store {
             let Some(checkpoint) = &self.checkpoint else {
                 return Ok(None);
             };
-            let record = &self.summary.record;
-            if is_portable(checkpoint) {
-                let portable = portable_checkpoint(checkpoint)?;
-                portable
-                    .require_family(record.family())
-                    .map_err(|error| Error::InvalidState(error.to_string()))?;
-
-                let rebound = nanocode_agent_core::SessionCheckpoint::native(
-                    record.session_id.clone(),
-                    portable.model(),
-                    portable.thinking(),
-                    record.lineage.clone(),
-                    portable.conversation_id(),
-                    portable.turn_id().map(str::to_owned),
-                    portable.has_conversation(),
-                    portable.payload().clone(),
-                )
-                .with_service_tier(portable.service_tier());
-                rebound
-                    .validate()
-                    .map_err(|error| Error::InvalidState(error.to_string()))?;
-                return Ok(Some(rebound));
-            }
-            self.formats
-                .family(record.family())?
-                .session_checkpoint(record, checkpoint.clone())
-                .map(Some)
+            session_checkpoint(&self.formats, &self.summary.record, checkpoint).map(Some)
         }
+    }
+
+    fn session_checkpoint(
+        formats: &Formats,
+        record: &SessionRecord,
+        checkpoint: &Value,
+    ) -> Result<nanocode_agent_core::SessionCheckpoint> {
+        if is_portable(checkpoint) {
+            let portable = portable_checkpoint(checkpoint)?;
+            portable
+                .require_family(record.family())
+                .map_err(|error| Error::InvalidState(error.to_string()))?;
+
+            let rebound = nanocode_agent_core::SessionCheckpoint::native(
+                record.session_id.clone(),
+                portable.model(),
+                portable.thinking(),
+                record.lineage.clone(),
+                portable.conversation_id(),
+                portable.turn_id().map(str::to_owned),
+                portable.has_conversation(),
+                portable.payload().clone(),
+            )
+            .with_service_tier(portable.service_tier());
+            rebound
+                .validate()
+                .map_err(|error| Error::InvalidState(error.to_string()))?;
+            return Ok(rebound);
+        }
+        formats
+            .family(record.family())?
+            .session_checkpoint(record, checkpoint.clone())
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -819,6 +834,34 @@ mod store {
                 .await
         }
 
+        pub async fn resumable(&self, id: &str) -> Result<Option<Resumable>> {
+            let Some(state) = self.peek_head(id).await? else {
+                return Ok(None);
+            };
+            let Some(record) = state.session().cloned() else {
+                return match self.load(id).await {
+                    Ok(stored) => Ok(Some(Resumable {
+                        record: stored.summary.record,
+                        pending: stored
+                            .turns
+                            .into_iter()
+                            .filter(|turn| turn.status == TurnStatus::Pending)
+                            .collect(),
+                        checkpointed: stored.checkpoint.is_some(),
+                    })),
+                    Err(Error::SessionNotFound { .. }) => Ok(None),
+                    Err(error) => Err(error),
+                };
+            };
+            Ok(Some(Resumable {
+                pending: self
+                    .stored_turns(id, state.pending_operations(), false)
+                    .await?,
+                checkpointed: state.latest_checkpoint().is_some(),
+                record,
+            }))
+        }
+
         pub async fn turn(&self, id: &str, request_id: &str) -> Result<Option<StoredTurn>> {
             let mut state = self.require_head(id).await?;
             if state.operation(request_id).is_none() {
@@ -867,18 +910,25 @@ mod store {
             journal
                 .validate()
                 .map_err(|error| Error::InvalidState(error.to_string()))?;
-            let stored = match self.load(journal.session_id()).await {
-                Ok(stored) => stored,
-                Err(Error::SessionNotFound { .. }) => return Ok(journal),
-                Err(error) => return Err(error),
+            let id = journal.session_id();
+            let Some(state) = self.peek_head(id).await? else {
+                return Ok(journal);
             };
-            let record = &stored.summary.record;
+            let checkpoint = self.loaded_checkpoint(id, &state).await?;
+            let record = match (state.session(), &checkpoint) {
+                (Some(record), _) => record.clone(),
+                (None, Some((checkpoint, ..))) => self.infer_record(id, checkpoint)?,
+                (None, None) => return Ok(journal),
+            };
             if record.family() != journal.family() || record.lineage != *journal.lineage() {
                 return Err(Error::InvalidState(
                     "child journal identity differs from its durable session".into(),
                 ));
             }
-            Ok(stored.session_checkpoint()?.unwrap_or(journal))
+            match checkpoint {
+                Some((checkpoint, ..)) => session_checkpoint(&self.formats, &record, &checkpoint),
+                None => Ok(journal),
+            }
         }
 
         pub async fn resume(&self, id: &str) -> Result<DurableSession> {

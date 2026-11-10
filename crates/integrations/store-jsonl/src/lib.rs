@@ -2025,6 +2025,55 @@ impl Journal {
         }
     }
 
+    fn acquire_many(
+        &mut self,
+        acquisitions: &[(String, OwnerId)],
+    ) -> Result<Vec<OwnedState>, StoreError> {
+        let distinct = acquisitions
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<HashSet<_>>();
+        if distinct.len() != acquisitions.len() {
+            return acquisitions
+                .iter()
+                .map(|(id, owner_id)| self.acquire(id, owner_id.clone()))
+                .collect();
+        }
+        loop {
+            self.writable()?;
+            let owners = acquisitions
+                .iter()
+                .map(|(id, owner_id)| {
+                    self.next_fence(id)
+                        .map(|fence| OwnerToken::new(owner_id.clone(), fence))
+                        .ok_or_else(|| {
+                            StoreError::NotCommitted("JSONL owner fence overflow".into())
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let entries = acquisitions
+                .iter()
+                .zip(&owners)
+                .map(|((id, _), owner)| Entry::Acquire {
+                    state_id: id.clone(),
+                    owner: owner.clone(),
+                })
+                .collect();
+            if let Outcome::Committed = self.commit(entries)? {
+                return acquisitions
+                    .iter()
+                    .zip(owners)
+                    .map(|((id, _), owner)| {
+                        Ok(OwnedState {
+                            owner,
+                            state: self.state(id)?,
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+
     fn replace(
         &mut self,
         id: &str,
@@ -2206,7 +2255,7 @@ impl Journal {
 }
 pub struct JsonlStore {
     jobs: mpsc::Sender<Job>,
-    closed: oneshot::Receiver<()>,
+    closed: Option<oneshot::Receiver<()>>,
     failed: Arc<OnceLock<StoreError>>,
     colocated: Arc<Colocated>,
 }
@@ -2257,9 +2306,12 @@ impl JsonlStore {
             colocated: _,
         } = self;
         drop(jobs);
-        closed
-            .await
-            .map_err(|_| failed.get().cloned().unwrap_or_else(stopped))
+        match closed {
+            Some(closed) => closed
+                .await
+                .map_err(|_| failed.get().cloned().unwrap_or_else(stopped)),
+            None => Ok(()),
+        }
     }
 
     fn start(
@@ -2296,7 +2348,7 @@ impl JsonlStore {
         Ok((
             Self {
                 jobs,
-                closed,
+                closed: Some(closed),
                 failed,
                 colocated: Arc::new(Colocated(colocated)),
             },
@@ -2356,6 +2408,15 @@ impl JsonlStore {
 impl StateStore for JsonlStore {
     fn colocation(&self) -> Option<Arc<dyn Colocation>> {
         Some(Arc::clone(&self.colocated) as Arc<dyn Colocation>)
+    }
+
+    fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
+        Some(Box::new(Self {
+            jobs: self.jobs.clone(),
+            closed: None,
+            failed: Arc::clone(&self.failed),
+            colocated: Arc::clone(&self.colocated),
+        }))
     }
 
     fn acquire_with<'a>(
@@ -2445,6 +2506,19 @@ impl StateStore for JsonlStore {
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
         let id = id.to_owned();
         self.write(move |sessions| sessions.acquire(&id, owner_id))
+    }
+    fn acquire_many(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> StoreFuture<'_, Vec<Result<OwnedState, StoreError>>> {
+        let count = acquisitions.len();
+        let acquired = self.write(move |sessions| Ok(sessions.acquire_many(acquisitions)));
+        Box::pin(async move {
+            match acquired.await {
+                Ok(results) => results,
+                Err(error) => vec![Err(error); count],
+            }
+        })
     }
     fn replace<'a>(
         &'a mut self,

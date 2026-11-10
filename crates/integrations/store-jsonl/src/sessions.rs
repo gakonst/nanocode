@@ -299,6 +299,55 @@ impl Sessions {
         self.opened(id)?.acquire(id, owner_id)
     }
 
+    pub(super) fn acquire_many(
+        &mut self,
+        acquisitions: Vec<(String, OwnerId)>,
+    ) -> Vec<Result<OwnedState, StoreError>> {
+        let mut results: Vec<Option<Result<OwnedState, StoreError>>> =
+            (0..acquisitions.len()).map(|_| None).collect();
+        let mut homes = Vec::<String>::new();
+        let mut groups = Vec::<(Vec<usize>, Vec<(String, OwnerId)>)>::new();
+        for (slot, acquisition) in acquisitions.into_iter().enumerate() {
+            let home = self.home(&acquisition.0);
+            match homes.iter().position(|key| *key == home) {
+                Some(group) => {
+                    groups[group].0.push(slot);
+                    groups[group].1.push(acquisition);
+                }
+                None => {
+                    homes.push(home);
+                    groups.push((vec![slot], vec![acquisition]));
+                }
+            }
+        }
+        for (slots, group) in groups {
+            let acquired = match group.first() {
+                Some((first, _)) => self
+                    .opened(first)
+                    .and_then(|journal| journal.acquire_many(&group)),
+                None => continue,
+            };
+            match acquired {
+                Ok(states) => {
+                    for (slot, state) in slots.into_iter().zip(states) {
+                        results[slot] = Some(Ok(state));
+                    }
+                }
+                Err(error) => {
+                    for slot in slots {
+                        results[slot] = Some(Err(error.clone()));
+                    }
+                }
+            }
+        }
+        results
+            .into_iter()
+            .map(|result| {
+                result.unwrap_or_else(|| Err(backend("JSONL acquisition was not attempted")))
+            })
+            .collect()
+    }
+
     pub(super) fn replace(
         &mut self,
         id: &str,

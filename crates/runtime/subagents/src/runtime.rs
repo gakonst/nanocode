@@ -3842,7 +3842,6 @@ impl Registry {
             .pending_resume
             .read(|pending| pending.get(root_session_id).cloned())
             .unwrap_or_default();
-        let mut results = Vec::with_capacity(ids.len());
         let settle = |id: AgentId| {
             self.pending_resume.update(|pending| {
                 if let Some(ids) = pending.get_mut(root_session_id) {
@@ -3853,7 +3852,7 @@ impl Registry {
                 }
             });
         };
-        for id in ids {
+        join_all(ids.into_iter().map(|id| async move {
             let root = root_session_id.to_owned();
             let message = self
                 .state
@@ -3885,9 +3884,9 @@ impl Registry {
             settle(id);
 
             self.changed();
-            results.push((id, result));
-        }
-        results
+            (id, result)
+        }))
+        .await
     }
 
     async fn fail_unresumable(&self, root_session_id: &str, id: AgentId, mut error: String) {

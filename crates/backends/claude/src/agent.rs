@@ -5137,6 +5137,16 @@ impl State {
                 )
                 .into());
             }
+            Step::Replay(value) if value.get("refused").is_some() => {
+                return Err(
+                    NanocodeError::Response(nanocode_agent_core::BackendError(Box::new(
+                        crate::ClaudeError::Protocol(
+                            value["refused"].as_str().unwrap_or_default().to_owned(),
+                        ),
+                    )))
+                    .into(),
+                );
+            }
             Step::Replay(value) if value.get("code_only_tools").is_some() => Some(
                 serde_json::from_value::<durable::CodeOnlyUpgrade>(value)
                     .map_err(durable::recovery_error)?,
@@ -5637,10 +5647,15 @@ impl State {
 
             if exhausted || !error.is_transient() || (uncertain && recovery.is_some()) {
                 telemetry::fail_attempt(&attempt_span, &error, None, retry_after.is_some());
+                let error =
+                    NanocodeError::Response(nanocode_agent_core::BackendError(Box::new(error)));
+                if unsigned_thinking(&error)
+                    && let Some(effect) = active_effect
+                {
+                    effect.refuse(&error).await?;
+                }
                 return Err(ResponseFailure {
-                    error: NanocodeError::Response(nanocode_agent_core::BackendError(Box::new(
-                        error,
-                    ))),
+                    error,
                     recovery: if uncertain || upgrade.is_some() {
                         recovery
                     } else {

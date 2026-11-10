@@ -258,6 +258,9 @@ impl Effect<'_> {
             .complete_step(self.operation.to_owned(), self.step.clone(), output)
             .await
     }
+    pub(super) async fn refuse(&self, error: &NanocodeError) -> Result<()> {
+        self.complete(json!({"refused": error.to_string()})).await
+    }
     pub(super) fn completion(&self, output: &impl Serialize) -> Result<JournalWrite> {
         Ok(JournalWrite::Complete {
             step_id: self.step.clone(),

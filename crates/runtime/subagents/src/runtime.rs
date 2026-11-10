@@ -308,6 +308,14 @@ impl Sessions {
         self.get(self.by_spawn.get(spawned)?)
     }
 
+    fn insert_stored(&mut self, id: AgentId, session: ChildSession) -> u64 {
+        self.insert(id, session);
+        self.changed.remove(&id);
+        self.sessions
+            .get(&id)
+            .map_or(0, |session| session.journal_generation)
+    }
+
     fn take_changed(&mut self) -> HashSet<AgentId> {
         std::mem::take(&mut self.changed)
     }
@@ -962,6 +970,7 @@ struct JournalWrite {
 }
 
 enum JournalRequest {
+    Stored(Box<durable::JournalCache>),
     Persist {
         scope: bool,
         done: oneshot::Sender<std::io::Result<()>>,
@@ -1457,7 +1466,8 @@ impl RegistryState {
         &mut self,
         root_session_id: &str,
         session: ChildSession,
-    ) -> std::io::Result<()> {
+        stored: bool,
+    ) -> std::io::Result<u64> {
         let id = session.descriptor.id;
         let session_id = session.descriptor.session_id.clone();
         self.scope_mut(root_session_id).topology.insert(
@@ -1470,8 +1480,12 @@ impl RegistryState {
         let last_used = self.next_access();
         let mut session = session;
         session.last_used = last_used;
-        self.scope_mut(root_session_id).sessions.insert(id, session);
-        Ok(())
+        let sessions = &mut self.scope_mut(root_session_id).sessions;
+        if stored {
+            return Ok(sessions.insert_stored(id, session));
+        }
+        sessions.insert(id, session);
+        Ok(0)
     }
 
     fn submit_result(
@@ -2773,6 +2787,7 @@ impl Registry {
         let mut finals = Vec::new();
         for request in requests {
             match request {
+                JournalRequest::Stored(stored) => cache.adopt(*stored),
                 JournalRequest::Persist { scope: false, done } if restoring => {
                     let _ = done.send(Err(std::io::Error::other(
                         "subagent task tree is still restoring",
@@ -3743,10 +3758,25 @@ impl Registry {
                 journal.version
             )));
         }
-        let deltas = durable::load_deltas(store.as_ref(), root_session_id, journal.deltas).await?;
+        let folds_all = !journal.agents.is_empty()
+            || !journal.agent_records.is_empty()
+            || journal.agent_pages.is_some();
+        let mut written = durable::JournalCache::default().written_as(journal.version);
+        let deltas = durable::load_deltas(
+            store.as_ref(),
+            root_session_id,
+            journal.deltas,
+            &mut written,
+        )
+        .await?;
         let messages = journal
             .messages
-            .hydrate(store.as_ref(), root_session_id, deltas.messages)
+            .hydrate(
+                store.as_ref(),
+                root_session_id,
+                deltas.messages,
+                &mut written,
+            )
             .await?;
         let mut records = journal.agent_records;
         if let Some(pages) = journal.agent_pages {
@@ -3760,9 +3790,11 @@ impl Registry {
                 root_session_id,
                 journal.agent_leaves,
                 deltas.agents,
+                &mut written,
             )
             .await?,
         );
+        let mut written = written.stored(folds_all);
         agents.sort_by_key(|agent| agent.descriptor.id);
         let spawning_turns = agents
             .iter()
@@ -3806,12 +3838,13 @@ impl Registry {
         let registry = self.shared();
         let root = root_session_id.to_owned();
         let records_sessions = store.records_sessions();
-        let (report, restored_sessions, waited) = self
+        let (report, restored_sessions, waited, written) = self
             .state
             .call(move |state| -> std::io::Result<_> {
                 let root_session_id = root.as_str();
                 let mut report = RestoreReport::default();
                 let mut waited = Vec::new();
+                let mut checkpoints = Vec::new();
                 if state
                     .scopes
                     .get(root_session_id)
@@ -3839,11 +3872,7 @@ impl Registry {
                         report.completed.push(id);
                     }
                     match (stored.remove(&id), session.stored_runtime.checkpoint()) {
-                        (Some(checkpoint), _) => {
-                            if let Some(registry) = &registry {
-                                registry.insert_checkpoint(root_session_id, id, checkpoint);
-                            }
-                        }
+                        (Some(checkpoint), _) => checkpoints.push((id, checkpoint)),
 
                         (None, Some(snapshot)) => {
                             let checkpoint = durable::JournalCheckpoint::encode(
@@ -3866,7 +3895,12 @@ impl Registry {
                     if matches!(session.stored_runtime, StoredRuntime::Unstarted(_)) {
                         report.unstarted.push(id);
                     }
-                    state.insert_restored(root_session_id, session)?;
+                    let generation = state.insert_restored(root_session_id, session, !resume)?;
+                    if let Some(written) = &mut written
+                        && !resume
+                    {
+                        written.restored(id, generation);
+                    }
                     report.restored += 1;
                     if resume {
                         report.interrupted.push(id);
@@ -3880,9 +3914,30 @@ impl Registry {
                     .entry(root_session_id.to_owned())
                     .or_default()
                     .messages = messages;
-                Ok((report, restored_sessions, waited))
+                if let Some(registry) = &registry {
+                    registry.checkpoints.update(|stored| {
+                        for (id, checkpoint) in &checkpoints {
+                            stored.insert((root_session_id.to_owned(), *id), checkpoint.clone());
+                        }
+                    });
+                    if written.is_none() {
+                        registry.checkpoint_changes.update(|changes| {
+                            changes
+                                .entry(root_session_id.to_owned())
+                                .or_default()
+                                .extend(checkpoints.iter().map(|(id, _)| *id));
+                        });
+                    }
+                }
+                Ok((report, restored_sessions, waited, written))
             })
             .await?;
+        if let Some(written) = written {
+            self.send_journal(
+                root_session_id,
+                Some(JournalRequest::Stored(Box::new(written))),
+            );
+        }
         self.roots.update(|roots| {
             for session_id in &restored_sessions {
                 roots.insert(session_id.clone(), root_session_id.to_owned());
@@ -3972,51 +4027,69 @@ impl Registry {
             .pending_resume
             .read(|pending| pending.get(root_session_id).cloned())
             .unwrap_or_default();
-        let settle = |id: AgentId| {
-            self.pending_resume.update(|pending| {
-                if let Some(ids) = pending.get_mut(root_session_id) {
-                    ids.remove(&id);
-                    if ids.is_empty() {
-                        pending.remove(root_session_id);
-                    }
-                }
-            });
-        };
-        join_all(ids.into_iter().map(|id| async move {
-            let root = root_session_id.to_owned();
-            let message = self
-                .state
-                .call(move |state| {
-                    state
-                        .scopes
-                        .get(&root)
-                        .and_then(|scope| scope.sessions.get(&id))
-                        .map(|session| {
-                            durable::resume_message(
-                                &session.in_flight_calls,
-                                session.in_flight_omitted,
-                                Some(&session.descriptor.task),
-                            )
-                        })
-                        .unwrap_or_else(|| durable::RESUME_MESSAGE.to_owned())
-                })
-                .await;
-            let result = self
-                .send_message_restored(
-                    root_session_id,
-                    id,
-                    MessagePriority::Deferred,
-                    MessagePurpose::Coordinate,
-                    None,
-                    message,
-                )
-                .await;
-            settle(id);
+        let resumes = ids
+            .into_iter()
+            .map(|id| {
+                let registry = Arc::clone(self);
+                let root = root_session_id.to_owned();
+                let resume = async move { registry.resume_one(&root, id).await };
+                (id, platform::spawn(resume.in_current_span()))
+            })
+            .collect::<Vec<_>>();
+        let mut resumed = Vec::with_capacity(resumes.len());
+        for (id, resume) in resumes {
+            let result = match resume.await {
+                Ok(result) => result,
+                Err(error) => Err(std::io::Error::other(error.to_string())),
+            };
+            resumed.push((id, result));
+        }
+        resumed
+    }
 
-            self.changed();
-            (id, result)
-        }))
-        .await
+    async fn resume_one(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        id: AgentId,
+    ) -> std::io::Result<MessageReceipt> {
+        let root = root_session_id.to_owned();
+        let message = self
+            .state
+            .call(move |state| {
+                state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.sessions.get(&id))
+                    .map(|session| {
+                        durable::resume_message(
+                            &session.in_flight_calls,
+                            session.in_flight_omitted,
+                            Some(&session.descriptor.task),
+                        )
+                    })
+                    .unwrap_or_else(|| durable::RESUME_MESSAGE.to_owned())
+            })
+            .await;
+        let result = self
+            .send_message_restored(
+                root_session_id,
+                id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                message,
+            )
+            .await;
+        self.pending_resume.update(|pending| {
+            if let Some(ids) = pending.get_mut(root_session_id) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    pending.remove(root_session_id);
+                }
+            }
+        });
+        self.changed();
+        result
     }
 
     async fn fail_unresumable(&self, root_session_id: &str, id: AgentId, mut error: String) {

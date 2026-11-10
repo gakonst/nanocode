@@ -6,7 +6,7 @@ use super::{
 use nanocode_agent_core::{AgentUsage, Lineage, ModelSelection, SessionCheckpoint, Thinking};
 use nanocode_durability_core::EncodedPayload;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use nanocode_sync::Atom;
@@ -324,9 +324,9 @@ struct DeltaPage {
 #[serde(deny_unknown_fields)]
 struct JournalDelta {
     #[serde(default)]
-    agents: Vec<(u64, AgentRecord)>,
+    agents: Vec<(u64, Box<RawValue>)>,
     #[serde(default)]
-    messages: Vec<super::model::AgentMessage>,
+    messages: Vec<Box<RawValue>>,
 }
 
 fn agents_json(agents: &[(u64, Arc<str>)]) -> String {
@@ -381,7 +381,12 @@ pub(super) async fn load_deltas(
     store: &dyn SubagentStore,
     root_session_id: &str,
     mut levels: Vec<Vec<Arc<str>>>,
+    stored: &mut JournalCache,
 ) -> std::io::Result<Deltas> {
+    stored.deltas = levels
+        .iter()
+        .map(|level| level.iter().cloned().collect())
+        .collect();
     let mut keys = Vec::<Arc<str>>::new();
     while let Some(level) = levels.pop() {
         let pages = verified(
@@ -410,16 +415,22 @@ pub(super) async fn load_deltas(
         messages: Vec::new(),
     };
     for (key, json) in keys.into_iter().zip(records) {
-        let delta: JournalDelta = serde_json::from_str(&json).map_err(|error| {
-            std::io::Error::other(format!("invalid subagent journal delta {key}: {error}"))
-        })?;
-        deltas.agents.extend(
-            delta
-                .agents
-                .into_iter()
-                .map(|(id, record)| (AgentId::new(id), Arc::clone(&key), record)),
-        );
-        deltas.messages.extend(delta.messages);
+        let invalid =
+            |error| std::io::Error::other(format!("invalid subagent journal delta {key}: {error}"));
+        let delta: JournalDelta = serde_json::from_str(&json).map_err(invalid)?;
+        stored.delta_bytes += json.len();
+        for (id, record) in delta.agents {
+            let id = AgentId::new(id);
+            let record = stored.stores(id, &record).map_err(invalid)?;
+            stored.unfolded.insert(id);
+            deltas.agents.push((id, Arc::clone(&key), record));
+        }
+        for message in delta.messages {
+            deltas
+                .messages
+                .push(serde_json::from_str(message.get()).map_err(invalid)?);
+            stored.unfolded_messages.push_back(message.get().into());
+        }
     }
     Ok(deltas)
 }
@@ -456,19 +467,48 @@ impl AgentPages {
         store: &dyn SubagentStore,
         root_session_id: &str,
     ) -> std::io::Result<Vec<(u64, Arc<str>)>> {
+        Ok(self.tree(store, root_session_id).await?.0)
+    }
+
+    async fn tree(
+        self,
+        store: &dyn SubagentStore,
+        root_session_id: &str,
+    ) -> std::io::Result<(Vec<(u64, Arc<str>)>, AgentTree)> {
+        let height = usize::try_from(self.height).map_err(std::io::Error::other)?;
+        let mut tree = AgentTree {
+            levels: vec![imbl::OrdMap::new(); height],
+        };
         let mut entries = self.pages;
-        for _ in 0..self.height {
+        for level in (0..height).rev() {
             let keys = entries.iter().map(|(_, key)| key.to_string()).collect();
             let pages = verified(store, root_session_id, keys).await?;
-            entries = Vec::with_capacity(pages.len() * PAGE_MESSAGES);
-            for json in pages {
+            let mut below = Vec::with_capacity(pages.len() * PAGE_MESSAGES);
+            for ((index, key), json) in entries.into_iter().zip(pages) {
                 let page: AgentPage = serde_json::from_str(&json).map_err(|error| {
                     std::io::Error::other(format!("invalid subagent journal page: {error}"))
                 })?;
-                entries.extend(page.entries);
+                if page
+                    .entries
+                    .iter()
+                    .any(|(entry, _)| entry >> PAGE_AGENT_BITS != index)
+                {
+                    return Err(std::io::Error::other(format!(
+                        "subagent journal page {key} holds an entry of another page"
+                    )));
+                }
+                tree.levels[level].insert(
+                    index,
+                    TreePage {
+                        entries: page.entries.iter().cloned().collect(),
+                        key: Some(key),
+                    },
+                );
+                below.extend(page.entries);
             }
+            entries = below;
         }
-        Ok(entries)
+        Ok((entries, tree))
     }
 }
 
@@ -608,7 +648,7 @@ struct MessagePage {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MessageLeaf {
-    messages: Vec<super::model::AgentMessage>,
+    messages: Vec<Box<RawValue>>,
 }
 
 fn message_leaf(messages: &imbl::Vector<Arc<str>>) -> (Arc<str>, Arc<str>) {
@@ -636,22 +676,31 @@ impl PersistedMessages {
         store: &dyn SubagentStore,
         root_session_id: &str,
         appended: Vec<super::model::AgentMessage>,
+        stored: &mut JournalCache,
     ) -> std::io::Result<super::message::MessageThreads> {
         let mut restored = Vec::new();
         if let Some(leaves) = self.leaves {
-            let keys = leaves
-                .entries(store, root_session_id)
-                .await?
-                .into_iter()
-                .map(|(_, key)| key.to_string())
-                .collect();
+            let (leaves, tree) = leaves.tree(store, root_session_id).await?;
+            stored.messages = tree;
+            let keys = leaves.iter().map(|(_, key)| key.to_string()).collect();
+            let invalid =
+                |error| std::io::Error::other(format!("invalid subagent message leaf: {error}"));
             for json in verified(store, root_session_id, keys).await? {
-                let leaf: MessageLeaf = serde_json::from_str(&json).map_err(|error| {
-                    std::io::Error::other(format!("invalid subagent message leaf: {error}"))
-                })?;
-                restored.extend(leaf.messages);
+                let leaf: MessageLeaf = serde_json::from_str(&json).map_err(invalid)?;
+                stored.folds_all |= !stored.message_tail.is_empty();
+                if leaf.messages.len() < PAGE_MESSAGES {
+                    stored.message_tail = leaf
+                        .messages
+                        .iter()
+                        .map(|message| Arc::from(message.get()))
+                        .collect();
+                }
+                for message in leaf.messages {
+                    restored.push(serde_json::from_str(message.get()).map_err(invalid)?);
+                }
             }
         }
+        stored.folds_all |= !self.records.is_empty() || self.tail.is_some();
         let mut keys = self.records;
         let mut pages = Vec::new();
         let mut next = self.tail;
@@ -666,13 +715,18 @@ impl PersistedMessages {
             restored.push(serde_json::from_str(&json).map_err(std::io::Error::other)?);
         }
         restored.extend(appended);
-        super::message::MessageThreads::restore(self.next_message_id, restored, self.pending)
+        stored.logged_ids = restored.iter().map(|message| message.id).collect();
+        let threads =
+            super::message::MessageThreads::restore(self.next_message_id, restored, self.pending)?;
+        stored.logged = threads.logged(&stored.logged_ids);
+        Ok(threads)
     }
 }
 
 #[derive(Clone)]
 pub(super) struct JournalCache {
     full: bool,
+    folds_all: bool,
     dirty: std::collections::BTreeSet<AgentId>,
     agents: imbl::HashMap<AgentId, CachedAgent>,
     tree: AgentTree,
@@ -693,6 +747,7 @@ impl Default for JournalCache {
     fn default() -> Self {
         Self {
             full: true,
+            folds_all: false,
             dirty: std::collections::BTreeSet::new(),
             agents: imbl::HashMap::new(),
             tree: AgentTree::default(),
@@ -759,10 +814,10 @@ struct AgentProfile {
     host_context: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentLeaf {
-    agents: Vec<(u64, AgentRecord)>,
+    agents: Vec<(u64, Box<RawValue>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -895,11 +950,17 @@ pub(super) async fn load_leaves(
     root_session_id: &str,
     leaves: Option<AgentPages>,
     changed: Vec<(AgentId, Arc<str>, AgentRecord)>,
+    stored: &mut JournalCache,
 ) -> std::io::Result<Vec<PersistedAgent>> {
     let leaves = match leaves {
-        Some(leaves) => leaves.entries(store, root_session_id).await?,
+        Some(leaves) => {
+            let (leaves, tree) = leaves.tree(store, root_session_id).await?;
+            stored.tree = tree;
+            leaves
+        }
         None => Vec::new(),
     };
+    let unfolded = std::mem::take(&mut stored.agents);
     let keys = leaves
         .iter()
         .map(|(_, key)| key.to_string())
@@ -909,18 +970,22 @@ pub(super) async fn load_leaves(
         .into_iter()
         .zip(verified(store, root_session_id, keys).await?)
     {
-        let leaf: AgentLeaf = serde_json::from_str(&json).map_err(|error| {
-            std::io::Error::other(format!("invalid subagent journal leaf {key}: {error}"))
-        })?;
+        let invalid =
+            |error| std::io::Error::other(format!("invalid subagent journal leaf {key}: {error}"));
+        let leaf: AgentLeaf = serde_json::from_str(&json).map_err(invalid)?;
+        stored.leaf_bytes.insert(index, json.len());
+        stored.folded_bytes += json.len();
         for (id, record) in leaf.agents {
             if id >> LEAF_AGENT_BITS != index {
                 return Err(std::io::Error::other(format!(
                     "subagent journal leaf {key} holds agent {id} of another leaf"
                 )));
             }
+            let record = stored.stores(AgentId::new(id), &record).map_err(invalid)?;
             records.push((AgentId::new(id), Arc::clone(&key), record));
         }
     }
+    stored.agents.extend(unfolded);
     if !changed.is_empty() {
         let mut latest = records
             .into_iter()
@@ -1043,6 +1108,41 @@ pub(super) struct EncodedJournal {
 }
 
 impl JournalCache {
+    fn stores(&mut self, id: AgentId, json: &RawValue) -> serde_json::Result<AgentRecord> {
+        let record: AgentRecord = serde_json::from_str(json.get())?;
+        self.agents.insert(
+            id,
+            CachedAgent {
+                generation: 0,
+                checkpoint: record.checkpoint_ref.clone(),
+                checkpoint_ref: record.checkpoint_ref.clone(),
+                profile: Arc::clone(&record.profile),
+                record: record_key(json.get().into()),
+            },
+        );
+        Ok(record)
+    }
+
+    pub(super) fn stored(mut self, folds_all: bool) -> Option<Self> {
+        if folds_all || self.folds_all {
+            return None;
+        }
+        self.full = false;
+        Some(self)
+    }
+
+    pub(super) fn restored(&mut self, id: AgentId, generation: u64) {
+        if let Some(agent) = self.agents.get_mut(&id) {
+            agent.generation = generation;
+        }
+    }
+
+    pub(super) fn adopt(&mut self, stored: Self) {
+        if self.full && self.version == stored.version {
+            *self = stored;
+        }
+    }
+
     pub(super) fn agent(
         &self,
         id: AgentId,

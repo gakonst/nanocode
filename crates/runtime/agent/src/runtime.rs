@@ -23,7 +23,7 @@ use std::{
     },
 };
 
-use nanocode_sync::{Swap, SwapOption};
+use nanocode_sync::{Inbox, Swap, SwapOption};
 
 type Result<T> = nanocode_agent_core::Result<T>;
 
@@ -1422,7 +1422,8 @@ pub(crate) struct Ownership {
     admissions: AtomicUsize,
     drained: AtomicBool,
     owned: Swap<Vec<(usize, WeakAgent)>>,
-    children: Swap<imbl::Vector<WeakAgent>>,
+    children: Inbox<WeakAgent>,
+    tracked: AtomicUsize,
     opening: Swap<HashMap<String, Arc<Opening>>>,
     services: OnceLock<std::sync::Weak<dyn HostServices>>,
     reopener: OnceLock<Reopener>,
@@ -1470,6 +1471,19 @@ impl Drop for SessionOpening {
 enum Opened {
     Live(Agent),
     Vacant(SessionOpening),
+}
+
+struct Unstopped<'a> {
+    children: &'a Inbox<WeakAgent>,
+    left: Vec<WeakAgent>,
+}
+
+impl Drop for Unstopped<'_> {
+    fn drop(&mut self) {
+        for child in self.left.drain(..) {
+            self.children.push(child);
+        }
+    }
 }
 
 struct Admission<'a>(&'a Ownership);
@@ -1556,15 +1570,20 @@ impl Ownership {
     {
         let admission = self.admission()?;
         let created = construct.await?;
-        let weak: Vec<_> = created.iter().map(|(agent, _)| agent.downgrade()).collect();
-        self.children.rcu(|children| {
-            let mut children = imbl::Vector::clone(children);
-            children.extend(weak.iter().cloned());
-            if children.len().is_power_of_two() {
-                children.retain(WeakAgent::is_live);
+        for (agent, _) in &created {
+            self.children.push(agent.downgrade());
+        }
+        let before = self.tracked.fetch_add(created.len(), Ordering::AcqRel);
+        if (before + created.len()).checked_ilog2() != before.checked_ilog2() {
+            let tracked = self.children.drain();
+            let known = tracked.len();
+            let mut live = 0;
+            for child in tracked.into_iter().filter(WeakAgent::is_live) {
+                self.children.push(child);
+                live += 1;
             }
-            children
-        });
+            self.tracked.fetch_sub(known - live, Ordering::AcqRel);
+        }
         if let Some(runners) = self.services() {
             for (agent, _) in &created {
                 runners.register(agent, false).await?;
@@ -1597,17 +1616,15 @@ impl Ownership {
                     }
                     self.forget(key);
                 }
-                loop {
-                    let next = self.children.load().last().cloned();
-                    let Some(child) = next else { break };
+                let mut unstopped = Unstopped {
+                    children: &self.children,
+                    left: self.children.drain(),
+                };
+                while let Some(child) = unstopped.left.last().cloned() {
                     if let Some(Err(error)) = child.shutdown().await {
                         failures.push(error.to_string());
                     }
-                    self.children.rcu(|children| {
-                        let mut children = imbl::Vector::clone(children);
-                        children.pop_back();
-                        children
-                    });
+                    unstopped.left.pop();
                 }
                 (!failures.is_empty()).then(|| Arc::new(ShutdownError(failures)))
             })

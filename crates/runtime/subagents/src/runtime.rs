@@ -522,6 +522,8 @@ pub struct Registry {
 
     manual_resume: std::sync::atomic::AtomicBool,
 
+    journal_version: std::sync::atomic::AtomicU32,
+
     deferred_resume: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
 
     wait_reported: Atom<AgentMap<u64>>,
@@ -1002,7 +1004,13 @@ async fn journal_writer(
 ) {
     let mut saved = None;
     let mut recorded = HashMap::new();
-    let mut cache = durable::JournalCache::default();
+    let mut cache = durable::JournalCache::default().written_as(
+        registry
+            .upgrade()
+            .map_or(durable::JOURNAL_VERSION, |registry| {
+                registry.journal_version.load(Ordering::Relaxed)
+            }),
+    );
     let mut pending = Vec::new();
     let mut failures = 0_u32;
     let mut fenced = false;
@@ -1177,7 +1185,7 @@ impl AgentScope {
                         generation: session.journal_generation,
                         checkpoint: checkpoint_key.cloned(),
                         unchanged: cached.is_some(),
-                        agent: durable::persist_agent(session, checkpoint_ref),
+                        agent: durable::persist_agent(session, checkpoint_ref, cache.deltas()),
                     },
                 ));
             }
@@ -1199,8 +1207,9 @@ impl AgentScope {
         &self,
         root_session_id: &str,
         checkpoints: &AgentMap<durable::JournalCheckpoint>,
+        version: u32,
     ) -> std::io::Result<JournalWrite> {
-        let cache = durable::JournalCache::default();
+        let cache = durable::JournalCache::default().written_as(version);
         let encoded = self
             .journal_snapshot(root_session_id, checkpoints, &cache)?
             .encode(&cache)?;
@@ -2259,6 +2268,7 @@ impl Registry {
             completed_tools: Atom::default(),
             pending_resume: Atom::default(),
             manual_resume: std::sync::atomic::AtomicBool::new(false),
+            journal_version: std::sync::atomic::AtomicU32::new(durable::JOURNAL_VERSION),
             deferred_resume: Atom::default(),
             wait_reported: Atom::default(),
             idle_waits: Atom::default(),
@@ -7094,7 +7104,11 @@ impl Registry {
                         Some(_) if !frozen => {
                             let checkpoints = registry.checkpoints.get();
                             let scope = state.scope_mut(&root);
-                            let payload = scope.journal_payload(&root, &checkpoints)?;
+                            let payload = scope.journal_payload(
+                                &root,
+                                &checkpoints,
+                                registry.journal_version.load(Ordering::Relaxed),
+                            )?;
                             scope.life = ScopeLife::Frozen;
                             Some(payload)
                         }
@@ -7642,6 +7656,20 @@ impl SubagentControl {
         self.registry
             .manual_resume
             .store(manual, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn set_journal_version(&self, version: u32) -> std::io::Result<()> {
+        if !(durable::TREE_JOURNAL_VERSION..=durable::JOURNAL_VERSION).contains(&version) {
+            return Err(std::io::Error::other(format!(
+                "subagent journal version {version} is not one this build writes ({} to {})",
+                durable::TREE_JOURNAL_VERSION,
+                durable::JOURNAL_VERSION
+            )));
+        }
+        self.registry
+            .journal_version
+            .store(version, Ordering::Relaxed);
+        Ok(())
     }
 
     pub async fn deferred_resume(&self, root_session_id: &str) -> std::io::Result<Vec<AgentId>> {

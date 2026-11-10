@@ -194,6 +194,8 @@ impl SubagentStore for MemorySubagentStore {
 
 pub(super) const JOURNAL_VERSION: u32 = 7;
 
+pub(super) const TREE_JOURNAL_VERSION: u32 = 6;
+
 pub(super) const LAZY_CHECKPOINT_VERSION: u32 = 3;
 
 pub(super) const PAGE_MESSAGES: usize = 64;
@@ -684,6 +686,7 @@ pub(super) struct JournalCache {
     delta_bytes: usize,
     leaf_bytes: imbl::OrdMap<u64, usize>,
     folded_bytes: usize,
+    version: u32,
 }
 
 impl Default for JournalCache {
@@ -703,6 +706,7 @@ impl Default for JournalCache {
             delta_bytes: 0,
             leaf_bytes: imbl::OrdMap::new(),
             folded_bytes: 0,
+            version: JOURNAL_VERSION,
         }
     }
 }
@@ -1054,8 +1058,17 @@ impl JournalCache {
         self.logged_ids.len() - self.message_tail.len() - self.unfolded_messages.len()
     }
 
+    pub(super) const fn written_as(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+
+    pub(super) const fn deltas(&self) -> bool {
+        self.version > TREE_JOURNAL_VERSION
+    }
+
     pub(super) const fn folds(&self, rewritten: bool) -> bool {
-        self.full || rewritten || self.delta_bytes >= self.folded_bytes
+        self.full || rewritten || !self.deltas() || self.delta_bytes >= self.folded_bytes
     }
 
     pub(super) const fn logged(&self) -> Option<super::message::MessageLog> {
@@ -1239,7 +1252,7 @@ impl JournalSnapshot {
         }
         update.logged = Some(self.logged);
         let payload = serde_json::to_string(&PersistedScope {
-            version: JOURNAL_VERSION,
+            version: update.version,
             agents: Vec::new(),
             agent_records: Vec::new(),
             agent_pages: None,
@@ -1889,6 +1902,7 @@ pub(super) fn checkpoint_ref(
 pub(super) fn persist_agent(
     session: &ChildSession,
     checkpoint_ref: Option<Arc<str>>,
+    keeps_result: bool,
 ) -> PersistedAgent {
     let output_in_status = matches!(
         &session.status,
@@ -1924,7 +1938,7 @@ pub(super) fn persist_agent(
         completion_parked: session.completion.parked(),
         cancelled_revision: session.cancelled_revision,
         conversation: session.conversation,
-        keeps_result: session.follow_up_output.is_some(),
+        keeps_result: keeps_result && session.follow_up_output.is_some(),
         waited: session.waited.clone(),
         sent: session.sent.clone(),
         spawned: session.spawned.clone(),

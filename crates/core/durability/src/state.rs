@@ -262,9 +262,10 @@ impl OperationState {
         self.steered.count == 0 || self.steered.loaded
     }
 
-    fn seals_steers(&self) -> bool {
+    fn seals_steers(&self, inline: bool) -> bool {
         self.steered.count > 0
-            || (self.retired_steers == 0
+            || (!inline
+                && self.retired_steers == 0
                 && self.steers.is_empty()
                 && self.steer_receipts.is_empty())
     }
@@ -566,6 +567,7 @@ pub struct JournalState {
     sealed: SealedReceipts,
     unloaded: u64,
     staged: Vec<StoreRecord>,
+    inline_steers: bool,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -638,6 +640,16 @@ struct RetainedCheckpointRef<'a, R> {
 }
 
 impl JournalState {
+    pub fn write_format(&mut self, format: u8) -> Result<()> {
+        if !(RECEIPT_STATE_FORMAT..=STEER_STATE_FORMAT).contains(&format) {
+            return Err(Error::InvalidState(format!(
+                "state format {format} is not one this build writes ({RECEIPT_STATE_FORMAT} to {STEER_STATE_FORMAT})"
+            )));
+        }
+        self.inline_steers = format < STEER_STATE_FORMAT;
+        Ok(())
+    }
+
     pub fn stage_records(&mut self) -> Vec<crate::StoreRecord> {
         self.stage_records_unless(&|_| false)
     }
@@ -1029,6 +1041,7 @@ impl JournalState {
             unloaded: sealed.count,
             sealed,
             staged: Vec::new(),
+            inline_steers: false,
         };
         for (operation_id, operation) in &state.operations {
             if matches!(
@@ -1429,8 +1442,9 @@ impl JournalState {
                 message_id,
             } => {
                 let mut staged = Vec::new();
+                let inline = self.inline_steers;
                 let operation = self.pending_operation_mut(&operation_id)?;
-                if operation.seals_steers() {
+                if operation.seals_steers(inline) {
                     let slot = EncodedPayload::encode(&SealedSteer {
                         message_id: message_id.clone(),
                         input: input.reference(),

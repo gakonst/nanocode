@@ -34,7 +34,7 @@ function judge(section, label, rows, key, lower = true) {
   const meds = {};
   for (const lane of lanesOf(rows)) { if (lane === "true") continue; const ok = rows.filter((row) => row.harness === lane && good(row)); const m = median(ok.map((row) => row[key])); if (m != null && ok.length) meds[lane] = { m, n: ok.length }; }
   if (!meds[lead]) { if (rows.some((row) => row.harness === lead)) verdicts.push({ kind: "trails", text: section + ", " + label + ": " + lead + " failed" }); return; }
-  const others = Object.entries(meds).filter(([lane]) => lane !== lead && !lane.startsWith(lead));
+  const others = Object.entries(meds).filter(([lane]) => lane !== lead && !(lead.startsWith("nc") && lane.startsWith("nc")));
   if (!others.length) return;
   const best = others.reduce((a, b) => (lower ? (b[1].m < a[1].m ? b : a) : (b[1].m > a[1].m ? b : a)));
   const mine = meds[lead].m, theirs = best[1].m;

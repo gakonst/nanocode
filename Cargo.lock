@@ -4438,6 +4438,7 @@ dependencies = [
  "imbl-sized-chunks",
  "rand_core 0.9.5",
  "rand_xoshiro",
+ "serde_core",
  "version_check",
  "wide 0.7.33",
 ]
@@ -5390,9 +5391,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "tempo-alloy",
  "tokio",
  "tracing",
- "tempo-alloy",
  "tracing-opentelemetry",
  "uuid",
 ]

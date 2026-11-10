@@ -192,8 +192,8 @@ pub struct IdentifiedSteerReceipt {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationState {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub steer_receipts: BTreeMap<String, IdentifiedSteerReceipt>,
+    #[serde(default, skip_serializing_if = "imbl::OrdMap::is_empty")]
+    pub steer_receipts: imbl::OrdMap<String, IdentifiedSteerReceipt>,
 
     #[serde(
         default,
@@ -214,8 +214,8 @@ pub struct OperationState {
 
     pub steps: BTreeMap<String, StepState>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub steers: Vec<SteerState>,
+    #[serde(default, skip_serializing_if = "imbl::Vector::is_empty")]
+    pub steers: imbl::Vector<SteerState>,
 
     #[serde(default, skip_serializing_if = "SealedSteers::is_empty")]
     steered: SealedSteers,
@@ -285,14 +285,14 @@ impl OperationState {
             }
         }
         std::borrow::Cow::Owned(Self {
-            steer_receipts: BTreeMap::new(),
+            steer_receipts: imbl::OrdMap::new(),
             continuation: self.continuation.clone(),
             retired_model_calls: self.retired_model_calls,
             retired_steers: self.retired_steers,
             input: self.input.clone(),
             status: self.status.clone(),
             steps: self.steps.clone(),
-            steers: Vec::new(),
+            steers: imbl::Vector::new(),
             steered: SealedSteers {
                 bound: if self.steered.loaded {
                     bound
@@ -355,7 +355,7 @@ impl OperationState {
                 );
             }
             if !withdrawn && index > self.retired_steers {
-                self.steers.push(SteerState {
+                self.steers.push_back(SteerState {
                     message_id,
                     input,
                     accepted_after_model_call_index,
@@ -401,9 +401,6 @@ impl OperationState {
                 output.stage_step_unless(records, known);
             }
         }
-        for steer in &mut self.steers {
-            steer.input.stage_unless(records, known);
-        }
     }
 
     fn settle(&mut self, status: OperationStatus) {
@@ -437,7 +434,7 @@ impl OperationState {
             .count();
 
         self.retired_steers += consumed as u32;
-        self.steers.drain(..consumed);
+        self.steers = self.steers.skip(consumed);
     }
 }
 
@@ -1382,14 +1379,14 @@ impl JournalState {
                 self.operations.insert(
                     operation_id,
                     OperationState {
-                        steer_receipts: BTreeMap::new(),
+                        steer_receipts: imbl::OrdMap::new(),
                         continuation: None,
                         retired_model_calls: 0,
                         retired_steers: 0,
                         input,
                         status: OperationStatus::Pending,
                         steps: BTreeMap::new(),
-                        steers: Vec::new(),
+                        steers: imbl::Vector::new(),
                         steered: SealedSteers::default(),
                         accepted_order: revision,
                     },
@@ -1437,11 +1434,12 @@ impl JournalState {
                 operation_id,
                 steer_index,
                 accepted_after_model_call_index,
-                input,
+                mut input,
                 input_key,
                 message_id,
             } => {
                 let mut staged = Vec::new();
+                input.stage(&mut staged);
                 let inline = self.inline_steers;
                 let operation = self.pending_operation_mut(&operation_id)?;
                 if operation.seals_steers(inline) {
@@ -1470,7 +1468,7 @@ impl JournalState {
                         },
                     );
                 }
-                operation.steers.push(SteerState {
+                operation.steers.push_back(SteerState {
                     message_id,
                     input,
                     accepted_after_model_call_index,
@@ -1500,7 +1498,7 @@ impl JournalState {
                 {
                     operation.steered.withdrawn.push(latest);
                 }
-                if let Some(steer) = operation.steers.pop()
+                if let Some(steer) = operation.steers.pop_back()
                     && let Some(id) = steer.message_id
                     && let Some(receipt) = operation.steer_receipts.get_mut(&id)
                 {

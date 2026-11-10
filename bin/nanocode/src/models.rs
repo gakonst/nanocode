@@ -45,14 +45,9 @@ pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
                 models: Vec::new(),
             });
         }
-        for (prefix, models) in offered {
+        for (provider, models) in offered {
             groups.push(Group {
-                title: match prefix {
-                    Some(provider) => {
-                        format!("Tempo · {provider} · $ per 1M input/output tokens")
-                    }
-                    None => "Tempo · Codex and Claude models through the Tempo gateway, paid from the Tempo wallet".to_owned(),
-                },
+                title: format!("Tempo · {provider} · $ per 1M input/output tokens"),
                 note: None,
                 models: models
                     .into_iter()

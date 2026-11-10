@@ -1223,6 +1223,9 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Of
         let id = entry["id"]
             .as_str()
             .ok_or_else(|| format!("{url} listed a model without an id"))?;
+        if id.starts_with("boundless/") {
+            continue;
+        }
         let offer = Offer {
             model: id.parse::<Model>()?,
             provider: entry["provider"]
@@ -1237,15 +1240,8 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Of
                 _ => None,
             },
         };
-        match offers.iter_mut().find(|known| {
-            known.model == offer.model
-                || known.provider == offer.provider && known.upstream == offer.upstream
-        }) {
-            Some(known) if !known.named_for_provider() && offer.named_for_provider() => {
-                *known = offer;
-            }
-            Some(_) => {}
-            None => offers.push(offer),
+        if offers.iter().all(|known| known.model != offer.model) {
+            offers.push(offer);
         }
     }
     if offers.is_empty() {
@@ -1347,37 +1343,82 @@ impl Tempo {
         }
     }
 
-    pub(crate) fn groups(&self) -> (Vec<(Option<String>, Offered)>, Option<String>) {
+    pub(crate) fn groups(&self) -> (Vec<(String, Offered)>, Option<String>) {
         self.listing.state.read(|state| match state {
             Listed::Loading => (Vec::new(), Some("listing models…".to_owned())),
             Listed::Failed(error) => (Vec::new(), Some(error.clone())),
-            Listed::Offers(offers) => {
-                let aliases = offers
-                    .iter()
-                    .filter_map(|offer| alias(offer.model.as_str()))
-                    .collect::<Vec<_>>();
-                let builtin = Model::ALL
-                    .map(ModelSelection::Codex)
-                    .into_iter()
-                    .chain(ClaudeModel::ALL.map(ModelSelection::Claude))
-                    .filter(|model| aliases.contains(model))
-                    .map(|model| (model, None))
-                    .collect();
-                let mut groups: Vec<(Option<String>, Offered)> = vec![(None, builtin)];
-                for offer in offers {
-                    let offered = (ModelSelection::Codex(offer.model), offer.price.clone());
-                    match groups
-                        .iter_mut()
-                        .find(|(group, _)| group.as_deref() == Some(offer.provider.as_str()))
-                    {
-                        Some((_, models)) => models.push(offered),
-                        None => groups.push((Some(offer.provider.clone()), vec![offered])),
-                    }
-                }
-                (groups, None)
-            }
+            Listed::Offers(offers) => (rows(offers), None),
         })
     }
+}
+
+struct Row<'a> {
+    provider: &'a str,
+    builtin: Option<ModelSelection>,
+    upstream: &'a str,
+    model: ModelSelection,
+    price: Option<String>,
+    preferred: bool,
+}
+
+fn rows(offers: &[Offer]) -> Vec<(String, Offered)> {
+    let routed = |builtin: &ModelSelection| {
+        ["vercel/", "openrouter/"].into_iter().find_map(|prefix| {
+            offers.iter().find(|offer| {
+                offer.model.as_str().starts_with(prefix)
+                    && alias(&offer.upstream).as_ref() == Some(builtin)
+            })
+        })
+    };
+    let mut rows: Vec<Row<'_>> = Vec::new();
+    for offer in offers {
+        let builtin = alias(&offer.upstream);
+        let route = builtin
+            .as_ref()
+            .and_then(|builtin| Some((builtin, routed(builtin)?)))
+            .filter(|(_, route)| route.provider == offer.provider);
+        let row = match route {
+            Some((builtin, route)) => Row {
+                provider: &offer.provider,
+                builtin: Some(builtin.clone()),
+                upstream: &offer.upstream,
+                model: builtin.clone(),
+                price: route.price.clone(),
+                preferred: true,
+            },
+            None => Row {
+                provider: &offer.provider,
+                builtin: builtin.clone(),
+                upstream: &offer.upstream,
+                model: ModelSelection::Codex(offer.model),
+                price: offer.price.clone(),
+                preferred: offer.named_for_provider(),
+            },
+        };
+        match rows.iter_mut().find(|known| {
+            known.provider == row.provider
+                && match (&known.builtin, &row.builtin) {
+                    (Some(known), Some(builtin)) => known == builtin,
+                    _ => known.upstream == row.upstream,
+                }
+        }) {
+            Some(known) if !known.preferred && row.preferred => *known = row,
+            Some(_) => {}
+            None => rows.push(row),
+        }
+    }
+    let mut groups: Vec<(String, Offered)> = Vec::new();
+    for row in rows {
+        let offered = (row.model, row.price);
+        match groups
+            .iter_mut()
+            .find(|(provider, _)| provider == row.provider)
+        {
+            Some((_, models)) => models.push(offered),
+            None => groups.push((row.provider.to_owned(), vec![offered])),
+        }
+    }
+    groups
 }
 
 fn alias(id: &str) -> Option<ModelSelection> {

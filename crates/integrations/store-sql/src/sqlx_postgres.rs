@@ -13,6 +13,10 @@ pub trait PgConnections: Send + Sync {
     const SIMPLE: Option<&'static str> = None;
 
     fn acquire(&self) -> StoreFuture<'_, Result<Self::Connection, StoreError>>;
+
+    fn lanes(&self) -> usize {
+        1
+    }
 }
 
 pub struct SqlxSql<C, R> {
@@ -43,7 +47,19 @@ async fn transact<C: PgConnections>(
     Ok(results)
 }
 
-impl<C: PgConnections, R: PgConnections> Sql for SqlxSql<C, R> {
+impl<C: PgConnections + 'static, R: PgConnections + 'static> Sql for SqlxSql<C, R> {
+    fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {
+        (self.writers() > 1 || self.readers() > 1).then_some(self as std::sync::Arc<dyn Sql>)
+    }
+
+    fn writers(&self) -> usize {
+        self.writes.lanes()
+    }
+
+    fn readers(&self) -> usize {
+        self.reads.lanes()
+    }
+
     fn transaction<'a>(
         &'a self,
         _operation: &'static str,

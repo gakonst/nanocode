@@ -555,34 +555,15 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
 
 async fn stream_turn(mut turn: nanocode::agent::Turn, answers: impl Write) -> Result<()> {
     let mut printer = stream::Printer::new(std::io::BufWriter::new(answers));
-    let mut flushed = tokio::time::Instant::now() - app::DISPLAY_FRAME;
-    let mut pending = false;
     loop {
-        if let Some(event) = turn.try_next() {
+        while let Some(event) = turn.try_next() {
             printer.event(&event)?;
-            pending = true;
-            continue;
         }
-        let due = flushed + app::DISPLAY_FRAME;
-        if pending && tokio::time::Instant::now() >= due {
-            printer.flush()?;
-            flushed = tokio::time::Instant::now();
-            pending = false;
-            continue;
-        }
-        let event = if pending {
-            tokio::select! {
-                event = turn.next() => event,
-                () = tokio::time::sleep_until(due) => continue,
-            }
-        } else {
-            turn.next().await
-        };
-        let Some(event) = event else {
+        printer.flush()?;
+        let Some(event) = turn.next().await else {
             break;
         };
         printer.event(&event)?;
-        pending = true;
     }
     let result = turn.await?;
     printer.finish(result.final_message())?;

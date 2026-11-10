@@ -491,6 +491,7 @@ const fn stop_reason(reason: StopReason) -> &'static str {
         StopReason::PauseTurn => "pause_turn",
         StopReason::Refusal => "refusal",
         StopReason::ModelContextWindowExceeded => "model_context_window_exceeded",
+        StopReason::Compaction => "compaction",
         StopReason::Unknown => "unknown",
     }
 }

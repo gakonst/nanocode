@@ -1641,6 +1641,11 @@ impl Snapshot {
                     ContentBlock::Thinking { thinking, .. } if !thinking.trim().is_empty() => {
                         items.push(TranscriptItem::Reasoning(thinking.clone()));
                     }
+                    ContentBlock::Compaction { content, .. } => {
+                        items.push(TranscriptItem::Assistant(format!(
+                            "Retained conversation summary:\n{content}"
+                        )));
+                    }
                     ContentBlock::ToolUse {
                         id, name, input, ..
                     }

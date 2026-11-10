@@ -47,6 +47,7 @@ pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
 const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
 const EFFORT_UPDATES_BETA: &str = "mid-conversation-output-config-2026-07-01";
+const COMPACTION_BETA: &str = "compact-2026-09-04";
 const FIRST_PARTY_HOST: &str = "api.anthropic.com";
 const GZIP_MIN_BODY_BYTES: usize = 4096;
 const INVALID_JSON_MESSAGES: [&str; 2] = [
@@ -285,6 +286,12 @@ pub enum ContentBlock {
     },
     RedactedThinking {
         data: String,
+        #[serde(flatten)]
+        extra: BTreeMap<String, Value>,
+    },
+    Compaction {
+        content: String,
+        signature: String,
         #[serde(flatten)]
         extra: BTreeMap<String, Value>,
     },
@@ -551,6 +558,8 @@ pub struct MessagesRequest {
     pub thinking: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -810,6 +819,7 @@ impl MessagesRequest {
             tool_choice,
             thinking,
             context_management,
+            compaction,
             diagnostics,
             system,
             messages: _,
@@ -826,6 +836,7 @@ impl MessagesRequest {
             tool_choice: tool_choice.clone(),
             thinking: thinking.clone(),
             context_management: context_management.clone(),
+            compaction: compaction.clone(),
             diagnostics: diagnostics.clone(),
             system: system.clone(),
             messages: Vec::new(),
@@ -1119,7 +1130,8 @@ impl ContentBlock {
             | Self::TextEditorCodeExecutionToolResult { extra, .. }
             | Self::McpToolUse { extra, .. }
             | Self::McpToolResult { extra, .. }
-            | Self::McpToolListing { extra, .. } => (extra.get("cache_control"), true),
+            | Self::McpToolListing { extra, .. }
+            | Self::Compaction { extra, .. } => (extra.get("cache_control"), true),
         }
     }
     const fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
@@ -1140,7 +1152,8 @@ impl ContentBlock {
             | Self::McpToolListing { extra, .. }
             | Self::ToolResult { extra, .. }
             | Self::Thinking { extra, .. }
-            | Self::RedactedThinking { extra, .. } => extra,
+            | Self::RedactedThinking { extra, .. }
+            | Self::Compaction { extra, .. } => extra,
         }
     }
 }
@@ -1166,6 +1179,7 @@ pub enum StopReason {
     PauseTurn,
     Refusal,
     ModelContextWindowExceeded,
+    Compaction,
     #[serde(other)]
     Unknown,
 }
@@ -1190,6 +1204,8 @@ pub struct Usage {
     pub cost: Option<UsdAmount>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost: Option<EstimatedUsdCost>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub iterations: Vec<UsageIteration>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1201,6 +1217,29 @@ pub struct CacheCreation {
 }
 
 impl Usage {
+    fn count_iterations(&mut self) {
+        let iterations = std::mem::take(&mut self.iterations);
+        if self.input_tokens
+            + self.cache_read_input_tokens
+            + self.cache_creation_input_tokens
+            + self.output_tokens
+            > 0
+        {
+            return;
+        }
+        for iteration in iterations {
+            self.input_tokens += iteration.input_tokens;
+            self.cache_read_input_tokens += iteration.cache_read_input_tokens;
+            self.cache_creation_input_tokens += iteration.cache_creation_input_tokens;
+            self.output_tokens += iteration.output_tokens;
+            if let Some(created) = iteration.cache_creation {
+                let total = self.cache_creation.get_or_insert_default();
+                total.ephemeral_5m_input_tokens += created.ephemeral_5m_input_tokens;
+                total.ephemeral_1h_input_tokens += created.ephemeral_1h_input_tokens;
+            }
+        }
+    }
+
     #[must_use]
     pub const fn tokens(&self, requested_ttl: Option<CacheTtl>) -> ClaudeTokens {
         let (cache_write_5m_input_tokens, cache_write_1h_input_tokens) =
@@ -1243,6 +1282,22 @@ pub struct UsageDelta {
     pub output_tokens: Option<u64>,
     #[serde(default, with = "nanocode_agent_types::usage::usd_number")]
     pub cost: Option<UsdAmount>,
+    #[serde(default)]
+    pub iterations: Vec<UsageIteration>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageIteration {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CacheCreation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -1732,6 +1787,14 @@ impl ClaudeClient {
                 .as_ref()
                 .is_some_and(|thinking| thinking.get("block_binding").is_some()),
             context_management: head.context_management.is_some(),
+            compaction: head.compaction.is_some()
+                || messages.first().is_some_and(|message| {
+                    message
+                        .message()
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::Compaction { .. }))
+                }),
             speed: head.speed.is_some(),
             effort_updates: head.effort_updates,
         })
@@ -1757,6 +1820,7 @@ impl ClaudeClient {
             thinking_updates: false,
             thinking_binding: false,
             context_management: false,
+            compaction: false,
             speed: false,
             effort_updates: false,
         }
@@ -1897,6 +1961,9 @@ impl ClaudeClient {
             }
             if wire.effort_updates && !betas.contains(&EFFORT_UPDATES_BETA) {
                 betas.push(EFFORT_UPDATES_BETA);
+            }
+            if wire.compaction && !betas.contains(&COMPACTION_BETA) {
+                betas.push(COMPACTION_BETA);
             }
             if wire.thread.is_some() && !betas.contains(&MESSAGE_THREADS_BETA) {
                 betas.push(MESSAGE_THREADS_BETA);
@@ -2054,6 +2121,7 @@ impl ClaudeClient {
         for block in &mut response.content {
             self.decode_block(block);
         }
+        response.usage.count_iterations();
         Ok(response)
     }
 
@@ -2174,6 +2242,7 @@ pub struct PreparedWire {
     thinking_updates: bool,
     thinking_binding: bool,
     context_management: bool,
+    compaction: bool,
     speed: bool,
     effort_updates: bool,
 }
@@ -2431,6 +2500,7 @@ fn api_body<M: WireMessage>(
         tool_choice,
         thinking,
         context_management,
+        compaction,
         diagnostics,
         system,
         messages: _,
@@ -2454,6 +2524,8 @@ fn api_body<M: WireMessage>(
         thinking: Option<&'a Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         context_management: Option<&'a Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        compaction: Option<&'a Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         diagnostics: Option<&'a Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -2516,6 +2588,7 @@ fn api_body<M: WireMessage>(
         tool_choice: tool_choice.as_ref(),
         thinking: thinking.as_ref(),
         context_management: context_management.as_ref(),
+        compaction: compaction.as_ref(),
         diagnostics: diagnostics.as_ref(),
         system: system_raw,
     })?;
@@ -2885,6 +2958,7 @@ impl BlockAccumulator {
                 ContentBlock::ToolResult { .. } => "tool_result",
                 ContentBlock::Thinking { .. } => "thinking",
                 ContentBlock::RedactedThinking { .. } => "redacted_thinking",
+                ContentBlock::Compaction { .. } => "compaction",
             },
         }
     }
@@ -3166,6 +3240,8 @@ impl MessageAccumulator {
                 if let Some(cost) = usage.cost {
                     self.message.usage.cost = Some(cost);
                 }
+                self.message.usage.iterations = usage.iterations;
+                self.message.usage.count_iterations();
             }
             StreamEvent::MessageStop => {
                 self.stopped = true;
@@ -3219,6 +3295,7 @@ impl MessageAccumulator {
                             Some(StopReason::Refusal) => "refusal",
                             Some(StopReason::ModelContextWindowExceeded) =>
                                 "model_context_window_exceeded",
+                            Some(StopReason::Compaction) => "compaction",
                             Some(StopReason::Unknown) => "unknown",
                             None => "missing",
                         },

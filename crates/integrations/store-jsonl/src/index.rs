@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
@@ -25,7 +25,6 @@ pub(super) struct Index {
     pub(super) states: HashMap<String, State>,
     pub(super) created: Vec<String>,
     pub(super) holders: HashMap<u64, usize>,
-    pub(super) unshared: usize,
     pub(super) last: Option<Location>,
     pub(super) migrated: bool,
     anchor: [u8; 32],
@@ -101,7 +100,6 @@ impl Index {
             states: HashMap::new(),
             created: Vec::new(),
             holders: HashMap::new(),
-            unshared: 0,
             last: None,
             migrated: false,
             anchor: Sha256::digest([]).into(),
@@ -175,10 +173,21 @@ impl Index {
         Ok(())
     }
 
-    pub(super) fn deferred_bytes(&self, id: &str) -> usize {
-        self.deferred
-            .get(id)
-            .map_or(0, |block| block.location.length)
+    fn settle_deferred(&mut self) -> io::Result<()> {
+        let appended = self
+            .deferred
+            .keys()
+            .filter(|id| {
+                self.states
+                    .get(*id)
+                    .is_some_and(|state| !state.records.is_empty())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for id in appended {
+            self.load_records(&id)?;
+        }
+        Ok(())
     }
 
     pub(super) fn load_records(&mut self, id: &str) -> io::Result<()> {
@@ -211,7 +220,23 @@ impl Index {
                 .entry(super::key_hash(key))
                 .or_insert(state.created);
         }
-        state.records = records;
+        for (key, later) in std::mem::replace(&mut state.records, records) {
+            match state.records.entry(key) {
+                Entry::Vacant(added) => {
+                    added.insert(later);
+                }
+                Entry::Occupied(stored) => {
+                    let same = matches!(
+                        (stored.get(), later),
+                        (Record::Value { digest, .. }, Record::Value { digest: repeated, .. })
+                            if *digest == repeated
+                    );
+                    if !same {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
         self.deferred.remove(id);
         self.pristine.insert(id.to_owned(), block);
         Ok(())
@@ -354,7 +379,6 @@ impl Journal {
         let mut index = Index::new(saved.source);
         index.offset = saved.offset;
         index.owners = saved.owners;
-        index.unshared = saved.created.len();
         let order = created_order(&saved.created);
         index.created = saved.created;
         index.last = saved.last;
@@ -464,6 +488,7 @@ impl Journal {
     }
 
     fn write_index(&mut self) -> io::Result<()> {
+        self.index.settle_deferred()?;
         self.index.anchor = digest_anchor(&mut self.reads, self.index.last)?;
         if self.index.length > 0
             && self.index.file.is_some()

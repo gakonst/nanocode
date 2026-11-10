@@ -1283,12 +1283,6 @@ impl Journal {
                     return Err(backend("invalid JSONL replacement entry"));
                 };
                 self.check_replacement(id, &owner, revision)?;
-                if !records.is_empty()
-                    && let Err(error) = self.index.load_records(id)
-                {
-                    self.invalid_index = Some(error.to_string());
-                    return Err(backend(error));
-                }
                 let known = self.index.states.get(id).map(|state| &state.records);
                 let mut keys = HashSet::with_capacity(records.len());
                 let repeated = records.iter().any(|record| {
@@ -1324,10 +1318,6 @@ impl Journal {
                 };
                 if self.index.owners.get(id) != Some(&owner) || self.revision(id) == 0 {
                     return Err(backend("invalid JSONL records owner"));
-                }
-                if let Err(error) = self.index.load_records(id) {
-                    self.invalid_index = Some(error.to_string());
-                    return Err(backend(error));
                 }
                 let known = self.index.states.get(id).map(|state| &state.records);
                 let mut keys = HashSet::with_capacity(records.len());
@@ -1597,10 +1587,6 @@ impl Journal {
             .zip(fresh)
             .filter_map(|(record, fresh)| fresh.then_some((record, None::<String>)))
             .collect::<Vec<_>>();
-        let mut budget = records
-            .iter()
-            .map(|(record, _)| record.value.len())
-            .sum::<usize>();
         for (record, holder) in &mut records {
             let Some(candidate) = self
                 .index
@@ -1612,30 +1598,7 @@ impl Journal {
             else {
                 continue;
             };
-            if let Some(found) = self.shares(&candidate, record)? {
-                budget = budget.saturating_sub(record.value.len());
-                *holder = Some(found);
-            }
-        }
-        while self.index.unshared > 0 && records.iter().any(|(_, holder)| holder.is_none()) {
-            let candidate = self.index.created[self.index.unshared - 1].clone();
-            let cost = self.index.deferred_bytes(&candidate);
-            if cost > budget {
-                break;
-            }
-            budget -= cost;
-            self.index.unshared -= 1;
-            if cost == 0 || candidate == id {
-                continue;
-            }
-            for (record, holder) in &mut records {
-                if holder.is_none()
-                    && let Some(found) = self.shares(&candidate, record)?
-                {
-                    budget = budget.saturating_sub(record.value.len());
-                    *holder = Some(found);
-                }
-            }
+            *holder = self.shares(&candidate, record)?;
         }
         Ok(records
             .into_iter()
@@ -1672,6 +1635,62 @@ impl Journal {
             return Err(self.invalidated("JSONL record index does not match its journal"));
         }
         serde_json::from_slice(&bytes).map_err(|error| self.invalidated(error))
+    }
+
+    #[cfg(unix)]
+    fn read_spread(&mut self, id: &str, keys: &[String]) -> Option<Vec<Option<String>>> {
+        use std::os::unix::fs::FileExt;
+        let mut located = Vec::with_capacity(keys.len());
+        let mut bytes = 0;
+        for key in keys {
+            match self.location(id, key) {
+                Ok(Some(record @ Record::Value { location, .. })) => {
+                    bytes += location.length;
+                    located.push(Some(record));
+                }
+                Ok(None) => located.push(None),
+                Ok(Some(Record::Entry(_))) | Err(_) => return None,
+            }
+        }
+        let workers = thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(bytes / JOURNAL_READ_BUFFER_BYTES);
+        if workers < 2 {
+            return None;
+        }
+        let wanted = keys.iter().zip(located).collect::<Vec<_>>();
+        let reads = &self.reads;
+        let read = |part: &[(&String, Option<Record>)]| {
+            part.iter()
+                .map(|(key, located)| {
+                    let Some(Record::Value { location, digest }) = located else {
+                        return Some(None);
+                    };
+                    let mut stored = vec![0; location.length];
+                    reads.read_exact_at(&mut stored, location.position).ok()?;
+                    if value_digest(id, key, &stored) != *digest {
+                        return None;
+                    }
+                    serde_json::from_slice::<String>(&stored).ok().map(Some)
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        thread::scope(|scope| {
+            let running = wanted
+                .chunks(wanted.len().div_ceil(workers))
+                .map(|part| scope.spawn(move || read(part)))
+                .collect::<Vec<_>>();
+            let mut values = Vec::with_capacity(wanted.len());
+            for part in running {
+                values.extend(part.join().ok()??);
+            }
+            Some(values)
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn read_spread(&mut self, _: &str, _: &[String]) -> Option<Vec<Option<String>>> {
+        None
     }
 
     fn entry_record(
@@ -2194,6 +2213,17 @@ impl Journal {
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
         self.read()?;
+        if let Some(mut values) = self.read_spread(id, keys) {
+            for (key, value) in keys.iter().zip(&mut values) {
+                if value
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with(SHARED_RECORD))
+                {
+                    *value = self.rebuilt(|store| store.record(id, key))?;
+                }
+            }
+            return Ok(values);
+        }
         self.rebuilt(|store| keys.iter().map(|key| store.record(id, key)).collect())
     }
 

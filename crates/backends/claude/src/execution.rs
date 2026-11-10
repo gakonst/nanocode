@@ -143,6 +143,19 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
             ))
         })
     }
+    fn bind_steers(
+        &self,
+        id: String,
+        steers: std::ops::RangeInclusive<u32>,
+        boundary: u32,
+    ) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            for index in steers {
+                self.bind_steer(id.clone(), index, boundary).await?;
+            }
+            Ok(())
+        })
+    }
     fn continuation(&self, id: String) -> PolicyFuture<'_, Option<Value>>;
     fn advance(&self, id: String, state: Value) -> PolicyFuture<'_, ()>;
 

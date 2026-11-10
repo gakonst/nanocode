@@ -383,7 +383,7 @@ enum Command {
     BindSteer {
         caller: Caller,
         operation_id: String,
-        steer_index: u32,
+        steers: std::ops::RangeInclusive<u32>,
         model_call_index: u32,
         result: oneshot::Sender<Result<()>>,
     },
@@ -1005,13 +1005,13 @@ impl Driver {
             Command::BindSteer {
                 caller,
                 operation_id,
-                steer_index,
+                steers,
                 model_call_index,
                 result,
             } => {
                 let outcome = match self.authorize(&caller) {
                     Ok(()) => {
-                        self.bind_steer(&caller, operation_id, steer_index, model_call_index)
+                        self.bind_steers(&caller, operation_id, steers, model_call_index)
                             .await
                     }
                     Err(error) => Err(error),
@@ -1715,48 +1715,74 @@ impl Driver {
         .await
     }
 
-    async fn bind_steer(
+    async fn bind_steers(
         &mut self,
         caller: &Caller,
         operation_id: String,
-        steer_index: u32,
+        steers: std::ops::RangeInclusive<u32>,
         model_call_index: u32,
     ) -> Result<()> {
         self.require_claimed(caller, &operation_id)?;
         self.require_running(&operation_id)?;
-        let retained = self
-            .state
-            .operation(&operation_id)
-            .and_then(|operation| {
-                steer_index
-                    .checked_sub(operation.retired_steers)
-                    .and_then(|index| index.checked_sub(1))
-                    .and_then(|index| {
-                        usize::try_from(index)
-                            .ok()
-                            .and_then(|index| operation.steers.get(index))
-                    })
-            })
-            .ok_or_else(|| {
-                Error::InvalidState(format!(
-                    "steer {steer_index} in operation `{operation_id}` was bound before acceptance"
-                ))
-            })?;
-        match retained.model_call_index {
-            Some(retained) if retained == model_call_index => return Ok(()),
-            Some(retained) => {
-                return Err(Error::InvalidState(format!(
-                    "steer {steer_index} in operation `{operation_id}` changed model boundary from {retained} to {model_call_index}"
-                )));
+        let mut unbound = Vec::new();
+        for steer_index in steers {
+            let retained = self
+                .state
+                .operation(&operation_id)
+                .and_then(|operation| {
+                    steer_index
+                        .checked_sub(operation.retired_steers)
+                        .and_then(|index| index.checked_sub(1))
+                        .and_then(|index| {
+                            usize::try_from(index)
+                                .ok()
+                                .and_then(|index| operation.steers.get(index))
+                        })
+                })
+                .ok_or_else(|| {
+                    Error::InvalidState(format!(
+                        "steer {steer_index} in operation `{operation_id}` was bound before acceptance"
+                    ))
+                })?;
+            match retained.model_call_index {
+                Some(retained) if retained == model_call_index => {}
+                Some(retained) => {
+                    return Err(Error::InvalidState(format!(
+                        "steer {steer_index} in operation `{operation_id}` changed model boundary from {retained} to {model_call_index}"
+                    )));
+                }
+                None => unbound.push(steer_index),
             }
-            None => {}
         }
-        self.apply(Transition::SteerBound {
-            operation_id,
-            steer_index,
-            model_call_index,
-        })
-        .await
+        if unbound.is_empty() {
+            return Ok(());
+        }
+        let revision = self.state.revision().checked_add(1).ok_or_else(|| {
+            Error::InvalidState("state revision exceeded the u64 range".to_owned())
+        })?;
+        let base = self.state.clone();
+        self.batch = Some(revision);
+        let mut outcome = Ok(());
+        for steer_index in unbound {
+            outcome = self
+                .apply(Transition::SteerBound {
+                    operation_id: operation_id.clone(),
+                    steer_index,
+                    model_call_index,
+                })
+                .await;
+            if outcome.is_err() {
+                break;
+            }
+        }
+        self.batch = None;
+        let mut next = std::mem::replace(&mut self.state, base);
+        outcome?;
+        if let Some(limit) = self.terminal_receipt_limit {
+            let _ = next.retain_terminal_receipts(limit);
+        }
+        self.persist(next).await?;
+        Ok(())
     }
 
     async fn begin_step(
@@ -3591,11 +3617,21 @@ impl DurableOwner {
         steer_index: u32,
         model_call_index: u32,
     ) -> Result<()> {
+        self.bind_steers(operation_id, steer_index..=steer_index, model_call_index)
+            .await
+    }
+
+    pub async fn bind_steers(
+        &self,
+        operation_id: String,
+        steers: std::ops::RangeInclusive<u32>,
+        model_call_index: u32,
+    ) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::BindSteer {
             caller: self.caller()?,
             operation_id,
-            steer_index,
+            steers,
             model_call_index,
             result,
         })

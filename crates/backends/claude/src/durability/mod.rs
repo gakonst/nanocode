@@ -435,6 +435,15 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         Box::pin(async move { self.get().await?.bind_steer(id, index, boundary).await })
     }
 
+    fn bind_steers(
+        &self,
+        id: String,
+        steers: std::ops::RangeInclusive<u32>,
+        boundary: u32,
+    ) -> PolicyFuture<'_, ()> {
+        Box::pin(async move { self.get().await?.bind_steers(id, steers, boundary).await })
+    }
+
     fn continuation(&self, id: String) -> PolicyFuture<'_, Option<Value>> {
         Box::pin(async move { self.get().await?.continuation(id).await })
     }
@@ -765,6 +774,19 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
         Box::pin(async move {
             self.owner
                 .bind_steer(id, index, boundary)
+                .await
+                .map_err(agent_error)
+        })
+    }
+    fn bind_steers(
+        &self,
+        id: String,
+        steers: std::ops::RangeInclusive<u32>,
+        boundary: u32,
+    ) -> PolicyFuture<'_, ()> {
+        Box::pin(async move {
+            self.owner
+                .bind_steers(id, steers, boundary)
                 .await
                 .map_err(agent_error)
         })

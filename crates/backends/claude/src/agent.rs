@@ -5982,6 +5982,7 @@ impl State {
         };
         let boundary = cursor.index.saturating_add(cursor.model_step_offset);
         let mut consumed = false;
+        let mut bound_through = 0;
         while turn.pending.front().is_some_and(|steer| {
             steer.after < boundary
                 && (!replaying_boundary || steer.boundary.is_some_and(|bound| bound <= boundary))
@@ -5989,15 +5990,27 @@ impl State {
             let steer = turn.pending.front().expect("pending steer");
             let messages = prompt_messages(&steer.prompt)?;
             if steer.durable
+                && steer.index > bound_through
                 && let (Some(policy), Some(operation)) = (&self.policy, &turn.operation)
             {
+                let target = steer.boundary.unwrap_or(boundary);
+                let mut last = steer.index;
+                for next in turn.pending.iter().skip(1) {
+                    if !(next.durable
+                        && next.index == last + 1
+                        && next.after < boundary
+                        && (!replaying_boundary
+                            || next.boundary.is_some_and(|bound| bound <= boundary))
+                        && next.boundary.unwrap_or(boundary) == target)
+                    {
+                        break;
+                    }
+                    last = next.index;
+                }
                 policy
-                    .bind_steer(
-                        operation.clone(),
-                        steer.index,
-                        steer.boundary.unwrap_or(boundary),
-                    )
+                    .bind_steers(operation.clone(), steer.index..=last, target)
                     .await?;
+                bound_through = last;
             }
             let steer = turn.pending.pop_front().expect("pending steer");
             if let Some(revision) = steer.prompt.instruction_revision() {

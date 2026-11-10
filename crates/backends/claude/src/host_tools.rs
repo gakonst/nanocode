@@ -78,7 +78,8 @@ fn file_tools(workspace: Arc<Path>, files: Arc<dyn FileHost>) -> nanocode_tool_h
                 name.clone(),
                 schema["description"].as_str().unwrap_or_default(),
                 schema["input_schema"].clone(),
-            ),
+            )
+            .with_output_schema(crate::claude_output::host_schema(&name)),
             name,
             workspace: Arc::clone(&workspace),
             files: Arc::clone(&files),
@@ -399,13 +400,15 @@ impl Tool for HostTaskTool {
                 name,
                 definition["description"].as_str().unwrap_or_default(),
                 definition["input_schema"].clone(),
-            );
+            )
+            .with_output_schema(crate::claude_output::host_schema(name));
         }
         ToolDefinition::function(
             name,
             "SDK extension: retrieve a background Bash task's result, optionally waiting for completion.",
             json!({"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":300000,"default":30000}},"required":["task_id"],"additionalProperties":false}),
         )
+        .with_output_schema(crate::claude_output::host_schema(name))
     }
 
     fn execute<'life0, 'life1, 'async_trait>(
@@ -438,6 +441,7 @@ impl Tool for HostBashTool {
             schema["description"].as_str().unwrap_or_default(),
             schema["input_schema"].clone(),
         )
+        .with_output_schema(crate::claude_output::host_schema("Bash"))
     }
 
     fn execute<'life0, 'life1, 'async_trait>(

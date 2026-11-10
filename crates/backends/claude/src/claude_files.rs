@@ -28,7 +28,8 @@ pub(super) fn selection(
                 name.clone(),
                 description,
                 schema["input_schema"].clone(),
-            ),
+            )
+            .with_output_schema(super::claude_output::schema(&name)),
             name,
             files: Arc::clone(files),
             session: session.clone(),

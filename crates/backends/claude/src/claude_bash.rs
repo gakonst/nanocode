@@ -727,6 +727,7 @@ impl Tool for BashTool {
             schema["description"].as_str().unwrap_or_default(),
             schema["input_schema"].clone(),
         )
+        .with_output_schema(super::claude_output::schema("Bash"))
     }
     fn running_tasks(&self) -> Vec<RunningTask> {
         self.jobs.entries.read(|entries| {
@@ -775,13 +776,15 @@ impl Tool for TaskTool {
                     .as_str()
                     .expect("upstream tool description"),
                 definition["input_schema"].clone(),
-            );
+            )
+            .with_output_schema(super::claude_output::schema(self.name));
         }
         ToolDefinition::function(
             self.name,
             "SDK extension: retrieve a session-owned Bash task's result, optionally waiting for completion.",
             json!({"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":300000,"default":30000}},"required":["task_id"],"additionalProperties":false}),
         )
+        .with_output_schema(super::claude_output::schema(self.name))
     }
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
         let input = input.decode_json::<Value>()?;

@@ -1433,6 +1433,7 @@ impl RegistryState {
         session_id: &str,
         instruction_revision: Option<u64>,
         output: Value,
+        resumed: bool,
     ) -> std::io::Result<SubmissionOutcome> {
         let root_session_id = self.root_session_id(session_id).to_owned();
         let scope = self.scopes.get_mut(&root_session_id).ok_or_else(|| {
@@ -1480,7 +1481,17 @@ impl RegistryState {
         if matches!(turn.stage, TurnStage::Steering) || turn.revision != instruction_revision {
             return Ok(SubmissionOutcome::Superseded);
         }
-        if matches!(turn.stage, TurnStage::Submitted(_)) {
+        if let TurnStage::Submitted(accepted) = &turn.stage {
+            if resumed
+                && let Ok((output, decoded_json_text)) = validate_submitted_output(
+                    &session.output_validator,
+                    &session.output_schema,
+                    output,
+                )
+                && output == *accepted
+            {
+                return Ok(SubmissionOutcome::Accepted { decoded_json_text });
+            }
             return Err(CompletionError::new(
                 CompletionErrorCode::AlreadyAccepted,
                 false,
@@ -4200,8 +4211,9 @@ impl Registry {
         session_id: &str,
         instruction_revision: Option<u64>,
         output: Value,
+        resumed: bool,
     ) -> std::io::Result<(SubmissionOutcome, bool)> {
-        self.submit_result_durably_inner(session_id, instruction_revision, output)
+        self.submit_result_durably_inner(session_id, instruction_revision, output, resumed)
             .instrument(tracing::info_span!(
                 "subagent.submit",
                 session.id = session_id,
@@ -4215,13 +4227,15 @@ impl Registry {
         session_id: &str,
         instruction_revision: Option<u64>,
         output: Value,
+        resumed: bool,
     ) -> std::io::Result<(SubmissionOutcome, bool)> {
         self.await_restored(session_id).await?;
         let session = session_id.to_owned();
         let (outcome, root) = self
             .state
             .call(move |state| -> std::io::Result<_> {
-                let outcome = state.submit_result(&session, instruction_revision, output)?;
+                let outcome =
+                    state.submit_result(&session, instruction_revision, output, resumed)?;
                 Ok((outcome, state.root_session_id(&session).to_owned()))
             })
             .await?;

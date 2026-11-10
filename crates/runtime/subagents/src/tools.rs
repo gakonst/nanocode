@@ -1242,14 +1242,32 @@ impl Tool for SubmitResult {
         })
     }
 
+    recovers!(self, input, context, self.submit(input, context, true));
+
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.submit(input, context, false).await
+    }
+}
+
+impl SubmitResult {
+    async fn submit(
+        &self,
+        input: ToolInput,
+        context: ToolContext<'_>,
+        resumed: bool,
+    ) -> ToolResult {
         let SubmitResultArgs { output } = input.decode_json()?;
         let registry = self
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         let (outcome, durable) = registry
-            .submit_result_durably(context.session_id(), context.instruction_revision(), output)
+            .submit_result_durably(
+                context.session_id(),
+                context.instruction_revision(),
+                output,
+                resumed,
+            )
             .await?;
         let output = match outcome {
             SubmissionOutcome::Accepted { decoded_json_text } => {

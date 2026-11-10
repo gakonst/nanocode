@@ -647,20 +647,26 @@ impl ToolRegistry {
 fn first_normalized_definitions(
     definitions: impl IntoIterator<Item = ToolDefinition>,
 ) -> Vec<ToolDefinition> {
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     definitions
         .into_iter()
         .filter(|definition| {
             let normalized = crate::selection::normalize_public_tool_name(definition.name());
-            if seen.insert(normalized.clone()) {
-                true
-            } else {
-                tracing::warn!(
-                    tool_name = definition.name(),
-                    code_mode_name = normalized,
-                    "skipping tool with a duplicate normalized Code Mode name"
-                );
-                false
+            match seen.get(&normalized) {
+                None => {
+                    seen.insert(normalized, definition.name().to_owned());
+                    true
+                }
+                Some(first) => {
+                    if first != definition.name() {
+                        tracing::warn!(
+                            tool_name = definition.name(),
+                            code_mode_name = normalized,
+                            "skipping tool with a duplicate normalized Code Mode name"
+                        );
+                    }
+                    false
+                }
             }
         })
         .collect()

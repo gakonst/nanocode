@@ -1252,6 +1252,7 @@ pub(crate) struct Tempo {
 
 impl Tempo {
     pub(crate) const NAME: &str = "tempo";
+    pub(crate) const OUTPUT_TOKENS: u32 = 32_768;
     pub(crate) const PREFIX: &str = "tempo/";
     pub(crate) const ABOUT: &str = "models the Tempo gateway serves (OpenAI, Anthropic, Workers AI, Vercel, OpenRouter, Boundless), paid from the Tempo wallet";
 

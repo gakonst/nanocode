@@ -1,7 +1,11 @@
-pub const COMMANDS: [(&str, &str); 33] = [
+pub const COMMANDS: [(&str, &str); 34] = [
     (
         "/model",
-        "choose harness, model, thinking and speed for a new thread",
+        "choose the model, thinking and speed for a new thread; tempo/<model> runs on the Tempo gateway",
+    ),
+    (
+        "/harness",
+        "run the thread on the Codex or Claude harness: /harness [codex|claude]",
     ),
     ("/thinking", "open the thinking dial"),
     ("/effort", "open the thinking dial"),
@@ -20,7 +24,7 @@ pub const COMMANDS: [(&str, &str); 33] = [
     ),
     (
         "/fund",
-        "buy MACH by card for the Tempo wallet that pays for tools and --gateway tempo: /fund [usd]",
+        "buy MACH by card for the Tempo wallet that pays for tools and tempo/ models: /fund [usd]",
     ),
     (
         "/wallet",

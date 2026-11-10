@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use nanocode::{
-    Claude, ClaudeHarness, ClaudeModel, Codex, CodexHarness, Model, ModelSelection, Nanocode,
-    OpenAi, Runner, RunnerServerConfig, ServiceTier, Thinking,
+    ClaudeHarness, ClaudeModel, CodexHarness, Model, ModelSelection, Nanocode, OpenAi, Runner,
+    RunnerServerConfig, ServiceTier, Thinking,
     agent::{Agent, AgentEvents},
     claude::ClaudeClient,
     durability::SessionStore,
@@ -61,6 +61,23 @@ impl Route {
             Self::Native => model.to_string(),
             Self::Tempo => format!("{}{model}", Tempo::PREFIX),
         }
+    }
+}
+
+pub fn follows_harness(route: Route, model: &ModelSelection) -> bool {
+    route == Route::Tempo
+        && model.as_claude().is_none()
+        && model
+            .as_codex()
+            .is_none_or(|model| !Model::ALL.contains(&model))
+}
+
+pub fn on_harness(model: &ModelSelection, family: &nanocode::HarnessFamily) -> ModelSelection {
+    let moved = ModelSelection::new(family.clone(), model.as_str());
+    match (moved.as_codex(), moved.as_claude()) {
+        (Some(model), _) => ModelSelection::Codex(model),
+        (_, Some(model)) => ModelSelection::Claude(model),
+        _ => moved,
     }
 }
 
@@ -240,6 +257,15 @@ impl ModelClients {
 
     pub(crate) fn codex_models(&self) -> Option<&[Model]> {
         self.models.as_deref()
+    }
+
+    pub(crate) fn default_model(&self, family: &nanocode::HarnessFamily) -> ModelSelection {
+        match self.models.as_deref().and_then(<[_]>::first) {
+            Some(model) if *family == nanocode::HarnessFamily::Codex => {
+                ModelSelection::Codex(*model)
+            }
+            _ => family.default_model(),
+        }
     }
 
     #[must_use]
@@ -591,6 +617,10 @@ impl Host {
         .client_for(move |request| tempo_claude.clone().filter(|_| tempo(request)))
         .headless(config.headless)
         .configure(move |builder| {
+            let builder = match builder.knows_max_tokens() {
+                true => builder,
+                false => builder.max_tokens(Tempo::OUTPUT_TOKENS),
+            };
             Ok(match &*described.get() {
                 Some(hand) => builder.environment(claude_environment(hand)),
                 None => builder,
@@ -626,26 +656,11 @@ impl Host {
         if !config.subagents {
             builder = builder.without_subagents();
         }
-        let builder = match (model.as_codex(), model.as_claude()) {
-            (Some(model), _) => {
-                builder
-                    .for_backend::<Codex>()
-                    .model(model)
-                    .thinking(thinking)
-                    .build_async()
-                    .await
-            }
-            (_, Some(model)) => {
-                builder
-                    .for_backend::<Claude>()
-                    .model(model)
-                    .thinking(thinking)
-                    .build_async()
-                    .await
-            }
-            _ => return Err(format!("unsupported model {model}").into()),
-        };
-        let runtime = builder?;
+        let runtime = builder
+            .harness_model(model.clone())
+            .thinking(thinking)
+            .build_async()
+            .await?;
         if let (Some(subagents), Some(tempo)) = (runtime.subagents(), &config.clients.tempo) {
             tempo.offer(subagents);
         }
@@ -674,26 +689,11 @@ impl Host {
             Some(provider) => self.runtime.spawn().provider(provider),
             None => self.runtime.spawn(),
         };
-        let started = match (model.as_codex(), model.as_claude()) {
-            (Some(model), _) => {
-                spawn
-                    .backend::<Codex>()
-                    .model(model)
-                    .thinking(thinking)
-                    .build()
-                    .await
-            }
-            (_, Some(model)) => {
-                spawn
-                    .backend::<Claude>()
-                    .model(model)
-                    .thinking(thinking)
-                    .build()
-                    .await
-            }
-            _ => return Err(format!("unsupported model {model}").into()),
-        };
-        Ok(started?)
+        Ok(spawn
+            .harness_model(model.clone())
+            .thinking(thinking)
+            .build()
+            .await?)
     }
 
     pub async fn open(

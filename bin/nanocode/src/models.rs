@@ -133,12 +133,39 @@ pub fn model_picker(
             choices.push(Some((offered, model)));
         }
     }
+    footer.push("/harness picks Codex or Claude".to_owned());
     (
-        Picker::new("Model", items)
-            .filterable()
-            .footer(footer.join(" · ")),
+        Picker::new(
+            format!("Model · {} harness", harness_title(&current.family())),
+            items,
+        )
+        .filterable()
+        .footer(footer.join(" · ")),
         choices,
     )
+}
+
+pub fn harness_picker(
+    current: &HarnessFamily,
+    target: impl Fn(&HarnessFamily) -> String,
+) -> Picker {
+    let items = HarnessFamily::builtin()
+        .into_iter()
+        .map(|family| {
+            let about = match family == HarnessFamily::Claude {
+                true => "Claude Code's agent loop, prompts and tools",
+                false => "Codex's agent loop, prompts and tools",
+            };
+            PickerItem::choice(harness_title(&family))
+                .detail(format!("{about} · runs {}", target(&family)))
+                .current(family == *current)
+        })
+        .collect();
+    Picker::new("Harness", items).footer("enter select · esc cancel")
+}
+
+pub fn harness_at(index: usize) -> Option<HarnessFamily> {
+    HarnessFamily::builtin().into_iter().nth(index)
 }
 
 pub fn thinking_picker(model: &ModelSelection, current: Thinking) -> Picker {

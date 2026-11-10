@@ -496,6 +496,13 @@ fn assemble(
 
 impl<D: RuntimeDefaults> RuntimeBuilder<Unselected, D> {
     #[must_use]
+    pub fn harness_model(mut self, model: ModelSelection) -> Self {
+        self.data.harness = Some(model.family());
+        self.data.model = Some(model);
+        self
+    }
+
+    #[must_use]
     pub fn for_backend<B: crate::BackendKind>(self) -> RuntimeBuilder<B, D> {
         let mut data = self.data;
         data.harness = Some(B::backend_id().into());
@@ -1238,6 +1245,11 @@ impl<B> SpawnBuilder<'_, B> {
 }
 
 impl<'a> SpawnBuilder<'a, Unselected> {
+    pub fn harness_model(mut self, model: ModelSelection) -> Self {
+        self.options = self.options.harness(model.family()).harness_model(model);
+        self
+    }
+
     pub fn backend<B: crate::BackendKind>(self) -> SpawnBuilder<'a, B> {
         SpawnBuilder {
             selection: PhantomData,

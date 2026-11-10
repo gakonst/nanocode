@@ -251,6 +251,12 @@ async fn prepare(
     let (route, model) = match (&args.model, args.harness) {
         (Some(model), harness) => {
             let (route, model) = clients.resolve(model)?;
+            let model = match harness {
+                Some(harness) if host::follows_harness(route, &model) => {
+                    host::on_harness(&model, &family(harness))
+                }
+                _ => model,
+            };
             if let Some(harness) = harness
                 && family(harness) != model.family()
             {

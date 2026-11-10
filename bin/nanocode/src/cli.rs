@@ -151,7 +151,11 @@ pub struct SessionArgs {
     )]
     pub model: Option<String>,
 
-    #[arg(long, value_enum, help = "Harness to use when --model is not given")]
+    #[arg(
+        long,
+        value_enum,
+        help = "Harness to run on: its default model when --model is not given, and the harness for a tempo/ model that is not a Codex or Claude model (Codex unless set)"
+    )]
     pub harness: Option<HarnessArg>,
 
     #[arg(

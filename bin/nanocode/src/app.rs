@@ -218,6 +218,7 @@ pub enum TurnState {
 
 pub enum PickerPurpose {
     Model(models::Choices),
+    Harness,
     Thinking(ModelSelection, Route),
     Tier(ModelSelection, Thinking, Route),
     Session(Vec<SessionSummary>),
@@ -2431,6 +2432,25 @@ impl App {
                 );
                 self.overlay = Some(Overlay::Picker(PickerPurpose::Model(choices), picker));
             }
+            "harness" if self.session_started => {
+                self.flash(
+                    "the harness is fixed for this thread; use /new before choosing another harness",
+                );
+            }
+            "harness" if argument.is_empty() => {
+                let picker = models::harness_picker(&self.model.family(), |family| {
+                    self.route.label(&self.harness_model(family))
+                });
+                self.overlay = Some(Overlay::Picker(PickerPurpose::Harness, picker));
+            }
+            "harness" => match argument.to_lowercase().as_str() {
+                "codex" => self.choose_harness(&nanocode::HarnessFamily::Codex),
+                "claude" => self.choose_harness(&nanocode::HarnessFamily::Claude),
+                other => self.notice(
+                    NoticeLevel::Error,
+                    format!("unknown harness {other:?}; use /harness codex or /harness claude"),
+                ),
+            },
             "model" | "m" => {
                 match self
                     .host
@@ -2444,6 +2464,10 @@ impl App {
                         _ => Ok((route, model)),
                     }) {
                     Ok((route, model)) => {
+                        let model = match crate::host::follows_harness(route, &model) {
+                            true => crate::host::on_harness(&model, &self.model.family()),
+                            false => model,
+                        };
                         let picker = models::thinking_picker(&model, self.thinking);
                         self.overlay = Some(Overlay::Picker(
                             PickerPurpose::Thinking(model, route),
@@ -2857,6 +2881,26 @@ impl App {
         }
     }
 
+    fn harness_model(&self, family: &nanocode::HarnessFamily) -> ModelSelection {
+        match self.route {
+            _ if *family == self.model.family() => self.model.clone(),
+            Route::Tempo => crate::host::on_harness(&self.model, family),
+            Route::Native => self.host.config.clients.default_model(family),
+        }
+    }
+
+    fn choose_harness(&mut self, family: &nanocode::HarnessFamily) {
+        if *family == self.model.family() {
+            self.flash(format!("already on the {} harness", family_label(family)));
+            return;
+        }
+        let model = self.harness_model(family);
+        let capabilities = model.capabilities(nanocode::ModelTransport::Native);
+        let thinking = capabilities.normalize_thinking(self.thinking);
+        let tier = capabilities.normalize_service_tier(self.tier);
+        self.request_switch(model, thinking, tier, self.route);
+    }
+
     fn after_thinking(&mut self, model: ModelSelection, thinking: Thinking, route: Route) {
         let tiers = models::tier_options(&model);
         if tiers.len() > 1 {
@@ -2877,12 +2921,21 @@ impl App {
                 let Some((route, model)) = choices.get(index).cloned().flatten() else {
                     return;
                 };
+                let model = match crate::host::follows_harness(route, &model) {
+                    true => crate::host::on_harness(&model, &self.model.family()),
+                    false => model,
+                };
                 let thinking = if model.supports_thinking(self.thinking) {
                     self.thinking
                 } else {
                     model.default_thinking()
                 };
                 self.open_dial(model, route, thinking, true);
+            }
+            PickerPurpose::Harness => {
+                if let Some(family) = models::harness_at(index) {
+                    self.choose_harness(&family);
+                }
             }
             PickerPurpose::Thinking(model, route) => {
                 let Some(thinking) = models::thinking_at(&model, picker, index) else {

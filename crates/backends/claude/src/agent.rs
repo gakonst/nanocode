@@ -959,6 +959,11 @@ impl ClaudeBuilder {
         self
     }
 
+    #[must_use]
+    pub fn knows_max_tokens(&self) -> bool {
+        self.max_tokens.is_some() || model_max_tokens(&self.claude.model).is_some()
+    }
+
     pub const fn effort(mut self, effort: crate::Effort) -> Self {
         self.effort = Some(effort);
         if self.thinking_mode.disabled() {

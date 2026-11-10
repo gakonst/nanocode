@@ -81,6 +81,8 @@ impl PagedConversation {
 struct PagedSnapshot {
     #[serde(flatten)]
     conversation: PagedConversation,
+    #[serde(default)]
+    instructions: Option<EncodedPayload>,
     snapshot: Value,
 }
 
@@ -129,6 +131,11 @@ pub(super) async fn hydrate_snapshot(
         .conversation
         .restore(reader, object(&mut snapshot, "/conversation")?, read)
         .await?;
+    if let Some(instructions) = paged.instructions {
+        read.insert(instructions.key().to_owned());
+        let text: String = reader.load_payload(instructions).await?.decode()?;
+        object(&mut snapshot, "/context")?.insert("text".into(), Value::String(text));
+    }
     Ok(snapshot)
 }
 

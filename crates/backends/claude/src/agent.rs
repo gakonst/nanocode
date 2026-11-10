@@ -68,6 +68,7 @@ const RETRY_JITTER_PERCENT: u64 = 25;
 const THROTTLED_ATTEMPTS: u32 = 10;
 const THROTTLED_WAIT: Duration = Duration::from_secs(180);
 const CACHE_LIFETIME: Duration = Duration::from_secs(5 * 60);
+const HOUR_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
 fn truncate_middle(text: &str, max_tokens: u64) -> String {
     let total = estimate_text_tokens(text);
@@ -1702,13 +1703,11 @@ impl ClaudeBuilder {
                 .is_empty()
                 .then(|| crate::instructions::default_system_blocks(self.code_only))
         });
-        let (environment, project_instructions) = self
+        let given_context = self
             .system_context
-            .or_else(|| self.environment.map(crate::ClaudeEnvironment::render))
-            .map_or_else(
-                || (std::sync::OnceLock::new(), std::sync::OnceLock::new()),
-                |(environment, instructions)| (environment.into(), instructions.into()),
-            );
+            .or_else(|| self.environment.map(crate::ClaudeEnvironment::render));
+        let kept_context = restored.context.clone();
+        let requested_at = kept_context.as_ref().map_or(0, |context| context.requested);
         let state = Arc::new(State {
             session_events,
             subagent_type: self.subagent_type,
@@ -1721,6 +1720,7 @@ impl ClaudeBuilder {
             automatic_cache: self.automatic_cache,
             cache_one_hour: AtomicBool::new(self.cache_one_hour),
             requested: Atom::default(),
+            requested_at: AtomicU64::new(requested_at),
             parking: parked::Parking::default(),
             thinking_mode: AtomicThinkingMode::new(self.thinking_mode),
             keep_thinking: self.keep_thinking,
@@ -1770,8 +1770,9 @@ impl ClaudeBuilder {
             round_boundary: Atom::new(round_boundary),
             side_view: Atom::default(),
             side_request: Atom::default(),
-            environment,
-            project_instructions,
+            context: std::sync::OnceLock::new(),
+            given_context,
+            kept_context,
             boundary_stale: AtomicBool::new(false),
             policy: self.policy,
             admission: Sequencer::new(),
@@ -3183,6 +3184,13 @@ impl AgentFactory for ClaudeNativeFactory {
         Box::pin(async move {
             let state = available?;
             let mut recipe = recipe.resume(checkpoint)?;
+            if let Some(kept) = recipe
+                .restored
+                .as_mut()
+                .and_then(|restored| restored.context.as_mut())
+            {
+                state.lend_instructions(kept);
+            }
 
             if let (Some(child_id), Some(lineage)) =
                 (recipe.session_id.clone(), recipe.lineage.clone())
@@ -3194,6 +3202,12 @@ impl AgentFactory for ClaudeNativeFactory {
             Agent::persist_created(recipe.host_context(host_context).build()).await
         })
     }
+}
+
+struct SystemText {
+    environment: String,
+    instructions: Option<Arc<str>>,
+    key: Option<String>,
 }
 
 struct StartedToolCall<'a> {
@@ -3306,6 +3320,7 @@ struct State {
     automatic_cache: bool,
     cache_one_hour: AtomicBool,
     requested: Atom<Option<Instant>>,
+    requested_at: AtomicU64,
     parking: parked::Parking,
     thinking_mode: AtomicThinkingMode,
     keep_thinking: bool,
@@ -3350,8 +3365,9 @@ struct State {
     side_view: Atom<Option<Arc<[HistoryMessage]>>>,
     side_request: Atom<Option<Arc<side::SideRequest>>>,
 
-    environment: std::sync::OnceLock<String>,
-    project_instructions: std::sync::OnceLock<Option<String>>,
+    context: std::sync::OnceLock<SystemText>,
+    given_context: Option<(String, Option<String>)>,
+    kept_context: Option<durable::SystemContext>,
 
     boundary_stale: AtomicBool,
     policy: Option<Arc<dyn ClaudeExecutionPolicy>>,
@@ -4337,13 +4353,76 @@ impl State {
         Ok(())
     }
     fn system_context(&self) -> (&str, Option<&str>) {
-        (
-            self.environment
-                .get_or_init(|| crate::environment::environment_section(&self.workspace())),
-            self.project_instructions
-                .get_or_init(|| crate::environment::project_instructions(&self.workspace()))
-                .as_deref(),
-        )
+        let context = self.context.get_or_init(|| self.resolve_context());
+        (&context.environment, context.instructions.as_deref())
+    }
+    fn resolve_context(&self) -> SystemText {
+        let (environment, instructions) = self.given_context.clone().unwrap_or_else(|| {
+            let workspace = self.workspace();
+            (
+                crate::environment::environment_section(&workspace),
+                crate::environment::project_instructions(&workspace),
+            )
+        });
+        let key = durable::instructions_key(instructions.as_deref());
+        let current = SystemText {
+            environment,
+            instructions: instructions.map(Arc::from),
+            key,
+        };
+        let Some(kept) = self
+            .kept_context
+            .as_ref()
+            .filter(|kept| self.cache_holds(kept.requested))
+        else {
+            return current;
+        };
+        let instructions = if current.key == kept.instructions {
+            current.instructions.clone()
+        } else if let Some(text) = kept
+            .text
+            .as_ref()
+            .filter(|text| durable::instructions_key(Some(text)) == kept.instructions)
+        {
+            Some(Arc::clone(text))
+        } else {
+            return current;
+        };
+        SystemText {
+            environment: crate::environment::dated(&current.environment, &kept.date),
+            instructions,
+            key: kept.instructions.clone(),
+        }
+    }
+    fn lend_instructions(&self, kept: &mut durable::SystemContext) {
+        let context = self.context.get_or_init(|| self.resolve_context());
+        if kept.text.is_none() && kept.instructions.is_some() && kept.instructions == context.key {
+            kept.text.clone_from(&context.instructions);
+        }
+    }
+    fn cache_holds(&self, requested: u64) -> bool {
+        let lifetime = match self.cache_ttl() {
+            Some(crate::CacheTtl::OneHour) => HOUR_CACHE_LIFETIME,
+            Some(crate::CacheTtl::FiveMinutes) | None => CACHE_LIFETIME,
+        };
+        self.automatic_cache
+            && (nanocode_platform::unix_millis() / 1000).saturating_sub(requested)
+                <= lifetime.as_secs()
+    }
+    fn kept_context(&self) -> Option<durable::SystemContext> {
+        let requested = self.requested_at.load(Ordering::SeqCst);
+        let Some(context) = self.context.get() else {
+            return self.kept_context.clone();
+        };
+        if requested == 0 {
+            return None;
+        }
+        Some(durable::SystemContext {
+            date: crate::environment::date_of(&context.environment).to_owned(),
+            instructions: context.key.clone(),
+            text: context.instructions.clone(),
+            requested,
+        })
     }
     fn share_system_context(&self, recipe: &mut ClaudeBuilder) {
         let workspace = match (&recipe.workspace_resolver, &recipe.session_id) {
@@ -5118,6 +5197,8 @@ impl State {
                 response_headers_ns = Some(elapsed_ns());
                 send_ns = Some(telemetry::elapsed_ns(attempt_started));
                 self.requested.set(Some(attempt_started));
+                self.requested_at
+                    .store(nanocode_platform::unix_millis() / 1000, Ordering::SeqCst);
             }
             let result = match opened {
                 Err(error) => Err(error),

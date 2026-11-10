@@ -34,7 +34,25 @@ pub(super) struct Snapshot {
     pub(super) thinking_disabled: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) fast_mode: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) context: Option<SystemContext>,
 }
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct SystemContext {
+    pub(super) date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) instructions: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub(super) text: Option<Arc<str>>,
+    pub(super) requested: u64,
+}
+
+pub(super) fn instructions_key(instructions: Option<&str>) -> Option<String> {
+    instructions.map(|text| EncodedPayload::from_json(text.into()).key().to_owned())
+}
+
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
@@ -50,6 +68,7 @@ impl Default for Snapshot {
             conversation_id: None,
             effort: None,
             thinking_disabled: false,
+            context: None,
             fast_mode: false,
         }
     }
@@ -391,6 +410,7 @@ impl State {
             effort: self.effort(),
             thinking_disabled: self.thinking_mode.get().disabled(),
             fast_mode: self.fast_mode.load(Ordering::SeqCst),
+            context: self.kept_context(),
             ..Snapshot::default()
         })
     }
@@ -585,6 +605,7 @@ impl State {
 
         if self.persists(cursor) {
             cursor.snapshot = self.snapshot(&Conversation::default()).await?;
+            cursor.snapshot.context = None;
             cursor.snapshot.conversation = std::mem::take(conversation);
             let mut paging = self.paging.take().unwrap_or_default();
             let pooled = self.pool_template(cursor, &mut paging).await;
@@ -933,6 +954,8 @@ struct PagedSnapshot<'a> {
     version: u32,
     #[serde(flatten)]
     conversation: PagedConversation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<EncodedPayload>,
     snapshot: &'a RawValue,
 }
 
@@ -1281,14 +1304,29 @@ fn paged_snapshot(
 ) -> Result<EncodedState> {
     let mut records = Vec::new();
     let conversation = detached.page(&mut records, paging, true)?;
+    let instructions = snapshot
+        .context
+        .as_ref()
+        .filter(|_| {
+            snapshot
+                .lineage
+                .as_ref()
+                .is_none_or(|lineage| lineage.depth == 0)
+        })
+        .and_then(|context| context.text.as_deref())
+        .map(EncodedPayload::encode)
+        .transpose()
+        .map_err(provider_error)?;
     let inner = serde_json::value::to_raw_value(snapshot).map_err(provider_error)?;
     let json = serde_json::value::to_raw_value(&PagedSnapshot {
         provider: &snapshot.provider,
         version: PAGED_VERSION,
         conversation,
+        instructions: instructions.as_ref().map(EncodedPayload::reference),
         snapshot: &inner,
     })
     .map_err(provider_error)?;
+    records.extend(instructions);
     Ok(EncodedState { json, records })
 }
 

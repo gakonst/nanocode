@@ -11,8 +11,23 @@ pub(crate) fn environment_section(workspace: &str) -> String {
         ));
     }
     lines.extend(host_lines());
-    lines.push(format!("Today's date: {}", current_date()));
+    lines.push(format!("{DATE}{}", current_date()));
     lines.join("\n")
+}
+
+const DATE: &str = "Today's date: ";
+
+pub(crate) fn date_of(environment: &str) -> &str {
+    environment
+        .rfind(DATE)
+        .map_or("", |at| &environment[at + DATE.len()..])
+}
+
+pub(crate) fn dated(environment: &str, date: &str) -> String {
+    match environment.rfind(DATE).filter(|_| !date.is_empty()) {
+        Some(at) => format!("{}{date}", &environment[..at + DATE.len()]),
+        None => environment.to_owned(),
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -94,10 +109,7 @@ impl ClaudeEnvironment {
         if let Some(version) = &self.os_version {
             lines.push(format!("OS Version: {version}"));
         }
-        lines.push(format!(
-            "Today's date: {}",
-            self.date.unwrap_or_else(current_date)
-        ));
+        lines.push(format!("{DATE}{}", self.date.unwrap_or_else(current_date)));
         let instructions = self.project_instructions.map(|text| {
             let heading = self.working_directory.map_or_else(
                 || "# AGENTS.md instructions".to_owned(),

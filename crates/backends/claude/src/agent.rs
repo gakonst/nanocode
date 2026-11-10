@@ -4463,8 +4463,10 @@ impl State {
     }
 
     fn cache_ttl(&self) -> Option<crate::CacheTtl> {
+        let continues = self.lineage.depth == 0
+            || matches!(self.lineage.origin, Origin::Fork | Origin::SideConversation);
         (self.cache_one_hour.load(Ordering::SeqCst)
-            || (self.lineage.depth == 0 && self.client.uses_subscription()))
+            || (continues && self.client.uses_subscription()))
         .then_some(crate::CacheTtl::OneHour)
     }
 

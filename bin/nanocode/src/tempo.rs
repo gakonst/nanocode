@@ -1158,7 +1158,19 @@ enum Listed {
 
 struct Offer {
     model: Model,
-    about: Option<String>,
+    provider: String,
+    upstream: String,
+    price: Option<String>,
+}
+
+impl Offer {
+    fn named_for_provider(&self) -> bool {
+        self.model
+            .as_str()
+            .split_once('/')
+            .map(|(prefix, _)| prefix)
+            == Some(self.provider.as_str())
+    }
 }
 
 impl Listing {
@@ -1208,28 +1220,33 @@ async fn list(client: &reqwest::Client, url: &str) -> std::result::Result<Vec<Of
         .as_array()
         .ok_or_else(|| format!("{url} returned no model list"))?
     {
-        let model = entry["id"]
+        let id = entry["id"]
             .as_str()
-            .ok_or_else(|| format!("{url} listed a model without an id"))?
-            .parse::<Model>()?;
-        if offers.iter().any(|offer| offer.model == model) {
-            continue;
-        }
-        let price = match (&entry["house"]["input"], &entry["house"]["output"]) {
-            (Value::Number(input), Value::Number(output)) => {
-                Some(format!("${input}/${output} per 1M"))
-            }
-            _ => None,
+            .ok_or_else(|| format!("{url} listed a model without an id"))?;
+        let offer = Offer {
+            model: id.parse::<Model>()?,
+            provider: entry["provider"]
+                .as_str()
+                .ok_or_else(|| format!("{url} names no provider for {id}"))?
+                .to_owned(),
+            upstream: entry["upstream"].as_str().unwrap_or(id).to_owned(),
+            price: match (&entry["house"]["input"], &entry["house"]["output"]) {
+                (Value::Number(input), Value::Number(output)) => {
+                    Some(format!("${input}/${output}"))
+                }
+                _ => None,
+            },
         };
-        let about = [entry["provider"].as_str().map(str::to_owned), price]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
-        offers.push(Offer {
-            model,
-            about: (!about.is_empty()).then_some(about),
-        });
+        match offers.iter_mut().find(|known| {
+            known.model == offer.model
+                || known.provider == offer.provider && known.upstream == offer.upstream
+        }) {
+            Some(known) if !known.named_for_provider() && offer.named_for_provider() => {
+                *known = offer;
+            }
+            Some(_) => {}
+            None => offers.push(offer),
+        }
     }
     if offers.is_empty() {
         return Err(format!("{url} lists no models"));
@@ -1348,15 +1365,13 @@ impl Tempo {
                     .collect();
                 let mut groups: Vec<(Option<String>, Offered)> = vec![(None, builtin)];
                 for offer in offers {
-                    let id = offer.model.as_str();
-                    let prefix = id.split_once('/').map_or(id, |(prefix, _)| prefix);
-                    let offered = (ModelSelection::Codex(offer.model), offer.about.clone());
+                    let offered = (ModelSelection::Codex(offer.model), offer.price.clone());
                     match groups
                         .iter_mut()
-                        .find(|(group, _)| group.as_deref() == Some(prefix))
+                        .find(|(group, _)| group.as_deref() == Some(offer.provider.as_str()))
                     {
                         Some((_, models)) => models.push(offered),
-                        None => groups.push((Some(prefix.to_owned()), vec![offered])),
+                        None => groups.push((Some(offer.provider.clone()), vec![offered])),
                     }
                 }
                 (groups, None)

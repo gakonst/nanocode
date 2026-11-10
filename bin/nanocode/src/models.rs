@@ -48,7 +48,9 @@ pub fn catalog(clients: &crate::host::ModelClients) -> Vec<Group> {
         for (prefix, models) in offered {
             groups.push(Group {
                 title: match prefix {
-                    Some(prefix) => format!("Tempo · {}{prefix}/", Tempo::PREFIX),
+                    Some(provider) => {
+                        format!("Tempo · {provider} · $ per 1M input/output tokens")
+                    }
                     None => "Tempo · Codex and Claude models through the Tempo gateway, paid from the Tempo wallet".to_owned(),
                 },
                 note: None,
@@ -113,10 +115,12 @@ pub fn model_picker(
                 .collect::<Vec<_>>()
                 .join("/");
             let name = model.display_name();
+            let known = model.as_codex().is_some_and(|model| !model.is_custom())
+                || model.as_claude().is_some();
             let detail = [
                 (name != model.as_str()).then(|| name.to_owned()),
                 about,
-                Some(format!("thinking {thinking}")),
+                known.then(|| format!("thinking {thinking}")),
             ]
             .into_iter()
             .flatten()

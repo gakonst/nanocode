@@ -75,6 +75,32 @@ pub enum PickerAction {
     Cancelled,
 }
 
+fn columns(items: &[PickerItem], shown: &[usize]) -> Vec<(usize, usize)> {
+    let mut widths = vec![(0, 0); shown.len()];
+    let mut start = 0;
+    for end in 1..=shown.len() {
+        if end < shown.len() && items[shown[end]].kind != ItemKind::Header {
+            continue;
+        }
+        let choices = shown[start..end]
+            .iter()
+            .map(|index| &items[*index])
+            .filter(|item| item.kind == ItemKind::Choice);
+        let label = choices
+            .clone()
+            .map(|item| item.label.width())
+            .max()
+            .unwrap_or(0);
+        let badge = choices
+            .map(|item| item.badge.as_ref().map_or(0, |badge| badge.width()))
+            .max()
+            .unwrap_or(0);
+        widths[start..end].fill((label, badge));
+        start = end;
+    }
+    widths
+}
+
 #[derive(Clone, Debug)]
 pub struct Picker {
     title: String,
@@ -231,18 +257,23 @@ impl Picker {
 
     #[must_use]
     pub fn desired_size(&self, area: Rect) -> (u16, u16) {
+        let all = (0..self.items.len()).collect::<Vec<_>>();
         let widest = self
             .items
             .iter()
-            .map(|item| {
-                item.label.width()
-                    + 2
-                    + item.badge.as_ref().map_or(0, |badge| badge.width() + 3)
-                    + if item.detail.is_empty() {
-                        0
-                    } else {
-                        item.detail.width() + 3
-                    }
+            .zip(columns(&self.items, &all))
+            .map(|(item, (label, badge))| match item.kind {
+                ItemKind::Header => item.label.width(),
+                ItemKind::Choice => {
+                    label
+                        + 4
+                        + if badge == 0 { 0 } else { badge + 2 }
+                        + if item.detail.is_empty() {
+                            0
+                        } else {
+                            item.detail.width() + 2
+                        }
+                }
             })
             .max()
             .unwrap_or(0)
@@ -295,17 +326,7 @@ impl Picker {
                 Style::default().fg(theme.muted()),
             ));
         }
-        let choices = || {
-            self.visible
-                .iter()
-                .map(|index| &self.items[*index])
-                .filter(|item| item.kind == ItemKind::Choice)
-        };
-        let label_width = choices().map(|item| item.label.width()).max().unwrap_or(0);
-        let badge_width = choices()
-            .map(|item| item.badge.as_ref().map_or(0, |badge| badge.width()))
-            .max()
-            .unwrap_or(0);
+        let widths = columns(&self.items, &self.visible);
         for (position, index) in self
             .visible
             .iter()
@@ -328,6 +349,7 @@ impl Picker {
                     if selected {
                         label_style = label_style.fg(theme.accent()).add_modifier(Modifier::BOLD);
                     }
+                    let (label_width, badge_width) = widths[position];
                     let padding = " ".repeat(label_width - item.label.width());
                     let mut spans = vec![
                         Span::styled(marker, Style::default().fg(theme.accent())),

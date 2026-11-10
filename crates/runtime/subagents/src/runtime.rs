@@ -848,6 +848,14 @@ struct ResultReceipt {
 
 type Readers = Arc<Atom<Vec<Arc<ResultReceipt>>>>;
 
+type InterruptRequest = (String, Vec<AgentId>, Vec<(AgentId, Option<u64>)>);
+
+#[derive(Default)]
+struct Told {
+    stopped: HashSet<AgentId>,
+    woken: HashSet<AgentId>,
+}
+
 impl ResultReceipt {
     fn carries(&self, call_id: &str) -> bool {
         self.carrier
@@ -2109,17 +2117,17 @@ impl RegistryState {
         &mut self,
         session_id: &str,
         id: AgentId,
-    ) -> std::io::Result<(String, Vec<AgentId>, Vec<HarnessHandle>)> {
+    ) -> std::io::Result<InterruptRequest> {
         let root_session_id = self.authorize(session_id, id)?;
         let ids = self.subtree_shutdown_order(&root_session_id, id)?;
-        let harnesses = self.harnesses(&root_session_id, &ids, false)?;
-        Ok((root_session_id, ids, harnesses))
+        let held = self.hold_unstarted(&root_session_id, &ids);
+        Ok((root_session_id, ids, held))
     }
 
     fn request_close(&mut self, session_id: &str, id: AgentId) -> std::io::Result<CloseRequest> {
         let root_session_id = self.authorize(session_id, id)?;
         let ids = self.subtree_shutdown_order(&root_session_id, id)?;
-        let harnesses = self.harnesses(&root_session_id, &ids, true)?;
+        let harnesses = self.harnesses(&root_session_id, &ids)?;
         let status_updates = self.closing_updates(&root_session_id, &ids);
         Ok(CloseRequest {
             root_session_id,
@@ -2158,7 +2166,7 @@ impl RegistryState {
             }
             scope.topology.all_postorder()
         };
-        let harnesses = self.harnesses(&root_session_id, &ids, true)?;
+        let harnesses = self.harnesses(&root_session_id, &ids)?;
         let status_updates = self.closing_updates(&root_session_id, &ids);
         Ok(CloseRequest {
             root_session_id,
@@ -2168,27 +2176,66 @@ impl RegistryState {
         })
     }
 
-    fn request_interrupt_all(
-        &mut self,
-        session_id: &str,
-    ) -> (String, Vec<AgentId>, Vec<HarnessHandle>) {
+    fn request_interrupt_all(&mut self, session_id: &str) -> InterruptRequest {
         let root_session_id = self.root_session_id(session_id).to_owned();
         let ids = self
             .scopes
             .get(&root_session_id)
             .map(|scope| scope.topology.ids())
             .unwrap_or_default();
-        let harnesses = self
-            .harnesses(&root_session_id, &ids, false)
-            .unwrap_or_default();
-        (root_session_id, ids, harnesses)
+        let held = self.hold_unstarted(&root_session_id, &ids);
+        (root_session_id, ids, held)
+    }
+
+    fn hold_unstarted(
+        &mut self,
+        root_session_id: &str,
+        ids: &[AgentId],
+    ) -> Vec<(AgentId, Option<u64>)> {
+        let Some(scope) = self.scopes.get_mut(root_session_id) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|id| {
+                let session = scope.sessions.get_mut(id)?;
+                if session.active()
+                    || session.harness().is_some()
+                    || !matches!(session.status, AgentStatus::Pending)
+                    || !matches!(session.stored_runtime, StoredRuntime::Unstarted(_))
+                {
+                    return None;
+                }
+                session.status = AgentStatus::Interrupted;
+                let settled = session.next_instruction_revision.saturating_add(1);
+                session.next_instruction_revision = settled;
+                session.settled_revision = Some(settled);
+                let completion = session.descriptor.parent.is_none().then_some(settled);
+                if let Some(revision) = completion {
+                    session.settle_completion(revision);
+                }
+                Some((*id, completion))
+            })
+            .collect()
+    }
+
+    fn release_unstarted(&mut self, session_id: &str, id: AgentId) -> Option<String> {
+        let root = self.root_session_id(session_id).to_owned();
+        let session = self.scopes.get_mut(&root)?.sessions.get_mut(&id)?;
+        if session.active()
+            || session.harness().is_some()
+            || !matches!(session.status, AgentStatus::Interrupted)
+            || !matches!(session.stored_runtime, StoredRuntime::Unstarted(_))
+        {
+            return None;
+        }
+        session.status = AgentStatus::Pending;
+        Some(root)
     }
 
     fn harnesses(
         &mut self,
         root_session_id: &str,
         ids: &[AgentId],
-        closing: bool,
     ) -> std::io::Result<Vec<HarnessHandle>> {
         let scope = self
             .scopes
@@ -2200,11 +2247,8 @@ impl RegistryState {
                 .sessions
                 .get_mut(id)
                 .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
-            if closing && !matches!(session.status, AgentStatus::Closed) {
+            if !matches!(session.status, AgentStatus::Closed) {
                 session.status = AgentStatus::Closing;
-            }
-            if !closing && let Some(turn) = session.turn.as_mut() {
-                turn.interrupted = true;
             }
             harnesses.extend(session.harness().into_iter().cloned());
         }
@@ -2246,6 +2290,39 @@ impl RegistryState {
             harness_tasks,
             event_tasks,
         })
+    }
+
+    fn interrupt_active(
+        &mut self,
+        root_session_id: &str,
+        ids: &[AgentId],
+        mut told: Told,
+    ) -> std::io::Result<(bool, Vec<HarnessHandle>, Vec<AgentId>, Told)> {
+        let scope = self
+            .scopes
+            .get_mut(root_session_id)
+            .ok_or_else(|| std::io::Error::other("subagent scope disappeared"))?;
+        let mut inactive = true;
+        let mut harnesses = Vec::new();
+        let mut asleep = Vec::new();
+        for id in ids {
+            let Some(session) = scope.sessions.get_mut(id) else {
+                continue;
+            };
+            let Some(turn) = session.turn.as_mut() else {
+                continue;
+            };
+            inactive = false;
+            turn.interrupted = true;
+            if let Some(harness) = session.harness() {
+                if told.stopped.insert(*id) {
+                    harnesses.push(harness.clone());
+                }
+            } else if session.hibernated.is_some() && told.woken.insert(*id) {
+                asleep.push(*id);
+            }
+        }
+        Ok((inactive, harnesses, asleep, told))
     }
 
     fn all_inactive(&self, root_session_id: &str, ids: &[AgentId]) -> std::io::Result<bool> {
@@ -4439,26 +4516,6 @@ impl Registry {
             )
             .await;
         }
-    }
-
-    async fn wake_interrupted(self: &Arc<Self>, root_session_id: &str, ids: &[AgentId]) {
-        let root = root_session_id.to_owned();
-        let interrupted = ids.to_vec();
-        let asleep = self
-            .state
-            .call(move |state| {
-                let scope = state.scopes.get(&root);
-                interrupted
-                    .into_iter()
-                    .filter(|id| {
-                        scope
-                            .and_then(|scope| scope.sessions.get(id))
-                            .is_some_and(|session| session.hibernated.is_some())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .await;
-        join_all(asleep.iter().map(|id| self.wake(root_session_id, *id))).await;
     }
 
     async fn settle_hibernated(
@@ -6935,6 +6992,22 @@ impl Registry {
         purpose: MessagePurpose,
     ) -> std::io::Result<Turn> {
         let session = session_id.to_owned();
+        if let Some(root) = self
+            .state
+            .call(move |state| state.release_unstarted(&session, to))
+            .await
+        {
+            self.send_status(
+                &root,
+                AgentUpdate::Status {
+                    id: to,
+                    status: AgentStatus::Pending,
+                },
+            );
+            let turn = self.capacity.acquire(Waiter::Spawn).await;
+            Box::pin(super::tools::start_unstarted(self, &root, to, turn)).await;
+        }
+        let session = session_id.to_owned();
         let (root, target) = self
             .state
             .call(move |state| -> std::io::Result<_> {
@@ -7291,6 +7364,21 @@ impl Registry {
             })
             .await??;
         drop(target);
+        let registry = Arc::clone(self);
+        let settled = platform::spawn(
+            async move { registry.settle_delivery(prepared, delivery).await }.in_current_span(),
+        );
+        match settled.await {
+            Ok(receipt) => receipt,
+            Err(error) => Err(std::io::Error::other(error.to_string())),
+        }
+    }
+
+    async fn settle_delivery(
+        &self,
+        prepared: PreparedMessage,
+        delivery: super::harness::EnqueuedDelivery,
+    ) -> std::io::Result<MessageReceipt> {
         if self.store_for(&prepared.root_session_id).is_some()
             && let Err(error) = self.persist_durably(&prepared.root_session_id).await
         {
@@ -7794,13 +7882,14 @@ impl Registry {
         let _closing = locks.closing.enter().await;
         let _paused = self.pause_messages(session_id).await;
         let session = session_id.to_owned();
-        let (root_session_id, ids, harnesses) = self
+        let (root_session_id, ids, held) = self
             .state
             .call(move |state| state.request_interrupt(&session, id))
             .await?;
+        self.settle_held(&root_session_id, held);
         self.changed();
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
-        self.interrupt_harnesses(&root_session_id, &ids, harnesses, deadline)
+        self.interrupt_harnesses(&root_session_id, &ids, deadline)
             .await?;
         self.state
             .call(move |state| state.summaries_in_scope(&root_session_id, &ids))
@@ -8111,54 +8200,79 @@ impl Registry {
         let _closing = locks.closing.enter().await;
         let _paused = self.pause_messages(session_id).await;
         let session = session_id.to_owned();
-        let (root_session_id, ids, harnesses) = self
+        let (root_session_id, ids, held) = self
             .state
             .call(move |state| state.request_interrupt_all(&session))
             .await;
+        self.settle_held(&root_session_id, held);
         self.changed();
         let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
         drop(
-            self.interrupt_harnesses(&root_session_id, &ids, harnesses, deadline)
+            self.interrupt_harnesses(&root_session_id, &ids, deadline)
                 .await,
         );
+    }
+
+    fn settle_held(&self, root_session_id: &str, held: Vec<(AgentId, Option<u64>)>) {
+        for (id, completion) in held {
+            self.enqueue_status(
+                root_session_id,
+                id,
+                OrderedJob::Settle {
+                    status: AgentStatus::Interrupted,
+                    completion,
+                    harness: None,
+                },
+            );
+        }
     }
 
     async fn interrupt_harnesses(
         &self,
         root_session_id: &str,
         ids: &[AgentId],
-        harnesses: Vec<HarnessHandle>,
         deadline: Instant,
     ) -> std::io::Result<()> {
-        let interruption = async move {
-            let results = join_all(
-                harnesses
-                    .into_iter()
-                    .map(|harness| async move { harness.interrupt().await }),
-            )
-            .await;
-            first_error(results)
-        };
-        let interruption_result = timeout_at(deadline, interruption).await.map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "timed out interrupting subagent harnesses",
-            )
-        })?;
-        if let Some(registry) = self.shared() {
-            timeout_at(deadline, registry.wake_interrupted(root_session_id, ids))
+        let mut revision = self.revision.subscribe();
+        let mut told = Told::default();
+        loop {
+            let root = root_session_id.to_owned();
+            let waiting = ids.to_vec();
+            let (inactive, harnesses, asleep, kept) = self
+                .state
+                .call(move |state| state.interrupt_active(&root, &waiting, told))
+                .await?;
+            told = kept;
+            if inactive {
+                return Ok(());
+            }
+            let interruption = async {
+                join_all(
+                    harnesses
+                        .into_iter()
+                        .map(|harness| async move { harness.interrupt().await }),
+                )
+                .await;
+                if let Some(registry) = self.shared() {
+                    join_all(asleep.iter().map(|id| registry.wake(root_session_id, *id))).await;
+                }
+            };
+            timeout_at(deadline, interruption).await.map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timed out interrupting subagent harnesses",
+                )
+            })?;
+            timeout_at(deadline, revision.changed())
                 .await
-                .map_err(|()| {
+                .map_err(|_| {
                     std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "timed out waking hibernated subagents to interrupt them",
+                        "timed out waiting for subagent turns to stop",
                     )
-                })?;
+                })?
+                .map_err(|_| std::io::Error::other("subagent runtime is closed"))?;
         }
-        self.wait_until_inactive(root_session_id, ids, deadline)
-            .await?;
-        drop(interruption_result);
-        Ok(())
     }
 
     async fn close_harnesses(

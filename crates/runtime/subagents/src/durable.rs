@@ -2396,12 +2396,14 @@ pub(super) fn restored_session(
     snapshot: Option<SessionCheckpoint>,
 ) -> std::io::Result<(ChildSession, bool, bool)> {
     let contract = OutputContract::compile(&agent.output_schema)?;
-    if let (Some(mut unstarted), AgentStatus::Pending) = (agent.unstarted.clone(), &agent.status) {
+    if let (Some(mut unstarted), AgentStatus::Pending | AgentStatus::Interrupted) =
+        (agent.unstarted.clone(), &agent.status)
+    {
         unstarted.restored = true;
         let mut session = ChildSession::restored(
             agent.descriptor,
             agent.host_context.map(Arc::from),
-            AgentStatus::Pending,
+            agent.status,
             contract,
             StoredRuntime::Unstarted(Arc::new(unstarted)),
             agent.next_instruction_revision,

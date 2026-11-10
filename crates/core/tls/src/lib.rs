@@ -151,6 +151,30 @@ fn pem_certs(path: &std::path::Path, loaded: &mut PathCerts) {
     }
 }
 
+pub fn peer_discarded_record(error: &(dyn std::error::Error + 'static)) -> bool {
+    use rustls::{AlertDescription, Error};
+
+    let mut next = Some(error);
+    while let Some(cause) = next {
+        let tls = cause.downcast_ref::<Error>().or_else(|| {
+            cause
+                .downcast_ref::<io::Error>()
+                .and_then(io::Error::get_ref)
+                .and_then(|inner| inner.downcast_ref())
+        });
+        if matches!(
+            tls,
+            Some(Error::AlertReceived(
+                AlertDescription::BadRecordMac | AlertDescription::RecordOverflow
+            ))
+        ) {
+            return true;
+        }
+        next = cause.source();
+    }
+    false
+}
+
 pub fn install_default_rustls_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

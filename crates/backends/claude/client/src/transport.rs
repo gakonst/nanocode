@@ -92,11 +92,21 @@ async fn send_reqwest(
 ) -> Result<layer::Response, layer::Error> {
     use futures_util::TryStreamExt;
 
-    let mut response = client
-        .execute(request)
-        .await
-        .map(nanocode_http::decode_response)
-        .map_err(|error| layer::Error::from(reqwest_error(error)))?;
+    let again = request.try_clone();
+    let mut response = match (client.execute(request).await, again) {
+        (Err(error), Some(again)) if nanocode_tls::peer_discarded_record(&error) => {
+            tracing::warn!(
+                target: "nanocode_claude",
+                %error,
+                "the peer could not read a record of a Claude Messages request; sending the request again"
+            );
+            tracing::Span::current().record("request.resent", true);
+            client.execute(again).await
+        }
+        (sent, _) => sent,
+    }
+    .map(nanocode_http::decode_response)
+    .map_err(|error| layer::Error::from(reqwest_error(error)))?;
     let status = response.status();
     let headers = std::mem::take(response.headers_mut());
     Ok(layer::Response::new(
@@ -182,7 +192,9 @@ fn reqwest_error(error: reqwest::Error) -> HttpError {
     HttpError::Transport {
         retryable: nanocode_http::retryable(&error),
         timeout: error.is_timeout(),
-        unsent: error.is_connect() || error.is_builder(),
+        unsent: error.is_connect()
+            || error.is_builder()
+            || nanocode_tls::peer_discarded_record(&error),
         detail,
     }
 }

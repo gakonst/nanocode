@@ -336,6 +336,7 @@ pub(super) fn attempt_span(call_index: u32, attempt: u32, max_attempts: u32) -> 
         max_attempts,
         request.bytes = Empty,
         request.gzip_bytes = Empty,
+        request.resent = Empty,
         http.status_code = Empty,
         error.class = Empty,
         error.kind = Empty,

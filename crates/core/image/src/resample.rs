@@ -2,6 +2,8 @@ use std::ops::Range;
 
 use image::{DynamicImage, ImageBuffer, Pixel, imageops::FilterType};
 
+const BAND_BYTES: usize = 2 << 20;
+
 struct Taps {
     spans: Vec<(usize, Range<usize>)>,
     weights: Vec<f32>,
@@ -47,14 +49,18 @@ fn taps(input: usize, output: usize) -> Taps {
     taps
 }
 
-fn lines<S, T>(source: &[S], samples: usize, output: usize, finish: impl Fn(f32) -> T) -> Vec<T>
-where
+fn lines<S, T>(
+    source: &[S],
+    samples: usize,
+    taps: &Taps,
+    range: Range<usize>,
+    target: &mut Vec<T>,
+    finish: impl Fn(f32) -> T,
+) where
     S: Copy + Into<f32>,
 {
-    let taps = taps(source.len() / samples, output);
-    let mut target = Vec::with_capacity(samples * output);
     let mut sums = vec![0.0; samples];
-    for (start, weights) in &taps.spans {
+    for (start, weights) in &taps.spans[range] {
         sums.fill(0.0);
         for (line, &weight) in source[start * samples..]
             .chunks_exact(samples)
@@ -66,15 +72,12 @@ where
         }
         target.extend(sums.iter().map(|&sum| finish(sum)));
     }
-    target
 }
 
-fn transpose<P: Copy>(source: &[P], width: usize) -> Vec<P> {
-    let mut target = Vec::with_capacity(source.len());
+fn transpose<P: Copy>(source: &[P], width: usize, target: &mut Vec<P>) {
     for x in 0..width {
         target.extend(source.chunks_exact(width).map(|line| line[x]));
     }
-    target
 }
 
 fn nearest(value: f32) -> u8 {
@@ -88,11 +91,41 @@ fn resize<const N: usize>(
     new_width: usize,
     new_height: usize,
 ) -> Vec<u8> {
-    let rows = lines(source, width * N, new_height, |sum| sum);
-    let columns = transpose(rows.as_chunks::<N>().0, width).into_flattened();
-    drop(rows);
-    let columns = lines(&columns, new_height * N, new_width, nearest);
-    transpose(columns.as_chunks::<N>().0, new_height).into_flattened()
+    let down = taps(source.len() / (width * N), new_height);
+    let across = taps(width, new_width);
+    let band = (BAND_BYTES / (width * N * size_of::<f32>())).clamp(1, new_height);
+    let mut target = Vec::with_capacity(new_width * new_height * N);
+    let mut rows = Vec::with_capacity(band * width * N);
+    let mut columns = Vec::with_capacity(band * width);
+    let mut narrowed = Vec::with_capacity(band * new_width * N);
+    let mut pixels: Vec<[u8; N]> = Vec::with_capacity(band * new_width);
+    for top in (0..new_height).step_by(band) {
+        let count = band.min(new_height - top);
+        rows.clear();
+        lines(
+            source,
+            width * N,
+            &down,
+            top..top + count,
+            &mut rows,
+            |sum| sum,
+        );
+        columns.clear();
+        transpose(rows.as_chunks::<N>().0, width, &mut columns);
+        narrowed.clear();
+        lines(
+            columns.as_flattened(),
+            count * N,
+            &across,
+            0..new_width,
+            &mut narrowed,
+            nearest,
+        );
+        pixels.clear();
+        transpose(narrowed.as_chunks::<N>().0, count, &mut pixels);
+        target.extend_from_slice(pixels.as_flattened());
+    }
+    target
 }
 
 fn resized<P, const N: usize>(

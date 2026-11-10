@@ -430,20 +430,12 @@ impl AgentFactory for RoutedFactory {
                     parent.ensure_available().await?;
                     checkpoint.validate()?;
 
-                    let checkpoint = match &inner.recovery_store {
+                    let (checkpoint, provider) = match &inner.recovery_store {
                         Some(store) => store
-                            .recovery_checkpoint(checkpoint)
+                            .recovery(checkpoint)
                             .await
                             .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?,
-                        None => checkpoint,
-                    };
-                    let provider = match &inner.recovery_store {
-                        Some(store) => store
-                            .record(checkpoint.session_id())
-                            .await
-                            .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?
-                            .and_then(|record| record.provider),
-                        None => None,
+                        None => (checkpoint, None),
                     };
                     if provider.is_none() && checkpoint.family() == parent.harness_family() {
                         return parent

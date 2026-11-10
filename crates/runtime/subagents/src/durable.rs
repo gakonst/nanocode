@@ -67,6 +67,10 @@ pub trait SubagentStore: Send + Sync {
         true
     }
 
+    fn verifies_records(&self) -> bool {
+        false
+    }
+
     fn load_record<'a>(
         &'a self,
         root_session_id: &'a str,
@@ -192,7 +196,9 @@ impl SubagentStore for MemorySubagentStore {
     }
 }
 
-pub(super) const JOURNAL_VERSION: u32 = 7;
+pub(super) const JOURNAL_VERSION: u32 = 8;
+
+const DELTA_JOURNAL_VERSION: u32 = 7;
 
 pub(super) const TREE_JOURNAL_VERSION: u32 = 6;
 
@@ -324,7 +330,9 @@ struct DeltaPage {
 #[serde(deny_unknown_fields)]
 struct JournalDelta {
     #[serde(default)]
-    agents: Vec<(u64, Box<RawValue>)>,
+    agents: Vec<(u64, AgentRecord)>,
+    #[serde(default)]
+    patches: Vec<(u64, serde_json::Map<String, Value>)>,
     #[serde(default)]
     messages: Vec<Box<RawValue>>,
 }
@@ -358,8 +366,26 @@ fn agent_leaf(agents: &[(u64, Arc<str>)]) -> (Arc<str>, Arc<str>) {
     (record_key(Arc::clone(&json)), json)
 }
 
-fn journal_delta(agents: &[(u64, Arc<str>)], messages: &[Arc<str>]) -> (Arc<str>, Arc<str>) {
+fn journal_delta(
+    agents: &[(u64, Arc<str>)],
+    patches: &[(u64, Arc<str>)],
+    messages: &[Arc<str>],
+) -> (Arc<str>, Arc<str>) {
     let mut json = agents_json(agents);
+    if !patches.is_empty() {
+        json.push_str(",\"patches\":[");
+        for (index, (id, patch)) in patches.iter().enumerate() {
+            if index > 0 {
+                json.push(',');
+            }
+            json.push('[');
+            json.push_str(&id.to_string());
+            json.push(',');
+            json.push_str(patch);
+            json.push(']');
+        }
+        json.push(']');
+    }
     json.push_str(",\"messages\":[");
     for (index, message) in messages.iter().enumerate() {
         if index > 0 {
@@ -372,8 +398,71 @@ fn journal_delta(agents: &[(u64, Arc<str>)], messages: &[Arc<str>]) -> (Arc<str>
     (record_key(Arc::clone(&json)), json)
 }
 
+pub(super) enum Changed {
+    Record(AgentRecord),
+    Fields(serde_json::Map<String, Value>),
+}
+
+impl Changed {
+    fn onto(self, stored: Option<&AgentRecord>) -> std::io::Result<AgentRecord> {
+        let fields = match self {
+            Self::Record(record) => return Ok(record),
+            Self::Fields(fields) => fields,
+        };
+        let stored = stored.ok_or_else(|| {
+            std::io::Error::other("a subagent journal delta changes fields of an unknown agent")
+        })?;
+        let Value::Object(mut record) =
+            serde_json::to_value(stored).map_err(std::io::Error::other)?
+        else {
+            return Err(std::io::Error::other(
+                "a subagent journal record is not an object",
+            ));
+        };
+        for (field, value) in fields {
+            if value.is_null() {
+                record.remove(&field);
+            } else {
+                record.insert(field, value);
+            }
+        }
+        serde_json::from_value(Value::Object(record)).map_err(std::io::Error::other)
+    }
+}
+
+fn changed_fields(stored: &str, json: &str) -> Option<Arc<str>> {
+    type Fields<'a> = std::collections::BTreeMap<&'a str, &'a RawValue>;
+    let stored: Fields<'_> = serde_json::from_str(stored).ok()?;
+    let fields: Fields<'_> = serde_json::from_str(json).ok()?;
+    let mut changed = String::from("{");
+    let mut add = |field: &str, value: &str| {
+        if changed.len() > 1 {
+            changed.push(',');
+        }
+        changed.push('"');
+        changed.push_str(field);
+        changed.push_str("\":");
+        changed.push_str(value);
+    };
+    for (field, value) in &fields {
+        if stored
+            .get(field)
+            .is_none_or(|stored| stored.get() != value.get())
+        {
+            add(field, value.get());
+        }
+    }
+    for field in stored.keys() {
+        if !fields.contains_key(field) {
+            add(field, "null");
+        }
+    }
+    changed.push('}');
+    (changed.len() < json.len()).then(|| changed.into())
+}
+
 pub(super) struct Deltas {
-    pub(super) agents: Vec<(AgentId, Arc<str>, AgentRecord)>,
+    pub(super) agents: Vec<(AgentId, Arc<str>, Changed)>,
     pub(super) messages: Vec<super::model::AgentMessage>,
 }
 
@@ -421,9 +510,17 @@ pub(super) async fn load_deltas(
         stored.delta_bytes += json.len();
         for (id, record) in delta.agents {
             let id = AgentId::new(id);
-            let record = stored.stores(id, &record).map_err(invalid)?;
             stored.unfolded.insert(id);
-            deltas.agents.push((id, Arc::clone(&key), record));
+            deltas
+                .agents
+                .push((id, Arc::clone(&key), Changed::Record(record)));
+        }
+        for (id, fields) in delta.patches {
+            let id = AgentId::new(id);
+            stored.unfolded.insert(id);
+            deltas
+                .agents
+                .push((id, Arc::clone(&key), Changed::Fields(fields)));
         }
         for message in delta.messages {
             deltas
@@ -778,6 +875,7 @@ pub(super) struct CachedAgent {
     pub(super) checkpoint_ref: Option<Arc<str>>,
     profile: Arc<str>,
     record: Arc<str>,
+    json: Option<Arc<str>>,
 }
 
 pub(super) struct AgentEntry {
@@ -949,7 +1047,7 @@ pub(super) async fn load_leaves(
     store: &dyn SubagentStore,
     root_session_id: &str,
     leaves: Option<AgentPages>,
-    changed: Vec<(AgentId, Arc<str>, AgentRecord)>,
+    changed: Vec<(AgentId, Arc<str>, Changed)>,
     stored: &mut JournalCache,
 ) -> std::io::Result<Vec<PersistedAgent>> {
     let leaves = match leaves {
@@ -960,39 +1058,59 @@ pub(super) async fn load_leaves(
         }
         None => Vec::new(),
     };
-    let unfolded = std::mem::take(&mut stored.agents);
     let keys = leaves
         .iter()
         .map(|(_, key)| key.to_string())
         .collect::<Vec<_>>();
-    let mut records = Vec::new();
-    for ((index, key), json) in leaves
-        .into_iter()
-        .zip(verified(store, root_session_id, keys).await?)
-    {
-        let invalid =
-            |error| std::io::Error::other(format!("invalid subagent journal leaf {key}: {error}"));
-        let leaf: AgentLeaf = serde_json::from_str(&json).map_err(invalid)?;
-        stored.leaf_bytes.insert(index, json.len());
-        stored.folded_bytes += json.len();
-        for (id, record) in leaf.agents {
-            if id >> LEAF_AGENT_BITS != index {
-                return Err(std::io::Error::other(format!(
-                    "subagent journal leaf {key} holds agent {id} of another leaf"
-                )));
+    let stored_leaves = verified(store, root_session_id, keys).await?;
+    let decoded = super::platform::spread(
+        leaves.into_iter().zip(stored_leaves).collect(),
+        |((index, key), json): ((u64, Arc<str>), String)| {
+            let invalid = |error| {
+                std::io::Error::other(format!("invalid subagent journal leaf {key}: {error}"))
+            };
+            let leaf: AgentLeaf = serde_json::from_str(&json).map_err(invalid)?;
+            let mut agents = Vec::with_capacity(leaf.agents.len());
+            for (id, json) in leaf.agents {
+                if id >> LEAF_AGENT_BITS != index {
+                    return Err(std::io::Error::other(format!(
+                        "subagent journal leaf {key} holds agent {id} of another leaf"
+                    )));
+                }
+                let record: AgentRecord = serde_json::from_str(json.get()).map_err(invalid)?;
+                let json: Arc<str> = json.get().into();
+                let key = record_key(Arc::clone(&json));
+                agents.push((AgentId::new(id), record, key, json));
             }
-            let record = stored.stores(AgentId::new(id), &record).map_err(invalid)?;
-            records.push((AgentId::new(id), Arc::clone(&key), record));
+            Ok((index, Arc::clone(&key), json.len(), agents))
+        },
+    )
+    .await?;
+    let mut records = Vec::new();
+    for (index, leaf, bytes, agents) in decoded {
+        stored.leaf_bytes.insert(index, bytes);
+        stored.folded_bytes += bytes;
+        for (id, record, key, json) in agents {
+            stored.stores(id, &record, key, json);
+            records.push((id, Arc::clone(&leaf), record));
         }
     }
-    stored.agents.extend(unfolded);
     if !changed.is_empty() {
         let mut latest = records
             .into_iter()
             .map(|(id, key, record)| (id, (key, record)))
             .collect::<std::collections::BTreeMap<_, _>>();
-        for (id, key, record) in changed {
+        let mut unfolded = std::collections::BTreeSet::new();
+        for (id, key, changed) in changed {
+            let record = changed.onto(latest.get(&id).map(|(_, record)| record))?;
             latest.insert(id, (key, record));
+            unfolded.insert(id);
+        }
+        for id in unfolded {
+            if let Some((_, record)) = latest.get(&id) {
+                let (key, json) = encoded(record)?;
+                stored.stores(id, record, key, json);
+            }
         }
         records = latest
             .into_iter()
@@ -1016,16 +1134,16 @@ async fn with_profiles(
             .collect(),
     )
     .await?;
-    records
-        .into_iter()
-        .zip(profiles)
-        .map(|((id, key, record), profile)| {
+    super::platform::spread(
+        records.into_iter().zip(profiles).collect(),
+        |((id, key, record), profile): ((AgentId, Arc<str>, AgentRecord), String)| {
             let profile = serde_json::from_str(&profile).map_err(|error| {
                 std::io::Error::other(format!("invalid subagent journal record {key}: {error}"))
             })?;
             agent_from(id, &key, record, profile)
-        })
-        .collect()
+        },
+    )
+    .await
 }
 
 async fn verified(
@@ -1043,6 +1161,9 @@ async fn verified(
             records.len(),
             keys.len()
         )));
+    }
+    if store.verifies_records() {
+        return Ok(records);
     }
     for (key, json) in keys.iter().zip(&records) {
         if !key_matches(json, key) {
@@ -1108,8 +1229,7 @@ pub(super) struct EncodedJournal {
 }
 
 impl JournalCache {
-    fn stores(&mut self, id: AgentId, json: &RawValue) -> serde_json::Result<AgentRecord> {
-        let record: AgentRecord = serde_json::from_str(json.get())?;
+    fn stores(&mut self, id: AgentId, record: &AgentRecord, key: Arc<str>, json: Arc<str>) {
         self.agents.insert(
             id,
             CachedAgent {
@@ -1117,10 +1237,10 @@ impl JournalCache {
                 checkpoint: record.checkpoint_ref.clone(),
                 checkpoint_ref: record.checkpoint_ref.clone(),
                 profile: Arc::clone(&record.profile),
-                record: record_key(json.get().into()),
+                record: key,
+                json: record.changing().then_some(json),
             },
         );
-        Ok(record)
     }
 
     pub(super) fn stored(mut self, folds_all: bool) -> Option<Self> {
@@ -1138,8 +1258,10 @@ impl JournalCache {
     }
 
     pub(super) fn adopt(&mut self, stored: Self) {
-        if self.full && self.version == stored.version {
+        if self.full && stored.deltas() && self.version >= stored.version {
+            let version = self.version;
             *self = stored;
+            self.version = version;
         }
     }
 
@@ -1169,6 +1291,10 @@ impl JournalCache {
 
     pub(super) const fn deltas(&self) -> bool {
         self.version > TREE_JOURNAL_VERSION
+    }
+
+    const fn changes_fields(&self) -> bool {
+        self.version > DELTA_JOURNAL_VERSION
     }
 
     pub(super) const fn folds(&self, rewritten: bool) -> bool {
@@ -1251,6 +1377,7 @@ impl JournalSnapshot {
         update.full = false;
         update.dirty.clear();
         let mut changed = Vec::new();
+        let mut fields = Vec::new();
         for (leaf, agents) in self.agents {
             let mut entries = Vec::with_capacity(agents.len());
             for (id, entry) in agents {
@@ -1265,20 +1392,32 @@ impl JournalSnapshot {
                     CachedAgent {
                         generation: entry.generation,
                         checkpoint: entry.checkpoint,
+                        json: record.changing().then(|| Arc::clone(&json)),
                         checkpoint_ref: record.checkpoint_ref,
                         profile: record.profile,
                         record: Arc::clone(&key),
                     },
                 );
-                if self.fold || written.is_none_or(|written| written.record != key) {
+                if self.fold {
                     entries.push((id.get(), json));
+                    continue;
+                }
+                if written
+                    .as_ref()
+                    .is_some_and(|written| written.record == key)
+                {
+                    continue;
+                }
+                update.unfolded.insert(id);
+                let stored = written
+                    .and_then(|written| written.json)
+                    .filter(|_| update.changes_fields());
+                match stored.and_then(|stored| changed_fields(&stored, &json)) {
+                    Some(changed) => fields.push((id.get(), changed)),
+                    None => changed.push((id.get(), json)),
                 }
             }
             if !self.fold {
-                update
-                    .unfolded
-                    .extend(entries.iter().map(|(id, _)| AgentId::new(*id)));
-                changed.extend(entries);
                 continue;
             }
             if entries.is_empty() {
@@ -1348,8 +1487,8 @@ impl JournalSnapshot {
             }
         }
         let message_leaves = update.messages.encode(&mut records)?;
-        if !changed.is_empty() || !appended.is_empty() {
-            let (key, json) = journal_delta(&changed, &appended);
+        if !changed.is_empty() || !fields.is_empty() || !appended.is_empty() {
+            let (key, json) = journal_delta(&changed, &fields, &appended);
             update.delta_bytes += json.len();
             records.push((Arc::clone(&key), json));
             update.push_delta(key, &mut records)?;
@@ -2026,6 +2165,10 @@ impl SubagentStore for JournalStore {
     fn records_sessions(&self) -> bool {
         self.0.records_children()
     }
+
+    fn verifies_records(&self) -> bool {
+        self.0.verifies_records()
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -2116,6 +2259,12 @@ pub(super) fn persist_agent(
             StoredRuntime::Unstarted(unstarted) => Some(Unstarted::clone(unstarted)),
             _ => None,
         },
+    }
+}
+
+impl AgentRecord {
+    const fn changing(&self) -> bool {
+        self.turn_in_flight || self.pending_completion.is_some()
     }
 }
 

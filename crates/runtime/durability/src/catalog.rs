@@ -907,28 +907,37 @@ mod store {
             &self,
             journal: nanocode_agent_core::SessionCheckpoint,
         ) -> Result<nanocode_agent_core::SessionCheckpoint> {
+            Ok(self.recovery(journal).await?.0)
+        }
+
+        pub async fn recovery(
+            &self,
+            journal: nanocode_agent_core::SessionCheckpoint,
+        ) -> Result<(nanocode_agent_core::SessionCheckpoint, Option<String>)> {
             journal
                 .validate()
                 .map_err(|error| Error::InvalidState(error.to_string()))?;
             let id = journal.session_id();
             let Some(state) = self.peek_head(id).await? else {
-                return Ok(journal);
+                return Ok((journal, None));
             };
             let checkpoint = self.loaded_checkpoint(id, &state).await?;
             let record = match (state.session(), &checkpoint) {
                 (Some(record), _) => record.clone(),
                 (None, Some((checkpoint, ..))) => self.infer_record(id, checkpoint)?,
-                (None, None) => return Ok(journal),
+                (None, None) => return Ok((journal, None)),
             };
             if record.family() != journal.family() || record.lineage != *journal.lineage() {
                 return Err(Error::InvalidState(
                     "child journal identity differs from its durable session".into(),
                 ));
             }
-            match checkpoint {
-                Some((checkpoint, ..)) => session_checkpoint(&self.formats, &record, &checkpoint),
-                None => Ok(journal),
-            }
+            let provider = is_listed(&state).then(|| record.provider.clone()).flatten();
+            let checkpoint = match checkpoint {
+                Some((checkpoint, ..)) => session_checkpoint(&self.formats, &record, &checkpoint)?,
+                None => journal,
+            };
+            Ok((checkpoint, provider))
         }
 
         pub async fn resume(&self, id: &str) -> Result<DurableSession> {

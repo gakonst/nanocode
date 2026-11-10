@@ -72,6 +72,51 @@ where
     Task { result, abort }
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+}
+
+#[cfg(target_family = "wasm")]
+const fn workers() -> usize {
+    1
+}
+
+pub(crate) async fn spread<T, R, F>(items: Vec<T>, work: F) -> std::io::Result<Vec<R>>
+where
+    T: MaybeSend + 'static,
+    R: MaybeSend + 'static,
+    F: Fn(T) -> std::io::Result<R> + Clone + MaybeSend + 'static,
+{
+    let parts = workers().min(items.len());
+    if parts < 2 {
+        return items.into_iter().map(work).collect();
+    }
+    let size = items.len().div_ceil(parts);
+    let mut items = items.into_iter();
+    let mut running = Vec::with_capacity(parts);
+    loop {
+        let part = items.by_ref().take(size).collect::<Vec<_>>();
+        if part.is_empty() {
+            break;
+        }
+        let work = work.clone();
+        running.push(spawn(async move {
+            part.into_iter()
+                .map(work)
+                .collect::<std::io::Result<Vec<_>>>()
+        }));
+    }
+    let mut all = Vec::new();
+    for part in running {
+        all.extend(
+            part.await
+                .map_err(|error| std::io::Error::other(error.to_string()))??,
+        );
+    }
+    Ok(all)
+}
+
 pub(crate) async fn timeout_at<T, F>(deadline: Instant, future: F) -> Result<T, ()>
 where
     F: Future<Output = T>,

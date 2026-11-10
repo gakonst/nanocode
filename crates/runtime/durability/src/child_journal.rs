@@ -473,6 +473,10 @@ impl ChildJournalStore for SharedJournal {
         false
     }
 
+    fn verifies_records(&self) -> bool {
+        true
+    }
+
     fn save_deferred(&self) -> BackendFuture<std::io::Result<Option<DeferredJournal>>> {
         let journal = self.clone();
         Box::pin(async move { journal.write(Write::Defer).await.map(Some) })

@@ -191,6 +191,10 @@ pub trait ChildJournalStore: Send + Sync + 'static {
     fn records_children(&self) -> bool {
         true
     }
+
+    fn verifies_records(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]

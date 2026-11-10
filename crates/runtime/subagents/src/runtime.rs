@@ -3845,6 +3845,7 @@ impl Registry {
                 let mut report = RestoreReport::default();
                 let mut waited = Vec::new();
                 let mut checkpoints = Vec::new();
+                let mut conversations = Vec::new();
                 if state
                     .scopes
                     .get(root_session_id)
@@ -3860,10 +3861,8 @@ impl Registry {
                     let id = agent.descriptor.id;
                     let checkpoint = agent.snapshot(&lineage)?;
                     let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
-                    if session.conversation
-                        && let Some(registry) = &registry
-                    {
-                        registry.recorded_conversation(root_session_id, id, true);
+                    if session.conversation {
+                        conversations.push(id);
                     }
                     if session.completion.revision().is_some()
                         && session.status.wakes_parent()
@@ -3915,6 +3914,13 @@ impl Registry {
                     .or_default()
                     .messages = messages;
                 if let Some(registry) = &registry {
+                    if !conversations.is_empty() && !registry.records_sessions(root_session_id) {
+                        registry.captured_once.update(|captured| {
+                            for id in &conversations {
+                                captured.insert((root_session_id.to_owned(), *id));
+                            }
+                        });
+                    }
                     registry.checkpoints.update(|stored| {
                         for (id, checkpoint) in &checkpoints {
                             stored.insert((root_session_id.to_owned(), *id), checkpoint.clone());

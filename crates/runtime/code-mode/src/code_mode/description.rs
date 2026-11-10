@@ -152,6 +152,19 @@ pub fn exec_description(
         description.push_str("\n- `ALL_TOOLS` is the catalog of callable nested tools for this execution. A tool exposed separately by the host is not necessarily callable through `tools`; use its direct tool entry when it is absent from this catalog.");
     }
     description.push_str("\n- Nanocode extension: calling a missing nested tool rejects locally with `TOOL_NOT_AVAILABLE`; it does not dispatch a tool, unless its input names a `hand`, which calls that hand's tool of that name, such as one only a phone offers. An unfinished nested call may have executed even when its cell ends; an `outcome: unknown` receipt is not permission to retry it.");
+    let reader = definitions
+        .iter()
+        .find_map(|definition| match definition.name() {
+            "Read" => Some("await tools.Read({ file_path })"),
+            "view_image" => Some("await tools.view_image({ path })"),
+            _ => None,
+        });
+    if let Some(read) = reader {
+        let _ = write!(
+            description,
+            "\n- Nanocode extension: `image` also takes an array of image items. To show an image file, such as a chart a script saved, pass what reading it returns: `image({read})`. Do not base64-encode it through a shell, whose output is cut off."
+        );
+    }
     if !provider_summaries.is_empty() {
         description.push_str("\n\nAdditional runtime-provided nested tools:");
         for (name, summary) in provider_summaries {

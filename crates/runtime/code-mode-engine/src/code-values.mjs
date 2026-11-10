@@ -21,7 +21,7 @@ function createValueHelpers() {
     },
 
     normalizeImage(value, detail) {
-      const expected = "image expects a non-empty image URL string, an object with exactly one of image_url or file_id and optional detail, or a raw MCP image block";
+      const expected = "image expects a non-empty image URL string, an object with exactly one of image_url or file_id and optional detail, a raw MCP image block, or an array of these";
       if (detail != null && typeof detail !== "string") throw "image detail must be a string when provided";
       let url;
       let fileId;

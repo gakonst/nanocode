@@ -26,6 +26,7 @@ nanocode-sync.workspace = true
 rcgen.workspace = true
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 rustls-native-certs.workspace = true
+rustls-platform-verifier = "0.7.0"
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }

@@ -79,6 +79,16 @@ fn other(error: impl Into<Box<dyn Error + Send + Sync>>) -> io::Error {
 }
 
 impl Tls {
+    #[cfg(all(unix, not(target_os = "android"), not(target_vendor = "apple")))]
+    pub fn new(name: &str) -> io::Result<Self> {
+        let roots = rustls_platform_verifier::system_roots();
+        if roots.is_empty() {
+            return Err(other("no trusted root certificates found"));
+        }
+        Self::with_roots(name, RootCertStore::clone(&roots))
+    }
+
+    #[cfg(not(all(unix, not(target_os = "android"), not(target_vendor = "apple"))))]
     pub fn new(name: &str) -> io::Result<Self> {
         let found = rustls_native_certs::load_native_certs();
         let mut roots = RootCertStore::empty();

@@ -6,6 +6,13 @@ use rustls::{client::WantsClientCert, ClientConfig, ConfigBuilder, WantsVerifier
 
 mod verification;
 pub use verification::Verifier;
+#[cfg(all(
+    unix,
+    not(target_os = "android"),
+    not(target_vendor = "apple"),
+    not(target_arch = "wasm32"),
+))]
+pub use verification::system_roots;
 
 // Build the Android module when generating docs so that
 // the Android-specific functions are included regardless of

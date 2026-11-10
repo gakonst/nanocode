@@ -5687,6 +5687,7 @@ dependencies = [
  "rustix",
  "rustls",
  "rustls-native-certs",
+ "rustls-platform-verifier",
  "seccompiler",
  "serde",
  "serde_json",
@@ -8279,6 +8280,7 @@ dependencies = [
 name = "rustls-platform-verifier"
 version = "0.7.0"
 dependencies = [
+ "arc-swap",
  "core-foundation",
  "core-foundation-sys",
  "jni",

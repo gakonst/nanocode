@@ -61,24 +61,13 @@ impl Verifier {
             not(target_arch = "wasm32"),
         ))]
         {
-            let result = rustls_native_certs::load_native_certs();
-            let (added, ignored) = root_store.add_parsable_certificates(result.certs);
-            if ignored > 0 {
-                log::warn!("{ignored} platform CA root certificates were ignored due to errors");
-            }
-
-            for error in result.errors {
-                log::warn!("Error loading CA root certificate: {error}");
-            }
-
-            // Don't return an error if this fails when other roots have already been loaded via
-            // `new_with_extra_roots`. It leads to extra failure cases where connections would otherwise still work.
+            root_store
+                .roots
+                .extend(system::roots().roots.iter().cloned());
             if root_store.is_empty() {
                 return Err(rustls::Error::General(
                     "No CA certificates were loaded from the system".to_owned(),
                 ));
-            } else {
-                log::debug!("Loaded {added} CA root certificates from the system");
             }
         }
 
@@ -155,5 +144,60 @@ fn map_webpki_errors(err: TlsError) -> TlsError {
             ))))
         }
         _ => err,
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(target_os = "android"),
+    not(target_vendor = "apple"),
+    not(target_arch = "wasm32"),
+))]
+pub mod system {
+    use arc_swap::ArcSwapOption;
+    use std::{
+        ffi::OsString,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    const MAX_AGE: Duration = Duration::from_secs(300);
+    type Environment = (Option<OsString>, Option<OsString>);
+
+    struct Loaded {
+        at: Instant,
+        environment: Environment,
+        roots: Arc<rustls::RootCertStore>,
+    }
+
+    static ROOTS: ArcSwapOption<Loaded> = ArcSwapOption::const_empty();
+
+    pub fn roots() -> Arc<rustls::RootCertStore> {
+        let environment = (
+            std::env::var_os("SSL_CERT_FILE"),
+            std::env::var_os("SSL_CERT_DIR"),
+        );
+        if let Some(loaded) = &*ROOTS.load() {
+            if loaded.environment == environment && loaded.at.elapsed() < MAX_AGE {
+                return Arc::clone(&loaded.roots);
+            }
+        }
+        let result = rustls_native_certs::load_native_certs();
+        let mut store = rustls::RootCertStore::empty();
+        let (added, ignored) = store.add_parsable_certificates(result.certs);
+        if ignored > 0 {
+            log::warn!("{ignored} platform CA root certificates were ignored due to errors");
+        }
+        for error in result.errors {
+            log::warn!("Error loading CA root certificate: {error}");
+        }
+        log::debug!("Loaded {added} CA root certificates from the system");
+        let roots = Arc::new(store);
+        ROOTS.store(Some(Arc::new(Loaded {
+            at: Instant::now(),
+            environment,
+            roots: Arc::clone(&roots),
+        })));
+        roots
     }
 }

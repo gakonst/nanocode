@@ -15,6 +15,14 @@ mod others;
 ))]
 pub use others::Verifier;
 
+#[cfg(all(
+    unix,
+    not(target_os = "android"),
+    not(target_vendor = "apple"),
+    not(target_arch = "wasm32"),
+))]
+pub use others::system::roots as system_roots;
+
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 mod apple;
 

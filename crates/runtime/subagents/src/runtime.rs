@@ -2202,50 +2202,60 @@ impl RegistryState {
         }))
     }
 
-    fn take_resident_eviction(
+    fn take_resident_evictions(
         &mut self,
         root_session_id: &str,
         limit: usize,
-    ) -> Option<ResidentEviction> {
-        let scope = self.scopes.get_mut(root_session_id)?;
-        scope.sessions.refresh();
-        if scope.sessions.resident.len() <= limit {
-            return None;
-        }
-        let sessions = &scope.sessions;
-        let (candidate, lock) = sessions.idle.iter().find_map(|&(_, id)| {
-            let session = sessions.get(&id)?;
-            if scope.messages.has_pending_for(id)
-                || !session
-                    .harness()
-                    .is_some_and(|harness| !harness.answering_side_questions())
-            {
-                return None;
-            }
-            let holding = scope.topology.has_children(id)
-                && scope
-                    .topology
-                    .subtree_postorder(id)
-                    .ok()?
-                    .into_iter()
-                    .any(|descendant| descendant != id && sessions.resident.contains(&descendant));
-            if holding {
-                return None;
-            }
-            Some((id, session.residency_lock.try_enter()?))
-        })?;
-        let session = scope.sessions.get_mut(&candidate)?;
-        let Residency::Resident(harness) =
-            std::mem::replace(&mut session.residency, Residency::Evicted)
-        else {
-            session.residency = Residency::Detached;
-            return None;
+    ) -> Vec<ResidentEviction> {
+        let Some(scope) = self.scopes.get_mut(root_session_id) else {
+            return Vec::new();
         };
-        Some(ResidentEviction {
-            id: candidate,
-            harness,
-            _lock: lock,
-        })
+        scope.sessions.refresh();
+        let excess = scope.sessions.resident.len().saturating_sub(limit);
+        let sessions = &scope.sessions;
+        let candidates = sessions
+            .idle
+            .iter()
+            .filter_map(|&(_, id)| {
+                let session = sessions.get(&id)?;
+                if scope.messages.has_pending_for(id)
+                    || !session
+                        .harness()
+                        .is_some_and(|harness| !harness.answering_side_questions())
+                {
+                    return None;
+                }
+                let holding =
+                    scope.topology.has_children(id)
+                        && scope.topology.subtree_postorder(id).ok()?.into_iter().any(
+                            |descendant| {
+                                descendant != id && sessions.resident.contains(&descendant)
+                            },
+                        );
+                if holding {
+                    return None;
+                }
+                Some((id, session.residency_lock.try_enter()?))
+            })
+            .take(excess)
+            .collect::<Vec<_>>();
+        let mut evictions = Vec::with_capacity(candidates.len());
+        for (id, lock) in candidates {
+            let Some(session) = scope.sessions.get_mut(&id) else {
+                continue;
+            };
+            match std::mem::replace(&mut session.residency, Residency::Evicted) {
+                Residency::Resident(harness) => evictions.push(ResidentEviction {
+                    id,
+                    harness,
+                    _lock: lock,
+                }),
+                Residency::Detached | Residency::Evicted => {
+                    session.residency = Residency::Detached;
+                }
+            }
+        }
+        evictions
     }
 
     fn subtree_shutdown_order(
@@ -5391,101 +5401,117 @@ impl Registry {
         }));
     }
 
-    async fn enforce_resident_limit(&self, root_session_id: &str) {
+    async fn enforce_resident_limit(self: &Arc<Self>, root_session_id: &str) {
         loop {
             let root = root_session_id.to_owned();
             let limit = self.max_resident.load(Ordering::Relaxed);
-            let Ok(eviction) = self
+            let Ok(evictions) = self
                 .when_messages_flow(root_session_id, move |state| {
-                    state.take_resident_eviction(&root, limit)
+                    state.take_resident_evictions(&root, limit)
                 })
                 .await
             else {
                 return;
             };
-            let Some(ResidentEviction { id, harness, _lock }) = eviction else {
+            if evictions.is_empty() {
                 return;
-            };
-            let snapshot = if self.store_for(root_session_id).is_some()
-                && self.journal_holds_conversation(root_session_id, id)
-            {
-                Ok(None)
-            } else {
-                harness.snapshot().await.map(Some)
-            };
-            match snapshot {
-                Ok(snapshot) => {
-                    let stored = match snapshot {
-                        None => None,
-                        Some(snapshot)
-                            if self.store_for(root_session_id).is_some()
-                                && self.record_checkpoint(
-                                    root_session_id,
-                                    id,
-                                    snapshot.clone(),
-                                ) =>
-                        {
-                            None
-                        }
-                        Some(snapshot) => Some(snapshot),
-                    };
-                    let root = root_session_id.to_owned();
-                    self.state
-                        .call(move |state| {
-                            if let Some(session) = state
-                                .scopes
-                                .get_mut(&root)
-                                .and_then(|scope| scope.sessions.get_mut(&id))
-                            {
-                                session.stored_runtime = stored
-                                    .map_or(StoredRuntime::Journaled, |stored| {
-                                        StoredRuntime::Checkpoint(Box::new(stored))
-                                    });
-                            }
-                        })
-                        .await;
-                }
-                Err(_) => {
-                    let root = root_session_id.to_owned();
-                    self.state
-                        .call(move |state| {
-                            if let Some(session) = state
-                                .scopes
-                                .get_mut(&root)
-                                .and_then(|scope| scope.sessions.get_mut(&id))
-                            {
-                                session.residency = Residency::Resident(harness);
-                            }
-                        })
-                        .await;
-                    return;
-                }
             }
-            self.changed();
-            if harness.close().await.is_err() {
-                self.harness_closed(root_session_id, id).await;
-            }
-
-            let root = root_session_id.to_owned();
-            let tasks = self
-                .state
-                .call(move |state| {
-                    let session = state
-                        .scopes
-                        .get_mut(&root)
-                        .and_then(|scope| scope.sessions.get_mut(&id));
-                    session.map(|session| (session.harness_task.take(), session.event_task.take()))
+            let evicting = evictions
+                .into_iter()
+                .map(|eviction| {
+                    let registry = Arc::clone(self);
+                    let root = root_session_id.to_owned();
+                    platform::spawn(async move { registry.evict(&root, eviction).await })
                 })
-                .await;
-            if let Some((harness_task, event_task)) = tasks {
-                if let Some(task) = harness_task {
-                    let _ = task.await;
-                }
-                if let Some(task) = event_task {
-                    let _ = task.await;
-                }
+                .collect::<Vec<_>>();
+            let mut kept = false;
+            for evicted in evicting {
+                kept |= !matches!(evicted.await, Ok(true));
+            }
+            if kept {
+                return;
             }
         }
+    }
+
+    async fn evict(&self, root_session_id: &str, eviction: ResidentEviction) -> bool {
+        let ResidentEviction { id, harness, _lock } = eviction;
+        let snapshot = if self.store_for(root_session_id).is_some()
+            && self.journal_holds_conversation(root_session_id, id)
+        {
+            Ok(None)
+        } else {
+            harness.snapshot().await.map(Some)
+        };
+        match snapshot {
+            Ok(snapshot) => {
+                let stored = match snapshot {
+                    None => None,
+                    Some(snapshot)
+                        if self.store_for(root_session_id).is_some()
+                            && self.record_checkpoint(root_session_id, id, snapshot.clone()) =>
+                    {
+                        None
+                    }
+                    Some(snapshot) => Some(snapshot),
+                };
+                let root = root_session_id.to_owned();
+                self.state
+                    .call(move |state| {
+                        if let Some(session) = state
+                            .scopes
+                            .get_mut(&root)
+                            .and_then(|scope| scope.sessions.get_mut(&id))
+                        {
+                            session.stored_runtime = stored
+                                .map_or(StoredRuntime::Journaled, |stored| {
+                                    StoredRuntime::Checkpoint(Box::new(stored))
+                                });
+                        }
+                    })
+                    .await;
+            }
+            Err(_) => {
+                let root = root_session_id.to_owned();
+                self.state
+                    .call(move |state| {
+                        if let Some(session) = state
+                            .scopes
+                            .get_mut(&root)
+                            .and_then(|scope| scope.sessions.get_mut(&id))
+                        {
+                            session.residency = Residency::Resident(harness);
+                        }
+                    })
+                    .await;
+                return false;
+            }
+        }
+        self.changed();
+        if harness.close().await.is_err() {
+            self.harness_closed(root_session_id, id).await;
+        }
+
+        let root = root_session_id.to_owned();
+        let tasks = self
+            .state
+            .call(move |state| {
+                let session = state
+                    .scopes
+                    .get_mut(&root)
+                    .and_then(|scope| scope.sessions.get_mut(&id));
+                session.map(|session| (session.harness_task.take(), session.event_task.take()))
+            })
+            .await;
+        if let Some((harness_task, event_task)) = tasks {
+            if let Some(task) = harness_task {
+                let _ = task.await;
+            }
+            if let Some(task) = event_task {
+                let _ = task.await;
+            }
+        }
+        true
     }
 
     pub(super) async fn harness_closed(&self, root_session_id: &str, id: AgentId) {

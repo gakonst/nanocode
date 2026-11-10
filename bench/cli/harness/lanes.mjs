@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { NODE, baseEnv, bins } from "./common.mjs";
 
-// One entry per CLI. `verified` says what ran end to end against the fixture and when; README.md has the detail.
+// One entry per CLI. `verified` says what ran end to end against the fixture and when, `flags` every non-default setting.
 // Smoke every lane (harness/smoke.mjs) before measuring it.
 // A lane whose requests include side requests (titles, token counts) uses the fixture's /sa prefix, which answers
 // a request without tools with a short reply instead of the scripted stream.
@@ -29,8 +29,12 @@ function claudeSetup(home, cwd) {
   fs.writeFileSync(home + "/.claude/.claude.json", JSON.stringify({ hasCompletedOnboarding: true, bypassPermissionsModeAccepted: true, customApiKeyResponses: { approved: ["fixture-key".slice(-20)], rejected: [] }, projects: { [fs.realpathSync(cwd)]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } } }));
   fs.writeFileSync(home + "/.claude/settings.json", JSON.stringify({ theme: "dark" }));
 }
-const claudeEnv = (home, base) => ({ ...baseEnv(home), ANTHROPIC_BASE_URL: base + "/sa", ANTHROPIC_API_KEY: "fixture-key", CLAUDE_CONFIG_DIR: home + "/.claude", DISABLE_TELEMETRY: "1", DISABLE_AUTOUPDATER: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" });
+const claudeEnv = (home, base) => ({ ...baseEnv(home), ANTHROPIC_BASE_URL: base + "/sa", ANTHROPIC_API_KEY: "fixture-key", CLAUDE_CONFIG_DIR: home + "/.claude", DISABLE_TELEMETRY: "1", DISABLE_AUTOUPDATER: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_UPDATES: "1" });
 
+function codexSetup(home) {
+  fs.mkdirSync(home + "/.codex", { recursive: true });
+  fs.writeFileSync(home + "/.codex/config.toml", "check_for_update_on_startup = false\n\n[analytics]\nenabled = false\n\n[feedback]\nenabled = false\n");
+}
 const codexEnv = (home) => ({ ...baseEnv(home), CODEX_HOME: home + "/.codex", BENCH_KEY: "fixture-key" });
 const codexArgs = (base) => ["-c", 'model_provider="bench"', "-c", 'model_providers.bench={name="bench",base_url="' + base + '/sa/v1",wire_api="responses",env_key="BENCH_KEY"}', "-m", "bench/model"];
 
@@ -39,9 +43,12 @@ function opencodeSetup(home, base) {
   fs.writeFileSync(home + "/.config/opencode/opencode.json", JSON.stringify({ $schema: "https://opencode.ai/config.json", autoupdate: false, share: "disabled", model: "bench/model", small_model: "bench/model", provider: { bench: { npm: "@ai-sdk/openai-compatible", name: "bench", options: { baseURL: base + "/sa/v1", apiKey: "fixture-key" }, models: { model: { name: "Bench" } } } } }));
 }
 
+const opencodeEnv = (home) => ({ ...baseEnv(home), OPENCODE_DISABLE_AUTOUPDATE: "1", OPENCODE_DISABLE_MODELS_FETCH: "1", OPENCODE_DISABLE_LSP_DOWNLOAD: "1" });
+
 export const lanes = {
   fx: {
-    verified: "2026-10-28 (0.0.15), smoked again 2026-11-09",
+    verified: "2026-11-10 (0.0.16, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests; netaudit sees no outbound traffic",
+    flags: "ask --yolo --no-save (headless); settings.json: provider gateway, max_agent_steps 0, session_titles false; env AI_GATEWAY_API_KEY, FX_GATEWAY_BASE_URL and FX_E2E_* point the gateway at the fixture, FX_SOUND=0",
     version: () => [bins.fx(), ["--version"]],
     setup: (home) => fxSetup(home),
     env: (home, base) => fxEnv(home, base),
@@ -50,7 +57,8 @@ export const lanes = {
     store: (home) => home + "/.fx",
   },
   pi: {
-    verified: "2026-10-28 (1.4.0); not smoked on 2026-11-09",
+    verified: "2026-11-10 (1.5.2, Linux x86_64): headless (-p --mode json, since plain -p prints only at the end) and terminal smoke pass, one stream request; netaudit sees no outbound traffic",
+    flags: "--provider bench --model bench/model, --no-session; -p --mode json (headless); models.json adds the fixture provider; settings.json quietStartup; PI_OFFLINE=1",
     version: () => [NODE, [bins.pi(), "--version"]],
     setup: (home, base) => piSetup(home, base),
     env: (home) => piEnv(home),
@@ -59,7 +67,8 @@ export const lanes = {
     store: (home) => home + "/.pi",
   },
   nc: {
-    verified: "2026-10-28, smoked again 2026-11-09 (0.7.0)",
+    verified: "2026-11-10 (0.7.0 release, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests. By default it connects to its Tempo tools (mercator.sh, gateway.tempo-dev.workers.dev MCP); that stays on (a default feature) and tools/netguard.sh blocks it",
+    flags: "--home, --gateway vercel --gateway-base-url <fixture>/v1, -m luna, --ephemeral; exec (headless); NANOCODE_TELEMETRY=off",
     version: () => [bins.nc(), ["--version"]],
     setup: () => undefined,
     env: (home) => ncEnv(home),
@@ -68,28 +77,31 @@ export const lanes = {
     store: (home) => home + "/.nanocode",
   },
   claude: {
-    verified: "headless 2026-11-09 (2.1.316); the terminal interface reached its prompt, a streamed turn in it has not run",
+    verified: "2026-11-10 (2.1.322, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests. The config is read from CLAUDE_CONFIG_DIR/.claude.json (onboarding and trust are pre-accepted there); the Auto mode notice is informational and does not block input. The marker is the prompt glyph, since the header is drawn with cursor moves. With the env below netaudit sees no outbound traffic except the official plugin marketplace clone (github.com), a default feature left on",
+    flags: "-p --output-format stream-json --include-partial-messages --verbose (headless); env ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, CLAUDE_CONFIG_DIR, DISABLE_TELEMETRY, DISABLE_AUTOUPDATER, DISABLE_UPDATES, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC; .claude.json onboarding, trust and API key approval; settings.json theme dark",
     version: () => [bins.claude(), ["--version"]],
     setup: (home, base, cwd) => claudeSetup(home, cwd),
     env: (home, base) => claudeEnv(home, base),
     headless: (home, base, text) => [bins.claude(), ["-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose", text]],
-    tui: () => ({ cmd: [bins.claude()], marker: "Claude Code v", exit: ["\x03", "\x03"] }),
+    tui: () => ({ cmd: [bins.claude()], marker: "❯", exit: ["\x03", "\x03"] }),
     store: (home) => home + "/.claude",
   },
   codex: {
-    verified: "headless 2026-11-09 (0.162.0-alpha.17.2); the terminal interface drew a frame and sent no request",
+    verified: "2026-11-10 (0.167.0, Linux x86_64): headless and terminal smoke pass, one stream request plus one side request (a thread title). No headless mode streams: exec prints the reply at the end both as text and with --json (item.completed only, no deltas); only app-server (JSON-RPC) emits deltas. The TUI needs about 150 ms between typing the prompt and Enter, or its paste-burst detection swallows the Enter (tui.py enter_gap_ms). config.toml turns off the update check, analytics and feedback; it still fetches announcement_tip.toml from raw.githubusercontent.com at TUI start (unconditional) and, headless too, syncs curated plugins from github.com, api.github.com and chatgpt.com (a default feature left on); tools/netguard.sh blocks both",
+    flags: "-c model_provider=bench, -c model_providers.bench={base_url <fixture>/sa/v1, wire_api responses, env_key BENCH_KEY}, -m bench/model; exec --skip-git-repo-check --json (headless); config.toml check_for_update_on_startup=false, analytics.enabled=false, feedback.enabled=false; CODEX_HOME",
     version: () => [bins.codex(), ["--version"]],
-    setup: (home) => { fs.mkdirSync(home + "/.codex", { recursive: true }); },
+    setup: (home) => codexSetup(home),
     env: (home) => codexEnv(home),
     headless: (home, base, text) => [bins.codex(), ["exec", "--skip-git-repo-check", "--json", ...codexArgs(base), text]],
     tui: (home, base) => ({ cmd: [bins.codex(), ...codexArgs(base)], marker: "bench/model", exit: ["\x03", "\x03"] }),
     store: (home) => home + "/.codex",
   },
   opencode: {
-    verified: false,
+    verified: "2026-11-10 (1.19.5, Linux x86_64): headless and terminal smoke pass, one stream request plus one side request (title, via small_model). The env below stops the models.dev fetch and update check; it still resolves registry.npmjs.org at start, which tools/netguard.sh blocks. Its terminal interface takes about 3.4 s to first frame, also under netguard",
+    flags: "run -m bench/model (headless), -m bench/model (TUI); opencode.json: autoupdate false, share disabled, model and small_model bench/model, an openai-compatible provider at <fixture>/sa/v1; env OPENCODE_DISABLE_AUTOUPDATE, OPENCODE_DISABLE_MODELS_FETCH, OPENCODE_DISABLE_LSP_DOWNLOAD",
     version: () => [bins.opencode(), ["--version"]],
     setup: (home, base) => opencodeSetup(home, base),
-    env: (home) => baseEnv(home),
+    env: (home) => opencodeEnv(home),
     headless: (home, base, text) => [bins.opencode(), ["run", "-m", "bench/model", text]],
     tui: () => ({ cmd: [bins.opencode(), "-m", "bench/model"], marker: "bench", exit: ["\x03", "\x03"] }),
     store: (home) => home + "/.local/share/opencode",

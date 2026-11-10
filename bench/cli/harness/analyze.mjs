@@ -67,8 +67,8 @@ export function usageOf(rs) {
   return {
     cpu_ms: cpu, user_ms: rs.user_us == null ? null : rs.user_us / 1000, sys_ms: rs.sys_us == null ? null : rs.sys_us / 1000,
     max_rss_mb: megabytes(rs.maxrss_bytes), max_footprint_mb: megabytes(rs.lifetime_max_footprint), instructions: rs.instructions ?? null,
-    tree_cpu_ms: rs.cgroup_cpu_us != null ? rs.cgroup_cpu_us / 1000 : rs.tree_cpu_us != null ? rs.tree_cpu_us / 1000 : cpu,
-    tree_max_rss_mb: rs.cgroup_memory_peak_bytes != null ? megabytes(rs.cgroup_memory_peak_bytes) : rs.tree_max_rss_bytes != null ? megabytes(rs.tree_max_rss_bytes) : megabytes(rs.maxrss_bytes),
+    tree_cpu_ms: Math.max(cpu ?? 0, rs.cgroup_cpu_us != null ? rs.cgroup_cpu_us / 1000 : rs.tree_cpu_us != null ? rs.tree_cpu_us / 1000 : 0) || cpu,
+    tree_max_rss_mb: megabytes(Math.max(rs.maxrss_bytes ?? 0, rs.cgroup_memory_peak_bytes ?? rs.tree_max_rss_bytes ?? 0)) || null,
     tree_source: rs.cgroup_cpu_us != null ? "cgroup" : rs.tree_cpu_us != null ? "proc-sampler" : "rusage",
     helpers_max: rs.helpers_max ?? null, helpers_left: rs.helpers_left ?? null,
   };

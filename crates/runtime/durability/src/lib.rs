@@ -28,8 +28,8 @@ pub use child_journal::{JournalClaim, JournalSeed};
 pub use format::{AdmittedTurn, CheckpointFormat, FormatFuture};
 pub use memory::MemoryStore;
 pub use nanocode_durability_core::{
-    BlobKey, BlobStore, BlobUrl, Committed, EncodedPayload, Error, EventCursor, EventHit,
-    EventHits, EventOrder, EventPage, EventQuery, EventRange, IndexedState, KeyValue,
+    BlobKey, BlobStore, BlobUrl, Colocation, Committed, EncodedPayload, Error, EventCursor,
+    EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange, IndexedState, KeyValue,
     KeyValueStore, KnownSummary, ListedState, ListedSummary, LockKey, LocksHeld, Migration,
     MissingColumn, OwnedCommit, OwnedState, OwnerId, OwnerToken, Result, RowStore, SharedBlobStore,
     Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedStore, StagedWrites,

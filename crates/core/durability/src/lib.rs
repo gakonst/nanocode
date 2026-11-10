@@ -23,9 +23,9 @@ pub use state::{
     Operations, RetainedCheckpoint, SteerState, StepState, StepStatus, Transition,
 };
 pub use store::{
-    Committed, EventCursor, EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange,
-    IndexedState, KnownSummary, ListedState, ListedSummary, OwnedCommit, OwnedState, OwnerId,
-    OwnerToken, StateCommit, StateCursor, StatePage, StateQuery, StateReader, StateStore,
+    Colocation, Committed, EventCursor, EventHit, EventHits, EventOrder, EventPage, EventQuery,
+    EventRange, IndexedState, KnownSummary, ListedState, ListedSummary, OwnedCommit, OwnedState,
+    OwnerId, OwnerToken, StateCommit, StateCursor, StatePage, StateQuery, StateReader, StateStore,
     StateSummary, StoreError, StoreEvent, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate,
     StoredEvent, StoredState, SummaryUpdate,
 };

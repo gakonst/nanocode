@@ -18,12 +18,14 @@ use super::{
 
 const OPEN_JOURNALS: usize = 32;
 const EXTENSION: &str = ".jsonl";
+const HOMES: &str = ".homes";
 
 pub(super) struct Sessions {
     directory: PathBuf,
     journals: HashMap<String, Opened>,
     clock: u64,
     summaries: Summaries,
+    homes: HashMap<String, String>,
 }
 
 struct Opened {
@@ -112,12 +114,50 @@ impl Sessions {
         }
         fs::create_dir_all(&directory).map_err(backend)?;
         clear_temporaries(&directory).map_err(backend)?;
+        let homes = match fs::read_to_string(directory.join(HOMES)) {
+            Ok(lines) => lines
+                .lines()
+                .filter_map(|line| serde_json::from_str::<(String, String)>(line).ok())
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(error) => return Err(backend(error)),
+        };
         Ok(Self {
             summaries: Summaries::new(&directory),
             directory,
             journals: HashMap::new(),
             clock: 0,
+            homes,
         })
+    }
+
+    fn home(&self, state_id: &str) -> String {
+        let key = session_key(state_id);
+        self.homes.get(key).map_or(key, String::as_str).to_owned()
+    }
+
+    pub(super) fn colocate(&mut self, state_id: &str, beside: &str) {
+        let key = session_key(state_id);
+        let home = self.home(beside);
+        if key == home || self.homes.contains_key(key) || self.path(key).is_file() {
+            return;
+        }
+        let line = serde_json::to_string(&(key, &home)).map(|line| line + "\n");
+        let appended = line.map_err(std::io::Error::other).and_then(|line| {
+            use std::io::Write as _;
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.directory.join(HOMES))?
+                .write_all(line.as_bytes())
+        });
+        if let Err(error) = appended {
+            tracing::warn!(%error, state_id, "could not record where a JSONL session is stored");
+        }
+        if let Some(opened) = self.journals.get_mut(&home) {
+            opened.journal.sidecar = true;
+        }
+        self.homes.insert(key.to_owned(), home);
     }
 
     pub(super) fn open_home(home: &Path) -> Result<Self, StoreError> {
@@ -142,7 +182,8 @@ impl Sessions {
         state_id: &str,
         create: bool,
     ) -> Result<Option<&mut Journal>, StoreError> {
-        let key = session_key(state_id);
+        let key = self.home(state_id);
+        let key = key.as_str();
         self.clock += 1;
         let clock = self.clock;
         if !self.journals.contains_key(key) {
@@ -159,7 +200,18 @@ impl Sessions {
             {
                 self.journals.remove(&oldest);
             }
-            let journal = Journal::open(&path, false)?;
+            let journal = Journal::open(&path, self.homes.values().any(|home| home == key))?;
+            for member in journal
+                .index
+                .states
+                .keys()
+                .chain(journal.index.owners.keys())
+            {
+                let member = session_key(member);
+                if member != key && !self.homes.contains_key(member) {
+                    self.homes.insert(member.to_owned(), key.to_owned());
+                }
+            }
             self.journals.insert(
                 key.to_owned(),
                 Opened {
@@ -170,6 +222,7 @@ impl Sessions {
         }
         Ok(self.journals.get_mut(key).map(|opened| {
             opened.used = clock;
+            opened.journal.index_due();
             &mut opened.journal
         }))
     }
@@ -222,7 +275,7 @@ impl Sessions {
         companion_id: &str,
         companion_owner: OwnerId,
     ) -> Result<(OwnedState, OwnedState), StoreError> {
-        if session_key(id) != session_key(companion_id) {
+        if self.home(id) != self.home(companion_id) {
             return Err(StoreError::NotCommitted(format!(
                 "JSONL stores {companion_id} in another session file than {id}"
             )));
@@ -272,7 +325,7 @@ impl Sessions {
             match replacement {
                 Err(error) => results[slot] = Some(Err(error)),
                 Ok(replacement) => {
-                    let key = session_key(&replacement.state_id).to_owned();
+                    let key = self.home(&replacement.state_id);
                     let group = *grouped.entry(key).or_insert_with(|| {
                         groups.push((Vec::new(), Vec::new()));
                         groups.len() - 1
@@ -349,25 +402,52 @@ impl Sessions {
         }
     }
 
+    fn listed(&mut self) -> Result<Vec<(String, Metadata, Option<u64>)>, StoreError> {
+        let mut members = HashMap::<String, Vec<String>>::new();
+        for (member, home) in &self.homes {
+            members
+                .entry(home.clone())
+                .or_default()
+                .push(member.clone());
+        }
+        let mut listed = Vec::new();
+        for (key, metadata) in self.files()? {
+            let mut colocated = members.remove(&key).unwrap_or_default();
+            colocated.sort_unstable_by(|a, b| b.cmp(a));
+            if !colocated.is_empty()
+                && let Some(journal) = self.existing(&key)?
+            {
+                listed.extend(colocated.into_iter().filter_map(|member| {
+                    let revision = journal.index.states.get(&member)?.revision;
+                    Some((member, metadata.clone(), Some(revision)))
+                }));
+            }
+            listed.push((key, metadata, None));
+        }
+        Ok(listed)
+    }
+
     pub(super) fn list_states(&mut self, limit: usize) -> Result<Vec<String>, StoreError> {
         Ok(self
-            .files()?
+            .listed()?
             .into_iter()
             .take(limit)
-            .map(|(key, _)| key)
+            .map(|(key, _, _)| key)
             .collect())
     }
 
     pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
-        let files = self.files()?;
+        let listed = self.listed()?;
         self.summaries.refresh();
-        files
+        listed
             .into_iter()
             .take(limit)
-            .map(|(state_id, metadata)| {
-                let known = self
-                    .summaries
-                    .listed(&state_id, &identity(&metadata)?, metadata.len());
+            .map(|(state_id, metadata, colocated)| {
+                let file = identity(&metadata)?;
+                let known = match colocated {
+                    Some(revision) => self.summaries.colocated(&state_id, &file, revision),
+                    None => self.summaries.listed(&state_id, &file, metadata.len()),
+                };
                 Ok(ListedState {
                     revision: known.as_ref().map_or(0, |known| known.revision),
                     summary: match known {

@@ -1272,6 +1272,12 @@ impl Driver {
             Ownership::Unacquired(Seed::New(record)) => (Some(record.clone()), true),
             Ownership::Unacquired(Seed::Existing) | Ownership::Owned(_) => (None, false),
         };
+        if let Some(record) = &record
+            && record.lineage.origin == nanocode_agent_core::Origin::Subagent
+            && let Some(colocation) = self.store.colocation()
+        {
+            colocation.colocate(&self.state_id, &record.lineage.root_session_id);
+        }
         if create
             && reduce(self.store.peek(&self.state_id).await?)?
                 .session()

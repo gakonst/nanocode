@@ -234,6 +234,10 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
         self.base.acquire_with(state_id, owner_id, update)
     }
 
+    fn colocation(&self) -> Option<std::sync::Arc<dyn crate::Colocation>> {
+        self.base.colocation()
+    }
+
     fn batches_companion_acquisition(&self) -> bool {
         self.base.batches_companion_acquisition()
     }

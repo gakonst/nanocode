@@ -59,6 +59,13 @@ impl Summaries {
             .cloned()
     }
 
+    pub(super) fn colocated(&self, state_id: &str, file: &str, revision: u64) -> Option<Summary> {
+        self.entries
+            .get(state_id)
+            .filter(|known| known.file == file && known.revision == revision)
+            .cloned()
+    }
+
     pub(super) fn remember(
         &mut self,
         remembered: Vec<(String, Summary)>,

@@ -10,8 +10,8 @@ pub use compact::CompactionStats;
 use sessions::Sessions;
 
 use nanocode_durability_core::{
-    Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken, StateStore,
-    StoreError, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate, StoredState,
+    Colocation, Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
+    StateStore, StoreError, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate, StoredState,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
 use sha2::{Digest, Sha256};
@@ -716,6 +716,14 @@ struct State {
     revision: u64,
     location: Location,
     records: HashMap<String, Record>,
+    created: usize,
+}
+
+fn key_hash(key: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Deserialize)]
@@ -1158,6 +1166,10 @@ impl Journal {
             for (key, record) in records {
                 if !state.records.contains_key(key) {
                     state.records.insert(key.into(), record);
+                    self.index
+                        .holders
+                        .entry(key_hash(key))
+                        .or_insert(state.created);
                 }
             }
         }
@@ -1209,15 +1221,16 @@ impl Journal {
         records: impl Iterator<Item = (&'k str, Record)>,
     ) {
         if !self.index.states.contains_key(id) {
-            self.index.created.push(id.into());
             self.index.states.insert(
                 id.into(),
                 State {
                     revision,
                     location,
                     records: HashMap::new(),
+                    created: self.index.created.len(),
                 },
             );
+            self.index.created.push(id.into());
         }
         let state = self
             .index
@@ -1229,6 +1242,10 @@ impl Journal {
         for (key, record) in records {
             if !state.records.contains_key(key) {
                 state.records.insert(key.into(), record);
+                self.index
+                    .holders
+                    .entry(key_hash(key))
+                    .or_insert(state.created);
             }
         }
     }
@@ -1343,6 +1360,25 @@ impl Journal {
         }
     }
 
+    fn shares(
+        &mut self,
+        candidate: &str,
+        record: &StoreRecord,
+    ) -> Result<Option<String>, StoreError> {
+        if record.value.len() <= SHARED_RECORD.len_utf8() + candidate.len()
+            || self.location(candidate, &record.key)?.is_none()
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .resolved(candidate, &record.key)?
+            .filter(|(found, value)| {
+                *value == record.value
+                    && record.value.len() > SHARED_RECORD.len_utf8() + found.len()
+            })
+            .map(|(found, _)| found))
+    }
+
     fn share(
         &mut self,
         id: &str,
@@ -1358,37 +1394,40 @@ impl Journal {
             .iter()
             .map(|(record, _)| record.value.len())
             .sum::<usize>();
-        let candidates = self
-            .index
-            .created
-            .iter()
-            .rev()
-            .filter(|candidate| candidate.as_str() != id)
-            .cloned()
-            .collect::<Vec<_>>();
-        for candidate in candidates {
+        for (record, holder) in &mut records {
+            let Some(candidate) = self
+                .index
+                .holders
+                .get(&key_hash(&record.key))
+                .and_then(|created| self.index.created.get(*created))
+                .filter(|candidate| candidate.as_str() != id)
+                .cloned()
+            else {
+                continue;
+            };
+            if let Some(found) = self.shares(&candidate, record)? {
+                budget = budget.saturating_sub(record.value.len());
+                *holder = Some(found);
+            }
+        }
+        while self.index.unshared > 0 && records.iter().any(|(_, holder)| holder.is_none()) {
+            let candidate = self.index.created[self.index.unshared - 1].clone();
             let cost = self.index.deferred_bytes(&candidate);
             if cost > budget {
                 break;
             }
             budget -= cost;
+            self.index.unshared -= 1;
+            if cost == 0 || candidate == id {
+                continue;
+            }
             for (record, holder) in &mut records {
-                if holder.is_some()
-                    || record.value.len() <= SHARED_RECORD.len_utf8() + candidate.len()
-                    || self.location(&candidate, &record.key)?.is_none()
-                {
-                    continue;
-                }
-                if let Some((found, value)) = self.resolved(&candidate, &record.key)?
-                    && value == record.value
-                    && record.value.len() > SHARED_RECORD.len_utf8() + found.len()
+                if holder.is_none()
+                    && let Some(found) = self.shares(&candidate, record)?
                 {
                     budget = budget.saturating_sub(record.value.len());
                     *holder = Some(found);
                 }
-            }
-            if records.iter().all(|(_, holder)| holder.is_some()) {
-                break;
             }
         }
         Ok(records
@@ -2169,6 +2208,15 @@ pub struct JsonlStore {
     jobs: mpsc::Sender<Job>,
     closed: oneshot::Receiver<()>,
     failed: Arc<OnceLock<StoreError>>,
+    colocated: Arc<Colocated>,
+}
+
+struct Colocated(std::sync::mpsc::Sender<(String, String)>);
+
+impl Colocation for Colocated {
+    fn colocate(&self, state_id: &str, beside: &str) {
+        let _ = self.0.send((state_id.to_owned(), beside.to_owned()));
+    }
 }
 
 impl JsonlStore {
@@ -2206,6 +2254,7 @@ impl JsonlStore {
             jobs,
             closed,
             failed,
+            colocated: _,
         } = self;
         drop(jobs);
         closed
@@ -2219,6 +2268,7 @@ impl JsonlStore {
         let (jobs, mut receiver) = mpsc::channel::<Job>(JOB_CAPACITY);
         let (finished, closed) = oneshot::channel();
         let (ready, opened) = oneshot::channel();
+        let (colocated, hints) = std::sync::mpsc::channel::<(String, String)>();
         let failed = Arc::new(OnceLock::new());
         let failure = Arc::clone(&failed);
         let span = tracing::Span::current();
@@ -2234,6 +2284,9 @@ impl JsonlStore {
                 };
                 drop(ready.send(Ok(())));
                 while let Some(job) = receiver.blocking_recv() {
+                    for (state_id, beside) in hints.try_iter() {
+                        sessions.colocate(&state_id, &beside);
+                    }
                     job(&mut sessions);
                 }
                 drop(sessions);
@@ -2245,6 +2298,7 @@ impl JsonlStore {
                 jobs,
                 closed,
                 failed,
+                colocated: Arc::new(Colocated(colocated)),
             },
             opened,
         ))
@@ -2300,6 +2354,10 @@ impl JsonlStore {
 }
 
 impl StateStore for JsonlStore {
+    fn colocation(&self) -> Option<Arc<dyn Colocation>> {
+        Some(Arc::clone(&self.colocated) as Arc<dyn Colocation>)
+    }
+
     fn acquire_with<'a>(
         &'a mut self,
         id: &'a str,

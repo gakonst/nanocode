@@ -24,6 +24,8 @@ pub(super) struct Index {
     pub(super) owners: HashMap<String, OwnerToken>,
     pub(super) states: HashMap<String, State>,
     pub(super) created: Vec<String>,
+    pub(super) holders: HashMap<u64, usize>,
+    pub(super) unshared: usize,
     pub(super) last: Option<Location>,
     pub(super) migrated: bool,
     anchor: [u8; 32],
@@ -98,6 +100,8 @@ impl Index {
             owners: HashMap::new(),
             states: HashMap::new(),
             created: Vec::new(),
+            holders: HashMap::new(),
+            unshared: 0,
             last: None,
             migrated: false,
             anchor: Sha256::digest([]).into(),
@@ -201,7 +205,13 @@ impl Index {
         {
             return Err(invalid());
         }
-        self.states.get_mut(id).ok_or_else(invalid)?.records = records;
+        let state = self.states.get_mut(id).ok_or_else(invalid)?;
+        for key in records.keys() {
+            self.holders
+                .entry(super::key_hash(key))
+                .or_insert(state.created);
+        }
+        state.records = records;
         self.deferred.remove(id);
         self.pristine.insert(id.to_owned(), block);
         Ok(())
@@ -229,6 +239,14 @@ impl Index {
             })
             && self.owners.values().all(|owner| owner.fence() > 0)
     }
+}
+
+fn created_order(created: &[String]) -> HashMap<String, usize> {
+    created
+        .iter()
+        .enumerate()
+        .map(|(order, id)| (id.clone(), order))
+        .collect()
 }
 
 impl Journal {
@@ -278,25 +296,30 @@ impl Journal {
             let mut index = Index::new(saved.source);
             index.offset = saved.offset;
             index.owners = saved.owners;
-            index.states = saved
-                .states
-                .into_iter()
-                .map(|(id, state)| {
-                    let records = state
-                        .records
-                        .into_iter()
-                        .map(|(key, location)| (key, Record::Entry(location)))
-                        .collect();
-                    (
-                        id,
-                        State {
-                            revision: state.revision,
-                            location: state.location,
-                            records,
-                        },
-                    )
-                })
-                .collect();
+            let order = created_order(&saved.created);
+            for (id, state) in saved.states {
+                let created = order.get(&id).copied().ok_or_else(invalid)?;
+                let records = state
+                    .records
+                    .into_iter()
+                    .map(|(key, location)| {
+                        index
+                            .holders
+                            .entry(super::key_hash(&key))
+                            .or_insert(created);
+                        (key, Record::Entry(location))
+                    })
+                    .collect();
+                index.states.insert(
+                    id,
+                    State {
+                        revision: state.revision,
+                        location: state.location,
+                        records,
+                        created,
+                    },
+                );
+            }
             index.created = saved.created;
             index.last = saved.last;
             index.anchor = saved.anchor;
@@ -331,6 +354,8 @@ impl Journal {
         let mut index = Index::new(saved.source);
         index.offset = saved.offset;
         index.owners = saved.owners;
+        index.unshared = saved.created.len();
+        let order = created_order(&saved.created);
         index.created = saved.created;
         index.last = saved.last;
         index.anchor = saved.anchor;
@@ -350,12 +375,14 @@ impl Journal {
                 _ => return Err(invalid()),
             };
             index.deferred.insert(id.clone(), state.records);
+            let created = order.get(&id).copied().ok_or_else(invalid)?;
             index.states.insert(
                 id,
                 State {
                     revision: state.revision,
                     location: state.location,
                     records: HashMap::new(),
+                    created,
                 },
             );
         }
@@ -870,6 +897,17 @@ impl Journal {
 }
 
 impl Journal {
+    pub(super) fn index_due(&mut self) {
+        if self.sidecar
+            && self.ready
+            && self
+                .persisted_offset
+                .is_none_or(|persisted| self.index.offset >= persisted.saturating_mul(2))
+        {
+            self.persist_index();
+        }
+    }
+
     pub(super) fn flush_index(&mut self) {
         if self.ready && (self.persisted_offset != Some(self.index.offset) || self.index.migrated) {
             self.persist_index();

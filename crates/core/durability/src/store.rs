@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, future::Future, pin::Pin};
+use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 
 use nanocode_platform::MaybeSend;
 
@@ -412,7 +412,15 @@ fn record_listing_unsupported() -> StoreError {
     StoreError::Backend("this store does not list a state's records".to_owned())
 }
 
+pub trait Colocation: Send + Sync {
+    fn colocate(&self, state_id: &str, beside: &str);
+}
+
 pub trait StateStore: MaybeSend {
+    fn colocation(&self) -> Option<Arc<dyn Colocation>> {
+        None
+    }
+
     fn read_record<'a>(
         &'a mut self,
         state_id: &'a str,

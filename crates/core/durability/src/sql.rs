@@ -1393,4 +1393,23 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
             ready: Arc::clone(&self.ready),
         }))
     }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn handles(&self) -> Option<Arc<dyn crate::StoreHandles>> {
+        let host = Arc::clone(&self.host).concurrent()?;
+        Some(Arc::new(SqlStore {
+            host,
+            ready: Arc::clone(&self.ready),
+        }))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl<H: Sql + ?Sized + 'static> crate::StoreHandles for SqlStore<H> {
+    fn handle(&self) -> Box<dyn StateStore> {
+        Box::new(Self {
+            host: Arc::clone(&self.host),
+            ready: Arc::clone(&self.ready),
+        })
+    }
 }

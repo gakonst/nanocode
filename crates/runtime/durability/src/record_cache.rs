@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use nanocode_durability_core::{
     Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
-    StagedWrites, StateCommit, StateStore, StoreError, StoreFuture, StoreRecord, StoreUpdate,
-    StoredState,
+    StagedWrites, StateCommit, StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord,
+    StoreUpdate, StoredState,
 };
 use nanocode_sync::Atom;
 
@@ -382,6 +382,29 @@ impl<S: StateStore + ?Sized + 'static> StateStore for CachedStore<S> {
                 cache: self.cache.clone(),
                 base,
             }) as Box<dyn StateStore>
+        })
+    }
+
+    fn handles(&self) -> Option<Arc<dyn StoreHandles>> {
+        self.base.handles().map(|base| {
+            Arc::new(CachedHandles {
+                cache: self.cache.clone(),
+                base,
+            }) as Arc<dyn StoreHandles>
+        })
+    }
+}
+
+struct CachedHandles {
+    cache: RecordCache,
+    base: Arc<dyn StoreHandles>,
+}
+
+impl StoreHandles for CachedHandles {
+    fn handle(&self) -> Box<dyn StateStore> {
+        Box::new(CachedStore {
+            cache: self.cache.clone(),
+            base: self.base.handle(),
         })
     }
 }

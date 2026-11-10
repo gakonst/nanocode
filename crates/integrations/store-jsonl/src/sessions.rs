@@ -197,8 +197,9 @@ impl Sessions {
                     .iter()
                     .min_by_key(|(_, opened)| opened.used)
                     .map(|(key, _)| key.clone())
+                && let Some(mut closed) = self.journals.remove(&oldest)
             {
-                self.journals.remove(&oldest);
+                closed.journal.harden()?;
             }
             let journal = Journal::open(&path, self.homes.values().any(|home| home == key))?;
             for member in journal
@@ -225,6 +226,19 @@ impl Sessions {
             opened.journal.index_due();
             &mut opened.journal
         }))
+    }
+
+    pub(super) fn stale(&mut self) {
+        for opened in self.journals.values_mut() {
+            opened.journal.stale();
+        }
+    }
+
+    pub(super) fn unsynced(&mut self) -> Vec<std::sync::Arc<fs::File>> {
+        self.journals
+            .values_mut()
+            .filter_map(|opened| opened.journal.unsynced())
+            .collect()
     }
 
     pub(super) fn existing(&mut self, state_id: &str) -> Result<Option<&mut Journal>, StoreError> {

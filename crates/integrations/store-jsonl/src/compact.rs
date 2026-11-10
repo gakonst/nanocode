@@ -169,6 +169,8 @@ impl Journal {
         if lineage(&mut reads, &source)? != self.lineage {
             return Err(identity_changed());
         }
+        self.harden()?;
+        self.synced = std::sync::Arc::new(file.try_clone().map_err(backend)?);
         self.file = file;
         self.reads = reads;
         self.index = Index::new(source);

@@ -167,6 +167,7 @@ pub struct SharedStore {
     pub(crate) logged_prompts: bool,
     pub(crate) state_format: Option<u8>,
     pools: std::sync::Arc<crate::pool::Pools>,
+    readers: Option<std::sync::Arc<dyn crate::StoreHandles>>,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +201,7 @@ impl SharedStore {
         let supports_events = store.supports_events();
         let supports_summaries = store.supports_summaries();
         let colocation = store.colocation();
+        let readers = store.handles();
         let (commands, receiver) = mpsc::unbounded_channel();
         if store.concurrent_handle().is_some() {
             spawn_driver(drive_concurrently(store, receiver))?;
@@ -216,6 +218,7 @@ impl SharedStore {
             logged_prompts: false,
             state_format: None,
             pools: std::sync::Arc::default(),
+            readers,
         })
     }
 
@@ -248,6 +251,13 @@ impl SharedStore {
             record.count = keys.len(),
             queue.duration_ms = tracing::field::Empty
         );
+        if let Some(readers) = &self.readers {
+            return readers
+                .handle()
+                .read_records(state_id, keys)
+                .instrument(span)
+                .await;
+        }
         let (result, receiver) = oneshot::channel();
         self.commands
             .send(StoreRequest {
@@ -1460,18 +1470,23 @@ impl StateStore for SharedStore {
             queue.duration_ms = tracing::field::Empty
         );
         Box::pin(async move {
-            let (result, receiver) = oneshot::channel();
-            self.commands
-                .send(StoreRequest {
-                    command: Command::Peek {
-                        state_id: state_id.to_owned(),
-                        result,
-                    },
-                    span,
-                    queued: Instant::now(),
-                })
-                .map_err(|_| stopped())?;
-            let stored = receiver.await.map_err(|_| stopped())??;
+            let stored = match &self.readers {
+                Some(readers) => readers.handle().peek(state_id).instrument(span).await?,
+                None => {
+                    let (result, receiver) = oneshot::channel();
+                    self.commands
+                        .send(StoreRequest {
+                            command: Command::Peek {
+                                state_id: state_id.to_owned(),
+                                result,
+                            },
+                            span,
+                            queued: Instant::now(),
+                        })
+                        .map_err(|_| stopped())?;
+                    receiver.await.map_err(|_| stopped())??
+                }
+            };
             self.pools.observe(state_id, stored.payload.as_deref());
             Ok(stored)
         })

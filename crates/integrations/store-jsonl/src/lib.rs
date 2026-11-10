@@ -11,7 +11,8 @@ use sessions::Sessions;
 
 use nanocode_durability_core::{
     Colocation, Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
-    StateStore, StoreError, StoreFuture, StoreRecord, StoreReplacement, StoreUpdate, StoredState,
+    StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord, StoreReplacement, StoreUpdate,
+    StoredState,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
 use sha2::{Digest, Sha256};
@@ -30,13 +31,15 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-const JOB_CAPACITY: usize = 1;
 const JOURNAL_READ_BUFFER_BYTES: usize = 128 * 1024;
+const RECOVERY_BLOCK_BYTES: usize = 64 * 1024 * 1024;
 const SEAL_POLL_FIRST: Duration = Duration::from_millis(1);
 const SEAL_POLL_LONGEST: Duration = Duration::from_millis(100);
 const SHARED_RECORD: char = '\u{1}';
 
-type Job = Box<dyn FnOnce(&mut Sessions) + Send>;
+type Job = Box<dyn FnOnce(&mut Sessions) -> Option<Settled> + Send>;
+
+type Settled = Box<dyn FnOnce(Result<(), StoreError>) + Send>;
 
 enum Entry {
     Acquire {
@@ -456,6 +459,57 @@ fn scan(
     Ok(())
 }
 
+type Recovered<'a> = (Location, Indexed<'a>, &'a [u8], Vec<[u8; 32]>);
+
+type Parsed<'a> = Result<(Indexed<'a>, Vec<[u8; 32]>), serde_json::Error>;
+
+fn parsed<'a>((_, line): &(Location, &'a [u8])) -> Parsed<'a> {
+    let entry = serde_json::from_slice::<Indexed<'a>>(line)?;
+    let digests = match (&entry.state_id, &entry.records) {
+        (Some(id), Some(records)) => records
+            .iter()
+            .map(|record| value_digest(id, &record.key, record.value.get().as_bytes()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok((entry, digests))
+}
+
+fn recovered<'a>(lines: &[(Location, &'a [u8])]) -> Result<Vec<Parsed<'a>>, StoreError> {
+    let bytes = lines.iter().map(|(_, line)| line.len()).sum::<usize>();
+    let workers = thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(bytes / JOURNAL_READ_BUFFER_BYTES);
+    if workers < 2 {
+        return Ok(lines.iter().map(parsed).collect());
+    }
+    let share = bytes.div_ceil(workers);
+    let mut parts = Vec::with_capacity(workers);
+    let (mut from, mut held) = (0, 0);
+    for (index, (_, line)) in lines.iter().enumerate() {
+        held += line.len();
+        if held >= share {
+            parts.push(&lines[from..=index]);
+            (from, held) = (index + 1, 0);
+        }
+    }
+    parts.push(&lines[from..]);
+    thread::scope(|scope| {
+        let running = parts
+            .into_iter()
+            .map(|part| scope.spawn(move || part.iter().map(parsed).collect::<Vec<_>>()))
+            .collect::<Vec<_>>();
+        let mut all = Vec::with_capacity(lines.len());
+        for part in running {
+            all.extend(
+                part.join()
+                    .map_err(|_| backend("a JSONL recovery worker stopped"))?,
+            );
+        }
+        Ok(all)
+    })
+}
+
 fn claim<'a>(entry: &'a Indexed<'_>) -> Result<Claim<'a>, StoreError> {
     let state_id = entry
         .state_id
@@ -695,6 +749,22 @@ impl Record {
         Self::value(id, key, position + start as u64, value.get().as_bytes())
     }
 
+    fn placed(
+        line: &[u8],
+        position: u64,
+        value: &serde_json::value::RawValue,
+        digest: [u8; 32],
+    ) -> Self {
+        let start = value.get().as_ptr().addr() - line.as_ptr().addr();
+        Self::Value {
+            location: Location {
+                position: position + start as u64,
+                length: value.get().len(),
+            },
+            digest,
+        }
+    }
+
     const fn location(self) -> Location {
         match self {
             Self::Entry(location) | Self::Value { location, .. } => location,
@@ -792,6 +862,7 @@ impl CachedEntry {
 
 struct Journal {
     file: File,
+    synced: Arc<File>,
     reads: File,
     path: PathBuf,
     lineage: String,
@@ -802,6 +873,8 @@ struct Journal {
     cached: Option<CachedEntry>,
     sealed: Option<Sealed>,
     sidecar: bool,
+    unsynced: bool,
+    current: bool,
 }
 
 impl Owners for index::Index {
@@ -833,6 +906,7 @@ impl Journal {
         };
         let lineage = compact::lineage(&mut reads, &source)?;
         let mut store = Self {
+            synced: Arc::new(file.try_clone().map_err(backend)?),
             file,
             reads,
             path,
@@ -844,6 +918,8 @@ impl Journal {
             cached: None,
             sealed: None,
             sidecar,
+            unsynced: false,
+            current: false,
         };
         if sidecar {
             store.restore_index();
@@ -943,7 +1019,32 @@ impl Journal {
             self.reopen_compacted()?;
         }
         self.adopt_saved_index();
-        self.refresh_index()
+        self.refresh_index()?;
+        self.current = true;
+        Ok(())
+    }
+
+    fn read(&mut self) -> Result<(), StoreError> {
+        if self.current {
+            return Ok(());
+        }
+        self.sync()
+    }
+
+    const fn stale(&mut self) {
+        self.current = false;
+    }
+
+    fn harden(&mut self) -> Result<(), StoreError> {
+        if !std::mem::take(&mut self.unsynced) {
+            return Ok(());
+        }
+        let _span = tracing::info_span!("durability.jsonl.sync").entered();
+        sync_journal(&self.file).map_err(backend)
+    }
+
+    fn unsynced(&mut self) -> Option<Arc<File>> {
+        std::mem::take(&mut self.unsynced).then(|| Arc::clone(&self.synced))
     }
 
     fn writable(&mut self) -> Result<(), StoreError> {
@@ -997,22 +1098,127 @@ impl Journal {
         reader
             .seek(SeekFrom::Start(self.index.offset))
             .map_err(backend)?;
-        let start = self.index.offset;
-        scan(&mut reader, start, end, until.is_some(), |unit, last| {
-            if let Unit::Entries(lines) = unit {
-                self.settle(&lines)?;
+        let mut position = self.index.offset;
+        let mut carried = Vec::new();
+        loop {
+            let mut block = std::mem::take(&mut carried);
+            let first = position - block.len() as u64;
+            let wanted = block.len().saturating_mul(2).max(RECOVERY_BLOCK_BYTES);
+            let mut torn = false;
+            while position < end && block.len() < wanted {
+                let before = block.len();
+                reader.read_until(b'\n', &mut block).map_err(backend)?;
+                if block.last() != Some(&b'\n') || block.len() == before {
+                    block.truncate(before);
+                    torn = true;
+                    break;
+                }
+                position = position
+                    .checked_add((block.len() - before) as u64)
+                    .ok_or_else(|| backend("JSONL offset overflow"))?;
+                if position > end {
+                    return Err(backend("JSONL entry crossed an appended boundary"));
+                }
             }
-            self.index.last = Some(last);
-            self.index.offset = last
-                .position
-                .checked_add(last.length as u64)
-                .ok_or_else(|| backend("JSONL offset overflow"))?;
-            Ok(())
-        })
+            let mut lines = Vec::new();
+            let mut start = 0;
+            let mut scanned = 0;
+            while scanned < block.len() {
+                let length = block[scanned..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(block.len() - scanned, |at| at + 1);
+                lines.push((
+                    Location {
+                        position: first + scanned as u64,
+                        length,
+                    },
+                    &block[scanned..scanned + length],
+                ));
+                scanned += length;
+            }
+            let last_block = torn || position >= end;
+            let mut group: Vec<Recovered<'_>> = Vec::new();
+            let mut open: Option<Batch> = None;
+            for (index, parsed) in recovered(&lines)?.into_iter().enumerate() {
+                let (location, line) = lines[index];
+                let batch = parsed
+                    .as_ref()
+                    .ok()
+                    .and_then(|(entry, _)| entry.batch.clone())
+                    .filter(|batch| batch.count > 1);
+                if open.is_some() && open != batch {
+                    let (last, ..) = group.pop().ok_or_else(|| backend("empty JSONL batch"))?;
+                    group.clear();
+                    open = None;
+                    self.recovered(None, last)?;
+                    start = index;
+                }
+                match parsed {
+                    Err(error) => {
+                        tracing::warn!(
+                            position = location.position,
+                            %error,
+                            "skipping an unparseable JSONL line"
+                        );
+                        self.recovered(None, location)?;
+                        start = index + 1;
+                    }
+                    Ok((entry, digests)) => match batch {
+                        Some(batch) => {
+                            group.push((location, entry, line, digests));
+                            let complete = group.len() == batch.count;
+                            open = Some(batch);
+                            if complete {
+                                self.recovered(Some(&group), location)?;
+                                group.clear();
+                                open = None;
+                                start = index + 1;
+                            }
+                        }
+                        None => {
+                            self.recovered(Some(&[(location, entry, line, digests)]), location)?;
+                            start = index + 1;
+                        }
+                    },
+                }
+            }
+            if last_block {
+                if until.is_some()
+                    && position == end
+                    && let Some((last, ..)) = group.pop()
+                {
+                    self.recovered(None, last)?;
+                }
+                return Ok(());
+            }
+            let kept = lines.get(start).map_or(block.len(), |(location, _)| {
+                (location.position - first) as usize
+            });
+            drop(group);
+            drop(lines);
+            carried = block.split_off(kept);
+        }
     }
 
-    fn settle(&mut self, lines: &[(Location, Indexed<'_>, &[u8])]) -> Result<(), StoreError> {
-        if let [(_, entry, _)] = lines
+    fn recovered(
+        &mut self,
+        lines: Option<&[Recovered<'_>]>,
+        last: Location,
+    ) -> Result<(), StoreError> {
+        if let Some(lines) = lines {
+            self.settle(lines)?;
+        }
+        self.index.last = Some(last);
+        self.index.offset = last
+            .position
+            .checked_add(last.length as u64)
+            .ok_or_else(|| backend("JSONL offset overflow"))?;
+        Ok(())
+    }
+
+    fn settle(&mut self, lines: &[Recovered<'_>]) -> Result<(), StoreError> {
+        if let [(_, entry, ..)] = lines
             && matches!(entry.kind, Kind::Seal | Kind::Unseal)
         {
             let seal = entry
@@ -1038,17 +1244,17 @@ impl Journal {
         }
         let claims = lines
             .iter()
-            .map(|(_, entry, _)| claim(entry))
+            .map(|(_, entry, ..)| claim(entry))
             .collect::<Result<Vec<_>, _>>()?;
         if matches!(judge(&self.index, &claims)?, Verdict::Stale) {
             tracing::debug!(
-                position = lines.first().map(|(location, _, _)| location.position),
+                position = lines.first().map(|(location, ..)| location.position),
                 "skipping a JSONL entry superseded by a concurrent writer"
             );
             return Ok(());
         }
-        for (location, entry, line) in lines {
-            self.replay(*location, entry, line)?;
+        for (location, entry, line, digests) in lines {
+            self.replay(*location, entry, line, digests)?;
         }
         Ok(())
     }
@@ -1058,6 +1264,7 @@ impl Journal {
         location: Location,
         indexed: &Indexed<'_>,
         line: &[u8],
+        digests: &[[u8; 32]],
     ) -> Result<(), StoreError> {
         let id = indexed
             .state_id
@@ -1096,10 +1303,10 @@ impl Journal {
                     id,
                     revision,
                     location,
-                    records.iter().map(|record| {
+                    records.iter().zip(digests).map(|(record, digest)| {
                         (
                             &*record.key,
-                            Record::located(id, &record.key, line, location.position, record.value),
+                            Record::placed(line, location.position, record.value, *digest),
                         )
                     }),
                 );
@@ -1133,10 +1340,10 @@ impl Journal {
                 }
                 self.added(
                     id,
-                    records.iter().map(|record| {
+                    records.iter().zip(digests).map(|(record, digest)| {
                         (
                             &*record.key,
-                            Record::located(id, &record.key, line, location.position, record.value),
+                            Record::placed(line, location.position, record.value, *digest),
                         )
                     }),
                 );
@@ -1600,12 +1807,7 @@ impl Journal {
             return Err(backend("JSONL append wrote only part of its entries"));
         }
         let end = self.file.stream_position().map_err(backend)?;
-        let started = Instant::now();
-        sync_journal(&self.file).map_err(backend)?;
-        tracing::Span::current().record(
-            "fsync.duration_ms",
-            started.elapsed().as_secs_f64() * 1_000.0,
-        );
+        self.unsynced = true;
         end.checked_sub(bytes.len() as u64)
             .ok_or_else(|| backend("JSONL append position underflow"))
     }
@@ -1614,6 +1816,7 @@ impl Journal {
         let mut bytes = serde_json::to_vec(line).map_err(backend)?;
         bytes.push(b'\n');
         let start = self.append_raw(&bytes)?;
+        self.harden()?;
         self.consume(Some(start))?;
         self.consume(None)
     }
@@ -1626,6 +1829,7 @@ impl Journal {
         .map_err(backend)?;
         bytes.push(b'\n');
         let start = self.append_raw(&bytes)?;
+        self.harden()?;
         self.consume(Some(start))?;
         if self.index.offset != start {
             return Err(backend("JSONL journal did not reach its appended seal"));
@@ -1641,7 +1845,6 @@ impl Journal {
             entry.count = entries.len(),
             log.bytes = tracing::field::Empty,
             encode.duration_ms = tracing::field::Empty,
-            fsync.duration_ms = tracing::field::Empty,
             index.duration_ms = tracing::field::Empty,
             outcome = tracing::field::Empty
         );
@@ -1658,7 +1861,12 @@ impl Journal {
             "encode.duration_ms",
             started.elapsed().as_secs_f64() * 1_000.0,
         );
+        let held = self.unsynced;
         let origin = self.append_raw(&bytes)?;
+        self.unsynced = held
+            || entries
+                .iter()
+                .any(|entry| !matches!(entry, Entry::Acquire { .. }));
         self.consume(Some(origin))?;
         if self.index.offset != origin {
             return Err(backend("JSONL journal did not reach its appended entries"));
@@ -1718,7 +1926,6 @@ impl Journal {
             entry.count = entries.len(),
             log.bytes = tracing::field::Empty,
             encode.duration_ms = tracing::field::Empty,
-            fsync.duration_ms = tracing::field::Empty,
             index.duration_ms = tracing::field::Empty,
             outcome = tracing::field::Empty
         );
@@ -1977,7 +2184,7 @@ impl Journal {
     }
 
     fn read_record(&mut self, id: &str, key: &str) -> Result<Option<String>, StoreError> {
-        self.sync()?;
+        self.read()?;
         self.rebuilt(|store| store.record(id, key))
     }
 
@@ -1986,22 +2193,22 @@ impl Journal {
         id: &str,
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
-        self.sync()?;
+        self.read()?;
         self.rebuilt(|store| keys.iter().map(|key| store.record(id, key)).collect())
     }
 
     fn peek(&mut self, id: &str) -> Result<StoredState, StoreError> {
-        self.sync()?;
+        self.read()?;
         self.state(id)
     }
 
     fn owner(&mut self, id: &str) -> Result<Option<OwnerToken>, StoreError> {
-        self.sync()?;
+        self.read()?;
         Ok(self.index.owners.get(id).cloned())
     }
 
     fn list_records(&mut self, id: &str) -> Result<Vec<String>, StoreError> {
-        self.sync()?;
+        self.read()?;
         self.rebuilt(|store| store.record_keys(id))
     }
 
@@ -2253,8 +2460,14 @@ impl Journal {
             .collect()
     }
 }
+enum Reply {
+    Wanted,
+    Applied,
+    Settled,
+}
+
 pub struct JsonlStore {
-    jobs: mpsc::Sender<Job>,
+    jobs: mpsc::UnboundedSender<Job>,
     closed: Option<oneshot::Receiver<()>>,
     failed: Arc<OnceLock<StoreError>>,
     colocated: Arc<Colocated>,
@@ -2317,7 +2530,7 @@ impl JsonlStore {
     fn start(
         open: impl FnOnce() -> Result<Sessions, StoreError> + Send + 'static,
     ) -> Result<(Self, oneshot::Receiver<Result<(), StoreError>>), StoreError> {
-        let (jobs, mut receiver) = mpsc::channel::<Job>(JOB_CAPACITY);
+        let (jobs, mut receiver) = mpsc::unbounded_channel::<Job>();
         let (finished, closed) = oneshot::channel();
         let (ready, opened) = oneshot::channel();
         let (colocated, hints) = std::sync::mpsc::channel::<(String, String)>();
@@ -2335,12 +2548,78 @@ impl JsonlStore {
                     }
                 };
                 drop(ready.send(Ok(())));
-                while let Some(job) = receiver.blocking_recv() {
-                    for (state_id, beside) in hints.try_iter() {
-                        sessions.colocate(&state_id, &beside);
+                let (syncs, unsynced) =
+                    std::sync::mpsc::channel::<(Vec<Arc<File>>, Vec<Settled>)>();
+                let hardened = Arc::clone(&failure);
+                let syncer = thread::Builder::new()
+                    .name("nanocode-jsonl-sync".into())
+                    .spawn(move || {
+                        while let Ok(first) = unsynced.recv() {
+                            let mut files = Vec::<Arc<File>>::new();
+                            let mut written = Vec::new();
+                            for (unsynced, replies) in
+                                std::iter::once(first).chain(unsynced.try_iter())
+                            {
+                                for file in unsynced {
+                                    if !files.iter().any(|known| Arc::ptr_eq(known, &file)) {
+                                        files.push(file);
+                                    }
+                                }
+                                written.extend(replies);
+                            }
+                            let settled = match hardened.get() {
+                                Some(error) => Err(error.clone()),
+                                None => {
+                                    let _span = tracing::info_span!(
+                                        "durability.jsonl.sync",
+                                        reply.count = written.len()
+                                    )
+                                    .entered();
+                                    files
+                                        .iter()
+                                        .try_for_each(|file| sync_journal(file))
+                                        .map_err(backend)
+                                }
+                            };
+                            if let Err(error) = &settled {
+                                drop(hardened.set(error.clone()));
+                            }
+                            for reply in written {
+                                reply(settled.clone());
+                            }
+                        }
+                    });
+                let syncer = match syncer {
+                    Ok(syncer) => syncer,
+                    Err(error) => return drop(failure.set(backend(error))),
+                };
+                while let Some(first) = receiver.blocking_recv() {
+                    if failure.get().is_some() {
+                        break;
                     }
-                    job(&mut sessions);
+                    sessions.stale();
+                    let mut queued = receiver.len();
+                    let mut written = Vec::new();
+                    let mut job = Some(first);
+                    while let Some(run) = job.take() {
+                        for (state_id, beside) in hints.try_iter() {
+                            sessions.colocate(&state_id, &beside);
+                        }
+                        written.extend(run(&mut sessions));
+                        if queued > 0 {
+                            queued -= 1;
+                            job = receiver.try_recv().ok();
+                        }
+                    }
+                    let unsynced = sessions.unsynced();
+                    if (!written.is_empty() || !unsynced.is_empty())
+                        && syncs.send((unsynced, written)).is_err()
+                    {
+                        break;
+                    }
                 }
+                drop(syncs);
+                drop(syncer.join());
                 drop(sessions);
                 let _ = finished.send(());
             })
@@ -2367,27 +2646,34 @@ impl JsonlStore {
         &mut self,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
-        self.dispatch(false, action)
+        self.dispatch(Reply::Settled, action)
+    }
+
+    fn mark<T: Send + 'static>(
+        &mut self,
+        action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
+    ) -> StoreFuture<'_, Result<T, StoreError>> {
+        self.dispatch(Reply::Applied, action)
     }
 
     fn read<T: Send + 'static>(
         &mut self,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
-        self.dispatch(true, action)
+        self.dispatch(Reply::Wanted, action)
     }
 
     fn dispatch<T: Send + 'static>(
         &mut self,
-        abandonable: bool,
+        answer: Reply,
         action: impl FnOnce(&mut Sessions) -> Result<T, StoreError> + Send + 'static,
     ) -> StoreFuture<'_, Result<T, StoreError>> {
         let parent = tracing::Span::current();
         let queued = Instant::now();
         let (reply, result) = oneshot::channel();
         let job: Job = Box::new(move |sessions| {
-            if abandonable && reply.is_closed() {
-                return;
+            if matches!(answer, Reply::Wanted) && reply.is_closed() {
+                return None;
             }
             let span = tracing::info_span!(
                 parent: &parent,
@@ -2395,12 +2681,30 @@ impl JsonlStore {
                 queue.duration_ms = queued.elapsed().as_secs_f64() * 1_000.0
             );
             let _entered = span.enter();
-            drop(reply.send(action(sessions)));
+            let result = action(sessions);
+            if matches!(answer, Reply::Settled) {
+                return Some(Box::new(move |settled: Result<(), StoreError>| {
+                    drop(reply.send(settled.and(result)));
+                }) as Settled);
+            }
+            drop(reply.send(result));
+            None
         });
         Box::pin(async move {
             let stopped = || self.failed.get().cloned().unwrap_or_else(stopped);
-            self.jobs.send(job).await.map_err(|_| stopped())?;
+            self.jobs.send(job).map_err(|_| stopped())?;
             result.await.map_err(|_| stopped())?
+        })
+    }
+}
+
+impl StoreHandles for JsonlStore {
+    fn handle(&self) -> Box<dyn StateStore> {
+        Box::new(Self {
+            jobs: self.jobs.clone(),
+            closed: None,
+            failed: Arc::clone(&self.failed),
+            colocated: Arc::clone(&self.colocated),
         })
     }
 }
@@ -2411,7 +2715,11 @@ impl StateStore for JsonlStore {
     }
 
     fn pipeline_handle(&self) -> Option<Box<dyn StateStore>> {
-        Some(Box::new(Self {
+        Some(self.handle())
+    }
+
+    fn handles(&self) -> Option<Arc<dyn StoreHandles>> {
+        Some(Arc::new(Self {
             jobs: self.jobs.clone(),
             closed: None,
             failed: Arc::clone(&self.failed),
@@ -2505,14 +2813,14 @@ impl StateStore for JsonlStore {
         owner_id: OwnerId,
     ) -> StoreFuture<'a, Result<OwnedState, StoreError>> {
         let id = id.to_owned();
-        self.write(move |sessions| sessions.acquire(&id, owner_id))
+        self.mark(move |sessions| sessions.acquire(&id, owner_id))
     }
     fn acquire_many(
         &mut self,
         acquisitions: Vec<(String, OwnerId)>,
     ) -> StoreFuture<'_, Vec<Result<OwnedState, StoreError>>> {
         let count = acquisitions.len();
-        let acquired = self.write(move |sessions| Ok(sessions.acquire_many(acquisitions)));
+        let acquired = self.mark(move |sessions| Ok(sessions.acquire_many(acquisitions)));
         Box::pin(async move {
             match acquired.await {
                 Ok(results) => results,

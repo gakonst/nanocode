@@ -416,8 +416,16 @@ pub trait Colocation: Send + Sync {
     fn colocate(&self, state_id: &str, beside: &str);
 }
 
+pub trait StoreHandles: Send + Sync {
+    fn handle(&self) -> Box<dyn StateStore>;
+}
+
 pub trait StateStore: MaybeSend {
     fn colocation(&self) -> Option<Arc<dyn Colocation>> {
+        None
+    }
+
+    fn handles(&self) -> Option<Arc<dyn StoreHandles>> {
         None
     }
 

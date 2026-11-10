@@ -1,6 +1,6 @@
 use super::{
-    CACHE_LIFETIME, HOUR_CACHE_LIFETIME, HistoryMessage, MessagesRequest, Result, State, images,
-    provider_error, spawn_task,
+    CACHE_LIFETIME, HOUR_CACHE_LIFETIME, HistoryMessage, MessagesRequest, Result, State, add_usage,
+    images, provider_error, spawn_task,
 };
 use crate::FrozenWireProfile;
 use nanocode_agent_core::{ClaudeModel, Origin};
@@ -107,7 +107,12 @@ impl State {
         );
         let refreshed = self.refresh(&kept).instrument(span.clone()).await;
         match refreshed {
-            Ok(usage) => {
+            Ok(mut usage) => {
+                usage.estimated_cost = self.estimate_cost(Some(&kept.request), &usage);
+                self.refreshed.update(|spent| match spent {
+                    Some(spent) => add_usage(spent, &usage),
+                    None => *spent = Some(usage.clone()),
+                });
                 span.record("cached_input_tokens", usage.cache_read_input_tokens);
                 span.record(
                     "cache_write_input_tokens",

@@ -1779,6 +1779,7 @@ impl ClaudeBuilder {
             keeping: AtomicBool::new(false),
             kept_changed: Arc::new(Notify::new()),
             refreshes: AtomicU64::new(0),
+            refreshed: Atom::default(),
             this: std::sync::OnceLock::new(),
             context: std::sync::OnceLock::new(),
             given_context,
@@ -3467,6 +3468,7 @@ struct State {
     keeping: AtomicBool,
     kept_changed: Arc<Notify>,
     refreshes: AtomicU64,
+    refreshed: Atom<Option<Usage>>,
     this: std::sync::OnceLock<Weak<Self>>,
 
     context: std::sync::OnceLock<SystemText>,
@@ -7273,6 +7275,9 @@ impl State {
             }
             previous_message_id = Some(response.id.clone());
             add_usage(&mut usage, &response.usage);
+            if let Some(refreshed) = self.refreshed.update(Option::take) {
+                add_usage(&mut usage, &refreshed);
+            }
             let has_server_effects = assistant.content.iter().any(|block| {
                 matches!(
                     block,

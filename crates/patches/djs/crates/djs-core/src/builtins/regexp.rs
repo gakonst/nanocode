@@ -728,7 +728,8 @@ pub(crate) fn original_method(heap: &Heap, which: usize, key: Atom, id: u16) -> 
 pub(crate) fn exec_is_original(heap: &Heap, r: Obj) -> bool {
     let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
     heap.get_prototype_of(r) == Some(proto)
-        && heap.get_own_property(r, atoms::EXEC).is_none()
+        && (heap.only_own_key(r, atoms::LAST_INDEX)
+            || heap.get_own_property(r, atoms::EXEC).is_none())
         && original_method(heap, EXEC, atoms::EXEC, REGEXP_PROTOTYPE_EXEC)
 }
 

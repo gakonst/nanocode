@@ -188,10 +188,14 @@ impl Exec<'_> {
         let Some(ff) = FAST.get(idx) else {
             return Ok(false);
         };
-        let mut args = [Value::UNDEFINED; MAX_ARGS];
-        for (i, a) in args.iter_mut().enumerate().take(argc as usize) {
-            *a = self.get(base + 2 + i as u32);
-        }
+        // (Written slot by slot: filling the array first was a memset call per call.)
+        let args: [Value; MAX_ARGS] = core::array::from_fn(|i| {
+            if (i as u32) < argc {
+                self.get(base + 2 + i as u32)
+            } else {
+                Value::UNDEFINED
+            }
+        });
         let this = self.get(base + 1);
         let v = match ff.call(self.heap, this, &args[..argc as usize], &mut self.fuel) {
             Ok(Some(v)) => v,

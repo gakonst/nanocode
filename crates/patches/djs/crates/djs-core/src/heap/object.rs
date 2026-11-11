@@ -2407,10 +2407,12 @@ impl Heap {
     ) -> Result<bool, HeapError> {
         // A new key on an extensible ordinary object (object literals, the common case):
         // what ordinary_define would do, without building and validating a descriptor.
-        if !matches!(
-            self.object_class(o),
-            ObjectClass::Array | ObjectClass::TypedArray
-        ) && key.as_int().is_none()
+        // An Array takes it for a key that is no index (a match array's `index`,
+        // `input` and `groups`; `length` is never absent).
+        let class = self.object_class(o);
+        if class != ObjectClass::TypedArray
+            && key.as_int().is_none()
+            && (class != ObjectClass::Array || self.atom_array_index(key).is_none())
             && self.find_own(o, key) == Loc::None
             && self.is_extensible(o)
         {

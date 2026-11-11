@@ -1019,6 +1019,23 @@ impl Machine<'_, '_> {
         let fail = Err(Stop::Fail);
         match op {
             MATCH => return Ok(true),
+            // A run of literal characters (a word of the pattern) in one step. Each is
+            // an instruction of its own for the fuel: it costs its unit, and the run
+            // stops where the fuel does.
+            CHAR if word == CHAR => {
+                let mut pc = pc;
+                loop {
+                    if self.read(false) != Some(code.at(pc + 1)) {
+                        return fail;
+                    }
+                    pc += 2;
+                    self.s.pc = pc as u32;
+                    if *fuel <= 0 || code.at(pc) != CHAR {
+                        break;
+                    }
+                    *fuel -= 1;
+                }
+            }
             CHAR => {
                 let Some(mut c) = self.read(back) else {
                     return fail;

@@ -29,8 +29,8 @@ use std::time::Duration;
 
 use psh_engine::HostFile;
 use psh_engine::host::{
-    Access, DirEntry, ExtraMetadata, FileKind, Host, HostFuture, Limit, Metadata, OpenOptions,
-    Signal, SpawnSpec, Spawned,
+    Access, DirEntry, ExtraMetadata, FileKind, Host, HostFuture, KnownEntry, Limit, Metadata,
+    OpenOptions, Signal, SpawnSpec, Spawned,
 };
 
 pub use crate::Leftovers;
@@ -213,10 +213,9 @@ fn ready<T: 'static>(v: T) -> HostFuture<T> {
     Box::pin(std::future::ready(v))
 }
 
-fn metadata(m: &std::fs::Metadata) -> Metadata {
-    use std::os::unix::fs::{FileTypeExt, MetadataExt};
-    let ft = m.file_type();
-    let kind = if ft.is_symlink() {
+fn kind(ft: std::fs::FileType) -> FileKind {
+    use std::os::unix::fs::FileTypeExt;
+    if ft.is_symlink() {
         FileKind::Symlink
     } else if ft.is_dir() {
         FileKind::Dir
@@ -232,9 +231,13 @@ fn metadata(m: &std::fs::Metadata) -> Metadata {
         FileKind::CharDevice
     } else {
         FileKind::Other
-    };
+    }
+}
+
+fn metadata(m: &std::fs::Metadata) -> Metadata {
+    use std::os::unix::fs::MetadataExt;
     Metadata {
-        kind,
+        kind: kind(m.file_type()),
         size: m.len(),
         mode: m.mode() & 0o7777,
         mtime_ns: m.mtime().saturating_mul(1_000_000_000) + m.mtime_nsec(),
@@ -425,6 +428,20 @@ impl Host for UnixHost {
             it.filter_map(Result::ok)
                 .map(|e| DirEntry {
                     name: e.file_name().into_vec(),
+                })
+                .collect()
+        });
+        ready(r)
+    }
+
+    fn read_dir_kinds(&self, p: &[u8]) -> HostFuture<io::Result<Vec<KnownEntry>>> {
+        // The kind is in the entry as the directory was read (d_type); a file system
+        // that does not record it there is asked by std, as `stat` would be.
+        let r = std::fs::read_dir(path(p)).map(|it| {
+            it.filter_map(Result::ok)
+                .map(|e| {
+                    let name = e.file_name().into_vec();
+                    (DirEntry { name }, e.file_type().ok().map(kind))
                 })
                 .collect()
         });

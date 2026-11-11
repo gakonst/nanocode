@@ -83,6 +83,9 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         write_status: None,
         now,
         root_dev: 0,
+        kind_only: parsed.global.follow == Follow::Never
+            && !parsed.global.xdev
+            && kind_only(&parsed.expr),
     };
     for (i, root) in parsed.paths.iter().enumerate() {
         if run.quit {
@@ -179,6 +182,27 @@ struct Run<'p> {
     write_status: Option<i32>,
     now: i64,
     root_dev: u64,
+    /// Nothing the walk does asks more of a file than its kind: where reading the
+    /// directory told it, the file is not asked (no `lstat` per file).
+    kind_only: bool,
+}
+
+/// Whether evaluating `e` reads only a file's path and kind.
+fn kind_only(e: &Expr) -> bool {
+    match e {
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Comma(a, b) => kind_only(a) && kind_only(b),
+        Expr::Not(a) => kind_only(a),
+        Expr::Const(_)
+        | Expr::Name(_)
+        | Expr::Path(_)
+        | Expr::Regex(_)
+        | Expr::Type(_, false)
+        | Expr::Depth(..)
+        | Expr::Prune
+        | Expr::Quit
+        | Expr::Print(_) => true,
+        _ => false,
+    }
 }
 
 type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -261,7 +285,7 @@ impl<'p> Run<'p> {
             let expr = &self.p.expr;
             if !g.depth_first && shown {
                 self.prune = false;
-                self.eval(ctx, expr, &f).await;
+                self.eval_one(ctx, expr, &f).await;
                 if self.prune {
                     descend = false;
                 }
@@ -270,18 +294,41 @@ impl<'p> Run<'p> {
                 descend = false;
             }
             if descend && !self.quit {
-                match ctx.read_dir(&f.path).await {
+                match ctx.read_dir_kinds(&f.path).await {
                     Err(e) => self.fail(ctx, &f.path, &e).await,
                     Ok(mut names) => {
-                        names.sort_by(|a, b| a.name.cmp(&b.name));
+                        names.sort_by(|a, b| a.0.name.cmp(&b.0.name));
                         stack.push((f.meta.dev, f.meta.ino, f.path.clone()));
-                        for n in names {
+                        for (n, kind) in names {
                             if self.quit {
                                 break;
                             }
                             let path = fsutil::join(&f.path, &n.name);
-                            if let Some(child) = self.file(ctx, path, f.depth + 1, f.root).await {
-                                self.visit(ctx, child, stack).await;
+                            let child = match kind {
+                                Some(kind) if self.kind_only => Some(File {
+                                    path,
+                                    depth: f.depth + 1,
+                                    root: f.root,
+                                    meta: Metadata {
+                                        kind,
+                                        size: 0,
+                                        mode: 0,
+                                        mtime_ns: 0,
+                                        dev: 0,
+                                        ino: 0,
+                                        uid: 0,
+                                        gid: 0,
+                                    },
+                                    followed: false,
+                                }),
+                                _ => self.file(ctx, path, f.depth + 1, f.root).await,
+                            };
+                            match child {
+                                Some(child) if child.meta.kind == FileKind::Dir => {
+                                    self.visit(ctx, child, stack).await
+                                }
+                                Some(child) => self.leaf(ctx, child).await,
+                                None => {}
                             }
                         }
                         stack.pop();
@@ -289,9 +336,33 @@ impl<'p> Run<'p> {
                 }
             }
             if g.depth_first && shown && !self.quit {
-                self.eval(ctx, expr, &f).await;
+                self.eval_one(ctx, expr, &f).await;
             }
         })
+    }
+
+    /// [`Self::visit`] for a file that is not a directory: nothing below it, so no
+    /// future on the heap for it.
+    async fn leaf(&mut self, ctx: &mut UtilCtx<'_>, f: File) {
+        ctx.check().await;
+        if self.quit || f.depth < self.p.global.min_depth {
+            return;
+        }
+        if !self.p.global.depth_first {
+            self.prune = false;
+        }
+        let expr = &self.p.expr;
+        self.eval_one(ctx, expr, &f).await;
+    }
+
+    /// [`Self::eval`] without a future on the heap for a single test.
+    async fn eval_one(&mut self, ctx: &mut UtilCtx<'_>, e: &'p Expr, f: &File) -> bool {
+        match e {
+            Expr::And(..) | Expr::Or(..) | Expr::Comma(..) | Expr::Not(_) => {
+                self.eval(ctx, e, f).await
+            }
+            _ => self.test(ctx, e, f).await,
+        }
     }
 
     fn eval<'a>(
@@ -303,16 +374,16 @@ impl<'p> Run<'p> {
         Box::pin(async move {
             match e {
                 Expr::And(a, b) => {
-                    self.eval(ctx, a, f).await && !self.quit && self.eval(ctx, b, f).await
+                    self.eval_one(ctx, a, f).await && !self.quit && self.eval_one(ctx, b, f).await
                 }
                 Expr::Or(a, b) => {
-                    self.eval(ctx, a, f).await || (!self.quit && self.eval(ctx, b, f).await)
+                    self.eval_one(ctx, a, f).await || (!self.quit && self.eval_one(ctx, b, f).await)
                 }
                 Expr::Comma(a, b) => {
-                    self.eval(ctx, a, f).await;
-                    !self.quit && self.eval(ctx, b, f).await
+                    self.eval_one(ctx, a, f).await;
+                    !self.quit && self.eval_one(ctx, b, f).await
                 }
-                Expr::Not(a) => !self.eval(ctx, a, f).await,
+                Expr::Not(a) => !self.eval_one(ctx, a, f).await,
                 _ => self.test(ctx, e, f).await,
             }
         })

@@ -188,6 +188,9 @@ pub struct DirEntry {
     pub name: Vec<u8>,
 }
 
+/// A directory entry and its kind, where listing the directory told it.
+pub type KnownEntry = (DirEntry, Option<FileKind>);
+
 /// How an external process ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitStatus {
@@ -395,6 +398,14 @@ pub trait Host {
     fn access(&self, path: &[u8], mode: Access) -> HostFuture<io::Result<bool>>;
     /// The entries of a directory, without `.` and `..`, in no particular order.
     fn read_dir(&self, path: &[u8]) -> HostFuture<io::Result<Vec<DirEntry>>>;
+    /// [`Host::read_dir`] with the kind of each entry where listing the directory
+    /// tells it (a link is a link, not what it points to), `None` where only `stat`
+    /// does: a walk that needs nothing else about a file then asks nothing more. The
+    /// default knows no kind.
+    fn read_dir_kinds(&self, path: &[u8]) -> HostFuture<io::Result<Vec<KnownEntry>>> {
+        let listed = self.read_dir(path);
+        Box::pin(async move { Ok(listed.await?.into_iter().map(|e| (e, None)).collect()) })
+    }
     /// The physical path: symlinks, `.` and `..` resolved (`pwd -P`, `cd -P`).
     fn canonicalize(&self, path: &[u8]) -> HostFuture<io::Result<Vec<u8>>>;
     /// Finds a command name (no slash) in `path` (the shell's `PATH`, relative entries

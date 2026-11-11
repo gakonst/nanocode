@@ -549,6 +549,12 @@ impl UtilCtx<'_> {
         self.vp.host().read_dir(&self.path(path)).await
     }
 
+    /// The entries of a directory with the kinds its listing tells
+    /// ([`crate::host::Host::read_dir_kinds`]).
+    pub async fn read_dir_kinds(&self, path: &[u8]) -> io::Result<Vec<crate::host::KnownEntry>> {
+        self.vp.host().read_dir_kinds(&self.path(path)).await
+    }
+
     pub async fn access(&self, path: &[u8], mode: Access) -> io::Result<bool> {
         self.vp.host().access(&self.path(path), mode).await
     }

@@ -939,8 +939,13 @@ pub(super) struct CachedAgent {
     checkpoint: Option<Arc<str>>,
     pub(super) checkpoint_ref: Option<Arc<str>>,
     profile: Arc<str>,
-    record: Arc<str>,
-    json: Option<Arc<str>>,
+    written: Written,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Written {
+    Changing(Arc<str>),
+    Settled(Arc<str>),
 }
 
 impl CachedAgent {
@@ -950,8 +955,11 @@ impl CachedAgent {
             checkpoint: record.checkpoint_ref.clone(),
             checkpoint_ref: record.checkpoint_ref.clone(),
             profile: Arc::clone(&record.profile),
-            record: key,
-            json: record.changing().then_some(json),
+            written: if record.changing() {
+                Written::Changing(json)
+            } else {
+                Written::Settled(key)
+            },
         }
     }
 
@@ -1676,34 +1684,44 @@ impl JournalSnapshot {
                 }
                 let record = agent_record(entry.agent, stored, entry.unchanged, &mut records)?;
                 settled = settled && record.settled();
-                let (key, json) = encoded(&record)?;
-                let written = update.agents.insert(
+                let json: Arc<str> = serde_json::to_string(&record)
+                    .map_err(std::io::Error::other)?
+                    .into();
+                let written = if record.changing() {
+                    Written::Changing(Arc::clone(&json))
+                } else {
+                    Written::Settled(record_key(Arc::clone(&json)))
+                };
+                let unchanged = update
+                    .agents
+                    .get(&id)
+                    .map(|stored| stored.written == written);
+                let stored = update.agents.insert(
                     id,
                     CachedAgent {
                         generation: entry.generation,
                         checkpoint: entry.checkpoint,
-                        json: record.changing().then(|| Arc::clone(&json)),
                         checkpoint_ref: record.checkpoint_ref,
                         profile: record.profile,
-                        record: Arc::clone(&key),
+                        written,
                     },
                 );
                 if self.fold {
                     entries.push((id.get(), json));
                     continue;
                 }
-                if written
-                    .as_ref()
-                    .is_some_and(|written| written.record == key)
-                {
+                if unchanged == Some(true) {
                     if update.tree.stub(leaf_of(id)).is_some() {
                         update.settled.insert(leaf_of(id));
                     }
                     continue;
                 }
                 update.unfolded.insert(id);
-                let stored = written
-                    .and_then(|written| written.json)
+                let stored = stored
+                    .and_then(|stored| match stored.written {
+                        Written::Changing(json) => Some(json),
+                        Written::Settled(_) => None,
+                    })
                     .filter(|_| update.changes_fields());
                 match stored.and_then(|stored| changed_fields(&stored, &json)) {
                     Some(changed) => fields.push((id.get(), changed)),

@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt::Write as _};
+use std::{collections::BTreeSet, fmt::Write as _, sync::Arc};
 
 use nanocode_tool_contracts::ToolDefinition;
 use nanocode_types_core::responses::JsonSchema;
@@ -124,12 +124,36 @@ const MCP_TYPESCRIPT_COMPACT: &str = r#"type ImageContent = { type: "image"; dat
 type ContentBlock = { type: "text"; text: string } | ImageContent | { type: "audio"; data: string; mimeType: string } | { type: "resource_link"; uri: string; name: string } | { type: "resource"; resource: { uri: string; text?: string; blob?: string } };
 type CallToolResult<TStructured = { [key: string]: unknown }> = { content: ContentBlock[]; isError?: boolean; structuredContent?: TStructured; [key: string]: unknown };"#;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExecLayout {
+    pub heading: Option<Arc<str>>,
+    pub undeclared: Arc<[String]>,
+}
+
 pub fn exec_description(
     definitions: &[ToolDefinition],
     provider_summaries: &[(String, String)],
     has_deferred_tools: bool,
     code_mode_only: bool,
     compact: bool,
+) -> String {
+    exec_description_with(
+        definitions,
+        provider_summaries,
+        has_deferred_tools,
+        code_mode_only,
+        compact,
+        &ExecLayout::default(),
+    )
+}
+
+pub fn exec_description_with(
+    definitions: &[ToolDefinition],
+    provider_summaries: &[(String, String)],
+    has_deferred_tools: bool,
+    code_mode_only: bool,
+    compact: bool,
+    layout: &ExecLayout,
 ) -> String {
     let base = if compact {
         EXEC_DESCRIPTION_COMPACT
@@ -177,7 +201,11 @@ pub fn exec_description(
     if has_deferred_tools {
         let _ = write!(description, "\n\n{DEFERRED_NESTED_TOOLS_GUIDANCE}");
     }
+    let mut heading = layout.heading.as_deref();
     if !code_mode_only {
+        if let Some(heading) = heading {
+            let _ = write!(description, "\n\n{heading}");
+        }
         return description;
     }
     if has_deferred_tools
@@ -210,17 +238,26 @@ pub fn exec_description(
         let Some(declaration) = exec_tool_declaration(spec) else {
             continue;
         };
+        if let Some(heading) = heading.take() {
+            let _ = write!(description, "\n\n{heading}");
+        }
         let global_name = normalize_identifier(spec.name());
-        let heading = if global_name == spec.name() {
-            format!("### `{global_name}`")
+        if global_name == spec.name() {
+            let _ = write!(description, "\n\n### `{global_name}`");
         } else {
-            format!("### `{global_name}` (`{}`)", spec.name())
-        };
-        let _ = write!(
-            description,
-            "\n\n{heading}\n{}\n\n{declaration}",
-            spec.description(),
-        );
+            let _ = write!(description, "\n\n### `{global_name}` (`{}`)", spec.name());
+        }
+        let _ = write!(description, "\n{}", spec.description());
+        if !layout
+            .undeclared
+            .iter()
+            .any(|name| *name == global_name || name == spec.name())
+        {
+            let _ = write!(description, "\n\n{declaration}");
+        }
+    }
+    if let Some(heading) = heading {
+        let _ = write!(description, "\n\n{heading}");
     }
     description
 }

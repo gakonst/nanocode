@@ -18,6 +18,7 @@ struct ExecSpec {
     definitions: Vec<ToolDefinition>,
     provider_summaries: Vec<(String, String)>,
     flags: (bool, bool, bool),
+    layout: description::ExecLayout,
     spec: ToolDefinition,
 }
 
@@ -28,6 +29,24 @@ pub fn exec_spec(
     code_mode_only: bool,
     compact: bool,
 ) -> ToolDefinition {
+    exec_spec_with(
+        definitions,
+        provider_summaries,
+        has_deferred_tools,
+        code_mode_only,
+        compact,
+        &description::ExecLayout::default(),
+    )
+}
+
+pub fn exec_spec_with(
+    definitions: &[ToolDefinition],
+    provider_summaries: &[(String, String)],
+    has_deferred_tools: bool,
+    code_mode_only: bool,
+    compact: bool,
+    layout: &description::ExecLayout,
+) -> ToolDefinition {
     static LAST: std::sync::OnceLock<nanocode_sync::Atom<Option<std::sync::Arc<ExecSpec>>>> =
         std::sync::OnceLock::new();
     let last = LAST.get_or_init(nanocode_sync::Atom::default);
@@ -36,6 +55,7 @@ pub fn exec_spec(
         last.as_ref()
             .filter(|last| {
                 last.flags == flags
+                    && last.layout == *layout
                     && last.definitions == definitions
                     && last.provider_summaries == provider_summaries
             })
@@ -43,40 +63,26 @@ pub fn exec_spec(
     }) {
         return spec;
     }
-    let spec = build_exec_spec(
-        definitions,
-        provider_summaries,
-        has_deferred_tools,
-        code_mode_only,
-        compact,
-    );
-    last.set(Some(std::sync::Arc::new(ExecSpec {
-        definitions: definitions.to_vec(),
-        provider_summaries: provider_summaries.to_vec(),
-        flags,
-        spec: spec.clone(),
-    })));
-    spec
-}
-
-fn build_exec_spec(
-    definitions: &[ToolDefinition],
-    provider_summaries: &[(String, String)],
-    has_deferred_tools: bool,
-    code_mode_only: bool,
-    compact: bool,
-) -> ToolDefinition {
-    ToolDefinition::custom(
+    let spec = ToolDefinition::custom(
         "exec",
-        description::exec_description(
+        description::exec_description_with(
             definitions,
             provider_summaries,
             has_deferred_tools,
             code_mode_only,
             compact,
+            layout,
         ),
         CustomToolFormat::grammar("lark", GRAMMAR),
-    )
+    );
+    last.set(Some(std::sync::Arc::new(ExecSpec {
+        definitions: definitions.to_vec(),
+        provider_summaries: provider_summaries.to_vec(),
+        flags,
+        layout: layout.clone(),
+        spec: spec.clone(),
+    })));
+    spec
 }
 
 pub fn wait_spec() -> ToolDefinition {

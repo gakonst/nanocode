@@ -229,6 +229,8 @@ pub struct Tools {
 
     pub(crate) brief_code_tools: Arc<[String]>,
 
+    pub(crate) code_tools_layout: crate::code_mode_description::ExecLayout,
+
     pub(crate) text_pins: Option<Arc<dyn crate::TextPins>>,
 }
 
@@ -289,6 +291,7 @@ impl Default for Tools {
             excluded_code_tools: HashSet::new(),
             recovery: None,
             brief_code_tools: Arc::from([]),
+            code_tools_layout: crate::code_mode_description::ExecLayout::default(),
             text_pins: None,
         }
     }
@@ -579,6 +582,18 @@ impl Tools {
     }
 
     #[must_use]
+    pub fn code_tools_heading(mut self, heading: impl Into<Arc<str>>) -> Self {
+        self.code_tools_layout.heading = Some(heading.into());
+        self
+    }
+
+    #[must_use]
+    pub fn undeclared_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.code_tools_layout.undeclared = names.into_iter().collect();
+        self
+    }
+
+    #[must_use]
     pub fn with_descriptions(mut self, descriptions: &HashMap<String, String>) -> Self {
         for registered in &mut self.registered {
             let definition = registered.handler.definition();
@@ -733,6 +748,18 @@ impl ToolsBuilder {
     #[must_use]
     pub fn brief_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.tools = self.tools.brief_code_tools(names);
+        self
+    }
+
+    #[must_use]
+    pub fn code_tools_heading(mut self, heading: impl Into<Arc<str>>) -> Self {
+        self.tools = self.tools.code_tools_heading(heading);
+        self
+    }
+
+    #[must_use]
+    pub fn undeclared_code_tools(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.tools = self.tools.undeclared_code_tools(names);
         self
     }
 

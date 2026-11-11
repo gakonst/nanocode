@@ -425,6 +425,7 @@ struct NativeToolRuntime {
     executors: Option<CodeModeExecutors>,
     sessions: Arc<Atom<HashSet<Arc<str>>>>,
     text_pins: Option<Arc<dyn crate::TextPins>>,
+    layout: crate::code_mode_description::ExecLayout,
 }
 
 #[doc(hidden)]
@@ -486,12 +487,14 @@ impl NativeToolRuntime {
             executors: None,
             sessions: Arc::default(),
             text_pins: None,
+            layout: crate::code_mode_description::ExecLayout::default(),
         }
     }
 
     fn with_tools(mut self, tools: &Tools) -> Self {
         tools.start_providers();
         self.text_pins.clone_from(&tools.text_pins);
+        self.layout.clone_from(&tools.code_tools_layout);
         let registry = Arc::make_mut(&mut self.registry);
         registry.exclude_code_tools(&tools.excluded_code_tools);
         for policy in tools.code_mode_policies() {
@@ -679,12 +682,13 @@ impl NativeToolRuntime {
         let nested = &catalog.ordered;
         let provider_summaries = self.registry.code_mode_tool_summaries();
         let mut native = vec![
-            code_mode::exec_spec(
+            code_mode::exec_spec_with(
                 nested,
                 &provider_summaries,
                 self.deferred_tools_guidance_enabled,
                 self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
                 false,
+                &self.layout,
             ),
             code_mode::wait_spec(),
         ];

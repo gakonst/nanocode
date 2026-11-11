@@ -37,6 +37,7 @@ pub struct EmbeddedToolRuntime {
     policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
     brief: Arc<[String]>,
+    layout: crate::code_mode_description::ExecLayout,
 }
 
 struct LocalTool {
@@ -70,6 +71,7 @@ impl EmbeddedToolRuntime {
             policies: Vec::new(),
             recovery: None,
             brief: Arc::from([]),
+            layout: crate::code_mode_description::ExecLayout::default(),
         }
     }
 
@@ -88,6 +90,7 @@ impl EmbeddedToolRuntime {
         self.policies = tools.code_mode_policies();
         self.recovery = tools.recovery();
         self.brief = Arc::clone(&tools.brief_code_tools);
+        self.layout.clone_from(&tools.code_tools_layout);
         self.local
             .extend(tools.registered.iter().map(|registered| LocalTool {
                 name: Arc::from(registered.handler.definition().name()),
@@ -260,12 +263,13 @@ impl EmbeddedToolRuntime {
                 .into_iter()
                 .partition(|definition| brief_names.iter().any(|name| name == definition.name()));
             let summaries = brief.iter().map(summary).collect::<Vec<_>>();
-            let mut exec = crate::code_mode_spec::exec_spec(
+            let mut exec = crate::code_mode_spec::exec_spec_with(
                 &visible_definitions,
                 &summaries,
                 has_deferred_tools || !deferred.is_empty(),
                 true,
                 true,
+                &self.layout,
             );
             if let ToolDefinition::Custom { description, .. } = &mut exec {
                 if !deferred.is_empty() {

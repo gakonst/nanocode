@@ -77,7 +77,7 @@ pub use replay::{
     MovedCells,
 };
 use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan, Restored};
-pub use spec::{exec_spec, wait_spec};
+pub use spec::{exec_spec, exec_spec_with, wait_spec};
 
 const INITIAL_YIELD: Duration = Duration::from_secs(10);
 const DEFAULT_WAIT_YIELD: Duration = Duration::from_secs(10);

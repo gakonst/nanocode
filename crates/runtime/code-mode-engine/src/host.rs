@@ -255,9 +255,9 @@ impl Machine {
             }
             Replaying::Input(_) => return Ok(Idle::Busy),
         }
-        let awake = matches!(self.body, Body::Awake(_));
+        let parks = self.parks();
         if self.held {
-            return Ok(if awake {
+            return Ok(if parks {
                 Idle::Park
             } else {
                 Idle::Quiet {
@@ -279,7 +279,7 @@ impl Machine {
             return Ok(Idle::Busy);
         }
         let timer = state.next_timeout_wait();
-        if awake && !state.awaits_tools() && timer.is_none_or(|timer| timer >= PARK_AFTER) {
+        if parks && !state.awaits_tools() && timer.is_none_or(|timer| timer >= PARK_AFTER) {
             return Ok(Idle::Park);
         }
         Ok(Idle::Quiet {
@@ -290,10 +290,20 @@ impl Machine {
         })
     }
 
+    fn parks(&self) -> bool {
+        match &self.body {
+            Body::Awake(instance) => {
+                let image = instance.snapshot().image_len();
+                instance.heap_used().saturating_sub(image) < image
+            }
+            Body::Parked(_) => false,
+        }
+    }
+
     fn park_due(&self) -> Option<Instant> {
-        match (&self.body, self.phase) {
-            (Body::Awake(_), Phase::Idle(since)) => since.checked_add(PARK_AFTER),
-            (Body::Awake(_), Phase::Running) | (Body::Parked(_), _) => None,
+        match self.phase {
+            Phase::Idle(since) if self.parks() => since.checked_add(PARK_AFTER),
+            Phase::Idle(_) | Phase::Running => None,
         }
     }
 }

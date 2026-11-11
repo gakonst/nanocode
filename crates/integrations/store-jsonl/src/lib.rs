@@ -138,6 +138,21 @@ fn encode(
     let mut lengths = Vec::with_capacity(entries.len());
     for entry in entries {
         let start = bytes.len();
+        let payload = match entry {
+            Entry::Replace { payload, .. } | Entry::Import { payload, .. } => document(payload),
+            Entry::Acquire { .. } | Entry::Records { .. } => None,
+        };
+        let documents = || {
+            entry
+                .records()
+                .iter()
+                .map(|record| record.value.strip_prefix('=').and_then(document))
+        };
+        let framed = payload.is_some() || documents().any(|document| document.is_some());
+        if framed {
+            bytes.push(b'[');
+        }
+        let first = spans.values.borrow().len();
         let line = match entry {
             Entry::Acquire { state_id, owner } => Line::Acquire {
                 state_id,
@@ -154,7 +169,7 @@ fn encode(
                 state_id,
                 owner,
                 revision: *revision,
-                payload,
+                payload: Stored::of(payload),
                 records: Spanned {
                     value: records,
                     spans,
@@ -172,7 +187,7 @@ fn encode(
                 owner,
                 after: after.as_ref(),
                 revision: *revision,
-                payload,
+                payload: Stored::of(payload),
                 records: Spanned { value: &[], spans },
                 batch,
             },
@@ -198,6 +213,21 @@ fn encode(
             &line,
         )
         .map_err(backend)?;
+        if framed {
+            if let Some(payload) = payload {
+                bytes.push(b',');
+                bytes.extend_from_slice(payload.as_bytes());
+            }
+            for (record, document) in documents().enumerate() {
+                if let Some(document) = document {
+                    bytes.push(b',');
+                    let at = bytes.len();
+                    bytes.extend_from_slice(document.as_bytes());
+                    spans.values.borrow_mut()[first + record] = at..bytes.len();
+                }
+            }
+            bytes.push(b']');
+        }
         bytes.push(b'\n');
         lengths.push(bytes.len() - start);
     }
@@ -237,7 +267,7 @@ enum Line<'a> {
         state_id: &'a str,
         owner: &'a OwnerToken,
         revision: u64,
-        payload: &'a str,
+        payload: Stored<'a>,
         records: Spanned<'a, [StoreRecord]>,
         #[serde(skip_serializing_if = "Option::is_none")]
         batch: Option<&'a Batch>,
@@ -248,7 +278,7 @@ enum Line<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         after: Option<&'a OwnerToken>,
         revision: u64,
-        payload: &'a str,
+        payload: Stored<'a>,
         records: Spanned<'a, [StoreRecord]>,
         #[serde(skip_serializing_if = "Option::is_none")]
         batch: Option<&'a Batch>,
@@ -267,6 +297,103 @@ enum Line<'a> {
     Unseal {
         seal: &'a str,
     },
+}
+
+enum Stored<'a> {
+    Text(&'a str),
+    Document(usize),
+}
+
+impl<'a> Stored<'a> {
+    fn of(text: &'a str) -> Self {
+        document(text).map_or(Self::Text(text), |document| Self::Document(document.len()))
+    }
+}
+
+impl Serialize for Stored<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Text(text) => serializer.serialize_str(text),
+            Self::Document(length) => serializer.serialize_u64(*length as u64),
+        }
+    }
+}
+
+fn document(text: &str) -> Option<&str> {
+    (text.starts_with(['{', '[']) && !text.as_bytes().contains(&b'\n')).then_some(text)
+}
+
+fn text(stored: &[u8], inline: bool) -> Result<String, StoreError> {
+    match stored.first() {
+        Some(b'"') => serde_json::from_slice(stored).map_err(backend),
+        Some(b'{' | b'[') => {
+            let document = std::str::from_utf8(stored).map_err(backend)?;
+            Ok(if inline {
+                format!("={document}")
+            } else {
+                document.to_owned()
+            })
+        }
+        _ => Err(backend("a JSONL value is neither a string nor a document")),
+    }
+}
+
+struct Documents<'a> {
+    line: &'a [u8],
+    at: Option<usize>,
+}
+
+impl<'a> Documents<'a> {
+    fn of<T: Deserialize<'a>>(line: &'a [u8]) -> Result<(T, Self), serde_json::Error> {
+        let Some(entry) = line.strip_prefix(b"[") else {
+            return Ok((serde_json::from_slice(line)?, Self { line, at: None }));
+        };
+        let mut entries = serde_json::Deserializer::from_slice(entry).into_iter::<T>();
+        let entry = entries
+            .next()
+            .ok_or_else(|| de::Error::custom("a JSONL frame holds no entry"))??;
+        Ok((
+            entry,
+            Self {
+                line,
+                at: Some(1 + entries.byte_offset()),
+            },
+        ))
+    }
+
+    fn resolve(&mut self, value: &mut &'a [u8]) -> Result<(), serde_json::Error> {
+        if !value.first().is_some_and(u8::is_ascii_digit) {
+            return Ok(());
+        }
+        let document = std::str::from_utf8(value)
+            .ok()
+            .and_then(|length| length.parse::<usize>().ok())
+            .zip(self.at)
+            .and_then(|(length, at)| {
+                let end = at.checked_add(1)?.checked_add(length)?;
+                (self.line.get(at) == Some(&b','))
+                    .then(|| self.line.get(at + 1..end))
+                    .flatten()
+                    .map(|document| (document, end))
+            });
+        let Some((document, end)) = document else {
+            return Err(de::Error::custom(
+                "a JSONL entry names a document its line does not hold",
+            ));
+        };
+        *value = document;
+        self.at = Some(end);
+        Ok(())
+    }
+
+    fn end(&self) -> Result<(), serde_json::Error> {
+        match self.at {
+            Some(at) if self.line[at..].trim_ascii() != b"]" => Err(de::Error::custom(
+                "a JSONL frame holds more than its entry's documents",
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 struct Claim<'a> {
@@ -409,7 +536,7 @@ fn scan(
         if position > end {
             return Err(backend("JSONL entry crossed an appended boundary"));
         }
-        let parsed = serde_json::from_slice::<Indexed>(&line);
+        let parsed = Indexed::of(&line);
         let batch = parsed
             .as_ref()
             .ok()
@@ -439,8 +566,7 @@ fn scan(
                         let lines = group
                             .iter()
                             .map(|(location, bytes)| {
-                                serde_json::from_slice::<Indexed>(bytes)
-                                    .map(|entry| (*location, entry, bytes.as_slice()))
+                                Indexed::of(bytes).map(|entry| (*location, entry, bytes.as_slice()))
                             })
                             .collect::<Result<Vec<_>, _>>()
                             .map_err(backend)?;
@@ -472,11 +598,11 @@ type Recovered<'a> = (Location, Indexed<'a>, &'a [u8], Vec<[u8; 32]>);
 type Parsed<'a> = Result<(Indexed<'a>, Vec<[u8; 32]>), serde_json::Error>;
 
 fn parsed<'a>((_, line): &(Location, &'a [u8])) -> Parsed<'a> {
-    let entry = serde_json::from_slice::<Indexed<'a>>(line)?;
+    let entry = Indexed::of(line)?;
     let digests = match (&entry.state_id, &entry.records) {
         (Some(id), Some(records)) => records
             .iter()
-            .map(|record| value_digest(id, &record.key, record.value.get().as_bytes()))
+            .map(|record| value_digest(id, &record.key, record.value))
             .collect(),
         _ => Vec::new(),
     };
@@ -514,6 +640,18 @@ fn recovered<'a>(lines: &[(Location, &'a [u8])]) -> Result<Vec<Parsed<'a>>, Stor
         }
         Ok(all)
     })
+}
+
+fn stored_records(records: &[IndexedRecord<'_>]) -> Result<Vec<StoreRecord>, StoreError> {
+    records
+        .iter()
+        .map(|record| {
+            Ok(StoreRecord {
+                key: record.key.to_string(),
+                value: text(record.value, true)?,
+            })
+        })
+        .collect()
 }
 
 fn claim<'a>(entry: &'a Indexed<'_>) -> Result<Claim<'a>, StoreError> {
@@ -611,7 +749,10 @@ impl Serialize for Spanned<'_, StoreRecord> {
 impl Serialize for Spanned<'_, str> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let start = self.spans.written.get();
-        let written = serializer.serialize_str(self.value)?;
+        let written = match self.value.strip_prefix('=').and_then(document) {
+            Some(document) => serializer.serialize_u64(document.len() as u64)?,
+            None => serializer.serialize_str(self.value)?,
+        };
         self.spans
             .values
             .borrow_mut()
@@ -649,11 +790,6 @@ enum Kind {
 }
 
 #[derive(Deserialize)]
-struct Records {
-    records: Vec<StoreRecord>,
-}
-
-#[derive(Deserialize)]
 struct Indexed<'a> {
     #[serde(rename = "type")]
     kind: Kind,
@@ -662,7 +798,8 @@ struct Indexed<'a> {
     owner: Option<OwnerToken>,
     after: Option<OwnerToken>,
     revision: Option<u64>,
-    payload: Option<Text>,
+    #[serde(borrow, default, deserialize_with = "stored_payload")]
+    payload: Option<&'a [u8]>,
     #[serde(borrow)]
     records: Option<Vec<IndexedRecord<'a>>>,
     batch: Option<Batch>,
@@ -671,29 +808,46 @@ struct Indexed<'a> {
     pid: Option<u32>,
 }
 
-#[derive(Deserialize, Serialize)]
+impl<'a> Indexed<'a> {
+    fn of(line: &'a [u8]) -> Result<Self, serde_json::Error> {
+        let (mut entry, mut documents) = Documents::of::<Self>(line)?;
+        for value in entry.payload.iter_mut().chain(
+            entry
+                .records
+                .iter_mut()
+                .flatten()
+                .map(|record| &mut record.value),
+        ) {
+            documents.resolve(value)?;
+        }
+        documents.end()?;
+        Ok(entry)
+    }
+}
+
+#[derive(Deserialize)]
 struct IndexedRecord<'a> {
     #[serde(borrow)]
     key: Cow<'a, str>,
-    #[serde(borrow, deserialize_with = "raw_text")]
-    value: &'a serde_json::value::RawValue,
+    #[serde(borrow, deserialize_with = "stored")]
+    value: &'a [u8],
 }
 
 struct Text;
 
-impl<'de> Deserialize<'de> for Text {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        raw_text(deserializer)?;
-        Ok(Self)
-    }
+fn stored_payload<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<&'de [u8]>, D::Error> {
+    stored(deserializer).map(Some)
 }
 
-fn raw_text<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<&'de serde_json::value::RawValue, D::Error> {
+fn stored<'de, D: Deserializer<'de>>(deserializer: D) -> Result<&'de [u8], D::Error> {
     let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+    if raw.get().starts_with(|first: char| first.is_ascii_digit()) {
+        return Ok(raw.get().as_bytes());
+    }
     if !raw.get().starts_with('"') {
-        return Err(de::Error::custom("expected a string"));
+        return Err(de::Error::custom("expected a string or a document"));
     }
     if raw.get().contains("\\u") {
         let mut decoder = serde_json::Deserializer::from_str(raw.get());
@@ -701,7 +855,7 @@ fn raw_text<'de, D: Deserializer<'de>>(
             .deserialize_str(TextVisitor)
             .map_err(de::Error::custom)?;
     }
-    Ok(raw)
+    Ok(raw.get().as_bytes())
 }
 
 struct TextVisitor;
@@ -744,28 +898,17 @@ impl Record {
         }
     }
 
-    fn located(
-        id: &str,
-        key: &str,
-        line: &[u8],
-        position: u64,
-        value: &serde_json::value::RawValue,
-    ) -> Self {
-        let start = value.get().as_ptr().addr() - line.as_ptr().addr();
-        Self::value(id, key, position + start as u64, value.get().as_bytes())
+    fn located(id: &str, key: &str, line: &[u8], position: u64, value: &[u8]) -> Self {
+        let start = value.as_ptr().addr() - line.as_ptr().addr();
+        Self::value(id, key, position + start as u64, value)
     }
 
-    fn placed(
-        line: &[u8],
-        position: u64,
-        value: &serde_json::value::RawValue,
-        digest: [u8; 32],
-    ) -> Self {
-        let start = value.get().as_ptr().addr() - line.as_ptr().addr();
+    fn placed(line: &[u8], position: u64, value: &[u8], digest: [u8; 32]) -> Self {
+        let start = value.as_ptr().addr() - line.as_ptr().addr();
         Self::Value {
             location: Location {
                 position: position + start as u64,
-                length: value.get().len(),
+                length: value.len(),
             },
             digest,
         }
@@ -811,18 +954,10 @@ struct StoredEntry<'a> {
     #[serde(rename = "owner")]
     _owner: OwnerToken,
     revision: u64,
-    #[serde(borrow, deserialize_with = "raw_text")]
-    payload: &'a serde_json::value::RawValue,
+    #[serde(borrow, deserialize_with = "stored")]
+    payload: &'a [u8],
     #[serde(borrow)]
-    records: Vec<StoredRecord<'a>>,
-}
-
-#[derive(Deserialize)]
-struct StoredRecord<'a> {
-    #[serde(borrow)]
-    key: Cow<'a, str>,
-    #[serde(borrow, deserialize_with = "raw_text")]
-    value: &'a serde_json::value::RawValue,
+    records: Vec<IndexedRecord<'a>>,
 }
 
 struct CachedEntry {
@@ -836,13 +971,19 @@ struct CachedEntry {
 
 impl CachedEntry {
     fn decode(location: Location, bytes: Vec<u8>) -> Result<Self, StoreError> {
-        let entry: StoredEntry = serde_json::from_slice(&bytes).map_err(backend)?;
+        let (mut entry, mut documents) = Documents::of::<StoredEntry>(&bytes).map_err(backend)?;
         if !matches!(entry.kind, Kind::Replace | Kind::Import) {
             return Err(backend("JSONL index does not reference a replacement"));
         }
-        let range = |value: &serde_json::value::RawValue| {
-            let start = value.get().as_ptr().addr() - bytes.as_ptr().addr();
-            start..start + value.get().len()
+        for value in std::iter::once(&mut entry.payload)
+            .chain(entry.records.iter_mut().map(|record| &mut record.value))
+        {
+            documents.resolve(value).map_err(backend)?;
+        }
+        documents.end().map_err(backend)?;
+        let range = |value: &[u8]| {
+            let start = value.as_ptr().addr() - bytes.as_ptr().addr();
+            start..start + value.len()
         };
         let payload = range(entry.payload);
         let mut records = HashMap::with_capacity(entry.records.len());
@@ -861,8 +1002,8 @@ impl CachedEntry {
         })
     }
 
-    fn text(&self, range: Range<usize>) -> Result<String, StoreError> {
-        serde_json::from_slice(&self.bytes[range]).map_err(backend)
+    fn text(&self, range: Range<usize>, inline: bool) -> Result<String, StoreError> {
+        text(&self.bytes[range], inline)
     }
 }
 
@@ -1285,8 +1426,8 @@ impl Journal {
         match indexed.kind {
             Kind::Acquire => self.acquired(id, owner),
             Kind::Replace => {
-                let (Some(revision), Some(Text), Some(records)) =
-                    (indexed.revision, &indexed.payload, &indexed.records)
+                let (Some(revision), Some(_), Some(records)) =
+                    (indexed.revision, indexed.payload, &indexed.records)
                 else {
                     return Err(backend("invalid JSONL replacement entry"));
                 };
@@ -1298,8 +1439,7 @@ impl Journal {
                         || known.is_some_and(|known| known.contains_key(&record.key))
                 });
                 if repeated {
-                    let Records { records } = serde_json::from_slice(line).map_err(backend)?;
-                    self.validate_records(id, &records)?;
+                    self.validate_records(id, &stored_records(records)?)?;
                 }
                 self.replaced(
                     id,
@@ -1315,7 +1455,7 @@ impl Journal {
                 Ok(())
             }
             Kind::Import => {
-                let (Some(revision), Some(Text)) = (indexed.revision, &indexed.payload) else {
+                let (Some(revision), Some(_)) = (indexed.revision, indexed.payload) else {
                     return Err(backend("invalid JSONL import entry"));
                 };
                 self.imported(id, owner, revision, location)
@@ -1333,8 +1473,7 @@ impl Journal {
                     !keys.insert(&*record.key)
                         || known.is_some_and(|known| known.contains_key(&record.key))
                 }) {
-                    let Records { records } = serde_json::from_slice(line).map_err(backend)?;
-                    self.validate_records(id, &records)?;
+                    self.validate_records(id, &stored_records(records)?)?;
                 }
                 self.added(
                     id,
@@ -1479,7 +1618,7 @@ impl Journal {
         }
         Ok(StoredState {
             revision: entry.revision,
-            payload: Some(entry.text(entry.payload.clone())?),
+            payload: Some(entry.text(entry.payload.clone(), false)?),
         })
     }
 
@@ -1640,7 +1779,7 @@ impl Journal {
         if value_digest(id, key, &bytes) != digest {
             return Err(self.invalidated("JSONL record index does not match its journal"));
         }
-        serde_json::from_slice(&bytes).map_err(|error| self.invalidated(error))
+        text(&bytes, true).map_err(|error| self.invalidated(error))
     }
 
     #[cfg(unix)]
@@ -1675,7 +1814,7 @@ impl Journal {
                     if value_digest(id, key, &stored) != *digest {
                         return None;
                     }
-                    serde_json::from_slice::<String>(&stored).ok().map(Some)
+                    text(&stored, true).ok().map(Some)
                 })
                 .collect::<Option<Vec<_>>>()
         };
@@ -1715,7 +1854,7 @@ impl Journal {
         else {
             return Err(self.invalidated("JSONL record index does not reference its record"));
         };
-        let value = match entry.text(range) {
+        let value = match entry.text(range, true) {
             Ok(value) => value,
             Err(error) => return Err(self.invalidated(error)),
         };
@@ -1799,7 +1938,15 @@ impl Journal {
         };
         if let Record::Value { location, digest } = indexed {
             encoded.clear();
-            serde_json::to_writer(&mut *encoded, &record.value).map_err(backend)?;
+            match record
+                .value
+                .strip_prefix('=')
+                .and_then(document)
+                .filter(|document| document.len() == location.length)
+            {
+                Some(document) => encoded.extend_from_slice(document.as_bytes()),
+                None => serde_json::to_writer(&mut *encoded, &record.value).map_err(backend)?,
+            }
             if encoded.len() == location.length {
                 stored.resize(location.length, 0);
                 if let Err(error) = self

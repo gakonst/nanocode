@@ -9,8 +9,8 @@ use serde_json::value::RawValue;
 use std::borrow::Cow;
 
 use super::{
-    Claim, Claimed, Counted, IndexedRecord, JOURNAL_READ_BUFFER_BYTES, Journal, Kind, Location,
-    OwnerToken, Owners, Record, Spanned, Spans, StoreError, Unit, Verdict,
+    Claim, Claimed, Counted, Documents, IndexedRecord, JOURNAL_READ_BUFFER_BYTES, Journal, Kind,
+    Location, OwnerToken, Owners, Record, Spanned, Spans, StoreError, Unit, Verdict,
 };
 use super::{backend, claim, identity, identity_changed, index::Index, judge, scan, value_digest};
 use nanocode_durability_core::OwnerId;
@@ -25,12 +25,6 @@ pub struct CompactionStats {
 #[derive(Deserialize)]
 struct Header {
     nanocode_journal: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Payload<'a> {
-    #[serde(borrow)]
-    payload: &'a RawValue,
 }
 
 #[derive(Default)]
@@ -84,7 +78,7 @@ enum Line<'a> {
         state_id: &'a str,
         owner: &'a OwnerToken,
         revision: u64,
-        payload: &'a RawValue,
+        payload: Kept<'a>,
         records: Spanned<'a, [IndexedRecord<'a>]>,
     },
     Import {
@@ -93,7 +87,7 @@ enum Line<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         after: Option<&'a OwnerToken>,
         revision: u64,
-        payload: &'a RawValue,
+        payload: Kept<'a>,
         records: Spanned<'a, [IndexedRecord<'a>]>,
         #[serde(skip_serializing_if = "Option::is_none")]
         nanocode_journal: Option<&'a str>,
@@ -129,15 +123,34 @@ impl Serialize for Spanned<'_, IndexedRecord<'_>> {
     }
 }
 
-impl Serialize for Spanned<'_, RawValue> {
+impl Serialize for Spanned<'_, [u8]> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let start = self.spans.written.get();
-        let written = self.value.serialize(serializer)?;
+        let written = Kept(self.value).serialize(serializer)?;
         self.spans
             .values
             .borrow_mut()
             .push(start..self.spans.written.get());
         Ok(written)
+    }
+}
+
+struct Kept<'a>(&'a [u8]);
+
+impl Kept<'_> {
+    fn document(&self) -> bool {
+        !self.0.starts_with(b"\"")
+    }
+}
+
+impl Serialize for Kept<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.document() {
+            return serializer.serialize_u64(self.0.len() as u64);
+        }
+        serde_json::from_slice::<&RawValue>(self.0)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
     }
 }
 
@@ -150,7 +163,7 @@ pub(super) fn lineage(file: &mut File, source: &str) -> Result<String, StoreErro
     if line.last() != Some(&b'\n') {
         return Ok(source.into());
     }
-    let header: Header = serde_json::from_slice(&line).map_err(backend)?;
+    let (header, _) = Documents::of::<Header>(&line).map_err(backend)?;
     Ok(header.nanocode_journal.unwrap_or_else(|| source.into()))
 }
 
@@ -254,7 +267,7 @@ impl Journal {
             .as_file()
             .set_permissions(metadata.permissions())
             .map_err(backend)?;
-        let empty = RawValue::from_string("\"\"".into()).map_err(backend)?;
+        let empty: &[u8] = b"\"\"";
         let mut input = BufReader::with_capacity(
             JOURNAL_READ_BUFFER_BYTES,
             File::open(&self.path).map_err(backend)?,
@@ -307,14 +320,13 @@ impl Journal {
                     .ok_or_else(|| backend("missing owner"))?;
                 let spans = Spans::default();
                 encoded.clear();
-                let counted = Counted {
-                    bytes: &mut encoded,
-                    spans: &spans,
-                };
                 match entry.kind {
                     Kind::Acquire => {
                         serde_json::to_writer(
-                            counted,
+                            Counted {
+                                bytes: &mut encoded,
+                                spans: &spans,
+                            },
                             &Line::Acquire {
                                 state_id: id,
                                 owner,
@@ -340,7 +352,7 @@ impl Journal {
                                 .get(id)
                                 .is_some_and(|state| state.location == *location)
                         {
-                            Some(serde_json::from_slice::<Payload<'_>>(line).map_err(backend)?)
+                            entry.payload
                         } else {
                             None
                         };
@@ -358,11 +370,7 @@ impl Journal {
                                 .then(|| {
                                     (
                                         Record::Entry(indexed),
-                                        value_digest(
-                                            id,
-                                            &record.key,
-                                            record.value.get().as_bytes(),
-                                        ),
+                                        value_digest(id, &record.key, record.value),
                                     )
                                 }),
                                 Some(Record::Value {
@@ -408,9 +416,13 @@ impl Journal {
                                 None => stats.records_removed += 1,
                             }
                         }
-                        let payload = original
-                            .as_ref()
-                            .map_or(empty.as_ref(), |value| value.payload);
+                        let payload = Kept(original.unwrap_or(empty));
+                        let framed = payload.document()
+                            || records.iter().any(|record| Kept(record.value).document());
+                        if framed {
+                            encoded.push(b'[');
+                        }
+                        let kept = payload.document().then_some(payload.0);
                         let records_line = Spanned {
                             value: records.as_slice(),
                             spans: &spans,
@@ -439,7 +451,29 @@ impl Journal {
                                 records: records_line,
                             },
                         };
-                        serde_json::to_writer(counted, &written_line).map_err(backend)?;
+                        serde_json::to_writer(
+                            Counted {
+                                bytes: &mut encoded,
+                                spans: &spans,
+                            },
+                            &written_line,
+                        )
+                        .map_err(backend)?;
+                        if framed {
+                            if let Some(payload) = kept {
+                                encoded.push(b',');
+                                encoded.extend_from_slice(payload);
+                            }
+                            for (index, record) in records.iter().enumerate() {
+                                if Kept(record.value).document() {
+                                    encoded.push(b',');
+                                    let at = encoded.len();
+                                    encoded.extend_from_slice(record.value);
+                                    spans.values.borrow_mut()[index] = at..encoded.len();
+                                }
+                            }
+                            encoded.push(b']');
+                        }
                         if original.is_some() {
                             current.insert(
                                 position,

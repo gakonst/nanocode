@@ -1,11 +1,11 @@
 use std::{
     borrow::Cow,
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
-    sync::{Arc, OnceLock},
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 
-use djs_embed::{HostCall, HostFn, Snapshot, Source, Throw};
+use djs_embed::{Data, HostCall, HostFn, Snapshot, Source, Throw};
 use nanocode_platform::Instant;
 use nanocode_sync::Atom;
 use serde::{Deserialize, Serialize, Serializer};
@@ -94,8 +94,9 @@ const CLEAR_TIMEOUT: u32 = 8;
 const VALUE: u32 = 9;
 const SETTLED: u32 = 10;
 pub(crate) const NEXT: u32 = 11;
+const CATALOG: u32 = 12;
 
-const HOST_FNS: [(u32, &str); 10] = [
+const HOST_FNS: [(u32, &str); 11] = [
     (TOOL, "__nanocodeTool"),
     (CONTENT, "__nanocodeContent"),
     (TEXT, "__nanocodeText"),
@@ -106,6 +107,7 @@ const HOST_FNS: [(u32, &str); 10] = [
     (CLEAR_TIMEOUT, "__nanocodeClearTimeout"),
     (VALUE, "__nanocodeValue"),
     (SETTLED, "__nanocodeSettled"),
+    (CATALOG, "__nanocodeCatalog"),
 ];
 
 #[derive(Clone)]
@@ -114,7 +116,7 @@ pub(crate) enum Unprepared {
     Bootstrap(String),
 }
 
-fn build(prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
+fn build(tools: &CellTools, prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
     let values = CODE_VALUES
         .split_once("export const")
         .ok_or_else(|| {
@@ -123,6 +125,10 @@ fn build(prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
         .0;
     let mut builder = Snapshot::builder()
         .frozen_builtins(false)
+        .global(
+            "__nanocodeDefinitions",
+            Data::from(tools.definitions.as_str()),
+        )
         .host_fn(HostFn::asynchronous(NEXT, "__nanocodeNext"));
     for (id, name) in HOST_FNS {
         builder = builder.host_fn(HostFn::sync(id, name));
@@ -155,28 +161,40 @@ fn build(prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
         })
 }
 
-pub(crate) fn snapshot(prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
-    type Preludes = Vec<(Arc<str>, Snapshot)>;
-    static BARE: OnceLock<Result<Snapshot, Unprepared>> = OnceLock::new();
-    static PRELUDES: OnceLock<Atom<Preludes>> = OnceLock::new();
-    let Some(source) = prelude else {
-        return BARE.get_or_init(|| build(None)).clone();
-    };
-    let preludes = PRELUDES.get_or_init(Atom::default);
-    let find = |list: &Preludes| {
+struct Prepared {
+    tools: Weak<CellTools>,
+    prelude: Option<Arc<str>>,
+    snapshot: Snapshot,
+}
+
+pub(crate) fn snapshot(
+    tools: &Arc<CellTools>,
+    prelude: Option<&Arc<str>>,
+) -> Result<Snapshot, Unprepared> {
+    type Snapshots = Vec<Arc<Prepared>>;
+    static SNAPSHOTS: OnceLock<Atom<Snapshots>> = OnceLock::new();
+    let snapshots = SNAPSHOTS.get_or_init(Atom::default);
+    let find = |list: &Snapshots| {
         list.iter()
-            .find(|(text, _)| **text == *source)
-            .map(|(_, snapshot)| snapshot.clone())
+            .find(|prepared| {
+                std::ptr::eq(prepared.tools.as_ptr(), Arc::as_ptr(tools))
+                    && prepared.prelude.as_deref() == prelude.map(|prelude| &**prelude)
+            })
+            .map(|prepared| prepared.snapshot.clone())
     };
-    if let Some(snapshot) = preludes.read(find) {
+    if let Some(snapshot) = snapshots.read(find) {
         return Ok(snapshot);
     }
-    let built = build(Some(source))?;
-    let source: Arc<str> = Arc::from(source);
-    Ok(preludes.update(|list| {
+    let prepared = Arc::new(Prepared {
+        tools: Arc::downgrade(tools),
+        prelude: prelude.cloned(),
+        snapshot: build(tools, prelude.map(|prelude| &**prelude))?,
+    });
+    Ok(snapshots.update(|list| {
         find(list).unwrap_or_else(|| {
-            list.push((Arc::clone(&source), built.clone()));
-            built.clone()
+            list.retain(|prepared| prepared.tools.strong_count() > 0);
+            list.push(Arc::clone(&prepared));
+            prepared.snapshot.clone()
         })
     }))
 }
@@ -193,6 +211,7 @@ pub(crate) struct ExecutionState {
     pub(crate) execution_id: u64,
     pub(crate) events: VecDeque<RuntimeEvent>,
     stored: HashMap<String, Arc<RawValue>>,
+    tools: Option<Arc<CellTools>>,
     pending_tools: HashSet<u64>,
     pending_timeouts: HashMap<u64, PendingTimeout>,
     timeout_order: BTreeSet<(Instant, u64)>,
@@ -231,6 +250,7 @@ impl ExecutionState {
             execution_id: 0,
             events: VecDeque::new(),
             stored: HashMap::new(),
+            tools: None,
             pending_tools: HashSet::new(),
             pending_timeouts: HashMap::new(),
             timeout_order: BTreeSet::new(),
@@ -248,6 +268,7 @@ impl ExecutionState {
         &mut self,
         execution_id: u64,
         stored: HashMap<String, Arc<RawValue>>,
+        tools: Arc<CellTools>,
         journaling: Option<CellJournaling>,
     ) {
         let (journal, replay) = journaling.map_or((None, None), |journaling| {
@@ -264,6 +285,7 @@ impl ExecutionState {
             execution_id,
             events: std::mem::take(&mut self.events),
             stored,
+            tools: Some(tools),
             journal,
             replay,
             ..Self::new()
@@ -271,6 +293,7 @@ impl ExecutionState {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.tools = None;
         self.pending_tools.clear();
         self.pending_timeouts.clear();
         self.timeout_order.clear();
@@ -488,6 +511,16 @@ impl ExecutionState {
             SETTLED => {
                 self.settling = true;
                 Ok(Reply::Nothing)
+            }
+            CATALOG => {
+                let schemas = call.arg(0).as_number().is_some_and(|kind| kind != 0.0);
+                Ok(self.tools.as_ref().map_or(Reply::Nothing, |tools| {
+                    Reply::Text(Cow::Borrowed(if schemas {
+                        &tools.schemas
+                    } else {
+                        &tools.descriptions
+                    }))
+                }))
             }
             _ => crate::bytes::host_call(self, call),
         }
@@ -757,9 +790,9 @@ struct ExecutionTerminal {
 }
 
 pub struct CellTools {
-    pub(crate) definitions: String,
-    pub(crate) descriptions: String,
-    pub(crate) schemas: String,
+    definitions: String,
+    descriptions: String,
+    schemas: String,
 }
 
 const DESCRIPTION_FIELD: &str = "description";

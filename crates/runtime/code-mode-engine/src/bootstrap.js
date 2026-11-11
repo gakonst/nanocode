@@ -16,6 +16,8 @@
   const nativeValue = native("__nanocodeValue");
   const nativeSettled = native("__nanocodeSettled");
   const nativeNext = native("__nanocodeNext");
+  const nativeCatalog = native("__nanocodeCatalog");
+  const definitionsJson = native("__nanocodeDefinitions");
   const preludeSource = native("__nanocodePrelude");
   const nativeBytes = {
     put: native("__nanocodeBytesPut"),
@@ -444,8 +446,7 @@
     }
   }
 
-  const runCell = async function (source, definitionsJson, descriptionsJson, schemasJson) {
-    pump();
+  const prepareCell = function () {
     const definitions = jsonParse(definitionsJson);
     let descriptions;
     let schemas;
@@ -533,7 +534,7 @@
 
     function exit() { throw EXIT; }
 
-    const describe = (index) => (descriptions ??= jsonParse(descriptionsJson))[index];
+    const describe = (index) => (descriptions ??= jsonParse(nativeCatalog(0)))[index];
     const allTools = Object.freeze(definitions.map((tool, index) => {
       return Object.freeze(Object.defineProperty({ name: tool.name }, "description", {
         enumerable: true,
@@ -548,93 +549,58 @@
         tool.name === name || tool.tool_name === name
       );
       if (index < 0) return undefined;
-      schemas ??= jsonParse(schemasJson);
+      schemas ??= jsonParse(nativeCatalog(1));
       const [inputSchema, outputSchema] = schemas[index];
       return cloneValue({
         inputSchema: inputSchema ?? null,
         outputSchema: outputSchema ?? null,
       });
     }
-    try {
-      const prelude = preludeSource
-        ? preludeSource(
-          tools,
-          (name, input) => invokeTool(name, input, true),
-        ) ?? {}
-        : {};
-      const preludeNames = Object.keys(prelude);
-      const cellGlobals = {
-        tools,
-        ALL_TOOLS: allTools,
-        toolSchema,
-        text,
-        image,
-        audio,
-        generatedImage,
-        notify,
-        store,
-        load,
-        yield_control,
-        exit,
-        setTimeout,
-        clearTimeout,
-        console,
-        ...prelude,
-      };
-      for (const name of Object.keys(cellGlobals)) {
+    const cellGlobals = {
+      tools,
+      ALL_TOOLS: allTools,
+      toolSchema,
+      text,
+      image,
+      audio,
+      generatedImage,
+      notify,
+      store,
+      load,
+      yield_control,
+      exit,
+      setTimeout,
+      clearTimeout,
+      console,
+    };
+    const defineGlobals = (globals) => {
+      for (const name of Object.keys(globals)) {
         Object.defineProperty(globalThis, name, {
-          value: cellGlobals[name],
+          value: globals[name],
           writable: true,
           configurable: true,
           enumerable: false,
         });
       }
-      const script = new AsyncFunction(
-        "tools",
-        "ALL_TOOLS",
-        "toolSchema",
-        "text",
-        "image",
-        "audio",
-        "generatedImage",
-        "notify",
-        "store",
-        "load",
-        "yield_control",
-        "exit",
-        "setTimeout",
-        "clearTimeout",
-        "console",
-        ...preludeNames,
-        source,
-      );
-      await finish(script(
-        tools,
-        allTools,
-        toolSchema,
-        text,
-        image,
-        audio,
-        generatedImage,
-        notify,
-        store,
-        load,
-        yield_control,
-        exit,
-        setTimeout,
-        clearTimeout,
-        console,
-        ...preludeNames.map((name) => prelude[name]),
-      ));
-      return terminal();
-    } catch (error) {
-      return jsonStringify({
-        type: "error",
-        message: failure ?? thrownText(error),
-        stored: Object.fromEntries(storedWrites),
-      });
-    }
+    };
+    defineGlobals(cellGlobals);
+    return async function runCell(source) {
+      pump();
+      try {
+        if (preludeSource) {
+          defineGlobals(preludeSource(tools, (name, input) => invokeTool(name, input, true)) ?? {});
+        }
+        const script = new AsyncFunction(source);
+        await finish(script());
+        return terminal();
+      } catch (error) {
+        return jsonStringify({
+          type: "error",
+          message: failure ?? thrownText(error),
+          stored: Object.fromEntries(storedWrites),
+        });
+      }
+    };
   };
-  runCell.uncaught = uncaught;
-  return runCell;
+  return prepareCell();
 })

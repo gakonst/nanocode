@@ -267,8 +267,9 @@ impl EmbeddedHost {
         journaling: Option<CellJournaling>,
     ) -> Result<(), String> {
         self.machine = None;
-        self.state.begin(execution_id, stored, journaling);
-        let snapshot = match snapshot(prelude.as_deref()) {
+        let snapshot = snapshot(&tools, prelude.as_ref());
+        self.state.begin(execution_id, stored, tools, journaling);
+        let snapshot = match snapshot {
             Ok(snapshot) => snapshot,
             Err(Unprepared::Prelude(message)) => {
                 self.state.send(RuntimeEvent::Error {
@@ -298,16 +299,7 @@ impl EmbeddedHost {
             .set_time_zone_offset(chrono::Local::now().offset().local_minus_utc() / 60)
             .map_err(failure)?;
         instance
-            .start_export(
-                BOOTSTRAP_MODULE,
-                RUN_CELL,
-                &[
-                    Value::Str(source),
-                    Value::Str(&tools.definitions),
-                    Value::Str(&tools.descriptions),
-                    Value::Str(&tools.schemas),
-                ],
-            )
+            .start_export(BOOTSTRAP_MODULE, RUN_CELL, &[Value::Str(source)])
             .map_err(failure)?;
         self.machine = Some(Machine {
             instance,

@@ -30,6 +30,7 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
+mimalloc.workspace = true
 mpp.workspace = true
 nanocode = { path = "../../crates/nanocode", version = "0.7.0" }
 nanocode-home = { path = "../../crates/core/home", version = "0.7.0" }

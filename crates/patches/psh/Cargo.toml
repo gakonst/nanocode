@@ -26,11 +26,13 @@ psh-regex = { path = "crates/psh-regex" }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
-# The wasm modules (scripts/build-wasm): small rather than fast, one codegen unit, no
-# symbols. Panics abort on wasm32 anyway.
+# The wasm modules (scripts/build-wasm): one codegen unit, no symbols. Panics abort on
+# wasm32 anyway. Fast rather than small (nanocode: upstream builds with "s"): at 3 the
+# shell module is 7.07 MB (2.38 MB gzipped) against 5.67 MB (1.96 MB), and its
+# arithmetic loop, awk, sed and jq take 20 to 34% less CPU under V8.
 [profile.wasm]
 inherits = "release"
-opt-level = "s"
+opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"

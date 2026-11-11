@@ -462,6 +462,11 @@ fn scan(
     Ok(())
 }
 
+fn cores() -> usize {
+    static CORES: OnceLock<usize> = OnceLock::new();
+    *CORES.get_or_init(|| thread::available_parallelism().map_or(1, std::num::NonZero::get))
+}
+
 type Recovered<'a> = (Location, Indexed<'a>, &'a [u8], Vec<[u8; 32]>);
 
 type Parsed<'a> = Result<(Indexed<'a>, Vec<[u8; 32]>), serde_json::Error>;
@@ -480,9 +485,7 @@ fn parsed<'a>((_, line): &(Location, &'a [u8])) -> Parsed<'a> {
 
 fn recovered<'a>(lines: &[(Location, &'a [u8])]) -> Result<Vec<Parsed<'a>>, StoreError> {
     let bytes = lines.iter().map(|(_, line)| line.len()).sum::<usize>();
-    let workers = thread::available_parallelism()
-        .map_or(1, std::num::NonZero::get)
-        .min(bytes / JOURNAL_READ_BUFFER_BYTES);
+    let workers = cores().min(bytes / JOURNAL_READ_BUFFER_BYTES);
     if workers < 2 {
         return Ok(lines.iter().map(parsed).collect());
     }
@@ -1655,9 +1658,7 @@ impl Journal {
                 Ok(Some(Record::Entry(_))) | Err(_) => return None,
             }
         }
-        let workers = thread::available_parallelism()
-            .map_or(1, std::num::NonZero::get)
-            .min(bytes / JOURNAL_READ_BUFFER_BYTES);
+        let workers = cores().min(bytes / JOURNAL_READ_BUFFER_BYTES);
         if workers < 2 {
             return None;
         }

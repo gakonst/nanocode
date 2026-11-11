@@ -27,6 +27,7 @@ pub(super) struct Sessions {
     clock: u64,
     summaries: Summaries,
     homes: HashMap<String, String>,
+    colocations: Option<fs::File>,
     shared: Option<Shared>,
     touched: HashSet<String>,
 }
@@ -132,6 +133,7 @@ impl Sessions {
             journals: HashMap::new(),
             clock: 0,
             homes,
+            colocations: None,
             shared: None,
             touched: HashSet::new(),
         })
@@ -151,11 +153,16 @@ impl Sessions {
         let line = serde_json::to_string(&(key, &home)).map(|line| line + "\n");
         let appended = line.map_err(std::io::Error::other).and_then(|line| {
             use std::io::Write as _;
-            fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.directory.join(HOMES))?
-                .write_all(line.as_bytes())
+            let mut colocations = match self.colocations.take() {
+                Some(colocations) => colocations,
+                None => fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.directory.join(HOMES))?,
+            };
+            colocations.write_all(line.as_bytes())?;
+            self.colocations = Some(colocations);
+            Ok(())
         });
         if let Err(error) = appended {
             tracing::warn!(%error, state_id, "could not record where a JSONL session is stored");

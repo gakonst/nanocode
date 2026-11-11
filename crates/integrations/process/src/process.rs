@@ -335,6 +335,8 @@ pub(super) enum ProcessOutput {
         stderr: super::embedded::Reader,
     },
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Stream(super::embedded::Reader),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     Served(super::server::Served),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     Fifos(super::server::Fifos),

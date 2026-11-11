@@ -12,10 +12,10 @@ pub use foreground::{ForegroundOutput, run_bash};
 mod marked;
 #[cfg(unix)]
 pub use marked::terminate_marked;
-mod output;
-mod process;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod embedded;
+mod output;
+mod process;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use embedded::{Contained, Embedded, Running, Sink, embed};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -450,7 +450,13 @@ impl ShellSessions {
                     #[cfg(any(target_os = "macos", target_os = "linux"))]
                     let warm = match command.tty {
                         true => None,
-                        false => match embedded::spawn(&script, &workdir, &shell, &environment) {
+                        false => match embedded::spawn(
+                            &script,
+                            &workdir,
+                            &shell,
+                            &environment,
+                            embedded::Streams::InOrder,
+                        ) {
                             Some(spawned) => Some(spawned),
                             None => {
                                 warm::spawn(&script, &workdir, &shell, login, &environment).await
@@ -780,6 +786,12 @@ impl Session {
                 )),
                 tokio::spawn(output::drain(Some(stderr), chunks, Arc::clone(&activity))),
             ],
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            process::ProcessOutput::Stream(both) => vec![tokio::spawn(output::drain(
+                Some(both),
+                chunks,
+                Arc::clone(&activity),
+            ))],
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             process::ProcessOutput::Served(served) => served.drains(&chunks, &activity),
             #[cfg(any(target_os = "macos", target_os = "linux"))]

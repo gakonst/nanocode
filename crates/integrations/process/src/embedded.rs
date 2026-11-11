@@ -67,19 +67,27 @@ impl AsyncRead for Reader {
     }
 }
 
-fn stream() -> (Sink, Reader) {
-    let (written, chunks) = mpsc::channel::<Vec<u8>>(1);
-    let sink = Box::new(move |bytes: &[u8]| {
+fn sink(written: mpsc::Sender<Vec<u8>>) -> Sink {
+    Box::new(move |bytes: &[u8]| {
         written
             .blocking_send(bytes.to_vec())
             .map_err(|_| io::Error::from(io::ErrorKind::BrokenPipe))
-    });
+    })
+}
+
+fn stream() -> (mpsc::Sender<Vec<u8>>, Reader) {
+    let (written, chunks) = mpsc::channel::<Vec<u8>>(1);
     let reader = Reader {
         chunks,
         chunk: Vec::new(),
         read: 0,
     };
-    (sink, reader)
+    (written, reader)
+}
+
+pub(crate) enum Streams {
+    Apart,
+    InOrder,
 }
 
 pub(crate) fn spawn(
@@ -87,13 +95,25 @@ pub(crate) fn spawn(
     workdir: &Path,
     shell: &Shell,
     environment: &[(OsString, OsString)],
+    streams: Streams,
 ) -> Option<process::SpawnedProcess> {
     let embedded = EMBEDDED.get()?;
     if !shell.is_psh() || !embedded.contains(script, environment) {
         return None;
     }
-    let (out, stdout) = stream();
-    let (err, stderr) = stream();
+    let (out, err, output) = match streams {
+        Streams::Apart => {
+            let (out, stdout) = stream();
+            let (err, stderr) = stream();
+            let output = process::ProcessOutput::Streams { stdout, stderr };
+            (sink(out), sink(err), output)
+        }
+        Streams::InOrder => {
+            let (written, both) = stream();
+            let output = process::ProcessOutput::Stream(both);
+            (sink(written.clone()), sink(written), output)
+        }
+    };
     let (exit, exited) = oneshot::channel();
     let started = embedded.start(Contained {
         script: script.to_owned(),
@@ -112,6 +132,6 @@ pub(crate) fn spawn(
         process_group: child.process_group(),
         child,
         stdin: None,
-        output: process::ProcessOutput::Streams { stdout, stderr },
+        output,
     })
 }

@@ -56,7 +56,13 @@ pub(crate) fn run_bash_with_environment<'call>(
             command,
         );
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let warm = match super::embedded::spawn(command, workspace, &shell, &environment) {
+        let warm = match super::embedded::spawn(
+            command,
+            workspace,
+            &shell,
+            &environment,
+            super::embedded::Streams::Apart,
+        ) {
             Some(spawned) => Some(spawned),
             None => super::warm::spawn(command, workspace, &shell, false, &environment).await,
         };

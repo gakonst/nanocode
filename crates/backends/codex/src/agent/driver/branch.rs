@@ -11,6 +11,7 @@ pub(in crate::agent) struct BranchSpawner {
     pub(in crate::agent) prompt_cache_key: Option<Arc<str>>,
     pub(in crate::agent) shared_prompt_cache: Option<SharedPromptCache>,
     pub(in crate::agent) before_compaction: Option<Arc<dyn execution::BeforeCompaction>>,
+    pub(in crate::agent) before_tool_call: Option<Arc<dyn execution::BeforeToolCall>>,
     pub(in crate::agent) images: ImageHistory,
     pub(in crate::agent) context_config: ContextSourceConfig,
     pub(in crate::agent) context_source: ContextSource,
@@ -77,6 +78,7 @@ impl BranchSpawner {
             shared_prompt_cache: self.shared_prompt_cache.clone(),
 
             before_compaction: None,
+            before_tool_call: None,
             images: self.images.clone(),
             context_config: self.context_config.clone(),
             context_source: self.context_source.clone(),
@@ -219,6 +221,7 @@ impl BranchSpawner {
             shared_prompt_cache: self.shared_prompt_cache.clone(),
 
             before_compaction: None,
+            before_tool_call: None,
             images: self.images.clone(),
             context_config: self.context_config.clone(),
             context_source: self.context_config.build(),

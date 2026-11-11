@@ -106,6 +106,7 @@ pub(crate) struct ModelRun {
     pending_developer_messages: Vec<ResponseItem>,
     execution_steps: Option<ExecutionSteps>,
     before_compaction: Option<Arc<dyn crate::execution::BeforeCompaction>>,
+    before_tool_call: Option<Arc<dyn crate::execution::BeforeToolCall>>,
     images: ImageHistory,
     compaction_thinking: Option<Thinking>,
 }
@@ -314,6 +315,7 @@ impl ModelRun {
             pending_developer_messages: Vec::new(),
             execution_steps: None,
             before_compaction: None,
+            before_tool_call: None,
             images: ImageHistory::default(),
             compaction_thinking: None,
         }
@@ -406,9 +408,17 @@ impl ModelRun {
             pending_developer_messages: Vec::new(),
             execution_steps: None,
             before_compaction: None,
+            before_tool_call: None,
             images: ImageHistory::default(),
             compaction_thinking: None,
         }
+    }
+
+    pub(crate) fn set_before_tool_call(
+        &mut self,
+        hook: Option<Arc<dyn crate::execution::BeforeToolCall>>,
+    ) {
+        self.before_tool_call = hook;
     }
 
     pub(crate) fn set_before_compaction(

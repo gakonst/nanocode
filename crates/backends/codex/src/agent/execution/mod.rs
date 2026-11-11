@@ -2,6 +2,8 @@ mod preservation;
 pub use preservation::{
     BeforeCompaction, BeforeCompactionRequest, CompactionMessage, CompactionReceipt,
 };
+mod tool_call;
+pub use tool_call::{BeforeToolCall, ToolCallDecision, ToolCallRequest};
 
 #[path = "disabled.rs"]
 mod platform;

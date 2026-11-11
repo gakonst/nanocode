@@ -682,6 +682,7 @@ impl ModelRun {
         let session_id = events.request_id().to_owned();
         let model = self.model;
         let host_context = self.host_context.clone();
+        let before_tool_call = self.before_tool_call.clone();
 
         let instruction_revision = self.instruction_revision;
         let execution_steps = self.execution_steps.clone();
@@ -696,6 +697,7 @@ impl ModelRun {
                 let session_id = session_id.clone();
                 let turn_id = turn_id.clone();
                 let host_context = host_context.clone();
+                let before_tool_call = before_tool_call.clone();
                 let execution_steps = execution_steps.clone();
                 let images = images.clone();
                 async move {
@@ -757,6 +759,7 @@ impl ModelRun {
                                     &turn_id,
                                     model,
                                     host_context.as_deref(),
+                                    before_tool_call.as_deref(),
                                     instruction_revision,
                                     started_at,
                                     &active.progress,
@@ -1063,6 +1066,7 @@ impl ModelRun {
         turn_id: &str,
         model: Model,
         host_context: Option<&str>,
+        before_tool_call: Option<&dyn crate::execution::BeforeToolCall>,
         instruction_revision: Option<u64>,
         started_at: Instant,
         progress: &Swap<ActiveToolProgress>,
@@ -1070,7 +1074,28 @@ impl ModelRun {
         recover: bool,
     ) -> Result<CompletedToolCall> {
         let qualified_name = qualified_tool_name(&call);
-        if let Some(message) = unsupported_tool_message(tools, &call) {
+        let refused = match (unsupported_tool_message(tools, &call), before_tool_call) {
+            (None, Some(hook)) if !recover && !matches!(call.kind, CodeCallKind::ToolSearch) => {
+                let request = crate::execution::ToolCallRequest {
+                    session_id: session_id.to_owned(),
+                    turn_id: turn_id.to_owned(),
+                    call_id: call.call_id.clone(),
+                    name: qualified_name.clone(),
+                    input: call.input.clone(),
+                };
+                match hook.before(request).await {
+                    Ok(crate::execution::ToolCallDecision::Allow) => None,
+                    Ok(crate::execution::ToolCallDecision::Deny(reason)) => Some(format!(
+                        "Tool blocked by host: {reason}; tool was not executed"
+                    )),
+                    Err(error) => Some(format!(
+                        "PreToolUse hook failed: {error}; tool was not executed"
+                    )),
+                }
+            }
+            (refused, _) => refused,
+        };
+        if let Some(message) = refused {
             let output = ToolOutputBody::Text(message);
             let structured_result = output.structured_result();
             record_tool_span_terminal(tool_span, "failed", "ERROR", 0, &output);

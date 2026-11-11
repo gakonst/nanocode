@@ -82,6 +82,7 @@ impl AgentDriver {
             )
         };
         model.set_before_compaction(self.spawner.before_compaction.clone());
+        model.set_before_tool_call(self.spawner.before_tool_call.clone());
         model.set_images(self.spawner.images.clone());
         if let Some(connect) = model.preconnect() {
             super::executor::spawn_driver(connect)?;
@@ -2323,6 +2324,7 @@ fn model_from_checkpoint(
         )
     };
     model.set_before_compaction(spawner.before_compaction.clone());
+    model.set_before_tool_call(spawner.before_tool_call.clone());
     model.set_images(spawner.images.clone());
     model
 }

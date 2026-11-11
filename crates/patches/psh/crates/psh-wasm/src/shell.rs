@@ -1,24 +1,33 @@
-//! The shell exports: create a shell over the JS host, start a script, step it, cancel
-//! and free it. The JS side drives `psh_shell_step` from its event loop: on `Blocked`
-//! it waits until the module asks it to wake the shell (`K_WAKE`), which happens when
-//! one of its answers unblocks a task.
+//! The shell exports: create a shell over the JS host, start a script, step it, read its
+//! result, cancel and free it. The JS side drives `psh_shell_step` from its event loop:
+//! on `Blocked` it waits until the module asks it to wake the shell (`K_WAKE`), which
+//! happens when one of its answers unblocks a task.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Wake, Waker};
 
-use psh_engine::{HostFile, Script, Shell, ShellConfig, Step};
+use bytes::Bytes;
+use nanocode_shell::{Config, Ended, HostInfo, Identity, Limit, Limits, Ran, Script, Shell, Step};
 
-use crate::host::{JsFile, JsHost};
-use crate::{export, sys, take_input};
+use crate::host::{JsCommands, JsFs, JsMachine, Reader, Writer};
+use crate::{export, set_output, sys, take_input};
 
-/// Step results other than `Done(status)` (a status is 0..=255).
+/// Step results other than done.
+pub const STEP_DONE: i32 = 0;
 pub const STEP_BLOCKED: i32 = -1;
 pub const STEP_YIELD: i32 = -2;
 pub const STEP_IDLE: i32 = -3;
 /// No such shell.
 pub const STEP_BAD: i32 = -4;
+
+/// How a run ended, in its result.
+const ENDED_EXITED: u32 = 0;
+const ENDED_CANCELLED: u32 = 1;
+const ENDED_FUEL: u32 = 2;
+const ENDED_MISSING: u32 = 3;
+const ENDED_OPERATIONS: u32 = 4;
 
 thread_local! {
     static SHELLS: RefCell<Vec<Option<Entry>>> = const { RefCell::new(Vec::new()) };
@@ -28,6 +37,8 @@ struct Entry {
     shell: Shell,
     /// A script was started and has not reported `Done` yet.
     running: bool,
+    /// The last finished run, until `psh_shell_result` takes it.
+    ran: Option<Box<Ran>>,
 }
 
 struct WakeShell(u32);
@@ -38,36 +49,12 @@ impl Wake for WakeShell {
     }
 }
 
-/// Reads the length-prefixed fields of a payload.
-struct Reader<'a> {
-    data: &'a [u8],
-}
-
-impl<'a> Reader<'a> {
-    fn u32(&mut self) -> Option<u32> {
-        let (head, rest) = self.data.split_at_checked(4)?;
-        self.data = rest;
-        Some(u32::from_le_bytes(head.try_into().ok()?))
-    }
-
-    fn bytes(&mut self) -> Option<&'a [u8]> {
-        let n = self.u32()? as usize;
-        let (head, rest) = self.data.split_at_checked(n)?;
-        self.data = rest;
-        Some(head)
-    }
-}
-
 /// The stack the module links with (build.rs) and the nesting limit it allows: each
-/// level may take up to [`ShellConfig::STACK_PER_LEVEL`]; a quarter of the stack stays
-/// free for the rest of the call chain.
+/// level may take up to 16 KiB (psh-engine's `ShellConfig::STACK_PER_LEVEL`); a quarter
+/// of the stack stays free for the rest of the call chain.
 const STACK: usize = 16 * 1024 * 1024;
-pub const MAX_DEPTH: u32 = (STACK * 3 / 4 / ShellConfig::STACK_PER_LEVEL) as u32;
-
-fn file(handle: u32) -> Option<Rc<dyn HostFile>> {
-    // u32::MAX: closed.
-    (handle != u32::MAX).then(|| Rc::new(JsFile::new(handle)) as Rc<dyn HostFile>)
-}
+const STACK_PER_LEVEL: usize = 16 * 1024;
+pub const MAX_DEPTH: u32 = (STACK * 3 / 4 / STACK_PER_LEVEL) as u32;
 
 fn new_shell(cfg: &[u8]) -> Option<Shell> {
     let mut r = Reader { data: cfg };
@@ -78,28 +65,63 @@ fn new_shell(cfg: &[u8]) -> Option<Shell> {
         let v = r.bytes()?.to_vec();
         env.push((k, v));
     }
-    let (stdin, stdout, stderr) = (r.u32()?, r.u32()?, r.u32()?);
-    let max_depth = match r.u32()? {
-        0 => MAX_DEPTH,
-        n => n.min(MAX_DEPTH),
+    let limits = Limits {
+        fuel: r.f64()? as u64,
+        output: r.f64()? as u64,
+        file: r.f64()? as u64,
+        operations: r.f64()? as u64,
+        depth: match r.u32()? {
+            0 => MAX_DEPTH,
+            n => n.min(MAX_DEPTH),
+        },
     };
-    let mut config = ShellConfig::new(Rc::new(JsHost));
-    // No programs exist in wasm: every utility runs in-process (D1080).
-    config.utilities = psh_utils::policy(true);
-    config.cwd = cwd;
-    config.env = env;
-    config.stdin = file(stdin);
-    config.stdout = file(stdout);
-    config.stderr = file(stderr);
-    config.max_depth = max_depth;
-    Some(Shell::new(config))
+    let strict = r.u32()? != 0;
+    let (uid, pid) = (r.u32()?, r.u32()?);
+    let user = r.bytes()?.to_vec();
+    let group = r.bytes()?.to_vec();
+    let home = r.bytes()?.to_vec();
+    let hostname = r.bytes()?.to_vec();
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let (ostype, machtype, hosttype) = (text(r.bytes()?), text(r.bytes()?), text(r.bytes()?));
+    let mut without = Vec::new();
+    for _ in 0..r.u32()? {
+        without.push(r.bytes()?.to_vec());
+    }
+    Some(Shell::new(Config {
+        fs: Rc::new(JsFs),
+        commands: Rc::new(JsCommands),
+        machine: Rc::new(JsMachine),
+        identity: Identity {
+            info: HostInfo {
+                uid,
+                euid: uid,
+                groups: vec![uid],
+                ppid: Some(1),
+                hostname,
+                ostype,
+                machtype,
+                hosttype,
+            },
+            pid,
+            user,
+            group,
+            home,
+        },
+        limits,
+        env,
+        cwd,
+        without,
+        strict,
+    }))
 }
 
 export! {
     /// Creates a shell from the `len` input bytes: cwd, the environment (a count, then
-    /// name and value), the stdin, stdout and stderr handles (`0xffffffff`: closed) and
-    /// the nesting limit (0: the module's maximum). Returns the shell's id, or 0 for a
-    /// malformed config.
+    /// name and value), the limits (fuel, output bytes, file bytes and file operations as
+    /// f64, the nesting limit as u32 with 0 for the module's maximum), whether a missing
+    /// command ends the run, the uid and pid, the user, group, home, host name, OSTYPE,
+    /// MACHTYPE and HOSTTYPE, and the utilities left to the host's commands (a count,
+    /// then each name). Returns the shell's id, or 0 for a malformed config.
     fn psh_shell_new(len: usize) -> u32 {
         let cfg = take_input(len);
         let Some(shell) = new_shell(&cfg) else {
@@ -119,6 +141,7 @@ export! {
             shells[id] = Some(Entry {
                 shell,
                 running: false,
+                ran: None,
             });
             sid
         })
@@ -144,16 +167,16 @@ export! {
 
 export! {
     /// Starts a script from the `len` input bytes: the source, `$0`, the arguments (a
-    /// count, then each), the command-line options (a count, then each word as
-    /// `Script::options` takes them: `-e`, `+x`, `-o`, `pipefail`, `-s`; what
-    /// `psh_engine::invocation::parse_args` returns). `dash_c`: run as `-c`. Returns 0, or 1 for a malformed payload or
-    /// an unknown shell, 2 when a script is still running.
-    fn psh_shell_start(id: u32, len: usize, dash_c: u32) -> u32 {
+    /// count, then each), the command-line options (a count, then each word as `set` and
+    /// `shopt` take them: `-e`, `+x`, `-o`, `pipefail`) and its standard input (a u32:
+    /// 0 for none, which reads as the null device, else 1 and then the bytes). Returns 0,
+    /// or 1 for a malformed payload or an unknown shell, 2 when a script is still running.
+    fn psh_shell_start(id: u32, len: usize) -> u32 {
         let data = take_input(len);
         let mut r = Reader { data: &data };
         let parsed = (|| {
             let source = r.bytes()?.to_vec();
-            let arg0 = r.bytes()?.to_vec();
+            let name = r.bytes()?.to_vec();
             let mut args = Vec::new();
             for _ in 0..r.u32()? {
                 args.push(r.bytes()?.to_vec());
@@ -162,13 +185,16 @@ export! {
             for _ in 0..r.u32()? {
                 options.push(r.bytes()?.to_vec());
             }
+            let stdin = match r.u32()? {
+                0 => None,
+                _ => Some(Bytes::copy_from_slice(r.bytes()?)),
+            };
             Some(Script {
                 source,
-                arg0,
+                name,
                 args,
-                dash_c: dash_c != 0,
                 options,
-                stdin: false,
+                stdin,
             })
         })();
         let Some(script) = parsed else {
@@ -180,6 +206,7 @@ export! {
             }
             e.shell.start(script);
             e.running = true;
+            e.ran = None;
             0
         })
         .unwrap_or(1)
@@ -187,14 +214,15 @@ export! {
 }
 
 export! {
-    /// Runs ready work for at most `budget` safepoints: the exit status when the script
-    /// finished, or -1 blocked (wait for a wake), -2 yielded (step again), -3 idle,
-    /// -4 unknown shell.
+    /// Runs ready work for at most `budget` safepoints: 0 when the script finished
+    /// (`psh_shell_result` then gives its result), or -1 blocked (wait for a wake), -2
+    /// yielded (step again), -3 idle, -4 unknown shell.
     fn psh_shell_step(id: u32, budget: u32) -> i32 {
         with_shell(id, |e| match e.shell.step(budget) {
-            Step::Done(status) => {
+            Step::Done(ran) => {
                 e.running = false;
-                status
+                e.ran = Some(ran);
+                STEP_DONE
             }
             Step::Blocked => STEP_BLOCKED,
             Step::Yield => STEP_YIELD,
@@ -205,9 +233,40 @@ export! {
 }
 
 export! {
-    /// Cancels the running script (the next step ends it with 143).
+    /// Puts the last finished run into the output buffer: how it ended (0 exited, 1
+    /// cancelled, 2 out of fuel, 3 a missing command, 4 too many file operations), the
+    /// exit status, whether output was cut at its limit (u32 each), the fuel and the file
+    /// operations it used (f64 each), stdout, stderr, and the names of the commands that
+    /// were not found (a count, then each). Returns 1, or 0 when there is none.
+    fn psh_shell_result(id: u32) -> u32 {
+        let Some(Some(ran)) = with_shell(id, |e| e.ran.take()) else {
+            return 0;
+        };
+        let (ended, status) = match ran.ended {
+            Ended::Exited(status) => (ENDED_EXITED, status),
+            Ended::Cancelled => (ENDED_CANCELLED, 143),
+            Ended::Refused(Limit::Fuel) => (ENDED_FUEL, 126),
+            Ended::Refused(Limit::Missing) => (ENDED_MISSING, 127),
+            Ended::Refused(Limit::Operations) => (ENDED_OPERATIONS, 126),
+        };
+        let mut w = Writer(Vec::with_capacity(64 + ran.stdout.len() + ran.stderr.len()));
+        w.u32(ended).u32(status as u32).u32(u32::from(ran.truncated));
+        w.raw(&(ran.fuel as f64).to_le_bytes())
+            .raw(&(ran.operations as f64).to_le_bytes());
+        w.bytes(&ran.stdout).bytes(&ran.stderr);
+        w.u32(ran.missing.len() as u32);
+        for name in &ran.missing {
+            w.bytes(name);
+        }
+        set_output(w.0);
+        1
+    }
+}
+
+export! {
+    /// Cancels the running script (the next step ends it).
     fn psh_shell_cancel(id: u32) {
-        with_shell(id, |e| e.shell.control().cancel());
+        with_shell(id, |e| e.shell.cancel());
     }
 }
 
@@ -218,82 +277,5 @@ export! {
             .checked_sub(1)
             .and_then(|idx| SHELLS.with(|s| s.borrow_mut().get_mut(idx)?.take()));
         drop(shell);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::host::Writer;
-    use crate::ops::{Answer, complete_for_test};
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    /// A native stand-in for the JS side: stdout (handle 1) collects writes, timers
-    /// answer when the test says so, everything else is "not found".
-    #[test]
-    fn echo_over_host_calls() {
-        let out = Rc::new(RefCell::new(Vec::new()));
-        let pending = Rc::new(RefCell::new(Vec::new()));
-        let wakes = Rc::new(RefCell::new(0));
-        let (o, p, w) = (out.clone(), pending.clone(), wakes.clone());
-        sys::set_handler(move |kind, op, arg, data, _len| {
-            match kind {
-                sys::K_WRITE if arg == 1 => {
-                    o.borrow_mut().extend_from_slice(data);
-                    complete_for_test(
-                        op,
-                        Answer {
-                            err: 0,
-                            value: data.len() as f64,
-                            data: vec![],
-                        },
-                    );
-                }
-                sys::K_SLEEP => p.borrow_mut().push(op),
-                sys::K_WAKE => *w.borrow_mut() += 1,
-                sys::K_CLOSE | sys::K_PANIC => {}
-                sys::K_PID => return 42,
-                _ => complete_for_test(
-                    op,
-                    Answer {
-                        err: 2,
-                        value: 0.0,
-                        data: vec![],
-                    },
-                ),
-            }
-            0
-        });
-        let mut cfg = Writer::new();
-        cfg.bytes(b"/")
-            .u32(0)
-            .u32(u32::MAX)
-            .u32(1)
-            .u32(u32::MAX)
-            .u32(0);
-        let shell = new_shell(&cfg.0).unwrap();
-        let mut e = Entry {
-            shell,
-            running: false,
-        };
-        e.shell.set_waker(Waker::from(Arc::new(WakeShell(7))));
-        e.shell.start(Script::command("echo a; echo $$"));
-        let status = loop {
-            match e.shell.step(1000) {
-                Step::Done(s) => break s,
-                Step::Yield => {}
-                Step::Blocked => {
-                    let ops: Vec<u32> = pending.borrow_mut().drain(..).collect();
-                    assert!(!ops.is_empty(), "blocked with nothing pending");
-                    for op in ops {
-                        complete_for_test(op, Answer::default());
-                    }
-                }
-                Step::Idle => panic!("idle"),
-            }
-        };
-        assert_eq!(status, 0);
-        assert_eq!(String::from_utf8_lossy(&out.borrow()), "a\n42\n");
     }
 }

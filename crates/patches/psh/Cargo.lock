@@ -448,6 +448,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
+name = "nanocode-shell"
+version = "0.7.0"
+dependencies = [
+ "bytes",
+ "psh-engine",
+ "psh-utils",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -597,12 +606,12 @@ dependencies = [
 name = "psh-wasm"
 version = "0.0.0"
 dependencies = [
+ "bytes",
  "deser-core",
  "deser-json",
+ "nanocode-shell",
  "psh-classify",
- "psh-engine",
  "psh-syntax",
- "psh-utils",
 ]
 
 [[package]]

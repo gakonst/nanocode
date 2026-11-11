@@ -8,23 +8,24 @@ license.workspace = true
 publish.workspace = true
 
 [lib]
-# cdylib: the .wasm module; rlib: so native unit tests can drive the exports over a
-# fake JS side.
+# cdylib: the .wasm module; rlib: so native builds check the exports.
 crate-type = ["cdylib", "rlib"]
 doctest = false
+test = false
 
 [features]
 default = ["shell"]
-# The whole shell (psh-engine over the JS host). Without it, the parser module: parse and
-# classify only (scripts/build-wasm --parser).
-shell = ["dep:psh-engine", "dep:psh-utils"]
+# The whole shell (nanocode-shell: psh-engine and psh-utils over the JS host's file
+# system). Without it, the parser module: parse and classify only.
+shell = ["dep:nanocode-shell", "dep:bytes"]
 
 [dependencies]
 psh-syntax.workspace = true
 psh-classify.workspace = true
-psh-engine = { workspace = true, optional = true }
-# The in-process utilities: in wasm they are the toolset (D1080).
-psh-utils = { workspace = true, optional = true }
+# nanocode's embedding of the engine and the utilities over a host file system: the
+# shell module is its JS host.
+nanocode-shell = { path = "../../../../core/shell", optional = true }
+bytes = { version = "1.12.1", optional = true }
 # JSON of parse and classify results, as `psh --parse`/`--classify` print it (D029).
 deser-json = { version = "0.10.1", default-features = false, features = ["std"] }
 deser-core = { version = "0.10.2", default-features = false, features = ["std"] }

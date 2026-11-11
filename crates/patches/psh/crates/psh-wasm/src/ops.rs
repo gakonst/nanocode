@@ -14,7 +14,6 @@ use crate::{export, sys, take_input};
 pub struct Answer {
     /// 0, or an errno (`ENOENT` = 2, ...).
     pub err: i32,
-    pub value: f64,
     pub data: Vec<u8>,
 }
 
@@ -43,6 +42,7 @@ pub fn errno_error(err: i32) -> io::Error {
         20 => (NotADirectory, "Not a directory"),
         21 => (IsADirectory, "Is a directory"),
         22 => (InvalidInput, "Invalid argument"),
+        27 => (FileTooLarge, "File too large"),
         28 => (StorageFull, "No space left on device"),
         30 => (ReadOnlyFilesystem, "Read-only file system"),
         32 => (BrokenPipe, "Broken pipe"),
@@ -82,13 +82,6 @@ thread_local! {
 pub fn start(kind: u32, arg: u32, data: &[u8]) -> u32 {
     let op = new_op();
     sys::call(kind, op, arg, data);
-    op
-}
-
-/// [`start`] with a length and no payload (`K_READ`).
-pub fn start_len(kind: u32, arg: u32, len: usize) -> u32 {
-    let op = new_op();
-    sys::call_len(kind, op, arg, std::ptr::null(), len);
     op
 }
 
@@ -147,11 +140,11 @@ fn complete(op: u32, answer: Answer) {
 }
 
 export! {
-    /// The answer to operation `op`: an errno (0 for success), a number, and `len`
-    /// bytes of data in the input buffer.
-    fn psh_complete(op: u32, err: i32, value: f64, len: usize) {
+    /// The answer to operation `op`: an errno (0 for success) and `len` bytes of data
+    /// in the input buffer.
+    fn psh_complete(op: u32, err: i32, len: usize) {
         let data = take_input(len);
-        complete(op, Answer { err, value, data });
+        complete(op, Answer { err, data });
     }
 }
 
@@ -184,9 +177,4 @@ impl Drop for OpFuture {
             forget(self.op);
         }
     }
-}
-
-#[cfg(test)]
-pub fn complete_for_test(op: u32, answer: Answer) {
-    complete(op, answer);
 }

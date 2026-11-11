@@ -183,6 +183,12 @@ impl WeakSharedStore {
 }
 
 impl SharedStore {
+    #[must_use]
+    pub fn holds_back_formats(&self) -> bool {
+        self.state_format
+            .is_some_and(|format| format < nanocode_durability_core::JournalState::NEWEST_FORMAT)
+    }
+
     pub(crate) fn same_store(&self, other: &Self) -> bool {
         self.commands.same_channel(&other.commands)
     }

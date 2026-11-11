@@ -436,7 +436,7 @@ impl State {
             effort: self.effort(),
             thinking_disabled: self.thinking_mode.get().disabled(),
             fast_mode: self.fast_mode.load(Ordering::SeqCst),
-            context: self.kept_context(),
+            context: self.kept_context().filter(|_| !self.holds_back_formats()),
             ..Snapshot::default()
         })
     }
@@ -612,6 +612,12 @@ impl State {
 
     pub(super) fn persists(&self, cursor: &Cursor) -> bool {
         self.policy.is_some() && cursor.operation.is_some()
+    }
+
+    pub(super) fn holds_back_formats(&self) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| policy.holds_back_formats())
     }
 
     pub(super) fn pages_messages(&self) -> bool {

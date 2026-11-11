@@ -2600,6 +2600,11 @@ impl Drop for DurableSession {
 }
 
 impl DurableSession {
+    #[must_use]
+    pub fn holds_back_formats(&self) -> bool {
+        self.store.holds_back_formats()
+    }
+
     pub async fn open<S>(store: S, state_id: impl Into<String>) -> Result<Self>
     where
         S: StateStore + 'static,

@@ -637,6 +637,8 @@ struct RetainedCheckpointRef<'a, R> {
 }
 
 impl JournalState {
+    pub const NEWEST_FORMAT: u8 = STEER_STATE_FORMAT;
+
     pub fn write_format(&mut self, format: u8) -> Result<()> {
         if !(RECEIPT_STATE_FORMAT..=STEER_STATE_FORMAT).contains(&format) {
             return Err(Error::InvalidState(format!(

@@ -6172,6 +6172,7 @@ impl State {
         }
         let served = if matches!(mode, CompactionMode::ContextRecovery)
             || self.summary_refused.load(Ordering::SeqCst)
+            || self.holds_back_formats()
         {
             None
         } else {

@@ -120,6 +120,6 @@ pub fn slow_waits(longer_than: Duration) -> Vec<SlowWait> {
             })
         })
         .collect();
-    waits.sort_by(|a, b| b.waited.cmp(&a.waited));
+    waits.sort_by_key(|wait| std::cmp::Reverse(wait.waited));
     waits
 }

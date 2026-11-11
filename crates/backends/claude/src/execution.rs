@@ -249,6 +249,11 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
     }
 
     #[doc(hidden)]
+    fn holds_back_formats(&self) -> bool {
+        false
+    }
+
+    #[doc(hidden)]
     fn pool(&self, _payload: nanocode_durability::EncodedPayload) -> PolicyFuture<'_, bool> {
         Box::pin(async { Ok(false) })
     }

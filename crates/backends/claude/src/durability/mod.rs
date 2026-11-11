@@ -504,6 +504,10 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         true
     }
 
+    fn holds_back_formats(&self) -> bool {
+        self.store.holds_back_formats()
+    }
+
     fn pool(&self, payload: EncodedPayload) -> PolicyFuture<'_, bool> {
         Box::pin(async move { self.get().await?.pool(payload).await })
     }
@@ -1015,6 +1019,10 @@ impl ClaudeExecutionPolicy for ClaudeExecution {
 
     fn pages_messages(&self) -> bool {
         true
+    }
+
+    fn holds_back_formats(&self) -> bool {
+        self.session.holds_back_formats()
     }
 
     fn pool(&self, payload: EncodedPayload) -> PolicyFuture<'_, bool> {

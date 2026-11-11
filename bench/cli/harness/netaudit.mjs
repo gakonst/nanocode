@@ -122,7 +122,7 @@ const ws = fresh(WORKSPACE);
 const rows = [];
 for (let round = 0; round < Number(args.repeat ?? 1); round++) for (const name of selected(args.only)) {
   const lane = lanes[name];
-  for (const kind of ["headless", "tui"]) {
+  for (const kind of lane.tui ? ["headless", "tui"] : ["headless"]) {
     const home = fresh(WORK + "/netaudit-" + name);
     const trace = WORK + "/netaudit-" + name + "-" + kind + ".strace";
     let row = { lane: name, kind, round, at: new Date().toISOString() };

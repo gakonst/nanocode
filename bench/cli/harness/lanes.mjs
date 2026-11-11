@@ -78,13 +78,13 @@ export const lanes = {
     store: (home) => home + "/.nanocode",
   },
   nclite: {
-    verified: "2026-11-11 (nc_lite example on the SDK, Linux x86_64): exec, saved sessions, --continue, sessions and a 50-step shell turn pass against the fixture, one stream request, no side requests. nanocode cut down to what fx ships: one harness (Codex), plain function tools (ToolExposure::DirectOnly, no Code Mode), any model through the AI Gateway, a JSONL store, no TUI, no MCP, no computer use, no runners, web search and image generation off",
+    verified: "2026-11-11 (nc-lite 0.7.0 at nanocode 1da9dd20c, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests; netaudit sees no outbound traffic. nanocode cut down to what fx ships: one harness (Codex), fx's system prompt, plain function tools (no Code Mode), any model through the AI Gateway, a JSONL home, exec, --continue, sessions and an inline terminal interface; no MCP, computer use or runners, web search and image generation off",
     flags: "exec --home, --base-url <fixture>/v1, -m luna, --ephemeral; AI_GATEWAY_API_KEY",
     version: () => [bins.nclite(), ["--version"]],
     setup: () => undefined,
     env: (home) => ({ ...baseEnv(home), AI_GATEWAY_API_KEY: "fixture-key" }),
     headless: (home, base, text, { save = false } = {}) => [bins.nclite(), ["exec", ...ncliteArgs(home, base), ...(save ? [] : ["--ephemeral"]), text]],
-    tui: null,
+    tui: (home, base) => ({ cmd: [bins.nclite(), ...ncliteArgs(home, base), "--ephemeral"], marker: "/help", exit: ["\x04"] }),
     store: (home) => home + "/.nc-lite",
   },
   claude: {

@@ -217,8 +217,9 @@ if (parts.includes("store")) {
     }
     const create_ms = msBetween(began, now());
     const kb = Number(spawnSync("du", ["-sk", x.store(home)], { encoding: "utf8" }).stdout.split("\t")[0]);
+    const bytes = Number(spawnSync("du", ["-sb", x.store(home)], { encoding: "utf8" }).stdout.split("\t")[0]) || null;
     const store_files = Number(spawnSync("sh", ["-c", "find \"$1\" -type f | wc -l", "-", x.store(home)], { encoding: "utf8" }).stdout.trim());
-    emit({ part: "store", harness: name, sessions: total, failures, store_kb: kb, store_kb_per_session: kb / total, store_files, create_ms, create_cpu_ms_per_session: cpu / total });
+    emit({ part: "store", harness: name, sessions: total, failures, store_kb: kb, store_kb_per_session: kb / total, store_bytes_per_session: bytes && bytes / total, store_files, create_ms, create_cpu_ms_per_session: cpu / total });
     for (let r = 0; r < Number(args.storerounds ?? 20); r++) {
       if (x.list) {
         const res = await measured(...x.list(home, server.base), env);

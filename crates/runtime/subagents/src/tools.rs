@@ -1570,7 +1570,7 @@ impl SendAgentMessage {
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
         if resumed
             && let Some(receipt) = registry
-                .resent(context.session_id(), context.call_id())
+                .resent_to(context.session_id(), context.call_id(), agent_id)
                 .await?
         {
             return json_output(&receipt);
@@ -1759,18 +1759,15 @@ impl Tool for ListAgents {
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let mut agents = registry
-            .directory(context.session_id(), include_completed, include_self)
+        let (agents, next_after_agent_id) = registry
+            .directory_page(
+                context.session_id(),
+                include_completed,
+                include_self,
+                after_agent_id,
+                limit,
+            )
             .await?;
-        if let Some(after) = after_agent_id {
-            agents.retain(|agent| agent.agent_id > after);
-        }
-        let next_after_agent_id = limit
-            .filter(|limit| agents.len() > limit.get())
-            .map(|limit| {
-                agents.truncate(limit.get());
-                agents[limit.get() - 1].agent_id
-            });
         let receipt = registry
             .observe_listed(context.session_id(), &agents, context.call_id())
             .await;

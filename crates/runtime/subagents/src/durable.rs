@@ -217,6 +217,10 @@ pub(super) fn leaf_agents(leaf: u64) -> impl Iterator<Item = AgentId> {
     (first..=first | ((1 << LEAF_AGENT_BITS) - 1)).map(AgentId::new)
 }
 
+pub(super) const fn leaf_of(id: AgentId) -> u64 {
+    id.get() >> LEAF_AGENT_BITS
+}
+
 pub(super) fn leaf_ids(leaf: u64) -> impl Iterator<Item = AgentId> {
     leaf_agents(leaf).filter(|id| id.get() != 0)
 }
@@ -896,6 +900,7 @@ pub(super) struct JournalCache {
     delta_bytes: usize,
     leaf_bytes: imbl::OrdMap<u64, usize>,
     folded_bytes: usize,
+    settled: std::collections::BTreeSet<u64>,
     version: u32,
 }
 
@@ -917,6 +922,7 @@ impl Default for JournalCache {
             delta_bytes: 0,
             leaf_bytes: imbl::OrdMap::new(),
             folded_bytes: 0,
+            settled: std::collections::BTreeSet::new(),
             version: JOURNAL_VERSION,
         }
     }
@@ -937,6 +943,24 @@ pub(super) struct CachedAgent {
     json: Option<Arc<str>>,
 }
 
+impl CachedAgent {
+    fn stored(record: &AgentRecord, key: Arc<str>, json: Arc<str>) -> Self {
+        Self {
+            generation: 0,
+            checkpoint: record.checkpoint_ref.clone(),
+            checkpoint_ref: record.checkpoint_ref.clone(),
+            profile: Arc::clone(&record.profile),
+            record: key,
+            json: record.changing().then_some(json),
+        }
+    }
+
+    pub(super) const fn at(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
+}
+
 pub(super) struct AgentEntry {
     pub(super) generation: u64,
     pub(super) checkpoint: Option<Arc<str>>,
@@ -949,8 +973,16 @@ pub(super) struct MessagesSnapshot {
     pub(super) messages: Vec<super::model::AgentMessage>,
 }
 
+#[derive(Clone)]
+pub(super) struct ColdLeaf {
+    pub(super) key: Arc<str>,
+    stub: Arc<str>,
+    bytes: usize,
+}
+
 pub(super) struct JournalSnapshot {
     pub(super) fold: bool,
+    pub(super) cold: imbl::OrdMap<u64, ColdLeaf>,
     pub(super) agents: Vec<(u64, Vec<(AgentId, AgentEntry)>)>,
     pub(super) messages: MessagesSnapshot,
     pub(super) logged: super::message::MessageLog,
@@ -1120,28 +1152,20 @@ pub(super) async fn load_agents(
     with_profiles(store, root_session_id, records).await
 }
 
-pub(super) async fn load_leaves(
+type LeafRecords = (u64, usize, Vec<(AgentId, AgentRecord, Arc<str>, Arc<str>)>);
+
+async fn read_leaves(
     store: &dyn SubagentStore,
     root_session_id: &str,
-    leaves: Option<AgentPages>,
-    changed: Vec<(AgentId, Arc<str>, Changed)>,
-    stored: &mut JournalCache,
-) -> std::io::Result<Vec<PersistedAgent>> {
-    let leaves = match leaves {
-        Some(leaves) => {
-            let (leaves, tree) = leaves.tree(store, root_session_id).await?;
-            stored.tree = tree;
-            leaves
-        }
-        None => Vec::new(),
-    };
+    leaves: Vec<(u64, Arc<str>)>,
+) -> std::io::Result<Vec<LeafRecords>> {
     let keys = leaves
         .iter()
         .map(|(_, key)| key.to_string())
         .collect::<Vec<_>>();
-    let stored_leaves = verified(store, root_session_id, keys).await?;
-    let decoded = super::platform::spread(
-        leaves.into_iter().zip(stored_leaves).collect(),
+    let stored = verified(store, root_session_id, keys).await?;
+    super::platform::spread(
+        leaves.into_iter().zip(stored).collect(),
         |((index, key), json): ((u64, Arc<str>), String)| {
             let invalid = |error| {
                 std::io::Error::other(format!("invalid subagent journal leaf {key}: {error}"))
@@ -1159,17 +1183,90 @@ pub(super) async fn load_leaves(
                 let key = record_key(Arc::clone(&json));
                 agents.push((AgentId::new(id), record, key, json));
             }
-            Ok((index, Arc::clone(&key), json.len(), agents))
+            Ok((index, json.len(), agents))
         },
     )
-    .await?;
+    .await
+}
+
+async fn read_stubs(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    leaves: Vec<(u64, Arc<str>, Arc<str>)>,
+) -> std::io::Result<Vec<(u64, ColdLeaf, Vec<AgentStub>)>> {
+    let keys = leaves
+        .iter()
+        .map(|(_, _, stub)| stub.to_string())
+        .collect::<Vec<_>>();
+    let stored = verified(store, root_session_id, keys).await?;
+    super::platform::spread(
+        leaves.into_iter().zip(stored).collect(),
+        |((leaf, key, stub), json): ((u64, Arc<str>, Arc<str>), String)| {
+            let read: LeafStub = serde_json::from_str(&json).map_err(|error| {
+                std::io::Error::other(format!("invalid subagent journal stub {stub}: {error}"))
+            })?;
+            if !read.agents.iter().map(|agent| agent.id).eq(leaf_ids(leaf)) {
+                return Err(std::io::Error::other(format!(
+                    "subagent journal stub {stub} does not list the agents of its leaf"
+                )));
+            }
+            let cold = ColdLeaf {
+                key,
+                stub,
+                bytes: read.bytes,
+            };
+            Ok((leaf, cold, read.agents))
+        },
+    )
+    .await
+}
+
+pub(super) struct Leaves {
+    pub(super) agents: Vec<PersistedAgent>,
+    pub(super) cold: Vec<(u64, ColdLeaf, Vec<AgentStub>)>,
+}
+
+pub(super) async fn load_leaves(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    leaves: Option<AgentPages>,
+    changed: Vec<(AgentId, Arc<str>, Changed)>,
+    stored: &mut JournalCache,
+) -> std::io::Result<Leaves> {
+    let leaves = match leaves {
+        Some(leaves) => {
+            let (leaves, tree) = leaves.tree(store, root_session_id).await?;
+            stored.tree = tree;
+            leaves
+        }
+        None => Vec::new(),
+    };
+    let touched = changed
+        .iter()
+        .map(|(id, _, _)| leaf_of(*id))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut settled = Vec::new();
+    let mut live = Vec::new();
+    for (leaf, key) in leaves {
+        match stored.tree.stub(leaf) {
+            Some(stub) if !touched.contains(&leaf) => {
+                settled.push((leaf, key, Arc::clone(stub)));
+            }
+            _ => live.push((leaf, key)),
+        }
+    }
+    let mut cold = read_stubs(store, root_session_id, settled)
+        .await?
+        .into_iter()
+        .map(|(leaf, stored, agents)| (leaf, (stored, agents)))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut records = Vec::new();
-    for (index, leaf, bytes, agents) in decoded {
+    for (index, bytes, agents) in read_leaves(store, root_session_id, live).await? {
         stored.leaf_bytes.insert(index, bytes);
         stored.folded_bytes += bytes;
         for (id, record, key, json) in agents {
-            stored.stores(id, &record, key, json);
-            records.push((id, Arc::clone(&leaf), record));
+            stored.stores(id, &record, Arc::clone(&key), json);
+            records.push((id, key, record));
         }
     }
     if !changed.is_empty() {
@@ -1194,7 +1291,63 @@ pub(super) async fn load_leaves(
             .map(|(id, (key, record))| (id, key, record))
             .collect();
     }
-    with_profiles(store, root_session_id, records).await
+    let mut agents = with_profiles(store, root_session_id, records).await?;
+    let mut parents = agents
+        .iter()
+        .filter_map(|agent| agent.descriptor.parent)
+        .collect::<Vec<_>>();
+    loop {
+        let above = parents
+            .drain(..)
+            .map(leaf_of)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|leaf| cold.remove(&leaf).map(|(stored, _)| (leaf, stored.key)))
+            .collect::<Vec<_>>();
+        if above.is_empty() {
+            break;
+        }
+        let mut records = Vec::new();
+        for (index, bytes, loaded) in read_leaves(store, root_session_id, above).await? {
+            stored.leaf_bytes.insert(index, bytes);
+            stored.folded_bytes += bytes;
+            for (id, record, key, json) in loaded {
+                stored.stores(id, &record, Arc::clone(&key), json);
+                records.push((id, key, record));
+            }
+        }
+        let loaded = with_profiles(store, root_session_id, records).await?;
+        parents.extend(loaded.iter().filter_map(|agent| agent.descriptor.parent));
+        agents.extend(loaded);
+    }
+    for (leaf, (stored_leaf, _)) in &cold {
+        stored.leaf_bytes.insert(*leaf, stored_leaf.bytes);
+        stored.folded_bytes += stored_leaf.bytes;
+    }
+    Ok(Leaves {
+        agents,
+        cold: cold
+            .into_iter()
+            .map(|(leaf, (stored, agents))| (leaf, stored, agents))
+            .collect(),
+    })
+}
+
+pub(super) async fn load_cold(
+    store: &dyn SubagentStore,
+    root_session_id: &str,
+    leaves: Vec<(u64, Arc<str>)>,
+) -> std::io::Result<Vec<(PersistedAgent, CachedAgent)>> {
+    let mut records = Vec::new();
+    let mut cached = Vec::new();
+    for (_, _, agents) in read_leaves(store, root_session_id, leaves).await? {
+        for (id, record, key, json) in agents {
+            cached.push(CachedAgent::stored(&record, Arc::clone(&key), json));
+            records.push((id, key, record));
+        }
+    }
+    let agents = with_profiles(store, root_session_id, records).await?;
+    Ok(agents.into_iter().zip(cached).collect())
 }
 
 async fn with_profiles(
@@ -1307,17 +1460,49 @@ pub(super) struct EncodedJournal {
 
 impl JournalCache {
     fn stores(&mut self, id: AgentId, record: &AgentRecord, key: Arc<str>, json: Arc<str>) {
-        self.agents.insert(
-            id,
-            CachedAgent {
-                generation: 0,
-                checkpoint: record.checkpoint_ref.clone(),
-                checkpoint_ref: record.checkpoint_ref.clone(),
-                profile: Arc::clone(&record.profile),
-                record: key,
-                json: record.changing().then_some(json),
-            },
-        );
+        self.agents
+            .insert(id, CachedAgent::stored(record, key, json));
+    }
+
+    pub(super) fn take_settled(&mut self) -> std::collections::BTreeSet<u64> {
+        std::mem::take(&mut self.settled)
+    }
+
+    pub(super) fn settles(&self) -> bool {
+        !self.settled.is_empty()
+    }
+
+    pub(super) fn written(
+        &self,
+        id: AgentId,
+        generation: u64,
+        checkpoint: Option<&Arc<str>>,
+    ) -> bool {
+        self.agent(id, generation, checkpoint).is_some()
+            && !self.unfolded.contains(&id)
+            && !self.dirty.contains(&id)
+    }
+
+    pub(super) fn cold(&self, leaf: u64) -> Option<ColdLeaf> {
+        Some(ColdLeaf {
+            key: Arc::clone(self.tree.get(0, leaf)?),
+            stub: Arc::clone(self.tree.stub(leaf)?),
+            bytes: *self.leaf_bytes.get(&leaf)?,
+        })
+    }
+
+    pub(super) fn cool(&mut self, leaf: u64) {
+        for id in leaf_ids(leaf) {
+            self.agents.remove(&id);
+        }
+    }
+
+    pub(super) fn warm(&mut self, agents: Vec<(AgentId, CachedAgent)>) {
+        for (id, cached) in agents {
+            if !self.agents.contains_key(&id) {
+                self.agents.insert(id, cached);
+            }
+        }
     }
 
     pub(super) fn stored(mut self, folds_all: bool) -> Option<Self> {
@@ -1458,6 +1643,14 @@ impl JournalSnapshot {
             update.tree = AgentTree::default();
             update.leaf_bytes = imbl::OrdMap::new();
             update.folded_bytes = 0;
+            for (leaf, cold) in &self.cold {
+                update.tree.set(0, *leaf, Arc::clone(&cold.key));
+                if update.stubs() {
+                    update.tree.set_stub(*leaf, Some(Arc::clone(&cold.stub)));
+                }
+                update.leaf_bytes.insert(*leaf, cold.bytes);
+                update.folded_bytes += cold.bytes;
+            }
         }
         update.full = false;
         update.dirty.clear();
@@ -1503,6 +1696,9 @@ impl JournalSnapshot {
                     .as_ref()
                     .is_some_and(|written| written.record == key)
                 {
+                    if update.tree.stub(leaf_of(id)).is_some() {
+                        update.settled.insert(leaf_of(id));
+                    }
                     continue;
                 }
                 update.unfolded.insert(id);
@@ -1529,6 +1725,7 @@ impl JournalSnapshot {
                 if update.tree.stub(leaf) != Some(&stub) {
                     records.push((Arc::clone(&stub), record));
                 }
+                update.settled.insert(leaf);
                 Some(stub)
             } else {
                 None

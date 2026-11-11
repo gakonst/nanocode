@@ -86,6 +86,17 @@ impl SubagentControl {
         self.registry.directory(root_session_id, true, false).await
     }
 
+    pub(super) async fn active(
+        &self,
+        root_session_id: &str,
+    ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
+        self.require_root(root_session_id).await?;
+        self.registry.await_restored(root_session_id).await?;
+        self.registry
+            .listed(root_session_id, true, false, None)
+            .await
+    }
+
     pub async fn session_id(&self, root_session_id: &str, id: AgentId) -> std::io::Result<String> {
         self.require_root(root_session_id).await?;
         self.registry.child_session_id(root_session_id, id).await

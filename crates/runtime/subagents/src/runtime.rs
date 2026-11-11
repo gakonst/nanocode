@@ -310,8 +310,31 @@ impl Sessions {
         self.sessions.insert(id, Box::new(session));
     }
 
-    fn spawned_by(&self, spawned: &durable::Spawned) -> Option<&ChildSession> {
-        self.get(self.by_spawn.get(spawned)?)
+    fn spawned_by(&self, spawned: &durable::Spawned) -> Option<AgentId> {
+        self.by_spawn.get(spawned).copied()
+    }
+
+    fn remove(&mut self, id: &AgentId) -> Option<Box<ChildSession>> {
+        let session = self.sessions.remove(id)?;
+        self.changed.remove(id);
+        self.stale.remove(id);
+        self.resident.remove(id);
+        if let Some(at) = self.idle_at.remove(id) {
+            self.idle.remove(&(at, *id));
+        }
+        self.parked.remove(id);
+        self.active_direct.remove(id);
+        self.spawning.remove(id);
+        self.unsettled.remove(id);
+        if let Some(context) = &session.host_context
+            && let Some(children) = self.by_context.get_mut(context)
+        {
+            children.remove(id);
+            if children.is_empty() {
+                self.by_context.remove(context);
+            }
+        }
+        Some(session)
     }
 
     fn insert_stored(&mut self, id: AgentId, session: ChildSession) -> u64 {
@@ -324,6 +347,10 @@ impl Sessions {
 
     fn take_changed(&mut self) -> HashSet<AgentId> {
         std::mem::take(&mut self.changed)
+    }
+
+    fn settled(&self, leaf: u64) -> bool {
+        durable::leaf_ids(leaf).all(|id| self.get(&id).is_some_and(ChildSession::settled))
     }
 
     fn refresh(&mut self) {
@@ -929,6 +956,12 @@ struct AgentScope {
     life: ScopeLife,
 
     paused: usize,
+
+    cold: imbl::OrdMap<u64, durable::ColdLeaf>,
+
+    pins: HashMap<u64, usize>,
+
+    recheck: BTreeSet<u64>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -997,6 +1030,7 @@ struct JournalWrite {
 
 enum JournalRequest {
     Stored(Box<durable::JournalCache>),
+    Warmed(Vec<(AgentId, durable::CachedAgent)>),
     Persist {
         scope: bool,
         done: oneshot::Sender<std::io::Result<()>>,
@@ -1010,6 +1044,30 @@ enum JournalRequest {
 #[derive(Default)]
 pub(super) struct ScopeLocks {
     pub(super) closing: Sequencer,
+    warming: Sequencer,
+}
+
+pub(super) struct Warm {
+    state: nanocode_sync::Mailbox<RegistryState>,
+    registry: Weak<Registry>,
+    root: String,
+    leaves: Vec<u64>,
+}
+
+impl Drop for Warm {
+    fn drop(&mut self) {
+        let root = std::mem::take(&mut self.root);
+        let leaves = std::mem::take(&mut self.leaves);
+        let registry = std::mem::take(&mut self.registry);
+        self.state.send(move |state| {
+            if let Some(scope) = state.scopes.get_mut(&root)
+                && scope.unpin(&leaves)
+                && let Some(registry) = registry.upgrade()
+            {
+                registry.changed();
+            }
+        });
+    }
 }
 
 pub(super) struct MessagePause {
@@ -1091,6 +1149,15 @@ fn acknowledge_deferred(
     }));
 }
 
+async fn refill(
+    open: nanocode_agent_core::backend::DeferredJournal,
+    payload: String,
+) -> Option<Filled> {
+    let (fill, commit) = open.await.ok()?;
+    fill.send((payload, Vec::new())).ok()?;
+    Some((commit, Vec::new()))
+}
+
 async fn journal_writer(
     registry: Weak<Registry>,
     root_session_id: String,
@@ -1156,15 +1223,10 @@ async fn journal_writer(
             }
             if pending.is_empty() {
                 if let Some(open) = slot.take() {
-                    let filled = live
-                        .fill_journal(
-                            &root_session_id,
-                            open,
-                            &mut saved,
-                            &mut recorded,
-                            &mut cache,
-                        )
-                        .await;
+                    let filled = match saved.clone() {
+                        Some(payload) => refill(open, payload).await,
+                        None => None,
+                    };
                     acknowledge_deferred(
                         registry.clone(),
                         &root_session_id,
@@ -1189,6 +1251,9 @@ async fn journal_writer(
             continue;
         }
         drop(live);
+        if cache.settles() {
+            continue;
+        }
         let retry = async {
             match failures {
                 0 => std::future::pending().await,
@@ -1240,6 +1305,129 @@ async fn journal_writer(
 }
 
 impl AgentScope {
+    fn warming(&self, ids: &[AgentId]) -> BTreeSet<u64> {
+        let mut leaves = BTreeSet::new();
+        let mut pending = Vec::new();
+        for id in ids {
+            let leaf = durable::leaf_of(*id);
+            if self.topology.contains(*id) && leaves.insert(leaf) && self.cold.contains_key(&leaf) {
+                pending.push(leaf);
+            }
+        }
+        while let Some(leaf) = pending.pop() {
+            for id in durable::leaf_ids(leaf) {
+                let mut parent = self.topology.parent(id);
+                while let Some(above) = parent {
+                    let leaf = durable::leaf_of(above);
+                    if !self.cold.contains_key(&leaf) || !leaves.insert(leaf) {
+                        break;
+                    }
+                    pending.push(leaf);
+                    parent = self.topology.parent(above);
+                }
+            }
+        }
+        leaves
+    }
+
+    fn unpin(&mut self, leaves: &[u64]) -> bool {
+        let mut released = false;
+        for leaf in leaves {
+            let Some(count) = self.pins.get_mut(leaf) else {
+                continue;
+            };
+            *count -= 1;
+            if *count == 0 {
+                self.pins.remove(leaf);
+                if self.sessions.settled(*leaf) {
+                    self.recheck.insert(*leaf);
+                    released = true;
+                }
+            }
+        }
+        released
+    }
+
+    fn coolable(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        registry: &Registry,
+        cache: &durable::JournalCache,
+        checkpoints: &AgentMap<durable::JournalCheckpoint>,
+    ) -> bool {
+        let Some(session) = self.sessions.get(&id) else {
+            return false;
+        };
+        let key = (root_session_id.to_owned(), id);
+        let checkpoint = checkpoints.get(&key);
+        let leaf = durable::leaf_of(id);
+        session.settled()
+            && !self.messages.has_pending_for(id)
+            && self.topology.children(id).all(|child| {
+                let below = durable::leaf_of(child);
+                below == leaf || self.cold.contains_key(&below)
+            })
+            && checkpoint.is_none_or(|checkpoint| {
+                matches!(checkpoint.payload, durable::Payload::Stored)
+                    && checkpoint.checkpoint.is_none()
+            })
+            && cache.written(
+                id,
+                session.journal_generation,
+                checkpoint.map(|checkpoint| &checkpoint.key),
+            )
+            && registry.unobserved(&key)
+    }
+
+    fn cool(
+        &mut self,
+        root_session_id: &str,
+        registry: &Registry,
+        cache: &mut durable::JournalCache,
+    ) {
+        let mut candidates = cache.take_settled();
+        candidates.append(&mut self.recheck);
+        if candidates.is_empty() || !cache.stubs() || self.life.frozen() {
+            return;
+        }
+        let checkpoints = registry.checkpoints.get();
+        let mut cooled = Vec::new();
+        while let Some(leaf) = candidates.pop_first() {
+            if self.cold.contains_key(&leaf) || self.pins.contains_key(&leaf) {
+                continue;
+            }
+            let Some(stored) = cache.cold(leaf) else {
+                continue;
+            };
+            if !durable::leaf_ids(leaf)
+                .all(|id| self.coolable(root_session_id, id, registry, cache, &checkpoints))
+            {
+                continue;
+            }
+            for id in durable::leaf_ids(leaf) {
+                let Some(session) = self.sessions.remove(&id) else {
+                    continue;
+                };
+                if let Some(parent) = session.descriptor.parent {
+                    let above = durable::leaf_of(parent);
+                    if above != leaf {
+                        candidates.insert(above);
+                    }
+                }
+                let waiters = session
+                    .waited
+                    .iter()
+                    .map(|waited| waited.session.clone())
+                    .collect::<Vec<_>>();
+                cooled.push((id, waiters));
+            }
+            cache.cool(leaf);
+            self.cold.insert(leaf, stored);
+        }
+        registry.forget(root_session_id, &cooled);
+    }
+
     fn holds_descendants(&self, id: AgentId) -> Option<bool> {
         Some(
             self.topology.has_children(id)
@@ -1324,6 +1512,7 @@ impl AgentScope {
         }
         Ok(durable::JournalSnapshot {
             fold,
+            cold: self.cold.clone(),
             agents,
             messages,
             logged,
@@ -1356,6 +1545,7 @@ pub(super) struct AgentReservation {
     pub(super) root_session_id: String,
     pub(super) id: AgentId,
     pub(super) parent: Option<AgentId>,
+    warm: Option<Arc<Warm>>,
 }
 
 pub(super) struct CloseRequest {
@@ -1563,6 +1753,42 @@ impl RegistryState {
         Ok(0)
     }
 
+    fn insert_cold(
+        &mut self,
+        root_session_id: &str,
+        stub: &durable::AgentStub,
+    ) -> std::io::Result<()> {
+        let scope = self.scope_mut(root_session_id);
+        scope
+            .topology
+            .insert(stub.id, stub.session.clone(), stub.parent)?;
+        if let Some(spawned) = &stub.spawned {
+            scope.sessions.by_spawn.insert(spawned.clone(), stub.id);
+        }
+        self.root_by_session
+            .insert(stub.session.clone(), root_session_id.to_owned());
+        Ok(())
+    }
+
+    fn session_or_cold(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<&ChildSession>, (String, AgentId)> {
+        let Some(root) = self.root_by_session.get(session_id) else {
+            return Ok(None);
+        };
+        let Some(scope) = self.scopes.get(root) else {
+            return Ok(None);
+        };
+        let Some(id) = scope.topology.agent_for_session(session_id) else {
+            return Ok(None);
+        };
+        if scope.cold.contains_key(&durable::leaf_of(id)) {
+            return Err((root.clone(), id));
+        }
+        Ok(scope.sessions.get(&id))
+    }
+
     fn submit_result(
         &mut self,
         session_id: &str,
@@ -1734,6 +1960,7 @@ impl RegistryState {
             root_session_id,
             id,
             parent,
+            warm: None,
         })
     }
 
@@ -1820,19 +2047,39 @@ impl RegistryState {
             .ok_or_else(|| std::io::Error::other(format!("agent {id} is closed")))
     }
 
+    fn listed(&self, session_id: &str, include_self: bool, after: Option<AgentId>) -> Vec<AgentId> {
+        let Some(scope) = self.scopes.get(self.root_session_id(session_id)) else {
+            return Vec::new();
+        };
+        let caller = scope.topology.agent_for_session(session_id);
+        let mut ids = scope
+            .topology
+            .ids()
+            .into_iter()
+            .filter(|id| include_self || caller != Some(*id))
+            .filter(|id| after.is_none_or(|after| *id > after))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
     fn directory(
         &self,
         session_id: &str,
         include_completed: bool,
         include_self: bool,
+        only: Option<Vec<AgentId>>,
     ) -> Vec<AgentDirectoryEntry> {
         let root_session_id = self.root_session_id(session_id);
         let Some(scope) = self.scopes.get(root_session_id) else {
             return Vec::new();
         };
         let caller = scope.topology.agent_for_session(session_id);
-        let mut ids = scope.topology.ids();
-        ids.sort_unstable();
+        let ids = only.unwrap_or_else(|| {
+            let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids
+        });
         ids.into_iter()
             .filter(|id| include_self || caller != Some(*id))
             .filter_map(|id| {
@@ -2175,7 +2422,9 @@ impl RegistryState {
             if !scope.life.closing() {
                 scope.life = ScopeLife::Closing;
             }
-            scope.topology.all_postorder()
+            let mut ids = scope.topology.all_postorder();
+            ids.retain(|id| scope.sessions.get(id).is_some());
+            ids
         };
         let harnesses = self.harnesses(&root_session_id, &ids)?;
         let status_updates = self.closing_updates(&root_session_id, &ids);
@@ -2192,7 +2441,7 @@ impl RegistryState {
         let ids = self
             .scopes
             .get(&root_session_id)
-            .map(|scope| scope.topology.ids())
+            .map(|scope| scope.sessions.keys().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         let held = self.hold_unstarted(&root_session_id, &ids);
         (root_session_id, ids, held)
@@ -2418,13 +2667,6 @@ impl RegistryState {
             .topology
             .authorize(session_id, id)?;
         Ok(root_session_id.to_owned())
-    }
-
-    fn session_for(&self, session_id: &str) -> Option<&ChildSession> {
-        let scope = self.scopes.get(self.root_by_session.get(session_id)?)?;
-        scope
-            .sessions
-            .get(&scope.topology.agent_for_session(session_id)?)
     }
 
     fn root_session_id<'a>(&'a self, session_id: &'a str) -> &'a str {
@@ -2939,6 +3181,7 @@ impl Registry {
         for request in requests {
             match request {
                 JournalRequest::Stored(stored) => cache.adopt(*stored),
+                JournalRequest::Warmed(agents) => cache.warm(agents),
                 JournalRequest::Persist { scope: false, done } if restoring => {
                     let _ = done.send(Err(std::io::Error::other(
                         "subagent task tree is still restoring",
@@ -2996,8 +3239,14 @@ impl Registry {
                                 let _ = done.send(frozen());
                             }
                         }
+                        if scope.life.released() {
+                            for (_, done) in waiters.drain(..) {
+                                let _ = done.send(frozen());
+                            }
+                        }
                         let write = !waiters.is_empty() || (background && !scope.life.frozen());
                         wanted = write;
+                        scope.cool(root_session_id, &registry, cache);
                         (
                             (write && !defer).then(|| {
                                 cache.track(
@@ -3226,6 +3475,7 @@ impl Registry {
                 let root_session_id = root.as_str();
                 let cache = &mut owned_cache;
                 let snapshot = state.scopes.get_mut(root_session_id).map(|scope| {
+                    scope.cool(root_session_id, &registry, cache);
                     cache.track(
                         registry
                             .checkpoint_changes
@@ -3910,6 +4160,237 @@ impl ChildSession {
 }
 
 impl Registry {
+    fn unobserved(&self, key: &(String, AgentId)) -> bool {
+        !self.status_queues.read(|queues| queues.contains_key(key))
+            && !self
+                .progress_captures
+                .read(|captures| captures.contains_key(key))
+    }
+
+    fn forget(&self, root_session_id: &str, cooled: &[(AgentId, Vec<String>)]) {
+        if cooled.is_empty() {
+            return;
+        }
+        let key = |id: &AgentId| (root_session_id.to_owned(), *id);
+        self.checkpoints.update(|checkpoints| {
+            for (id, _) in cooled {
+                checkpoints.remove(&key(id));
+            }
+        });
+        self.wait_reported.update(|reported| {
+            for (id, waiters) in cooled {
+                reported.remove(&key(id));
+                for waiter in waiters {
+                    reported.remove(&(waiter.clone(), *id));
+                }
+            }
+        });
+        self.captured_once.update(|captured| {
+            for (id, _) in cooled {
+                captured.remove(&key(id));
+            }
+        });
+        self.completed_tools.update(|completed| {
+            for (id, _) in cooled {
+                completed.remove(&key(id));
+            }
+        });
+    }
+
+    pub(super) async fn warm(
+        &self,
+        root_session_id: &str,
+        ids: Vec<AgentId>,
+    ) -> std::io::Result<Option<Warm>> {
+        let Some(store) = self.store_for(root_session_id) else {
+            return Ok(None);
+        };
+        let root = root_session_id.to_owned();
+        let (leaves, cold) = self
+            .state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return (Vec::new(), false);
+                };
+                let leaves = scope.warming(&ids);
+                for leaf in &leaves {
+                    *scope.pins.entry(*leaf).or_default() += 1;
+                }
+                let cold = leaves.iter().any(|leaf| scope.cold.contains_key(leaf));
+                (leaves.into_iter().collect::<Vec<_>>(), cold)
+            })
+            .await;
+        if leaves.is_empty() {
+            return Ok(None);
+        }
+        let warm = Warm {
+            state: self.state.clone(),
+            registry: self.this.get().cloned().unwrap_or_default(),
+            root: root_session_id.to_owned(),
+            leaves,
+        };
+        if cold {
+            self.thaw(root_session_id, store.as_ref(), &warm.leaves)
+                .instrument(tracing::info_span!(
+                    "subagent.warm",
+                    session.root_id = root_session_id,
+                    leaf.count = warm.leaves.len()
+                ))
+                .await?;
+        }
+        Ok(Some(warm))
+    }
+
+    async fn thaw(
+        &self,
+        root_session_id: &str,
+        store: &dyn SubagentStore,
+        leaves: &[u64],
+    ) -> std::io::Result<()> {
+        let locks = self.scope_locks(root_session_id);
+        let _warming = locks.warming.enter().await;
+        let root = root_session_id.to_owned();
+        let wanted = leaves.to_vec();
+        let cold = self
+            .state
+            .call(move |state| {
+                let Some(scope) = state.scopes.get(&root) else {
+                    return Vec::new();
+                };
+                wanted
+                    .iter()
+                    .filter_map(|leaf| Some((*leaf, Arc::clone(&scope.cold.get(leaf)?.key))))
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        if cold.is_empty() {
+            return Ok(());
+        }
+        let thawed = cold.iter().map(|(leaf, _)| *leaf).collect::<Vec<_>>();
+        let agents = durable::load_cold(store, root_session_id, cold).await?;
+        let mut sessions = Vec::with_capacity(agents.len());
+        let mut checkpoints = Vec::new();
+        let mut conversations = Vec::new();
+        let mut waited = Vec::new();
+        for (agent, cached) in agents {
+            let id = agent.descriptor.id;
+            if let Some(key) = &agent.checkpoint_ref {
+                checkpoints.push((id, durable::JournalCheckpoint::stored(key.clone(), None)));
+            }
+            let (session, _, _) = durable::restored_session(agent, None)?;
+            if session.conversation {
+                conversations.push(id);
+            }
+            waited.extend(
+                session
+                    .waited
+                    .iter()
+                    .map(|waited| ((waited.session.clone(), id), waited.mark)),
+            );
+            sessions.push((id, session, cached));
+        }
+        let root = root_session_id.to_owned();
+        let warmed = self
+            .state
+            .call(move |state| {
+                let last_used = state.next_access();
+                let Some(scope) = state.scopes.get_mut(&root) else {
+                    return Vec::new();
+                };
+                for leaf in &thawed {
+                    scope.cold.remove(leaf);
+                }
+                sessions
+                    .into_iter()
+                    .map(|(id, mut session, cached)| {
+                        session.last_used = last_used;
+                        (id, cached.at(scope.sessions.insert_stored(id, session)))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+        if !conversations.is_empty() && !store.records_sessions() {
+            self.captured_once.update(|captured| {
+                for id in &conversations {
+                    captured.insert((root_session_id.to_owned(), *id));
+                }
+            });
+        }
+        if !checkpoints.is_empty() {
+            self.checkpoints.update(|stored| {
+                for (id, checkpoint) in &checkpoints {
+                    stored.insert((root_session_id.to_owned(), *id), checkpoint.clone());
+                }
+            });
+        }
+        if !waited.is_empty() {
+            self.wait_reported
+                .update(|reported| reported.extend(waited.iter().cloned()));
+        }
+        self.send_journal(root_session_id, Some(JournalRequest::Warmed(warmed)));
+        Ok(())
+    }
+
+    async fn warm_subtree(&self, session_id: &str, id: AgentId) -> std::io::Result<Option<Warm>> {
+        let session = session_id.to_owned();
+        let (root, ids) = self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                let ids = state
+                    .scopes
+                    .get(&root)
+                    .and_then(|scope| scope.topology.subtree_postorder(id).ok())
+                    .unwrap_or_default();
+                (root, ids)
+            })
+            .await;
+        self.warm(&root, ids).await
+    }
+
+    async fn warm_all(&self, session_id: &str) -> std::io::Result<Option<Warm>> {
+        let session = session_id.to_owned();
+        let (root, ids) = self
+            .state
+            .call(move |state| {
+                let root = state.root_session_id(&session).to_owned();
+                let ids = state
+                    .scopes
+                    .get(&root)
+                    .filter(|scope| !scope.cold.is_empty())
+                    .map(|scope| scope.topology.ids())
+                    .unwrap_or_default();
+                (root, ids)
+            })
+            .await;
+        self.warm(&root, ids).await
+    }
+
+    async fn of_session<T, F>(&self, session_id: &str, read: F) -> Option<T>
+    where
+        T: Send + 'static,
+        F: Fn(&ChildSession) -> T + Clone + Send + 'static,
+    {
+        let mut warm = None;
+        loop {
+            let session = session_id.to_owned();
+            let read = read.clone();
+            let found = self
+                .state
+                .call(move |state| {
+                    state
+                        .session_or_cold(&session)
+                        .map(|session| session.map(read))
+                })
+                .await;
+            match found {
+                Ok(found) => return found,
+                Err(_) if warm.is_some() => return None,
+                Err((root, id)) => warm = Some(self.warm(&root, vec![id]).await.ok()??),
+            }
+        }
+    }
+
     pub async fn restore(
         self: &Arc<Self>,
         root_session_id: &str,
@@ -3970,16 +4451,16 @@ impl Registry {
         }
         let mut agents = journal.agents;
         agents.extend(durable::load_agents(store.as_ref(), root_session_id, records).await?);
-        agents.extend(
-            durable::load_leaves(
-                store.as_ref(),
-                root_session_id,
-                journal.agent_leaves,
-                deltas.agents,
-                &mut written,
-            )
-            .await?,
-        );
+        let leaves = durable::load_leaves(
+            store.as_ref(),
+            root_session_id,
+            journal.agent_leaves,
+            deltas.agents,
+            &mut written,
+        )
+        .await?;
+        agents.extend(leaves.agents);
+        let cold = leaves.cold;
         let mut written = written.stored(folds_all);
         agents.sort_by_key(|agent| agent.descriptor.id);
         let spawning_turns = agents
@@ -4035,7 +4516,7 @@ impl Registry {
                 if state
                     .scopes
                     .get(root_session_id)
-                    .is_some_and(|scope| !scope.sessions.is_empty())
+                    .is_some_and(|scope| !scope.sessions.is_empty() || !scope.cold.is_empty())
                 {
                     return Err(std::io::Error::other(
                         "subagent scope already has live children and cannot be restored",
@@ -4043,8 +4524,14 @@ impl Registry {
                 }
                 let lineages = durable::journaled_lineages(root_session_id, &agents);
                 let mut restored_sessions = Vec::with_capacity(agents.len());
+                let mut stubs = cold.iter().flat_map(|(_, _, stubs)| stubs).peekable();
                 for (agent, lineage) in agents.into_iter().zip(lineages) {
                     let id = agent.descriptor.id;
+                    while let Some(stub) = stubs.next_if(|stub| stub.id < id) {
+                        state.insert_cold(root_session_id, stub)?;
+                        restored_sessions.push(stub.session.clone());
+                        report.restored += 1;
+                    }
                     let checkpoint = agent.snapshot(&lineage)?;
                     let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
                     if session.conversation {
@@ -4094,11 +4581,16 @@ impl Registry {
                         report.unrecoverable.push(id);
                     }
                 }
-                state
-                    .scopes
-                    .entry(root_session_id.to_owned())
-                    .or_default()
-                    .messages = messages;
+                for stub in stubs {
+                    state.insert_cold(root_session_id, stub)?;
+                    restored_sessions.push(stub.session.clone());
+                    report.restored += 1;
+                }
+                let scope = state.scope_mut(root_session_id);
+                scope.messages = messages;
+                for (leaf, stored, _) in &cold {
+                    scope.cold.insert(*leaf, stored.clone());
+                }
                 if let Some(registry) = &registry {
                     if !conversations.is_empty() && !registry.records_sessions(root_session_id) {
                         registry.captured_once.update(|captured| {
@@ -4591,6 +5083,7 @@ impl Registry {
 
     pub async fn child_session_id(&self, caller: &str, id: AgentId) -> std::io::Result<String> {
         self.await_restored(caller).await?;
+        let _warm = self.warm(&self.root_of(caller), vec![id]).await?;
         let caller = caller.to_owned();
         self.state
             .call(move |state| {
@@ -4607,6 +5100,7 @@ impl Registry {
 
     #[doc(hidden)]
     pub async fn host_context(&self, root_session_id: &str, id: AgentId) -> Option<Arc<str>> {
+        let _warm = self.warm(root_session_id, vec![id]).await.ok()?;
         let root = root_session_id.to_owned();
         self.state
             .call(move |state| {
@@ -4620,26 +5114,15 @@ impl Registry {
     }
 
     pub(super) async fn descriptor_for_session(&self, session_id: &str) -> Option<AgentDescriptor> {
-        let session_id = session_id.to_owned();
-        self.state
-            .call(move |state| {
-                state
-                    .session_for(&session_id)
-                    .map(|session| session.descriptor.clone())
-            })
+        self.of_session(session_id, |session| session.descriptor.clone())
             .await
     }
 
     #[doc(hidden)]
     pub async fn host_context_for_session(&self, session_id: &str) -> Option<Arc<str>> {
-        let session_id = session_id.to_owned();
-        self.state
-            .call(move |state| {
-                state
-                    .session_for(&session_id)
-                    .and_then(|session| session.host_context.as_ref().map(Arc::clone))
-            })
+        self.of_session(session_id, |session| session.host_context.clone())
             .await
+            .flatten()
     }
 
     async fn lineage(&self, session_id: &str) -> Vec<AgentId> {
@@ -4657,10 +5140,7 @@ impl Registry {
                 let mut next = scope.topology.agent_for_session(&session_id);
                 while let Some(id) = next {
                     lineage.push(id);
-                    next = scope
-                        .sessions
-                        .get(&id)
-                        .and_then(|session| session.descriptor.parent);
+                    next = scope.topology.parent(id);
                 }
                 lineage
             })
@@ -4697,6 +5177,7 @@ impl Registry {
         id: AgentId,
         budget: Option<UsdAmount>,
     ) -> std::io::Result<AgentSummary> {
+        let _warm = self.warm(root_session_id, vec![id]).await?;
         let root = root_session_id.to_owned();
         let (descriptor, summary) = self
             .state
@@ -4719,10 +5200,10 @@ impl Registry {
     }
 
     pub(super) async fn reserve(&self, session_id: &str) -> std::io::Result<AgentReservation> {
-        let session_id = session_id.to_owned();
-        self.state
-            .call(move |state| state.reserve_for(&session_id))
-            .await
+        self.reserve_many(session_id, 1)
+            .await?
+            .pop()
+            .ok_or_else(|| std::io::Error::other("no subagent was reserved"))
     }
 
     pub(super) async fn reserve_many(
@@ -4730,10 +5211,36 @@ impl Registry {
         session_id: &str,
         count: usize,
     ) -> std::io::Result<Vec<AgentReservation>> {
-        let session_id = session_id.to_owned();
-        self.state
-            .call(move |state| (0..count).map(|_| state.reserve_for(&session_id)).collect())
-            .await
+        let mut warm = None;
+        loop {
+            let session = session_id.to_owned();
+            let reserved = self
+                .state
+                .call(move |state| {
+                    state.session_or_cold(&session).map(drop)?;
+                    Ok((0..count)
+                        .map(|_| state.reserve_for(&session))
+                        .collect::<std::io::Result<Vec<_>>>())
+                })
+                .await;
+            match reserved {
+                Ok(reserved) => {
+                    let warm = warm.map(Arc::new);
+                    let mut reserved = reserved?;
+                    for reservation in &mut reserved {
+                        reservation.warm.clone_from(&warm);
+                    }
+                    return Ok(reserved);
+                }
+                Err((root, id)) if warm.is_none() => {
+                    warm = self.warm(&root, vec![id]).await?;
+                    if warm.is_none() {
+                        return Err(std::io::Error::other("subagent parent disappeared"));
+                    }
+                }
+                Err(_) => return Err(std::io::Error::other("subagent parent disappeared")),
+            }
+        }
     }
 
     pub(super) async fn submit_result_durably(
@@ -4980,6 +5487,13 @@ impl Registry {
                 {
                     Some(session) if session.completion.awaits(revision) => {
                         session.clear_completion();
+                        let mark = wait_mark(&session.status, revision);
+                        session.waited.retain(|waited| waited.session != root);
+                        session.waited.push(durable::Waited {
+                            session: root.clone(),
+                            call: String::new(),
+                            mark,
+                        });
                         true
                     }
                     _ => false,
@@ -6681,16 +7195,23 @@ impl Registry {
             session: session_id.to_owned(),
             call: call_id.to_owned(),
         };
-        Ok(self
+        let child = self
             .state
             .call(move |state| {
                 let root = state.root_session_id(&spawned.session).to_owned();
-                state
-                    .scopes
-                    .get(&root)?
-                    .sessions
-                    .spawned_by(&spawned)
-                    .map(|child| child.descriptor.clone())
+                let id = state.scopes.get(&root)?.sessions.spawned_by(&spawned)?;
+                Some((root, id))
+            })
+            .await;
+        let Some((root, id)) = child else {
+            return Ok(None);
+        };
+        let _warm = self.warm(&root, vec![id]).await?;
+        Ok(self
+            .state
+            .call(move |state| {
+                let child = state.scopes.get(&root)?.sessions.get(&id)?;
+                Some(child.descriptor.clone())
             })
             .await)
     }
@@ -6982,12 +7503,78 @@ impl Registry {
         include_self: bool,
     ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
         self.await_restored(session_id).await?;
+        let _warm = if include_completed {
+            self.warm_all(session_id).await?
+        } else {
+            None
+        };
+        self.listed(session_id, include_completed, include_self, None)
+            .await
+    }
+
+    pub(super) async fn directory_page(
+        &self,
+        session_id: &str,
+        include_completed: bool,
+        include_self: bool,
+        after: Option<AgentId>,
+        limit: Option<std::num::NonZeroUsize>,
+    ) -> std::io::Result<(Vec<AgentDirectoryEntry>, Option<AgentId>)> {
+        self.await_restored(session_id).await?;
+        let mut warm = None;
+        let mut only = None;
+        if include_completed {
+            let session = session_id.to_owned();
+            let mut ids = self
+                .state
+                .call(move |state| state.listed(&session, include_self, after))
+                .await;
+            if let Some(limit) = limit {
+                ids.truncate(limit.get().saturating_add(1));
+            }
+            warm = self.warm(&self.root_of(session_id), ids.clone()).await?;
+            only = Some(ids);
+        }
+        let mut agents = self
+            .listed(session_id, include_completed, include_self, only)
+            .await?;
+        drop(warm);
+        if let Some(after) = after {
+            agents.retain(|agent| agent.agent_id > after);
+        }
+        let next = limit
+            .filter(|limit| agents.len() > limit.get())
+            .map(|limit| {
+                agents.truncate(limit.get());
+                agents[limit.get() - 1].agent_id
+            });
+        Ok((agents, next))
+    }
+
+    pub(super) async fn directory_of(
+        &self,
+        root_session_id: &str,
+        ids: &[AgentId],
+    ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
+        self.await_restored(root_session_id).await?;
+        let _warm = self.warm(root_session_id, ids.to_vec()).await?;
+        self.listed(root_session_id, true, false, Some(ids.to_vec()))
+            .await
+    }
+
+    pub(super) async fn listed(
+        &self,
+        session_id: &str,
+        include_completed: bool,
+        include_self: bool,
+        only: Option<Vec<AgentId>>,
+    ) -> std::io::Result<Vec<AgentDirectoryEntry>> {
         let session = session_id.to_owned();
         let (mut entries, root) = self
             .state
             .call(move |state| {
                 (
-                    state.directory(&session, include_completed, include_self),
+                    state.directory(&session, include_completed, include_self, only),
                     state.root_session_id(&session).to_owned(),
                 )
             })
@@ -7018,6 +7605,7 @@ impl Registry {
         to: AgentId,
         purpose: MessagePurpose,
     ) -> std::io::Result<Turn> {
+        let _warm = self.warm(&self.root_of(session_id), vec![to]).await?;
         let session = session_id.to_owned();
         if let Some(root) = self
             .state
@@ -7323,6 +7911,26 @@ impl Registry {
         call_id: &str,
     ) -> std::io::Result<Option<MessageReceipt>> {
         self.await_restored(session_id).await?;
+        let _warm = self.warm_all(session_id).await?;
+        self.sent(session_id, call_id).await
+    }
+
+    pub(super) async fn resent_to(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        to: AgentId,
+    ) -> std::io::Result<Option<MessageReceipt>> {
+        self.await_restored(session_id).await?;
+        let _warm = self.warm(&self.root_of(session_id), vec![to]).await?;
+        self.sent(session_id, call_id).await
+    }
+
+    async fn sent(
+        &self,
+        session_id: &str,
+        call_id: &str,
+    ) -> std::io::Result<Option<MessageReceipt>> {
         let session = session_id.to_owned();
         let call = call_id.to_owned();
         Ok(self
@@ -7648,6 +8256,7 @@ impl Registry {
         if ids.is_empty() {
             return Err(std::io::Error::other("agent_ids must not be empty"));
         }
+        let _warm = self.warm(&self.root_of(session_id), ids.to_vec()).await?;
         let session = session_id.to_owned();
         let wanted = ids.to_vec();
         let mut changes = self
@@ -7839,6 +8448,7 @@ impl Registry {
         ids: &[AgentId],
     ) -> std::io::Result<Option<AgentWait>> {
         self.await_restored(session_id).await?;
+        let _warm = self.warm(&self.root_of(session_id), ids.to_vec()).await?;
         let session = session_id.to_owned();
         let call = call_id.to_owned();
         let wanted = ids.to_vec();
@@ -7905,6 +8515,7 @@ impl Registry {
         id: AgentId,
     ) -> std::io::Result<Vec<AgentSummary>> {
         self.await_restored(session_id).await?;
+        let _warm = self.warm_subtree(session_id, id).await?;
         let locks = self.session_locks(session_id).await;
         let _closing = locks.closing.enter().await;
         let _paused = self.pause_messages(session_id).await;
@@ -7925,6 +8536,7 @@ impl Registry {
 
     pub async fn close(&self, session_id: &str, id: AgentId) -> std::io::Result<Vec<AgentSummary>> {
         self.await_restored(session_id).await?;
+        let _warm = self.warm_subtree(session_id, id).await?;
         let locks = self.session_locks(session_id).await;
         let _closing = locks.closing.enter().await;
         let _paused = self.pause_messages(session_id).await;
@@ -8106,6 +8718,15 @@ impl Registry {
         let locks = self.session_locks(root_session_id).await;
         let _closing = locks.closing.enter().await;
         let _paused = self.pause_messages(root_session_id).await;
+        if self.store_for(root_session_id).is_some()
+            && let Ok(Err(error)) = timeout_at(
+                Instant::now() + AGENT_STOP_TIMEOUT,
+                self.save_scope(root_session_id),
+            )
+            .await
+        {
+            tracing::debug!(%error, %root_session_id, "subagent journal was not saved before its scope stopped");
+        }
         let root = root_session_id.to_owned();
         let request = self
             .state
@@ -8511,6 +9132,30 @@ impl ChildSession {
 
     pub(super) const fn active(&self) -> bool {
         self.turn.is_some()
+    }
+
+    fn settled(&self) -> bool {
+        matches!(
+            self.status,
+            AgentStatus::Completed { .. } | AgentStatus::Failed { .. } | AgentStatus::Closed
+        ) && !self.unsettled()
+            && self.hibernated.is_none()
+            && self.harness().is_none()
+            && self.harness_task.is_none()
+            && self.event_task.is_none()
+            && matches!(
+                self.stored_runtime,
+                StoredRuntime::None | StoredRuntime::Journaled
+            )
+            && self.in_flight_calls.is_empty()
+            && self.in_flight_omitted == 0
+            && self.follow_up_output.is_none()
+            && !self.delegated_turn
+            && self.residency_lock.is_unshared()
+            && self
+                .changes
+                .as_ref()
+                .is_none_or(|changes| changes.receiver_count() == 0)
     }
 
     const fn unsettled(&self) -> bool {

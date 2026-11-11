@@ -19,7 +19,7 @@ pub struct SubagentCompletion {
 impl SubagentControl {
     pub async fn running(&self, root_session_id: &str) -> Option<RunningSubagents> {
         let ids: Vec<_> = self
-            .agents(root_session_id)
+            .active(root_session_id)
             .await
             .ok()?
             .into_iter()
@@ -35,7 +35,7 @@ impl SubagentControl {
 
     pub async fn stop_all(&self, root_session_id: &str, timeout: Duration) -> Option<bool> {
         if !self
-            .agents(root_session_id)
+            .active(root_session_id)
             .await
             .is_ok_and(|agents| agents.iter().any(|entry| entry.status.is_active()))
         {
@@ -58,12 +58,14 @@ impl RunningSubagents {
         let mut changes = self.control.registry.revision.subscribe();
         let next = async {
             loop {
-                let agents = self.control.agents(&self.root_session_id).await.ok()?;
+                let agents = self
+                    .control
+                    .registry
+                    .directory_of(&self.root_session_id, &self.ids)
+                    .await
+                    .ok()?;
                 let mut active = false;
-                for entry in agents
-                    .into_iter()
-                    .filter(|entry| self.ids.contains(&entry.agent_id))
-                {
+                for entry in agents {
                     match entry.status {
                         status if status.is_active() => active = true,
                         AgentStatus::Closed => {}

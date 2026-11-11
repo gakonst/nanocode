@@ -102,6 +102,10 @@ impl TaskTree {
         self.nodes.keys().copied().collect()
     }
 
+    pub(super) fn children(&self, id: AgentId) -> impl Iterator<Item = AgentId> + '_ {
+        self.children.get(&Some(id)).into_iter().flatten().copied()
+    }
+
     pub(super) fn has_children(&self, id: AgentId) -> bool {
         self.children
             .get(&Some(id))

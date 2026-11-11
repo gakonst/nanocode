@@ -607,10 +607,10 @@ pub(super) fn request_profile(
     code_mode_tool_names: Vec<(String, String)>,
     system_prompt: &str,
 ) -> Result<RequestProfile> {
-    let prefix = responses_lite_request_prefix(prompt_cache_key, tool_specs, system_prompt)
+    let prefix = shared_request_prefix(prompt_cache_key, tool_specs, system_prompt)
         .map_err(NanocodeError::SerializePromptPrefix)?;
     Ok(with_code_mode_tool_names(
-        RequestProfile::new(session_id, prompt_cache_key, Arc::from(prefix)),
+        RequestProfile::new(session_id, prompt_cache_key, prefix),
         code_mode_tool_names,
     ))
 }

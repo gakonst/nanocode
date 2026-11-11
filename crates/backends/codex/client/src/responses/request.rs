@@ -14,6 +14,57 @@ fn encoded_prefix() -> EncodedPrefix {
     Arc::new(std::array::from_fn(|_| std::sync::OnceLock::new()))
 }
 
+type ToolNames = Arc<BTreeMap<String, CodeModeToolName>>;
+
+struct SharedPrefix {
+    prefix: Arc<[ResponseItem]>,
+    encoded: EncodedPrefix,
+    tool_namespaces_info: Arc<RawValue>,
+}
+
+struct NamedPrefix {
+    prefix: Arc<[ResponseItem]>,
+    code_mode_tool_names: ToolNames,
+    tool_namespaces_info: Arc<RawValue>,
+}
+
+fn shared_prefix(prefix: &Arc<[ResponseItem]>) -> Arc<SharedPrefix> {
+    static LAST: nanocode_sync::SwapOption<SharedPrefix> = nanocode_sync::SwapOption::const_empty();
+    if let Some(last) = LAST
+        .load_full()
+        .filter(|last| Arc::ptr_eq(&last.prefix, prefix))
+    {
+        return last;
+    }
+    let shared = Arc::new(SharedPrefix {
+        prefix: Arc::clone(prefix),
+        encoded: encoded_prefix(),
+        tool_namespaces_info: tool_namespaces_info(prefix, &BTreeMap::new()),
+    });
+    LAST.store(Some(Arc::clone(&shared)));
+    shared
+}
+
+fn named_prefix(
+    prefix: &Arc<[ResponseItem]>,
+    names: BTreeMap<String, CodeModeToolName>,
+) -> Arc<NamedPrefix> {
+    static LAST: nanocode_sync::SwapOption<NamedPrefix> = nanocode_sync::SwapOption::const_empty();
+    if let Some(last) = LAST
+        .load_full()
+        .filter(|last| Arc::ptr_eq(&last.prefix, prefix) && *last.code_mode_tool_names == names)
+    {
+        return last;
+    }
+    let named = Arc::new(NamedPrefix {
+        prefix: Arc::clone(prefix),
+        tool_namespaces_info: tool_namespaces_info(prefix, &names),
+        code_mode_tool_names: Arc::new(names),
+    });
+    LAST.store(Some(Arc::clone(&named)));
+    named
+}
+
 #[derive(Clone)]
 pub struct RequestProfile {
     session_id: String,
@@ -42,15 +93,15 @@ impl RequestProfile {
         prefix: Arc<[ResponseItem]>,
     ) -> Self {
         let session_id = session_id.into();
-        let code_mode_tool_names = Arc::default();
+        let shared = shared_prefix(&prefix);
         Self {
             thread_id: session_id.clone(),
             session_id,
             prompt_cache_key: prompt_cache_key.into(),
-            tool_namespaces_info: tool_namespaces_info(&prefix, &code_mode_tool_names),
+            tool_namespaces_info: Arc::clone(&shared.tool_namespaces_info),
             prefix,
-            encoded_prefix: encoded_prefix(),
-            code_mode_tool_names,
+            encoded_prefix: Arc::clone(&shared.encoded),
+            code_mode_tool_names: Arc::default(),
             logical_turn: 0,
             retained_config: None,
         }
@@ -131,18 +182,20 @@ impl RequestProfile {
         mut self,
         names: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
-        self.code_mode_tool_names = Arc::new(
+        let named = named_prefix(
+            &self.prefix,
             names
                 .into_iter()
                 .map(|(identifier, name)| (identifier, CodeModeToolName::from_flat_name(name)))
                 .collect(),
         );
-        self.tool_namespaces_info = tool_namespaces_info(&self.prefix, &self.code_mode_tool_names);
+        self.code_mode_tool_names = Arc::clone(&named.code_mode_tool_names);
+        self.tool_namespaces_info = Arc::clone(&named.tool_namespaces_info);
         self
     }
 }
 
-#[derive(Serialize)]
+#[derive(PartialEq, Serialize)]
 struct CodeModeToolName {
     name: Box<str>,
     namespace: Option<Box<str>>,

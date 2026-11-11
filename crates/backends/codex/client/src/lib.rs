@@ -105,6 +105,7 @@ pub mod __private {
         session::{
             context::{
                 ContextManager, assign_missing_response_item_id, responses_lite_request_prefix,
+                shared_request_prefix,
             },
             state::{
                 ManagedSessionState, ManagedSessionStateError, RejectedRequestRepair,

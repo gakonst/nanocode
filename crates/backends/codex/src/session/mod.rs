@@ -460,7 +460,7 @@ impl SessionSnapshot {
                 let mut checkpoint = ModelCheckpoint::resume(
                     self.workspace.clone(),
                     Arc::clone(&lineage_id),
-                    request_prefix.to_vec(),
+                    request_prefix,
                     Arc::clone(&prompt_cache_key),
                     self.canonical_context.clone(),
                     history.clone(),

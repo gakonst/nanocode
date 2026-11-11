@@ -25,8 +25,8 @@ use std::{
 use crate::client::{
     __private::{
         EventSink, ManagedSessionState, ModelConfig, RequestHistory, ResponsesAttemptFactory,
-        TransportFallback, assign_missing_response_item_id, compaction,
-        responses_lite_request_prefix, with_code_mode_tool_names,
+        TransportFallback, assign_missing_response_item_id, compaction, shared_request_prefix,
+        with_code_mode_tool_names,
     },
     Model, Prompt, Thinking,
     events::AgentEventKind,
@@ -237,7 +237,7 @@ impl ModelCheckpoint {
     pub(crate) fn resume(
         workspace: String,
         provider_session_id: Arc<str>,
-        request_prefix: Vec<ResponseItem>,
+        request_prefix: Arc<[ResponseItem]>,
         prompt_cache_key: Arc<str>,
         canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
@@ -255,7 +255,7 @@ impl ModelCheckpoint {
             workspace,
             provider_session_id,
             conversation,
-            request_prefix: Arc::from(request_prefix),
+            request_prefix,
             prompt_cache_key,
             preserve_inherited_delta: false,
             global_instructions,
@@ -699,17 +699,14 @@ pub(crate) fn prepare_resumed_checkpoint(
         .or(checkpoint.global_instructions);
     let runtime = tool_runtime(checkpoint.workspace(), config, tools);
     let (tool_specs, code_mode_tool_names) = model_tool_contract(&runtime, session_id);
-    checkpoint.request_prefix = Arc::from(
-        request_profile(
-            session_id,
-            checkpoint.prompt_cache_key(),
-            tool_specs,
-            code_mode_tool_names,
-            &config.base_system_prompt(),
-        )?
-        .prefix()
-        .to_vec(),
-    );
+    checkpoint.request_prefix = request_profile(
+        session_id,
+        checkpoint.prompt_cache_key(),
+        tool_specs,
+        code_mode_tool_names,
+        &config.base_system_prompt(),
+    )?
+    .shared_prefix();
     let selected_agents_md = context_source
         .project_instructions(checkpoint.workspace())
         .map(Arc::from);
@@ -751,8 +748,7 @@ pub(crate) fn prepare_history_checkpoint(
         code_mode_tool_names,
         &config.base_system_prompt(),
     )?
-    .prefix()
-    .to_vec();
+    .shared_prefix();
     let mut checkpoint = ModelCheckpoint::resume(
         workspace,
         provider_session_id,

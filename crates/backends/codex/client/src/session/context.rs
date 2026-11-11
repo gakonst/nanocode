@@ -477,7 +477,7 @@ struct RequestPrefix {
     cache_lineage: Box<str>,
     tools: Vec<crate::client::ToolDefinition>,
     instructions: Box<str>,
-    items: [ResponseItem; 2],
+    items: std::sync::Arc<[ResponseItem]>,
 }
 
 pub fn responses_lite_request_prefix(
@@ -485,6 +485,14 @@ pub fn responses_lite_request_prefix(
     tools: Vec<crate::client::ToolDefinition>,
     instructions: &str,
 ) -> Result<[ResponseItem; 2], serde_json::Error> {
+    build_request_prefix(cache_lineage, tools, instructions)
+}
+
+pub fn shared_request_prefix(
+    cache_lineage: &str,
+    tools: Vec<crate::client::ToolDefinition>,
+    instructions: &str,
+) -> Result<std::sync::Arc<[ResponseItem]>, serde_json::Error> {
     static LAST: nanocode_sync::SwapOption<RequestPrefix> =
         nanocode_sync::SwapOption::const_empty();
     if let Some(last) = LAST.load().as_deref()
@@ -492,14 +500,18 @@ pub fn responses_lite_request_prefix(
         && *last.instructions == *instructions
         && last.tools == tools
     {
-        return Ok(last.items.clone());
+        return Ok(std::sync::Arc::clone(&last.items));
     }
-    let items = build_request_prefix(cache_lineage, tools.clone(), instructions)?;
+    let items = std::sync::Arc::<[ResponseItem]>::from(build_request_prefix(
+        cache_lineage,
+        tools.clone(),
+        instructions,
+    )?);
     LAST.store(Some(std::sync::Arc::new(RequestPrefix {
         cache_lineage: cache_lineage.into(),
         tools,
         instructions: instructions.into(),
-        items: items.clone(),
+        items: std::sync::Arc::clone(&items),
     })));
     Ok(items)
 }

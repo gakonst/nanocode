@@ -13,7 +13,7 @@ use crate::client::{
 };
 
 use super::{
-    context::responses_lite_request_prefix,
+    context::shared_request_prefix,
     response::{
         CompletedCompaction, Response, ResponseError, ResponseInput, run_compact, run_create,
     },
@@ -78,11 +78,9 @@ where
             return Err(SessionBuildError::EmptyPromptCacheKey);
         }
 
-        let prefix =
-            responses_lite_request_prefix(&prompt_cache_key, self.tools, &self.instructions)
-                .map_err(SessionBuildError::SerializePromptPrefix)?;
-        let profile =
-            RequestProfile::new(session_id.to_string(), prompt_cache_key, Arc::from(prefix));
+        let prefix = shared_request_prefix(&prompt_cache_key, self.tools, &self.instructions)
+            .map_err(SessionBuildError::SerializePromptPrefix)?;
+        let profile = RequestProfile::new(session_id.to_string(), prompt_cache_key, prefix);
         let config = self.config;
         let service = self.factory.make(Arc::new(config.clone()));
 

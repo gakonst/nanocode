@@ -199,9 +199,21 @@ impl ContinuationCache {
     }
 
     fn sync_prefix(&mut self, prefix: &Arc<[ResponseItem]>) -> Result<()> {
+        static LAST: nanocode_sync::SwapOption<(Arc<[ResponseItem]>, Vec<EncodedPayload>)> =
+            nanocode_sync::SwapOption::const_empty();
         if !Arc::ptr_eq(&self.prefix, prefix) || self.prefix_log.len() != prefix.len() {
-            self.prefix_log
-                .sync(0, prefix.iter().map(EncodedPayload::encode))?;
+            let encoded = match LAST.load_full().filter(|last| Arc::ptr_eq(&last.0, prefix)) {
+                Some(last) => last.1.clone(),
+                None => {
+                    let encoded = prefix
+                        .iter()
+                        .map(EncodedPayload::encode)
+                        .collect::<Result<Vec<_>>>()?;
+                    LAST.store(Some(Arc::new((Arc::clone(prefix), encoded.clone()))));
+                    encoded
+                }
+            };
+            self.prefix_log.sync(0, encoded.into_iter().map(Ok))?;
             self.prefix = Arc::clone(prefix);
         }
         Ok(())

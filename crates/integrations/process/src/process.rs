@@ -330,6 +330,11 @@ pub(super) enum ProcessOutput {
     },
     Pty(Box<dyn Read + Send>),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Streams {
+        stdout: super::embedded::Reader,
+        stderr: super::embedded::Reader,
+    },
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     Served(super::server::Served),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     Fifos(super::server::Fifos),
@@ -460,20 +465,35 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-pub struct ProcessGroupGuard {
+enum Guarded {
     #[cfg(unix)]
-    process_group: Option<Pid>,
+    Group(Pid),
     #[cfg(not(unix))]
-    process_group: Option<u32>,
+    Group(u32),
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    Running(Arc<dyn crate::embedded::Running>),
+}
+
+pub struct ProcessGroupGuard {
+    guarded: Option<Guarded>,
 }
 
 impl ProcessGroupGuard {
     pub fn new(pid: u32) -> Self {
         #[cfg(unix)]
-        let process_group = i32::try_from(pid).ok().map(Pid::from_raw);
+        let guarded = i32::try_from(pid)
+            .ok()
+            .map(|pid| Guarded::Group(Pid::from_raw(pid)));
         #[cfg(not(unix))]
-        let process_group = Some(pid);
-        Self { process_group }
+        let guarded = Some(Guarded::Group(pid));
+        Self { guarded }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) fn embedded(running: Arc<dyn crate::embedded::Running>) -> Self {
+        Self {
+            guarded: Some(Guarded::Running(running)),
+        }
     }
 
     #[cfg(all(
@@ -488,7 +508,7 @@ impl ProcessGroupGuard {
     fn prepare_to_reap(&mut self) -> io::Result<bool> {
         use rustix::process::{WaitId, WaitIdOptions, waitid};
 
-        let Some(group) = self.process_group else {
+        let Some(Guarded::Group(group)) = &self.guarded else {
             return Ok(true);
         };
         let pid = rustix::process::Pid::from_raw(group.as_raw())
@@ -521,12 +541,17 @@ impl ProcessGroupGuard {
 
     #[cfg(unix)]
     pub(super) fn interrupt(&self) -> io::Result<()> {
-        let Some(process_group) = self.process_group else {
-            return Ok(());
-        };
-        match killpg(process_group, Signal::SIGINT) {
-            Ok(()) | Err(Errno::ESRCH) => Ok(()),
-            Err(error) => Err(io::Error::from_raw_os_error(error as i32)),
+        match &self.guarded {
+            None => Ok(()),
+            Some(Guarded::Group(process_group)) => match killpg(*process_group, Signal::SIGINT) {
+                Ok(()) | Err(Errno::ESRCH) => Ok(()),
+                Err(error) => Err(io::Error::from_raw_os_error(error as i32)),
+            },
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Some(Guarded::Running(running)) => {
+                running.interrupt();
+                Ok(())
+            }
         }
     }
 
@@ -537,8 +562,14 @@ impl ProcessGroupGuard {
 
     #[cfg(unix)]
     fn terminate(&self) -> io::Result<()> {
-        let Some(process_group) = self.process_group else {
-            return Ok(());
+        let process_group = match &self.guarded {
+            None => return Ok(()),
+            Some(Guarded::Group(process_group)) => *process_group,
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            Some(Guarded::Running(running)) => {
+                running.stop();
+                return Ok(());
+            }
         };
         for signal in [Signal::SIGSTOP, Signal::SIGKILL] {
             match killpg(process_group, signal) {
@@ -552,7 +583,7 @@ impl ProcessGroupGuard {
 
     #[cfg(windows)]
     fn terminate(&self) -> io::Result<()> {
-        let Some(process_group) = self.process_group else {
+        let Some(Guarded::Group(process_group)) = &self.guarded else {
             return Ok(());
         };
 
@@ -570,8 +601,8 @@ impl ProcessGroupGuard {
         Ok(())
     }
 
-    pub(super) const fn disarm(&mut self) {
-        self.process_group = None;
+    pub(super) fn disarm(&mut self) {
+        self.guarded = None;
     }
 
     pub fn terminate_and_disarm(&mut self) -> io::Result<()> {

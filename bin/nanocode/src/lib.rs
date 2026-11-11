@@ -117,7 +117,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     #[cfg(unix)]
     if cli.shell == cli::ShellArg::Psh {
         let chosen = nanocode_psh::shell().map(nanocode_home::shell::choose);
-        if !matches!(chosen, Ok(Ok(()))) {
+        if !matches!(chosen, Ok(Ok(()))) || nanocode_psh_embedded::embed().is_err() {
             eprintln!("nanocode: failed to make psh the shell: {chosen:?}");
             return ExitCode::FAILURE;
         }

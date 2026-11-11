@@ -41,6 +41,7 @@ members = [
     "crates/integrations/tool-runtime",
     "crates/integrations/process",
     "crates/integrations/psh",
+    "crates/integrations/psh-embedded",
     "crates/integrations/mcp-tools",
     "crates/integrations/computer",
     "crates/integrations/computer-repl",
@@ -146,6 +147,7 @@ nanocode-tool-runtime = { version = "0.7.0", path = "crates/integrations/tool-ru
 nanocode-tool-provider = { version = "0.7.0", path = "crates/core/tool-provider" }
 nanocode-process = { version = "0.7.0", path = "crates/integrations/process" }
 nanocode-psh = { version = "0.7.0", path = "crates/integrations/psh" }
+nanocode-psh-embedded = { version = "0.7.0", path = "crates/integrations/psh-embedded" }
 psh = { path = "crates/patches/psh/crates/psh" }
 psh-classify = { path = "crates/patches/psh/crates/psh-classify" }
 psh-syntax = { path = "crates/patches/psh/crates/psh-syntax" }

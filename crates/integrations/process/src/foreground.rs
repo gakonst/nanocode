@@ -56,7 +56,10 @@ pub(crate) fn run_bash_with_environment<'call>(
             command,
         );
         #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let warm = super::warm::spawn(command, workspace, &shell, false, &environment).await;
+        let warm = match super::embedded::spawn(command, workspace, &shell, &environment) {
+            Some(spawned) => Some(spawned),
+            None => super::warm::spawn(command, workspace, &shell, false, &environment).await,
+        };
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let warm = None;
         let mut spawned = match warm {
@@ -71,8 +74,17 @@ pub(crate) fn run_bash_with_environment<'call>(
             }
         }
         let cleanup = Cleanup(spawned.process_group);
-        let process::ProcessOutput::Pipes { stdout, stderr } = spawned.output else {
-            return Err("foreground execution requires pipes".into());
+        type Stream = Option<Box<dyn AsyncRead + Send + Unpin>>;
+        let (stdout, stderr): (Stream, Stream) = match spawned.output {
+            process::ProcessOutput::Pipes { stdout, stderr } => (
+                stdout.map(|pipe| Box::new(pipe) as _),
+                stderr.map(|pipe| Box::new(pipe) as _),
+            ),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            process::ProcessOutput::Streams { stdout, stderr } => {
+                (Some(Box::new(stdout)), Some(Box::new(stderr)))
+            }
+            _ => return Err("foreground execution requires pipes".into()),
         };
         let outcome = tokio::time::timeout(timeout, async {
             let (status, stdout, stderr) = tokio::join!(

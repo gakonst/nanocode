@@ -5984,6 +5984,7 @@ dependencies = [
  "nanocode-home",
  "nanocode-observability",
  "nanocode-psh",
+ "nanocode-psh-embedded",
  "nanocode-store-jsonl",
  "nanocode-sync",
  "nanocode-tui",
@@ -6300,6 +6301,14 @@ dependencies = [
  "nanocode-home",
  "psh-classify",
  "psh-syntax",
+]
+
+[[package]]
+name = "nanocode-psh-embedded"
+version = "0.7.0"
+dependencies = [
+ "nanocode-process",
+ "psh",
 ]
 
 [[package]]

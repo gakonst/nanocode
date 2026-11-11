@@ -12,7 +12,10 @@ use super::{
     Claim, Claimed, Counted, Documents, IndexedRecord, JOURNAL_READ_BUFFER_BYTES, Journal, Kind,
     Location, OwnerToken, Owners, Record, Spanned, Spans, StoreError, Unit, Verdict,
 };
-use super::{backend, claim, identity, identity_changed, index::Index, judge, scan, value_digest};
+use super::{
+    backend, claim, identity, identity_changed, index::Index, judge, scan, sync_journal,
+    value_digest,
+};
 use nanocode_durability_core::OwnerId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -525,13 +528,13 @@ impl Journal {
         if written >= stats.before_bytes {
             return Ok(None);
         }
-        temporary.as_file().sync_all().map_err(backend)?;
+        sync_journal(temporary.as_file()).map_err(backend)?;
         let persisted = temporary
             .persist(&self.path)
             .map_err(|error| backend(error.error))?;
         #[cfg(unix)]
         File::open(directory)
-            .and_then(|file| file.sync_all())
+            .and_then(|file| sync_journal(&file))
             .map_err(backend)?;
         let source = identity(&persisted.metadata().map_err(backend)?)?;
         drop(persisted);

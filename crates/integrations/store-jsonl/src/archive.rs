@@ -116,7 +116,7 @@ fn unchanged(before: &fs::Metadata, after: &fs::Metadata) -> bool {
 
 #[cfg(unix)]
 fn sync_directory(directory: &Path) -> io::Result<()> {
-    fs::File::open(directory)?.sync_all()
+    sync_journal(&fs::File::open(directory)?)
 }
 
 #[cfg(not(unix))]

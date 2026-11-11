@@ -30,6 +30,7 @@ members = [
     "crates/core/image",
     "crates/core/audio",
     "crates/core/tls",
+    "crates/core/machine",
     "crates/core/sync",
     "crates/core/tools",
     "crates/core/tool-contracts",
@@ -126,6 +127,7 @@ nanocode-http = { version = "0.7.0", path = "crates/core/http" }
 nanocode-mcp = { version = "0.7.0", path = "crates/core/mcp" }
 nanocode-mcp-http = { version = "0.7.0", path = "crates/core/mcp-http" }
 nanocode-platform = { version = "0.7.0", path = "crates/core/platform" }
+nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
 nanocode-schema = { version = "0.7.0", path = "crates/core/schema" }
 nanocode-durability = { version = "0.7.0", path = "crates/runtime/durability" }

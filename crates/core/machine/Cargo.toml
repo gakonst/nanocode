@@ -1,0 +1,22 @@
+[package]
+name = "nanocode-machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Explicit state machines: states with wire names, a table of moves and the SQL that fences a stored state"
+autotests = false
+autobenches = false
+
+[dependencies]
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

@@ -5540,6 +5540,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-machine"
+version = "0.7.0"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "nanocode-mcp"
 version = "0.7.0"
 dependencies = [

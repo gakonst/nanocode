@@ -186,6 +186,8 @@ pub struct Tools {
     #[cfg(not(target_family = "wasm"))]
     session: Option<crate::SessionEnvironment>,
     #[cfg(not(target_family = "wasm"))]
+    backend: Option<Arc<str>>,
+    #[cfg(not(target_family = "wasm"))]
     remote_http_client: Option<reqwest::Client>,
     pub(crate) registered: Vec<RegisteredTool>,
     #[cfg(not(target_family = "wasm"))]
@@ -246,6 +248,8 @@ impl Default for Tools {
             process_environment: Arc::new(Vec::new()),
             #[cfg(not(target_family = "wasm"))]
             session: None,
+            #[cfg(not(target_family = "wasm"))]
+            backend: None,
             #[cfg(not(target_family = "wasm"))]
             remote_http_client: None,
             registered: Vec::new(),
@@ -537,16 +541,28 @@ impl Tools {
     }
 
     #[must_use]
-    pub fn for_backend(self, session_id: &str, backend: &str) -> Self {
+    #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+    pub fn for_backend(mut self, session_id: &str, backend: &str) -> Self {
         if let Some(host) = &self.embedded_host {
             host.bind_session(session_id, backend);
         }
         #[cfg(not(target_family = "wasm"))]
-        if let Some(executors) = &self.code_mode_executors {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.session_id() == session_id)
+        {
+            self.backend = Some(Arc::from(backend));
+        } else if let Some(executors) = &self.code_mode_executors {
             use crate::embedded::CodeModeHost;
             executors.bind_session(session_id, backend);
         }
         self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn backend(&self) -> Option<&str> {
+        self.backend.as_deref()
     }
 
     #[must_use]
@@ -592,9 +608,6 @@ impl Tools {
         }
         #[cfg(not(target_family = "wasm"))]
         {
-            if let Some(executors) = &self.code_mode_executors {
-                executors.link(session.session_id(), session.root_session_id());
-            }
             for (name, value) in session.os_variables() {
                 self.insert_process_environment(name, value);
             }
@@ -1032,7 +1045,27 @@ impl ToolsBuilder {
         {
             return Err(ToolsBuildError::EmptyDefaultShell);
         }
-        let mut names = HashSet::with_capacity(self.tools.registered.len());
+        let registered = self
+            .tools
+            .registered
+            .iter()
+            .map(|tool| tool.handler.definition())
+            .collect::<Vec<_>>();
+        #[cfg(not(target_family = "wasm"))]
+        let provider_direct = self
+            .tools
+            .provider_direct
+            .iter()
+            .map(|tool| tool.definition())
+            .collect::<Vec<_>>();
+        #[cfg(not(target_family = "wasm"))]
+        let provided = self
+            .tools
+            .providers
+            .iter()
+            .flat_map(|provider| provider.available_definitions())
+            .collect::<Vec<_>>();
+        let mut names = HashSet::with_capacity(registered.len());
 
         let mut code_mode_names = HashMap::new();
 
@@ -1041,8 +1074,7 @@ impl ToolsBuilder {
                 insert_code_mode_name(&mut code_mode_names, name)?;
             }
         }
-        for tool in &self.tools.registered {
-            let definition = tool.handler.definition();
+        for (tool, definition) in self.tools.registered.iter().zip(&registered) {
             let name = definition.name();
 
             let exposure = tool.exposure.unwrap_or_else(|| self.tools.exposure());
@@ -1069,7 +1101,7 @@ impl ToolsBuilder {
             {
                 return Err(ToolsBuildError::BuiltInName(name.into()));
             }
-            if !names.insert(name.to_owned()) {
+            if !names.insert(name) {
                 return Err(ToolsBuildError::DuplicateName(name.into()));
             }
 
@@ -1080,8 +1112,7 @@ impl ToolsBuilder {
             }
         }
         #[cfg(not(target_family = "wasm"))]
-        for tool in &self.tools.provider_direct {
-            let definition = tool.definition();
+        for definition in &provider_direct {
             let name = definition.name();
             validate_registered_tool_name(
                 name,
@@ -1098,7 +1129,7 @@ impl ToolsBuilder {
             {
                 return Err(ToolsBuildError::BuiltInName(name.into()));
             }
-            if !names.insert(name.to_owned()) {
+            if !names.insert(name) {
                 return Err(ToolsBuildError::DuplicateName(name.into()));
             }
             if self.tools.exposure.is_available_in_code_mode()
@@ -1108,33 +1139,31 @@ impl ToolsBuilder {
             }
         }
         #[cfg(not(target_family = "wasm"))]
-        for provider in &self.tools.providers {
-            for definition in provider.available_definitions() {
-                let name = definition.name();
-                validate_registered_tool_name(
-                    name,
-                    matches!(definition, ToolDefinition::ToolSearch { .. }),
-                )?;
-                if host_owned_name(name)
-                    || (name == "tool_search"
-                        && !matches!(definition, ToolDefinition::ToolSearch { .. }))
-                {
-                    return Err(ToolsBuildError::ReservedName(name.into()));
-                }
-                if self
-                    .tools
-                    .builtin_names
-                    .iter()
-                    .any(|builtin| builtin.as_ref() == name)
-                {
-                    return Err(ToolsBuildError::BuiltInName(name.into()));
-                }
-                if !names.insert(name.to_owned()) {
-                    return Err(ToolsBuildError::DuplicateName(name.into()));
-                }
-                if !matches!(definition, ToolDefinition::ToolSearch { .. }) {
-                    insert_code_mode_name(&mut code_mode_names, name)?;
-                }
+        for definition in &provided {
+            let name = definition.name();
+            validate_registered_tool_name(
+                name,
+                matches!(definition, ToolDefinition::ToolSearch { .. }),
+            )?;
+            if host_owned_name(name)
+                || (name == "tool_search"
+                    && !matches!(definition, ToolDefinition::ToolSearch { .. }))
+            {
+                return Err(ToolsBuildError::ReservedName(name.into()));
+            }
+            if self
+                .tools
+                .builtin_names
+                .iter()
+                .any(|builtin| builtin.as_ref() == name)
+            {
+                return Err(ToolsBuildError::BuiltInName(name.into()));
+            }
+            if !names.insert(name) {
+                return Err(ToolsBuildError::DuplicateName(name.into()));
+            }
+            if !matches!(definition, ToolDefinition::ToolSearch { .. }) {
+                insert_code_mode_name(&mut code_mode_names, name)?;
             }
         }
         Ok(self.tools)
@@ -1222,31 +1251,53 @@ fn valid_public_tool_name_grammar(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
-fn insert_code_mode_name(
-    names: &mut HashMap<String, String>,
-    name: &str,
+fn insert_code_mode_name<'a>(
+    names: &mut HashMap<std::borrow::Cow<'a, str>, &'a str>,
+    name: &'a str,
 ) -> Result<(), ToolsBuildError> {
-    let normalized = normalize_public_tool_name(name);
-    if let Some(first) = names.insert(normalized.clone(), name.to_owned()) {
+    let normalized = normalized_public_tool_name(name);
+    if let Some(first) = names.get(&normalized) {
         return Err(ToolsBuildError::NormalizedNameCollision {
-            first: first.into(),
+            first: (*first).into(),
             second: name.into(),
             normalized: normalized.into(),
         });
     }
+    names.insert(normalized, name);
     Ok(())
+}
+
+const fn normalized_character(index: usize, character: char) -> bool {
+    character == '_'
+        || character == '$'
+        || if index == 0 {
+            character.is_ascii_alphabetic()
+        } else {
+            character.is_ascii_alphanumeric()
+        }
+}
+
+pub(crate) fn normalized_public_tool_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if name
+        .chars()
+        .enumerate()
+        .all(|(index, character)| normalized_character(index, character))
+    {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(normalize_public_tool_name(name))
+    }
 }
 
 pub fn normalize_public_tool_name(name: &str) -> String {
     name.chars()
         .enumerate()
         .map(|(index, character)| {
-            let valid = if index == 0 {
-                character == '_' || character == '$' || character.is_ascii_alphabetic()
+            if normalized_character(index, character) {
+                character
             } else {
-                character == '_' || character == '$' || character.is_ascii_alphanumeric()
-            };
-            if valid { character } else { '_' }
+                '_'
+            }
         })
         .collect()
 }

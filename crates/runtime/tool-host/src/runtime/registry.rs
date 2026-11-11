@@ -5,6 +5,7 @@ use super::*;
 use crate::attachment::{ProcessRouteStore, RemoteRoute, RunnerRouting};
 use nanocode_code_mode::embedded::{declares_hand, take_hand, tool_not_available};
 use nanocode_sync::Atom;
+use std::sync::OnceLock;
 
 pub struct RoutingCatalog<'a> {
     registry: &'a mut ToolRegistry,
@@ -30,12 +31,16 @@ impl RoutingCatalog<'_> {
         &self.registry.providers
     }
 
-    pub fn wrap(&mut self, mut wrap: impl FnMut(&Arc<dyn Tool>) -> Option<Arc<dyn Tool>>) {
+    pub fn wrap(
+        &mut self,
+        mut wrap: impl FnMut(&Arc<dyn Tool>, &ToolDefinition) -> Option<Arc<dyn Tool>>,
+    ) {
         let registry = &mut *self.registry;
         for (index, tool) in registry.ordered.iter_mut().enumerate() {
-            if let Some(wrapped) = wrap(tool) {
+            if let Some(wrapped) = wrap(tool, &registry.definitions[index]) {
                 *tool = wrapped;
                 registry.definitions[index] = tool.definition();
+                registry.catalog = OnceLock::new();
             }
         }
     }
@@ -64,8 +69,90 @@ pub(crate) struct ToolRegistry {
     pub(super) policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
     pub(super) hand_calls: Option<Arc<dyn crate::embedded::HandCalls>>,
     nested_gate: Arc<super::admission::AdmissionGate>,
-    pub(super) excluded_code_tools: HashSet<String>,
+    excluded_code_tools: HashSet<String>,
     nested_metadata: Arc<Atom<Option<Arc<NestedMetadata>>>>,
+    catalog: OnceLock<Arc<Catalog>>,
+}
+
+pub(super) struct Catalog {
+    definitions: Vec<ToolDefinition>,
+    exposures: Vec<ToolExposure>,
+    excluded: HashSet<String>,
+    pub(super) registered: Vec<ToolDefinition>,
+    pub(super) ordered: Vec<ToolDefinition>,
+    pub(super) names: HashSet<String>,
+    normalized: HashSet<String>,
+    nested: Vec<ToolDefinition>,
+    metadata: OnceLock<Arc<[Value]>>,
+}
+
+impl Catalog {
+    fn of(
+        definitions: &[ToolDefinition],
+        exposures: &[ToolExposure],
+        excluded: &HashSet<String>,
+    ) -> Arc<Self> {
+        static LIVE: std::sync::LazyLock<Atom<Vec<std::sync::Weak<Catalog>>>> =
+            std::sync::LazyLock::new(Atom::default);
+        let live = LIVE.read(|live| {
+            live.iter()
+                .filter_map(std::sync::Weak::upgrade)
+                .find(|catalog| {
+                    catalog.definitions == definitions
+                        && catalog.exposures == exposures
+                        && catalog.excluded == *excluded
+                })
+        });
+        if let Some(catalog) = live {
+            return catalog;
+        }
+        let offered = || {
+            definitions
+                .iter()
+                .zip(exposures)
+                .filter(|(definition, exposure)| {
+                    exposure.is_available_in_code_mode() && !excluded.contains(definition.name())
+                })
+                .map(|(definition, _)| nested_definition(definition.clone()))
+        };
+        let registered = first_normalized_definitions(offered());
+        let mut ordered = registered.clone();
+        crate::code_mode_order::sort_definitions(&mut ordered);
+        let catalog = Arc::new(Self {
+            definitions: definitions.to_vec(),
+            exposures: exposures.to_vec(),
+            excluded: excluded.clone(),
+            names: registered
+                .iter()
+                .map(|definition| definition.name().to_owned())
+                .collect(),
+            normalized: registered
+                .iter()
+                .map(|definition| crate::selection::normalize_public_tool_name(definition.name()))
+                .collect(),
+            nested: first_normalized_definitions(
+                offered().filter(|definition| !host_owned_name(definition.name())),
+            ),
+            registered,
+            ordered,
+            metadata: OnceLock::new(),
+        });
+        let weak = Arc::downgrade(&catalog);
+        LIVE.update(|live| {
+            live.retain(|catalog| catalog.strong_count() > 0);
+            live.push(std::sync::Weak::clone(&weak));
+        });
+        catalog
+    }
+
+    fn metadata(&self) -> Arc<[Value]> {
+        Arc::clone(self.metadata.get_or_init(|| {
+            self.nested
+                .iter()
+                .map(|definition| definition_metadata(definition.name(), definition))
+                .collect()
+        }))
+    }
 }
 
 struct NestedMetadata {
@@ -392,15 +479,38 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub(crate) fn nested_tool_metadata(&self) -> Vec<Value> {
-        self.code_mode_definitions()
-            .into_iter()
-            .map(|definition| definition_metadata(definition.name(), &definition))
+    pub(super) fn catalog(&self) -> &Arc<Catalog> {
+        self.catalog.get_or_init(|| {
+            Catalog::of(
+                &self.definitions,
+                &self.exposures,
+                &self.excluded_code_tools,
+            )
+        })
+    }
+
+    pub(super) fn exclude_code_tools(&mut self, excluded: &HashSet<String>) {
+        self.excluded_code_tools.clone_from(excluded);
+        self.catalog = OnceLock::new();
+    }
+
+    fn provided_definitions(&self) -> Vec<ToolDefinition> {
+        self.providers
+            .iter()
+            .flat_map(|provider| provider.available_definitions())
             .collect()
     }
 
+    pub(crate) fn nested_tool_metadata(&self) -> Vec<Value> {
+        self.shared_nested_tool_metadata().to_vec()
+    }
+
     pub(crate) fn shared_nested_tool_metadata(&self) -> Arc<[Value]> {
-        let definitions = self.code_mode_definitions();
+        let provided = self.provided_definitions();
+        if provided.is_empty() {
+            return self.catalog().metadata();
+        }
+        let definitions = self.code_mode_definitions_with(provided);
         static LIVE: std::sync::LazyLock<Atom<Vec<std::sync::Weak<NestedMetadata>>>> =
             std::sync::LazyLock::new(Atom::default);
         let cached = self.nested_metadata.read(|cached| {
@@ -462,6 +572,7 @@ impl ToolRegistry {
             nested_gate: Arc::default(),
             excluded_code_tools: HashSet::new(),
             nested_metadata: Arc::default(),
+            catalog: OnceLock::new(),
         }
     }
 
@@ -481,6 +592,7 @@ impl ToolRegistry {
 
     pub(super) fn set_all_exposures(&mut self, exposure: ToolExposure) {
         self.exposures.fill(exposure);
+        self.catalog = OnceLock::new();
     }
 
     pub(super) fn extend(
@@ -501,6 +613,7 @@ impl ToolRegistry {
             self.definitions.push(definition);
             self.exposures.push(exposure);
             self.ordered.push(tool);
+            self.catalog = OnceLock::new();
         }
     }
 
@@ -579,32 +692,22 @@ impl ToolRegistry {
     }
 
     pub(crate) fn registered_code_mode_definitions(&self) -> Vec<ToolDefinition> {
-        first_normalized_definitions(
-            self.definitions
-                .iter()
-                .zip(&self.exposures)
-                .filter(|(definition, exposure)| {
-                    exposure.is_available_in_code_mode()
-                        && !self.excluded_code_tools.contains(definition.name())
-                })
-                .map(|(definition, _)| nested_definition(definition.clone())),
-        )
+        self.catalog().registered.clone()
     }
 
     pub(crate) fn code_mode_tool_summaries(&self) -> Vec<(String, String)> {
-        let mut seen = self
-            .registered_code_mode_definitions()
-            .into_iter()
-            .map(|definition| crate::selection::normalize_public_tool_name(definition.name()))
-            .collect::<HashSet<_>>();
+        let registered = &self.catalog().normalized;
+        let mut seen = HashSet::new();
         let mut summaries = self
             .providers
             .iter()
             .flat_map(|provider| provider.code_mode_tool_summaries())
             .filter_map(|(name, description)| {
                 let normalized = crate::selection::normalize_public_tool_name(&name);
-                (!host_owned_name(&name) && seen.insert(normalized.clone()))
-                    .then_some((normalized, description))
+                (!host_owned_name(&name)
+                    && !registered.contains(&normalized)
+                    && seen.insert(normalized.clone()))
+                .then_some((normalized, description))
             })
             .collect::<Vec<_>>();
         summaries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -613,7 +716,7 @@ impl ToolRegistry {
 
     fn model_code_mode_definitions(&self) -> Vec<ToolDefinition> {
         first_normalized_definitions(
-            self.registered_code_mode_definitions().into_iter().chain(
+            self.catalog().registered.iter().cloned().chain(
                 self.providers
                     .iter()
                     .filter(|provider| provider.model_catalog_visible())
@@ -623,24 +726,18 @@ impl ToolRegistry {
         )
     }
 
-    pub(crate) fn code_mode_definitions(&self) -> Vec<ToolDefinition> {
-        let definitions = self
-            .definitions
-            .iter()
-            .zip(&self.exposures)
-            .filter(|(_, exposure)| exposure.is_available_in_code_mode())
-            .map(|(definition, _)| definition.clone())
-            .chain(
-                self.providers
-                    .iter()
-                    .flat_map(|provider| provider.available_definitions()),
-            )
-            .filter(|definition| {
-                !host_owned_name(definition.name())
-                    && !self.excluded_code_tools.contains(definition.name())
-            })
-            .map(nested_definition);
-        first_normalized_definitions(definitions)
+    fn code_mode_definitions_with(&self, provided: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+        first_normalized_definitions(
+            self.catalog().nested.iter().cloned().chain(
+                provided
+                    .into_iter()
+                    .filter(|definition| {
+                        !host_owned_name(definition.name())
+                            && !self.excluded_code_tools.contains(definition.name())
+                    })
+                    .map(nested_definition),
+            ),
+        )
     }
 }
 

@@ -32,6 +32,7 @@ struct RouteOwner {
 pub(crate) struct ProcessRoutes {
     sessions: Atom<HashMap<String, Actor<RouteOwner>>>,
     store: Option<Arc<dyn ProcessRouteStore>>,
+    runtime_id: std::sync::OnceLock<Box<str>>,
 }
 
 async fn load<'state>(
@@ -80,7 +81,13 @@ impl ProcessRoutes {
         Self {
             sessions: Atom::default(),
             store,
+            runtime_id: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn runtime_id(&self) -> &str {
+        self.runtime_id
+            .get_or_init(|| uuid::Uuid::new_v4().to_string().into())
     }
 
     fn session(&self, session_id: &str) -> Result<Actor<RouteOwner>, ToolError> {

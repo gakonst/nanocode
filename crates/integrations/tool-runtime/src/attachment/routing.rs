@@ -131,10 +131,9 @@ impl WorkspaceRouter for AttachmentRouter {
             pool: pool.clone(),
         }));
         let sessions = Arc::new(ProcessRoutes::new(store));
-        let local_runtime_id: Arc<str> = uuid::Uuid::new_v4().to_string().into();
-        catalog.wrap(|tool| {
-            let name = tool.definition().name().to_owned();
-            let routing = classify(&policies, &known, &name);
+        catalog.wrap(|tool, definition| {
+            let name = definition.name();
+            let routing = classify(&policies, &known, name);
             let routed = routing.is_some_and(|routing| pool.is_some() || !pool_only(routing))
                 || (pool.is_some() && name.starts_with("mcp__"))
                 || routes.iter().any(|route| {
@@ -146,12 +145,11 @@ impl WorkspaceRouter for AttachmentRouter {
             routed.then(|| {
                 Arc::new(RoutedTool {
                     local: Arc::clone(tool),
-                    local_desktop: local_names.contains(name.as_str())
-                        || providers.iter().any(|provider| provider.contains(&name)),
+                    local_desktop: local_names.contains(name)
+                        || providers.iter().any(|provider| provider.contains(name)),
                     routes: Arc::clone(&routes),
                     pool: pool.clone(),
                     sessions: Arc::clone(&sessions),
-                    local_runtime_id: Arc::clone(&local_runtime_id),
                     routing,
                     guidance: Arc::clone(&guidance),
                 }) as Arc<dyn Tool>
@@ -162,7 +160,6 @@ impl WorkspaceRouter for AttachmentRouter {
                 pool,
                 routes,
                 sessions,
-                local_runtime_id,
                 providers: catalog.providers().to_vec(),
                 policies,
                 local_names,
@@ -184,7 +181,6 @@ pub(crate) struct RoutedTool {
     pub routes: Arc<Vec<Route>>,
     pub pool: Option<super::RunnerPool>,
     pub sessions: Arc<ProcessRoutes>,
-    pub local_runtime_id: Arc<str>,
     pub local_desktop: bool,
     pub routing: Option<WorkspaceToolRouting>,
     pub guidance: Arc<RoutingGuidance>,
@@ -643,7 +639,7 @@ impl RoutedTool {
                             }
                             Some(index)
                         } else {
-                            if stored.runtime_id.as_deref() != Some(&*self.local_runtime_id) {
+                            if stored.runtime_id.as_deref() != Some(self.sessions.runtime_id()) {
                                 return Err(
                                     "local process session belongs to a previous SDK runtime"
                                         .into(),
@@ -793,7 +789,7 @@ impl RoutedTool {
                         runtime_id: if selected.is_some() {
                             runtime_id.clone()
                         } else {
-                            Some(self.local_runtime_id.to_string().into())
+                            Some(self.sessions.runtime_id().into())
                         },
                     };
                     let id = self.sessions.insert(context.session_id(), mapping).await?;
@@ -824,7 +820,6 @@ pub(crate) struct RunnerProvider {
     pub pool: super::RunnerPool,
     pub routes: Arc<Vec<Route>>,
     pub sessions: Arc<ProcessRoutes>,
-    pub local_runtime_id: Arc<str>,
     pub providers: Vec<Arc<dyn crate::DynamicToolProvider>>,
     pub policies: Policies,
     pub local_names: HashSet<Box<str>>,
@@ -918,7 +913,6 @@ impl RunnerProvider {
             routes: self.routes.clone(),
             pool: Some(self.pool.clone()),
             sessions: self.sessions.clone(),
-            local_runtime_id: self.local_runtime_id.clone(),
             guidance: Arc::clone(&snapshot.guidance),
         }
     }

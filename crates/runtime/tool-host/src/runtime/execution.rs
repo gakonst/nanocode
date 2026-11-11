@@ -493,9 +493,7 @@ impl NativeToolRuntime {
         tools.start_providers();
         self.text_pins.clone_from(&tools.text_pins);
         let registry = Arc::make_mut(&mut self.registry);
-        registry
-            .excluded_code_tools
-            .clone_from(&tools.excluded_code_tools);
+        registry.exclude_code_tools(&tools.excluded_code_tools);
         for policy in tools.code_mode_policies() {
             if !registry
                 .policies
@@ -536,7 +534,18 @@ impl NativeToolRuntime {
         if let Some(default_shell) = &tools.default_shell {
             self.default_shell_name = Arc::clone(default_shell);
         }
-        self.executors.clone_from(&tools.code_mode_executors);
+        self.executors =
+            tools
+                .code_mode_executors
+                .as_ref()
+                .map(|executors| match tools.session() {
+                    Some(session) => executors.for_session(
+                        session.session_id(),
+                        session.root_session_id(),
+                        tools.backend(),
+                    ),
+                    None => executors.clone(),
+                });
         if let Some(journals) = &tools.cell_journals {
             self.code_mode.set_journals(journals.clone());
         }
@@ -546,12 +555,10 @@ impl NativeToolRuntime {
         if let Some(guard) = tools.cell_guard {
             self.code_mode.set_cell_guard(guard);
         }
-        registry.hand_calls = tools.hand_calls.clone().or_else(|| {
-            tools
-                .code_mode_executors
-                .as_ref()
-                .map(CodeModeExecutors::calls)
-        });
+        registry.hand_calls = tools
+            .hand_calls
+            .clone()
+            .or_else(|| self.executors.as_ref().map(CodeModeExecutors::calls));
         self
     }
 
@@ -668,23 +675,12 @@ impl NativeToolRuntime {
 
     #[must_use]
     pub fn model_specs(&self, _session_id: &str) -> Vec<ToolDefinition> {
-        let mut nested = self.registry.registered_code_mode_definitions();
+        let catalog = self.registry.catalog();
+        let nested = &catalog.ordered;
         let provider_summaries = self.registry.code_mode_tool_summaries();
-        let mut direct = self
-            .registry
-            .direct_definitions()
-            .filter(|definition| !matches!(definition, ToolDefinition::ToolSearch { .. }))
-            .cloned()
-            .collect::<Vec<_>>();
-        let code_mode_names = nested
-            .iter()
-            .map(|definition| definition.name().to_owned())
-            .collect::<HashSet<_>>();
-        direct = group_direct_code_mode_definitions(direct, &code_mode_names);
-        crate::code_mode_order::sort_definitions(&mut nested);
         let mut native = vec![
             code_mode::exec_spec(
-                &nested,
+                nested,
                 &provider_summaries,
                 self.deferred_tools_guidance_enabled,
                 self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
@@ -697,7 +693,7 @@ impl NativeToolRuntime {
                 pins.as_ref(),
                 &mut native,
                 &(
-                    &nested,
+                    nested,
                     &provider_summaries,
                     self.deferred_tools_guidance_enabled,
                     self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
@@ -707,6 +703,14 @@ impl NativeToolRuntime {
         if self.is_code_only() {
             return native;
         }
+        let mut direct = group_direct_code_mode_definitions(
+            self.registry
+                .direct_definitions()
+                .filter(|definition| !matches!(definition, ToolDefinition::ToolSearch { .. }))
+                .cloned()
+                .collect(),
+            &catalog.names,
+        );
         if self.exposure.unwrap_or_default() == ToolExposure::DirectOnly {
             native.clear();
         }

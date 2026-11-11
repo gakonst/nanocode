@@ -1101,31 +1101,28 @@ struct SpawnAgent {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
-        let mut policy = self
-            .registry
-            .upgrade()
-            .map(|registry| registry.spawn_policy())
-            .unwrap_or_default();
-        for provider in policy.providers.iter_mut().flatten() {
-            provider.models.clear();
-            provider.note = None;
+        static LATEST: LazyLock<Atom<Option<Offered>>> = LazyLock::new(Atom::default);
+        let Some(registry) = self.registry.upgrade() else {
+            return spawn_agent_definition(SpawnPolicy::default());
+        };
+        let latest = registry.spawn_policy.read(|policy| {
+            LATEST.read(|latest| {
+                latest
+                    .as_ref()
+                    .filter(|latest| std::ptr::eq(Arc::as_ptr(&latest.policy), policy))
+                    .map(|latest| latest.definition.clone())
+            })
+        });
+        if let Some(definition) = latest {
+            return definition;
         }
-        memoized(format!("{SPAWN_AGENT_TOOL} {policy:?}"), || {
-            let description = "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.";
-            let description = match policy.providers {
-                Some(_) => format!(
-                    "{description} A model a provider serves runs as <provider>/<model>, paid as that provider charges (list_models lists them), so a question about models or providers can be answered by spawning a subagent on each."
-                ),
-                None => description.to_owned(),
-            };
-            ToolDefinition::function(
-                SPAWN_AGENT_TOOL,
-                description,
-                spawn_agent_parameters_for(&policy),
-            )
-            .with_strict_parameters()
-            .with_output_schema(SPAWN_AGENT_OUTPUT_SCHEMA.clone())
-        })
+        let policy = registry.spawn_policy.get();
+        let definition = spawn_agent_definition(SpawnPolicy::clone(&policy));
+        LATEST.set(Some(Offered {
+            policy,
+            definition: definition.clone(),
+        }));
+        definition
     }
 
     recovers!(self, input, context, self.spawn(input, context, true));
@@ -1133,6 +1130,42 @@ impl Tool for SpawnAgent {
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         self.spawn(input, context, false).await
     }
+}
+
+struct Offered {
+    policy: Arc<SpawnPolicy>,
+    definition: ToolDefinition,
+}
+
+fn spawn_agent_definition(mut policy: SpawnPolicy) -> ToolDefinition {
+    static DEFINITIONS: LazyLock<Atom<HashMap<String, ToolDefinition>>> =
+        LazyLock::new(Atom::default);
+    for provider in policy.providers.iter_mut().flatten() {
+        provider.models.clear();
+        provider.note = None;
+    }
+    let key = format!("{policy:?}");
+    if let Some(definition) = DEFINITIONS.read(|definitions| definitions.get(&key).cloned()) {
+        return definition;
+    }
+    let description = "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID. When the root agent is durable, the task tree survives runtime restarts with the same IDs and interrupted children resume from their latest committed checkpoint; otherwise children are dropped when the parent runtime restarts. Delegate meaningful, separable work and handle trivial or tightly coupled work directly. When Code Mode is available, build multi-agent pipelines in it: start independent subtasks in parallel, await and reduce their results, then dispatch dependent stages. Do not repeat delegated work; double-check results against the relevant evidence before relying on them. Use output contracts that expose the fields downstream stages need, keep concurrent write scopes disjoint, and own final synthesis and verification.";
+    let description = match policy.providers {
+        Some(_) => format!(
+            "{description} A model a provider serves runs as <provider>/<model>, paid as that provider charges (list_models lists them), so a question about models or providers can be answered by spawning a subagent on each."
+        ),
+        None => description.to_owned(),
+    };
+    let definition = ToolDefinition::function(
+        SPAWN_AGENT_TOOL,
+        description,
+        spawn_agent_parameters_for(&policy),
+    )
+    .with_strict_parameters()
+    .with_output_schema(SPAWN_AGENT_OUTPUT_SCHEMA.clone());
+    DEFINITIONS.update(|definitions| {
+        definitions.insert(key.clone(), definition.clone());
+    });
+    definition
 }
 
 impl SpawnAgent {
@@ -1222,15 +1255,15 @@ impl SpawnAgent {
     }
 }
 
-fn memoized(key: String, build: impl FnOnce() -> ToolDefinition) -> ToolDefinition {
-    static DEFINITIONS: LazyLock<Atom<HashMap<String, ToolDefinition>>> =
+fn memoized(key: &'static str, build: impl FnOnce() -> ToolDefinition) -> ToolDefinition {
+    static DEFINITIONS: LazyLock<Atom<HashMap<&'static str, ToolDefinition>>> =
         LazyLock::new(Atom::default);
-    if let Some(definition) = DEFINITIONS.read(|definitions| definitions.get(&key).cloned()) {
+    if let Some(definition) = DEFINITIONS.read(|definitions| definitions.get(key).cloned()) {
         return definition;
     }
     let definition = build();
     DEFINITIONS.update(|definitions| {
-        definitions.insert(key.clone(), definition.clone());
+        definitions.insert(key, definition.clone());
     });
     definition
 }
@@ -1404,7 +1437,7 @@ struct SubmitResult {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SubmitResult {
     fn definition(&self) -> ToolDefinition {
-        memoized(SUBMIT_RESULT_TOOL.to_owned(), || {
+        memoized(SUBMIT_RESULT_TOOL, || {
             ToolDefinition::function(
             SUBMIT_RESULT_TOOL,
             "Submits the current child subagent turn's final JSON output. Supply only output matching the task schema. After an accepted receipt, send a brief final assistant message with no further tool calls; do not finish with an empty response. If superseded, incorporate pending instructions and submit the updated result. Invalid values can be corrected and retried.",
@@ -1500,7 +1533,7 @@ struct SendAgentMessage {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SendAgentMessage {
     fn definition(&self) -> ToolDefinition {
-        memoized(SEND_AGENT_MESSAGE_TOOL.to_owned(), || {
+        memoized(SEND_AGENT_MESSAGE_TOOL, || {
             ToolDefinition::function(
                 SEND_AGENT_MESSAGE_TOOL,
                 "Sends a bounded directed message to any other agent in the same task tree. Deferred messages start an idle agent or queue behind its active turn. If a send is queued, do not wait for it inside the current turn; finish the turn so queued messages can be delivered. Urgent messages steer a running agent at its next safe model boundary. Delegate messages replace the recipient's assigned task, retain its output schema, and require management authority.",
@@ -1648,7 +1681,7 @@ struct CatalogModel {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ListModels {
     fn definition(&self) -> ToolDefinition {
-        memoized(LIST_MODELS_TOOL.to_owned(), || {
+        memoized(LIST_MODELS_TOOL, || {
             ToolDefinition::function(
                 LIST_MODELS_TOOL,
                 "Lists the models this host reaches through providers, each named <provider>/<model> with the harness that runs it, and what each provider is and how it is paid. Pass one as spawn_agent's model to run a subagent on it.",
@@ -1710,7 +1743,7 @@ struct ListAgents {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
-        memoized(LIST_AGENTS_TOOL.to_owned(), || {
+        memoized(LIST_AGENTS_TOOL, || {
             ToolDefinition::function(
                 LIST_AGENTS_TOOL,
                 "Lists agents in the same task tree in agent_id order. Pending, running, and recoverable interrupted agents are returned by default. Set include_completed to retrieve terminal statuses and completed results in status.output. After reuse or closure, last_output retains the latest completed result. In a large tree, page with limit: the result's next_after_agent_id, present while more agents remain, is the after_agent_id of the next page.",
@@ -1794,13 +1827,14 @@ impl Tool for WaitAgent {
             .registry
             .upgrade()
             .is_some_and(|registry| registry.continues_root());
-        memoized(format!("{WAIT_AGENT_TOOL} {continues}"), || {
+        let key = if continues {
+            "wait_agent continued"
+        } else {
+            WAIT_AGENT_TOOL
+        };
+        memoized(key, || {
             let mut description = "Waits until any requested subagent reaches a terminal status and returns a snapshot of every requested agent. The result includes pending, running, and closing agents; consumers must preserve those nonterminal agents and act only on completed, failed, interrupted, or closed entries. Each entry's status is an object; read its terminal state from status.state. Only results this caller has not yet received end the wait: already-reported terminal agents do not, so waiting again with the same IDs blocks for the next result. When every requested agent is terminal and already reported, the snapshot returns immediately; repeating that identical call errors because nothing is left to wait for. Use one call with multiple IDs instead of polling the workspace. Tasks are abbreviated. A completed entry omits status.output when this caller already received that result from an earlier wait_agent call or a completion notice; list_agents with include_completed=true returns it again.".to_owned();
-            if self
-                .registry
-                .upgrade()
-                .is_some_and(|registry| registry.continues_root())
-            {
+            if continues {
                 description.push_str(" Use wait_agent only while other work still needs this turn to stay alive. When the root agent has no other work and is only waiting on running direct children, end the turn instead of blocking on them: the runtime continues the root when any direct child completes, fails, or is interrupted. Subagents are not continued by their children, so a subagent keeps its turn alive until it can submit its result.");
             }
             ToolDefinition::function(
@@ -1904,7 +1938,7 @@ impl ChangeAgentLifecycle {
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ChangeAgentLifecycle {
     fn definition(&self) -> ToolDefinition {
-        memoized(self.tool_name().to_owned(), || {
+        memoized(self.tool_name(), || {
             let description = match self.operation {
                 LifecycleOperation::Interrupt => {
                     "Interrupts an agent's active turn and every active descendant, waits for their model and tool resources to stop, and keeps the sessions reusable within the running parent runtime."

@@ -43,6 +43,33 @@ fn shared_description(name: &str, description: String) -> Arc<str> {
     shared
 }
 
+struct ExecDescription {
+    source: Arc<str>,
+    shared: Arc<str>,
+}
+
+fn exec_description(description: &Arc<str>) -> Arc<str> {
+    static LATEST: std::sync::LazyLock<nanocode_sync::Atom<Option<ExecDescription>>> =
+        std::sync::LazyLock::new(nanocode_sync::Atom::default);
+    if let Some(shared) = LATEST.read(|latest| {
+        latest
+            .as_ref()
+            .filter(|latest| Arc::ptr_eq(&latest.source, description))
+            .map(|latest| Arc::clone(&latest.shared))
+    }) {
+        return shared;
+    }
+    let shared = shared_description(
+        "exec",
+        format!("{description}\n\nPass the complete JavaScript source as the `code` string."),
+    );
+    LATEST.set(Some(ExecDescription {
+        source: Arc::clone(description),
+        shared: Arc::clone(&shared),
+    }));
+    shared
+}
+
 pub fn install_shared_tools(
     workspace: PathBuf,
     handle: &AgentHandle,
@@ -126,15 +153,12 @@ pub(super) fn install(
         let (name, description, input_schema, call) = match definition {
             RuntimeDefinition::Custom {
                 name, description, ..
-            } if &*name == "exec" => {
-                let description = shared_description(
-                    &name,
-                    format!(
-                        "{description}\n\nPass the complete JavaScript source as the `code` string."
-                    ),
-                );
-                (name, description, Arc::clone(&EXEC_SCHEMA), Call::Exec)
-            }
+            } if &*name == "exec" => (
+                name,
+                exec_description(&description),
+                Arc::clone(&EXEC_SCHEMA),
+                Call::Exec,
+            ),
             RuntimeDefinition::Function {
                 name,
                 description,

@@ -31,7 +31,8 @@ struct FilePatch {
     new: Option<Vec<u8>>,
     rename: Option<(Vec<u8>, Vec<u8>)>,
     hunks: Vec<Hunk>,
-    /// The line of the patch its header starts at, and the header's text.
+    /// The line of the patch its first hunk starts at (its header's first line when
+    /// it has none), and the header's text.
     line: usize,
     header: Vec<Vec<u8>>,
     new_mode: Option<u32>,
@@ -131,6 +132,7 @@ fn parse(text: &[u8]) -> Parsed {
                 continue;
             };
             let bad = || Parsed::Malformed(i + 1, plain.clone());
+            let start = i + 1;
             let inner = &plain[4..];
             let Some(space) = inner.iter().position(|&b| b == b' ') else {
                 return bad();
@@ -196,6 +198,9 @@ fn parse(text: &[u8]) -> Parsed {
                     i += 1;
                 }
             }
+            if file.hunks.is_empty() {
+                file.line = start;
+            }
             file.hunks.push(hunk);
             continue;
         }
@@ -252,6 +257,8 @@ fn parse(text: &[u8]) -> Parsed {
     Parsed::Files(files)
 }
 
+/// A name of the patch without its leading components: the base name without -p,
+/// else what is left after count slashes, and nothing when it has fewer.
 fn strip(name: &[u8], count: Option<usize>) -> Vec<u8> {
     match count {
         None => name.rsplit(|&b| b == b'/').next().unwrap_or(name).to_vec(),
@@ -265,12 +272,41 @@ fn strip(name: &[u8], count: Option<usize>) -> Vec<u8> {
                             rest = &rest[1..];
                         }
                     }
-                    None => break,
+                    None => return Vec::new(),
                 }
             }
             rest.to_vec()
         }
     }
+}
+
+/// A hunk as a unified diff has it, for a reject of a patch applied in reverse.
+fn render(hunk: &Hunk) -> Vec<u8> {
+    let old = hunk.lines.iter().filter(|l| l.0 != b'+').count();
+    let new = hunk.lines.iter().filter(|l| l.0 != b'-').count();
+    let range = |start: usize, count: usize| match count {
+        0 => format!("{},0", start - 1),
+        1 => start.to_string(),
+        _ => format!("{start},{count}"),
+    };
+    let mut out = format!(
+        "@@ -{} +{} @@\n",
+        range(hunk.old_start, old),
+        range(hunk.new_start, new)
+    )
+    .into_bytes();
+    let last_old = hunk.lines.iter().rposition(|l| l.0 != b'+');
+    let last_new = hunk.lines.iter().rposition(|l| l.0 != b'-');
+    for (i, (mark, line)) in hunk.lines.iter().enumerate() {
+        out.push(*mark);
+        out.extend_from_slice(line);
+        if (hunk.old_open && Some(i) == last_old && *mark != b'+')
+            || (hunk.new_open && Some(i) == last_new && *mark != b'-')
+        {
+            out.extend_from_slice(b"\\ No newline at end of file\n");
+        }
+    }
+    out
 }
 
 struct Options {
@@ -448,6 +484,15 @@ fn reversed(hunk: &Hunk) -> Hunk {
     }
 }
 
+/// A hunk that did not apply, as the reject file has it: the way it was tried.
+fn rejected(reverse: bool, hunk: &Hunk, original: &Hunk) -> Vec<u8> {
+    if reverse {
+        render(hunk)
+    } else {
+        original.text.clone()
+    }
+}
+
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
@@ -621,6 +666,9 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         .await;
         return 2;
     }
+    if text.is_empty() {
+        return 0;
+    }
     let files = match parse(&text) {
         Parsed::Files(files) => files,
         Parsed::Malformed(line, content) => {
@@ -682,7 +730,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 }
             }
             if let (None, Some((source, _))) = (&target, &patch.rename) {
-                let source = strip(source, o.strip);
+                let source = strip(source, o.strip.map(|n| n.saturating_sub(1)));
                 if ctx.stat(&at(&o, &source), true).await.is_ok() {
                     target = Some(source);
                 }
@@ -717,7 +765,11 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         let shown = String::from_utf8_lossy(&target).into_owned();
         let path = at(&o, &target);
         let renamed_to = match &patch.rename {
-            Some((a, b)) => Some(strip(if o.reverse { a } else { b }, o.strip)),
+            // git's rename lines name the files without the a/ and b/ of its headers.
+            Some((a, b)) => Some(strip(
+                if o.reverse { a } else { b },
+                o.strip.map(|n| n.saturating_sub(1)),
+            )),
             None => None,
         };
         let out_name = o
@@ -726,8 +778,37 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             .or_else(|| renamed_to.clone())
             .unwrap_or_else(|| target.clone());
         let out_path = at(&o, &out_name);
+        let mut data = Vec::new();
+        let existed = match Input::open(ctx, &path).await {
+            Ok(input) => input.read_to_end(ctx, &mut data).await.is_ok(),
+            Err(_) => false,
+        };
+        let mut reverse = o.reverse;
+        let mut skip = false;
+        let mut apply_anyway = false;
+        let mut save_rejects = true;
+        // A patch that makes a file that is there: made already, or the other way.
+        let there = creates && existed && !data.is_empty() && !patch.hunks.is_empty();
+        if there {
+            say!("The next patch would create the file {shown},\nwhich already exists!");
+            if o.forward {
+                say!("  Skipping patch.\n");
+                skip = true;
+            } else if o.force {
+                say!("  Applying it anyway.\n");
+                apply_anyway = true;
+            } else if o.batch {
+                say!("  Assuming -R.\n");
+                reverse = !reverse;
+            } else {
+                say!("  Assume -R? [n] \nApply anyway? [n] \nSkipping patch.\n");
+                skip = true;
+            }
+            save_rejects = !skip;
+        }
         let verb = if o.dry_run { "checking" } else { "patching" };
         match &renamed_to {
+            _ if skip => {}
             Some(new_name) if *new_name != target => {
                 say!(
                     "{verb} file {} (renamed from {shown})\n",
@@ -742,22 +823,14 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             }
             _ => say!("{verb} file {shown}\n"),
         }
-        let mut data = Vec::new();
-        let existed = match Input::open(ctx, &path).await {
-            Ok(input) => input.read_to_end(ctx, &mut data).await.is_ok(),
-            Err(_) => false,
-        };
         let meta = ctx.stat(&path, true).await.ok();
         let mut file = lines_of(&data);
         let mut open_end = !data.is_empty() && data.last() != Some(&b'\n');
         let mut result: Vec<Vec<u8>> = Vec::new();
         let mut frozen = 0usize;
         let mut offset = 0isize;
-        let mut failed: Vec<&Hunk> = Vec::new();
-        let mut reverse = o.reverse;
-        let mut skip = false;
+        let mut failed: Vec<Vec<u8>> = Vec::new();
         let mut mismatch = false;
-        let mut apply_anyway = false;
         for (n, original) in patch.hunks.iter().enumerate() {
             let number = n + 1;
             let mut hunk = if reverse {
@@ -766,7 +839,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 original.clone()
             };
             if skip {
-                failed.push(original);
+                failed.push(rejected(reverse, &hunk, original));
                 continue;
             }
             let mut fuzz = 0;
@@ -870,17 +943,14 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             }
             let landed = hunk.new_start as isize + offset;
             if skip {
-                failed.push(original);
+                failed.push(rejected(reverse, &hunk, original));
                 continue;
             }
-            if found == 0 || (found == 1 && creates && existed && !data.is_empty()) {
-                if found != 0 {
-                    say!("Patch attempted to create file {shown}, which already exists.\n");
-                }
-                failed.push(original);
+            if found == 0 {
+                failed.push(rejected(reverse, &hunk, original));
                 say!(
                     "Hunk #{number} FAILED at {}.\n",
-                    hunk.new_start as isize + offset
+                    hunk.old_start as isize + offset
                 );
                 continue;
             }
@@ -931,40 +1001,63 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             name.extend_from_slice(b".rej");
             name
         });
+        // The file as it was is kept when asked for, and when the patch did not fit
+        // where and as it said.
+        let keep_original = !o.dry_run && (o.backup || (mismatch && o.backup_if_mismatch && !skip));
+        if keep_original {
+            if existed {
+                let mut backup = path.clone();
+                backup.extend_from_slice(&o.suffix);
+                if let Ok(file) = ctx.open(&backup, OpenOptions::write()).await {
+                    let _ = file.write_all(&data).await;
+                }
+            } else if !creates {
+                say!("Cannot stat file {shown}, skipping backup\n");
+            }
+        }
         if !failed.is_empty() {
             status = status.max(1);
             let what = if skip { "ignored" } else { "FAILED" };
-            say!(
-                "{} out of {total} hunk{} {what} -- saving rejects to file {}\n",
+            let mut line = format!(
+                "{} out of {total} hunk{} {what}",
                 failed.len(),
-                plural(total),
-                String::from_utf8_lossy(&reject_name)
+                plural(total)
             );
-            if !o.dry_run {
+            if !o.dry_run && save_rejects {
+                line.push_str(&format!(
+                    " -- saving rejects to file {}",
+                    String::from_utf8_lossy(&reject_name)
+                ));
+            }
+            line.push('\n');
+            // The count is said to the silent too.
+            out.extend_from_slice(line.as_bytes());
+            if !o.dry_run && save_rejects {
+                // The names are the patch's, as the patch was applied.
+                let named = |name: &Option<Vec<u8>>| match name {
+                    Some(name) if !strip(name, o.strip).is_empty() => strip(name, o.strip),
+                    _ => out_name.clone(),
+                };
                 let mut reject = Vec::new();
                 reject.extend_from_slice(b"--- ");
-                reject.extend_from_slice(&out_name);
+                reject.extend_from_slice(&named(from));
                 reject.extend_from_slice(b"\n+++ ");
-                reject.extend_from_slice(&out_name);
+                reject.extend_from_slice(&named(to));
                 reject.push(b'\n');
-                for hunk in &failed {
-                    reject.extend_from_slice(&hunk.text);
+                for text in &failed {
+                    reject.extend_from_slice(text);
                 }
                 if let Ok(file) = ctx.open(&at(&o, &reject_name), OpenOptions::write()).await {
                     let _ = file.write_all(&reject).await;
                 }
             }
         }
-        if o.dry_run || failed.len() == total && total > 0 {
+        if o.dry_run || (failed.len() == total && total > 0 && (!existed || new_data == data)) {
             continue;
         }
-        let keep_original = o.backup || (mismatch && o.backup_if_mismatch && failed.len() < total);
-        if keep_original && existed {
-            let mut backup = path.clone();
-            backup.extend_from_slice(&o.suffix);
-            if let Ok(file) = ctx.open(&backup, OpenOptions::write()).await {
-                let _ = file.write_all(&data).await;
-            }
+        if deletes && !new_data.is_empty() && o.output.is_none() {
+            say!("Not deleting file {shown} as content differs from patch\n");
+            status = status.max(1);
         }
         let gone = (deletes || o.remove_empty) && new_data.is_empty() && o.output.is_none();
         if gone {
@@ -993,6 +1086,11 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             mode,
             ..OpenOptions::write()
         };
+        // GNU puts a new file in the old one's place: one that may not be written
+        // still can be patched.
+        if meta.is_some_and(|m| m.mode & 0o200 == 0) && out_path == path {
+            let _ = ctx.remove_file(&path).await;
+        }
         let written = match ctx.open(&out_path, options).await {
             Ok(file) => file.write_all(&new_data).await,
             Err(e) => Err(e),

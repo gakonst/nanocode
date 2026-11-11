@@ -177,11 +177,28 @@ pub(crate) struct ContinuationCache {
     history_log: SequenceLog,
     prefix: Arc<[ResponseItem]>,
     prefix_log: SequenceLog,
+    prefix_pooled: bool,
 }
 
 impl ContinuationCache {
     pub(crate) fn committed(&mut self) {
         self.history_log.release();
+        self.prefix_log.release();
+    }
+
+    pub(crate) fn unpooled_prefix(
+        &mut self,
+        prefix: &Arc<[ResponseItem]>,
+    ) -> Result<Vec<EncodedPayload>> {
+        self.sync_prefix(prefix)?;
+        if self.prefix_pooled {
+            return Ok(Vec::new());
+        }
+        Ok(self.prefix_log.frontier().cloned().collect())
+    }
+
+    pub(crate) fn prefix_pooled(&mut self) {
+        self.prefix_pooled = true;
         self.prefix_log.release();
     }
 
@@ -215,6 +232,7 @@ impl ContinuationCache {
             };
             self.prefix_log.sync(0, encoded.into_iter().map(Ok))?;
             self.prefix = Arc::clone(prefix);
+            self.prefix_pooled = false;
         }
         Ok(())
     }

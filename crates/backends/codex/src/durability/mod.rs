@@ -125,10 +125,10 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
 
             builder = builder.default_prompt_cache_key(state_id.clone());
         }
-        let owner = Arc::new(Slot::new(Some((owner, known_records, branches))));
+        let owner = Arc::new(Slot::new(Some((owner, known_records, branches, state))));
         Ok(builder
             .execution_policy_factory(move || {
-                let (owner, keys, branches) = owner
+                let (owner, keys, branches, state) = owner
                     .take()
                     .ok_or_else(|| {
                         NanocodeError::InvalidExecutionPolicy(
@@ -136,7 +136,8 @@ impl<F> DurableAgentExt for CodexBuilder<F> {
                                 .to_owned(),
                         )
                     })?;
-                let policy = DurableExecution::ready(owner, state_id.clone(), Some(branches));
+                let policy =
+                    DurableExecution::ready(owner, state, state_id.clone(), Some(branches));
                 policy.remember(keys)?;
                 let policy: Arc<dyn ExecutionPolicy> = Arc::new(policy);
                 Ok(policy)
@@ -176,6 +177,7 @@ impl<F> CodexBuilder<F> {
 
 struct DurableExecution {
     owner: DurableOwner,
+    session: DurableSession,
     state_id: String,
     branches: Option<Branches>,
     context_records: Swap<HashSet<String>>,
@@ -191,9 +193,15 @@ fn recovery(kind: &str) -> StepRecovery {
 }
 
 impl DurableExecution {
-    fn ready(owner: DurableOwner, state_id: String, branches: Option<Branches>) -> Self {
+    fn ready(
+        owner: DurableOwner,
+        session: DurableSession,
+        state_id: String,
+        branches: Option<Branches>,
+    ) -> Self {
         Self {
             owner,
+            session,
             state_id,
             branches,
             context_records: Swap::default(),
@@ -219,6 +227,18 @@ impl DurableExecution {
 
     fn remember(&self, keys: HashSet<String>) -> AgentResult<()> {
         self.context_records.store(Arc::new(keys));
+        Ok(())
+    }
+
+    async fn pool_prefix(
+        &self,
+        cache: &mut context::ContinuationCache,
+        prefix: &Arc<[ResponseItem]>,
+    ) -> nanocode_durability::Result<()> {
+        for payload in cache.unpooled_prefix(prefix)? {
+            self.session.pool(payload).await?;
+        }
+        cache.prefix_pooled();
         Ok(())
     }
 }
@@ -603,9 +623,10 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionStepAdmission>>> {
         Box::pin(async move {
             let mut cache = self.continuation_cache.take().unwrap_or_default();
-            let continuation = match context::prepare_cached_continuation(
-                state_json, &history, &prefix, &mut cache,
-            ) {
+            let pooled = self.pool_prefix(&mut cache, &prefix).await;
+            let continuation = match pooled.and_then(|()| {
+                context::prepare_cached_continuation(state_json, &history, &prefix, &mut cache)
+            }) {
                 Ok(continuation) => continuation,
                 Err(error) => {
                     drop(self.continuation_cache.put(cache));
@@ -699,8 +720,10 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let mut cache = self.continuation_cache.take().unwrap_or_default();
-            let continuation =
-                context::prepare_cached_continuation(state_json, &history, &prefix, &mut cache);
+            let pooled = self.pool_prefix(&mut cache, &prefix).await;
+            let continuation = pooled.and_then(|()| {
+                context::prepare_cached_continuation(state_json, &history, &prefix, &mut cache)
+            });
             drop(self.continuation_cache.put(cache));
             self.owner
                 .advance_deferred(operation_id, continuation.map_err(agent_error)?)
@@ -896,6 +919,7 @@ impl LazyExecution {
                 Ok::<_, NanocodeError>(Acquired {
                     execution: DurableExecution::ready(
                         owner,
+                        state,
                         record.session_id.clone(),
                         Some(Branches {
                             store: self.store.clone(),

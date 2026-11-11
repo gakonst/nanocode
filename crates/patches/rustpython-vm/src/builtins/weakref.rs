@@ -1,0 +1,188 @@
+use super::{PyGenericAlias, PyType, PyTypeRef};
+use crate::common::{
+    atomic::{Ordering, Radium},
+    hash::{self, PyHash},
+};
+use crate::{
+    AsObject, Context, Py, PyObject, PyObjectRef, PyPayload, PyResult, VirtualMachine,
+    class::PyClassImpl,
+    function::{FuncArgs, OptionalArg, PyArithmeticValue, PyComparisonValue},
+    types::{
+        Callable, Comparable, Constructor, Hashable, Initializer, PyComparisonOp, Representable,
+    },
+};
+
+pub use crate::object::PyWeak;
+
+#[derive(FromArgs)]
+#[allow(dead_code)]
+pub struct WeakNewArgs {
+    #[pyarg(positional)]
+    referent: PyObjectRef,
+    #[pyarg(positional, optional)]
+    callback: OptionalArg<PyObjectRef>,
+}
+
+impl PyPayload for PyWeak {
+    #[inline]
+    fn class(ctx: &Context) -> &'static Py<PyType> {
+        ctx.types.weakref_type
+    }
+}
+
+impl Callable for PyWeak {
+    type Args = ();
+
+    #[inline]
+    fn call(zelf: &Py<Self>, _: Self::Args, vm: &VirtualMachine) -> PyResult {
+        Ok(vm.unwrap_or_none(zelf.upgrade()))
+    }
+}
+
+impl Constructor for PyWeak {
+    type Args = WeakNewArgs;
+
+    fn slot_new(cls: PyTypeRef, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+        // PyArg_UnpackTuple: only process positional args, ignore kwargs.
+        // Subclass __init__ will handle extra kwargs.
+        let mut positional = args.args.into_iter();
+        let referent = positional
+            .next()
+            .ok_or_else(|| vm.new_arity_type_error("__new__", 1..=2, 0))?;
+        let callback = positional.next().filter(|callback| !vm.is_none(callback));
+        if let Some(_extra) = positional.next() {
+            let got = positional.count() + 3;
+            return Err(vm.new_arity_type_error("__new__", 1..=2, got));
+        }
+        let weak = referent.downgrade_with_typ(callback, cls, vm)?;
+        Ok(weak.into())
+    }
+
+    fn py_new(_cls: &Py<PyType>, _args: Self::Args, _vm: &VirtualMachine) -> PyResult<Self> {
+        unimplemented!("use slot_new")
+    }
+}
+
+impl Initializer for PyWeak {
+    type Args = WeakNewArgs;
+
+    // weakref_tp_init: accepts args but does nothing (all init done in slot_new)
+    fn init(_zelf: &Py<Self>, _args: Self::Args, _vm: &VirtualMachine) -> PyResult<()> {
+        Ok(())
+    }
+}
+
+#[pyclass(
+    with(
+        Callable,
+        Hashable,
+        Comparable,
+        Constructor,
+        Initializer,
+        Representable
+    ),
+    flags(BASETYPE)
+)]
+impl Py<PyWeak> {
+    #[pygetset]
+    fn __callback__(&self, vm: &VirtualMachine) -> PyObjectRef {
+        vm.unwrap_or_none(self.get_callback())
+    }
+
+    #[pyclassmethod]
+    fn __class_getitem__(
+        cls: PyTypeRef,
+        object: PyObjectRef,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyGenericAlias> {
+        PyGenericAlias::from_args(cls, object, vm)
+    }
+}
+
+impl Hashable for PyWeak {
+    fn hash(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyHash> {
+        let hash = match zelf.hash.load(Ordering::Relaxed) {
+            hash::SENTINEL => {
+                let obj = zelf
+                    .upgrade()
+                    .ok_or_else(|| vm.new_type_error("weak object has gone away"))?;
+                let hash = obj.hash(vm)?;
+                match Radium::compare_exchange(
+                    &zelf.hash,
+                    hash::SENTINEL,
+                    hash::fix_sentinel(hash),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => hash,
+                    Err(prev_stored) => prev_stored,
+                }
+            }
+            hash => hash,
+        };
+        Ok(hash)
+    }
+}
+
+impl Comparable for PyWeak {
+    fn cmp(
+        zelf: &Py<Self>,
+        other: &PyObject,
+        op: PyComparisonOp,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyComparisonValue> {
+        op.eq_only(|| {
+            let other = class_or_notimplemented!(Self, other);
+            let both = zelf.upgrade().zip(other.upgrade());
+            match both {
+                // CPython parity (Objects/weakref.c::weakref_richcompare): use
+                // PyObject_RichCompare on the referents, not the bool variant,
+                // so referent __eq__ runs even when referents share identity.
+                Some((a, b)) => {
+                    let res = a.rich_compare(b, PyComparisonOp::Eq, vm)?;
+                    PyArithmeticValue::from_object(vm, res)
+                        .map(|obj| obj.try_to_bool(vm))
+                        .transpose()
+                }
+                None => Ok(zelf.is(other).into()),
+            }
+        })
+    }
+}
+
+/// `__name__` when that lookup yields a string. A missing name or a non-string
+/// value is left off the repr.
+fn instance_name(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Option<String>> {
+    let found =
+        crate::vm::PyMethod::get_special_ex::<false>(obj, identifier!(vm, __name__), vm, true)?;
+    let Some(crate::vm::PyMethod::Attribute(attr)) = found else {
+        return Ok(None);
+    };
+    Ok(attr
+        .downcast_ref::<crate::builtins::PyStr>()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned))
+}
+
+impl Representable for PyWeak {
+    #[inline]
+    fn repr_str(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<String> {
+        let id = zelf.get_id();
+        let Some(obj) = zelf.upgrade() else {
+            return Ok(format!("<weakref at {id:#x}; dead>"));
+        };
+        let type_name = obj.class().fully_qualified_name(vm)?;
+        let obj_id = obj.get_id();
+        let suffix = match instance_name(&obj, vm)? {
+            Some(name) => format!(" ({name})"),
+            None => String::new(),
+        };
+        Ok(format!(
+            "<weakref at {id:#x}; to '{type_name}' at {obj_id:#x}{suffix}>"
+        ))
+    }
+}
+
+pub(crate) fn init(context: &'static Context) {
+    PyWeak::extend_class(context, context.types.weakref_type);
+}

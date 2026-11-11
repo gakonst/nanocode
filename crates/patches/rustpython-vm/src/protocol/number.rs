@@ -1,0 +1,791 @@
+use core::ops::Deref;
+
+use crossbeam_utils::atomic::AtomicCell;
+
+use crate::{
+    AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, TryFromBorrowedObject,
+    VirtualMachine,
+    builtins::{
+        PyBaseExceptionRef, PyByteArray, PyBytes, PyComplex, PyFloat, PyInt, PyIntRef, PyStr, int,
+    },
+    common::{
+        int::{BytesToIntError, bytes_to_int},
+        str::{PyKindStr, transform_decimal_and_space_to_ascii},
+    },
+    function::ArgBytesLike,
+    object::{Traverse, TraverseFn},
+    stdlib::_warnings,
+};
+use alloc::borrow::Cow;
+
+/// Normalize a `str` for the byte-oriented numeric parsers: Unicode decimal digits
+/// and whitespace fold to their ASCII equivalents, the way CPython runs every
+/// numeric constructor's string argument through
+/// `_PyUnicode_TransformDecimalAndSpaceToASCII` first.
+///
+/// `int`, `float` and `complex` share this step and nothing else — only `int` takes
+/// a base, and only `int` and `float` accept bytes-like input, so each keeps its own
+/// entry point around this one.
+///
+/// A string holding surrogates can never be a valid literal, so it folds to an
+/// empty — and therefore invalid — one.
+pub fn numeric_literal_from_str(s: &Py<PyStr>) -> Cow<'_, str> {
+    match s.as_str_kind() {
+        PyKindStr::Ascii(s) => Cow::Borrowed(s.trim().as_str()),
+        PyKindStr::Utf8(s) => transform_decimal_and_space_to_ascii(s.trim()),
+        PyKindStr::Wtf8(_) => Cow::Borrowed(""),
+    }
+}
+
+pub type PyNumberUnaryFunc<R = PyObjectRef> = fn(PyNumber<'_>, &VirtualMachine) -> PyResult<R>;
+pub type PyNumberBinaryFunc = fn(&PyObject, &PyObject, &VirtualMachine) -> PyResult;
+pub type PyNumberTernaryFunc = fn(&PyObject, &PyObject, &PyObject, &VirtualMachine) -> PyResult;
+
+impl PyObject {
+    #[inline]
+    pub const fn number(&self) -> PyNumber<'_> {
+        PyNumber { obj: self }
+    }
+
+    pub fn try_index_opt(&self, vm: &VirtualMachine) -> Option<PyResult<PyIntRef>> {
+        if let Some(i) = self.downcast_ref_if_exact::<PyInt>(vm) {
+            Some(Ok(i.to_owned()))
+        } else if let Some(i) = self.downcast_ref::<PyInt>() {
+            Some(Ok(vm.ctx.new_bigint(i.as_bigint())))
+        } else {
+            self.number().index(vm)
+        }
+    }
+
+    #[inline]
+    pub fn try_index(&self, vm: &VirtualMachine) -> PyResult<PyIntRef> {
+        self.try_index_opt(vm).transpose()?.ok_or_else(|| {
+            vm.new_type_error(format!(
+                "'{}' object cannot be interpreted as an integer",
+                self.class().slot_name()
+            ))
+        })
+    }
+
+    pub fn try_int(&self, vm: &VirtualMachine) -> PyResult<PyIntRef> {
+        fn try_convert(obj: &PyObject, lit: &[u8], vm: &VirtualMachine) -> PyResult<PyIntRef> {
+            let base = 10;
+            let digit_limit = vm.state.int_max_str_digits.load();
+
+            let i = bytes_to_int(lit, base, digit_limit)
+                .map_err(|e| handle_bytes_to_int_err(e, obj, vm))?;
+            Ok(PyInt::from(i).into_ref(&vm.ctx))
+        }
+
+        if let Some(i) = self.downcast_ref_if_exact::<PyInt>(vm) {
+            Ok(i.to_owned())
+        } else if let Some(i) = self.number().int(vm).or_else(|| self.try_index_opt(vm)) {
+            i
+        } else if let Some(s) = self.downcast_ref::<PyStr>() {
+            try_convert(self, numeric_literal_from_str(s).as_bytes(), vm)
+        } else if let Some(bytes) = self.downcast_ref::<PyBytes>() {
+            try_convert(self, bytes.as_bytes(), vm)
+        } else if let Some(bytearray) = self.downcast_ref::<PyByteArray>() {
+            try_convert(self, &bytearray.borrow_buf(), vm)
+        } else if let Ok(buffer) = ArgBytesLike::try_from_borrowed_object(vm, self) {
+            // TODO: replace to PyBuffer
+            try_convert(self, &buffer.borrow_buf(), vm)
+        } else {
+            Err(vm.new_type_error(format!(
+                "int() argument must be a string, a bytes-like object or a real number, not '{}'",
+                self.class().slot_name()
+            )))
+        }
+    }
+
+    pub fn try_float_opt(&self, vm: &VirtualMachine) -> Option<PyResult<PyRef<PyFloat>>> {
+        if let Some(float) = self.downcast_ref_if_exact::<PyFloat>(vm) {
+            Some(Ok(float.to_owned()))
+        } else if let Some(f) = self.number().float(vm) {
+            Some(f)
+        } else {
+            self.try_index_opt(vm)
+                .map(|i| Ok(vm.ctx.new_float(int::try_to_float(i?.as_bigint(), vm)?)))
+        }
+    }
+
+    #[inline]
+    pub fn try_float(&self, vm: &VirtualMachine) -> PyResult<PyRef<PyFloat>> {
+        self.try_float_opt(vm).ok_or_else(|| {
+            vm.new_type_error(format!(
+                "must be real number, not {}",
+                self.class().slot_name()
+            ))
+        })?
+    }
+}
+
+#[derive(Default)]
+pub struct PyNumberMethods {
+    /* Number implementations must check *both*
+    arguments for proper type and implement the necessary conversions
+    in the slot functions themselves. */
+    pub add: Option<PyNumberBinaryFunc>,
+    pub subtract: Option<PyNumberBinaryFunc>,
+    pub multiply: Option<PyNumberBinaryFunc>,
+    pub remainder: Option<PyNumberBinaryFunc>,
+    pub divmod: Option<PyNumberBinaryFunc>,
+    pub power: Option<PyNumberTernaryFunc>,
+    pub negative: Option<PyNumberUnaryFunc>,
+    pub positive: Option<PyNumberUnaryFunc>,
+    pub absolute: Option<PyNumberUnaryFunc>,
+    pub boolean: Option<PyNumberUnaryFunc<bool>>,
+    pub invert: Option<PyNumberUnaryFunc>,
+    pub lshift: Option<PyNumberBinaryFunc>,
+    pub rshift: Option<PyNumberBinaryFunc>,
+    pub and: Option<PyNumberBinaryFunc>,
+    pub xor: Option<PyNumberBinaryFunc>,
+    pub or: Option<PyNumberBinaryFunc>,
+    pub int: Option<PyNumberUnaryFunc>,
+    pub float: Option<PyNumberUnaryFunc>,
+
+    pub inplace_add: Option<PyNumberBinaryFunc>,
+    pub inplace_subtract: Option<PyNumberBinaryFunc>,
+    pub inplace_multiply: Option<PyNumberBinaryFunc>,
+    pub inplace_remainder: Option<PyNumberBinaryFunc>,
+    pub inplace_power: Option<PyNumberTernaryFunc>,
+    pub inplace_lshift: Option<PyNumberBinaryFunc>,
+    pub inplace_rshift: Option<PyNumberBinaryFunc>,
+    pub inplace_and: Option<PyNumberBinaryFunc>,
+    pub inplace_xor: Option<PyNumberBinaryFunc>,
+    pub inplace_or: Option<PyNumberBinaryFunc>,
+
+    pub floor_divide: Option<PyNumberBinaryFunc>,
+    pub true_divide: Option<PyNumberBinaryFunc>,
+    pub inplace_floor_divide: Option<PyNumberBinaryFunc>,
+    pub inplace_true_divide: Option<PyNumberBinaryFunc>,
+
+    pub index: Option<PyNumberUnaryFunc>,
+
+    pub matrix_multiply: Option<PyNumberBinaryFunc>,
+    pub inplace_matrix_multiply: Option<PyNumberBinaryFunc>,
+}
+
+impl PyNumberMethods {
+    /// NOTE:
+    /// This is **NOT** a global variable. Use [`Self::not_implemented`] for a global variable.
+    pub const NOT_IMPLEMENTED: Self = Self {
+        add: None,
+        subtract: None,
+        multiply: None,
+        remainder: None,
+        divmod: None,
+        power: None,
+        negative: None,
+        positive: None,
+        absolute: None,
+        boolean: None,
+        invert: None,
+        lshift: None,
+        rshift: None,
+        and: None,
+        xor: None,
+        or: None,
+        int: None,
+        float: None,
+        inplace_add: None,
+        inplace_subtract: None,
+        inplace_multiply: None,
+        inplace_remainder: None,
+        inplace_power: None,
+        inplace_lshift: None,
+        inplace_rshift: None,
+        inplace_and: None,
+        inplace_xor: None,
+        inplace_or: None,
+        floor_divide: None,
+        true_divide: None,
+        inplace_floor_divide: None,
+        inplace_true_divide: None,
+        index: None,
+        matrix_multiply: None,
+        inplace_matrix_multiply: None,
+    };
+
+    #[must_use]
+    pub const fn not_implemented() -> &'static Self {
+        static GLOBAL_NOT_IMPLEMENTED: PyNumberMethods = PyNumberMethods::NOT_IMPLEMENTED;
+        &GLOBAL_NOT_IMPLEMENTED
+    }
+}
+
+/// Matches the NB_* constants ordering from opcode.h / BinaryOperator.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum PyNumberBinaryOp {
+    Add,
+    And,
+    FloorDivide,
+    Lshift,
+    MatrixMultiply,
+    Multiply,
+    Remainder,
+    Or,
+    Rshift,
+    Subtract,
+    TrueDivide,
+    Xor,
+    InplaceAdd,
+    InplaceAnd,
+    InplaceFloorDivide,
+    InplaceLshift,
+    InplaceMatrixMultiply,
+    InplaceMultiply,
+    InplaceRemainder,
+    InplaceOr,
+    InplaceRshift,
+    InplaceSubtract,
+    InplaceTrueDivide,
+    InplaceXor,
+    Divmod,
+}
+
+impl PyNumberBinaryOp {
+    /// Returns `None` for in-place ops which don't have right-side variants.
+    pub fn right_method_name(
+        self,
+        vm: &VirtualMachine,
+    ) -> Option<&'static crate::builtins::PyStrInterned> {
+        Some(match self {
+            Self::Add => identifier!(vm, __radd__),
+            Self::Subtract => identifier!(vm, __rsub__),
+            Self::Multiply => identifier!(vm, __rmul__),
+            Self::Remainder => identifier!(vm, __rmod__),
+            Self::Divmod => identifier!(vm, __rdivmod__),
+            Self::Lshift => identifier!(vm, __rlshift__),
+            Self::Rshift => identifier!(vm, __rrshift__),
+            Self::And => identifier!(vm, __rand__),
+            Self::Xor => identifier!(vm, __rxor__),
+            Self::Or => identifier!(vm, __ror__),
+            Self::FloorDivide => identifier!(vm, __rfloordiv__),
+            Self::TrueDivide => identifier!(vm, __rtruediv__),
+            Self::MatrixMultiply => identifier!(vm, __rmatmul__),
+            // In-place ops don't have right-side variants
+            Self::InplaceAdd
+            | Self::InplaceSubtract
+            | Self::InplaceMultiply
+            | Self::InplaceRemainder
+            | Self::InplaceLshift
+            | Self::InplaceRshift
+            | Self::InplaceAnd
+            | Self::InplaceXor
+            | Self::InplaceOr
+            | Self::InplaceFloorDivide
+            | Self::InplaceTrueDivide
+            | Self::InplaceMatrixMultiply => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum PyNumberTernaryOp {
+    Power,
+    InplacePower,
+}
+
+impl PyNumberTernaryOp {
+    /// Returns `None` for in-place ops which don't have right-side variants.
+    pub fn right_method_name(
+        self,
+        vm: &VirtualMachine,
+    ) -> Option<&'static crate::builtins::PyStrInterned> {
+        Some(match self {
+            Self::Power => identifier!(vm, __rpow__),
+            Self::InplacePower => return None,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct PyNumberSlots {
+    pub add: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub subtract: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub multiply: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub remainder: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub divmod: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub power: AtomicCell<Option<PyNumberTernaryFunc>>,
+    pub negative: AtomicCell<Option<PyNumberUnaryFunc>>,
+    pub positive: AtomicCell<Option<PyNumberUnaryFunc>>,
+    pub absolute: AtomicCell<Option<PyNumberUnaryFunc>>,
+    pub boolean: AtomicCell<Option<PyNumberUnaryFunc<bool>>>,
+    pub invert: AtomicCell<Option<PyNumberUnaryFunc>>,
+    pub lshift: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub rshift: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub and: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub xor: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub or: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub int: AtomicCell<Option<PyNumberUnaryFunc>>,
+    pub float: AtomicCell<Option<PyNumberUnaryFunc>>,
+
+    // Right variants (internal - not exposed in SlotAccessor)
+    pub right_add: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_subtract: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_multiply: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_remainder: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_divmod: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_power: AtomicCell<Option<PyNumberTernaryFunc>>,
+    pub right_lshift: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_rshift: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_and: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_xor: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_or: AtomicCell<Option<PyNumberBinaryFunc>>,
+
+    pub inplace_add: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_subtract: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_multiply: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_remainder: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_power: AtomicCell<Option<PyNumberTernaryFunc>>,
+    pub inplace_lshift: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_rshift: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_and: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_xor: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_or: AtomicCell<Option<PyNumberBinaryFunc>>,
+
+    pub floor_divide: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub true_divide: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_floor_divide: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_true_divide: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_floor_divide: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_true_divide: AtomicCell<Option<PyNumberBinaryFunc>>,
+
+    pub index: AtomicCell<Option<PyNumberUnaryFunc>>,
+
+    pub matrix_multiply: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub right_matrix_multiply: AtomicCell<Option<PyNumberBinaryFunc>>,
+    pub inplace_matrix_multiply: AtomicCell<Option<PyNumberBinaryFunc>>,
+}
+
+impl From<&PyNumberMethods> for PyNumberSlots {
+    fn from(value: &PyNumberMethods) -> Self {
+        // right_* slots use the same function as left ops for native types
+        Self {
+            add: AtomicCell::new(value.add),
+            subtract: AtomicCell::new(value.subtract),
+            multiply: AtomicCell::new(value.multiply),
+            remainder: AtomicCell::new(value.remainder),
+            divmod: AtomicCell::new(value.divmod),
+            power: AtomicCell::new(value.power),
+            negative: AtomicCell::new(value.negative),
+            positive: AtomicCell::new(value.positive),
+            absolute: AtomicCell::new(value.absolute),
+            boolean: AtomicCell::new(value.boolean),
+            invert: AtomicCell::new(value.invert),
+            lshift: AtomicCell::new(value.lshift),
+            rshift: AtomicCell::new(value.rshift),
+            and: AtomicCell::new(value.and),
+            xor: AtomicCell::new(value.xor),
+            or: AtomicCell::new(value.or),
+            int: AtomicCell::new(value.int),
+            float: AtomicCell::new(value.float),
+            right_add: AtomicCell::new(value.add),
+            right_subtract: AtomicCell::new(value.subtract),
+            right_multiply: AtomicCell::new(value.multiply),
+            right_remainder: AtomicCell::new(value.remainder),
+            right_divmod: AtomicCell::new(value.divmod),
+            right_power: AtomicCell::new(value.power),
+            right_lshift: AtomicCell::new(value.lshift),
+            right_rshift: AtomicCell::new(value.rshift),
+            right_and: AtomicCell::new(value.and),
+            right_xor: AtomicCell::new(value.xor),
+            right_or: AtomicCell::new(value.or),
+            inplace_add: AtomicCell::new(value.inplace_add),
+            inplace_subtract: AtomicCell::new(value.inplace_subtract),
+            inplace_multiply: AtomicCell::new(value.inplace_multiply),
+            inplace_remainder: AtomicCell::new(value.inplace_remainder),
+            inplace_power: AtomicCell::new(value.inplace_power),
+            inplace_lshift: AtomicCell::new(value.inplace_lshift),
+            inplace_rshift: AtomicCell::new(value.inplace_rshift),
+            inplace_and: AtomicCell::new(value.inplace_and),
+            inplace_xor: AtomicCell::new(value.inplace_xor),
+            inplace_or: AtomicCell::new(value.inplace_or),
+            floor_divide: AtomicCell::new(value.floor_divide),
+            true_divide: AtomicCell::new(value.true_divide),
+            right_floor_divide: AtomicCell::new(value.floor_divide),
+            right_true_divide: AtomicCell::new(value.true_divide),
+            inplace_floor_divide: AtomicCell::new(value.inplace_floor_divide),
+            inplace_true_divide: AtomicCell::new(value.inplace_true_divide),
+            index: AtomicCell::new(value.index),
+            matrix_multiply: AtomicCell::new(value.matrix_multiply),
+            right_matrix_multiply: AtomicCell::new(value.matrix_multiply),
+            inplace_matrix_multiply: AtomicCell::new(value.inplace_matrix_multiply),
+        }
+    }
+}
+
+impl PyNumberSlots {
+    /// Copy from static [`PyNumberMethods`].
+    pub fn copy_from(&self, methods: &PyNumberMethods) {
+        if let Some(f) = methods.add {
+            self.add.store(Some(f));
+            self.right_add.store(Some(f));
+        }
+
+        if let Some(f) = methods.subtract {
+            self.subtract.store(Some(f));
+            self.right_subtract.store(Some(f));
+        }
+
+        if let Some(f) = methods.multiply {
+            self.multiply.store(Some(f));
+            self.right_multiply.store(Some(f));
+        }
+
+        if let Some(f) = methods.remainder {
+            self.remainder.store(Some(f));
+            self.right_remainder.store(Some(f));
+        }
+
+        if let Some(f) = methods.divmod {
+            self.divmod.store(Some(f));
+            self.right_divmod.store(Some(f));
+        }
+
+        if let Some(f) = methods.power {
+            self.power.store(Some(f));
+            self.right_power.store(Some(f));
+        }
+
+        if let Some(f) = methods.negative {
+            self.negative.store(Some(f));
+        }
+
+        if let Some(f) = methods.positive {
+            self.positive.store(Some(f));
+        }
+
+        if let Some(f) = methods.absolute {
+            self.absolute.store(Some(f));
+        }
+
+        if let Some(f) = methods.boolean {
+            self.boolean.store(Some(f));
+        }
+
+        if let Some(f) = methods.invert {
+            self.invert.store(Some(f));
+        }
+
+        if let Some(f) = methods.lshift {
+            self.lshift.store(Some(f));
+            self.right_lshift.store(Some(f));
+        }
+
+        if let Some(f) = methods.rshift {
+            self.rshift.store(Some(f));
+            self.right_rshift.store(Some(f));
+        }
+
+        if let Some(f) = methods.and {
+            self.and.store(Some(f));
+            self.right_and.store(Some(f));
+        }
+
+        if let Some(f) = methods.xor {
+            self.xor.store(Some(f));
+            self.right_xor.store(Some(f));
+        }
+
+        if let Some(f) = methods.or {
+            self.or.store(Some(f));
+            self.right_or.store(Some(f));
+        }
+
+        if let Some(f) = methods.int {
+            self.int.store(Some(f));
+        }
+
+        if let Some(f) = methods.float {
+            self.float.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_add {
+            self.inplace_add.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_subtract {
+            self.inplace_subtract.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_multiply {
+            self.inplace_multiply.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_remainder {
+            self.inplace_remainder.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_power {
+            self.inplace_power.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_lshift {
+            self.inplace_lshift.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_rshift {
+            self.inplace_rshift.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_and {
+            self.inplace_and.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_xor {
+            self.inplace_xor.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_or {
+            self.inplace_or.store(Some(f));
+        }
+
+        if let Some(f) = methods.floor_divide {
+            self.floor_divide.store(Some(f));
+            self.right_floor_divide.store(Some(f));
+        }
+
+        if let Some(f) = methods.true_divide {
+            self.true_divide.store(Some(f));
+            self.right_true_divide.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_floor_divide {
+            self.inplace_floor_divide.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_true_divide {
+            self.inplace_true_divide.store(Some(f));
+        }
+
+        if let Some(f) = methods.index {
+            self.index.store(Some(f));
+        }
+
+        if let Some(f) = methods.matrix_multiply {
+            self.matrix_multiply.store(Some(f));
+            self.right_matrix_multiply.store(Some(f));
+        }
+
+        if let Some(f) = methods.inplace_matrix_multiply {
+            self.inplace_matrix_multiply.store(Some(f));
+        }
+    }
+
+    pub fn left_binary_op(&self, op_slot: PyNumberBinaryOp) -> Option<PyNumberBinaryFunc> {
+        match op_slot {
+            PyNumberBinaryOp::Add => self.add.load(),
+            PyNumberBinaryOp::Subtract => self.subtract.load(),
+            PyNumberBinaryOp::Multiply => self.multiply.load(),
+            PyNumberBinaryOp::Remainder => self.remainder.load(),
+            PyNumberBinaryOp::Divmod => self.divmod.load(),
+            PyNumberBinaryOp::Lshift => self.lshift.load(),
+            PyNumberBinaryOp::Rshift => self.rshift.load(),
+            PyNumberBinaryOp::And => self.and.load(),
+            PyNumberBinaryOp::Xor => self.xor.load(),
+            PyNumberBinaryOp::Or => self.or.load(),
+            PyNumberBinaryOp::InplaceAdd => self.inplace_add.load(),
+            PyNumberBinaryOp::InplaceSubtract => self.inplace_subtract.load(),
+            PyNumberBinaryOp::InplaceMultiply => self.inplace_multiply.load(),
+            PyNumberBinaryOp::InplaceRemainder => self.inplace_remainder.load(),
+            PyNumberBinaryOp::InplaceLshift => self.inplace_lshift.load(),
+            PyNumberBinaryOp::InplaceRshift => self.inplace_rshift.load(),
+            PyNumberBinaryOp::InplaceAnd => self.inplace_and.load(),
+            PyNumberBinaryOp::InplaceXor => self.inplace_xor.load(),
+            PyNumberBinaryOp::InplaceOr => self.inplace_or.load(),
+            PyNumberBinaryOp::FloorDivide => self.floor_divide.load(),
+            PyNumberBinaryOp::TrueDivide => self.true_divide.load(),
+            PyNumberBinaryOp::InplaceFloorDivide => self.inplace_floor_divide.load(),
+            PyNumberBinaryOp::InplaceTrueDivide => self.inplace_true_divide.load(),
+            PyNumberBinaryOp::MatrixMultiply => self.matrix_multiply.load(),
+            PyNumberBinaryOp::InplaceMatrixMultiply => self.inplace_matrix_multiply.load(),
+        }
+    }
+
+    pub fn right_binary_op(&self, op_slot: PyNumberBinaryOp) -> Option<PyNumberBinaryFunc> {
+        match op_slot {
+            PyNumberBinaryOp::Add => self.right_add.load(),
+            PyNumberBinaryOp::Subtract => self.right_subtract.load(),
+            PyNumberBinaryOp::Multiply => self.right_multiply.load(),
+            PyNumberBinaryOp::Remainder => self.right_remainder.load(),
+            PyNumberBinaryOp::Divmod => self.right_divmod.load(),
+            PyNumberBinaryOp::Lshift => self.right_lshift.load(),
+            PyNumberBinaryOp::Rshift => self.right_rshift.load(),
+            PyNumberBinaryOp::And => self.right_and.load(),
+            PyNumberBinaryOp::Xor => self.right_xor.load(),
+            PyNumberBinaryOp::Or => self.right_or.load(),
+            PyNumberBinaryOp::FloorDivide => self.right_floor_divide.load(),
+            PyNumberBinaryOp::TrueDivide => self.right_true_divide.load(),
+            PyNumberBinaryOp::MatrixMultiply => self.right_matrix_multiply.load(),
+            _ => None,
+        }
+    }
+
+    pub fn left_ternary_op(&self, op_slot: PyNumberTernaryOp) -> Option<PyNumberTernaryFunc> {
+        match op_slot {
+            PyNumberTernaryOp::Power => self.power.load(),
+            PyNumberTernaryOp::InplacePower => self.inplace_power.load(),
+        }
+    }
+
+    pub fn right_ternary_op(&self, op_slot: PyNumberTernaryOp) -> Option<PyNumberTernaryFunc> {
+        if op_slot == PyNumberTernaryOp::Power {
+            self.right_power.load()
+        } else {
+            None
+        }
+    }
+}
+#[derive(Copy, Clone)]
+pub struct PyNumber<'a> {
+    pub obj: &'a PyObject,
+}
+
+unsafe impl Traverse for PyNumber<'_> {
+    fn traverse(&self, tracer_fn: &mut TraverseFn<'_>) {
+        self.obj.traverse(tracer_fn)
+    }
+}
+
+impl Deref for PyNumber<'_> {
+    type Target = PyObject;
+
+    fn deref(&self) -> &Self::Target {
+        self.obj
+    }
+}
+
+impl PyNumber<'_> {
+    // PyIndex_Check
+    #[must_use]
+    pub fn is_index(self) -> bool {
+        self.class().slots().as_number.index.load().is_some()
+    }
+
+    #[inline]
+    pub fn int(self, vm: &VirtualMachine) -> Option<PyResult<PyIntRef>> {
+        self.class().slots().as_number.int.load().map(|f| {
+            let ret = f(self, vm)?;
+
+            if let Some(ret) = ret.downcast_ref_if_exact::<PyInt>(vm) {
+                return Ok(ret.to_owned());
+            }
+
+            let ret_class = ret.class().to_owned();
+            if let Some(ret) = ret.downcast_ref::<PyInt>() {
+                let msg = format!(
+                    "__int__ returned non-int (type {}).  \
+The ability to return an instance of a strict subclass of int is deprecated, \
+and may be removed in a future version of Python.",
+                    ret_class.slot_name()
+                );
+                _warnings::warn(vm.ctx.exceptions.deprecation_warning, msg, 1, vm)?;
+
+                Ok(ret.to_owned())
+            } else {
+                Err(vm.new_type_error(format!(
+                    "__int__ returned non-int (type {})",
+                    ret_class.slot_name()
+                )))
+            }
+        })
+    }
+
+    #[inline]
+    pub fn index(self, vm: &VirtualMachine) -> Option<PyResult<PyIntRef>> {
+        self.class().slots().as_number.index.load().map(|f| {
+            let ret = f(self, vm)?;
+
+            if let Some(ret) = ret.downcast_ref_if_exact::<PyInt>(vm) {
+                return Ok(ret.to_owned());
+            }
+
+            let ret_class = ret.class().to_owned();
+            if let Some(ret) = ret.downcast_ref::<PyInt>() {
+                let msg = format!(
+                    "__index__ returned non-int (type {}).  \
+The ability to return an instance of a strict subclass of int is deprecated, \
+and may be removed in a future version of Python.",
+                    ret_class.slot_name()
+                );
+                _warnings::warn(vm.ctx.exceptions.deprecation_warning, msg, 1, vm)?;
+
+                Ok(ret.to_owned())
+            } else {
+                Err(vm.new_type_error(format!(
+                    "__index__ returned non-int (type {})",
+                    ret_class.slot_name()
+                )))
+            }
+        })
+    }
+
+    #[inline]
+    pub fn float(self, vm: &VirtualMachine) -> Option<PyResult<PyRef<PyFloat>>> {
+        self.class().slots().as_number.float.load().map(|f| {
+            let ret = f(self, vm)?;
+
+            if let Some(ret) = ret.downcast_ref_if_exact::<PyFloat>(vm) {
+                return Ok(ret.to_owned());
+            }
+
+            let ret_class = ret.class().to_owned();
+            if let Some(ret) = ret.downcast_ref::<PyFloat>() {
+                let msg = format!(
+                    "{}.__float__ returned non-float (type {}).  \
+The ability to return an instance of a strict subclass of float is deprecated, \
+and may be removed in a future version of Python.",
+                    self.class().slot_name(),
+                    ret_class.slot_name()
+                );
+                _warnings::warn(vm.ctx.exceptions.deprecation_warning, msg, 1, vm)?;
+
+                Ok(ret.to_owned())
+            } else {
+                Err(vm.new_type_error(format!(
+                    "{}.__float__ returned non-float (type {})",
+                    self.class().slot_name(),
+                    ret_class.slot_name()
+                )))
+            }
+        })
+    }
+
+    // PyNumber_Check - slots are now inherited
+    #[must_use]
+    pub fn check(obj: &PyObject) -> bool {
+        let methods = &obj.class().slots().as_number;
+        let has_number = methods.int.load().is_some()
+            || methods.index.load().is_some()
+            || methods.float.load().is_some();
+        has_number || obj.downcastable::<PyComplex>()
+    }
+}
+
+pub fn handle_bytes_to_int_err(
+    e: BytesToIntError,
+    obj: &PyObject,
+    vm: &VirtualMachine,
+) -> PyBaseExceptionRef {
+    match e {
+        BytesToIntError::InvalidLiteral { base } => {
+            let v = match obj.repr(vm) {
+                Ok(v) => v,
+                Err(err) => return err,
+            };
+            vm.new_value_error(format!("invalid literal for int() with base {base}: {v}"))
+        }
+        BytesToIntError::InvalidBase => {
+            vm.new_value_error("int() base must be >= 2 and <= 36, or 0")
+        }
+        BytesToIntError::DigitLimit { got, limit } => {
+            let msg = format!(
+                "Exceeds the limit ({limit} digits) for integer string conversion: \
+value has {got} digits; use sys.set_int_max_str_digits() to increase the limit"
+            );
+            vm.new_value_error(msg)
+        }
+    }
+}

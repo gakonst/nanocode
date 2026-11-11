@@ -1,0 +1,409 @@
+use super::{PyStr, PyStrRef, PyType, PyWeak};
+use crate::common::lock::LazyLock;
+use crate::{
+    Context, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine, atomic_func,
+    class::PyClassImpl,
+    common::hash::PyHash,
+    function::{FuncArgs, PyArithmeticValue, PyComparisonValue, PySetterValue},
+    protocol::{PyIter, PyIterReturn, PyMappingMethods, PyNumberMethods, PySequenceMethods},
+    stdlib::builtins::reversed,
+    types::{
+        AsMapping, AsNumber, AsSequence, Callable, Comparable, Constructor, GetAttr, Hashable,
+        IterNext, Iterable, PyComparisonOp, Representable, SetAttr,
+    },
+};
+
+#[pyclass(module = "weakref", name = "weakproxy", unhashable = true)]
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct PyWeakProxy(PyWeak);
+
+impl PyPayload for PyWeakProxy {
+    const PAYLOAD_TYPE_ID: core::any::TypeId = <PyWeak as PyPayload>::PAYLOAD_TYPE_ID;
+
+    #[inline]
+    unsafe fn validate_downcastable_from(obj: &PyObject) -> bool {
+        <Self as ::rustpython_vm::class::PyClassDef>::BASICSIZE <= obj.class().slots().basicsize
+            && obj
+                .class()
+                .fast_issubclass(<Self as ::rustpython_vm::class::StaticType>::static_type())
+    }
+
+    #[inline]
+    fn class(ctx: &Context) -> &'static Py<PyType> {
+        ctx.types.weakproxy_type
+    }
+}
+
+#[derive(FromArgs)]
+pub struct WeakProxyNewArgs {
+    #[pyarg(positional)]
+    object: PyObjectRef,
+    #[pyarg(positional, optional)]
+    callback: Option<PyObjectRef>,
+}
+
+impl Constructor for PyWeakProxy {
+    type Args = ();
+
+    fn py_new(cls: &Py<PyType>, _args: Self::Args, vm: &VirtualMachine) -> PyResult<Self> {
+        Err(vm.new_type_error(format!("cannot create '{}' instances", cls.slot_name())))
+    }
+}
+
+impl PyWeakProxy {
+    pub fn from_new_args(args: WeakProxyNewArgs, vm: &VirtualMachine) -> PyResult<PyRef<PyWeak>> {
+        let WeakProxyNewArgs { object, callback } = args;
+        let callback = callback.filter(|callback| !vm.is_none(callback));
+        Self::new_weakproxy(object.as_ref(), callback, vm)
+    }
+
+    pub fn new_weakproxy(
+        referent: &PyObject,
+        callback: Option<PyObjectRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyRef<PyWeak>> {
+        let typ = if referent.is_callable() {
+            vm.ctx.types.weakcallableproxy_type.to_owned()
+        } else {
+            vm.ctx.types.weakproxy_type.to_owned()
+        };
+        referent.downgrade_with_typ(callback, typ, vm)
+    }
+
+    #[must_use]
+    pub fn get_weak(&self) -> &PyWeak {
+        &self.0
+    }
+}
+
+#[pyclass(
+    module = "weakref",
+    name = "weakcallableproxy",
+    base = PyWeakProxy,
+    ctx = "weakcallableproxy_type",
+    unhashable = true
+)]
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct PyWeakCallableProxy(PyWeakProxy);
+
+#[pyclass(with(Callable, Constructor))]
+impl PyWeakCallableProxy {}
+
+impl Constructor for PyWeakCallableProxy {
+    type Args = ();
+
+    fn py_new(cls: &Py<PyType>, _args: Self::Args, vm: &VirtualMachine) -> PyResult<Self> {
+        Err(vm.new_type_error(format!("cannot create '{}' instances", cls.slot_name())))
+    }
+}
+
+impl Callable for PyWeakCallableProxy {
+    type Args = FuncArgs;
+
+    fn call(zelf: &Py<Self>, args: FuncArgs, vm: &VirtualMachine) -> PyResult {
+        zelf.0.try_upgrade(vm)?.call(args, vm)
+    }
+}
+
+impl PyWeakProxy {
+    fn try_upgrade(&self, vm: &VirtualMachine) -> PyResult {
+        self.0.upgrade().ok_or_else(|| new_reference_error(vm))
+    }
+
+    fn len(&self, vm: &VirtualMachine) -> PyResult<usize> {
+        self.try_upgrade(vm)?.length(vm)
+    }
+    fn __contains__(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult<bool> {
+        self.try_upgrade(vm)?
+            .sequence_unchecked()
+            .contains(needle, vm)
+    }
+
+    fn getitem(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult {
+        let obj = self.try_upgrade(vm)?;
+        obj.get_item(needle, vm)
+    }
+
+    fn setitem(&self, needle: &PyObject, value: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+        let obj = self.try_upgrade(vm)?;
+        obj.set_item(needle, value, vm)
+    }
+
+    fn delitem(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult<()> {
+        let obj = self.try_upgrade(vm)?;
+        obj.del_item(needle, vm)
+    }
+}
+
+#[pyclass(with(
+    GetAttr,
+    SetAttr,
+    Constructor,
+    Comparable,
+    AsNumber,
+    AsSequence,
+    AsMapping,
+    Representable,
+    IterNext
+))]
+impl Py<PyWeakProxy> {
+    /// Return str(self).
+    #[pymethod]
+    fn __str__(zelf: &Self, vm: &VirtualMachine) -> PyResult<PyStrRef> {
+        zelf.try_upgrade(vm)?.str(vm)
+    }
+
+    #[pymethod]
+    fn __bytes__(&self, vm: &VirtualMachine) -> PyResult {
+        self.try_upgrade(vm)?.bytes(vm)
+    }
+
+    #[pymethod]
+    fn __reversed__(&self, vm: &VirtualMachine) -> PyResult {
+        let obj = self.try_upgrade(vm)?;
+        reversed(obj, vm)
+    }
+}
+
+impl Iterable for PyWeakProxy {
+    fn iter(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+        let obj = zelf.try_upgrade(vm)?;
+        Ok(obj.get_iter(vm)?.into())
+    }
+}
+
+impl IterNext for PyWeakProxy {
+    fn next(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
+        let obj = zelf.try_upgrade(vm)?;
+        if obj.class().slots().iternext.load().is_none() {
+            return Err(vm.new_type_error("Weakref proxy referenced a non-iterator"));
+        }
+        PyIter::new(obj).next(vm)
+    }
+}
+
+fn new_reference_error(vm: &VirtualMachine) -> PyRef<super::PyBaseException> {
+    vm.new_exception_msg(
+        vm.ctx.exceptions.reference_error.to_owned(),
+        "weakly-referenced object no longer exists".into(),
+    )
+}
+
+impl GetAttr for PyWeakProxy {
+    // TODO: callbacks
+    fn getattro(zelf: &Py<Self>, name: &Py<PyStr>, vm: &VirtualMachine) -> PyResult {
+        let obj = zelf.try_upgrade(vm)?;
+        obj.get_attr(name, vm)
+    }
+}
+
+impl SetAttr for PyWeakProxy {
+    fn setattro(
+        zelf: &Py<Self>,
+        attr_name: &Py<PyStr>,
+        value: PySetterValue,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let obj = zelf.try_upgrade(vm)?;
+        obj.call_set_attr(vm, attr_name, value)
+    }
+}
+
+fn proxy_upgrade(obj: &PyObject, vm: &VirtualMachine) -> PyResult {
+    obj.downcast_ref::<PyWeakProxy>()
+        .expect("proxy_upgrade called on non-PyWeakProxy object")
+        .try_upgrade(vm)
+}
+
+fn proxy_upgrade_opt(obj: &PyObject, vm: &VirtualMachine) -> PyResult<Option<PyObjectRef>> {
+    match obj.downcast_ref::<PyWeakProxy>() {
+        Some(proxy) => Ok(Some(proxy.try_upgrade(vm)?)),
+        None => Ok(None),
+    }
+}
+
+fn proxy_unary_op(
+    obj: &PyObject,
+    vm: &VirtualMachine,
+    op: fn(&VirtualMachine, &PyObject) -> PyResult,
+) -> PyResult {
+    let upgraded = proxy_upgrade(obj, vm)?;
+    op(vm, &upgraded)
+}
+
+macro_rules! proxy_unary_slot {
+    ($vm_method:ident) => {
+        Some(|number, vm| proxy_unary_op(number.obj, vm, |vm, obj| vm.$vm_method(obj)))
+    };
+}
+
+fn proxy_binary_op(
+    a: &PyObject,
+    b: &PyObject,
+    vm: &VirtualMachine,
+    op: fn(&VirtualMachine, &PyObject, &PyObject) -> PyResult,
+) -> PyResult {
+    let a_up = proxy_upgrade_opt(a, vm)?;
+    let b_up = proxy_upgrade_opt(b, vm)?;
+    let a_ref = a_up.as_deref().unwrap_or(a);
+    let b_ref = b_up.as_deref().unwrap_or(b);
+    op(vm, a_ref, b_ref)
+}
+
+macro_rules! proxy_binary_slot {
+    ($vm_method:ident) => {
+        Some(|a, b, vm| proxy_binary_op(a, b, vm, |vm, a, b| vm.$vm_method(a, b)))
+    };
+}
+
+fn proxy_ternary_op(
+    a: &PyObject,
+    b: &PyObject,
+    c: &PyObject,
+    vm: &VirtualMachine,
+    op: fn(&VirtualMachine, &PyObject, &PyObject, &PyObject) -> PyResult,
+) -> PyResult {
+    let a_up = proxy_upgrade_opt(a, vm)?;
+    let b_up = proxy_upgrade_opt(b, vm)?;
+    let c_up = proxy_upgrade_opt(c, vm)?;
+    let a_ref = a_up.as_deref().unwrap_or(a);
+    let b_ref = b_up.as_deref().unwrap_or(b);
+    let c_ref = c_up.as_deref().unwrap_or(c);
+    op(vm, a_ref, b_ref, c_ref)
+}
+
+macro_rules! proxy_ternary_slot {
+    ($vm_method:ident) => {
+        Some(|a, b, c, vm| proxy_ternary_op(a, b, c, vm, |vm, a, b, c| vm.$vm_method(a, b, c)))
+    };
+}
+
+impl AsNumber for PyWeakProxy {
+    fn as_number() -> &'static PyNumberMethods {
+        static AS_NUMBER: LazyLock<PyNumberMethods> = LazyLock::new(|| PyNumberMethods {
+            boolean: Some(|number, vm| {
+                let obj = proxy_upgrade(number.obj, vm)?;
+                obj.is_true(vm)
+            }),
+            int: Some(|number, vm| {
+                let obj = proxy_upgrade(number.obj, vm)?;
+                obj.try_int(vm).map(Into::into)
+            }),
+            float: Some(|number, vm| {
+                let obj = proxy_upgrade(number.obj, vm)?;
+                obj.try_float(vm).map(Into::into)
+            }),
+            index: Some(|number, vm| {
+                let obj = proxy_upgrade(number.obj, vm)?;
+                obj.try_index(vm).map(Into::into)
+            }),
+            negative: proxy_unary_slot!(_neg),
+            positive: proxy_unary_slot!(_pos),
+            absolute: proxy_unary_slot!(_abs),
+            invert: proxy_unary_slot!(_invert),
+            add: proxy_binary_slot!(_add),
+            subtract: proxy_binary_slot!(_sub),
+            multiply: proxy_binary_slot!(_mul),
+            remainder: proxy_binary_slot!(_mod),
+            divmod: proxy_binary_slot!(_divmod),
+            lshift: proxy_binary_slot!(_lshift),
+            rshift: proxy_binary_slot!(_rshift),
+            and: proxy_binary_slot!(_and),
+            xor: proxy_binary_slot!(_xor),
+            or: proxy_binary_slot!(_or),
+            floor_divide: proxy_binary_slot!(_floordiv),
+            true_divide: proxy_binary_slot!(_truediv),
+            matrix_multiply: proxy_binary_slot!(_matmul),
+            inplace_add: proxy_binary_slot!(_iadd),
+            inplace_subtract: proxy_binary_slot!(_isub),
+            inplace_multiply: proxy_binary_slot!(_imul),
+            inplace_remainder: proxy_binary_slot!(_imod),
+            inplace_lshift: proxy_binary_slot!(_ilshift),
+            inplace_rshift: proxy_binary_slot!(_irshift),
+            inplace_and: proxy_binary_slot!(_iand),
+            inplace_xor: proxy_binary_slot!(_ixor),
+            inplace_or: proxy_binary_slot!(_ior),
+            inplace_floor_divide: proxy_binary_slot!(_ifloordiv),
+            inplace_true_divide: proxy_binary_slot!(_itruediv),
+            inplace_matrix_multiply: proxy_binary_slot!(_imatmul),
+            power: proxy_ternary_slot!(_pow),
+            inplace_power: proxy_ternary_slot!(_ipow),
+        });
+        &AS_NUMBER
+    }
+}
+
+impl Comparable for PyWeakProxy {
+    fn cmp(
+        zelf: &Py<Self>,
+        other: &PyObject,
+        op: PyComparisonOp,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyComparisonValue> {
+        let obj = zelf.try_upgrade(vm)?;
+        // CPython parity (Objects/weakref.c::proxy_richcompare): delegate to
+        // PyObject_RichCompare on the referent, not the bool variant.
+        let res = obj.rich_compare(other.to_owned(), op, vm)?;
+        PyArithmeticValue::from_object(vm, res)
+            .map(|o| o.try_to_bool(vm))
+            .transpose()
+    }
+}
+
+impl AsSequence for PyWeakProxy {
+    fn as_sequence() -> &'static PySequenceMethods {
+        static AS_SEQUENCE: LazyLock<PySequenceMethods> = LazyLock::new(|| PySequenceMethods {
+            length: atomic_func!(|seq, vm| PyWeakProxy::sequence_downcast(seq).len(vm)),
+            contains: atomic_func!(|seq, needle, vm| {
+                PyWeakProxy::sequence_downcast(seq).__contains__(needle, vm)
+            }),
+            ..PySequenceMethods::NOT_IMPLEMENTED
+        });
+        &AS_SEQUENCE
+    }
+}
+
+impl AsMapping for PyWeakProxy {
+    fn as_mapping() -> &'static PyMappingMethods {
+        static AS_MAPPING: PyMappingMethods = PyMappingMethods {
+            length: atomic_func!(|mapping, vm| PyWeakProxy::mapping_downcast(mapping).len(vm)),
+            subscript: atomic_func!(|mapping, needle, vm| {
+                PyWeakProxy::mapping_downcast(mapping).getitem(needle, vm)
+            }),
+            ass_subscript: atomic_func!(|mapping, needle, value, vm| {
+                let zelf = PyWeakProxy::mapping_downcast(mapping);
+                if let Some(value) = value {
+                    zelf.setitem(needle, value, vm)
+                } else {
+                    zelf.delitem(needle, vm)
+                }
+            }),
+        };
+        &AS_MAPPING
+    }
+}
+
+impl Representable for PyWeakProxy {
+    #[inline]
+    fn repr(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyStrRef> {
+        zelf.try_upgrade(vm)?.repr(vm)
+    }
+
+    #[cold]
+    fn repr_str(_zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<String> {
+        unreachable!("use repr instead")
+    }
+}
+
+pub(crate) fn init(context: &'static Context) {
+    PyWeakProxy::extend_class(context, context.types.weakproxy_type);
+    PyWeakCallableProxy::extend_class(context, context.types.weakcallableproxy_type);
+}
+
+impl Hashable for PyWeakProxy {
+    fn hash(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyHash> {
+        zelf.try_upgrade(vm)?.hash(vm)
+    }
+}

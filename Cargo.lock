@@ -9526,8 +9526,6 @@ dependencies = [
 [[package]]
 name = "rustpython-sre_engine"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed7519062320c171041f2bb79432c243bcb258465680cdc2d04a3ac47ec6bb7a"
 dependencies = [
  "bitflags 2.13.1",
  "num_enum",
@@ -9597,8 +9595,6 @@ dependencies = [
 [[package]]
 name = "rustpython-vm"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f5e6290260601ddbba6cbe917df9d24725aa6664f61c5bdc1ba24db9c81f346"
 dependencies = [
  "ascii",
  "bitflags 2.13.1",

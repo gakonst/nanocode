@@ -1,0 +1,632 @@
+use super::VirtualMachine;
+use crate::stdlib::_warnings;
+use crate::{
+    Py, PyRef,
+    builtins::{PyInt, PyStr, PyStrInterned, PyStrRef, PyType, PyUtf8Str},
+    object::{AsObject, PyObject, PyObjectRef, PyResult},
+    protocol::{PyNumberBinaryOp, PyNumberSlots, PyNumberTernaryOp, PyNumberUnaryFunc, PySequence},
+    types::PyComparisonOp,
+};
+use num_traits::ToPrimitive;
+
+/// [CPython `method_is_overloaded`](https://github.com/python/cpython/blob/v3.14.3/Objects/typeobject.c#L9849-L9879)
+fn method_is_overloaded(
+    class_a: &Py<PyType>,
+    class_b: &Py<PyType>,
+    rop_name: Option<&'static PyStrInterned>,
+    vm: &VirtualMachine,
+) -> PyResult<bool> {
+    let Some(rop_name) = rop_name else {
+        return Ok(false);
+    };
+    let Some(method_b) = class_b.get_attr(rop_name) else {
+        return Ok(false);
+    };
+    class_a.get_attr(rop_name).map_or(Ok(true), |method_a| {
+        vm.identical_or_equal(&method_a, &method_b).map(|eq| !eq)
+    })
+}
+
+macro_rules! binary_func {
+    ($fn:ident, $op_slot:ident, $op:expr) => {
+        pub fn $fn(&self, a: &PyObject, b: &PyObject) -> PyResult {
+            self.binary_op(a, b, PyNumberBinaryOp::$op_slot, $op)
+        }
+    };
+}
+
+macro_rules! ternary_func {
+    ($fn:ident, $op_slot:ident, $op:expr) => {
+        pub fn $fn(&self, a: &PyObject, b: &PyObject, c: &PyObject) -> PyResult {
+            self.ternary_op(a, b, c, PyNumberTernaryOp::$op_slot, $op)
+        }
+    };
+}
+
+macro_rules! inplace_binary_func {
+    ($fn:ident, $iop_slot:ident, $op_slot:ident, $op:expr) => {
+        pub fn $fn(&self, a: &PyObject, b: &PyObject) -> PyResult {
+            self.binary_iop(
+                a,
+                b,
+                PyNumberBinaryOp::$iop_slot,
+                PyNumberBinaryOp::$op_slot,
+                $op,
+            )
+        }
+    };
+}
+
+macro_rules! inplace_ternary_func {
+    ($fn:ident, $iop_slot:ident, $op_slot:ident, $op:expr) => {
+        pub fn $fn(&self, a: &PyObject, b: &PyObject, c: &PyObject) -> PyResult {
+            self.ternary_iop(
+                a,
+                b,
+                c,
+                PyNumberTernaryOp::$iop_slot,
+                PyNumberTernaryOp::$op_slot,
+                $op,
+            )
+        }
+    };
+}
+
+/// Collection of operators
+impl VirtualMachine {
+    #[inline]
+    pub fn bool_eq(&self, a: &PyObject, b: &PyObject) -> PyResult<bool> {
+        a.rich_compare_bool(b, PyComparisonOp::Eq, self)
+    }
+
+    pub fn identical_or_equal(&self, a: &PyObject, b: &PyObject) -> PyResult<bool> {
+        if a.is(b) {
+            Ok(true)
+        } else {
+            self.bool_eq(a, b)
+        }
+    }
+
+    pub fn bool_seq_lt(&self, a: &PyObject, b: &PyObject) -> PyResult<Option<bool>> {
+        let value = if a.rich_compare_bool(b, PyComparisonOp::Lt, self)? {
+            Some(true)
+        } else if !self.bool_eq(a, b)? {
+            Some(false)
+        } else {
+            None
+        };
+        Ok(value)
+    }
+
+    pub fn bool_seq_gt(&self, a: &PyObject, b: &PyObject) -> PyResult<Option<bool>> {
+        let value = if a.rich_compare_bool(b, PyComparisonOp::Gt, self)? {
+            Some(true)
+        } else if !self.bool_eq(a, b)? {
+            Some(false)
+        } else {
+            None
+        };
+        Ok(value)
+    }
+
+    pub fn length_hint_opt(&self, iter: PyObjectRef) -> PyResult<Option<usize>> {
+        // Ask for a length only from something that could have one. `length()`
+        // answers a type with no length slot -- every iterator, every
+        // generator, which is most of what gets passed here -- by building a
+        // `TypeError` this caller immediately throws away. CPython's
+        // `PyObject_LengthHint` gates the call on the slots for the same
+        // reason.
+        if let Some(len) = iter.length_opt(self) {
+            match len {
+                Ok(len) => return Ok(Some(len)),
+                Err(e) => {
+                    if !e.fast_isinstance(self.ctx.exceptions.type_error) {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        let hint = match self.get_method(iter, identifier!(self, __length_hint__)) {
+            Some(hint) => hint?,
+            None => return Ok(None),
+        };
+        let result = match hint.call((), self) {
+            Ok(res) => {
+                if res.is(&self.ctx.not_implemented) {
+                    return Ok(None);
+                }
+                res
+            }
+            Err(e) => {
+                return if e.fast_isinstance(self.ctx.exceptions.type_error) {
+                    Ok(None)
+                } else {
+                    Err(e)
+                };
+            }
+        };
+        let hint = result
+            .downcast_ref::<PyInt>()
+            .ok_or_else(|| {
+                self.new_type_error(format!(
+                    "'{}' object cannot be interpreted as an integer",
+                    result.class().name()
+                ))
+            })?
+            .try_to_primitive::<isize>(self)?;
+        if hint.is_negative() {
+            Err(self.new_value_error("__length_hint__() should return >= 0"))
+        } else {
+            Ok(Some(hint as usize))
+        }
+    }
+
+    /// Checks that the multiplication is able to be performed. On Ok returns the
+    /// index as a usize for sequences to be able to use immediately.
+    pub fn check_repeat_or_overflow_error(&self, length: usize, n: isize) -> PyResult<usize> {
+        if n <= 0 {
+            Ok(0)
+        } else {
+            let n = n as usize;
+            if length > crate::stdlib::sys::MAXSIZE as usize / n {
+                Err(self.new_overflow_error("repeated value are too long"))
+            } else {
+                Ok(n)
+            }
+        }
+    }
+
+    /// `vec![0; len]` for a length that came from Python, where a request too
+    /// large to satisfy is a `MemoryError` rather than an aborted process.
+    ///
+    /// The bytes are left for the allocator to zero, so a large request costs
+    /// no more than the pages that are actually written to.
+    pub fn new_zeroed_bytes(&self, len: usize) -> PyResult<Vec<u8>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let layout = core::alloc::Layout::array::<u8>(len).map_err(|_| self.no_memory_error())?;
+        // SAFETY: `len` is not zero, so neither is the layout's size.
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err(self.no_memory_error());
+        }
+        // SAFETY: `ptr` was just allocated by the global allocator for exactly
+        // this many bytes, and every one of them is initialized to zero.
+        Ok(unsafe { Vec::from_raw_parts(ptr, len, len) })
+    }
+
+    /// Calling scheme used for binary operations:
+    ///
+    /// Order operations are tried until either a valid result or error:
+    ///   `b.rop(b,a)[*], a.op(a,b), b.rop(b,a)`
+    ///
+    /// `[*]` - only when Py_TYPE(a) != Py_TYPE(b) && Py_TYPE(b) is a subclass of Py_TYPE(a)
+    pub fn binary_op1(&self, a: &PyObject, b: &PyObject, op_slot: PyNumberBinaryOp) -> PyResult {
+        let class_a = a.class();
+        let class_b = b.class();
+
+        // Number slots are inherited, direct access is O(1)
+        let slot_a = class_a.slots.as_number.left_binary_op(op_slot);
+        let slot_a_addr = slot_a.map(|x| crate::types::fn_addr(x));
+        let mut slot_b = None;
+        let left_b_addr = if class_a.is(class_b) {
+            slot_a_addr
+        } else {
+            let slot_bb = class_b.slots.as_number.right_binary_op(op_slot);
+            if slot_bb.map(|x| crate::types::fn_addr(x)) != slot_a_addr {
+                slot_b = slot_bb;
+            }
+
+            class_b
+                .slots
+                .as_number
+                .left_binary_op(op_slot)
+                .map(|x| crate::types::fn_addr(x))
+        };
+
+        if let Some(slot_a) = slot_a {
+            if let Some(slot_bb) = slot_b
+                && class_b.fast_issubclass(class_a)
+                && (slot_a_addr != left_b_addr
+                    || method_is_overloaded(
+                        class_a,
+                        class_b,
+                        op_slot.right_method_name(self),
+                        self,
+                    )?)
+            {
+                let ret = slot_bb(a, b, self)?;
+                if !ret.is(&self.ctx.not_implemented) {
+                    return Ok(ret);
+                }
+                slot_b = None;
+            }
+            let ret = slot_a(a, b, self)?;
+            if !ret.is(&self.ctx.not_implemented) {
+                return Ok(ret);
+            }
+        }
+
+        if let Some(slot_b) = slot_b {
+            let ret = slot_b(a, b, self)?;
+            if !ret.is(&self.ctx.not_implemented) {
+                return Ok(ret);
+            }
+        }
+
+        Ok(self.ctx.not_implemented())
+    }
+
+    pub fn binary_op(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        op_slot: PyNumberBinaryOp,
+        op: &str,
+    ) -> PyResult {
+        let result = self.binary_op1(a, b, op_slot)?;
+        if !result.is(&self.ctx.not_implemented) {
+            return Ok(result);
+        }
+        Err(self.new_unsupported_bin_op_error(a, b, op))
+    }
+
+    /// Binary in-place operators
+    ///
+    /// The in-place operators are defined to fall back to the 'normal',
+    /// non in-place operations, if the in-place methods are not in place.
+    ///
+    /// - If the left hand object has the appropriate struct members, and
+    ///   they are filled, call the appropriate function and return the
+    ///   result.  No coercion is done on the arguments; the left-hand object
+    ///   is the one the operation is performed on, and it's up to the
+    ///   function to deal with the right-hand object.
+    ///
+    /// - Otherwise, in-place modification is not supported. Handle it exactly as
+    ///   a non in-place operation of the same kind.
+    pub(crate) fn binary_iop1(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        iop_slot: PyNumberBinaryOp,
+        op_slot: PyNumberBinaryOp,
+    ) -> PyResult {
+        if let Some(slot) = a.class().slots().as_number.left_binary_op(iop_slot) {
+            let x = slot(a, b, self)?;
+            if !x.is(&self.ctx.not_implemented) {
+                return Ok(x);
+            }
+        }
+        self.binary_op1(a, b, op_slot)
+    }
+
+    fn binary_iop(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        iop_slot: PyNumberBinaryOp,
+        op_slot: PyNumberBinaryOp,
+        op: &str,
+    ) -> PyResult {
+        let result = self.binary_iop1(a, b, iop_slot, op_slot)?;
+        if !result.is(&self.ctx.not_implemented) {
+            return Ok(result);
+        }
+        Err(self.new_unsupported_bin_op_error(a, b, op))
+    }
+
+    fn ternary_op(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        c: &PyObject,
+        op_slot: PyNumberTernaryOp,
+        op_str: &str,
+    ) -> PyResult {
+        let class_a = a.class();
+        let class_b = b.class();
+        let class_c = c.class();
+
+        // Number slots are inherited, direct access is O(1)
+        let slot_a = class_a.slots.as_number.left_ternary_op(op_slot);
+        let slot_a_addr = slot_a.map(|x| crate::types::fn_addr(x));
+        let mut slot_b = None;
+        let left_b_addr = if class_a.is(class_b) {
+            slot_a_addr
+        } else {
+            let slot_bb = class_b.slots.as_number.right_ternary_op(op_slot);
+            if slot_bb.map(|x| crate::types::fn_addr(x)) != slot_a_addr {
+                slot_b = slot_bb;
+            }
+
+            class_b
+                .slots
+                .as_number
+                .left_ternary_op(op_slot)
+                .map(|x| crate::types::fn_addr(x))
+        };
+
+        if let Some(slot_a) = slot_a {
+            if let Some(slot_bb) = slot_b
+                && class_b.fast_issubclass(class_a)
+                && (slot_a_addr != left_b_addr
+                    || method_is_overloaded(
+                        class_a,
+                        class_b,
+                        op_slot.right_method_name(self),
+                        self,
+                    )?)
+            {
+                let ret = slot_bb(a, b, c, self)?;
+                if !ret.is(&self.ctx.not_implemented) {
+                    return Ok(ret);
+                }
+                slot_b = None;
+            }
+            let ret = slot_a(a, b, c, self)?;
+            if !ret.is(&self.ctx.not_implemented) {
+                return Ok(ret);
+            }
+        }
+
+        if let Some(slot_b) = slot_b {
+            let ret = slot_b(a, b, c, self)?;
+            if !ret.is(&self.ctx.not_implemented) {
+                return Ok(ret);
+            }
+        }
+
+        // The modulus gets its turn whenever its slot is not one of the two
+        // already tried, which includes the case where neither operand had one:
+        // `pow(10, 2, Decimal(7))` reaches `Decimal` only this way.
+        if let Some(slot_c) = class_c.slots.as_number.left_ternary_op(op_slot)
+            && slot_a.is_none_or(|slot_a| !core::ptr::fn_addr_eq(slot_a, slot_c))
+            && slot_b.is_none_or(|slot_b| !core::ptr::fn_addr_eq(slot_b, slot_c))
+        {
+            let ret = slot_c(a, b, c, self)?;
+            if !ret.is(&self.ctx.not_implemented) {
+                return Ok(ret);
+            }
+        }
+
+        Err(if self.is_none(c) {
+            self.new_type_error(format!(
+                "unsupported operand type(s) for {}: \
+                '{}' and '{}'",
+                op_str,
+                a.class().slot_name(),
+                b.class().slot_name()
+            ))
+        } else {
+            self.new_type_error(format!(
+                "unsupported operand type(s) for {}: \
+                '{}', '{}', '{}'",
+                op_str,
+                a.class().slot_name(),
+                b.class().slot_name(),
+                c.class().slot_name()
+            ))
+        })
+    }
+
+    fn ternary_iop(
+        &self,
+        a: &PyObject,
+        b: &PyObject,
+        c: &PyObject,
+        iop_slot: PyNumberTernaryOp,
+        op_slot: PyNumberTernaryOp,
+        op_str: &str,
+    ) -> PyResult {
+        if let Some(slot) = a.class().slots().as_number.left_ternary_op(iop_slot) {
+            let x = slot(a, b, c, self)?;
+            if !x.is(&self.ctx.not_implemented) {
+                return Ok(x);
+            }
+        }
+        self.ternary_op(a, b, c, op_slot, op_str)
+    }
+
+    binary_func!(_sub, Subtract, "-");
+    binary_func!(_mod, Remainder, "%");
+    binary_func!(_divmod, Divmod, "divmod()");
+    binary_func!(_lshift, Lshift, "<<");
+    binary_func!(_rshift, Rshift, ">>");
+    binary_func!(_and, And, "&");
+    binary_func!(_xor, Xor, "^");
+    binary_func!(_or, Or, "|");
+    binary_func!(_floordiv, FloorDivide, "//");
+    binary_func!(_truediv, TrueDivide, "/");
+    binary_func!(_matmul, MatrixMultiply, "@");
+
+    inplace_binary_func!(_isub, InplaceSubtract, Subtract, "-=");
+    inplace_binary_func!(_imod, InplaceRemainder, Remainder, "%=");
+    inplace_binary_func!(_ilshift, InplaceLshift, Lshift, "<<=");
+    inplace_binary_func!(_irshift, InplaceRshift, Rshift, ">>=");
+    inplace_binary_func!(_iand, InplaceAnd, And, "&=");
+    inplace_binary_func!(_ixor, InplaceXor, Xor, "^=");
+    inplace_binary_func!(_ior, InplaceOr, Or, "|=");
+    inplace_binary_func!(_ifloordiv, InplaceFloorDivide, FloorDivide, "//=");
+    inplace_binary_func!(_itruediv, InplaceTrueDivide, TrueDivide, "/=");
+    inplace_binary_func!(_imatmul, InplaceMatrixMultiply, MatrixMultiply, "@=");
+
+    ternary_func!(_pow, Power, "** or pow()");
+    inplace_ternary_func!(_ipow, InplacePower, Power, "**=");
+
+    pub fn _add(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        let result = self.binary_op1(a, b, PyNumberBinaryOp::Add)?;
+        if !result.is(&self.ctx.not_implemented) {
+            return Ok(result);
+        }
+        // Check if concat slot is available directly, matching PyNumber_Add behavior
+        let seq = a.sequence_unchecked();
+        if let Some(f) = seq.slots().concat.load() {
+            let result = f(seq, b, self)?;
+            if !result.is(&self.ctx.not_implemented) {
+                return Ok(result);
+            }
+        }
+        Err(self.new_unsupported_bin_op_error(a, b, "+"))
+    }
+
+    pub fn _iadd(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        let result = self.binary_iop1(a, b, PyNumberBinaryOp::InplaceAdd, PyNumberBinaryOp::Add)?;
+        if !result.is(&self.ctx.not_implemented) {
+            return Ok(result);
+        }
+        // Check inplace_concat or concat slot directly, matching PyNumber_InPlaceAdd behavior
+        let seq = a.sequence_unchecked();
+        let slots = seq.slots();
+        if let Some(f) = slots.inplace_concat.load().or_else(|| slots.concat.load()) {
+            let result = f(seq, b, self)?;
+            if !result.is(&self.ctx.not_implemented) {
+                return Ok(result);
+            }
+        }
+        Err(self.new_unsupported_bin_op_error(a, b, "+="))
+    }
+
+    pub fn _mul(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        let result = self.binary_op1(a, b, PyNumberBinaryOp::Multiply)?;
+        if !result.is(&self.ctx.not_implemented) {
+            return Ok(result);
+        }
+        if let Some(f) = a.sequence_unchecked().slots().repeat.load() {
+            return self.sequence_repeat(f, a, b);
+        }
+        if let Some(f) = b.sequence_unchecked().slots().repeat.load() {
+            return self.sequence_repeat(f, b, a);
+        }
+        Err(self.new_unsupported_bin_op_error(a, b, "*"))
+    }
+
+    pub fn _imul(&self, a: &PyObject, b: &PyObject) -> PyResult {
+        let result = self.binary_iop1(
+            a,
+            b,
+            PyNumberBinaryOp::InplaceMultiply,
+            PyNumberBinaryOp::Multiply,
+        )?;
+        if !result.is(&self.ctx.not_implemented) {
+            return Ok(result);
+        }
+        let a_seq = a.sequence_unchecked();
+        let a_slots = a_seq.slots();
+        if let Some(f) = a_slots
+            .inplace_repeat
+            .load()
+            .or_else(|| a_slots.repeat.load())
+        {
+            return self.sequence_repeat(f, a, b);
+        }
+        // The right operand is only tried when the left type has no sequence table at all,
+        // and every heap type has one. It is repeated, never mutated in place.
+        if !a_slots.has_any()
+            && a.class().heaptype_ext().is_none()
+            && let Some(f) = b.sequence_unchecked().slots().repeat.load()
+        {
+            return self.sequence_repeat(f, b, a);
+        }
+        Err(self.new_unsupported_bin_op_error(a, b, "*="))
+    }
+
+    // sequence_repeat in CPython
+    fn sequence_repeat(
+        &self,
+        repeat: fn(PySequence<'_>, isize, &Self) -> PyResult,
+        seq: &PyObject,
+        n: &PyObject,
+    ) -> PyResult {
+        let index = n.try_index_opt(self).ok_or_else(|| {
+            self.new_type_error(format!(
+                "can't multiply sequence by non-int of type '{}'",
+                n.class().slot_name()
+            ))
+        })??;
+        let count = index.as_bigint().to_isize().ok_or_else(|| {
+            self.new_overflow_error(format!(
+                "cannot fit '{}' into an index-sized integer",
+                n.class().slot_name()
+            ))
+        })?;
+        repeat(seq.sequence_unchecked(), count, self)
+    }
+
+    fn unary_op(
+        &self,
+        a: &PyObject,
+        slot: impl FnOnce(&PyNumberSlots) -> Option<PyNumberUnaryFunc>,
+        op: &str,
+    ) -> PyResult {
+        let f = slot(&a.class().slots.as_number)
+            .ok_or_else(|| self.new_unsupported_unary_error(a, op))?;
+        f(a.number(), self)
+    }
+
+    // PyNumber_Absolute
+    pub fn _abs(&self, a: &PyObject) -> PyResult<PyObjectRef> {
+        self.unary_op(a, |s| s.absolute.load(), "abs()")
+    }
+
+    // PyNumber_Positive
+    pub fn _pos(&self, a: &PyObject) -> PyResult {
+        self.unary_op(a, |s| s.positive.load(), "unary +")
+    }
+
+    // PyNumber_Negative
+    pub fn _neg(&self, a: &PyObject) -> PyResult {
+        self.unary_op(a, |s| s.negative.load(), "unary -")
+    }
+
+    pub fn _invert(&self, a: &PyObject) -> PyResult {
+        const STR: &str = "Bitwise inversion '~' on bool is deprecated and will be removed in Python 3.16. \
+            This returns the bitwise inversion of the underlying int object and is usually not what you expect from negating a bool. \
+            Use the 'not' operator for boolean negation or ~int(x) if you really want the bitwise inversion of the underlying int.";
+        if a.fast_isinstance(self.ctx.types.bool_type) {
+            _warnings::warn(
+                self.ctx.exceptions.deprecation_warning,
+                STR.to_owned(),
+                1,
+                self,
+            )?;
+        }
+        self.unary_op(a, |s| s.invert.load(), "unary ~")
+    }
+
+    // PyObject_Format
+    pub fn format(&self, obj: &PyObject, format_spec: PyStrRef) -> PyResult<PyStrRef> {
+        if format_spec.is_empty() {
+            let obj = match obj.to_owned().downcast_exact::<PyStr>(self) {
+                Ok(s) => return Ok(s.into_pyref()),
+                Err(obj) => obj,
+            };
+            if obj.class().is(self.ctx.types.int_type) {
+                return obj.str(self);
+            }
+        }
+        let bound_format = self
+            .get_special_method(obj, identifier!(self, __format__))?
+            .ok_or_else(|| {
+                self.new_type_error(format!(
+                    "Type {} doesn't define __format__",
+                    obj.class().name()
+                ))
+            })?;
+        let formatted = bound_format.invoke((format_spec,), self)?;
+        formatted.downcast().map_err(|result| {
+            self.new_type_error(format!(
+                "__format__ must return a str, not {}",
+                result.class().name()
+            ))
+        })
+    }
+    pub fn format_utf8(&self, obj: &PyObject, format_spec: PyStrRef) -> PyResult<PyRef<PyUtf8Str>> {
+        self.format(obj, format_spec)?.try_into_utf8(self)
+    }
+
+    pub fn _contains(&self, haystack: &PyObject, needle: &PyObject) -> PyResult<bool> {
+        let seq = haystack.sequence_unchecked();
+        seq.contains(needle, self)
+    }
+}

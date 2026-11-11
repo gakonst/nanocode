@@ -213,6 +213,8 @@ arc-swap = { path = "crates/patches/arc-swap" }
 grep-printer = { path = "crates/patches/psh/third_party/grep-printer" }
 iana-time-zone = { path = "crates/patches/iana-time-zone" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
+rustpython-sre_engine = { path = "crates/patches/rustpython-sre_engine" }
+rustpython-vm = { path = "crates/patches/rustpython-vm" }
 sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
 sqlx-postgres = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
 

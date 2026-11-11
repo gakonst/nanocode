@@ -1,0 +1,465 @@
+//! Utilities to define a new Python class
+
+use crate::{
+    AsObject, PyPayload,
+    builtins::{PyBaseObject, PyType, PyTypeRef, descriptor::PyWrapper},
+    function::{ItemDoc, PyMethodDef, plain_doc},
+    object::Py,
+    types::{PyTypeFlags, PyTypeSlots, SLOT_DEFS, fn_addr, hash_not_implemented},
+    vm::{Context, VirtualMachine},
+};
+use rustpython_common::static_cell;
+
+/// Add slot wrapper descriptors to a type's dict
+///
+/// Iterates SLOT_DEFS and creates a PyWrapper for each slot that:
+/// 1. Has a function set in the type's slots
+/// 2. Doesn't already have an attribute in the type's dict
+#[cfg(feature = "doc")]
+pub fn add_operators(class: &'static Py<PyType>, ctx: &Context, attr_docs: &[(&str, u32, u32)]) {
+    add_operators_inner(class, ctx, |name| match attr_doc(attr_docs, name) {
+        Some((offset, len)) if len != 0 => (offset, len),
+        _ => (0, 0),
+    })
+}
+
+#[cfg(not(feature = "doc"))]
+pub fn add_operators(class: &'static Py<PyType>, ctx: &Context, attr_docs: &[&str]) {
+    add_operators_inner(class, ctx, |name| {
+        if attr_name_present(attr_docs, name) {
+            // Present in the database: do not fall back to the slot text.
+            (0, 1)
+        } else {
+            (0, 0)
+        }
+    })
+}
+
+fn add_operators_inner(
+    class: &'static Py<PyType>,
+    ctx: &Context,
+    mut plain_span: impl FnMut(&str) -> (u32, u32),
+) {
+    for def in SLOT_DEFS {
+        let (plain_off, plain_len) = plain_span(def.name);
+        // Skip __new__ - it has special handling
+        if def.name == "__new__" {
+            continue;
+        }
+
+        // Special handling for __hash__ = None
+        if def.name == "__hash__"
+            && class.slots().hash.load().is_some_and(|h| {
+                fn_addr(h) == fn_addr(hash_not_implemented as crate::types::HashFunc)
+            })
+        {
+            class.set_attr(ctx.names.__hash__, ctx.none.clone().into());
+            continue;
+        }
+
+        // __getattr__ should only have a wrapper if the type explicitly defines it.
+        // Unlike __getattribute__, __getattr__ is not present on object by default.
+        // Both map to TpGetattro, but only __getattribute__ gets a wrapper from the slot.
+        if def.name == "__getattr__" {
+            continue;
+        }
+
+        // Get the slot function wrapped in SlotFunc
+        let Some(slot_func) = def.accessor.get_slot_func_with_op(class.slots(), def.op) else {
+            continue;
+        };
+
+        // Check if attribute already exists in dict
+        let attr_name = ctx.intern_str(def.name);
+        if class.attributes().contains(attr_name) {
+            continue;
+        }
+
+        // Create and add the wrapper
+        let wrapper = PyWrapper {
+            typ: class,
+            name: attr_name,
+            wrapped: slot_func,
+            doc: Some(def.doc),
+            plain_off,
+            plain_len,
+        };
+        class.set_attr(attr_name, wrapper.into_ref(ctx).into());
+    }
+}
+
+pub trait StaticType {
+    // Ideally, saving PyType is better than PyTypeRef
+    fn static_cell() -> &'static static_cell::StaticCell<PyTypeRef>;
+
+    #[inline]
+    #[must_use]
+    fn static_metaclass() -> &'static Py<PyType> {
+        PyType::static_type()
+    }
+
+    #[inline]
+    #[must_use]
+    fn static_baseclass() -> &'static Py<PyType> {
+        PyBaseObject::static_type()
+    }
+
+    #[inline]
+    #[must_use]
+    fn static_type() -> &'static Py<PyType> {
+        #[cold]
+        fn fail() -> ! {
+            panic!(
+                "static type has not been initialized. e.g. the native types defined in different module may be used before importing library."
+            );
+        }
+        Self::static_cell().get().unwrap_or_else(|| fail())
+    }
+
+    #[must_use]
+    fn init_manually(typ: PyTypeRef) -> &'static Py<PyType> {
+        let cell = Self::static_cell();
+        cell.set(typ)
+            .unwrap_or_else(|_| panic!("double initialization from init_manually"));
+        let typ = cell.get().unwrap();
+        typ.as_object().make_immortal();
+        typ
+    }
+
+    #[must_use]
+    fn init_builtin_type() -> &'static Py<PyType>
+    where
+        Self: PyClassImpl,
+    {
+        let typ = Self::create_static_type();
+        let cell = Self::static_cell();
+        cell.set(typ)
+            .unwrap_or_else(|_| panic!("double initialization of {}", Self::NAME));
+        let typ = cell.get().unwrap();
+        typ.as_object().make_immortal();
+        typ
+    }
+
+    #[must_use]
+    fn create_static_type() -> PyTypeRef
+    where
+        Self: PyClassImpl,
+    {
+        // inherit_special COPYVAL(tp_itemsize): the direct base, and only when
+        // this type left the slot at 0. The base type object already exists.
+        let mut slots = Self::make_slots();
+        if slots.itemsize == 0 {
+            slots.itemsize = Self::static_baseclass().slots.itemsize;
+        }
+        PyType::new_static(
+            Self::static_baseclass().to_owned(),
+            Default::default(),
+            slots,
+            Self::static_metaclass().to_owned(),
+        )
+        .unwrap()
+    }
+}
+
+pub trait PyClassDef {
+    const NAME: &'static str;
+    const MODULE_NAME: Option<&'static str>;
+    const TP_NAME: &'static str;
+    const DOC: ItemDoc = ItemDoc::NONE;
+    /// Attribute name → database span, sorted by name.
+    /// `(u32::MAX, 0)` is an explicit empty doc.
+    #[cfg(feature = "doc")]
+    const ATTR_DOCS: &'static [(&'static str, u32, u32)] = &[];
+    /// Names that have a database doc, sorted. The text is not in this build.
+    #[cfg(not(feature = "doc"))]
+    const ATTR_DOCS: &'static [&'static str] = &[];
+    const BASICSIZE: usize;
+    const ITEMSIZE: usize = 0;
+    const UNHASHABLE: bool = false;
+    const MEMBERS: &'static [crate::builtins::descriptor::PyMemberSpec] = &[];
+
+    fn assert_member_layout() {}
+
+    // due to restriction of rust trait system, object.__base__ is None
+    // but PyBaseObject::Base will be PyBaseObject.
+    type Base: PyClassDef;
+}
+
+const fn cmp_str(left: &str, right: &str) -> i8 {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let n = if left.len() < right.len() {
+        left.len()
+    } else {
+        right.len()
+    };
+    let mut i = 0;
+    while i < n {
+        if left[i] != right[i] {
+            return if left[i] < right[i] { -1 } else { 1 };
+        }
+        i += 1;
+    }
+    if left.len() == right.len() {
+        0
+    } else if left.len() < right.len() {
+        -1
+    } else {
+        1
+    }
+}
+
+#[must_use]
+pub const fn attr_name_present(table: &[&str], name: &str) -> bool {
+    let mut lo = 0;
+    let mut hi = table.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let ord = cmp_str(table[mid], name);
+        if ord == 0 {
+            return true;
+        } else if ord < 0 {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    false
+}
+
+/// Database doc of attribute `name` of `T`.
+#[must_use]
+pub fn class_attr_item_doc<T: PyClassDef + ?Sized>(name: &str) -> ItemDoc {
+    #[cfg(feature = "doc")]
+    if let Some((offset, len)) = attr_doc(T::ATTR_DOCS, name) {
+        if len != 0 {
+            return ItemDoc {
+                text: None,
+                offset,
+                len,
+            };
+        }
+        if offset == u32::MAX {
+            return ItemDoc::EMPTY;
+        }
+    }
+    #[cfg(not(feature = "doc"))]
+    let _ = name;
+    ItemDoc::NONE
+}
+
+/// Set `doc` as `__doc__` of a native type that has none.
+pub fn assign_missing_doc(vm: &VirtualMachine, class: &Py<PyType>, doc: ItemDoc) {
+    let Some(text) = plain_doc(doc) else {
+        return;
+    };
+    let doc_name = identifier!(vm, __doc__);
+    let missing = class
+        .attributes()
+        .get(doc_name)
+        .is_none_or(|value| value.is(&vm.ctx.none));
+    if missing {
+        class.set_attr(doc_name, vm.ctx.new_str(text).into());
+    }
+}
+
+/// Doc for `name` in a sorted attribute-doc table.
+#[must_use]
+#[inline(never)]
+pub const fn attr_doc(table: &[(&str, u32, u32)], name: &str) -> Option<(u32, u32)> {
+    let mut lo = 0;
+    let mut hi = table.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let ord = cmp_str(table[mid].0, name);
+        if ord == 0 {
+            return Some((table[mid].1, table[mid].2));
+        } else if ord < 0 {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    None
+}
+
+pub trait PyClassImpl: PyClassDef {
+    const TP_FLAGS: PyTypeFlags = PyTypeFlags::empty();
+
+    /// Signature-bearing class doc. [`ItemDoc::NONE`] when the constructor has no signature.
+    const INTERNAL_DOC: ItemDoc = ItemDoc::NONE;
+
+    const METHOD_DEFS: &'static [PyMethodDef];
+
+    fn impl_extend_class(ctx: &'static Context, class: &'static Py<PyType>);
+
+    fn extend_slots(slots: &mut PyTypeSlots);
+
+    fn extend_class(ctx: &'static Context, class: &'static Py<PyType>)
+    where
+        Self: Sized,
+    {
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            class
+                .slots()
+                .flags
+                .contains(&PyTypeFlags::_CREATED_WITH_FLAGS)
+        );
+
+        let _ = ctx.intern_str(Self::NAME); // intern type name
+
+        if Self::TP_FLAGS.contains(&PyTypeFlags::HAS_DICT)
+            && !Self::MEMBERS.iter().any(|member| member.name == "__dict__")
+        {
+            let __dict__ = identifier!(ctx, __dict__);
+            class.set_attr(
+                __dict__,
+                ctx.new_static_getset(
+                    "__dict__",
+                    class,
+                    crate::builtins::object::object_get_dict,
+                    crate::builtins::object::object_set_dict,
+                )
+                .into(),
+            );
+        }
+
+        Self::assert_member_layout();
+        for member in Self::MEMBERS {
+            class.set_str_attr(
+                member.name,
+                ctx.new_member(
+                    member.name,
+                    member.kind,
+                    member.offset,
+                    member.flags,
+                    class,
+                    member.doc,
+                ),
+                ctx,
+            );
+        }
+
+        Self::impl_extend_class(ctx, class);
+
+        // Only set __doc__ if it doesn't already exist (e.g., as a member descriptor)
+        // This matches CPython's behavior in type_dict_set_doc
+        let doc_attr_name = identifier!(ctx, __doc__);
+        if class.attributes().get(doc_attr_name).is_none() {
+            let doc =
+                plain_doc(Self::DOC).map_or_else(|| ctx.none(), |doc| ctx.new_str(doc).into());
+            class.set_attr(doc_attr_name, doc);
+        }
+
+        if let Some(module_name) = Self::MODULE_NAME {
+            let module_key = identifier!(ctx, __module__);
+            // Don't overwrite a getset descriptor for __module__ (e.g. TypeAliasType
+            // has an instance-level __module__ getset that should not be replaced)
+            let has_getset = class
+                .attributes()
+                .get(module_key)
+                .is_some_and(|v| v.downcastable::<crate::builtins::PyGetSet>());
+            if !has_getset {
+                class.set_attr(module_key, ctx.new_str(module_name).into());
+            }
+        }
+
+        // Don't add __new__ attribute if slot_new is inherited from object
+        // (Python doesn't add __new__ to __dict__ for inherited slots)
+        // Exception: object itself should have __new__ in its dict
+        if let Some(slot_new) = class.slots().new.load() {
+            let object_new = ctx.types.object_type.slots().new.load();
+            let is_object_itself = core::ptr::eq(class, ctx.types.object_type);
+            let is_inherited_from_object = !is_object_itself
+                && object_new.is_some_and(|obj_new| fn_addr(slot_new) == fn_addr(obj_new));
+
+            if !is_inherited_from_object {
+                let bound_new =
+                    ctx.slot_new_wrapper
+                        .build_bound_method(ctx, class.to_owned().into(), class);
+                class.set_attr(identifier!(ctx, __new__), bound_new.into());
+            }
+        }
+
+        // Add slot wrappers using SLOT_DEFS array
+        add_operators(class, ctx, Self::ATTR_DOCS);
+
+        // Same walk as init_slots: a slot such as tp_init is copied only from
+        // a base that defines it, so a static grandchild must see that base
+        // in the MRO, not only its direct bases.
+        let mro = {
+            let guard = class.mro.read();
+            guard[1..].to_vec()
+        };
+        for base in &mro {
+            class.inherit_slots(base);
+        }
+
+        class.extend_methods(class.slots().methods, ctx);
+    }
+
+    #[must_use]
+    fn make_static_type() -> PyTypeRef
+    where
+        Self: StaticType + Sized,
+    {
+        let typ = Self::static_cell().get_or_init(|| {
+            let typ = Self::create_static_type();
+            Self::extend_class(Context::genesis(), unsafe {
+                // typ will be saved in static_cell
+                let r: &Py<PyType> = &typ;
+                let r: &'static Py<PyType> = core::mem::transmute(r);
+                r
+            });
+            typ
+        });
+        // A static type is held by its `static_cell` for the life of the
+        // process, so nothing is kept alive that would have died: all this
+        // buys is that every reference to a builtin type from here on is a
+        // branch rather than an atomic read-modify-write.
+        typ.as_object().make_immortal();
+        (*typ).to_owned()
+    }
+
+    fn make_slots() -> PyTypeSlots {
+        let mut slots = PyTypeSlots {
+            flags: crate::types::AtomicPyTypeFlags::from_plain(Self::TP_FLAGS),
+            name: Self::TP_NAME,
+            basicsize: Self::BASICSIZE,
+            itemsize: Self::ITEMSIZE,
+            doc: {
+                let internal = Self::INTERNAL_DOC;
+                if internal.text.is_some() || internal.len != 0 {
+                    internal
+                } else {
+                    Self::DOC
+                }
+            },
+            methods: Self::METHOD_DEFS,
+            ..Default::default()
+        };
+
+        if Self::UNHASHABLE {
+            slots.hash.store(Some(hash_not_implemented));
+        }
+
+        Self::extend_slots(&mut slots);
+        slots
+    }
+}
+
+/// Trait for Python subclasses that can provide a reference to their base type.
+///
+/// This trait is automatically implemented by the `#[pyclass]` macro when
+/// `base = SomeType` is specified. It provides safe reference access to the
+/// base type's payload.
+///
+/// For subclasses with `#[repr(transparent)]`
+/// which enables ownership transfer via `into_base()`.
+pub trait PySubclass: crate::PyPayload {
+    type Base: crate::PyPayload;
+
+    /// Returns a reference to the base type's payload.
+    fn as_base(&self) -> &Self::Base;
+}

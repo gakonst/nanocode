@@ -1,0 +1,344 @@
+use super::{PyDict, PyDictRef, PyGenericAlias, PyList, PyTuple, PyType, PyTypeRef};
+use crate::{
+    AsObject, Context, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
+    atomic_func,
+    class::PyClassImpl,
+    common::{hash, lock::LazyLock},
+    convert::ToPyObject,
+    function::{ArgMapping, OptionalArg, PyArithmeticValue, PyComparisonValue},
+    object::{Traverse, TraverseFn},
+    protocol::{PyMappingMethods, PyNumberMethods, PySequenceMethods},
+    types::{
+        AsMapping, AsNumber, AsSequence, Comparable, Constructor, Hashable, Iterable,
+        PyComparisonOp, Representable,
+    },
+};
+use rustpython_common::wtf8::{Wtf8Buf, wtf8_concat};
+
+#[pyclass(module = false, name = "mappingproxy", traverse)]
+#[derive(Debug)]
+pub struct PyMappingProxy {
+    mapping: MappingProxyInner,
+}
+
+#[derive(Debug)]
+enum MappingProxyInner {
+    Class(PyTypeRef),
+    Mapping(ArgMapping),
+}
+
+unsafe impl Traverse for MappingProxyInner {
+    fn traverse(&self, tracer_fn: &mut TraverseFn<'_>) {
+        match self {
+            Self::Class(r) => r.traverse(tracer_fn),
+            Self::Mapping(arg) => arg.traverse(tracer_fn),
+        }
+    }
+}
+
+impl PyPayload for PyMappingProxy {
+    #[inline]
+    fn class(ctx: &Context) -> &'static Py<PyType> {
+        ctx.types.mappingproxy_type
+    }
+}
+
+impl From<PyTypeRef> for PyMappingProxy {
+    fn from(dict: PyTypeRef) -> Self {
+        Self {
+            mapping: MappingProxyInner::Class(dict),
+        }
+    }
+}
+
+impl From<PyDictRef> for PyMappingProxy {
+    fn from(dict: PyDictRef) -> Self {
+        Self {
+            mapping: MappingProxyInner::Mapping(ArgMapping::from_dict_exact(dict)),
+        }
+    }
+}
+
+impl Constructor for PyMappingProxy {
+    type Args = PyObjectRef;
+
+    fn py_new(_cls: &Py<PyType>, mapping: Self::Args, vm: &VirtualMachine) -> PyResult<Self> {
+        Self::from_object(mapping, vm)
+    }
+}
+
+impl PyMappingProxy {
+    pub fn from_object(mapping: PyObjectRef, vm: &VirtualMachine) -> PyResult<Self> {
+        if mapping.mapping_unchecked().check()
+            && !mapping.downcastable::<PyList>()
+            && !mapping.downcastable::<PyTuple>()
+        {
+            return Ok(Self {
+                mapping: MappingProxyInner::Mapping(ArgMapping::new(mapping)),
+            });
+        }
+        Err(vm.new_type_error(format!(
+            "mappingproxy() argument must be a mapping, not {}",
+            mapping.class()
+        )))
+    }
+
+    fn get_inner(&self, key: &PyObject, vm: &VirtualMachine) -> PyResult<Option<PyObjectRef>> {
+        match &self.mapping {
+            MappingProxyInner::Class(class) => Self::class_get(class, key, vm),
+            MappingProxyInner::Mapping(mapping) => mapping.mapping().subscript(key, vm).map(Some),
+        }
+    }
+
+    fn class_get(
+        class: &Py<PyType>,
+        key: &PyObject,
+        vm: &VirtualMachine,
+    ) -> PyResult<Option<PyObjectRef>> {
+        match class.attributes.as_dict() {
+            Some(dict) => dict.get_item_opt(key, vm),
+            None => Ok(key
+                .as_interned_str(vm)
+                .and_then(|key| class.attributes.get(key))),
+        }
+    }
+
+    pub fn __getitem__(&self, key: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        self.get_inner(&key, vm)?
+            .ok_or_else(|| vm.new_key_error(key))
+    }
+
+    fn _contains(&self, key: &PyObject, vm: &VirtualMachine) -> PyResult<bool> {
+        match &self.mapping {
+            MappingProxyInner::Class(class) => Ok(Self::class_contains(class, key, vm)),
+            MappingProxyInner::Mapping(mapping) => {
+                mapping.obj().sequence_unchecked().contains(key, vm)
+            }
+        }
+    }
+
+    fn class_contains(class: &Py<PyType>, key: &PyObject, vm: &VirtualMachine) -> bool {
+        match class.attributes.as_dict() {
+            Some(dict) => dict.contains_key(key, vm),
+            None => key
+                .as_interned_str(vm)
+                .is_some_and(|key| class.attributes.contains(key)),
+        }
+    }
+
+    pub fn __contains__(&self, key: &PyObject, vm: &VirtualMachine) -> PyResult<bool> {
+        self._contains(key, vm)
+    }
+
+    fn to_object(&self, vm: &VirtualMachine) -> PyResult {
+        Ok(match &self.mapping {
+            MappingProxyInner::Mapping(d) => d.as_ref().to_owned(),
+            MappingProxyInner::Class(c) => Self::class_to_dict(c, vm)?,
+        })
+    }
+
+    fn class_to_dict(class: &Py<PyType>, vm: &VirtualMachine) -> PyResult {
+        if let Some(dict) = class.attributes.as_dict() {
+            return Ok(dict.copy().to_pyobject(vm));
+        }
+        Ok(PyDict::from_attributes(class.attributes.attributes(&vm.ctx), vm)?.to_pyobject(vm))
+    }
+
+    fn __len__(&self, vm: &VirtualMachine) -> PyResult<usize> {
+        let obj = self.to_object(vm)?;
+        obj.length(vm)
+    }
+
+    fn __ior__(&self, _args: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        Err(vm.new_type_error(format!(
+            r#""'|=' is not supported by {}; use '|' instead""#,
+            Self::class(&vm.ctx)
+        )))
+    }
+
+    fn __or__(&self, args: &PyObject, vm: &VirtualMachine) -> PyResult {
+        vm._or(self.copy(vm)?.as_ref(), args)
+    }
+
+    pub fn copy(&self, vm: &VirtualMachine) -> PyResult {
+        match &self.mapping {
+            MappingProxyInner::Mapping(d) => {
+                vm.call_method(d.obj(), identifier!(vm, copy).as_str(), ())
+            }
+            MappingProxyInner::Class(c) => Self::class_to_dict(c, vm),
+        }
+    }
+}
+
+#[pyclass(with(
+    AsMapping,
+    Iterable,
+    Constructor,
+    AsSequence,
+    Comparable,
+    Hashable,
+    AsNumber,
+    Representable
+))]
+impl Py<PyMappingProxy> {
+    #[pymethod]
+    fn get(
+        &self,
+        key: PyObjectRef,
+        default: OptionalArg,
+        vm: &VirtualMachine,
+    ) -> PyResult<Option<PyObjectRef>> {
+        let obj = self.to_object(vm)?;
+        Ok(Some(vm.call_method(
+            &obj,
+            "get",
+            (key, default.unwrap_or_none(vm)),
+        )?))
+    }
+
+    #[pymethod]
+    pub fn items(&self, vm: &VirtualMachine) -> PyResult {
+        let obj = self.to_object(vm)?;
+        vm.call_method(&obj, identifier!(vm, items).as_str(), ())
+    }
+
+    #[pymethod]
+    pub fn keys(&self, vm: &VirtualMachine) -> PyResult {
+        let obj = self.to_object(vm)?;
+        vm.call_method(&obj, identifier!(vm, keys).as_str(), ())
+    }
+
+    #[pymethod]
+    pub fn values(&self, vm: &VirtualMachine) -> PyResult {
+        let obj = self.to_object(vm)?;
+        vm.call_method(&obj, identifier!(vm, values).as_str(), ())
+    }
+
+    #[pymethod]
+    pub fn copy(&self, vm: &VirtualMachine) -> PyResult {
+        self.payload.copy(vm)
+    }
+
+    #[pyclassmethod]
+    fn __class_getitem__(
+        cls: PyTypeRef,
+        args: PyObjectRef,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyGenericAlias> {
+        PyGenericAlias::from_args(cls, args, vm)
+    }
+
+    #[pymethod]
+    fn __reversed__(&self, vm: &VirtualMachine) -> PyResult {
+        vm.call_method(
+            self.to_object(vm)?.as_object(),
+            identifier!(vm, __reversed__).as_str(),
+            (),
+        )
+    }
+}
+
+impl Comparable for PyMappingProxy {
+    fn cmp(
+        zelf: &Py<Self>,
+        other: &PyObject,
+        op: PyComparisonOp,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyComparisonValue> {
+        let obj = zelf.to_object(vm)?;
+        // CPython parity (Objects/descrobject.c::mappingproxy_richcompare):
+        // delegate to PyObject_RichCompare on the underlying mapping.
+        let res = obj.rich_compare(other.to_owned(), op, vm)?;
+        PyArithmeticValue::from_object(vm, res)
+            .map(|o| o.try_to_bool(vm))
+            .transpose()
+    }
+}
+
+impl Hashable for PyMappingProxy {
+    #[inline]
+    fn hash(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<hash::PyHash> {
+        // Delegate hash to the underlying mapping
+        let obj = zelf.to_object(vm)?;
+        obj.hash(vm)
+    }
+}
+
+impl AsMapping for PyMappingProxy {
+    fn as_mapping() -> &'static PyMappingMethods {
+        static AS_MAPPING: LazyLock<PyMappingMethods> = LazyLock::new(|| PyMappingMethods {
+            length: atomic_func!(
+                |mapping, vm| PyMappingProxy::mapping_downcast(mapping).__len__(vm)
+            ),
+            subscript: atomic_func!(|mapping, needle, vm| {
+                PyMappingProxy::mapping_downcast(mapping).__getitem__(needle.to_owned(), vm)
+            }),
+            ..PyMappingMethods::NOT_IMPLEMENTED
+        });
+        &AS_MAPPING
+    }
+}
+
+impl AsSequence for PyMappingProxy {
+    fn as_sequence() -> &'static PySequenceMethods {
+        static AS_SEQUENCE: LazyLock<PySequenceMethods> = LazyLock::new(|| PySequenceMethods {
+            length: atomic_func!(|seq, vm| PyMappingProxy::sequence_downcast(seq).__len__(vm)),
+            contains: atomic_func!(
+                |seq, target, vm| PyMappingProxy::sequence_downcast(seq)._contains(target, vm)
+            ),
+            ..PySequenceMethods::NOT_IMPLEMENTED
+        });
+        &AS_SEQUENCE
+    }
+}
+
+impl AsNumber for PyMappingProxy {
+    fn as_number() -> &'static PyNumberMethods {
+        static AS_NUMBER: PyNumberMethods = PyNumberMethods {
+            or: Some(|a, b, vm| {
+                // Mirror CPython's mappingproxy_or: when either side is a
+                // mappingproxy, unwrap to its underlying mapping and delegate
+                // to PyNumber_Or so `dict | mp`, `mp | dict`, and `mp | mp`
+                // all produce a `dict` result.
+                let a_obj = match a.downcast_ref::<PyMappingProxy>() {
+                    Some(mp) => mp.copy(vm)?,
+                    None => a.to_pyobject(vm),
+                };
+                let b_obj = match b.downcast_ref::<PyMappingProxy>() {
+                    Some(mp) => mp.copy(vm)?,
+                    None => b.to_pyobject(vm),
+                };
+                vm._or(a_obj.as_ref(), b_obj.as_ref())
+            }),
+            inplace_or: Some(|a, b, vm| {
+                if let Some(a) = a.downcast_ref::<PyMappingProxy>() {
+                    a.__ior__(b.to_pyobject(vm), vm)
+                } else {
+                    Ok(vm.ctx.not_implemented())
+                }
+            }),
+            ..PyNumberMethods::NOT_IMPLEMENTED
+        };
+        &AS_NUMBER
+    }
+}
+
+impl Iterable for PyMappingProxy {
+    fn iter(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+        let obj = zelf.to_object(vm)?;
+        let iter = obj.get_iter(vm)?;
+        Ok(iter.into())
+    }
+}
+
+impl Representable for PyMappingProxy {
+    #[inline]
+    fn repr_wtf8(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<Wtf8Buf> {
+        let obj = zelf.to_object(vm)?;
+        Ok(wtf8_concat!("mappingproxy(", obj.repr(vm)?.as_wtf8(), ')'))
+    }
+}
+
+pub(crate) fn init(context: &'static Context) {
+    PyMappingProxy::extend_class(context, context.types.mappingproxy_type)
+}

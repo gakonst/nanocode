@@ -1,0 +1,1072 @@
+// spell-checker:disable
+
+mod array;
+mod base;
+mod function;
+mod pointer;
+mod simple;
+mod structure;
+mod union;
+
+use crate::{
+    AsObject, Py, PyObjectRef, PyResult, VirtualMachine,
+    builtins::{PyStr, PyType},
+    class::PyClassImpl,
+    types::TypeDataRef,
+};
+
+pub(super) use array::PyCArray;
+pub(super) use base::{CArgValue, PyCData, PyCField, StgInfo, StgInfoFlags};
+pub(super) use pointer::PyCPointer;
+pub(super) use simple::{PyCSimple, PyCSimpleType};
+pub(super) use structure::PyCStructure;
+pub(super) use union::PyCUnion;
+
+/// Extension for PyType to get StgInfo
+/// PyStgInfo_FromType
+impl Py<PyType> {
+    /// Get StgInfo from a ctypes type object
+    ///
+    /// Returns a TypeDataRef to StgInfo if the type has one and is initialized, error otherwise.
+    /// Abstract classes (whose metaclass __init__ was not called) will have uninitialized StgInfo.
+    fn stg_info<'a>(&'a self, vm: &VirtualMachine) -> PyResult<TypeDataRef<'a, StgInfo>> {
+        self.stg_info_opt()
+            .ok_or_else(|| vm.new_type_error("abstract class"))
+    }
+
+    /// Get StgInfo if initialized, None otherwise.
+    fn stg_info_opt(&self) -> Option<TypeDataRef<'_, StgInfo>> {
+        self.get_type_data::<StgInfo>()
+            .filter(|info| info.initialized)
+    }
+
+    /// Get _type_ attribute as String (type code like "i", "d", etc.)
+    fn type_code(&self, vm: &VirtualMachine) -> Option<String> {
+        self.as_object()
+            .get_attr("_type_", vm)
+            .ok()
+            .and_then(|t: PyObjectRef| t.downcast_ref::<PyStr>().map(|s| s.to_string()))
+    }
+
+    /// Mark all base classes as finalized
+    fn mark_bases_final(&self) {
+        for base in self.bases.read().as_slice() {
+            if let Some(mut stg) = base.get_type_data_mut::<StgInfo>() {
+                stg.flags |= StgInfoFlags::DICTFLAG_FINAL;
+            } else {
+                let mut stg = StgInfo::default();
+                stg.flags |= StgInfoFlags::DICTFLAG_FINAL;
+                let _ = base.init_type_data(stg);
+            }
+        }
+    }
+}
+
+impl PyType {
+    /// Check if StgInfo is already initialized.
+    /// Raises SystemError if already initialized.
+    pub(crate) fn check_not_initialized(&self, vm: &VirtualMachine) -> PyResult<()> {
+        if let Some(stg_info) = self.get_type_data::<StgInfo>()
+            && stg_info.initialized
+        {
+            return Err(
+                vm.new_system_error(format!(r#"class "{}" already initialized"#, self.name()))
+            );
+        }
+        Ok(())
+    }
+
+    /// Check if StgInfo is already initialized, returning true if so.
+    /// Unlike check_not_initialized, does not raise an error.
+    pub(crate) fn is_initialized(&self) -> bool {
+        self.get_type_data::<StgInfo>()
+            .is_some_and(|stg_info| stg_info.initialized)
+    }
+}
+
+// Dynamic type check helpers for PyCData
+pub(crate) use _ctypes::module_def;
+
+// These check if an object's type's metaclass is a subclass of a specific metaclass
+
+#[pymodule]
+pub(crate) mod _ctypes {
+    use super::{PyCArray, PyCData, PyCPointer, PyCSimple, PyCStructure, PyCUnion};
+    use crate::builtins::{PyType, PyTypeRef};
+    use crate::class::StaticType;
+    #[cfg(windows)]
+    use crate::convert::ToPyException;
+    use crate::convert::ToPyObject;
+    use crate::function::{ArgStrictInt, Either, OptionalArg};
+    use crate::types::Representable;
+    use crate::{AsObject, Py, PyObjectRef, PyPayload, PyResult, VirtualMachine};
+    use num_traits::ToPrimitive;
+
+    // CArgObject - returned by byref() and paramfunc
+    // tagPyCArgObject
+    #[pyclass(name = "CArgObject", module = "_ctypes", no_attr)]
+    #[derive(Debug, PyPayload)]
+    pub(crate) struct CArgObject {
+        /// Type tag ('P', 'V', 'i', 'd', etc.)
+        pub tag: u8,
+        /// The actual foreign-call value (mirrors union value)
+        pub value: super::CArgValue,
+        /// Reference to original object (for memory safety)
+        pub obj: PyObjectRef,
+        /// Owner keeping a `Pointer` value's target memory alive (e.g. a
+        /// null-terminated buffer copy created by `from_param`), if any.
+        pub keep: Option<PyObjectRef>,
+        /// Size for struct/union ('V' tag)
+        #[allow(dead_code)]
+        pub size: usize,
+        /// Offset for byref()
+        pub offset: isize,
+    }
+
+    /// is_literal_char - check if character is printable literal (not \\ or ')
+    fn is_literal_char(c: u8) -> bool {
+        c < 128 && c.is_ascii_graphic() && c != b'\\' && c != b'\''
+    }
+
+    impl Representable for CArgObject {
+        // PyCArg_repr - use tag and value fields directly
+        fn repr_str(zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<String> {
+            use rustpython_host_env::ctypes::{FfiValue, ffi_value_from_type_code};
+
+            let tag_char = zelf.tag as char;
+
+            // Reconstruct the scalar the value lowers to, so the formatting
+            // matches the value passed to the foreign call exactly.
+            let ffi_val = match &zelf.value {
+                super::CArgValue::Typed { code, bytes } => {
+                    let mut buf = [0u8; 4];
+                    ffi_value_from_type_code(code.encode_utf8(&mut buf), bytes)
+                }
+                super::CArgValue::Int(v) => FfiValue::I32(*v),
+                super::CArgValue::Pointer(v) => FfiValue::Pointer(*v),
+                // 'V' aggregates format via the object-address default arm below.
+                super::CArgValue::Aggregate { .. } => FfiValue::Pointer(0),
+            };
+
+            // Format value based on tag
+            match zelf.tag {
+                b'b' | b'h' | b'i' | b'l' | b'q' => {
+                    // Signed integers
+                    let n = match ffi_val {
+                        FfiValue::I8(v) => v as i64,
+                        FfiValue::I16(v) => v as i64,
+                        FfiValue::I32(v) => v as i64,
+                        FfiValue::I64(v) => v,
+                        _ => 0,
+                    };
+                    Ok(format!("<cparam '{tag_char}' ({n})>"))
+                }
+                b'B' | b'H' | b'I' | b'L' | b'Q' => {
+                    // Unsigned integers
+                    let n = match ffi_val {
+                        FfiValue::U8(v) => v as u64,
+                        FfiValue::U16(v) => v as u64,
+                        FfiValue::U32(v) => v as u64,
+                        FfiValue::U64(v) => v,
+                        _ => 0,
+                    };
+                    Ok(format!("<cparam '{tag_char}' ({n})>"))
+                }
+                b'f' => {
+                    let v = match ffi_val {
+                        FfiValue::F32(v) => v as f64,
+                        _ => 0.0,
+                    };
+                    Ok(format!("<cparam '{tag_char}' ({v})>"))
+                }
+                b'd' | b'g' => {
+                    let v = match ffi_val {
+                        FfiValue::F64(v) => v,
+                        FfiValue::F32(v) => v as f64,
+                        _ => 0.0,
+                    };
+                    Ok(format!("<cparam '{tag_char}' ({v})>"))
+                }
+                b'c' => {
+                    // c_char - single byte
+                    let byte = match ffi_val {
+                        FfiValue::I8(v) => v as u8,
+                        FfiValue::U8(v) => v,
+                        _ => 0,
+                    };
+                    if is_literal_char(byte) {
+                        Ok(format!("<cparam '{}' ('{}')>", tag_char, byte as char))
+                    } else {
+                        Ok(format!("<cparam '{tag_char}' ('\\x{byte:02x}')>"))
+                    }
+                }
+                b'z' | b'Z' | b'P' => {
+                    // Pointer types
+                    let ptr = match ffi_val {
+                        FfiValue::Pointer(v) => v,
+                        _ => 0,
+                    };
+                    if ptr == 0 {
+                        Ok(format!("<cparam '{tag_char}' (nil)>"))
+                    } else {
+                        Ok(format!("<cparam '{tag_char}' ({ptr:#x})>"))
+                    }
+                }
+                _ => {
+                    // Default fallback
+                    let addr = zelf.get_id();
+                    if is_literal_char(zelf.tag) {
+                        Ok(format!("<cparam '{tag_char}' at {addr:#x}>"))
+                    } else {
+                        Ok(format!("<cparam {:#04x} at {:#x}>", zelf.tag, addr))
+                    }
+                }
+            }
+        }
+    }
+
+    #[pyclass(with(Representable))]
+    impl Py<CArgObject> {
+        #[pygetset]
+        fn _obj(&self) -> PyObjectRef {
+            self.obj.clone()
+        }
+    }
+
+    #[pyattr(name = "__version__")]
+    const __VERSION__: &str = "1.1.0";
+
+    // TODO: get properly
+    #[pyattr]
+    const RTLD_LOCAL: i32 = rustpython_host_env::ctypes::RTLD_LOCAL;
+
+    // TODO: get properly
+    #[pyattr]
+    const RTLD_GLOBAL: i32 = rustpython_host_env::ctypes::RTLD_GLOBAL;
+
+    #[pyattr]
+    const SIZEOF_TIME_T: usize = rustpython_host_env::ctypes::SIZEOF_TIME_T;
+
+    #[pyattr]
+    use rustpython_host_env::ctypes::{
+        CTYPES_MAX_ARGCOUNT, DICTFLAG_FINAL, FUNCFLAG_CDECL, FUNCFLAG_HRESULT, FUNCFLAG_PYTHONAPI,
+        FUNCFLAG_STDCALL, FUNCFLAG_USE_ERRNO, FUNCFLAG_USE_LASTERROR, TYPEFLAG_HASPOINTER,
+        TYPEFLAG_ISPOINTER,
+    };
+
+    #[pyattr(name = "ArgumentError", once)]
+    fn argument_error(vm: &VirtualMachine) -> PyTypeRef {
+        vm.ctx.new_exception_type(
+            "ctypes",
+            "ArgumentError",
+            Some(vec![vm.ctx.exceptions.exception_type.to_owned()]),
+        )
+    }
+
+    #[cfg(target_os = "windows")]
+    #[pyattr(name = "COMError", once)]
+    fn com_error(vm: &VirtualMachine) -> PyTypeRef {
+        use crate::PyObject;
+        use crate::builtins::type_::PyAttributes;
+        use crate::function::FuncArgs;
+        use crate::types::{PyTypeFlags, PyTypeSlots};
+
+        // Sets hresult, text, details as instance attributes in __init__
+        // This function has InitFunc signature for direct slots.init use
+        fn comerror_init(zelf: &PyObject, args: FuncArgs, vm: &VirtualMachine) -> PyResult<()> {
+            let (hresult, text, details): (
+                Option<PyObjectRef>,
+                Option<PyObjectRef>,
+                Option<PyObjectRef>,
+            ) = args.bind(vm)?;
+            let hresult = hresult.unwrap_or_else(|| vm.ctx.none());
+            let text = text.unwrap_or_else(|| vm.ctx.none());
+            let details = details.unwrap_or_else(|| vm.ctx.none());
+
+            // Set instance attributes
+            zelf.set_attr("hresult", hresult, vm)?;
+            zelf.set_attr("text", text.clone(), vm)?;
+            zelf.set_attr("details", details.clone(), vm)?;
+
+            // self.args = args[1:] = (text, details)
+            // via: PyObject_SetAttrString(self, "args", PySequence_GetSlice(args, 1, size))
+            let args_tuple: PyObjectRef = vm.ctx.new_tuple(vec![text, details]).into();
+            zelf.set_attr("args", args_tuple, vm)?;
+
+            Ok(())
+        }
+
+        // Create exception type with IMMUTABLETYPE flag
+        let mut attrs = PyAttributes::default();
+        attrs.insert(
+            vm.ctx.intern_str("__module__"),
+            vm.ctx.new_str("_ctypes").into(),
+        );
+        attrs.insert(
+            vm.ctx.intern_str("__doc__"),
+            vm.ctx
+                .new_str("Raised when a COM method call failed.")
+                .into(),
+        );
+
+        // Create slots with IMMUTABLETYPE flag
+        let slots = PyTypeSlots {
+            name: "COMError",
+            flags: crate::types::AtomicPyTypeFlags::from_plain(
+                PyTypeFlags::HEAP_TYPE_DICT_IMMUTABLE,
+            ),
+            ..PyTypeSlots::default()
+        };
+
+        let exc_type = PyType::new_heap(
+            "COMError",
+            vec![vm.ctx.exceptions.exception_type.to_owned()],
+            attrs,
+            slots,
+            vm.ctx.types.type_type.to_owned(),
+            &vm.ctx,
+        )
+        .unwrap();
+
+        // Set our custom init after new_heap, which runs init_slots that would
+        // otherwise overwrite slots.init with init_wrapper (due to __init__ in MRO).
+        exc_type.slots.init.store(Some(comerror_init));
+
+        exc_type
+    }
+
+    #[pyfunction]
+    pub(crate) fn sizeof(obj: PyObjectRef, vm: &VirtualMachine) -> PyResult<usize> {
+        use super::structure::PyCStructType;
+        use super::union::PyCUnionType;
+
+        // 1. Check if obj is a TYPE object (not instance) - PyStgInfo_FromType
+        if let Some(type_obj) = obj.downcast_ref::<PyType>() {
+            // Type object - return StgInfo.size
+            if let Some(stg_info) = type_obj.stg_info_opt() {
+                return Ok(stg_info.size);
+            }
+            // Fallback for type objects without StgInfo
+            // Array types
+            if type_obj
+                .class()
+                .fast_issubclass(super::array::PyCArrayType::static_type())
+                && let Ok(stg) = type_obj.stg_info(vm)
+            {
+                return Ok(stg.size);
+            }
+            // Structure types
+            if type_obj
+                .class()
+                .fast_issubclass(PyCStructType::static_type())
+            {
+                return super::structure::calculate_struct_size(type_obj, vm);
+            }
+            // Union types
+            if type_obj
+                .class()
+                .fast_issubclass(PyCUnionType::static_type())
+            {
+                return super::union::calculate_union_size(type_obj, vm);
+            }
+            // Simple types
+            if type_obj.fast_issubclass(PyCSimple::static_type()) {
+                if let Ok(type_attr) = type_obj.as_object().get_attr("_type_", vm)
+                    && let Ok(type_str) = type_attr.str(vm)
+                {
+                    return Ok(
+                        rustpython_host_env::ctypes::simple_type_size(type_str.as_ref())
+                            .expect("invalid ctypes simple type"),
+                    );
+                }
+                return Ok(rustpython_host_env::ctypes::pointer_size());
+            }
+            // Pointer types
+            if type_obj.fast_issubclass(PyCPointer::static_type()) {
+                return Ok(rustpython_host_env::ctypes::pointer_size());
+            }
+            return Err(vm.new_type_error("this type has no size"));
+        }
+
+        // 2. Instance object - return actual buffer size (b_size)
+        // CDataObject_Check + return obj->b_size
+        if let Some(cdata) = obj.downcast_ref::<PyCData>() {
+            return Ok(cdata.size());
+        }
+        if obj.fast_isinstance(PyCPointer::static_type()) {
+            return Ok(rustpython_host_env::ctypes::pointer_size());
+        }
+
+        Err(vm.new_type_error("this type has no size"))
+    }
+
+    #[cfg(windows)]
+    #[pyfunction(name = "LoadLibrary")]
+    fn load_library_windows(
+        name: String,
+        load_flags: OptionalArg<i32>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let wide = widestring::WideCString::from_str(&name)
+            .map_err(|_| vm.new_value_error("embedded null character"))?;
+        let flags = load_flags.unwrap_or(0) as u32;
+        rustpython_host_env::ctypes::load_library_ex_w(&wide, flags)
+            .map(|module| module as usize)
+            .map_err(|error| error.to_pyexception(vm))
+    }
+
+    #[cfg(not(windows))]
+    #[pyfunction(name = "dlopen")]
+    fn load_library_unix(
+        name: Option<crate::function::FsPath>,
+        load_flags: OptionalArg<i32>,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let mode = rustpython_host_env::ctypes::dlopen_mode(load_flags.into_option());
+
+        match name {
+            Some(name) => {
+                let os_str = name.as_os_str(vm)?;
+                rustpython_host_env::ctypes::open_library_with_mode(&*os_str, mode).map_err(|e| {
+                    let name_str = os_str.to_string_lossy();
+                    vm.new_os_error(format!("{name_str}: {e}"))
+                })
+            }
+            None => {
+                // dlopen(NULL, mode) to get the current process handle (for pythonapi)
+                let handle = rustpython_host_env::ctypes::dlopen_self(mode)
+                    .map_err(|msg| vm.new_os_error(msg))?;
+                // Add to library cache so symbol lookup works
+                Ok(rustpython_host_env::ctypes::insert_raw_library_handle(
+                    handle,
+                ))
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[pyfunction(name = "FreeLibrary")]
+    fn free_library(handle: usize, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::ctypes::free_library(handle as _)
+            .map_err(|error| error.to_pyexception(vm))
+    }
+
+    #[cfg(not(windows))]
+    #[pyfunction(name = "FreeLibrary")]
+    fn free_library(handle: ArgStrictInt<usize>) {
+        rustpython_host_env::ctypes::drop_library(handle.value);
+    }
+
+    #[cfg(not(windows))]
+    #[pyfunction]
+    fn dlclose(handle: ArgStrictInt<usize>, _vm: &VirtualMachine) {
+        // Remove from the host_env cache. The underlying library is closed on Drop.
+        rustpython_host_env::ctypes::drop_library(handle.value);
+    }
+
+    #[cfg(not(windows))]
+    #[pyfunction]
+    fn dlsym(
+        handle: ArgStrictInt<usize>,
+        name: crate::builtins::PyUtf8StrRef,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        let handle = handle.value;
+        let symbol_name = alloc::ffi::CString::new(name.as_str())
+            .map_err(|_| vm.new_value_error("symbol name contains null byte"))?;
+        let ptr = rustpython_host_env::ctypes::dlsym_checked(handle, symbol_name.as_c_str())
+            .map_err(|msg| vm.new_os_error(msg))?;
+        Ok(ptr as usize)
+    }
+
+    #[pyfunction(name = "POINTER")]
+    fn create_pointer_type(cls: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        use crate::builtins::PyStr;
+
+        // Get the _pointer_type_cache
+        let ctypes_module = vm.import("_ctypes", 0)?;
+        let cache = ctypes_module.get_attr("_pointer_type_cache", vm)?;
+
+        // Check if already in cache using __getitem__
+        if let Ok(cached) = vm.call_method(&cache, "__getitem__", (cls.clone(),))
+            && !vm.is_none(&cached)
+        {
+            return Ok(cached);
+        }
+
+        // Get the _Pointer base class
+        let pointer_base = ctypes_module.get_attr("_Pointer", vm)?;
+
+        // Create a new type that inherits from _Pointer
+        let pointer_base_type = pointer_base
+            .clone()
+            .downcast::<crate::builtins::PyType>()
+            .map_err(|_| vm.new_type_error("_Pointer must be a type"))?;
+        let metaclass = pointer_base_type.class().to_owned();
+
+        let bases = vm.ctx.new_tuple(vec![pointer_base]);
+        let dict = vm.ctx.new_dict();
+
+        // PyUnicode_CheckExact(cls) - string creates incomplete pointer type
+        if let Some(s) = cls.downcast_ref::<PyStr>() {
+            // Incomplete pointer type: _type_ not set, cache key is id(result)
+            let name = format!("LP_{}", s.as_wtf8());
+
+            let new_type = metaclass
+                .as_object()
+                .call((vm.ctx.new_str(name), bases, dict), vm)?;
+
+            // Store with id(result) as key for incomplete pointer types
+            let id_key: PyObjectRef = vm.ctx.new_int(new_type.get_id() as i64).into();
+            vm.call_method(&cache, "__setitem__", (id_key, new_type.clone()))?;
+
+            return Ok(new_type);
+        }
+
+        // PyType_Check(cls) - type creates complete pointer type
+        if !cls.class().fast_issubclass(vm.ctx.types.type_type.as_ref()) {
+            return Err(vm.new_type_error("must be a ctypes type"));
+        }
+
+        // Create the name for the pointer type
+        let name = if let Ok(type_obj) = cls.get_attr("__name__", vm) {
+            format!("LP_{}", type_obj.str(vm)?)
+        } else {
+            "LP_unknown".to_string()
+        };
+
+        // Complete pointer type: set _type_ attribute
+        dict.set_item("_type_", cls.clone(), vm)?;
+
+        // Call the metaclass (PyCPointerType) to create the new type
+        let new_type = metaclass
+            .as_object()
+            .call((vm.ctx.new_str(name), bases, dict), vm)?;
+
+        // Store in cache with cls as key
+        vm.call_method(&cache, "__setitem__", (cls, new_type.clone()))?;
+
+        Ok(new_type)
+    }
+
+    #[pyfunction]
+    fn pointer(obj: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        // Get the type of the object
+        let obj_type = obj.class().to_owned();
+
+        // Create pointer type for this object's type
+        let ptr_type = create_pointer_type(obj_type.into(), vm)?;
+
+        // Create an instance of the pointer type with the object
+        ptr_type.call((obj,), vm)
+    }
+
+    #[pyfunction]
+    fn _pointer_type_cache() -> PyObjectRef {
+        todo!()
+    }
+
+    #[cfg(target_os = "windows")]
+    #[pyfunction(name = "_check_HRESULT")]
+    fn check_hresult(_self: PyObjectRef, hr: i32, _vm: &VirtualMachine) -> i32 {
+        // TODO: fixme
+        if hr < 0 {
+            // vm.ctx.new_windows_error(hr)
+            todo!();
+        }
+        hr
+    }
+
+    #[pyfunction]
+    fn addressof(obj: PyObjectRef, vm: &VirtualMachine) -> PyResult<usize> {
+        // All ctypes objects should return cdata buffer pointer
+        if let Some(cdata) = obj.downcast_ref::<PyCData>() {
+            Ok(cdata.buffer.read().as_ptr() as usize)
+        } else {
+            Err(vm.new_type_error("expected a ctypes instance"))
+        }
+    }
+
+    #[derive(FromArgs)]
+    pub(crate) struct ByRefArgs {
+        #[pyarg(positional)]
+        pub(crate) obj: PyObjectRef,
+        #[pyarg(positional, default)]
+        pub(crate) offset: isize,
+    }
+
+    #[pyfunction]
+    pub(crate) fn byref(args: ByRefArgs, vm: &VirtualMachine) -> PyResult {
+        let ByRefArgs { obj, offset } = args;
+        use super::CArgValue;
+
+        // Check if obj is a ctypes instance
+        if !obj.fast_isinstance(PyCData::static_type())
+            && !obj.fast_isinstance(PyCSimple::static_type())
+        {
+            return Err(vm.new_type_error(format!(
+                "byref() argument must be a ctypes instance, not '{}'",
+                obj.class().name()
+            )));
+        }
+
+        let offset_val = offset;
+
+        // Get buffer address: (char *)((CDataObject *)obj)->b_ptr + offset
+        let ptr_val = if let Some(simple) = obj.downcast_ref::<PyCSimple>() {
+            let buffer = simple.0.buffer.read();
+            rustpython_host_env::ctypes::offset_address(buffer.as_ptr() as usize, offset_val)
+        } else if let Some(cdata) = obj.downcast_ref::<PyCData>() {
+            let buffer = cdata.buffer.read();
+            rustpython_host_env::ctypes::offset_address(buffer.as_ptr() as usize, offset_val)
+        } else {
+            0
+        };
+
+        // Create CArgObject to hold the reference
+        Ok(CArgObject {
+            tag: b'P',
+            value: CArgValue::pointer(ptr_val),
+            obj,
+            keep: None,
+            size: 0,
+            offset: offset_val,
+        }
+        .to_pyobject(vm))
+    }
+
+    #[pyfunction]
+    fn alignment(object: Either<PyTypeRef, PyObjectRef>, vm: &VirtualMachine) -> PyResult<usize> {
+        use crate::builtins::PyType;
+
+        let obj = match &object {
+            Either::A(t) => t.as_object(),
+            Either::B(o) => o.as_ref(),
+        };
+
+        // 1. Check TypeDataSlot on class (for instances)
+        if let Some(stg_info) = obj.class().stg_info_opt() {
+            return Ok(stg_info.align);
+        }
+
+        // 2. Check TypeDataSlot on type itself (for type objects)
+        if let Some(type_obj) = obj.downcast_ref::<PyType>()
+            && let Some(stg_info) = type_obj.stg_info_opt()
+        {
+            return Ok(stg_info.align);
+        }
+
+        // 3. Fallback for simple types
+        if obj.fast_isinstance(PyCSimple::static_type())
+            && let Ok(stg) = obj.class().stg_info(vm)
+        {
+            return Ok(stg.align);
+        }
+        if obj.fast_isinstance(PyCArray::static_type())
+            && let Ok(stg) = obj.class().stg_info(vm)
+        {
+            return Ok(stg.align);
+        }
+        if obj.fast_isinstance(PyCStructure::static_type()) {
+            // Calculate alignment from _fields_
+            let cls = obj.class();
+            return alignment(Either::A(cls.to_owned()), vm);
+        }
+        if obj.fast_isinstance(PyCPointer::static_type()) {
+            // Pointer alignment is always pointer size
+            return Ok(core::mem::align_of::<usize>());
+        }
+        if obj.fast_isinstance(PyCUnion::static_type()) {
+            // Calculate alignment from _fields_
+            let cls = obj.class();
+            return alignment(Either::A(cls.to_owned()), vm);
+        }
+
+        // Get the type object to check
+        let type_obj: PyObjectRef = match &object {
+            Either::A(t) => t.clone().into(),
+            Either::B(obj) => obj.class().to_owned().into(),
+        };
+
+        // For type objects, try to get alignment from _type_ attribute
+        if let Ok(type_attr) = type_obj.get_attr("_type_", vm) {
+            // Array/Pointer: _type_ is the element type (a PyType)
+            if let Ok(elem_type) = type_attr.clone().downcast::<crate::builtins::PyType>() {
+                return alignment(Either::A(elem_type), vm);
+            }
+            // Simple type: _type_ is a single character string
+            if let Ok(s) = type_attr.str(vm) {
+                let ty = s.to_string();
+                if ty.len() == 1 && super::simple::SIMPLE_TYPE_CHARS.contains(ty.as_str()) {
+                    return Ok(rustpython_host_env::ctypes::simple_type_align(&ty)
+                        .expect("invalid ctypes simple type"));
+                }
+            }
+        }
+
+        // Structure/Union: max alignment of fields
+        if let Ok(fields_attr) = type_obj.get_attr("_fields_", vm)
+            && let Ok(fields) = fields_attr.try_to_value::<Vec<PyObjectRef>>(vm)
+        {
+            let mut max_align = 1usize;
+            for field in &fields {
+                if let Some(tuple) = field.downcast_ref::<crate::builtins::PyTuple>()
+                    && let Some(field_type) = tuple.as_slice().get(1)
+                {
+                    let align =
+                        if let Ok(ft) = field_type.clone().downcast::<crate::builtins::PyType>() {
+                            alignment(Either::A(ft), vm).unwrap_or(1)
+                        } else {
+                            1
+                        };
+                    max_align = max_align.max(align);
+                }
+            }
+            return Ok(max_align);
+        }
+
+        // For instances, delegate to their class
+        if let Either::B(obj) = &object
+            && !obj.class().is(vm.ctx.types.type_type.as_ref())
+        {
+            return alignment(Either::A(obj.class().to_owned()), vm);
+        }
+
+        // No alignment info found
+        Err(vm.new_type_error("no alignment info"))
+    }
+
+    #[pyfunction]
+    fn resize(obj: PyObjectRef, size: isize, vm: &VirtualMachine) -> PyResult<()> {
+        use alloc::borrow::Cow;
+
+        // 1. Get StgInfo from object's class (validates ctypes instance)
+        let stg_info = obj
+            .class()
+            .stg_info_opt()
+            .ok_or_else(|| vm.new_type_error("expected ctypes instance"))?;
+
+        // 2. Validate size
+        if size < 0 || (size as usize) < stg_info.size {
+            return Err(vm.new_value_error(format!("minimum size is {}", stg_info.size)));
+        }
+
+        // 3. Get PyCData via upcast (works for all ctypes types due to repr(transparent))
+        let cdata = obj
+            .downcast_ref::<PyCData>()
+            .ok_or_else(|| vm.new_type_error("expected ctypes instance"))?;
+
+        // 4. Check if buffer is owned (not borrowed from external memory)
+        {
+            let buffer = cdata.buffer.read();
+            if matches!(&*buffer, Cow::Borrowed(_)) {
+                return Err(vm.new_value_error(
+                    "Memory cannot be resized because this object doesn't own it",
+                ));
+            }
+        }
+
+        // 5. Resize the buffer
+        let new_size = size as usize;
+        let mut buffer = cdata.buffer.write();
+        let old_data = buffer.to_vec();
+        *buffer = Cow::Owned(rustpython_host_env::ctypes::resize_owned_bytes(
+            &old_data, new_size,
+        ));
+
+        Ok(())
+    }
+
+    #[pyfunction]
+    fn get_errno() -> i32 {
+        rustpython_host_env::ctypes::get_errno()
+    }
+
+    #[pyfunction]
+    fn set_errno(value: i32) -> i32 {
+        rustpython_host_env::ctypes::set_errno(value)
+    }
+
+    #[cfg(windows)]
+    #[pyfunction]
+    fn get_last_error() -> u32 {
+        rustpython_host_env::ctypes::get_last_error()
+    }
+
+    #[cfg(windows)]
+    #[pyfunction]
+    fn set_last_error(value: u32) -> u32 {
+        rustpython_host_env::ctypes::set_last_error(value)
+    }
+
+    #[pyattr]
+    fn _memmove_addr(_vm: &VirtualMachine) -> usize {
+        rustpython_host_env::ctypes::memmove_addr()
+    }
+
+    #[pyattr]
+    fn _memset_addr(_vm: &VirtualMachine) -> usize {
+        rustpython_host_env::ctypes::memset_addr()
+    }
+
+    #[pyattr]
+    fn _string_at_addr(_vm: &VirtualMachine) -> usize {
+        super::function::INTERNAL_STRING_AT_ADDR
+    }
+
+    #[pyattr]
+    fn _wstring_at_addr(_vm: &VirtualMachine) -> usize {
+        super::function::INTERNAL_WSTRING_AT_ADDR
+    }
+
+    #[pyattr]
+    fn _cast_addr(_vm: &VirtualMachine) -> usize {
+        super::function::INTERNAL_CAST_ADDR
+    }
+
+    #[pyattr]
+    fn _memoryview_at_addr(_vm: &VirtualMachine) -> usize {
+        super::function::INTERNAL_MEMORYVIEW_AT_ADDR
+    }
+
+    #[pyfunction]
+    fn _cast(
+        obj: PyObjectRef,
+        src: PyObjectRef,
+        ctype: PyObjectRef,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        super::function::cast_impl(&obj, src, &ctype, vm)
+    }
+
+    // Python-level cast function (PYFUNCTYPE wrapper)
+    #[pyfunction]
+    fn cast(obj: PyObjectRef, typ: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        super::function::cast_impl(&obj, obj.clone(), &typ, vm)
+    }
+
+    #[pyfunction]
+    fn buffer_info(object: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        // Determine if object is a type or an instance
+        let is_type = object
+            .class()
+            .fast_issubclass(vm.ctx.types.type_type.as_ref());
+        let cls = if is_type {
+            object
+        } else {
+            object.class().to_owned().into()
+        };
+
+        // Get format from type - try _type_ first (for simple types), then _stg_info_format_
+        let format = if let Ok(type_attr) = cls.get_attr("_type_", vm) {
+            type_attr.str(vm)?.to_string()
+        } else if let Ok(format_attr) = cls.get_attr("_stg_info_format_", vm) {
+            format_attr.str(vm)?.to_string()
+        } else {
+            return Err(vm.new_type_error("not a ctypes type or object"));
+        };
+
+        // Non-array types have ndim=0 and empty shape
+        // TODO: Implement ndim/shape for arrays when StgInfo supports it
+        let ndim = 0;
+        let shape: Vec<PyObjectRef> = vec![];
+
+        let shape_tuple = vm.ctx.new_tuple(shape);
+        Ok(vm
+            .ctx
+            .new_tuple(vec![
+                vm.ctx.new_str(format).into(),
+                vm.ctx.new_int(ndim).into(),
+                shape_tuple.into(),
+            ])
+            .into())
+    }
+
+    // Unpickle a ctypes object.
+    #[pyfunction]
+    fn _unpickle(typ: PyObjectRef, state: PyObjectRef, vm: &VirtualMachine) -> PyResult {
+        if !state.class().is(vm.ctx.types.tuple_type.as_ref()) {
+            return Err(vm.new_type_error("state must be a tuple"));
+        }
+        let obj = vm.call_method(&typ, "__new__", (typ.clone(),))?;
+        vm.call_method(&obj, "__setstate__", (state,))?;
+        Ok(obj)
+    }
+
+    // Call a function at the given address with the given arguments.
+    #[pyfunction]
+    fn call_function(
+        func_addr: ArgStrictInt<usize>,
+        args: crate::builtins::PyTupleRef,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        let func_addr = func_addr.value;
+        call_function_internal(func_addr, args, 0, vm)
+    }
+
+    // Call a cdecl function at the given address with the given arguments.
+    #[pyfunction]
+    fn call_cdeclfunction(
+        func_addr: ArgStrictInt<usize>,
+        args: crate::builtins::PyTupleRef,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        let func_addr = func_addr.value;
+        call_function_internal(func_addr, args, FUNCFLAG_CDECL, vm)
+    }
+
+    fn call_function_internal(
+        func_addr: usize,
+        args: crate::builtins::PyTupleRef,
+        _flags: u32,
+        vm: &VirtualMachine,
+    ) -> PyResult {
+        if func_addr == 0 {
+            return Err(vm.new_value_error("NULL function pointer"));
+        }
+
+        let mut call_args = Vec::with_capacity(args.as_slice().len());
+
+        for arg in args.as_slice() {
+            if vm.is_none(arg) {
+                call_args.push(rustpython_host_env::ctypes::CdeclArgValue::Pointer(0));
+            } else if let Ok(int_val) = arg.try_int(vm) {
+                let val = int_val.as_bigint().to_i64().unwrap_or(0) as isize;
+                call_args.push(rustpython_host_env::ctypes::CdeclArgValue::Int(val));
+            } else if let Some(bytes) = arg.downcast_ref::<crate::builtins::PyBytes>() {
+                let ptr = bytes.as_bytes().as_ptr() as isize;
+                call_args.push(rustpython_host_env::ctypes::CdeclArgValue::Pointer(ptr));
+            } else if let Some(s) = arg.downcast_ref::<crate::builtins::PyStr>() {
+                let ptr = s.as_bytes().as_ptr() as isize;
+                call_args.push(rustpython_host_env::ctypes::CdeclArgValue::Pointer(ptr));
+            } else {
+                return Err(vm.new_type_error(format!(
+                    "Don't know how to convert parameter of type '{}'",
+                    arg.class().name()
+                )));
+            }
+        }
+
+        let result = rustpython_host_env::ctypes::call_cdecl_i32_values(func_addr, &call_args);
+        Ok(vm.ctx.new_int(result).into())
+    }
+
+    // Convert a pointer (as integer) to a Python object.
+    #[pyfunction(name = "PyObj_FromPtr")]
+    fn py_obj_from_ptr(ptr: ArgStrictInt<usize>, vm: &VirtualMachine) -> PyResult {
+        let ptr = ptr.value;
+        if ptr == 0 {
+            return Err(vm.new_value_error("NULL pointer access"));
+        }
+        let raw_ptr = ptr as *mut crate::object::PyObject;
+        unsafe {
+            let obj = crate::PyObjectRef::from_raw(core::ptr::NonNull::new_unchecked(raw_ptr));
+            let obj = core::mem::ManuallyDrop::new(obj);
+            Ok((*obj).clone())
+        }
+    }
+
+    #[pyfunction(name = "Py_INCREF")]
+    fn py_incref(object: PyObjectRef, _vm: &VirtualMachine) -> PyObjectRef {
+        // TODO:
+        object
+    }
+
+    #[pyfunction(name = "Py_DECREF")]
+    fn py_decref(object: PyObjectRef, _vm: &VirtualMachine) -> PyObjectRef {
+        // TODO:
+        object
+    }
+
+    #[cfg(target_os = "macos")]
+    #[pyfunction]
+    fn _dyld_shared_cache_contains_path(
+        path: Option<PyObjectRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult<bool> {
+        let path = match path {
+            Some(p) if !vm.is_none(&p) => p,
+            _ => return Ok(false),
+        };
+
+        let path_str = path.str(vm)?.to_string();
+        rustpython_host_env::ctypes::dyld_shared_cache_contains_path(&path_str)
+            .map_err(|_| vm.new_value_error("path contains null byte"))
+    }
+
+    #[cfg(windows)]
+    #[pyfunction(name = "FormatError")]
+    fn format_error_func(code: OptionalArg<u32>, _vm: &VirtualMachine) -> String {
+        rustpython_host_env::ctypes::format_error_message(code.into_option())
+            .unwrap_or_else(|| "<no description>".to_string())
+    }
+
+    #[cfg(windows)]
+    #[pyfunction(name = "CopyComPointer")]
+    fn copy_com_pointer(src: PyObjectRef, dst: PyObjectRef, vm: &VirtualMachine) -> i32 {
+        // 1. Extract pointer-to-pointer address from dst (byref() result)
+        let pdst: usize = if let Some(carg) = dst.downcast_ref::<CArgObject>() {
+            // byref() result: object buffer address + offset
+            let base = if let Some(cdata) = carg.obj.downcast_ref::<PyCData>() {
+                cdata.buffer.read().as_ptr() as usize
+            } else {
+                return rustpython_host_env::ctypes::HRESULT_E_POINTER;
+            };
+            (base as isize + carg.offset) as usize
+        } else {
+            return rustpython_host_env::ctypes::HRESULT_E_POINTER;
+        };
+
+        if pdst == 0 {
+            return rustpython_host_env::ctypes::HRESULT_E_POINTER;
+        }
+
+        // 2. Extract COM pointer value from src
+        let src_ptr: usize = if vm.is_none(&src) {
+            0
+        } else if let Some(cdata) = src.downcast_ref::<PyCData>() {
+            // c_void_p etc: read pointer value from buffer
+            let buffer = cdata.buffer.read();
+            rustpython_host_env::ctypes::read_pointer_from_buffer(&buffer)
+        } else {
+            return rustpython_host_env::ctypes::HRESULT_E_POINTER;
+        };
+
+        rustpython_host_env::ctypes::copy_com_pointer(src_ptr, pdst)
+    }
+
+    #[expect(clippy::unnecessary_wraps, reason = "Needs to comply with a signature")]
+    pub(crate) fn module_exec(
+        vm: &VirtualMachine,
+        module: &Py<crate::builtins::PyModule>,
+    ) -> PyResult<()> {
+        use super::*;
+
+        __module_exec(vm, module);
+
+        let ctx = &vm.ctx;
+        let _ = PyCSimpleType::make_static_type();
+        let _ = array::PyCArrayType::make_static_type();
+        let _ = pointer::PyCPointerType::make_static_type();
+        let _ = structure::PyCStructType::make_static_type();
+        let _ = union::PyCUnionType::make_static_type();
+        let _ = function::PyCFuncPtrType::make_static_type();
+        let _ = function::RawMemoryBuffer::make_static_type();
+
+        extend_module!(vm, module, {
+            "_CData" => PyCData::make_static_type(),
+            "_SimpleCData" => PyCSimple::make_static_type(),
+            "Array" => PyCArray::make_static_type(),
+            "CField" => PyCField::make_static_type(),
+            "CFuncPtr" => function::PyCFuncPtr::make_static_type(),
+            "_Pointer" => PyCPointer::make_static_type(),
+            "_pointer_type_cache" => ctx.new_dict(),
+            "_array_type_cache" => ctx.new_dict(),
+            "Structure" => PyCStructure::make_static_type(),
+            "CThunkObject" => function::PyCThunk::make_static_type(),
+            "Union" => PyCUnion::make_static_type(),
+        });
+
+        Ok(())
+    }
+}

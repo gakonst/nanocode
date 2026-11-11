@@ -1,0 +1,2990 @@
+// spell-checker:disable
+
+pub(crate) use module::module_def;
+
+pub use rustpython_host_env::posix::set_inheritable;
+
+#[pymodule(name = "posix", with(
+    super::os::_os,
+    super::posix_unix_like::_posix_unix_like,
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "freebsd",
+        target_os = "android"
+    ))]
+    posix_sched
+))]
+pub mod module {
+    use crate::{
+        AsObject, Py, PyObject, PyObjectRef, PyResult, VirtualMachine,
+        builtins::{PyBytesRef, PyDictRef, PyInt, PyListRef, PyTuple, PyTupleRef, PyUtf8Str},
+        convert::{IntoPyException, ToPyException, ToPyObject, TryFromObject},
+        exceptions::OSErrorBuilder,
+        function::{ArgBytesLike, ArgMapping, Either, OptionalArg, PySsize},
+        ospath::{OsPath, OsPathOrFd},
+        stdlib::os::{
+            _os, DirFd, FollowSymlinks, SupportFunc, SymlinkArgs, fs_metadata, warn_if_bool_fd,
+        },
+    };
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "openbsd"
+    ))]
+    use crate::{builtins::PyUtf8StrRef, utils::ToCString};
+    use alloc::ffi::CString;
+    use core::ffi::CStr;
+    use rustpython_host_env::os::ffi::OsStringExt;
+    use rustpython_host_env::posix as host_posix;
+    use std::{
+        fs, io,
+        os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
+    };
+    use strum::IntoEnumIterator;
+    use strum_macros::{EnumIter, EnumString};
+
+    #[cfg(target_os = "linux")]
+    #[pyattr]
+    use rustpython_host_env::posix::PIDFD_NONBLOCK;
+
+    #[cfg(target_os = "macos")]
+    #[pyattr]
+    use rustpython_host_env::posix::{
+        COPYFILE_DATA as _COPYFILE_DATA, PRIO_DARWIN_BG, PRIO_DARWIN_NONUI, PRIO_DARWIN_PROCESS,
+        PRIO_DARWIN_THREAD,
+    };
+
+    #[cfg(target_os = "macos")]
+    #[pyattr]
+    use rustpython_host_env::os::{O_EVTONLY, O_NOFOLLOW_ANY};
+
+    #[cfg(target_os = "freebsd")]
+    #[pyattr]
+    use rustpython_host_env::posix::{SF_MNOWAIT, SF_NOCACHE, SF_NODISKIO, SF_SYNC};
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[pyattr]
+    use rustpython_host_env::posix::{
+        CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
+        CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS, CLONE_SIGHAND, CLONE_SYSVSEM, CLONE_THREAD,
+        CLONE_VM, MFD_HUGE_SHIFT, P_PIDFD, SCHED_BATCH, SCHED_DEADLINE, SCHED_IDLE, SCHED_NORMAL,
+        SCHED_RESET_ON_FORK, SPLICE_F_MORE, SPLICE_F_MOVE, SPLICE_F_NONBLOCK,
+    };
+
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[pyattr]
+    use rustpython_host_env::os::{O_NOATIME, O_TMPFILE};
+
+    #[cfg(any(target_os = "macos", target_os = "redox"))]
+    #[pyattr]
+    use rustpython_host_env::os::O_SYMLINK;
+
+    #[cfg(any(target_os = "android", target_os = "redox", unix))]
+    #[pyattr]
+    use rustpython_host_env::posix::{PRIO_PGRP, PRIO_PROCESS, PRIO_USER};
+
+    #[cfg(any(target_os = "android", target_os = "redox", unix))]
+    #[pyattr]
+    use rustpython_host_env::os::O_NOFOLLOW;
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "netbsd"))]
+    #[pyattr]
+    use rustpython_host_env::posix::{XATTR_CREATE, XATTR_REPLACE};
+
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "netbsd"))]
+    #[pyattr]
+    use rustpython_host_env::os::O_RSYNC;
+
+    #[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux"))]
+    #[pyattr]
+    use rustpython_host_env::posix::{
+        MFD_ALLOW_SEALING, MFD_CLOEXEC, MFD_HUGE_MASK, MFD_HUGETLB, POSIX_FADV_DONTNEED,
+        POSIX_FADV_NOREUSE, POSIX_FADV_NORMAL, POSIX_FADV_RANDOM, POSIX_FADV_SEQUENTIAL,
+        POSIX_FADV_WILLNEED,
+    };
+
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "redox", unix))]
+    #[pyattr]
+    use rustpython_host_env::posix::{RTLD_LAZY, RTLD_NOW, WNOHANG};
+
+    #[cfg(any(target_os = "android", target_os = "macos", target_os = "redox", unix))]
+    #[pyattr]
+    use rustpython_host_env::posix::RTLD_GLOBAL;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "redox"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_PATH;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::{
+        EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE, TFD_CLOEXEC, TFD_NONBLOCK, TFD_TIMER_ABSTIME,
+        TFD_TIMER_CANCEL_ON_SET,
+    };
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "linux",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::{GRND_NONBLOCK, GRND_RANDOM};
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::{F_OK, R_OK, W_OK, X_OK};
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_NONBLOCK;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_DSYNC;
+
+    #[cfg(any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::SCHED_OTHER;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::{RTLD_NODELETE, SEEK_DATA, SEEK_HOLE};
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_DIRECT;
+
+    #[cfg(any(
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::{O_EXLOCK, O_FSYNC, O_SHLOCK};
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::RTLD_LOCAL;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::WUNTRACED;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::{
+        CLD_CONTINUED, CLD_DUMPED, CLD_EXITED, CLD_KILLED, CLD_STOPPED, CLD_TRAPPED, P_ALL, P_PGID,
+        P_PID, SCHED_FIFO, SCHED_RR,
+    };
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_SYNC;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_DIRECTORY;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::fcntl::{F_LOCK, F_TEST, F_TLOCK, F_ULOCK};
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::{RTLD_NOLOAD, WEXITED, WNOWAIT, WSTOPPED};
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox"
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::{O_ASYNC, O_NDELAY, O_NOCTTY};
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::posix::WCONTINUED;
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "netbsd",
+        target_os = "redox",
+        unix
+    ))]
+    #[pyattr]
+    use rustpython_host_env::os::O_CLOEXEC;
+
+    #[pyattr]
+    use rustpython_host_env::posix::{
+        EX_CANTCREAT, EX_CONFIG, EX_DATAERR, EX_IOERR, EX_NOHOST, EX_NOINPUT, EX_NOPERM, EX_NOUSER,
+        EX_OK, EX_OSERR, EX_OSFILE, EX_PROTOCOL, EX_SOFTWARE, EX_TEMPFAIL, EX_UNAVAILABLE,
+        EX_USAGE,
+    };
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[pyattr]
+    const POSIX_SPAWN_OPEN: i32 = PosixSpawnFileActionIdentifier::Open as i32;
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[pyattr]
+    const POSIX_SPAWN_CLOSE: i32 = PosixSpawnFileActionIdentifier::Close as i32;
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[pyattr]
+    const POSIX_SPAWN_DUP2: i32 = PosixSpawnFileActionIdentifier::Dup2 as i32;
+
+    impl TryFromObject for BorrowedFd<'_> {
+        fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            crate::stdlib::os::warn_if_bool_fd(&obj, vm)?;
+            let fd = i32::try_from_object(vm, obj)?;
+            if fd == -1 {
+                return Err(io::Error::from_raw_os_error(libc::EBADF).into_pyexception(vm));
+            }
+            // SAFETY: none, really. but, python's os api of passing around file descriptors
+            //         everywhere isn't really io-safe anyway, so, this is passed to the user.
+            Ok(unsafe { BorrowedFd::borrow_raw(fd) })
+        }
+    }
+
+    impl TryFromObject for OwnedFd {
+        fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            let fd = i32::try_from_object(vm, obj)?;
+            if fd == -1 {
+                return Err(io::Error::from_raw_os_error(libc::EBADF).into_pyexception(vm));
+            }
+            // SAFETY: none, really. but, python's os api of passing around file descriptors
+            //         everywhere isn't really io-safe anyway, so, this is passed to the user.
+            Ok(unsafe { Self::from_raw_fd(fd) })
+        }
+    }
+
+    impl ToPyObject for OwnedFd {
+        fn to_pyobject(self, vm: &VirtualMachine) -> PyObjectRef {
+            self.into_raw_fd().to_pyobject(vm)
+        }
+    }
+
+    #[pyfunction]
+    fn getgroups(vm: &VirtualMachine) -> PyResult<Vec<PyObjectRef>> {
+        let group_ids =
+            rustpython_host_env::posix::getgroups().map_err(|e| e.into_pyexception(vm))?;
+        Ok(group_ids
+            .into_iter()
+            .map(|gid| vm.ctx.new_int(gid).into())
+            .collect())
+    }
+
+    #[derive(FromArgs)]
+    pub(super) struct AccessArgs<'a> {
+        #[pyarg(any)]
+        path: OsPath,
+        #[pyarg(any)]
+        mode: u8,
+        #[pyarg(flatten)]
+        dir_fd: DirFd<'a, 0>,
+        #[pyarg(named, default)]
+        effective_ids: bool,
+        #[pyarg(flatten)]
+        follow_symlinks: FollowSymlinks,
+    }
+
+    #[pyfunction]
+    pub(super) fn access(args: AccessArgs<'_>, vm: &VirtualMachine) -> PyResult<bool> {
+        let [] = args.dir_fd.0;
+        if args.effective_ids {
+            return Err(
+                vm.new_not_implemented_error("access: effective_ids unavailable on this platform")
+            );
+        }
+        if !args.follow_symlinks.0 {
+            return Err(vm.new_not_implemented_error(
+                "access: follow_symlinks unavailable on this platform",
+            ));
+        }
+        rustpython_host_env::posix::check_access(args.path.as_ref(), args.mode)
+            .map_err(|err| err.to_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn _create_environ(vm: &VirtualMachine) -> PyDictRef {
+        let environ = vm.ctx.new_dict();
+        for (key, value) in crate::host_env::os::vars_os() {
+            let key: PyObjectRef = vm.ctx.new_bytes(key.into_vec()).into();
+            let value: PyObjectRef = vm.ctx.new_bytes(value.into_vec()).into();
+            environ.set_item(&*key, value, vm).unwrap();
+        }
+        environ
+    }
+
+    #[pyfunction]
+    pub(super) fn symlink(args: SymlinkArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        let src = args.src.into_cstring(vm)?;
+        let dst = args.dst.into_cstring(vm)?;
+        #[cfg(not(target_os = "redox"))]
+        {
+            rustpython_host_env::posix::symlinkat(&src, args.dir_fd.get().into(), &dst)
+                .map_err(|err| err.into_pyexception(vm))
+        }
+        #[cfg(target_os = "redox")]
+        {
+            let [] = args.dir_fd.0;
+            rustpython_host_env::posix::symlink(&src, &dst).map_err(|err| err.into_pyexception(vm))
+        }
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct FchdirArgs {
+        #[pyarg(any)]
+        fd: PyObjectRef,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn fchdir(fd: FchdirArgs, vm: &VirtualMachine) -> PyResult<()> {
+        let fd = fd.fd;
+        warn_if_bool_fd(&fd, vm)?;
+        let fd = i32::try_from_object(vm, fd)?;
+        rustpython_host_env::posix::fchdir(fd).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct ChrootArgs {
+        #[pyarg(any)]
+        path: OsPath,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn chroot(path: ChrootArgs, vm: &VirtualMachine) -> PyResult<()> {
+        use crate::exceptions::OSErrorBuilder;
+
+        let path = path.path;
+        rustpython_host_env::posix::chroot(std::path::Path::new(&path.path))
+            .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
+    }
+
+    // As of now, redox does not seems to support chown command (cf. https://gitlab.redox-os.org/redox-os/coreutils , last checked on 05/07/2020)
+    #[cfg(not(target_os = "redox"))]
+    fn chown_inner(
+        path: OsPathOrFd<'_>,
+        uid: isize,
+        gid: isize,
+        dir_fd: DirFd<'_, 1>,
+        follow_symlinks: FollowSymlinks,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let uid = if uid >= 0 {
+            Some(uid as u32)
+        } else if uid == -1 {
+            None
+        } else {
+            return Err(vm.new_os_error("Specified uid is not valid."));
+        };
+
+        let gid = if gid >= 0 {
+            Some(gid as u32)
+        } else if gid == -1 {
+            None
+        } else {
+            return Err(vm.new_os_error("Specified gid is not valid."));
+        };
+
+        match path {
+            OsPathOrFd::Path(ref p) => rustpython_host_env::posix::fchownat(
+                dir_fd.get().into(),
+                p.path.as_os_str(),
+                uid,
+                gid,
+                follow_symlinks.0,
+            ),
+            OsPathOrFd::Fd(fd) => rustpython_host_env::posix::fchown(fd.into(), uid, gid),
+        }
+        .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct ChownArgs<'a> {
+        #[pyarg(any)]
+        path: OsPathOrFd<'a>,
+        #[pyarg(any)]
+        uid: isize,
+        #[pyarg(any)]
+        gid: isize,
+        #[pyarg(flatten)]
+        dir_fd: DirFd<'a, 1>,
+        #[pyarg(flatten)]
+        follow_symlinks: FollowSymlinks,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn chown(args: ChownArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        chown_inner(
+            args.path,
+            args.uid,
+            args.gid,
+            args.dir_fd,
+            args.follow_symlinks,
+            vm,
+        )
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct LchownArgs {
+        #[pyarg(any)]
+        path: OsPath,
+        #[pyarg(any)]
+        uid: isize,
+        #[pyarg(any)]
+        gid: isize,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn lchown(args: LchownArgs, vm: &VirtualMachine) -> PyResult<()> {
+        let LchownArgs { path, uid, gid } = args;
+        chown_inner(
+            OsPathOrFd::Path(path),
+            uid,
+            gid,
+            DirFd::default(),
+            FollowSymlinks(false),
+            vm,
+        )
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct FchownArgs<'a> {
+        #[pyarg(any)]
+        fd: BorrowedFd<'a>,
+        #[pyarg(any)]
+        uid: isize,
+        #[pyarg(any)]
+        gid: isize,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn fchown(args: FchownArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        let FchownArgs { fd, uid, gid } = args;
+        chown_inner(
+            OsPathOrFd::Fd(fd.into()),
+            uid,
+            gid,
+            DirFd::default(),
+            FollowSymlinks(true),
+            vm,
+        )
+    }
+
+    #[derive(FromArgs)]
+    struct RegisterAtForkArgs {
+        #[pyarg(named, optional)]
+        before: OptionalArg<PyObjectRef>,
+        #[pyarg(named, optional)]
+        after_in_child: OptionalArg<PyObjectRef>,
+        #[pyarg(named, optional)]
+        after_in_parent: OptionalArg<PyObjectRef>,
+    }
+
+    impl RegisterAtForkArgs {
+        fn into_validated(
+            self,
+            vm: &VirtualMachine,
+        ) -> PyResult<(
+            Option<PyObjectRef>,
+            Option<PyObjectRef>,
+            Option<PyObjectRef>,
+        )> {
+            fn into_option(
+                arg: OptionalArg<PyObjectRef>,
+                vm: &VirtualMachine,
+            ) -> PyResult<Option<PyObjectRef>> {
+                match arg {
+                    OptionalArg::Present(obj) => {
+                        if !obj.is_callable() {
+                            return Err(vm.new_type_error("Args must be callable"));
+                        }
+                        Ok(Some(obj))
+                    }
+                    OptionalArg::Missing => Ok(None),
+                }
+            }
+            let before = into_option(self.before, vm)?;
+            let after_in_parent = into_option(self.after_in_parent, vm)?;
+            let after_in_child = into_option(self.after_in_child, vm)?;
+            if before.is_none() && after_in_parent.is_none() && after_in_child.is_none() {
+                return Err(vm.new_type_error("At least one arg must be present"));
+            }
+            Ok((before, after_in_parent, after_in_child))
+        }
+    }
+
+    #[pyfunction]
+    fn register_at_fork(args: RegisterAtForkArgs, vm: &VirtualMachine) -> PyResult<()> {
+        let (before, after_in_parent, after_in_child) = args.into_validated(vm)?;
+
+        if let Some(before) = before {
+            vm.state.before_forkers.lock().push(before);
+        }
+        if let Some(after_in_parent) = after_in_parent {
+            vm.state.after_forkers_parent.lock().push(after_in_parent);
+        }
+        if let Some(after_in_child) = after_in_child {
+            vm.state.after_forkers_child.lock().push(after_in_child);
+        }
+        Ok(())
+    }
+
+    fn run_at_forkers(mut funcs: Vec<PyObjectRef>, reversed: bool, vm: &VirtualMachine) {
+        if !funcs.is_empty() {
+            if reversed {
+                funcs.reverse();
+            }
+            for func in funcs {
+                if let Err(e) = func.call((), vm) {
+                    let exit = e.fast_isinstance(vm.ctx.exceptions.system_exit);
+                    vm.run_unraisable(e, Some("Exception ignored in".to_owned()), func);
+                    if exit {
+                        // Do nothing!
+                    }
+                }
+            }
+        }
+    }
+
+    fn py_os_before_fork(vm: &VirtualMachine) {
+        let before_forkers: Vec<PyObjectRef> = vm.state.before_forkers.lock().clone();
+        // functions must be executed in reversed order as they are registered
+        // only for before_forkers, refer: test_register_at_fork in test_posix
+
+        run_at_forkers(before_forkers, true, vm);
+
+        #[cfg(feature = "threading")]
+        crate::stdlib::_imp::acquire_imp_lock_for_fork(vm);
+
+        #[cfg(feature = "threading")]
+        vm.state.stop_the_world.stop_the_world(&vm.state);
+    }
+
+    fn py_os_after_fork_child(vm: &VirtualMachine) {
+        // The interpreter registry is reachable from every thread, so repair it
+        // before anything enumerates interpreters.
+        #[cfg(all(unix, feature = "threading"))]
+        unsafe {
+            crate::vm::runtime::reinit_after_fork()
+        };
+
+        #[cfg(feature = "threading")]
+        vm.state.stop_the_world.reset_after_fork();
+
+        // Phase 1: Reset all internal locks FIRST.
+        // After fork(), locks held by dead parent threads would deadlock
+        // if we try to acquire them. This must happen before anything else.
+        #[cfg(feature = "threading")]
+        reinit_locks_after_fork(vm);
+
+        // The collector stops every interpreter, so interpreters other than the
+        // forking one must be repaired too; otherwise the child's first
+        // collection waits for threads that did not survive the fork.
+        #[cfg(all(unix, feature = "threading"))]
+        reinit_other_interpreters_after_fork(vm);
+
+        // Reinit per-object IO buffer locks on std streams.
+        // BufferedReader/Writer/TextIOWrapper use PyThreadMutex which can be
+        // held by dead parent threads, causing deadlocks on any IO in the child.
+        #[cfg(feature = "threading")]
+        unsafe {
+            crate::stdlib::_io::reinit_std_streams_after_fork(vm)
+        };
+
+        // Phase 2: Reset low-level atomic state (no locks needed).
+        crate::signal::clear_after_fork();
+        crate::stdlib::_signal::_signal::clear_wakeup_fd_after_fork();
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "dragonfly",
+        ))]
+        rustpython_host_env::select::kqueue::mark_closed_after_fork();
+
+        // Reset weakref stripe locks that may have been held during fork.
+        #[cfg(feature = "threading")]
+        crate::object::reset_weakref_locks_after_fork();
+
+        // Repair any type-cache entries left mid-update at fork time.
+        unsafe { crate::builtins::type_::type_cache_after_fork() };
+
+        // Reset QSBR: dead parent threads' slots would stall reclamation
+        // forever, and retired memory can be freed immediately in the
+        // single-threaded child.
+        #[cfg(feature = "threading")]
+        unsafe {
+            crate::object::qsbr::QSBR.reset_after_fork()
+        };
+
+        // Phase 3: Clean up thread state. Locks are now reinit'd so we can
+        // acquire them normally instead of using try_lock().
+        #[cfg(feature = "threading")]
+        crate::stdlib::_thread::after_fork_child(vm);
+
+        // Reinit import lock ownership metadata in child and release the lock
+        // acquired before fork.
+        #[cfg(feature = "threading")]
+        unsafe {
+            crate::stdlib::_imp::after_fork_child_imp_lock_release()
+        };
+
+        // Initialize signal handlers for the child's main thread.
+        // When forked from a worker thread, the OnceCell is empty.
+        vm.signal_handlers
+            .get_or_init(crate::signal::SignalHandlers::default);
+
+        // Phase 4: Run Python-level at-fork callbacks.
+        let after_forkers_child: Vec<PyObjectRef> = vm.state.after_forkers_child.lock().clone();
+        run_at_forkers(after_forkers_child, false, vm);
+    }
+
+    /// Reset all parking_lot-based locks in the interpreter state after fork().
+    ///
+    /// After fork(), only the calling thread survives. Any locks held by other
+    /// (now-dead) threads would cause deadlocks. We unconditionally reset them
+    /// to unlocked by zeroing the raw lock bytes.
+    #[cfg(all(unix, feature = "threading"))]
+    fn reinit_locks_after_fork(vm: &VirtualMachine) {
+        use rustpython_common::lock::reinit_mutex_after_fork;
+
+        unsafe {
+            // PyGlobalState PyMutex locks
+            reinit_mutex_after_fork(&vm.state.before_forkers);
+            reinit_mutex_after_fork(&vm.state.after_forkers_child);
+            reinit_mutex_after_fork(&vm.state.after_forkers_parent);
+            reinit_mutex_after_fork(&vm.state.atexit_funcs);
+            reinit_mutex_after_fork(&vm.state.global_trace_func);
+            reinit_mutex_after_fork(&vm.state.global_profile_func);
+            reinit_mutex_after_fork(&vm.state.type_mutex);
+            reinit_mutex_after_fork(&vm.state.monitoring);
+
+            // PyGlobalState parking_lot::Mutex locks
+            reinit_mutex_after_fork(&vm.state.thread_frames);
+            reinit_mutex_after_fork(&vm.state.thread_handles);
+            reinit_mutex_after_fork(&vm.state.shutdown_handles);
+
+            // Context-level RwLock
+            vm.ctx.string_pool.reinit_after_fork();
+
+            // Codec registry RwLock
+            vm.state.codec_registry.reinit_after_fork();
+
+            // GC state (multiple Mutex + RwLock), shared lists and this
+            // interpreter's own policy state.
+            crate::gc_state::gc_state().reinit_after_fork();
+            vm.state.gc.reinit_after_fork();
+
+            // Import lock (RawReentrantMutex<RawMutex, RawThreadId>)
+            crate::stdlib::_imp::reinit_imp_lock_after_fork();
+        }
+    }
+
+    /// Repair every live interpreter other than the forking one after `fork()`.
+    ///
+    /// Only the forking thread survives, so each other interpreter is left with
+    /// slots for threads that no longer exist (still ATTACHED if they were
+    /// running bytecode) and possibly locks or stop-the-world flags held by
+    /// them. Since a collection stops all interpreters, that state would hang
+    /// the child's first collection.
+    ///
+    /// # Safety
+    /// Must only be called after `fork()` in the child, when no other threads exist.
+    #[cfg(all(unix, feature = "threading"))]
+    fn reinit_other_interpreters_after_fork(vm: &VirtualMachine) {
+        use rustpython_common::lock::reinit_mutex_after_fork;
+
+        for state in crate::vm::runtime::live_interpreter_states() {
+            if state.interpreter_id == vm.state.interpreter_id {
+                continue;
+            }
+
+            unsafe {
+                reinit_mutex_after_fork(&state.before_forkers);
+                reinit_mutex_after_fork(&state.after_forkers_child);
+                reinit_mutex_after_fork(&state.after_forkers_parent);
+                reinit_mutex_after_fork(&state.atexit_funcs);
+                reinit_mutex_after_fork(&state.global_trace_func);
+                reinit_mutex_after_fork(&state.global_profile_func);
+                reinit_mutex_after_fork(&state.type_mutex);
+                reinit_mutex_after_fork(&state.monitoring);
+                reinit_mutex_after_fork(&state.thread_frames);
+                reinit_mutex_after_fork(&state.thread_handles);
+                reinit_mutex_after_fork(&state.shutdown_handles);
+
+                state.codec_registry.reinit_after_fork();
+                state.gc.reinit_after_fork();
+            }
+
+            state.stop_the_world.reset_after_fork();
+
+            // Every thread registered here belongs to the parent, including any
+            // slot the forking thread itself registered before the fork.
+            state.thread_frames.lock().clear();
+            state.thread_handles.lock().clear();
+            state.shutdown_handles.lock().clear();
+        }
+
+        crate::vm::thread::purge_other_interpreter_slots_after_fork(vm.state.interpreter_id);
+    }
+
+    fn py_os_after_fork_parent(vm: &VirtualMachine) {
+        #[cfg(feature = "threading")]
+        vm.state.stop_the_world.start_the_world(&vm.state);
+
+        #[cfg(feature = "threading")]
+        crate::stdlib::_imp::release_imp_lock_after_fork_parent();
+
+        let after_forkers_parent: Vec<PyObjectRef> = vm.state.after_forkers_parent.lock().clone();
+        run_at_forkers(after_forkers_parent, false, vm);
+    }
+
+    /// Best-effort number of OS threads in this process.
+    /// Returns <= 0 when unavailable.
+    fn get_number_of_os_threads() -> isize {
+        rustpython_host_env::posix::get_number_of_os_threads()
+    }
+
+    /// Warn if forking from a multi-threaded process.
+    /// `num_os_threads` should be captured before parent after-fork hooks run.
+    fn warn_if_multi_threaded(name: &str, num_os_threads: isize, vm: &VirtualMachine) {
+        let num_threads = if num_os_threads > 0 {
+            num_os_threads as usize
+        } else {
+            // CPython fallback: if OS-level count isn't available, use the
+            // threading module's active+limbo view.
+            // Only check threading if it was already imported. Avoid vm.import()
+            // which can execute arbitrary Python code in the fork path.
+            let threading = match vm
+                .sys_module
+                .get_attr("modules", vm)
+                .and_then(|m| m.get_item("threading", vm))
+            {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+            let active = threading.get_attr("_active", vm).ok();
+            let limbo = threading.get_attr("_limbo", vm).ok();
+
+            // Match threading module internals and avoid sequence overcounting:
+            // count only dict-backed _active/_limbo containers.
+            let count_dict = |obj: Option<crate::PyObjectRef>| -> usize {
+                obj.and_then(|o| {
+                    o.downcast_ref::<crate::builtins::PyDict>()
+                        .map(|d| d.__len__())
+                })
+                .unwrap_or(0)
+            };
+
+            count_dict(active) + count_dict(limbo)
+        };
+
+        if num_threads > 1 {
+            let pid = rustpython_host_env::posix::getpid();
+            let msg = format!(
+                "This process (pid={pid}) is multi-threaded, use of {name}() may lead to deadlocks in the child."
+            );
+
+            // Match PyErr_WarnFormat(..., stacklevel=1) in CPython.
+            // Best effort: ignore failures like CPython does in this path.
+            let _ =
+                crate::stdlib::_warnings::warn(vm.ctx.exceptions.deprecation_warning, msg, 1, vm);
+        }
+    }
+
+    #[pyfunction]
+    fn fork(vm: &VirtualMachine) -> PyResult<i32> {
+        if vm
+            .state
+            .finalizing
+            .load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(vm.new_exception_msg(
+                vm.ctx.exceptions.python_finalization_error.to_owned(),
+                "can't fork at interpreter shutdown".into(),
+            ));
+        }
+        if !vm.state.allow_fork() {
+            return Err(
+                vm.new_runtime_error("fork not supported for isolated subinterpreters".to_owned())
+            );
+        }
+
+        vm.audit("os.fork", || ())?;
+
+        py_os_before_fork(vm);
+        let pid = rustpython_host_env::posix::fork();
+
+        match pid {
+            Ok(0) => {
+                py_os_after_fork_child(vm);
+                Ok(0)
+            }
+            Ok(pid) => {
+                // Capture this before parent after-fork hooks in case those
+                // hooks start threads.
+                let num_os_threads = get_number_of_os_threads();
+                py_os_after_fork_parent(vm);
+                // Warn only after parent callback path resumes the world.
+                warn_if_multi_threaded("fork", num_os_threads, vm);
+                Ok(pid)
+            }
+            Err(err) => {
+                py_os_after_fork_parent(vm);
+                Err(err.into_pyexception(vm))
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "redox", target_os = "wasi")))]
+    #[pyfunction]
+    fn forkpty(vm: &VirtualMachine) -> PyResult<(i32, i32)> {
+        if vm
+            .state
+            .finalizing
+            .load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(vm.new_exception_msg(
+                vm.ctx.exceptions.python_finalization_error.to_owned(),
+                "can't fork at interpreter shutdown".into(),
+            ));
+        }
+        if !vm.state.allow_fork() {
+            return Err(
+                vm.new_runtime_error("fork not supported for isolated subinterpreters".to_owned())
+            );
+        }
+
+        vm.audit("os.forkpty", || ())?;
+
+        py_os_before_fork(vm);
+        let result = rustpython_host_env::posix::forkpty();
+
+        match result {
+            Ok((0, master)) => {
+                py_os_after_fork_child(vm);
+                Ok((0, master))
+            }
+            Ok((pid, master)) => {
+                let num_os_threads = get_number_of_os_threads();
+                py_os_after_fork_parent(vm);
+                warn_if_multi_threaded("forkpty", num_os_threads, vm);
+                Ok((pid, master))
+            }
+            Err(err) => {
+                py_os_after_fork_parent(vm);
+                Err(err.into_pyexception(vm))
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    const MKNOD_DIR_FD: bool = cfg!(not(target_vendor = "apple"));
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct MknodArgs<'fd> {
+        #[pyarg(any)]
+        path: OsPath,
+        #[pyarg(any, default = 0o600)]
+        mode: libc::mode_t,
+        #[pyarg(any, default = 0)]
+        device: libc::dev_t,
+        #[pyarg(flatten)]
+        dir_fd: DirFd<'fd, { MKNOD_DIR_FD as usize }>,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    impl MknodArgs<'_> {
+        #[cfg(not(target_vendor = "apple"))]
+        fn mknod(self, vm: &VirtualMachine) -> PyResult<()> {
+            let c_path = self.path.clone().into_cstring(vm)?;
+            match self.dir_fd.raw_opt() {
+                None => rustpython_host_env::posix::mknod(&c_path, self.mode, self.device),
+                Some(non_default_fd) => rustpython_host_env::posix::mknodat(
+                    non_default_fd,
+                    &c_path,
+                    self.mode,
+                    self.device,
+                ),
+            }
+            .map_err(|err| err.into_pyexception(vm))
+        }
+
+        #[cfg(target_vendor = "apple")]
+        fn mknod(self, vm: &VirtualMachine) -> PyResult<()> {
+            let [] = self.dir_fd.0;
+            let c_path = self.path.clone().into_cstring(vm)?;
+            rustpython_host_env::posix::mknod(&c_path, self.mode, self.device)
+                .map_err(|err| err.into_pyexception(vm))
+        }
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn mknod(args: MknodArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        args.mknod(vm)
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn nice(increment: i32, vm: &VirtualMachine) -> PyResult<i32> {
+        rustpython_host_env::posix::nice(increment).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct SchedPolicyArgs {
+        #[pyarg(any)]
+        policy: i32,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn sched_get_priority_max(policy: SchedPolicyArgs, vm: &VirtualMachine) -> PyResult<i32> {
+        rustpython_host_env::posix::sched_get_priority_max(policy.policy)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn sched_get_priority_min(policy: SchedPolicyArgs, vm: &VirtualMachine) -> PyResult<i32> {
+        rustpython_host_env::posix::sched_get_priority_min(policy.policy)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn sched_yield(vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::sched_yield().map_err(|e| e.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn get_inheritable(fd: BorrowedFd<'_>, vm: &VirtualMachine) -> PyResult<bool> {
+        rustpython_host_env::fcntl::get_inheritable(fd).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn set_inheritable(fd: BorrowedFd<'_>, inheritable: bool, vm: &VirtualMachine) -> PyResult<()> {
+        super::set_inheritable(fd, inheritable).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn get_blocking(fd: BorrowedFd<'_>, vm: &VirtualMachine) -> PyResult<bool> {
+        rustpython_host_env::fcntl::get_blocking(fd).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn set_blocking(fd: BorrowedFd<'_>, blocking: bool, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::fcntl::set_blocking(fd, blocking)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn pread(
+        fd: i32,
+        length: PySsize,
+        offset: libc::off_t,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyBytesRef> {
+        let (fd, n, offset) = (fd, length, offset);
+        if n < 0 {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL).into_pyexception(vm));
+        }
+        let mut buffer = vm.new_zeroed_bytes(n as usize)?;
+        loop {
+            match vm.allow_threads(|| rustpython_host_env::posix::pread(fd, &mut buffer, offset)) {
+                Ok(n) => {
+                    buffer.truncate(n);
+                    return Ok(vm.ctx.new_bytes(buffer));
+                }
+                Err(err) if err.raw_os_error() == Some(libc::EINTR) => {
+                    vm.check_signals()?;
+                    continue;
+                }
+                Err(err) => return Err(err.into_pyexception(vm)),
+            }
+        }
+    }
+
+    #[pyfunction]
+    fn pwrite(
+        fd: i32,
+        buffer: ArgBytesLike,
+        offset: libc::off_t,
+        vm: &VirtualMachine,
+    ) -> PyResult<usize> {
+        // Avoid holding a buffer lock across blocking I/O,
+        // which can prevent other threads from reaching GC safepoints.
+        let data = buffer.borrow_buf_unlocked(vm)?;
+        loop {
+            match vm.allow_threads(|| rustpython_host_env::posix::pwrite(fd, &data, offset)) {
+                Ok(n) => return Ok(n),
+                Err(err) if err.raw_os_error() == Some(libc::EINTR) => {
+                    vm.check_signals()?;
+                    continue;
+                }
+                Err(err) => return Err(err.into_pyexception(vm)),
+            }
+        }
+    }
+
+    #[pyfunction]
+    fn pipe(vm: &VirtualMachine) -> PyResult<(OwnedFd, OwnedFd)> {
+        rustpython_host_env::posix::pipe().map_err(|err| err.into_pyexception(vm))
+    }
+
+    // cfg from nix
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "emscripten",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    #[pyfunction]
+    fn pipe2(flags: libc::c_int, vm: &VirtualMachine) -> PyResult<(OwnedFd, OwnedFd)> {
+        rustpython_host_env::posix::pipe2(flags).map_err(|err| err.into_pyexception(vm))
+    }
+
+    fn _chmod(
+        path: OsPath,
+        dir_fd: DirFd<'_, 0>,
+        mode: u32,
+        follow_symlinks: FollowSymlinks,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let [] = dir_fd.0;
+        #[cfg(all(
+            unix,
+            not(target_os = "redox"),
+            not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd"))
+        ))]
+        if !follow_symlinks.0 {
+            let err_path = path.clone();
+            let c_path = path.into_cstring(vm)?;
+            return rustpython_host_env::posix::fchmodat(
+                libc::AT_FDCWD,
+                &c_path,
+                mode as libc::mode_t,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+            .map_err(|err| {
+                let enotsup = err.raw_os_error() == Some(libc::EOPNOTSUPP)
+                    || err.raw_os_error() == Some(libc::ENOTSUP);
+                if enotsup {
+                    vm.new_not_implemented_error(
+                        "chmod: follow_symlinks unavailable on this platform".to_owned(),
+                    )
+                } else {
+                    OSErrorBuilder::with_filename(&err, err_path, vm)
+                }
+            });
+        }
+        let err_path = path.clone();
+        let body = move || {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = fs_metadata(&path, follow_symlinks.0)?;
+            let mut permissions = meta.permissions();
+            permissions.set_mode(mode);
+            fs::set_permissions(&path, permissions)
+        };
+        body().map_err(|err| OSErrorBuilder::with_filename(&err, err_path, vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    fn _fchmod(fd: BorrowedFd<'_>, mode: u32, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::fchmod(fd, mode).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn chmod(
+        path: OsPathOrFd<'_>,
+        dir_fd: DirFd<'_, 0>,
+        mode: u32,
+        follow_symlinks: FollowSymlinks,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        match path {
+            OsPathOrFd::Path(path) => {
+                #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd",))]
+                if !follow_symlinks.0 && dir_fd == Default::default() {
+                    return lchmod(LchmodArgs { path, mode }, vm);
+                }
+                _chmod(path, dir_fd, mode, follow_symlinks, vm)
+            }
+            OsPathOrFd::Fd(fd) => _fchmod(fd.into(), mode, vm),
+        }
+    }
+
+    #[cfg(target_os = "redox")]
+    #[pyfunction]
+    fn chmod(
+        path: OsPath,
+        dir_fd: DirFd<0>,
+        mode: u32,
+        follow_symlinks: FollowSymlinks,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        _chmod(path, dir_fd, mode, follow_symlinks, vm)
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct FchmodArgs<'a> {
+        #[pyarg(any)]
+        fd: BorrowedFd<'a>,
+        #[pyarg(any)]
+        mode: u32,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn fchmod(args: FchmodArgs<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        _fchmod(args.fd, args.mode, vm)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd",))]
+    #[derive(FromArgs)]
+    struct LchmodArgs {
+        #[pyarg(any)]
+        path: OsPath,
+        #[pyarg(any)]
+        mode: u32,
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd",))]
+    #[pyfunction]
+    fn lchmod(args: LchmodArgs, vm: &VirtualMachine) -> PyResult<()> {
+        let LchmodArgs { path, mode } = args;
+        let c_path = path.clone().into_cstring(vm)?;
+        rustpython_host_env::posix::lchmod(&c_path, mode as libc::mode_t)
+            .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
+    }
+
+    #[pyfunction]
+    fn execv(
+        path: OsPath,
+        argv: Either<PyListRef, PyTupleRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        if !vm.state.allow_exec() {
+            return Err(
+                vm.new_runtime_error("exec not supported for isolated subinterpreters".to_owned())
+            );
+        }
+        let path = path.into_cstring(vm)?;
+
+        let argv = vm.extract_elements_with(argv.as_ref(), |obj| {
+            OsPath::try_from_object(vm, obj)?.into_cstring(vm)
+        })?;
+        let argv: Vec<&CStr> = argv.iter().map(|entry| entry.as_c_str()).collect();
+
+        let first = argv
+            .first()
+            .ok_or_else(|| vm.new_value_error("execv() arg 2 must not be empty"))?;
+        if first.to_bytes().is_empty() {
+            return Err(vm.new_value_error("execv() arg 2 first element cannot be empty"));
+        }
+
+        rustpython_host_env::posix::execv(&path, &argv).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[derive(FromArgs)]
+    struct ExecveArgs {
+        #[pyarg(any)]
+        path: OsPath,
+        #[pyarg(any)]
+        argv: Either<PyListRef, PyTupleRef>,
+        #[pyarg(any)]
+        env: ArgMapping,
+    }
+
+    #[pyfunction]
+    fn execve(args: ExecveArgs, vm: &VirtualMachine) -> PyResult<()> {
+        let ExecveArgs { path, argv, env } = args;
+        if !vm.state.allow_exec() {
+            return Err(
+                vm.new_runtime_error("exec not supported for isolated subinterpreters".to_owned())
+            );
+        }
+        let path = path.into_cstring(vm)?;
+
+        let argv = vm.extract_elements_with(argv.as_ref(), |obj| {
+            OsPath::try_from_object(vm, obj)?.into_cstring(vm)
+        })?;
+        let argv: Vec<&CStr> = argv.iter().map(|entry| entry.as_c_str()).collect();
+
+        let first = argv
+            .first()
+            .ok_or_else(|| vm.new_value_error("execve() arg 2 must not be empty"))?;
+
+        if first.to_bytes().is_empty() {
+            return Err(vm.new_value_error("execve() arg 2 first element cannot be empty"));
+        }
+
+        let env = crate::stdlib::os::envobj_to_dict(env, vm)?;
+        let env = env
+            .into_iter()
+            .map(|(k, v)| -> PyResult<_> {
+                let (key, value) = (
+                    OsPath::try_from_object(vm, k)?.into_bytes(),
+                    OsPath::try_from_object(vm, v)?.into_bytes(),
+                );
+
+                if key.is_empty() || memchr::memchr(b'=', &key).is_some() {
+                    return Err(vm.new_value_error("illegal environment variable name"));
+                }
+
+                let mut entry = key;
+                entry.push(b'=');
+                entry.extend_from_slice(&value);
+
+                CString::new(entry).map_err(|err| err.into_pyexception(vm))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let env: Vec<&CStr> = env.iter().map(|entry| entry.as_c_str()).collect();
+
+        rustpython_host_env::posix::execve(&path, &argv, &env)
+            .map_err(|err| err.into_pyexception(vm))?;
+        Ok(())
+    }
+
+    #[pyfunction]
+    fn getppid(vm: &VirtualMachine) -> PyObjectRef {
+        let ppid = rustpython_host_env::posix::getppid();
+        vm.ctx.new_int(ppid).into()
+    }
+
+    #[pyfunction]
+    fn getgid(vm: &VirtualMachine) -> PyObjectRef {
+        let gid = rustpython_host_env::posix::getgid();
+        vm.ctx.new_int(gid).into()
+    }
+
+    #[pyfunction]
+    fn getegid(vm: &VirtualMachine) -> PyObjectRef {
+        let egid = rustpython_host_env::posix::getegid();
+        vm.ctx.new_int(egid).into()
+    }
+
+    #[derive(FromArgs)]
+    struct GetPgidArgs {
+        #[pyarg(any)]
+        pid: u32,
+    }
+
+    #[pyfunction]
+    fn getpgid(pid: GetPgidArgs, vm: &VirtualMachine) -> PyResult {
+        let pid = pid.pid;
+        let pgid = rustpython_host_env::posix::getpgid(pid).map_err(|e| e.into_pyexception(vm))?;
+        Ok(vm.new_pyobj(pgid))
+    }
+
+    #[pyfunction]
+    fn getpgrp(vm: &VirtualMachine) -> PyObjectRef {
+        vm.ctx.new_int(rustpython_host_env::posix::getpgrp()).into()
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn getsid(pid: u32, vm: &VirtualMachine) -> PyResult {
+        let sid = rustpython_host_env::posix::getsid(pid).map_err(|e| e.into_pyexception(vm))?;
+        Ok(vm.new_pyobj(sid))
+    }
+
+    #[pyfunction]
+    fn getuid(vm: &VirtualMachine) -> PyObjectRef {
+        let uid = rustpython_host_env::posix::getuid();
+        vm.ctx.new_int(uid).into()
+    }
+
+    #[pyfunction]
+    fn geteuid(vm: &VirtualMachine) -> PyObjectRef {
+        let euid = rustpython_host_env::posix::geteuid();
+        vm.ctx.new_int(euid).into()
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "android")))]
+    #[pyfunction]
+    fn setgid(gid: RawGid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setgid(gid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "android", target_os = "redox")))]
+    #[pyfunction]
+    fn setegid(egid: RawGid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setegid(egid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn setpgid(pid: u32, pgrp: u32, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setpgid(pid, pgrp).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn setpgrp(vm: &VirtualMachine) -> PyResult<()> {
+        // setpgrp() is equivalent to setpgid(0, 0)
+        rustpython_host_env::posix::setpgrp().map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "redox")))]
+    #[pyfunction]
+    fn setsid(vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setsid().map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "redox")))]
+    #[pyfunction]
+    fn tcgetpgrp(fd: i32, vm: &VirtualMachine) -> PyResult<libc::pid_t> {
+        use std::os::fd::BorrowedFd;
+        let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+        rustpython_host_env::posix::tcgetpgrp(fd).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "redox")))]
+    #[pyfunction]
+    fn tcsetpgrp(fd: i32, pgid: libc::pid_t, vm: &VirtualMachine) -> PyResult<()> {
+        use std::os::fd::BorrowedFd;
+        let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+        rustpython_host_env::posix::tcsetpgrp(fd, pgid).map_err(|err| err.into_pyexception(vm))
+    }
+
+    fn try_from_id(vm: &VirtualMachine, obj: &PyObject, typ_name: &str) -> PyResult<u32> {
+        use core::cmp::Ordering;
+        let i = obj
+            .try_to_ref::<PyInt>(vm)
+            .map_err(|_| {
+                vm.new_type_error(format!(
+                    "an integer is required (got type {})",
+                    obj.class().name()
+                ))
+            })?
+            .try_to_primitive::<i64>(vm)?;
+
+        match i.cmp(&-1) {
+            Ordering::Greater => Ok(i.try_into().map_err(|_| {
+                vm.new_overflow_error(format!("{typ_name} is larger than maximum"))
+            })?),
+            Ordering::Less => {
+                Err(vm.new_overflow_error(format!("{typ_name} is less than minimum")))
+            }
+            // -1 means does not change the value
+            // In CPython, this is `(uid_t) -1`, rustc gets mad when we try to declare
+            // a negative unsigned integer :).
+            Ordering::Equal => Ok(-1i32 as u32),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct RawUid(u32);
+
+    #[derive(Clone, Copy)]
+    struct RawGid(u32);
+
+    impl TryFromObject for RawUid {
+        fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            try_from_id(vm, &obj, "uid").map(Self)
+        }
+    }
+
+    impl TryFromObject for RawGid {
+        fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            try_from_id(vm, &obj, "gid").map(Self)
+        }
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "android")))]
+    #[pyfunction]
+    fn setuid(uid: RawUid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setuid(uid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "android", target_os = "redox")))]
+    #[pyfunction]
+    fn seteuid(euid: RawUid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::seteuid(euid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "android", target_os = "redox")))]
+    #[pyfunction]
+    fn setreuid(ruid: RawUid, euid: RawUid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setreuid(ruid.0, euid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    // cfg from nix
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "openbsd"
+    ))]
+    #[pyfunction]
+    fn setresuid(ruid: RawUid, euid: RawUid, suid: RawUid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setresuid(ruid.0, euid.0, suid.0)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "wasi"))]
+    #[pyfunction]
+    fn login_tty(fd: BorrowedFd<'_>, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::login_tty(fd.as_raw_fd())
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn openpty(vm: &VirtualMachine) -> PyResult<(OwnedFd, OwnedFd)> {
+        rustpython_host_env::posix::openpty().map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn ttyname(fd: BorrowedFd<'_>, vm: &VirtualMachine) -> PyResult {
+        let name = rustpython_host_env::posix::ttyname(fd).map_err(|e| e.into_pyexception(vm))?;
+        let name = name.into_string().unwrap();
+        Ok(vm.ctx.new_str(name).into())
+    }
+
+    #[pyfunction]
+    fn umask(mask: libc::mode_t) -> libc::mode_t {
+        rustpython_host_env::posix::umask(mask)
+    }
+
+    #[pyfunction]
+    fn uname(vm: &VirtualMachine) -> PyResult<_os::UnameResultData> {
+        let info = rustpython_host_env::posix::uname_info().map_err(|err| {
+            let start = err.error.valid_up_to();
+            let end = err
+                .error
+                .error_len()
+                .map_or(err.bytes.len(), |len| start + len);
+            vm.new_unicode_decode_error(
+                vm.ctx.new_str("utf-8"),
+                vm.ctx.new_bytes(err.bytes),
+                start,
+                end,
+                vm.ctx.new_str(err.error.to_string()),
+            )
+        })?;
+        Ok(_os::UnameResultData {
+            sysname: info.sysname,
+            nodename: info.nodename,
+            release: info.release,
+            version: info.version,
+            machine: info.machine,
+        })
+    }
+
+    #[pyfunction]
+    fn sync() {
+        #[cfg(not(any(target_os = "redox", target_os = "android")))]
+        rustpython_host_env::posix::sync();
+    }
+
+    // cfg from nix
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "openbsd"))]
+    #[pyfunction]
+    fn getresuid(vm: &VirtualMachine) -> PyResult<(u32, u32, u32)> {
+        rustpython_host_env::posix::getresuid().map_err(|err| err.into_pyexception(vm))
+    }
+
+    // cfg from nix
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "openbsd"))]
+    #[pyfunction]
+    fn getresgid(vm: &VirtualMachine) -> PyResult<(u32, u32, u32)> {
+        rustpython_host_env::posix::getresgid().map_err(|err| err.into_pyexception(vm))
+    }
+
+    // cfg from nix
+    #[cfg(any(target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+    #[pyfunction]
+    fn setresgid(rgid: RawGid, egid: RawGid, sgid: RawGid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setresgid(rgid.0, egid.0, sgid.0)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(any(target_os = "wasi", target_os = "android", target_os = "redox")))]
+    #[pyfunction]
+    fn setregid(rgid: RawGid, egid: RawGid, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::setregid(rgid.0, egid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    // cfg from nix
+    #[cfg(any(target_os = "freebsd", target_os = "linux", target_os = "openbsd"))]
+    #[pyfunction]
+    fn initgroups(username: PyUtf8StrRef, gid: RawGid, vm: &VirtualMachine) -> PyResult<()> {
+        let user = username.to_cstring(vm)?;
+        rustpython_host_env::posix::initgroups(&user, gid.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    // cfg from nix
+    #[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "redox")))]
+    #[pyfunction]
+    fn setgroups(groups: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+        groups
+            .try_sequence(vm)
+            .map_err(|_| vm.new_type_error("setgroups argument must be a sequence"))?;
+        let gids = vm.extract_elements_with(&groups, |gid| {
+            RawGid::try_from_object(vm, gid).map(|gid| gid.0)
+        })?;
+        rustpython_host_env::posix::setgroups_raw(&gids).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    fn envp_from_dict(
+        env: crate::function::ArgMapping,
+        vm: &VirtualMachine,
+    ) -> PyResult<Vec<CString>> {
+        let items = env.mapping().items(vm)?;
+
+        // Convert items to list if it isn't already
+        let items = vm.ctx.new_list(
+            items
+                .get_iter(vm)?
+                .iter(vm)?
+                .collect::<PyResult<Vec<_>>>()?,
+        );
+
+        items
+            .borrow_vec()
+            .iter()
+            .map(|item| {
+                let tuple = item
+                    .downcast_ref::<crate::builtins::PyTuple>()
+                    .ok_or_else(|| vm.new_type_error("items() should return tuples"))?;
+                let tuple_items = tuple.as_slice();
+                if tuple_items.len() != 2 {
+                    return Err(vm.new_value_error("items() tuples should have exactly 2 elements"));
+                }
+                Ok((tuple_items[0].clone(), tuple_items[1].clone()))
+            })
+            .collect::<PyResult<Vec<_>>>()?
+            .into_iter()
+            .map(|(k, v)| {
+                let k = OsPath::try_from_object(vm, k)?.into_bytes();
+                let v = OsPath::try_from_object(vm, v)?.into_bytes();
+                if k.contains(&0) {
+                    return Err(vm.new_value_error("envp dict key cannot contain a nul byte"));
+                }
+                if k.contains(&b'=') {
+                    return Err(vm.new_value_error("envp dict key cannot contain a '=' character"));
+                }
+                if v.contains(&0) {
+                    return Err(vm.new_value_error("envp dict value cannot contain a nul byte"));
+                }
+                let mut env = k;
+                env.push(b'=');
+                env.extend(v);
+                Ok(unsafe { CString::from_vec_unchecked(env) })
+            })
+            .collect()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[derive(FromArgs)]
+    pub(super) struct PosixSpawnArgs {
+        #[pyarg(positional)]
+        path: OsPath,
+        #[pyarg(positional)]
+        argv: PyObjectRef,
+        #[pyarg(positional)]
+        env: Option<crate::function::ArgMapping>,
+        #[pyarg(named, default, py_default = "()")]
+        file_actions: Option<crate::function::ArgIterable<PyTupleRef>>,
+        #[pyarg(named, optional)]
+        setpgroup: Option<libc::pid_t>,
+        #[pyarg(named, default)]
+        resetids: bool,
+        #[pyarg(named, default)]
+        setsid: bool,
+        #[pyarg(named, default, py_default = "()")]
+        setsigmask: Option<crate::function::ArgIterable<i32>>,
+        #[pyarg(named, default, py_default = "()")]
+        setsigdef: Option<crate::function::ArgIterable<i32>>,
+        #[pyarg(named, optional)]
+        scheduler: Option<PyObjectRef>,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[derive(num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
+    #[repr(i32)]
+    enum PosixSpawnFileActionIdentifier {
+        Open,
+        Close,
+        Dup2,
+    }
+
+    #[cfg(all(
+        any(target_os = "linux", target_os = "freebsd", target_os = "android"),
+        not(target_env = "musl")
+    ))]
+    fn parse_posix_spawn_scheduler(
+        scheduler: Option<PyObjectRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult<Option<rustpython_host_env::posix::PosixSpawnScheduler>> {
+        let Some(obj) = scheduler else {
+            return Ok(None);
+        };
+        if obj.is(&vm.ctx.none()) {
+            return Ok(None);
+        }
+        let Some(tuple) = obj.downcast_ref::<PyTuple>() else {
+            return Err(vm.new_type_error("scheduler must be a tuple or None"));
+        };
+        if tuple.as_slice().len() != 2 {
+            return Err(vm.new_type_error("A scheduler tuple must have two elements"));
+        }
+        let policy = if tuple.as_slice()[0].is(&vm.ctx.none()) {
+            None
+        } else {
+            Some(i32::try_from_object(vm, tuple.as_slice()[0].clone())?)
+        };
+        let param = super::posix_sched::convert_sched_param(&tuple.as_slice()[1], vm)?;
+        Ok(Some(rustpython_host_env::posix::PosixSpawnScheduler {
+            policy,
+            param,
+        }))
+    }
+
+    #[cfg(any(target_os = "macos", target_env = "musl"))]
+    fn parse_posix_spawn_scheduler(
+        scheduler: Option<PyObjectRef>,
+        vm: &VirtualMachine,
+    ) -> PyResult<()> {
+        let Some(obj) = scheduler else {
+            return Ok(());
+        };
+        if obj.is(&vm.ctx.none()) {
+            return Ok(());
+        }
+        let Some(tuple) = obj.downcast_ref::<PyTuple>() else {
+            return Err(vm.new_type_error("scheduler must be a tuple or None"));
+        };
+        if tuple.as_slice().len() != 2 {
+            return Err(vm.new_type_error("A scheduler tuple must have two elements"));
+        }
+        Err(vm.new_not_implemented_error("The scheduler option is not supported in this system."))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    impl PosixSpawnArgs {
+        fn spawn(self, spawnp: bool, vm: &VirtualMachine) -> PyResult<libc::pid_t> {
+            use crate::TryFromBorrowedObject;
+
+            let path = self
+                .path
+                .clone()
+                .into_cstring(vm)
+                .map_err(|_| vm.new_value_error("path should not have nul bytes"))?;
+
+            let function_name = if spawnp {
+                "posix_spawnp"
+            } else {
+                "posix_spawn"
+            };
+            if !self.argv.fast_isinstance(vm.ctx.types.list_type)
+                && !self.argv.fast_isinstance(vm.ctx.types.tuple_type)
+            {
+                return Err(
+                    vm.new_type_error(format!("{function_name}: argv must be a tuple or list"))
+                );
+            }
+
+            let mut file_actions = Vec::new();
+            if let Some(it) = self.file_actions {
+                for action in it.iter(vm)? {
+                    let action = action?;
+                    let (id, args) = action.as_slice().split_first().ok_or_else(|| {
+                        vm.new_type_error("Each file_actions element must be a non-empty tuple")
+                    })?;
+                    let id = i32::try_from_borrowed_object(vm, id)?;
+                    let id = PosixSpawnFileActionIdentifier::try_from(id)
+                        .map_err(|_| vm.new_type_error("Unknown file_actions identifier"))?;
+                    let args: crate::function::FuncArgs = args.to_vec().into();
+                    let parsed = match id {
+                        PosixSpawnFileActionIdentifier::Open => {
+                            let (fd, path, oflag, mode): (_, OsPath, _, _) = args.bind(vm)?;
+                            let path = CString::new(path.into_bytes()).map_err(|_| {
+                                vm.new_value_error(
+                                    "POSIX_SPAWN_OPEN path should not have nul bytes",
+                                )
+                            })?;
+                            rustpython_host_env::posix::PosixSpawnFileAction::Open {
+                                fd,
+                                path,
+                                oflag,
+                                mode,
+                            }
+                        }
+                        PosixSpawnFileActionIdentifier::Close => {
+                            let (fd,) = args.bind(vm)?;
+                            rustpython_host_env::posix::PosixSpawnFileAction::Close { fd }
+                        }
+                        PosixSpawnFileActionIdentifier::Dup2 => {
+                            let (fd, newfd) = args.bind(vm)?;
+                            rustpython_host_env::posix::PosixSpawnFileAction::Dup2 { fd, newfd }
+                        }
+                    };
+                    file_actions.push(parsed);
+                }
+            }
+
+            let collect_signals = |sigs: crate::function::ArgIterable<i32>| {
+                let mut collected = Vec::new();
+                for sig in sigs.iter(vm)? {
+                    let sig = sig?;
+                    if !rustpython_host_env::posix::validate_posix_spawn_signal(sig) {
+                        return Err(vm.new_value_error(format!("signal number {sig} out of range")));
+                    }
+                    if !collected.contains(&sig) {
+                        collected.push(sig);
+                    }
+                }
+                Ok(collected)
+            };
+
+            let setsigdef = self.setsigdef.map(collect_signals).transpose()?;
+
+            #[cfg(all(
+                any(target_os = "linux", target_os = "freebsd", target_os = "android"),
+                not(target_env = "musl")
+            ))]
+            let scheduler = parse_posix_spawn_scheduler(self.scheduler, vm)?;
+            #[cfg(any(target_os = "macos", target_env = "musl"))]
+            parse_posix_spawn_scheduler(self.scheduler, vm)?;
+
+            if self.setsid && !rustpython_host_env::posix::supports_posix_spawn_setsid() {
+                return Err(vm.new_not_implemented_error(
+                    "setsid parameter is not supported on this platform",
+                ));
+            }
+
+            let setsigmask = self.setsigmask.map(collect_signals).transpose()?;
+
+            let args = vm.extract_elements_with(&self.argv, |arg| {
+                CString::new(OsPath::try_from_object(vm, arg)?.into_bytes())
+                    .map_err(|_| vm.new_value_error("path should not have nul bytes"))
+            })?;
+            let env = if let Some(env_dict) = self.env {
+                envp_from_dict(env_dict, vm)?
+            } else {
+                // env=None means use the current environment
+
+                crate::host_env::os::vars_os()
+                    .map(|(k, v)| {
+                        let mut entry = k.into_vec();
+                        entry.push(b'=');
+                        entry.extend(v.into_vec());
+                        CString::new(entry).map_err(|_| {
+                            vm.new_value_error("environment string contains null byte")
+                        })
+                    })
+                    .collect::<PyResult<Vec<_>>>()?
+            };
+
+            rustpython_host_env::posix::posix_spawn(rustpython_host_env::posix::PosixSpawnConfig {
+                path: &path,
+                args: &args,
+                env: &env,
+                file_actions: &file_actions,
+                setsigdef: setsigdef.as_deref(),
+                setpgroup: self.setpgroup,
+                resetids: self.resetids,
+                setsid: self.setsid,
+                setsigmask: setsigmask.as_deref(),
+                spawnp,
+                #[cfg(all(
+                    any(target_os = "linux", target_os = "freebsd", target_os = "android"),
+                    not(target_env = "musl")
+                ))]
+                scheduler,
+            })
+            .map_err(|err| OSErrorBuilder::with_filename(&err, self.path, vm))
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[pyfunction]
+    fn posix_spawn(args: PosixSpawnArgs, vm: &VirtualMachine) -> PyResult<libc::pid_t> {
+        args.spawn(false, vm)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
+    #[pyfunction]
+    fn posix_spawnp(args: PosixSpawnArgs, vm: &VirtualMachine) -> PyResult<libc::pid_t> {
+        args.spawn(true, vm)
+    }
+
+    #[derive(FromArgs)]
+    struct StatusArg {
+        #[pyarg(any)]
+        status: i32,
+    }
+
+    #[pyfunction(name = "WCOREDUMP")]
+    fn wcoredump(status: i32) -> bool {
+        rustpython_host_env::posix::wcoredump(status)
+    }
+
+    #[pyfunction(name = "WIFCONTINUED")]
+    fn wifcontinued(status: StatusArg) -> bool {
+        rustpython_host_env::posix::wifcontinued(status.status)
+    }
+
+    #[pyfunction(name = "WIFSTOPPED")]
+    fn wifstopped(status: StatusArg) -> bool {
+        rustpython_host_env::posix::wifstopped(status.status)
+    }
+
+    #[pyfunction(name = "WIFSIGNALED")]
+    fn wifsignaled(status: StatusArg) -> bool {
+        rustpython_host_env::posix::wifsignaled(status.status)
+    }
+
+    #[pyfunction(name = "WIFEXITED")]
+    fn wifexited(status: StatusArg) -> bool {
+        rustpython_host_env::posix::wifexited(status.status)
+    }
+
+    #[pyfunction(name = "WEXITSTATUS")]
+    fn wexitstatus(status: StatusArg) -> i32 {
+        rustpython_host_env::posix::wexitstatus(status.status)
+    }
+
+    #[pyfunction(name = "WSTOPSIG")]
+    fn wstopsig(status: StatusArg) -> i32 {
+        rustpython_host_env::posix::wstopsig(status.status)
+    }
+
+    #[pyfunction(name = "WTERMSIG")]
+    fn wtermsig(status: StatusArg) -> i32 {
+        rustpython_host_env::posix::wtermsig(status.status)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[pyfunction]
+    fn pidfd_open(
+        pid: libc::pid_t,
+        flags: OptionalArg<u32>,
+        vm: &VirtualMachine,
+    ) -> PyResult<OwnedFd> {
+        let flags = flags.unwrap_or(0);
+        rustpython_host_env::posix::pidfd_open(pid, flags).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn waitpid(
+        pid: libc::pid_t,
+        options: i32,
+        vm: &VirtualMachine,
+    ) -> PyResult<(libc::pid_t, i32)> {
+        let mut status = 0;
+        loop {
+            let res =
+                vm.allow_threads(|| rustpython_host_env::posix::waitpid(pid, &mut status, options));
+            match res {
+                Err(err) if err.raw_os_error() == Some(libc::EINTR) => {
+                    vm.check_signals()?;
+                    continue;
+                }
+                Err(err) => return Err(err.into_pyexception(vm)),
+                Ok(res) => return Ok((res, status)),
+            }
+        }
+    }
+
+    #[pyfunction]
+    fn wait(vm: &VirtualMachine) -> PyResult<(libc::pid_t, i32)> {
+        waitpid(-1, 0, vm)
+    }
+
+    fn rusage_to_py(
+        ru: rustpython_host_env::resource::RUsage,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyObjectRef> {
+        let resource = vm.import("resource", 0)?;
+        let struct_rusage = resource.get_attr("struct_rusage", vm)?;
+        let tv = |t: rustpython_host_env::resource::timeval| {
+            t.tv_sec as f64 + (t.tv_usec as f64 / 1_000_000.0)
+        };
+        let fields = vm.ctx.new_tuple(vec![
+            vm.ctx.new_float(tv(ru.ru_utime)).into(),
+            vm.ctx.new_float(tv(ru.ru_stime)).into(),
+            vm.ctx.new_int(ru.ru_maxrss).into(),
+            vm.ctx.new_int(ru.ru_ixrss).into(),
+            vm.ctx.new_int(ru.ru_idrss).into(),
+            vm.ctx.new_int(ru.ru_isrss).into(),
+            vm.ctx.new_int(ru.ru_minflt).into(),
+            vm.ctx.new_int(ru.ru_majflt).into(),
+            vm.ctx.new_int(ru.ru_nswap).into(),
+            vm.ctx.new_int(ru.ru_inblock).into(),
+            vm.ctx.new_int(ru.ru_oublock).into(),
+            vm.ctx.new_int(ru.ru_msgsnd).into(),
+            vm.ctx.new_int(ru.ru_msgrcv).into(),
+            vm.ctx.new_int(ru.ru_nsignals).into(),
+            vm.ctx.new_int(ru.ru_nvcsw).into(),
+            vm.ctx.new_int(ru.ru_nivcsw).into(),
+        ]);
+        struct_rusage.call((fields,), vm)
+    }
+
+    fn wait_with_rusage<F>(vm: &VirtualMachine, wait: F) -> PyResult<PyTupleRef>
+    where
+        F: Fn() -> std::io::Result<(libc::pid_t, i32, rustpython_host_env::resource::RUsage)>,
+    {
+        loop {
+            match vm.allow_threads(&wait) {
+                Err(err) if err.raw_os_error() == Some(libc::EINTR) => {
+                    vm.check_signals()?;
+                    continue;
+                }
+                Err(err) => return Err(err.into_pyexception(vm)),
+                Ok((pid, status, ru)) => {
+                    let rusage = rusage_to_py(ru, vm)?;
+                    return Ok(vm.new_tuple((pid, status, rusage)));
+                }
+            }
+        }
+    }
+
+    #[derive(FromArgs)]
+    struct Wait3Args {
+        #[pyarg(any)]
+        options: i32,
+    }
+
+    #[pyfunction]
+    fn wait3(options: Wait3Args, vm: &VirtualMachine) -> PyResult<PyTupleRef> {
+        let options = options.options;
+        wait_with_rusage(vm, || rustpython_host_env::posix::wait3(options))
+    }
+
+    #[derive(FromArgs)]
+    struct Wait4Args {
+        #[pyarg(any)]
+        pid: libc::pid_t,
+        #[pyarg(any)]
+        options: i32,
+    }
+
+    #[pyfunction]
+    fn wait4(args: Wait4Args, vm: &VirtualMachine) -> PyResult<PyTupleRef> {
+        wait_with_rusage(vm, || {
+            rustpython_host_env::posix::wait4(args.pid, args.options)
+        })
+    }
+
+    #[pyfunction]
+    fn kill(pid: i32, signal: isize, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::kill(pid, signal as i32).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn killpg(pgid: i32, signal: isize, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::killpg(pgid, signal as i32)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn get_terminal_size(
+        fd: OptionalArg<i32>,
+        vm: &VirtualMachine,
+    ) -> PyResult<_os::TerminalSizeData> {
+        let (columns, lines) =
+            rustpython_host_env::posix::get_terminal_size(fd.unwrap_or(libc::STDOUT_FILENO))
+                .map(|(columns, lines)| (columns.into(), lines.into()))
+                .map_err(|err| err.into_pyexception(vm))?;
+        Ok(_os::TerminalSizeData { columns, lines })
+    }
+
+    #[cfg(target_os = "macos")]
+    #[pyfunction]
+    fn _fcopyfile(in_fd: i32, out_fd: i32, flags: i32, vm: &VirtualMachine) -> PyResult<()> {
+        rustpython_host_env::posix::fcopyfile(in_fd, out_fd, flags as u32)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn dup(fd: BorrowedFd<'_>, vm: &VirtualMachine) -> PyResult<OwnedFd> {
+        rustpython_host_env::posix::dup_noninheritable(fd).map_err(|e| e.into_pyexception(vm))
+    }
+
+    #[derive(FromArgs)]
+    struct Dup2Args<'fd> {
+        #[pyarg(any)]
+        fd: BorrowedFd<'fd>,
+        #[pyarg(any)]
+        fd2: OwnedFd,
+        #[pyarg(any, default = true)]
+        inheritable: bool,
+    }
+
+    #[pyfunction]
+    fn dup2(args: Dup2Args<'_>, vm: &VirtualMachine) -> PyResult<OwnedFd> {
+        rustpython_host_env::posix::dup2(args.fd, args.fd2, args.inheritable)
+            .map_err(|e| e.into_pyexception(vm))
+    }
+
+    pub(crate) fn support_funcs() -> Vec<SupportFunc> {
+        vec![
+            SupportFunc::new(
+                "chmod",
+                Some(false),
+                Some(false),
+                Some(cfg!(any(
+                    target_os = "macos",
+                    target_os = "freebsd",
+                    target_os = "netbsd"
+                ))),
+            ),
+            #[cfg(not(target_os = "redox"))]
+            SupportFunc::new("chroot", Some(false), None, None),
+            #[cfg(not(target_os = "redox"))]
+            SupportFunc::new("chown", Some(true), Some(true), Some(true)),
+            #[cfg(not(target_os = "redox"))]
+            SupportFunc::new("lchown", None, None, None),
+            #[cfg(not(target_os = "redox"))]
+            SupportFunc::new("fchown", Some(true), None, Some(true)),
+            #[cfg(not(target_os = "redox"))]
+            SupportFunc::new("mknod", Some(true), Some(MKNOD_DIR_FD), Some(false)),
+            SupportFunc::new("umask", Some(false), Some(false), Some(false)),
+            SupportFunc::new("execv", None, None, None),
+            SupportFunc::new("pathconf", Some(true), None, None),
+            SupportFunc::new("fpathconf", Some(true), None, None),
+            SupportFunc::new("fchdir", Some(true), None, None),
+        ]
+    }
+
+    #[pyfunction]
+    fn getlogin(vm: &VirtualMachine) -> PyResult<String> {
+        // Get a pointer to the login name string. The string is statically
+        // allocated and might be overwritten on subsequent calls to this
+        // function or to `cuserid()`. See man getlogin(3) for more information.
+        let Some(login) = rustpython_host_env::posix::getlogin() else {
+            return Err(vm.new_os_error("unable to determine login name"));
+        };
+        login.to_str().map(|s| s.to_owned()).map_err(|e| {
+            vm.new_unicode_decode_error(
+                vm.ctx.new_str("utf-8"),
+                vm.ctx.new_bytes(login.as_bytes().to_vec()),
+                e.valid_up_to(),
+                e.error_len()
+                    .map_or(login.as_bytes().len(), |n| e.valid_up_to() + n),
+                vm.ctx.new_str("unable to decode login name"),
+            )
+        })
+    }
+
+    // cfg from nix
+    #[cfg(any(
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "linux",
+        target_os = "openbsd"
+    ))]
+    #[pyfunction]
+    fn getgrouplist(
+        user: PyUtf8StrRef,
+        group: u32,
+        vm: &VirtualMachine,
+    ) -> PyResult<Vec<PyObjectRef>> {
+        let user = user.to_cstring(vm)?;
+        let group_ids = rustpython_host_env::posix::getgrouplist(&user, group)
+            .map_err(|err| err.into_pyexception(vm))?;
+        Ok(group_ids.into_iter().map(|gid| vm.new_pyobj(gid)).collect())
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct GetPriorityArgs {
+        #[pyarg(any)]
+        which: rustpython_host_env::posix::PriorityWhichType,
+        #[pyarg(any)]
+        who: rustpython_host_env::posix::PriorityWhoType,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn getpriority(args: GetPriorityArgs, vm: &VirtualMachine) -> PyResult {
+        let GetPriorityArgs { which, who } = args;
+        rustpython_host_env::posix::getpriority(which, who)
+            .map(|retval| vm.ctx.new_int(retval).into())
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(FromArgs)]
+    struct SetPriorityArgs {
+        #[pyarg(any)]
+        which: rustpython_host_env::posix::PriorityWhichType,
+        #[pyarg(any)]
+        who: rustpython_host_env::posix::PriorityWhoType,
+        #[pyarg(any)]
+        priority: i32,
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[pyfunction]
+    fn setpriority(args: SetPriorityArgs, vm: &VirtualMachine) -> PyResult<()> {
+        let SetPriorityArgs {
+            which,
+            who,
+            priority,
+        } = args;
+        rustpython_host_env::posix::setpriority(which, who, priority)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    struct PathconfName(i32);
+
+    impl TryFromObject for PathconfName {
+        fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            let i = match obj.downcast::<PyInt>() {
+                Ok(int) => int.try_to_primitive(vm)?,
+                Err(obj) => {
+                    let s = obj.downcast::<PyUtf8Str>().map_err(|_| {
+                        vm.new_type_error("configuration names must be strings or integers")
+                    })?;
+                    s.as_str()
+                        .parse::<PathconfVar>()
+                        .map_err(|_| vm.new_value_error("unrecognized configuration name"))?
+                        as i32
+                }
+            };
+            Ok(Self(i))
+        }
+    }
+
+    // Mirror the libc pathconf constants as Python-facing names.
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, EnumIter, EnumString)]
+    #[repr(i32)]
+    #[allow(non_camel_case_types)]
+    pub enum PathconfVar {
+        #[cfg(any(
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "linux",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox"
+        ))]
+        /// Minimum number of bits needed to represent, as a signed integer value,
+        /// the maximum size of a regular file allowed in the specified directory.
+        PC_FILESIZEBITS = host_posix::_PC_FILESIZEBITS,
+        /// Maximum number of links to a single file.
+        PC_LINK_MAX = host_posix::_PC_LINK_MAX,
+        /// Maximum number of bytes in a terminal canonical input line.
+        PC_MAX_CANON = host_posix::_PC_MAX_CANON,
+        /// Minimum number of bytes for which space is available in a terminal input
+        /// queue; therefore, the maximum number of bytes a conforming application
+        /// may require to be typed as input before reading them.
+        PC_MAX_INPUT = host_posix::_PC_MAX_INPUT,
+        /// Maximum number of bytes in a filename (not including the terminating
+        /// null of a filename string).
+        PC_NAME_MAX = host_posix::_PC_NAME_MAX,
+        /// Maximum number of bytes the implementation will store as a pathname in a
+        /// user-supplied buffer of unspecified size, including the terminating null
+        /// character. Minimum number the implementation will accept as the maximum
+        /// number of bytes in a pathname.
+        PC_PATH_MAX = host_posix::_PC_PATH_MAX,
+        /// Maximum number of bytes that is guaranteed to be atomic when writing to
+        /// a pipe.
+        PC_PIPE_BUF = host_posix::_PC_PIPE_BUF,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "illumos",
+            target_os = "linux",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        ))]
+        /// Symbolic links can be created.
+        PC_2_SYMLINKS = host_posix::_PC_2_SYMLINKS,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "redox"
+        ))]
+        /// Minimum number of bytes of storage actually allocated for any portion of
+        /// a file.
+        PC_ALLOC_SIZE_MIN = host_posix::_PC_ALLOC_SIZE_MIN,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "linux",
+            target_os = "openbsd"
+        ))]
+        /// Recommended increment for file transfer sizes between the
+        /// `POSIX_REC_MIN_XFER_SIZE` and `POSIX_REC_MAX_XFER_SIZE` values.
+        PC_REC_INCR_XFER_SIZE = host_posix::_PC_REC_INCR_XFER_SIZE,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "redox"
+        ))]
+        /// Maximum recommended file transfer size.
+        PC_REC_MAX_XFER_SIZE = host_posix::_PC_REC_MAX_XFER_SIZE,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "redox"
+        ))]
+        /// Minimum recommended file transfer size.
+        PC_REC_MIN_XFER_SIZE = host_posix::_PC_REC_MIN_XFER_SIZE,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "redox"
+        ))]
+        ///  Recommended file transfer buffer alignment.
+        PC_REC_XFER_ALIGN = host_posix::_PC_REC_XFER_ALIGN,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "illumos",
+            target_os = "linux",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        ))]
+        /// Maximum number of bytes in a symbolic link.
+        PC_SYMLINK_MAX = host_posix::_PC_SYMLINK_MAX,
+        /// The use of `chown` and `fchown` is restricted to a process with
+        /// appropriate privileges, and to changing the group ID of a file only to
+        /// the effective group ID of the process or to one of its supplementary
+        /// group IDs.
+        PC_CHOWN_RESTRICTED = host_posix::_PC_CHOWN_RESTRICTED,
+        /// Pathname components longer than {NAME_MAX} generate an error.
+        PC_NO_TRUNC = host_posix::_PC_NO_TRUNC,
+        /// This symbol shall be defined to be the value of a character that shall
+        /// disable terminal special character handling.
+        PC_VDISABLE = host_posix::_PC_VDISABLE,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "illumos",
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        ))]
+        /// Asynchronous input or output operations may be performed for the
+        /// associated file.
+        PC_ASYNC_IO = host_posix::_PC_ASYNC_IO,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "illumos",
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        ))]
+        /// Prioritized input or output operations may be performed for the
+        /// associated file.
+        PC_PRIO_IO = host_posix::_PC_PRIO_IO,
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "illumos",
+            target_os = "linux",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "solaris"
+        ))]
+        /// Synchronized input or output operations may be performed for the
+        /// associated file.
+        PC_SYNC_IO = host_posix::_PC_SYNC_IO,
+        #[cfg(any(target_os = "dragonfly", target_os = "openbsd"))]
+        /// The resolution in nanoseconds for all file timestamps.
+        PC_TIMESTAMP_RESOLUTION = host_posix::_PC_TIMESTAMP_RESOLUTION,
+    }
+
+    #[cfg(unix)]
+    #[derive(FromArgs)]
+    struct PathconfArgs {
+        #[pyarg(any)]
+        path: OsPathOrFd<'static>,
+        #[pyarg(any)]
+        name: PathconfName,
+    }
+
+    #[cfg(unix)]
+    #[pyfunction]
+    fn pathconf(
+        PathconfArgs {
+            path,
+            name: PathconfName(name),
+        }: PathconfArgs,
+        vm: &VirtualMachine,
+    ) -> PyResult<Option<libc::c_long>> {
+        match &path {
+            OsPathOrFd::Path(path) => {
+                let c_path = path.clone().into_cstring(vm)?;
+                rustpython_host_env::posix::pathconf(&c_path, name)
+                    .map_err(|err| OSErrorBuilder::with_filename(&err, path.clone(), vm))
+            }
+            OsPathOrFd::Fd(fd) => rustpython_host_env::posix::fpathconf(fd.as_raw(), name)
+                .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm)),
+        }
+    }
+
+    #[pyfunction]
+    fn fpathconf(
+        fd: BorrowedFd<'_>,
+        name: PathconfName,
+        vm: &VirtualMachine,
+    ) -> PyResult<Option<libc::c_long>> {
+        let path = OsPathOrFd::Fd(fd.into());
+        let OsPathOrFd::Fd(fd) = &path else {
+            unreachable!()
+        };
+        rustpython_host_env::posix::fpathconf(fd.as_raw(), name.0)
+            .map_err(|err| OSErrorBuilder::with_filename(&err, path, vm))
+    }
+
+    #[pyattr]
+    fn pathconf_names(vm: &VirtualMachine) -> PyDictRef {
+        let pathname = vm.ctx.new_dict();
+        for variant in PathconfVar::iter() {
+            // get the name of variant as a string to use as the dictionary key
+            let key = vm.ctx.new_str(format!("{variant:?}"));
+            // get the enum from the string and convert it to an integer for the dictionary value
+            let value = vm.ctx.new_int(variant as u8);
+            pathname
+                .set_item(&*key, value.into(), vm)
+                .expect("dict set_item unexpectedly failed");
+        }
+        pathname
+    }
+
+    #[cfg(not(target_os = "redox"))]
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, EnumIter, EnumString)]
+    #[repr(i32)]
+    #[allow(non_camel_case_types)]
+    pub enum SysconfVar {
+        SC_2_CHAR_TERM = host_posix::_SC_2_CHAR_TERM,
+        SC_2_C_BIND = host_posix::_SC_2_C_BIND,
+        SC_2_C_DEV = host_posix::_SC_2_C_DEV,
+        SC_2_FORT_DEV = host_posix::_SC_2_FORT_DEV,
+        SC_2_FORT_RUN = host_posix::_SC_2_FORT_RUN,
+        SC_2_LOCALEDEF = host_posix::_SC_2_LOCALEDEF,
+        SC_2_SW_DEV = host_posix::_SC_2_SW_DEV,
+        SC_2_UPE = host_posix::_SC_2_UPE,
+        SC_2_VERSION = host_posix::_SC_2_VERSION,
+        SC_AIO_LISTIO_MAX = host_posix::_SC_AIO_LISTIO_MAX,
+        SC_AIO_MAX = host_posix::_SC_AIO_MAX,
+        SC_AIO_PRIO_DELTA_MAX = host_posix::_SC_AIO_PRIO_DELTA_MAX,
+        SC_ARG_MAX = host_posix::_SC_ARG_MAX,
+        SC_ASYNCHRONOUS_IO = host_posix::_SC_ASYNCHRONOUS_IO,
+        SC_ATEXIT_MAX = host_posix::_SC_ATEXIT_MAX,
+        SC_BC_BASE_MAX = host_posix::_SC_BC_BASE_MAX,
+        SC_BC_DIM_MAX = host_posix::_SC_BC_DIM_MAX,
+        SC_BC_SCALE_MAX = host_posix::_SC_BC_SCALE_MAX,
+        SC_BC_STRING_MAX = host_posix::_SC_BC_STRING_MAX,
+        SC_CHILD_MAX = host_posix::_SC_CHILD_MAX,
+        SC_CLK_TCK = host_posix::_SC_CLK_TCK,
+        SC_COLL_WEIGHTS_MAX = host_posix::_SC_COLL_WEIGHTS_MAX,
+        SC_DELAYTIMER_MAX = host_posix::_SC_DELAYTIMER_MAX,
+        SC_EXPR_NEST_MAX = host_posix::_SC_EXPR_NEST_MAX,
+        SC_FSYNC = host_posix::_SC_FSYNC,
+        SC_GETGR_R_SIZE_MAX = host_posix::_SC_GETGR_R_SIZE_MAX,
+        SC_GETPW_R_SIZE_MAX = host_posix::_SC_GETPW_R_SIZE_MAX,
+        SC_IOV_MAX = host_posix::_SC_IOV_MAX,
+        SC_JOB_CONTROL = host_posix::_SC_JOB_CONTROL,
+        SC_LINE_MAX = host_posix::_SC_LINE_MAX,
+        SC_LOGIN_NAME_MAX = host_posix::_SC_LOGIN_NAME_MAX,
+        SC_MAPPED_FILES = host_posix::_SC_MAPPED_FILES,
+        SC_MEMLOCK = host_posix::_SC_MEMLOCK,
+        SC_MEMLOCK_RANGE = host_posix::_SC_MEMLOCK_RANGE,
+        SC_MEMORY_PROTECTION = host_posix::_SC_MEMORY_PROTECTION,
+        SC_MESSAGE_PASSING = host_posix::_SC_MESSAGE_PASSING,
+        SC_MQ_OPEN_MAX = host_posix::_SC_MQ_OPEN_MAX,
+        SC_MQ_PRIO_MAX = host_posix::_SC_MQ_PRIO_MAX,
+        SC_NGROUPS_MAX = host_posix::_SC_NGROUPS_MAX,
+        SC_NPROCESSORS_CONF = host_posix::_SC_NPROCESSORS_CONF,
+        SC_NPROCESSORS_ONLN = host_posix::_SC_NPROCESSORS_ONLN,
+        SC_OPEN_MAX = host_posix::_SC_OPEN_MAX,
+        SC_PAGE_SIZE = host_posix::_SC_PAGE_SIZE,
+        #[cfg(any(
+            target_os = "linux",
+            target_vendor = "apple",
+            target_os = "netbsd",
+            target_os = "fuchsia"
+        ))]
+        SC_PASS_MAX = host_posix::_SC_PASS_MAX,
+        SC_PHYS_PAGES = host_posix::_SC_PHYS_PAGES,
+        SC_PRIORITIZED_IO = host_posix::_SC_PRIORITIZED_IO,
+        SC_PRIORITY_SCHEDULING = host_posix::_SC_PRIORITY_SCHEDULING,
+        SC_REALTIME_SIGNALS = host_posix::_SC_REALTIME_SIGNALS,
+        SC_RE_DUP_MAX = host_posix::_SC_RE_DUP_MAX,
+        SC_RTSIG_MAX = host_posix::_SC_RTSIG_MAX,
+        SC_SAVED_IDS = host_posix::_SC_SAVED_IDS,
+        SC_SEMAPHORES = host_posix::_SC_SEMAPHORES,
+        SC_SEM_NSEMS_MAX = host_posix::_SC_SEM_NSEMS_MAX,
+        SC_SEM_VALUE_MAX = host_posix::_SC_SEM_VALUE_MAX,
+        SC_SHARED_MEMORY_OBJECTS = host_posix::_SC_SHARED_MEMORY_OBJECTS,
+        SC_SIGQUEUE_MAX = host_posix::_SC_SIGQUEUE_MAX,
+        SC_STREAM_MAX = host_posix::_SC_STREAM_MAX,
+        SC_SYNCHRONIZED_IO = host_posix::_SC_SYNCHRONIZED_IO,
+        SC_THREADS = host_posix::_SC_THREADS,
+        SC_THREAD_ATTR_STACKADDR = host_posix::_SC_THREAD_ATTR_STACKADDR,
+        SC_THREAD_ATTR_STACKSIZE = host_posix::_SC_THREAD_ATTR_STACKSIZE,
+        SC_THREAD_DESTRUCTOR_ITERATIONS = host_posix::_SC_THREAD_DESTRUCTOR_ITERATIONS,
+        SC_THREAD_KEYS_MAX = host_posix::_SC_THREAD_KEYS_MAX,
+        SC_THREAD_PRIORITY_SCHEDULING = host_posix::_SC_THREAD_PRIORITY_SCHEDULING,
+        SC_THREAD_PRIO_INHERIT = host_posix::_SC_THREAD_PRIO_INHERIT,
+        SC_THREAD_PRIO_PROTECT = host_posix::_SC_THREAD_PRIO_PROTECT,
+        SC_THREAD_PROCESS_SHARED = host_posix::_SC_THREAD_PROCESS_SHARED,
+        SC_THREAD_SAFE_FUNCTIONS = host_posix::_SC_THREAD_SAFE_FUNCTIONS,
+        SC_THREAD_STACK_MIN = host_posix::_SC_THREAD_STACK_MIN,
+        SC_THREAD_THREADS_MAX = host_posix::_SC_THREAD_THREADS_MAX,
+        SC_TIMERS = host_posix::_SC_TIMERS,
+        SC_TIMER_MAX = host_posix::_SC_TIMER_MAX,
+        SC_TTY_NAME_MAX = host_posix::_SC_TTY_NAME_MAX,
+        SC_TZNAME_MAX = host_posix::_SC_TZNAME_MAX,
+        SC_VERSION = host_posix::_SC_VERSION,
+        SC_XOPEN_CRYPT = host_posix::_SC_XOPEN_CRYPT,
+        SC_XOPEN_ENH_I18N = host_posix::_SC_XOPEN_ENH_I18N,
+        SC_XOPEN_LEGACY = host_posix::_SC_XOPEN_LEGACY,
+        SC_XOPEN_REALTIME = host_posix::_SC_XOPEN_REALTIME,
+        SC_XOPEN_REALTIME_THREADS = host_posix::_SC_XOPEN_REALTIME_THREADS,
+        SC_XOPEN_SHM = host_posix::_SC_XOPEN_SHM,
+        SC_XOPEN_UNIX = host_posix::_SC_XOPEN_UNIX,
+        SC_XOPEN_VERSION = host_posix::_SC_XOPEN_VERSION,
+        SC_XOPEN_XCU_VERSION = host_posix::_SC_XOPEN_XCU_VERSION,
+        #[cfg(any(
+            target_os = "linux",
+            target_vendor = "apple",
+            target_os = "netbsd",
+            target_os = "fuchsia"
+        ))]
+        SC_XBS5_ILP32_OFF32 = host_posix::_SC_XBS5_ILP32_OFF32,
+        #[cfg(any(
+            target_os = "linux",
+            target_vendor = "apple",
+            target_os = "netbsd",
+            target_os = "fuchsia"
+        ))]
+        SC_XBS5_ILP32_OFFBIG = host_posix::_SC_XBS5_ILP32_OFFBIG,
+        #[cfg(any(
+            target_os = "linux",
+            target_vendor = "apple",
+            target_os = "netbsd",
+            target_os = "fuchsia"
+        ))]
+        SC_XBS5_LP64_OFF64 = host_posix::_SC_XBS5_LP64_OFF64,
+        #[cfg(any(
+            target_os = "linux",
+            target_vendor = "apple",
+            target_os = "netbsd",
+            target_os = "fuchsia"
+        ))]
+        SC_XBS5_LPBIG_OFFBIG = host_posix::_SC_XBS5_LPBIG_OFFBIG,
+    }
+
+    #[cfg(target_os = "redox")]
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, EnumIter, EnumString)]
+    #[repr(i32)]
+    #[allow(non_camel_case_types)]
+    pub enum SysconfVar {
+        SC_ARG_MAX = host_posix::_SC_ARG_MAX,
+        SC_CHILD_MAX = host_posix::_SC_CHILD_MAX,
+        SC_CLK_TCK = host_posix::_SC_CLK_TCK,
+        SC_NGROUPS_MAX = host_posix::_SC_NGROUPS_MAX,
+        SC_OPEN_MAX = host_posix::_SC_OPEN_MAX,
+        SC_STREAM_MAX = host_posix::_SC_STREAM_MAX,
+        SC_TZNAME_MAX = host_posix::_SC_TZNAME_MAX,
+        SC_VERSION = host_posix::_SC_VERSION,
+        SC_PAGE_SIZE = host_posix::_SC_PAGE_SIZE,
+        SC_RE_DUP_MAX = host_posix::_SC_RE_DUP_MAX,
+        SC_LOGIN_NAME_MAX = host_posix::_SC_LOGIN_NAME_MAX,
+        SC_TTY_NAME_MAX = host_posix::_SC_TTY_NAME_MAX,
+        SC_SYMLOOP_MAX = host_posix::_SC_SYMLOOP_MAX,
+        SC_HOST_NAME_MAX = host_posix::_SC_HOST_NAME_MAX,
+    }
+
+    impl SysconfVar {
+        pub const SC_PAGESIZE: Self = Self::SC_PAGE_SIZE;
+    }
+
+    struct SysconfName(i32);
+
+    impl TryFromObject for SysconfName {
+        fn try_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            let i = match obj.downcast::<PyInt>() {
+                Ok(int) => int.try_to_primitive(vm)?,
+                Err(obj) => {
+                    let s = obj.downcast::<PyUtf8Str>().map_err(|_| {
+                        vm.new_type_error("configuration names must be strings or integers")
+                    })?;
+                    {
+                        let name = s.as_str();
+                        name.parse::<SysconfVar>().or_else(|_| {
+                            if name == "SC_PAGESIZE" {
+                                Ok(SysconfVar::SC_PAGESIZE)
+                            } else {
+                                Err(vm.new_value_error("unrecognized configuration name"))
+                            }
+                        })? as i32
+                    }
+                }
+            };
+            Ok(Self(i))
+        }
+    }
+
+    #[pyfunction]
+    fn sysconf(name: SysconfName, vm: &VirtualMachine) -> PyResult<libc::c_long> {
+        rustpython_host_env::posix::sysconf(name.0).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyattr]
+    fn sysconf_names(vm: &VirtualMachine) -> PyDictRef {
+        let names = vm.ctx.new_dict();
+        for variant in SysconfVar::iter() {
+            // get the name of variant as a string to use as the dictionary key
+            let key = vm.ctx.new_str(format!("{variant:?}"));
+            // get the enum from the string and convert it to an integer for the dictionary value
+            let value = vm.ctx.new_int(variant as u8);
+            names
+                .set_item(&*key, value.into(), vm)
+                .expect("dict set_item unexpectedly failed");
+        }
+        names
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[derive(FromArgs)]
+    struct SendFileArgs<'fd> {
+        out_fd: BorrowedFd<'fd>,
+        in_fd: BorrowedFd<'fd>,
+        offset: rustpython_host_env::crt_fd::Offset,
+        count: i64,
+        #[cfg(target_os = "macos")]
+        // Missing means an empty header list.
+        #[pyarg(any, optional, py_default = "()")]
+        headers: OptionalArg<PyObjectRef>,
+        #[cfg(target_os = "macos")]
+        // Missing means an empty trailer list.
+        #[pyarg(any, optional, py_default = "()")]
+        trailers: OptionalArg<PyObjectRef>,
+        #[cfg(target_os = "macos")]
+        #[allow(dead_code)]
+        #[pyarg(any, default)]
+        // TODO: not implemented
+        flags: i32,
+    }
+
+    #[cfg(target_os = "linux")]
+    #[pyfunction]
+    fn sendfile(args: SendFileArgs<'_>, vm: &VirtualMachine) -> PyResult {
+        let mut file_offset = args.offset;
+
+        let res = rustpython_host_env::posix::sendfile(
+            args.out_fd,
+            args.in_fd,
+            &mut file_offset,
+            args.count as usize,
+        )
+        .map_err(|err| err.into_pyexception(vm))?;
+        Ok(vm.ctx.new_int(res as u64).into())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn _extract_vec_bytes(
+        x: OptionalArg,
+        vm: &VirtualMachine,
+    ) -> PyResult<Option<Vec<crate::function::ArgBytesLike>>> {
+        x.into_option()
+            .map(|x| {
+                let v: Vec<crate::function::ArgBytesLike> = x.try_to_value(vm)?;
+                Ok(if v.is_empty() { None } else { Some(v) })
+            })
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[pyfunction]
+    fn sendfile(args: SendFileArgs<'_>, vm: &VirtualMachine) -> PyResult {
+        let headers = _extract_vec_bytes(args.headers, vm)?;
+        let count = headers
+            .as_ref()
+            .map_or(0, |v| v.iter().map(|s| s.len()).sum()) as i64
+            + args.count;
+
+        let headers = headers
+            .as_ref()
+            .map(|v| v.iter().map(|b| b.borrow_buf()).collect::<Vec<_>>());
+        let headers = headers
+            .as_ref()
+            .map(|v| v.iter().map(|borrowed| &**borrowed).collect::<Vec<_>>());
+        let headers = headers.as_deref();
+
+        let trailers = _extract_vec_bytes(args.trailers, vm)?;
+        let trailers = trailers
+            .as_ref()
+            .map(|v| v.iter().map(|b| b.borrow_buf()).collect::<Vec<_>>());
+        let trailers = trailers
+            .as_ref()
+            .map(|v| v.iter().map(|borrowed| &**borrowed).collect::<Vec<_>>());
+        let trailers = trailers.as_deref();
+
+        let (res, written) = rustpython_host_env::posix::sendfile(
+            args.in_fd,
+            args.out_fd,
+            args.offset,
+            count,
+            headers,
+            trailers,
+        );
+        // On macOS, sendfile can return EAGAIN even when some bytes were written.
+        // In that case, we should return the number of bytes written rather than
+        // raising an exception. Only raise an error if no bytes were written.
+        if let Err(err) = res
+            && written == 0
+        {
+            return Err(err.into_pyexception(vm));
+        }
+        Ok(vm.ctx.new_int(written as u64).into())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[pyfunction]
+    fn getrandom(size: isize, flags: OptionalArg<u32>, vm: &VirtualMachine) -> PyResult<Vec<u8>> {
+        let size = usize::try_from(size)
+            .map_err(|_| vm.new_os_error(format!("Invalid argument for size: {size}")))?;
+        let mut buf = Vec::with_capacity(size);
+        unsafe {
+            let len = rustpython_host_env::posix::getrandom(
+                buf.as_mut_ptr() as *mut libc::c_void,
+                size,
+                flags.unwrap_or(0),
+            )
+            .map_err(|_| vm.new_last_os_error())?;
+            buf.set_len(len);
+        }
+        Ok(buf)
+    }
+
+    pub(crate) fn module_exec(
+        vm: &VirtualMachine,
+        module: &Py<crate::builtins::PyModule>,
+    ) -> PyResult<()> {
+        __module_exec(vm, module);
+        super::super::os::module_exec(vm, module)?;
+        Ok(())
+    }
+
+    #[pyfunction]
+    fn _is_inputhook_installed() -> bool {
+        // TODO: Implement the actual logic here
+        false
+    }
+}
+
+#[cfg(any(
+    target_os = "linux",
+    target_os = "netbsd",
+    target_os = "freebsd",
+    target_os = "android"
+))]
+#[pymodule(sub, name = "posix")]
+mod posix_sched {
+    use crate::{
+        AsObject, Py, PyObject, PyObjectRef, PyResult, VirtualMachine,
+        builtins::PyTupleRef,
+        class::PyClassDef,
+        convert::{IntoPyException, ToPyObject},
+        function::FuncArgs,
+        types::PyStructSequence,
+    };
+
+    #[derive(FromArgs)]
+    struct SchedParamArgs {
+        #[pyarg(any)]
+        sched_priority: PyObjectRef,
+    }
+
+    #[pystruct_sequence_data]
+    struct SchedParamData {
+        pub sched_priority: PyObjectRef,
+    }
+
+    #[pyattr]
+    #[pystruct_sequence(name = "sched_param", module = "posix", data = "SchedParamData")]
+    struct PySchedParam;
+
+    #[pyclass(with(PyStructSequence))]
+    impl PySchedParam {
+        #[pyslot]
+        fn slot_new(
+            cls: crate::builtins::PyTypeRef,
+            args: FuncArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult {
+            use crate::PyPayload;
+            let SchedParamArgs { sched_priority } = args.bind_for(vm, Self::NAME)?;
+            let items = vec![sched_priority];
+            crate::builtins::PyTuple::new_unchecked(items.into_boxed_slice())
+                .into_ref_with_type(vm, cls)
+                .map(Into::into)
+        }
+
+        #[extend_class]
+        fn extend_pyclass(ctx: &crate::vm::Context, class: &'static Py<crate::builtins::PyType>) {
+            // Override __reduce__ to return (type, (sched_priority,))
+            // instead of the generic structseq (type, ((sched_priority,),)).
+            // The trait's extend_class checks contains_key before setting default.
+            const SCHED_PARAM_REDUCE: crate::function::PyMethodDef =
+                crate::function::PyMethodDef::new_const(
+                    "__reduce__",
+                    |zelf: crate::PyRef<crate::builtins::PyTuple>,
+                     vm: &VirtualMachine|
+                     -> PyTupleRef {
+                        vm.new_tuple((zelf.class().to_owned(), (zelf.as_slice()[0].clone(),)))
+                    },
+                    crate::function::PyMethodFlags::METHOD,
+                    crate::function::ItemDoc::NONE,
+                );
+            class.set_attr(
+                ctx.intern_str("__reduce__"),
+                SCHED_PARAM_REDUCE.to_proper_method(class, ctx),
+            );
+        }
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    pub(super) fn convert_sched_param(
+        obj: &PyObject,
+        vm: &VirtualMachine,
+    ) -> PyResult<libc::sched_param> {
+        use crate::{
+            builtins::{PyInt, PyTuple},
+            class::StaticType,
+        };
+        if !obj.fast_isinstance(PySchedParam::static_type()) {
+            return Err(vm.new_type_error("must have a sched_param object"));
+        }
+        let tuple = obj.downcast_ref::<PyTuple>().unwrap();
+        let priority = tuple.as_slice()[0].clone();
+        let priority_type = priority.class().name().to_string();
+        let value = priority.downcast::<PyInt>().map_err(|_| {
+            vm.new_type_error(format!("an integer is required (got type {priority_type})"))
+        })?;
+        let sched_priority = value.try_to_primitive(vm)?;
+        Ok(libc::sched_param { sched_priority })
+    }
+
+    #[pyfunction]
+    fn sched_getscheduler(pid: libc::pid_t, vm: &VirtualMachine) -> PyResult<i32> {
+        rustpython_host_env::posix::sched_getscheduler(pid).map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[derive(FromArgs)]
+    struct SchedSetschedulerArgs {
+        #[pyarg(positional)]
+        pid: i32,
+        #[pyarg(positional)]
+        policy: i32,
+        #[pyarg(positional)]
+        sched_param: PyObjectRef,
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[pyfunction]
+    fn sched_setscheduler(args: SchedSetschedulerArgs, vm: &VirtualMachine) -> PyResult<i32> {
+        let libc_sched_param = convert_sched_param(&args.sched_param, vm)?;
+        rustpython_host_env::posix::sched_setscheduler(args.pid, args.policy, &libc_sched_param)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+
+    #[pyfunction]
+    fn sched_getparam(pid: libc::pid_t, vm: &VirtualMachine) -> PyResult<PyTupleRef> {
+        let param = rustpython_host_env::posix::sched_getparam(pid)
+            .map_err(|err| err.into_pyexception(vm))?;
+        Ok(PySchedParam::from_data(
+            SchedParamData {
+                sched_priority: param.sched_priority.to_pyobject(vm),
+            },
+            vm,
+        ))
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[derive(FromArgs)]
+    struct SchedSetParamArgs {
+        #[pyarg(positional)]
+        pid: i32,
+        #[pyarg(positional)]
+        sched_param: PyObjectRef,
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[pyfunction]
+    fn sched_setparam(args: SchedSetParamArgs, vm: &VirtualMachine) -> PyResult<i32> {
+        let libc_sched_param = convert_sched_param(&args.sched_param, vm)?;
+        rustpython_host_env::posix::sched_setparam(args.pid, &libc_sched_param)
+            .map_err(|err| err.into_pyexception(vm))
+    }
+}

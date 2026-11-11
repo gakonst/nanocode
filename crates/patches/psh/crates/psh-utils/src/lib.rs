@@ -63,6 +63,7 @@ mod git;
 mod jq;
 
 mod codec;
+mod dd;
 mod dump;
 mod gzip;
 mod lines;
@@ -267,6 +268,18 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(tree::run),
+    },
+    UtilEntry {
+        names: &["dd"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dd::dd),
+    },
+    UtilEntry {
+        names: &["install"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dd::install),
     },
     UtilEntry {
         names: &["find"],

@@ -67,6 +67,7 @@ mod dump;
 mod gzip;
 mod lines;
 mod patch;
+mod small;
 mod tar;
 mod xargs;
 mod zip;
@@ -217,6 +218,48 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(lines::split),
+    },
+    UtilEntry {
+        names: &["expr"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::expr),
+    },
+    UtilEntry {
+        names: &["factor"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::factor),
+    },
+    UtilEntry {
+        names: &["envsubst"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::envsubst),
+    },
+    UtilEntry {
+        names: &["truncate"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::truncate),
+    },
+    UtilEntry {
+        names: &["sponge"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::sponge),
+    },
+    UtilEntry {
+        names: &["yes"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::yes),
+    },
+    UtilEntry {
+        names: &["uuidgen"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(small::uuidgen),
     },
     UtilEntry {
         names: &["find"],
@@ -506,6 +549,41 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::Always,
         destructive: false,
         run: util_fn!(mktemp::run),
+    },
+];
+
+/// What a host with no machine under it answers from what it says of itself
+/// (nanocode's addition): not in [`REGISTRY`], so the psh program keeps the machine's.
+pub static HOST_FACTS: &[UtilEntry] = &[
+    UtilEntry {
+        names: &["uname"],
+        mode: Mode::Always,
+        destructive: false,
+        run: util_fn!(small::uname),
+    },
+    UtilEntry {
+        names: &["hostname"],
+        mode: Mode::Always,
+        destructive: false,
+        run: util_fn!(small::hostname),
+    },
+    UtilEntry {
+        names: &["whoami"],
+        mode: Mode::Always,
+        destructive: false,
+        run: util_fn!(small::whoami),
+    },
+    UtilEntry {
+        names: &["id"],
+        mode: Mode::Always,
+        destructive: false,
+        run: util_fn!(small::id),
+    },
+    UtilEntry {
+        names: &["nproc"],
+        mode: Mode::Always,
+        destructive: false,
+        run: util_fn!(small::nproc),
     },
 ];
 

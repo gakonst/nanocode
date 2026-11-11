@@ -260,33 +260,50 @@ fn md5_block(s: &mut [u32; 4], block: &[u8]) {
 // SHA-1: FIPS 180-4 §6.1.
 
 fn sha1_block(s: &mut [u32; 5], block: &[u8]) {
-    let mut w = [0u32; 80];
-    for i in 0..16 {
-        w[i] = u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().unwrap());
-    }
-    for i in 16..80 {
-        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    // The sixteen words of the schedule that are live, and each run of twenty rounds
+    // as a loop of its own (nanocode: git status hashes every file whose stat the
+    // index cannot vouch for, and the round's function chosen by a division per round
+    // held this to 200 MB/s).
+    let mut w = [0u32; 16];
+    for (i, word) in w.iter_mut().enumerate() {
+        *word = u32::from_be_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
     }
     let [mut a, mut b, mut c, mut d, mut e] = *s;
-    for (i, wi) in w.iter().enumerate() {
-        let (f, k) = match i / 20 {
-            0 => ((b & c) | (!b & d), 0x5a827999),
-            1 => (b ^ c ^ d, 0x6ed9eba1),
-            2 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdc),
-            _ => (b ^ c ^ d, 0xca62c1d6),
+    macro_rules! rounds {
+        ($from:expr, $to:expr, $k:expr, $f:expr) => {
+            for i in $from..$to {
+                let wi = if i < 16 {
+                    w[i]
+                } else {
+                    let next = (w[(i + 13) & 15] ^ w[(i + 8) & 15] ^ w[(i + 2) & 15] ^ w[i & 15])
+                        .rotate_left(1);
+                    w[i & 15] = next;
+                    next
+                };
+                let f: u32 = $f;
+                let t = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add($k)
+                    .wrapping_add(wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
         };
-        let t = a
-            .rotate_left(5)
-            .wrapping_add(f)
-            .wrapping_add(e)
-            .wrapping_add(k)
-            .wrapping_add(*wi);
-        e = d;
-        d = c;
-        c = b.rotate_left(30);
-        b = a;
-        a = t;
     }
+    rounds!(0usize, 20usize, 0x5a827999u32, (b & c) | (!b & d));
+    rounds!(20usize, 40usize, 0x6ed9eba1u32, b ^ c ^ d);
+    rounds!(40usize, 60usize, 0x8f1bbcdcu32, (b & c) | (b & d) | (c & d));
+    rounds!(60usize, 80usize, 0xca62c1d6u32, b ^ c ^ d);
     for (x, v) in s.iter_mut().zip([a, b, c, d, e]) {
         *x = x.wrapping_add(v);
     }

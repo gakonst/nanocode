@@ -275,7 +275,8 @@ fn ask(pid: u32, change: impl FnOnce(&mut Proc)) {
 
 export! {
     /// A host command reads its stdin: at most `max` bytes, answered with `K_DONE`
-    /// (no bytes: end of input).
+    /// whose argument has `READ_END` set when the input ended with these bytes (no
+    /// bytes: end of input).
     fn psh_proc_read(pid: u32, req: u32, max: usize) {
         ask(pid, |p| p.requests.push_back(Request::Read { req, max }));
     }
@@ -283,7 +284,9 @@ export! {
 
 export! {
     /// A host command writes the `len` input bytes to its stdout (`fd` 1) or stderr
-    /// (`fd` 2), answered with `K_DONE` once they are all written.
+    /// (`fd` 2), answered with `K_DONE` once they are all written. With `req` 0 no
+    /// answer is sent (a command's last output, followed at once by its exit): if
+    /// nobody reads it any more the command counts as ended by SIGPIPE (141).
     fn psh_proc_write(pid: u32, req: u32, fd: u32, len: usize) {
         let data = take_input(len);
         ask(pid, |p| p.requests.push_back(Request::Write { req, fd, data }));
@@ -351,6 +354,8 @@ impl Commands for JsCommands {
         w.u32(u32::from(call.stdout.captured()) | u32::from(call.stderr.captured()) << 1);
         Box::pin(async move {
             let running = Running(pid);
+            // A last write that found its pipe closed (`psh_proc_write` without an answer).
+            let mut piped = false;
             sys::call(sys::K_SPAWN, 0, pid, &w.0);
             loop {
                 let next = std::future::poll_fn(|cx| {
@@ -374,20 +379,39 @@ impl Commands for JsCommands {
                     Ok(Request::Read { req, max }) => {
                         let mut buf = vec![0; max];
                         match call.stdin.read(&mut buf).await {
-                            Ok(n) => sys::call(sys::K_DONE, req, 0, &buf[..n]),
+                            Ok(mut n) => {
+                                // What is there already comes along, and so does the
+                                // end of the input: one answer instead of two.
+                                let mut end = n == 0;
+                                while !end && n < max {
+                                    match call.stdin.read_ready(&mut buf[n..]) {
+                                        Some(Ok(0)) => end = true,
+                                        Some(Ok(more)) => n += more,
+                                        Some(Err(_)) | None => break,
+                                    }
+                                }
+                                let arg = if end { sys::READ_END } else { 0 };
+                                sys::call(sys::K_DONE, req, arg, &buf[..n])
+                            }
                             Err(e) => sys::call(sys::K_DONE, req, errno(&e), &[]),
                         };
                     }
                     Ok(Request::Write { req, fd, data }) => {
                         let stream = if fd == 2 { &call.stderr } else { &call.stdout };
-                        match stream.write_all(&data).await {
+                        let wrote = stream.write_all(&data).await;
+                        if req == 0 {
+                            piped |=
+                                matches!(&wrote, Err(e) if e.kind() == io::ErrorKind::BrokenPipe);
+                            continue;
+                        }
+                        match wrote {
                             Ok(()) => sys::call(sys::K_DONE, req, 0, &[]),
                             Err(e) => sys::call(sys::K_DONE, req, errno(&e), &[]),
                         };
                     }
                     Err(status) => {
                         drop(running);
-                        return status;
+                        return if piped { 128 + 13 } else { status };
                     }
                 }
             }

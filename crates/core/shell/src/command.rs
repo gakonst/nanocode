@@ -13,6 +13,7 @@ use std::{
     pin::Pin,
     rc::Rc,
     sync::Arc,
+    task::{Context, Poll, Waker},
 };
 
 pub trait Commands {
@@ -123,6 +124,16 @@ impl Stream {
 
     pub async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         poll_fn(|cx| self.0.poll_read(cx, buf)).await
+    }
+
+    pub fn read_ready(&self, buf: &mut [u8]) -> Option<io::Result<usize>> {
+        match self
+            .0
+            .poll_read(&mut Context::from_waker(Waker::noop()), buf)
+        {
+            Poll::Ready(read) => Some(read),
+            Poll::Pending => None,
+        }
     }
 
     pub async fn read_to_end(&self, out: &mut Vec<u8>) -> io::Result<()> {

@@ -35,8 +35,11 @@ pub const K_SPAWN: u32 = 6;
 /// A host command was signalled or abandoned: arg = process id, len = the signal.
 pub const K_KILL: u32 = 7;
 /// The answer to a command's read or write: op = the request id the JS side chose,
-/// arg = an errno (0 for success), payload = the bytes read.
+/// arg = an errno (0 for success; a read may have [`READ_END`] instead), payload = the
+/// bytes read.
 pub const K_DONE: u32 = 8;
+/// `K_DONE`'s argument for a read whose bytes are the input's last.
+pub const READ_END: u32 = 1 << 16;
 /// A blocked shell has work again: arg = shell id.
 pub const K_WAKE: u32 = 9;
 /// A panic message (the module aborts after it): payload = the message.

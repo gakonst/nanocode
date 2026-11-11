@@ -16,7 +16,8 @@ use alloc::vec::Vec;
 
 use super::decode::{DecodeError, decode};
 use super::handlers::Handler;
-use super::ops::flags;
+use super::imm::ImmKind;
+use super::ops::{OP_COUNT, OPS, Op, flags};
 
 /// Why code was rejected. `pc` is the position of the offending instruction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,12 +73,36 @@ pub fn check_stack(code: &[u8], handlers: &[Handler]) -> Result<u16, StackError>
 /// the positions of the `Cache` immediates in code order.
 #[derive(Default)]
 pub struct StackScratch {
-    at_pc: Vec<u32>,
-    insns: Vec<super::decode::Insn>,
+    /// One bit per code position: set at instruction starts.
+    starts: Vec<u64>,
     depth: Vec<u32>,
     work: Vec<u32>,
     pub caches: Vec<u32>,
 }
+
+/// Per opcode, where its `Cache` immediates are: the offset from the opcode byte of
+/// the first in bits 0-3 and of the second in bits 4-7 (0: none), so the pass over the
+/// instruction starts does not walk `OpInfo::imms`.
+const CACHE_AT: [u8; OP_COUNT] = {
+    let mut t = [0u8; OP_COUNT];
+    let mut i = 0;
+    while i < OP_COUNT {
+        let imms = OPS[i].imms;
+        let mut at = 1;
+        let mut n = 0;
+        let mut j = 0;
+        while j < imms.len() {
+            if matches!(imms[j], ImmKind::Cache) {
+                t[i] |= at << (4 * n);
+                n += 1;
+            }
+            at += imms[j].width();
+            j += 1;
+        }
+        i += 1;
+    }
+    t
+};
 
 /// [`check_stack`] with reused buffers; also finds the `Cache` immediates (for
 /// `alloc_template`'s numbering, without decoding the code again).
@@ -107,86 +132,84 @@ fn walk(
     scratch: &mut StackScratch,
 ) -> Result<u16, StackError> {
     let StackScratch {
-        at_pc,
-        insns,
+        starts,
         depth,
         work,
         caches,
     } = scratch;
-    // Instruction starts; the code must decode linearly from 0 to the end. Each is
-    // decoded once (0092): `at_pc[pc]` is 1 + its index in `insns`, 0 inside an
-    // instruction.
-    at_pc.clear();
-    at_pc.resize(code.len() + 1, 0);
-    insns.clear();
+    // Instruction starts; the code must decode linearly from 0 to the end. Only the
+    // opcodes are read here: an instruction is decoded when the walk reaches it.
+    starts.clear();
+    starts.resize(code.len() / 64 + 1, 0);
     caches.clear();
     work.clear();
-    let mut pc = 0u32;
-    while (pc as usize) < code.len() {
-        let insn = decode(code, pc).map_err(StackError::Decode)?;
-        let info = insn.info();
+    let mut at = 0usize;
+    while let Some(&byte) = code.get(at) {
+        let pc = at as u32;
+        let op =
+            Op::from_u8(byte).ok_or(StackError::Decode(DecodeError::InvalidOpcode { pc, byte }))?;
+        let info = op.info();
+        if at + info.size as usize > code.len() {
+            return Err(StackError::Decode(DecodeError::Truncated { pc }));
+        }
         if info.has(flags::PHASE1) {
             return Err(StackError::Phase1Op { pc });
         }
-        let mut at = pc + 1;
-        for &k in info.imms {
-            if k == super::imm::ImmKind::Cache {
-                caches.push(at);
-            }
-            at += k.width() as u32;
+        let mut cache = CACHE_AT[op as usize];
+        while cache != 0 {
+            caches.push(pc + u32::from(cache & 0xF));
+            cache >>= 4;
         }
-        insns.push(insn);
-        at_pc[pc as usize] = insns.len() as u32;
-        pc = insn.next_pc();
+        starts[at / 64] |= 1 << (at % 64);
+        at += info.size as usize;
     }
-    let is_start = |pc: usize| at_pc[pc] != 0;
+    let is_start = |pc: usize| starts[pc / 64] & (1 << (pc % 64)) != 0;
     let len = code.len() as u32;
 
     depth.clear();
     depth.resize(code.len(), UNKNOWN);
     let mut max: u32 = 0;
 
-    // Records the depth at `target`, reached from `from`.
-    let reach = |depth: &mut Vec<u32>,
-                 work: &mut Vec<u32>,
-                 from: u32,
-                 target: u32,
-                 d: u32|
-     -> Result<(), StackError> {
-        if target >= len {
-            return Err(if target == len {
-                StackError::FallsOffEnd { pc: from }
+    // Records the depth at `target`, reached from `from`; whether it is new.
+    let reach =
+        |depth: &mut Vec<u32>, from: u32, target: u32, d: u32| -> Result<bool, StackError> {
+            if target >= len {
+                return Err(if target == len {
+                    StackError::FallsOffEnd { pc: from }
+                } else {
+                    StackError::BadTarget { pc: from, target }
+                });
+            }
+            if !is_start(target as usize) {
+                return Err(StackError::BadTarget { pc: from, target });
+            }
+            let slot = &mut depth[target as usize];
+            if *slot == UNKNOWN {
+                *slot = d;
+                Ok(true)
+            } else if *slot != d {
+                Err(StackError::Mismatch {
+                    pc: target,
+                    depth: *slot,
+                    other: d,
+                })
             } else {
-                StackError::BadTarget { pc: from, target }
-            });
-        }
-        if !is_start(target as usize) {
-            return Err(StackError::BadTarget { pc: from, target });
-        }
-        let slot = &mut depth[target as usize];
-        if *slot == UNKNOWN {
-            *slot = d;
-            work.push(target);
-        } else if *slot != d {
-            return Err(StackError::Mismatch {
-                pc: target,
-                depth: *slot,
-                other: d,
-            });
-        }
-        Ok(())
-    };
+                Ok(false)
+            }
+        };
 
     if len == 0 {
         return Ok(0);
     }
-    reach(depth, work, 0, 0, 0)?;
+    if reach(depth, 0, 0, 0)? {
+        work.push(0);
+    }
     for (index, h) in handlers.iter().enumerate() {
         if skip_unknown && h.depth == UNKNOWN_DEPTH {
             continue;
         }
-        let start_ok = (h.start as usize) < at_pc.len() && is_start(h.start as usize);
-        let end_ok = h.end == len || ((h.end as usize) < at_pc.len() && is_start(h.end as usize));
+        let start_ok = h.start <= len && is_start(h.start as usize);
+        let end_ok = h.end == len || (h.end < len && is_start(h.end as usize));
         if !start_ok || !end_ok || h.start > h.end {
             return Err(StackError::BadHandler { index });
         }
@@ -194,30 +217,38 @@ fn walk(
             .depth
             .checked_add(1)
             .ok_or(StackError::BadHandler { index })?;
-        reach(depth, work, h.start, h.target, entry)
-            .map_err(|_| StackError::BadHandler { index })?;
+        if reach(depth, h.start, h.target, entry).map_err(|_| StackError::BadHandler { index })? {
+            work.push(h.target);
+        }
         max = max.max(entry);
     }
 
-    while let Some(pc) = work.pop() {
-        let insn = insns[at_pc[pc as usize] as usize - 1];
-        let info = insn.info();
-        let d = depth[pc as usize];
-        let pops = insn.pops();
-        if pops > d {
-            return Err(StackError::Underflow { pc, depth: d, pops });
-        }
-        let after = d - pops + insn.pushes();
-        max = max.max(after).max(d);
-        if max > u16::MAX as u32 {
-            return Err(StackError::TooDeep { pc });
-        }
-        if info.has(flags::JUMP) || info.has(flags::BRANCH) {
-            let target = insn.jump_target().unwrap_or(len);
-            reach(depth, work, pc, target, after)?;
-        }
-        if !info.no_fallthrough() {
-            reach(depth, work, pc, insn.next_pc(), after)?;
+    // The fallthrough is followed at once and a jump's target later, the order a stack
+    // of both gives.
+    while let Some(mut pc) = work.pop() {
+        loop {
+            let insn = decode(code, pc).map_err(StackError::Decode)?;
+            let info = insn.info();
+            let d = depth[pc as usize];
+            let pops = insn.pops();
+            if pops > d {
+                return Err(StackError::Underflow { pc, depth: d, pops });
+            }
+            let after = d - pops + insn.pushes();
+            max = max.max(after).max(d);
+            if max > u16::MAX as u32 {
+                return Err(StackError::TooDeep { pc });
+            }
+            if info.has(flags::JUMP | flags::BRANCH) {
+                let target = insn.jump_target().unwrap_or(len);
+                if reach(depth, pc, target, after)? {
+                    work.push(target);
+                }
+            }
+            if info.no_fallthrough() || !reach(depth, pc, insn.next_pc(), after)? {
+                break;
+            }
+            pc = insn.next_pc();
         }
     }
     Ok(max as u16)

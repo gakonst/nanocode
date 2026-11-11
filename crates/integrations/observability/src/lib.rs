@@ -5,6 +5,9 @@ extern crate self as nanocode_observability;
 
 mod cli;
 mod file;
+mod genai;
+mod held;
+mod lines;
 mod typed;
 
 use std::{fs::OpenOptions, io, path::PathBuf, time::Duration};
@@ -26,6 +29,9 @@ use tracing_subscriber::{
 };
 
 pub use cli::ObservabilityOutputArgs;
+pub use genai::{Agent, Exported, GenAi};
+pub use held::{Ended, Held, Holding};
+pub use lines::{Counters, Exports, Lines, line};
 
 pub const DEFAULT_FILTER: &str = "warn,nanocode=info,nanocode_backend_codex=info,nanocode_backend_claude=info,nanocode_claude=info,nanocode_agent=info,nanocode_code_mode=info,nanocode_subagents=info,nanocode_durability=info,nanocode_store_jsonl=info,nanocode=info";
 pub const METRICS_TARGET: &str = "nc_metrics";

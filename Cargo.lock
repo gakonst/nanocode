@@ -5614,6 +5614,8 @@ name = "nanocode-observability"
 version = "0.7.0"
 dependencies = [
  "clap",
+ "imbl",
+ "nanocode-sync",
  "nanocode-tls",
  "opentelemetry",
  "opentelemetry-otlp",

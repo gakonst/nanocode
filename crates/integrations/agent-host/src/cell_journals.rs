@@ -15,7 +15,6 @@ const VERSION: u32 = 2;
 pub(crate) struct DurableCellJournals {
     store: SharedStore,
     sessions: Atom<HashMap<String, Arc<Owned<Session>>>>,
-    catalogs: Atom<Vec<(Weak<[Value]>, EncodedPayload)>>,
 }
 
 #[derive(Default)]
@@ -70,12 +69,14 @@ impl DurableCellJournals {
         Arc::new(Self {
             store,
             sessions: Atom::default(),
-            catalogs: Atom::default(),
         })
     }
 
-    fn catalog(&self, tools: &Arc<[Value]>) -> Result<EncodedPayload, String> {
-        let known = self.catalogs.read(|catalogs| {
+    fn catalog(tools: &Arc<[Value]>) -> Result<EncodedPayload, String> {
+        type Catalogs = Vec<(Weak<[Value]>, EncodedPayload)>;
+        static CATALOGS: std::sync::LazyLock<Atom<Catalogs>> =
+            std::sync::LazyLock::new(Atom::default);
+        let known = CATALOGS.read(|catalogs| {
             catalogs
                 .iter()
                 .find(|(held, _)| std::ptr::eq(held.as_ptr(), Arc::as_ptr(tools)))
@@ -85,7 +86,7 @@ impl DurableCellJournals {
             return Ok(catalog);
         }
         let catalog = EncodedPayload::encode(&**tools).map_err(|error| error.to_string())?;
-        self.catalogs.update(|catalogs| {
+        CATALOGS.update(|catalogs| {
             catalogs.retain(|(held, _)| held.strong_count() > 0);
             catalogs.push((Arc::downgrade(tools), catalog.clone()));
         });
@@ -269,7 +270,7 @@ impl CellJournalSink for DurableCellJournals {
         let catalog = update
             .header
             .as_mut()
-            .map(|header| self.catalog(&std::mem::take(&mut header.tools)));
+            .map(|header| Self::catalog(&std::mem::take(&mut header.tools)));
         Box::pin(async move {
             let mut session = session.acquire().await;
             let (owned, cells, catalogs) = owned(&store, &update.session_id, &mut session).await?;

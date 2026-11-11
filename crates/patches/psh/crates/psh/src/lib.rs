@@ -211,35 +211,24 @@ pub fn run(args: Vec<std::ffi::OsString>) -> ExitCode {
 /// the host is gone, and the process ends. Signals keep their default action until the
 /// command is there.
 #[cfg(unix)]
-fn warm(mut args: Vec<Vec<u8>>) -> ExitCode {
-    struct Request {
-        script: Script,
-        exports: Vec<(Vec<u8>, Vec<u8>)>,
-        stdin: std::fs::File,
-    }
+fn warm(args: Vec<Vec<u8>>) -> ExitCode {
     psh_os::unix::close_inherited();
-    let control: Control = Default::default();
-    let attach = control.clone();
-    let (prepared, wait) = std::sync::mpsc::channel::<()>();
-    let (send, request) = std::sync::mpsc::channel::<Request>();
-    let thread = engine_thread(move || {
-        let mut cfg = shell_config();
-        let _ = prepared.send(());
-        let Ok(request) = request.recv() else {
-            return (0, None);
-        };
-        for (name, value) in request.exports {
-            cfg.env.retain(|(k, _)| *k != name);
-            cfg.env.push((name, value));
-        }
-        cfg.stdin = Some(Rc::new(psh_os::unix::UnixFile::new(request.stdin)));
-        run_script(cfg, request.script, &attach)
-    });
-    let Ok(thread) = thread else {
-        return ExitCode::from(2);
-    };
-    // Without a request the process ends with the engine thread still waiting for one.
-    let _ = wait.recv();
+    let thread = engine_thread(move || warm_shell(args));
+    // Only the engine thread takes the signals a script may trap, and it has them from
+    // its start: one that arrives while it waits ends the process, as it would any.
+    psh_os::unix::signals::block_in_thread(&CAUGHT);
+    match thread.map(|t| t.join()) {
+        Ok(Ok(code)) => code,
+        _ => ExitCode::from(2),
+    }
+}
+
+/// The warm shell, all of it on the engine thread: the command passes through no other
+/// thread on its way in or out (two more thread switches were most of what a busy
+/// machine added to a short command), and the process ends from here.
+#[cfg(unix)]
+fn warm_shell(mut args: Vec<Vec<u8>>) -> ExitCode {
+    let mut cfg = shell_config();
     let mut bytes = Vec::new();
     let ready = {
         let mut stdout = std::io::stdout().lock();
@@ -251,7 +240,6 @@ fn warm(mut args: Vec<Vec<u8>>) -> ExitCode {
     if bytes.is_empty() {
         return ExitCode::SUCCESS;
     }
-    let mut exports: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut rest = bytes.as_slice();
     let source = loop {
         let Some(end) = rest.iter().position(|&b| b == 0) else {
@@ -265,27 +253,26 @@ fn warm(mut args: Vec<Vec<u8>>) -> ExitCode {
         let Some(eq) = item.iter().position(|&b| b == b'=') else {
             return usage_error("--warm: a variable of the request has no value");
         };
-        exports.push((item[..eq].to_vec(), item[eq + 1..].to_vec()));
+        let (name, value) = (&item[..eq], &item[eq + 1..]);
+        cfg.env.retain(|(k, _)| k != name);
+        cfg.env.push((name.to_vec(), value.to_vec()));
     };
-    let stdin = match std::fs::File::open("/dev/null") {
-        Ok(null) => null,
+    match std::fs::File::open("/dev/null") {
+        Ok(null) => cfg.stdin = Some(Rc::new(psh_os::unix::UnixFile::new(null))),
         Err(e) => {
             eprintln!("psh: /dev/null: {}", psh_engine::host::error_text(&e));
             return ExitCode::from(2);
         }
-    };
+    }
     args.extend([b"-c".to_vec(), source]);
     let script = match script(&args) {
         Ok(script) => script,
         Err(code) => return code,
     };
-    let signals = Signals::catch(control);
-    let _ = send.send(Request {
-        script,
-        exports,
-        stdin,
-    });
-    finish(Ok(thread), signals)
+    let signals = Signals::catch(Default::default());
+    let (status, killed_by) = run_script(cfg, script, &signals.control);
+    signals.finish(killed_by);
+    std::process::exit(status & 0xff)
 }
 
 /// The standalone shell: bash's command line in `args`.

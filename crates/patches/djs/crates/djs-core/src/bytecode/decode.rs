@@ -141,12 +141,25 @@ impl Insn {
     }
 
     fn target_index(&self) -> Option<usize> {
-        let imms = self.info().imms;
-        imms.last()
-            .is_some_and(|k| k.is_target())
-            .then(|| imms.len() - 1)
+        (TARGET[self.op as usize] as usize).checked_sub(1)
     }
 }
+
+/// Per opcode, the number of its immediates if the last one is a `Target` (a jump's
+/// target is its last immediate), else 0: one table load instead of a look at
+/// `OpInfo::imms` for every jump the compiler's passes ask about.
+const TARGET: [u8; OP_COUNT] = {
+    let mut t = [0u8; OP_COUNT];
+    let mut i = 0;
+    while i < OP_COUNT {
+        let imms = OPS[i].imms;
+        if !imms.is_empty() && imms[imms.len() - 1].is_target() {
+            t[i] = imms.len() as u8;
+        }
+        i += 1;
+    }
+    t
+};
 
 /// The declared parameters of intrinsic `id` (`call_intrinsic8`'s argument count; 0
 /// for an unknown id, which the interpreter rejects).

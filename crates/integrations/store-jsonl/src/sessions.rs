@@ -2,6 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
     fs::{self, Metadata},
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -10,6 +11,8 @@ use nanocode_durability_core::{
     KnownSummary, ListedState, ListedSummary, OwnedState, OwnerId, OwnerToken, StoreError,
     StoreRecord, StoreReplacement, StoreUpdate, StoredState,
 };
+
+use sha2::{Digest, Sha256};
 
 use super::{
     CompactionStats, Journal, Replacement, archive, backend, identity, process_alive,
@@ -20,6 +23,7 @@ use super::{
 const OPEN_JOURNALS: usize = 32;
 const EXTENSION: &str = ".jsonl";
 const HOMES: &str = ".homes";
+const COPY: &str = ".listed-";
 
 pub(super) struct Sessions {
     directory: PathBuf,
@@ -36,6 +40,14 @@ pub(super) struct Sessions {
 struct Opened {
     journal: Journal,
     used: u64,
+    archive: Option<Archived>,
+}
+
+struct Archived {
+    copy: tempfile::TempPath,
+    file: String,
+    length: u64,
+    anchor: Anchor,
 }
 
 struct Listed {
@@ -94,7 +106,7 @@ fn clear_temporaries(directory: &Path) -> std::io::Result<()> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        let abandoned = [".compact-", ".migrate-"].into_iter().any(|marker| {
+        let abandoned = [".compact-", ".migrate-", COPY].into_iter().any(|marker| {
             name.split_once(marker)
                 .and_then(|(_, rest)| rest.split_once('-'))
                 .and_then(|(pid, _)| pid.parse::<u32>().ok())
@@ -210,13 +222,28 @@ impl Sessions {
         let key = key.as_str();
         self.clock += 1;
         let clock = self.clock;
+        let listing = !create && self.unknown.contains_key(state_id);
+        if !listing
+            && self
+                .journals
+                .get(key)
+                .is_some_and(|opened| opened.archive.is_some())
+        {
+            self.journals.remove(key);
+        }
         if !self.journals.contains_key(key) {
             let path = self.path(key);
+            let mut archive = None;
             if !path.is_file() && archive::archived(&path).is_file() {
-                archive::restore(&path).map_err(backend)?;
-                self.touched.insert(key.to_owned());
+                if listing {
+                    self.release();
+                    archive = self.copy(&archive::archived(&path))?;
+                } else {
+                    archive::restore(&path).map_err(backend)?;
+                    self.touched.insert(key.to_owned());
+                }
             }
-            if !create && !path.is_file() {
+            if !create && archive.is_none() && !path.is_file() {
                 return Ok(None);
             }
             if self.journals.len() >= OPEN_JOURNALS
@@ -229,7 +256,10 @@ impl Sessions {
             {
                 closed.journal.harden()?;
             }
-            let mut journal = Journal::open(&path, self.homes.values().any(|home| home == key))?;
+            let opened = archive
+                .as_ref()
+                .map_or(path.as_path(), |archive| &archive.copy);
+            let mut journal = Journal::open(opened, self.homes.values().any(|home| home == key))?;
             journal.shared = self.shared.clone();
             for member in journal
                 .index
@@ -247,6 +277,7 @@ impl Sessions {
                 Opened {
                     journal,
                     used: clock,
+                    archive,
                 },
             );
         }
@@ -254,6 +285,36 @@ impl Sessions {
             opened.used = clock;
             opened.journal.index_due();
             &mut opened.journal
+        }))
+    }
+
+    fn release(&mut self) {
+        self.journals.retain(|_, opened| opened.archive.is_none());
+    }
+
+    fn copy(&self, archived: &Path) -> Result<Option<Archived>, StoreError> {
+        let mut file = match fs::File::open(archived) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(backend(error)),
+        };
+        let metadata = file.metadata().map_err(backend)?;
+        let mut stored = Vec::new();
+        file.read_to_end(&mut stored).map_err(backend)?;
+        let mut copy = tempfile::Builder::new()
+            .prefix(&format!("{COPY}{}-", std::process::id()))
+            .tempfile_in(&self.directory)
+            .map_err(backend)?;
+        copy.write_all(&archive::decompress(&stored).map_err(backend)?)
+            .map_err(backend)?;
+        Ok(Some(Archived {
+            copy: copy.into_temp_path(),
+            file: identity(&metadata)?,
+            length: metadata.len(),
+            anchor: Anchor {
+                position: 0,
+                digest: Sha256::digest(&stored).into(),
+            },
         }))
     }
 
@@ -542,6 +603,16 @@ impl Sessions {
                 summary: None,
                 anchor: if member { None } else { journal.anchor() },
             };
+            let archive = self.journals.get(&self.home(id));
+            let seen = match archive.and_then(|opened| opened.archive.as_ref()) {
+                Some(archive) => Summary {
+                    file: archive.file.clone(),
+                    length: archive.length,
+                    anchor: Some(archive.anchor),
+                    ..seen
+                },
+                None => seen,
+            };
             self.unknown.insert(id.to_owned(), Some(seen));
         }
         Ok(state)
@@ -612,6 +683,7 @@ impl Sessions {
         let listed = self.listed()?;
         self.summaries.refresh();
         self.unknown.clear();
+        self.release();
         let listed = listed
             .into_iter()
             .take(limit)
@@ -694,6 +766,7 @@ impl Sessions {
                 ));
             }
         }
+        self.release();
         self.remember(remembered)
     }
 

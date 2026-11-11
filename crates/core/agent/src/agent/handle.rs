@@ -1086,6 +1086,12 @@ impl Agent {
         self.backend.checkpoint().await
     }
 
+    pub async fn settings(
+        &self,
+    ) -> Result<(crate::ModelSelection, Thinking, crate::ReasoningMode)> {
+        self.backend.settings().await
+    }
+
     pub async fn spawn(&self) -> Result<(Self, AgentEvents)> {
         self.spawn_with(SpawnOptions::new()).await
     }

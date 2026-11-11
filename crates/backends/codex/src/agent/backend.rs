@@ -480,6 +480,22 @@ impl LifecycleBackend for LocalLifecycle {
         })
     }
 
+    fn settings(&self) -> BackendFuture<Result<(crate::ModelSelection, Thinking, ReasoningMode)>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            let state = request_command(&commands, &shutdown, |result| Command::ChildSnapshot {
+                result,
+            })
+            .await?;
+            Ok((
+                crate::ModelSelection::Codex(state.model),
+                state.thinking,
+                state.reasoning_mode,
+            ))
+        })
+    }
+
     fn persist_initial(&self) -> BackendFuture<Result<()>> {
         let ready = self.initial_ready.take();
         Box::pin(async move {

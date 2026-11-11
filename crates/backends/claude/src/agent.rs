@@ -8146,6 +8146,23 @@ impl LifecycleBackend for Driver {
             state.boundary(Arc::new(snapshot)).checkpoint()
         })
     }
+    fn settings(
+        &self,
+    ) -> BackendFuture<Result<(ModelSelection, Thinking, nanocode_agent_core::ReasoningMode)>> {
+        let state = self.state.clone();
+        Box::pin(async move {
+            if state.life.stopped() {
+                return Err(NanocodeError::AgentStopped);
+            }
+            let model = ModelSelection::new(HarnessFamily::Claude, state.model());
+            let thinking = state.selected_thinking(&model);
+            Ok((
+                model,
+                thinking,
+                nanocode_agent_core::ReasoningMode::Standard,
+            ))
+        })
+    }
     fn persist_initial(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {

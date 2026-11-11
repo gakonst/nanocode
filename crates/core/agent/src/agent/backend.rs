@@ -433,6 +433,20 @@ pub trait LifecycleBackend: Send + Sync + 'static {
 
     fn checkpoint(&self) -> BackendFuture<Result<SessionCheckpoint>>;
 
+    fn settings(
+        &self,
+    ) -> BackendFuture<Result<(crate::ModelSelection, Thinking, crate::ReasoningMode)>> {
+        let checkpoint = self.checkpoint();
+        Box::pin(async move {
+            let checkpoint = checkpoint.await?;
+            Ok((
+                checkpoint.model(),
+                checkpoint.thinking(),
+                checkpoint.reasoning_mode(),
+            ))
+        })
+    }
+
     fn persist_initial(&self) -> BackendFuture<Result<()>> {
         Box::pin(async { Ok(()) })
     }

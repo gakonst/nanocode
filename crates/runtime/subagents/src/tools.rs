@@ -324,15 +324,14 @@ async fn child_settings(
     child: &nanocode_agent_core::Agent,
     policy: Option<(&Registry, &SpawnParent)>,
 ) -> std::io::Result<(Option<ModelSelection>, Option<Thinking>, ReasoningMode)> {
-    match child.checkpoint().await {
-        Ok(checkpoint) => {
-            let (model, thinking) = (checkpoint.model(), checkpoint.thinking());
+    match child.settings().await {
+        Ok((model, thinking, reasoning_mode)) => {
             if let Some((registry, parent)) = policy {
                 let policy = registry.spawn_policy();
                 policy.admit(parent, Some(&model), Some(thinking))?;
-                policy.admit_reasoning_mode(parent, checkpoint.reasoning_mode())?;
+                policy.admit_reasoning_mode(parent, reasoning_mode)?;
             }
-            Ok((Some(model), Some(thinking), checkpoint.reasoning_mode()))
+            Ok((Some(model), Some(thinking), reasoning_mode))
         }
         Err(error) => match policy {
             Some((registry, _)) if !registry.spawn_policy().is_unrestricted() => {

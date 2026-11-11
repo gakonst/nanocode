@@ -863,11 +863,12 @@ impl Harness {
         let recovering = pending.is_some();
         let recovery_request_id = pending.as_ref().map(|(id, _)| id.clone());
         if !recovering {
-            let checkpoint = agent.checkpoint().await.map_err(std::io::Error::other)?;
+            let (model, thinking, reasoning_mode) =
+                agent.settings().await.map_err(std::io::Error::other)?;
             self.context = Some(AgentContext {
-                model: checkpoint.model(),
-                thinking: checkpoint.thinking(),
-                reasoning_mode: checkpoint.reasoning_mode(),
+                model,
+                thinking,
+                reasoning_mode,
             });
         }
         let Some(started) = registry

@@ -124,6 +124,7 @@ impl Py<PyBool> {
         vm: &VirtualMachine,
     ) -> PyResult<String> {
         let new_bool = zelf.try_to_bool(vm)?;
+        crate::format::reserve_spec(format_spec.as_str(), vm)?;
         FormatSpec::parse(format_spec.as_str())
             .and_then(|format_spec| format_spec.format_bool(new_bool))
             .map_err(|err| err.into_pyexception(vm))

@@ -232,6 +232,9 @@ impl PyList {
                 other.class().name()
             ))
         })?;
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        let joined = self.borrow_vec().len().saturating_add(other.borrow_vec().len());
+        vm.reserve(joined.saturating_mul(core::mem::size_of::<PyObjectRef>()))?;
         let mut elements = self.borrow_vec().to_vec();
         elements.extend(other.borrow_vec().iter().cloned());
         Ok(Self::from(elements).into_ref(&vm.ctx))

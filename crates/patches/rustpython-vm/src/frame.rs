@@ -4304,9 +4304,10 @@ impl ExecutingFrame<'_> {
                     let right_str = right
                         .downcast_ref_if_exact::<PyStr>(vm)
                         .expect("BINARY_OP_INPLACE_ADD_UNICODE right operand not exact str");
-                    local_str.concat_in_place(right_str.as_wtf8(), vm);
+                    let concatenated = local_str.concat_in_place(right_str.as_wtf8(), vm);
 
                     self.localsplus.fastlocals_mut()[target_local] = Some(local_str.into());
+                    concatenated?;
                     self.jump_relative_forward(
                         1,
                         Instruction::BinaryOpInplaceAddUnicode.cache_entries() as u32,
@@ -6480,6 +6481,8 @@ impl ExecutingFrame<'_> {
                     a.downcast_ref_if_exact::<PyStr>(vm),
                     b.downcast_ref_if_exact::<PyStr>(vm),
                 ) {
+                    // nanocode: the embedder's memory bound (vm/limit.rs).
+                    vm.reserve(a_str.byte_len().saturating_add(b_str.byte_len()))?;
                     let result = a_str.as_wtf8().py_add(b_str.as_wtf8());
                     self.pop_stackref();
                     self.pop_stackref();

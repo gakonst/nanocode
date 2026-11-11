@@ -254,3 +254,15 @@ pub(crate) fn format_map(
         FieldType::Keyword(keyword) => dict.get_item(&keyword, vm),
     })
 }
+
+/// nanocode: the embedder's memory bound (vm/limit.rs). The numbers in a format spec
+/// are its width and its precision, and the result is at least that long.
+pub(crate) fn reserve_spec(spec: &str, vm: &VirtualMachine) -> PyResult<()> {
+    let sized = spec
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|digits| !digits.is_empty())
+        .fold(0usize, |sized, digits| {
+            sized.saturating_add(digits.parse().unwrap_or(usize::MAX))
+        });
+    vm.reserve(sized)
+}

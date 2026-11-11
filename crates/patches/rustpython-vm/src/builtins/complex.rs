@@ -571,6 +571,7 @@ impl Py<PyComplex> {
         if format_spec.is_empty() {
             return Ok(zelf.as_object().str(vm)?.as_wtf8().to_owned());
         }
+        crate::format::reserve_spec(format_spec.as_str(), vm)?;
         let format_spec =
             FormatSpec::parse(format_spec.as_str()).map_err(|err| err.into_pyexception(vm))?;
         let result = if format_spec.has_locale_format() {

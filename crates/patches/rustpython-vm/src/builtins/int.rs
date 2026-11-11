@@ -603,6 +603,7 @@ impl Py<PyInt> {
         if format_spec.is_empty() && !zelf.class().is(vm.ctx.types.int_type) {
             return Ok(zelf.as_object().str(vm)?.as_wtf8().to_owned());
         }
+        crate::format::reserve_spec(format_spec.as_str(), vm)?;
         let format_spec =
             FormatSpec::parse(format_spec.as_str()).map_err(|err| err.into_pyexception(vm))?;
         if format_spec.is_decimal_int_format() {

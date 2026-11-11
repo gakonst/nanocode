@@ -55,11 +55,25 @@ fn format_decimal_object(
     Ok(spec.format_number(i.as_bigint()))
 }
 
+/// nanocode: the embedder's memory bound (vm/limit.rs).
+fn reserve_spec(vm: &VirtualMachine, spec: &CFormatSpec) -> PyResult<()> {
+    let width = match spec.min_field_width {
+        Some(CFormatQuantity::Amount(width)) => width,
+        _ => 0,
+    };
+    let precision = match spec.precision {
+        Some(CFormatPrecision::Quantity(CFormatQuantity::Amount(precision))) => precision,
+        _ => 0,
+    };
+    vm.reserve(width.saturating_add(precision))
+}
+
 fn spec_format_bytes(
     vm: &VirtualMachine,
     spec: &CFormatSpec,
     obj: PyObjectRef,
 ) -> PyResult<Vec<u8>> {
+    reserve_spec(vm, spec)?;
     match &spec.format_type {
         CFormatType::Unsupported { ch, index } => Err(vm.new_value_error(format!(
             "unsupported format character '{}' ({:#x}) at index {index}",
@@ -183,6 +197,7 @@ fn spec_format_string(
     spec: &CFormatSpec,
     obj: PyObjectRef,
 ) -> PyResult<Wtf8Buf> {
+    reserve_spec(vm, spec)?;
     match &spec.format_type {
         CFormatType::Unsupported { ch, index } => Err(vm.new_value_error(format!(
             "unsupported format character '{}' ({:#x}) at index {index}",

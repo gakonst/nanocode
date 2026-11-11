@@ -580,6 +580,11 @@ impl AsSequence for PyTuple {
             length: atomic_func!(|seq, _vm| Ok(PyTuple::sequence_downcast(seq).as_slice().len())),
             concat: atomic_func!(|seq, other, vm| {
                 let zelf = PyTuple::sequence_downcast(seq);
+                // nanocode: the embedder's memory bound (vm/limit.rs).
+                if let Some(other) = other.downcast_ref::<PyTuple>() {
+                    let joined = zelf.as_slice().len().saturating_add(other.as_slice().len());
+                    vm.reserve(joined.saturating_mul(core::mem::size_of::<PyObjectRef>()))?;
+                }
                 match PyTuple::__add__(zelf.to_owned(), other.to_owned(), vm) {
                     PyArithmeticValue::Implemented(tuple) => Ok(tuple.into()),
                     PyArithmeticValue::NotImplemented => Err(vm.new_type_error(format!(

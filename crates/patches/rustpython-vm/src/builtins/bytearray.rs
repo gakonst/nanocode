@@ -660,8 +660,12 @@ impl Py<PyByteArray> {
     }
 
     #[pymethod]
-    fn expandtabs(&self, options: anystr::ExpandTabsArgs) -> PyByteArray {
-        self.inner().expandtabs(options).into()
+    fn expandtabs(
+        &self,
+        options: anystr::ExpandTabsArgs,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyByteArray> {
+        Ok(self.inner().expandtabs(options, vm)?.into())
     }
 
     #[pymethod]

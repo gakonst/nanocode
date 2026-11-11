@@ -556,8 +556,8 @@ impl Py<PyBytes> {
     }
 
     #[pymethod]
-    fn expandtabs(&self, options: anystr::ExpandTabsArgs) -> PyBytes {
-        self.inner.expandtabs(options).into()
+    fn expandtabs(&self, options: anystr::ExpandTabsArgs, vm: &VirtualMachine) -> PyResult<PyBytes> {
+        Ok(self.inner.expandtabs(options, vm)?.into())
     }
 
     #[pymethod]

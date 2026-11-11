@@ -15,16 +15,18 @@
 //! to the embedder, which calls [`VirtualMachine::set_limiter`] before the next run.
 //!
 //! [`VirtualMachine::reserve`] is asked before the allocations Python can size with a
-//! number in one instruction (sequence repetition, `bytes(n)`, padding, integer powers
-//! and shifts), so that `[0] * 10**9` is refused before the memory is taken rather than
-//! after. Everything else is counted by [`Metered`] as it is allocated, and crossing
-//! [`VirtualMachine::with_memory_ceiling`] spends the fuel, so the limiter is asked at
-//! the next step.
+//! number or a product in one instruction (sequence repetition, `bytes(n)`, padding,
+//! integer powers and shifts, format widths and precisions, `expandtabs`, `replace`,
+//! `join`, `translate`) and before a concatenation, so that `[0] * 10**9` is refused
+//! before the memory is taken rather than after. Everything else is counted by
+//! [`Metered`] as it is allocated, and crossing [`VirtualMachine::with_memory_ceiling`]
+//! spends the fuel, so the limiter is asked at the next step.
 //!
 //! What stays unbounded: one native operation that takes no step (a sort, a big-integer
 //! multiplication or factorial, a codec over a large input) runs to its end, and one
-//! whose result a number sizes without [`VirtualMachine::reserve`] (a format width,
-//! `expandtabs`, `int.to_bytes`) has its memory before the ceiling is looked at.
+//! that makes many objects out of one (`split`, `list(text)`, the JSON scanner) or
+//! lives in `rustpython-stdlib` (`array` repetition) has its memory before the ceiling
+//! is looked at: a constant factor of what the script already holds.
 
 use core::{cell::Cell, ptr::NonNull};
 
@@ -78,8 +80,20 @@ impl VirtualMachine {
         }
     }
 
-    /// Asks the limiter before `bytes` are allocated at once.
+    /// Asks the limiter before `bytes` are allocated at once. Nothing is asked while
+    /// the bytes fit under [`Self::with_memory_ceiling`], so a call costs two loads
+    /// and can stand in front of every concatenation.
+    #[inline]
     pub fn reserve(&self, bytes: usize) -> PyResult<()> {
+        if bytes <= room() {
+            return Ok(());
+        }
+        self.refuse_or_reserve(bytes)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn refuse_or_reserve(&self, bytes: usize) -> PyResult<()> {
         if let Some(stop) = self.stopped.borrow().as_ref() {
             return Err(stop.clone());
         }
@@ -165,6 +179,22 @@ fn count(delta: isize) {
             unsafe { fuel.as_ref() }.set(0);
         }
     });
+}
+
+/// The bytes this thread may still take before it crosses the ceiling of
+/// [`VirtualMachine::with_memory_ceiling`]: `usize::MAX` without one.
+#[inline]
+fn room() -> usize {
+    METER
+        .try_with(|meter| {
+            let ceiling = meter.ceiling.get();
+            if ceiling == isize::MAX {
+                usize::MAX
+            } else {
+                ceiling.saturating_sub(meter.held.get()).max(0).cast_unsigned()
+            }
+        })
+        .unwrap_or(usize::MAX)
 }
 
 /// The bytes this thread holds, when the program's allocator is [`Metered`].

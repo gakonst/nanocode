@@ -132,6 +132,8 @@ impl BytesJoin {
                 return Err(changed());
             }
         }
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(len)?;
         let mut joined = Vec::new();
         joined
             .try_reserve_exact(len)
@@ -900,18 +902,25 @@ impl PyBytesInner {
         )
     }
 
-    pub fn expandtabs(&self, options: anystr::ExpandTabsArgs) -> Vec<u8> {
+    pub fn expandtabs(
+        &self,
+        options: anystr::ExpandTabsArgs,
+        vm: &VirtualMachine,
+    ) -> PyResult<Vec<u8>> {
         let tabsize = options.tabsize();
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        let tabs = memchr::memchr_iter(b'\t', &self.elements).count();
+        vm.reserve(tabs.saturating_mul(tabsize))?;
         let mut counter: usize = 0;
         let mut res = vec![];
 
         if tabsize == 0 {
-            return self
+            return Ok(self
                 .elements
                 .iter()
                 .copied()
                 .filter(|x| *x != b'\t')
-                .collect();
+                .collect());
         }
 
         for i in &self.elements {
@@ -929,7 +938,7 @@ impl PyBytesInner {
             }
         }
 
-        res
+        Ok(res)
     }
 
     pub fn splitlines<FW, W>(&self, options: anystr::SplitLinesArgs, into_wrapper: FW) -> Vec<W>
@@ -1047,6 +1056,8 @@ impl PyBytesInner {
             + count as isize * (to.len() as isize - from.len() as isize))
             as usize;
 
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(result_len)?;
         let mut result = Vec::with_capacity(result_len);
         let mut last_end = 0;
         let mut count = count;
@@ -1091,6 +1102,10 @@ impl PyBytesInner {
             // insert the 'to' bytes everywhere.
             //     >>> b"Python".replace(b"", b".")
             //     b'.P.y.t.h.o.n.'
+            // nanocode: the embedder's memory bound (vm/limit.rs).
+            let places = self.elements.len().saturating_add(1);
+            let placed = max_count.map_or(places, |count| count.min(places));
+            vm.reserve(placed.saturating_mul(to.len()))?;
             return Ok(self.replace_interleave(to, max_count));
         }
 
@@ -1134,6 +1149,8 @@ impl PyBytesInner {
         let buffer = PyBuffer::from_object(vm, other, BufferFlags::SIMPLE)?;
         let borrowed = buffer.as_contiguous();
         if let Some(other) = borrowed {
+            // nanocode: the embedder's memory bound (vm/limit.rs).
+            vm.reserve(self.elements.len().saturating_add(other.len()))?;
             let mut v = Vec::with_capacity(self.elements.len() + other.len());
             v.extend_from_slice(&self.elements);
             v.extend_from_slice(&other);

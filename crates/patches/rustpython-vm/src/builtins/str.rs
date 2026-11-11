@@ -657,6 +657,8 @@ impl Py<PyStr> {
 impl PyStr {
     fn __add__(zelf: PyRef<Self>, other: &PyObject, vm: &VirtualMachine) -> PyResult {
         if let Some(other) = other.downcast_ref::<Self>() {
+            // nanocode: the embedder's memory bound (vm/limit.rs).
+            vm.reserve(zelf.byte_len().saturating_add(other.byte_len()))?;
             let bytes = zelf.as_wtf8().py_add(other.as_wtf8());
             Ok(unsafe {
                 // SAFETY: `kind` is safely decided
@@ -795,6 +797,8 @@ impl PyStr {
         for (i, obj) in items.iter().enumerate() {
             len = len.saturating_add(item_str(i, obj, vm)?.as_wtf8().len());
         }
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(len)?;
         if let [only] = items {
             let only = item_str(0, only, vm)?;
             if only.class().is(vm.ctx.types.str_type) {
@@ -1169,6 +1173,7 @@ impl Py<PyStr> {
             };
         }
         let zelf = zelf.try_into_utf8(vm)?;
+        crate::format::reserve_spec(format_spec.as_str(), vm)?;
         let s = FormatSpec::parse(format_spec.as_str())
             .and_then(|format_spec| {
                 format_spec.format_string(&CharLenStr(zelf.as_str(), zelf.char_len()))
@@ -1206,13 +1211,27 @@ impl Py<PyStr> {
     }
 
     #[pymethod]
-    fn replace(zelf: PyRef<PyStr>, args: ReplaceArgs, vm: &VirtualMachine) -> PyRef<PyStr> {
+    fn replace(
+        zelf: PyRef<PyStr>,
+        args: ReplaceArgs,
+        vm: &VirtualMachine,
+    ) -> PyResult<PyRef<PyStr>> {
         let ReplaceArgs { old, new, count } = args;
         if count == 0 || old.byte_len() > zelf.byte_len() || old.as_wtf8() == new.as_wtf8() {
-            return PyStr::result_unchanged(zelf, vm);
+            return Ok(PyStr::result_unchanged(zelf, vm));
         }
 
         let s = zelf.as_wtf8();
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        if new.byte_len() > old.byte_len() {
+            let found = if old.is_empty() {
+                s.len().saturating_add(1)
+            } else {
+                memchr::memmem::find_iter(s.as_bytes(), old.as_bytes()).count()
+            };
+            let replaced = usize::try_from(count).map_or(found, |count| count.min(found));
+            vm.reserve(replaced.saturating_mul(new.byte_len() - old.byte_len()))?;
+        }
         let replaced = if count < 0 {
             s.replace(old.as_wtf8(), new.as_wtf8())
         } else {
@@ -1227,7 +1246,7 @@ impl Py<PyStr> {
                 s.replacen(old.as_wtf8(), new.as_wtf8(), count as usize)
             }
         };
-        vm.ctx.new_str(replaced)
+        Ok(vm.ctx.new_str(replaced))
     }
 
     #[pymethod]
@@ -1447,8 +1466,11 @@ impl Py<PyStr> {
     }
 
     #[pymethod]
-    fn expandtabs(&self, args: anystr::ExpandTabsArgs) -> Wtf8Buf {
-        rustpython_common::str::expandtabs(self.as_wtf8(), args.tabsize())
+    fn expandtabs(&self, args: anystr::ExpandTabsArgs, vm: &VirtualMachine) -> PyResult<Wtf8Buf> {
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        let tabs = memchr::memchr_iter(b'\t', self.as_bytes()).count();
+        vm.reserve(tabs.saturating_mul(args.tabsize()))?;
+        Ok(rustpython_common::str::expandtabs(self.as_wtf8(), args.tabsize()))
     }
 
     #[pymethod]
@@ -1483,6 +1505,8 @@ impl Py<PyStr> {
                 continue;
             };
             if let Some(text) = value.downcast_ref::<PyStr>() {
+                // nanocode: the embedder's memory bound (vm/limit.rs).
+                vm.reserve(text.byte_len())?;
                 translated.push_wtf8(text.as_wtf8());
             } else if let Some(bigint) = value.downcast_ref::<PyInt>() {
                 let mapped = bigint
@@ -1604,10 +1628,12 @@ impl PyRef<PyStr> {
         (**self).is_empty()
     }
 
-    pub fn concat_in_place(&mut self, other: &Wtf8, vm: &VirtualMachine) {
+    pub fn concat_in_place(&mut self, other: &Wtf8, vm: &VirtualMachine) -> PyResult<()> {
         if other.is_empty() {
-            return;
+            return Ok(());
         }
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(self.byte_len().saturating_add(other.len()))?;
         let mut s = Wtf8Buf::with_capacity(self.byte_len() + other.len());
         s.push_wtf8(self.as_ref());
         s.push_wtf8(other);
@@ -1624,6 +1650,7 @@ impl PyRef<PyStr> {
         } else {
             *self = PyStr::from(s).into_ref(&vm.ctx);
         }
+        Ok(())
     }
 
     pub fn try_into_utf8(self, vm: &VirtualMachine) -> PyResult<PyRef<PyUtf8Str>> {

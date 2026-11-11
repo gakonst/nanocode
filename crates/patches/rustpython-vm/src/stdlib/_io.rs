@@ -4130,7 +4130,7 @@ mod _io {
                         let decoded_chars = decoded_chars.as_wtf8();
                         let line = if remaining.is_full_slice() {
                             let mut line = remaining.0;
-                            line.concat_in_place(decoded_chars, vm);
+                            line.concat_in_place(decoded_chars, vm)?;
                             line
                         } else {
                             let remaining = remaining.slice();

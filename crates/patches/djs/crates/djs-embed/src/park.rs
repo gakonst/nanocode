@@ -325,13 +325,18 @@ impl Snapshot {
 }
 
 fn static_fingerprint(snapshot: &Snapshot) -> u64 {
-    *snapshot.fingerprint_cell().get_or_init(|| {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for &b in snapshot.image() {
-            h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-        }
-        h
-    })
+    *snapshot
+        .fingerprint_cell()
+        .get_or_init(|| image_fingerprint(snapshot.image()))
+}
+
+/// FNV-1a over an image's bytes.
+pub(crate) fn image_fingerprint(image: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in image {
+        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 /// The cell [`Snapshot::fingerprint`] is kept in.

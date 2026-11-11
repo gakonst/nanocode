@@ -228,12 +228,59 @@ impl Builder {
         let image = guard_vm(|| self.setup(&mut vm))??;
         Ok(Snapshot(Arc::new(Inner {
             image,
+            setup: self.setup_hash(),
             fingerprint: Default::default(),
             frozen_builtins: self.frozen_builtins,
             host_fns: self.host_fns,
             modules: self.modules,
             loader: self.loader,
         })))
+    }
+
+    /// A hash of what the setup makes the image from: the host functions and the
+    /// probe, the globals, the synthetic modules, the sources, whether the builtins
+    /// are frozen and the memory cap. A host keys stored snapshots
+    /// ([`Snapshot::to_bytes`]) by it. The loader is not in it: what it answered during
+    /// the setup is in the image.
+    pub fn setup_hash(&self) -> u64 {
+        let mut h = SetupHash(0xcbf2_9ce4_8422_2325);
+        h.word(self.host_fns.len() as u64);
+        for f in &self.host_fns {
+            h.host_fn(f);
+        }
+        h.word(self.probe.map_or(u64::MAX, u64::from));
+        h.word(self.globals.len() as u64);
+        for (name, value) in &self.globals {
+            h.bytes(name.as_bytes());
+            h.bytes(&value.to_wire());
+        }
+        h.word(self.modules.len() as u64);
+        for m in &self.modules {
+            h.bytes(m.key.as_bytes());
+            h.word(m.exports.len() as u64);
+            for e in &m.exports {
+                match e {
+                    Export::Fn(f) => {
+                        h.word(0);
+                        h.host_fn(f);
+                    }
+                    Export::Data(name, value) => {
+                        h.word(1);
+                        h.bytes(name.as_bytes());
+                        h.bytes(&value.to_wire());
+                    }
+                }
+            }
+        }
+        h.word(self.sources.len() as u64);
+        for s in &self.sources {
+            h.word(s.kind as u64);
+            h.bytes(s.name.as_bytes());
+            h.bytes(s.text.as_bytes());
+        }
+        h.word(u64::from(self.frozen_builtins));
+        h.word(self.memory as u64);
+        h.0
     }
 
     fn setup(&self, vm: &mut Vm) -> Result<Vec<u8>, Error> {
@@ -425,15 +472,45 @@ pub(crate) fn vm_options(memory: usize, frozen_builtins: bool) -> VmOptions {
 /// measured no better for short calls and cost the allocator more per instance.
 pub(crate) const IMAGE_ROOM: usize = 64 << 10;
 
+/// FNV-1a over the parts of a setup, each with its length.
+struct SetupHash(u64);
+
+impl SetupHash {
+    fn word(&mut self, w: u64) {
+        for b in w.to_le_bytes() {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        self.word(bytes.len() as u64);
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    fn host_fn(&mut self, f: &HostFn) {
+        self.word(u64::from(f.id));
+        self.bytes(f.name.as_bytes());
+        self.word(u64::from(f.is_async));
+    }
+}
+
+/// The first bytes of [`Snapshot::to_bytes`].
+const MAGIC: &[u8; 8] = b"djssnap1";
+
 /// A compiled setup: the image of a VM after the host's host functions, globals and setup
 /// sources, from which [`Instance`]s start. Cheap to clone (shared), `Send` and `Sync`.
-/// Images live in this process only: there is no way to save one, and none is needed,
-/// since building one from the sources is the same thing.
+/// A host that starts often (a wasm instance per request) stores the image
+/// ([`Snapshot::to_bytes`]) and loads it ([`Snapshot::from_bytes`]) in place of running
+/// the setup again.
 #[derive(Clone)]
 pub struct Snapshot(Arc<Inner>);
 
 struct Inner {
     image: Vec<u8>,
+    /// [`Builder::setup_hash`] of the builder it comes from.
+    setup: u64,
     fingerprint: crate::park::Fingerprint,
     frozen_builtins: bool,
     host_fns: Vec<HostFn>,
@@ -458,6 +535,61 @@ const _: () = {
 impl Snapshot {
     pub fn builder() -> Builder {
         Builder::default()
+    }
+
+    /// The snapshot as bytes, for a host that stores it or hands it to another
+    /// instance of itself: [`Snapshot::from_bytes`] with a builder of the same setup
+    /// makes the snapshot again without compiling or running anything. The image with
+    /// its fingerprint ([`Snapshot::fingerprint`]) and the setup's hash
+    /// ([`Builder::setup_hash`]).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(MAGIC.len() + 16 + self.0.image.len());
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&self.0.setup.to_le_bytes());
+        out.extend_from_slice(&self.fingerprint().to_le_bytes());
+        out.extend_from_slice(&self.0.image);
+        out
+    }
+
+    /// The snapshot of [`Snapshot::to_bytes`], for `builder`: the one that built it, set
+    /// up again (the same host functions, globals, modules and sources, which the bytes
+    /// do not hold, and the loader it had). The setup does not run. Bytes of another
+    /// setup, of another build of djs or damaged ones are [`Error::Usage`]: the image is
+    /// compared with its fingerprint and verified cell by cell, since it comes from
+    /// storage; the host then builds the snapshot.
+    pub fn from_bytes(builder: Builder, bytes: &[u8]) -> Result<Snapshot, Error> {
+        let bad = |why: &str| Error::Usage(format!("not a snapshot of this setup: {why}"));
+        let word = |at: usize| -> Option<u64> {
+            Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+        };
+        let head = MAGIC.len();
+        if bytes.get(..head) != Some(MAGIC) {
+            return Err(bad("not snapshot bytes"));
+        }
+        let setup = builder.setup_hash();
+        if word(head) != Some(setup) {
+            return Err(bad("another setup"));
+        }
+        let image = bytes.get(head + 16..).ok_or_else(|| bad("truncated"))?;
+        let fingerprint = crate::park::image_fingerprint(image);
+        if word(head + 8) != Some(fingerprint) {
+            return Err(bad("the image is damaged"));
+        }
+        let opts = vm_options(builder.memory, builder.frozen_builtins);
+        let copy = image.to_vec();
+        guard_vm(|| Vm::from_bytes(copy, opts))?.map_err(|e| match e {
+            djs_core::heap::LoadError::TooLarge => Error::OutOfMemory,
+            e => Error::Usage(format!("cannot load the snapshot: {e:?}")),
+        })?;
+        Ok(Snapshot(Arc::new(Inner {
+            image: image.to_vec(),
+            setup,
+            fingerprint: fingerprint.into(),
+            frozen_builtins: builder.frozen_builtins,
+            host_fns: builder.host_fns,
+            modules: builder.modules,
+            loader: builder.loader,
+        })))
     }
 
     /// A new VM in the snapshot's state. Copies the image (no compile, no setup run).

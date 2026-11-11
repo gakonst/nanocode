@@ -256,6 +256,44 @@ def _stdio(fd, name):
     return text
 
 
+def _signals():
+    module = type(sys)('_signal')
+    handlers = {}
+
+    def signal(number, handler):
+        previous = handlers.get(number, module.SIG_DFL)
+        handlers[number] = handler
+        return previous
+
+    def getsignal(number):
+        return handlers.get(number, module.SIG_DFL)
+
+    def default_int_handler(number, frame):
+        raise KeyboardInterrupt
+
+    def raise_signal(number):
+        handler = getsignal(number)
+        if callable(handler):
+            handler(number, None)
+        elif number == module.SIGINT and handler == module.SIG_DFL:
+            raise KeyboardInterrupt
+
+    module.SIG_DFL, module.SIG_IGN = 0, 1
+    module.SIGINT, module.SIGILL, module.SIGABRT, module.SIGFPE, module.SIGSEGV, module.SIGTERM = 2, 4, 6, 8, 11, 15
+    module.NSIG = 65
+    module.signal = signal
+    module.getsignal = getsignal
+    module.default_int_handler = default_int_handler
+    module.raise_signal = raise_signal
+    module.set_wakeup_fd = lambda fd, **options: -1
+    module.valid_signals = lambda: set((2, 4, 6, 8, 11, 15))
+    module.strsignal = lambda number: None
+    return module
+
+
+sys.modules.setdefault('_signal', _signals())
+
+
 _gmtime, _localtime, _strftime, _ctime = time.gmtime, time.localtime, time.strftime, time.ctime
 
 

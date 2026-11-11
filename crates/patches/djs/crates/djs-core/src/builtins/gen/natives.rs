@@ -125,7 +125,7 @@ fn handler_ArrayPrototypePush(state: u32) -> Option<(u32, u32)> {
     None
 }
 
-// builtins/array.ts:964
+// builtins/array.ts:966
 fn native_SortList(ex: &mut Exec<'_>) -> Step {
     let mut st = ex.n_state();
     loop {
@@ -227,7 +227,7 @@ fn handler_SortList(state: u32) -> Option<(u32, u32)> {
     None
 }
 
-// builtins/array.ts:1009 (Array.prototype.sort)
+// builtins/array.ts:1011 (Array.prototype.sort)
 #[allow(unused_assignments)]
 fn native_ArrayPrototypeSort(ex: &mut Exec<'_>) -> Step {
     let mut st = ex.n_state();

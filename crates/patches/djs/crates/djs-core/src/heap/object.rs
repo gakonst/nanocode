@@ -2656,6 +2656,12 @@ impl Heap {
         self.prop_insert(o, key, p)
     }
 
+    /// Whether `o` has no elements and one property slot, which holds `key`: then `key`
+    /// is its only own property (an object that had more and lost them may say false).
+    pub(crate) fn only_own_key(&self, o: Obj, key: Atom) -> bool {
+        self.elements(o) == 0 && self.prop_slots(o) == 1 && self.prop_key(o, 0) == key
+    }
+
     /// `[[OwnPropertyKeys]]` in spec order: array indexes ascending, then string keys in
     /// creation order, then symbols in creation order.
     pub fn own_keys(&self, o: Obj) -> Vec<Atom> {

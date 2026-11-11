@@ -17,7 +17,7 @@ use crate::PushOut;
 
 use alloc::vec::Vec;
 
-use crate::builtins::{collection, dense, number, string};
+use crate::builtins::{collection, dense, number, regexp, string};
 use crate::bytecode::intrinsics::INTRINSICS;
 use crate::heap::{Heap, ObjectClass, Property, StrView, atoms};
 use crate::interp::conv::{self, Fault};
@@ -34,17 +34,33 @@ pub(crate) struct FastFn {
     pub name: &'static str,
     /// `run(heap, this, args)`.
     pub run: fn(&mut Heap, Value, &[Value]) -> Fast,
+    /// An entry that runs the regexp matcher, in place of `run`: `metered(heap, this,
+    /// args, fuel)` charges the matcher's steps to the run's fuel when it ends. It
+    /// declines a match that needs more steps than an entry takes
+    /// (`regexp::FAST_STEPS`): the builtin starts over and suspends.
+    pub metered: Option<Metered>,
     /// A constructor's `new F(args)` with new.target F, `new(heap, args)` (0236); `None`:
     /// constructs run the builtin.
     pub new: Option<fn(&mut Heap, &[Value]) -> Fast>,
 }
 
+pub(crate) type Metered = fn(&mut Heap, Value, &[Value], &mut i64) -> Fast;
+
 /// The most arguments an entry looks at (calls with more decline).
 pub(crate) const MAX_ARGS: usize = 6;
 
 impl FastFn {
-    pub(crate) fn call(&self, heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
-        (self.run)(heap, this, args)
+    pub(crate) fn call(
+        &self,
+        heap: &mut Heap,
+        this: Value,
+        args: &[Value],
+        fuel: &mut i64,
+    ) -> Fast {
+        match self.metered {
+            Some(run) => run(heap, this, args, fuel),
+            None => (self.run)(heap, this, args),
+        }
     }
 }
 
@@ -61,7 +77,16 @@ const fn f(name: &'static str, run: fn(&mut Heap, Value, &[Value]) -> Fast) -> F
         #[cfg(djs_prelude)]
         name,
         run,
+        metered: None,
         new: None,
+    }
+}
+
+/// An entry that runs the regexp matcher (`FastFn::metered`).
+const fn m(name: &'static str, run: Metered) -> FastFn {
+    FastFn {
+        metered: Some(run),
+        ..f(name, no_call)
     }
 }
 
@@ -93,7 +118,7 @@ pub(crate) static FAST: &[FastFn] = &[
     f("StringPrototypeSlice", slice),
     f("StringPrototypeCharAt", char_at),
     f("StringPrototypeCharCodeAt", char_code_at),
-    f("StringPrototypeSplit", split),
+    m("StringPrototypeSplit", split),
     // 0230b: >2x QuickJS after the general fixes (D3120, D3121)
     f("StringPrototypeSubstring", substring),
     f("StringPrototypeAt", at),
@@ -147,6 +172,32 @@ pub(crate) static FAST: &[FastFn] = &[
     ctor("MapConstructor", no_call, map_new),
     ctor("SetConstructor", no_call, set_new),
     ctor("DateConstructor", no_call, date_new),
+    // ---- the rest of the everyday String methods and two Array ones (nanocode: as
+    // bytecode each was 3-10x QuickJS; the entries are at or below it) ----
+    f("StringPrototypeStartsWith", starts_with),
+    f("StringPrototypeEndsWith", ends_with),
+    f("StringPrototypeLastIndexOf", last_index_of),
+    f("StringPrototypeCodePointAt", code_point_at),
+    f("StringPrototypeLocaleCompare", locale_compare),
+    f("StringPrototypeConcat", concat),
+    f("StringPrototypeToLowerCase", to_lower_case),
+    f("StringPrototypeToUpperCase", to_upper_case),
+    f("StringPrototypeToLocaleLowerCase", to_lower_case),
+    f("StringPrototypeToLocaleUpperCase", to_upper_case),
+    f("StringPrototypeTrim", trim),
+    f("StringPrototypeTrimStart", trim_start),
+    f("StringPrototypeTrimEnd", trim_end),
+    f("StringPrototypeSubstr", substr),
+    m("StringPrototypeReplace", replace),
+    m("StringPrototypeReplaceAll", replace_all),
+    f("ArrayPrototypeReverse", array_reverse),
+    f("ArrayPrototypeConcat", array_concat),
+    // ---- RegExps whose protocol is unobservable (D1503, D3137), matched in one go ----
+    m("RegExpPrototypeTest", regexp_test),
+    m("RegExpPrototypeExec", regexp_exec),
+    m("RegExpStringIteratorNext", regexp_string_iterator_next),
+    m("StringPrototypeMatch", string_match),
+    m("StringPrototypeSearch", string_search),
 ];
 
 // ---- argument helpers ----------------------------------------------------------------
@@ -462,11 +513,29 @@ fn new_array(heap: &mut Heap, values: &[Value]) -> Fast {
     )))
 }
 
-/// String.prototype.split with a primitive separator (an object's @@split is a lookup).
-fn split(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+/// String.prototype.split with a primitive separator, or a pristine RegExp whose
+/// @@split is the original (any other object's @@split is a lookup).
+fn split(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
     let (sep, limit) = (arg(args, 0), arg(args, 1));
     if sep.as_object().is_some() {
-        return Ok(None);
+        // RegExpPrototypeSplit's leaf case: a non-empty string and a limit that is
+        // undefined or a Number, above 0.
+        let Some(r) = symbol_method(heap, sep, regexp::SPLIT, atoms::SYM_SPLIT, REGEXP_SPLIT)
+        else {
+            return Ok(None);
+        };
+        let Some(s) = this_str(heap, this)? else {
+            return Ok(None);
+        };
+        let lim = match limit.as_number() {
+            Some(n) => number::to_uint32(n),
+            None if limit.is_undefined() => u32::MAX,
+            None => return Ok(None),
+        };
+        if lim == 0 || heap.str_len(s) == 0 {
+            return Ok(None);
+        }
+        return regexp::split_now(heap, r, s, lim, fuel);
     }
     let Some(s) = this_str(heap, this)? else {
         return Ok(None);
@@ -548,6 +617,468 @@ fn split(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
     new_array(heap, &parts)
 }
 
+/// Whether `s[at .. at + len(t))` is `t`; both are contiguous and the range lies in `s`.
+fn range_eq(heap: &Heap, s: Str, at: usize, t: Str) -> bool {
+    match (heap.str_view(s), heap.str_view(t)) {
+        (Some(StrView::Latin1(h)), Some(StrView::Latin1(n))) => h[at..at + n.len()] == *n,
+        (Some(h), Some(n)) => (0..n.len()).all(|i| h.get(at + i) == n.get(i)),
+        _ => false,
+    }
+}
+
+/// String.prototype.startsWith ( searchString [ , position ] ).
+fn starts_with(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((s, t)) = search(heap, this, arg(args, 0))? else {
+        return Ok(None);
+    };
+    let Some(p) = int_arg(heap, arg(args, 1))? else {
+        return Ok(None);
+    };
+    let (n, m) = (len(heap, s), len(heap, t));
+    let start = clamp(p, n);
+    if start + m > n {
+        return Ok(Some(Value::FALSE));
+    }
+    let (s, t) = (heap.contiguous(s)?, heap.contiguous(t)?);
+    Ok(Some(Value::bool(range_eq(heap, s, start as usize, t))))
+}
+
+/// String.prototype.endsWith ( searchString [ , endPosition ] ).
+fn ends_with(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((s, t)) = search(heap, this, arg(args, 0))? else {
+        return Ok(None);
+    };
+    let (n, m) = (len(heap, s), len(heap, t));
+    let end = match arg(args, 1) {
+        v if v.is_undefined() => n,
+        v => match int_arg(heap, v)? {
+            Some(p) => clamp(p, n),
+            None => return Ok(None),
+        },
+    };
+    if m > end {
+        return Ok(Some(Value::FALSE));
+    }
+    let (s, t) = (heap.contiguous(s)?, heap.contiguous(t)?);
+    Ok(Some(Value::bool(range_eq(heap, s, (end - m) as usize, t))))
+}
+
+/// String.prototype.lastIndexOf ( searchString [ , position ] ): a NaN position is the
+/// end.
+fn last_index_of(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((s, t)) = search(heap, this, arg(args, 0))? else {
+        return Ok(None);
+    };
+    let Some(p) = num(heap, arg(args, 1))? else {
+        return Ok(None);
+    };
+    let (n, m) = (len(heap, s), len(heap, t));
+    let pos = if p.is_nan() { n } else { clamp(integer(p), n) };
+    if m > n {
+        return Ok(Some(Value::int(-1)));
+    }
+    let from = pos.min(n - m) as u32;
+    Ok(Some(conv::number(string::index_of(
+        heap, s, t, from, true,
+    )?)))
+}
+
+/// String.prototype.codePointAt ( pos ).
+fn code_point_at(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    Ok(match position(heap, s, arg(args, 0))? {
+        None => None,
+        Some(None) => Some(Value::UNDEFINED),
+        Some(Some(i)) => {
+            let s = heap.contiguous(s)?;
+            Some(string::code_point_at(heap, s, i).map_or(Value::UNDEFINED, conv::number))
+        }
+    })
+}
+
+/// String.prototype.localeCompare ( that ).
+fn locale_compare(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((s, t)) = search(heap, this, arg(args, 0))? else {
+        return Ok(None);
+    };
+    Ok(Some(conv::number(string::locale_compare(heap, s, t)?)))
+}
+
+/// String.prototype.concat ( ...args ) of primitives.
+fn concat(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some(mut r) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    let mut parts = [r; MAX_ARGS];
+    for (p, &v) in parts.iter_mut().zip(args) {
+        let Some(s) = str(heap, v)? else {
+            return Ok(None);
+        };
+        *p = s;
+    }
+    for &p in &parts[..args.len()] {
+        r = heap.concat(r, p)?;
+    }
+    some_str(r)
+}
+
+fn to_lower_case(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    some_str(string::to_case(heap, s, false)?)
+}
+
+fn to_upper_case(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    some_str(string::to_case(heap, s, true)?)
+}
+
+/// trim (`where_` 0), trimStart (1), trimEnd (2).
+fn trim_at(heap: &mut Heap, this: Value, where_: i32) -> Fast {
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    some_str(string::trim(heap, s, where_)?)
+}
+
+fn trim(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    trim_at(heap, this, 0)
+}
+
+fn trim_start(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    trim_at(heap, this, 1)
+}
+
+fn trim_end(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    trim_at(heap, this, 2)
+}
+
+/// String.prototype.substr ( start, length ).
+fn substr(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    let n = len(heap, s);
+    let Some(start) = relative(heap, arg(args, 0), n, 0.0)? else {
+        return Ok(None);
+    };
+    let count = match arg(args, 1) {
+        v if v.is_undefined() => n,
+        v => match int_arg(heap, v)? {
+            Some(c) => c,
+            None => return Ok(None),
+        },
+    };
+    let end = (start + count).min(n);
+    if start >= end {
+        return empty(heap);
+    }
+    some_str(string::substring(heap, s, start as u32, end as u32)?)
+}
+
+const REGEXP_REPLACE: u16 = intrinsic_id("RegExpPrototypeReplace");
+const REGEXP_SEARCH: u16 = intrinsic_id("RegExpPrototypeSearch");
+const REGEXP_SPLIT: u16 = intrinsic_id("RegExpPrototypeSplit");
+const REGEXP_MATCH: u16 = intrinsic_id("RegExpPrototypeMatch");
+
+/// The pristine RegExp `v` (`regexp::pristine`: no own property but lastIndex, so its
+/// methods are %RegExp.prototype%'s) when the method under the well-known symbol `key`
+/// is the original builtin `id`: a String method that hands over to it can run its
+/// leaf case directly.
+fn symbol_method(
+    heap: &Heap,
+    v: Value,
+    which: usize,
+    key: crate::heap::Atom,
+    id: u16,
+) -> Option<Obj> {
+    let r = regexp::pristine(heap, v)?;
+    regexp::original_method(heap, which, key, id).then_some(r)
+}
+
+/// What replace and replaceAll search for.
+enum Pattern {
+    Text(Str),
+    RegExp(Obj),
+}
+
+/// The string, the pattern and the replacement template of replace and replaceAll with a
+/// primitive replacement (an object is a function or runs its toString) and a primitive
+/// pattern or a pristine RegExp whose @@replace is the original (any other object is
+/// asked for its @@replace).
+fn replace_args(
+    heap: &mut Heap,
+    this: Value,
+    args: &[Value],
+) -> Result<Option<(Str, Pattern, Str)>, Fault> {
+    let (pattern, replacement) = (arg(args, 0), arg(args, 1));
+    if replacement.as_object().is_some() {
+        return Ok(None);
+    }
+    let regexp = match pattern.as_object() {
+        None => None,
+        Some(_) => match symbol_method(
+            heap,
+            pattern,
+            regexp::REPLACE,
+            atoms::SYM_REPLACE,
+            REGEXP_REPLACE,
+        ) {
+            Some(r) => Some(r),
+            None => return Ok(None),
+        },
+    };
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    let pattern = match regexp {
+        Some(r) => Pattern::RegExp(r),
+        None => match str(heap, pattern)? {
+            Some(t) => Pattern::Text(t),
+            None => return Ok(None),
+        },
+    };
+    Ok(str(heap, replacement)?.map(|r| (s, pattern, r)))
+}
+
+/// GetSubstitution of regexp.ts for a match `s[at .. at + m)` of a string pattern, as
+/// pieces: without captures `$n` and `$<` stay as written.
+fn substitution(
+    heap: &mut Heap,
+    pieces: &mut Vec<(Str, u32, u32)>,
+    template: Str,
+    s: Str,
+    at: u32,
+    m: u32,
+) -> Result<(), Fault> {
+    let t = heap.contiguous(template)?;
+    let n = heap.str_len(s);
+    let view = heap.str_view(t).expect("contiguous");
+    let tl = view.len() as u32;
+    let (mut run, mut k) = (0, 0);
+    while k + 1 < tl {
+        if view.get(k as usize) != 0x24 {
+            k += 1;
+            continue;
+        }
+        let piece = match view.get(k as usize + 1) {
+            0x24 => (t, k, k + 1),
+            0x26 => (s, at, at + m),
+            0x60 => (s, 0, at),
+            0x27 => (s, (at + m).min(n), n),
+            _ => {
+                k += 1;
+                continue;
+            }
+        };
+        pieces.push_out((t, run, k));
+        pieces.push_out(piece);
+        k += 2;
+        run = k;
+    }
+    pieces.push_out((t, run, tl));
+    Ok(())
+}
+
+/// String.prototype.replace ( searchValue, replaceValue ) with a string replacement.
+fn replace(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
+    let Some((s, pattern, r)) = replace_args(heap, this, args)? else {
+        return Ok(None);
+    };
+    let t = match pattern {
+        Pattern::Text(t) => t,
+        Pattern::RegExp(rx) => return regexp::replace_now(heap, rx, s, r, fuel),
+    };
+    let at = string::index_of(heap, s, t, 0, false)?;
+    if at < 0.0 {
+        return some_str(s);
+    }
+    let (at, m, n) = (at as u32, heap.str_len(t), heap.str_len(s));
+    let mut pieces = crate::buf::vec_with_capacity(8);
+    pieces.push_out((s, 0, at));
+    substitution(heap, &mut pieces, r, s, at, m)?;
+    pieces.push_out((s, at + m, n));
+    some_str(string::join(heap, &mut pieces)?)
+}
+
+/// String.prototype.replaceAll ( searchValue, replaceValue ) with a string replacement; a
+/// RegExp without the `g` flag is the builtin's TypeError.
+fn replace_all(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
+    let Some((s, pattern, r)) = replace_args(heap, this, args)? else {
+        return Ok(None);
+    };
+    let t = match pattern {
+        Pattern::Text(t) => t,
+        Pattern::RegExp(rx) if regexp::has_flag(heap, rx, u16::from(b'g')) => {
+            return regexp::replace_now(heap, rx, s, r, fuel);
+        }
+        Pattern::RegExp(_) => return Ok(None),
+    };
+    let (m, n) = (heap.str_len(t), heap.str_len(s));
+    let advance = m.max(1);
+    let mut pieces = crate::buf::vec_with_capacity(16);
+    let mut end = 0;
+    let mut at = string::index_of(heap, s, t, 0, false)?;
+    while at >= 0.0 {
+        let p = at as u32;
+        pieces.push_out((s, end, p));
+        substitution(heap, &mut pieces, r, s, p, m)?;
+        end = p + m;
+        at = string::index_of(heap, s, t, p + advance, false)?;
+    }
+    if pieces.is_empty() {
+        return some_str(s);
+    }
+    if end < n {
+        pieces.push_out((s, end, n));
+    }
+    some_str(string::join(heap, &mut pieces)?)
+}
+
+// ---- RegExp --------------------------------------------------------------------------
+
+/// The RegExp `this` and the string argument of test and exec.
+fn regexp_and_string(
+    heap: &mut Heap,
+    this: Value,
+    args: &[Value],
+) -> Result<Option<(Obj, Str)>, Fault> {
+    let Some(r) = regexp::as_regexp(heap, this) else {
+        return Ok(None);
+    };
+    Ok(str(heap, arg(args, 0))?.map(|s| (r, s)))
+}
+
+/// RegExp.prototype.test ( S ) when RegExpExec is RegExpBuiltinExec (`%RegExpExecOwn`'s
+/// case).
+fn regexp_test(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
+    let Some((r, s)) = regexp_and_string(heap, this, args)? else {
+        return Ok(None);
+    };
+    match regexp::last_index(heap, r) {
+        Some(last) if regexp::exec_is_original(heap, r) => {
+            regexp::exec_now(heap, r, s, last, true, fuel)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// RegExp.prototype.exec ( string ): RegExpBuiltinExec with a Number lastIndex.
+fn regexp_exec(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
+    let Some((r, s)) = regexp_and_string(heap, this, args)? else {
+        return Ok(None);
+    };
+    match regexp::last_index(heap, r) {
+        Some(last) => regexp::exec_now(heap, r, s, last, false, fuel),
+        None => Ok(None),
+    }
+}
+
+/// %RegExpStringIteratorPrototype%.next ( ) over a RegExp whose RegExpExec is
+/// RegExpBuiltinExec. The result object is made first: the steps after the match only
+/// store.
+fn regexp_string_iterator_next(heap: &mut Heap, this: Value, _: &[Value], fuel: &mut i64) -> Fast {
+    let Some(it) = this
+        .as_object()
+        .filter(|&o| heap.object_class(o) == ObjectClass::RegExpStringIterator)
+    else {
+        return Ok(None);
+    };
+    let flags = heap.object_slot(it, regexp::IT_FLAGS).as_int().unwrap_or(0);
+    let proto = realm::intrinsic_obj(heap, Intrinsic::ObjectProto);
+    let result = heap.new_object_from_entries(
+        Some(proto),
+        &[atoms::VALUE, atoms::DONE],
+        &[Value::UNDEFINED, Value::TRUE],
+    )?;
+    if flags & regexp::IT_DONE != 0 {
+        return Ok(Some(Value::object(result)));
+    }
+    let (Some(r), Some(s)) = (
+        regexp::as_regexp(heap, heap.object_slot(it, regexp::IT_REGEXP)),
+        heap.object_slot(it, regexp::IT_STRING).as_string(),
+    ) else {
+        return Ok(None);
+    };
+    let Some(last) = regexp::last_index(heap, r).filter(|_| regexp::exec_is_original(heap, r))
+    else {
+        return Ok(None);
+    };
+    let Some(found) = regexp::exec_now(heap, r, s, last, false, fuel)? else {
+        return Ok(None);
+    };
+    let finish = |heap: &mut Heap| {
+        heap.set_object_slot(it, regexp::IT_FLAGS, Value::int(flags | regexp::IT_DONE));
+    };
+    let Some(matched) = found.as_object() else {
+        finish(heap);
+        return Ok(Some(Value::object(result)));
+    };
+    if flags & regexp::IT_GLOBAL == 0 {
+        finish(heap);
+    } else if heap
+        .get_element_fast(matched, 0)
+        .and_then(Value::as_string)
+        .is_some_and(|m| heap.str_len(m) == 0)
+    {
+        // AdvanceAfterEmptyMatch: the match just set lastIndex (a global RegExp).
+        let at = regexp::last_index(heap, r).unwrap_or(0.0) as usize;
+        let s = heap.contiguous(s)?;
+        let view = heap.str_view(s).expect("flat string");
+        let next = regexp::advance(view, at, flags & regexp::IT_UNICODE != 0);
+        heap.set_own_data_value(r, atoms::LAST_INDEX, Value::int(next as i32));
+    }
+    heap.set_own_data_value(result, atoms::VALUE, found);
+    heap.set_own_data_value(result, atoms::DONE, Value::FALSE);
+    Ok(Some(Value::object(result)))
+}
+
+/// String.prototype.match ( regexp ) of a pristine RegExp: every match of a global one,
+/// else RegExpExec.
+fn string_match(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
+    let Some(r) = symbol_method(
+        heap,
+        arg(args, 0),
+        regexp::MATCH,
+        atoms::SYM_MATCH,
+        REGEXP_MATCH,
+    ) else {
+        return Ok(None);
+    };
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    if regexp::has_flag(heap, r, u16::from(b'g')) {
+        return regexp::match_all_now(heap, r, s, fuel);
+    }
+    match regexp::last_index(heap, r) {
+        Some(last) => regexp::exec_now(heap, r, s, last, false, fuel),
+        None => Ok(None),
+    }
+}
+
+/// String.prototype.search ( regexp ) of a pristine RegExp.
+fn string_search(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) -> Fast {
+    let Some(r) = symbol_method(
+        heap,
+        arg(args, 0),
+        regexp::SEARCH,
+        atoms::SYM_SEARCH,
+        REGEXP_SEARCH,
+    ) else {
+        return Ok(None);
+    };
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    regexp::search_now(heap, r, s, fuel)
+}
+
 // ---- Number --------------------------------------------------------------------------
 
 /// `Number(value)` called as a function: ToNumeric of a primitive (a BigInt converts).
@@ -624,7 +1155,7 @@ fn math_min(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
 // ---- Object / Array ------------------------------------------------------------------
 
 /// The id of an `@intrinsic` builtin, at compile time.
-const fn intrinsic_id(name: &str) -> u16 {
+pub(crate) const fn intrinsic_id(name: &str) -> u16 {
     let mut k = 0;
     while k < INTRINSICS.len() {
         let (a, b) = (INTRINSICS[k].name.as_bytes(), name.as_bytes());
@@ -814,6 +1345,71 @@ fn array_join(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
         },
     };
     Ok(dense::join(heap, o, len, sep)?.map(Value::string))
+}
+
+/// Array.prototype.reverse ( ) of an Array whose elements are all present in its dense
+/// store: HasProperty and Get observe nothing, and each Set is a plain store.
+fn array_reverse(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    let Some((o, len)) = this_array(heap, this) else {
+        return Ok(None);
+    };
+    if heap.frozen(o) {
+        return Ok(None);
+    }
+    let Some(values) = dense::dense_range(heap, o, 0, len) else {
+        return Ok(None);
+    };
+    for (i, v) in values.into_iter().rev().enumerate() {
+        heap.set_element_fast(o, i as u32, v)?;
+    }
+    Ok(Some(this))
+}
+
+/// Whether Get(o, @@isConcatSpreadable) is undefined without running user code: no object
+/// on the prototype chain (none a proxy) has the property.
+fn no_spreadable_key(heap: &Heap, o: Obj) -> bool {
+    let mut c = Some(o);
+    while let Some(q) = c {
+        if heap.is_proxy(q) || heap.has_own_property(q, atoms::SYM_IS_CONCAT_SPREADABLE) {
+            return false;
+        }
+        c = heap.get_prototype_of(q);
+    }
+    true
+}
+
+/// Array.prototype.concat ( ...items ) with a plain Array result: `this` and the items
+/// that are Arrays spread their dense elements (all present), every other item (an
+/// object only without @@isConcatSpreadable on its chain) is one element.
+fn array_concat(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((o, _)) = this_array(heap, this) else {
+        return Ok(None);
+    };
+    if !plain_species(heap, o) {
+        return Ok(None);
+    }
+    let mut values: Vec<Value> = Vec::new();
+    for &e in core::iter::once(&this).chain(args) {
+        let Some(eo) = e.as_object() else {
+            values.push_out(e);
+            continue;
+        };
+        if !no_spreadable_key(heap, eo) {
+            return Ok(None);
+        }
+        if heap.object_class(eo) != ObjectClass::Array {
+            values.push_out(e);
+            continue;
+        }
+        let Some(part) = dense::dense_range(heap, eo, 0, heap.array_length(eo)) else {
+            return Ok(None);
+        };
+        values.extend_from_slice(&part);
+    }
+    if values.len() as u64 > u64::from(crate::heap::atom::MAX_INT_ATOM) {
+        return Ok(None);
+    }
+    new_array(heap, &values)
 }
 
 // ---- String.fromCharCode (0091) -----------------------------------------------------

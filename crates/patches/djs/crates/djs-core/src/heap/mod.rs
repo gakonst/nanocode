@@ -194,6 +194,10 @@ pub struct Heap {
     /// for the VM's lifetime (D2338). Not part of the image.
     #[cfg(feature = "unicode-normalization")]
     pub(crate) compositions: crate::unicode::normalize::Compositions,
+    /// A spare regexp matcher state: the `@fast` RegExp entries run match after match in
+    /// its memory instead of allocating one each (builtins/regexp.rs). Not part of the
+    /// image.
+    pub(crate) regexp_state: crate::regexp::ExecState,
     /// The prefix as it was when the barrier was armed (debug builds, D2065): what
     /// [`Heap::check_prefix`] compares against, for writes that bypass `Arena::write`.
     #[cfg(debug_assertions)]
@@ -314,6 +318,7 @@ impl Heap {
             frozen_end: 0,
             #[cfg(feature = "unicode-normalization")]
             compositions: Default::default(),
+            regexp_state: Default::default(),
             #[cfg(debug_assertions)]
             prefix_copy: None,
             barrier_forced: false,

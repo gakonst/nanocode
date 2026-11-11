@@ -37,6 +37,9 @@ const FIND_INDEX: i32 = 6;
 const REDUCE: i32 = 7;
 /// Array.from's mapping loop over an array-like (D2306).
 const FROM: i32 = 8;
+/// A replacer function over the matches of a RegExp without groups (regexp.ts): `o`
+/// holds the matched strings, `a` their positions and then the results, THIS the string.
+const REPLACE: i32 = 9;
 
 impl Exec<'_> {
     /// `%EachDense(mode, o, k, len, f, thisArg, a)` from `call_intrinsic`: the arguments
@@ -122,7 +125,7 @@ impl Exec<'_> {
         };
         match mode {
             FOR_EACH | SOME | EVERY | FIND_INDEX => true,
-            MAP | FIND => a.is_some(),
+            MAP | FIND | REPLACE => a.is_some(),
             FILTER => a.is_some() && crate::builtins::fast::plain_species(self.heap, o),
             REDUCE => a.is_some(),
             _ => false,
@@ -190,6 +193,21 @@ impl Exec<'_> {
             ([self.get(base + THIS), x, kv, o], 4)
         } else if mode == Some(FROM) {
             ([x, kv, Value::UNDEFINED, Value::UNDEFINED], 2)
+        } else if mode == Some(REPLACE) {
+            // `matched, position, string`: the position is in `a` until the result is.
+            let at = self
+                .get(base + A)
+                .as_object()
+                .and_then(|a| self.heap.get_element_fast(a, self.each_k(base)));
+            (
+                [
+                    x,
+                    at.unwrap_or(Value::UNDEFINED),
+                    self.get(base + THIS),
+                    Value::UNDEFINED,
+                ],
+                3,
+            )
         } else {
             ([x, kv, o, Value::UNDEFINED], 3)
         }
@@ -206,7 +224,7 @@ impl Exec<'_> {
         let (args, argc) = self.each_args(base, kv);
         self.ensure(cb + 2 + argc)?;
         self.set(cb, self.get(base + F));
-        let this = if self.get(base + MODE).as_int() == Some(REDUCE) {
+        let this = if matches!(self.get(base + MODE).as_int(), Some(REDUCE | REPLACE)) {
             Value::UNDEFINED
         } else {
             self.get(base + THIS)
@@ -283,7 +301,7 @@ impl Exec<'_> {
         // NEW_TARGET undefined, undefined locals (the callee, `this` and the rest of the
         // header are never written).
         let (bp, hp, lp) = (self.bp, self.hp, self.lp);
-        let (args, argc) = if mode == REDUCE || mode == FROM {
+        let (args, argc) = if matches!(mode, REDUCE | FROM | REPLACE) {
             self.each_args(base, kv)
         } else {
             ([x, kv, self.get(base + O), Value::UNDEFINED], 3)
@@ -324,7 +342,8 @@ impl Exec<'_> {
     /// collects and is tried once more (D1900).
     fn each_complete(&mut self, base: u32, v: Value) -> Result<bool, Fault> {
         let mode = self.get(base + MODE).as_int().unwrap_or(FOR_EACH);
-        let truthy = !matches!(mode, MAP | REDUCE | FROM) && conv::to_boolean(self.heap, v);
+        let truthy =
+            !matches!(mode, MAP | REDUCE | FROM | REPLACE) && conv::to_boolean(self.heap, v);
         let (stop, store) = match mode {
             MAP | REDUCE | FROM => {
                 self.set(base + KVALUE, v);
@@ -332,6 +351,12 @@ impl Exec<'_> {
                     self.set(base + THIS, v);
                 }
                 (false, true)
+            }
+            // A result that is not a string is the builtin's to convert, before the next
+            // call.
+            REPLACE => {
+                self.set(base + KVALUE, v);
+                (v.as_string().is_none(), true)
             }
             FILTER => (false, truthy),
             SOME | FIND_INDEX => (truthy, false),
@@ -345,7 +370,7 @@ impl Exec<'_> {
         let put = |ex: &mut Self| {
             let a = ex.get(base + A).as_object().expect("each: a");
             let i = match mode {
-                MAP | FROM => ex.each_k(base),
+                MAP | FROM | REPLACE => ex.each_k(base),
                 FILTER => ex.heap.array_length(a),
                 _ => 0,
             };

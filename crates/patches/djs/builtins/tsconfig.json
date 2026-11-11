@@ -1,0 +1,16 @@
+{
+  // Lets editors and tsc type-check the builtin sources. djs-bgen does not use this
+  // file; it is stricter than tsc (see crates/djs-bgen/src/check.rs).
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es5"],
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": false,
+    "isolatedModules": false
+  },
+  "include": ["*.ts"]
+}

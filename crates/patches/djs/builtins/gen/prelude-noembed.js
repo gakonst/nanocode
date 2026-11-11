@@ -509,7 +509,7 @@ function IsConcatSpreadable(o) {
   return %IsArray(o);
 }
 
-// builtins/array.ts:633 Array.prototype.concat
+// builtins/array.ts:634 Array.prototype.concat
 function ArrayPrototypeConcat(...items) {
   let $1, $2, $3;
   const o = %ToObject(this);
@@ -538,7 +538,7 @@ function ArrayPrototypeConcat(...items) {
   return a;
 }
 
-// builtins/array.ts:665 Array.prototype.slice
+// builtins/array.ts:666 Array.prototype.slice
 function ArrayPrototypeSlice(start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -561,7 +561,7 @@ function ArrayPrototypeSlice(start, end) {
   return a;
 }
 
-// builtins/array.ts:693 Array.prototype.splice
+// builtins/array.ts:694 Array.prototype.splice
 function ArrayPrototypeSplice(...args) {
   let $1, $2;
   const o = %ToObject(this);
@@ -596,7 +596,7 @@ function ArrayPrototypeSplice(...args) {
   return a;
 }
 
-// builtins/array.ts:731
+// builtins/array.ts:732
 function MoveElements(o, len, start, deleteCount, itemCount) {
   if (deleteCount !== itemCount && %ArraySpliceDense(o, start, deleteCount, itemCount)) {
     return;
@@ -627,7 +627,7 @@ function MoveElements(o, len, start, deleteCount, itemCount) {
   }
 }
 
-// builtins/array.ts:766 Array.prototype.copyWithin
+// builtins/array.ts:767 Array.prototype.copyWithin
 function ArrayPrototypeCopyWithin(target, start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -654,7 +654,7 @@ function ArrayPrototypeCopyWithin(target, start, end) {
   return o;
 }
 
-// builtins/array.ts:796 Array.prototype.fill
+// builtins/array.ts:797 Array.prototype.fill
 function ArrayPrototypeFill(value, start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -666,7 +666,7 @@ function ArrayPrototypeFill(value, start, end) {
   return o;
 }
 
-// builtins/array.ts:811 Array.prototype.reverse
+// builtins/array.ts:813 Array.prototype.reverse
 function ArrayPrototypeReverse() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -697,7 +697,7 @@ function ArrayPrototypeReverse() {
   return o;
 }
 
-// builtins/array.ts:846 Array.prototype.pop
+// builtins/array.ts:848 Array.prototype.pop
 function ArrayPrototypePop() {
   const o = %ToObject(this);
   if (%ArrayCanPopDense(o)) {
@@ -715,7 +715,7 @@ function ArrayPrototypePop() {
   return element;
 }
 
-// builtins/array.ts:867 Array.prototype.shift
+// builtins/array.ts:869 Array.prototype.shift
 function ArrayPrototypeShift() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -729,7 +729,7 @@ function ArrayPrototypeShift() {
   return first;
 }
 
-// builtins/array.ts:885 Array.prototype.unshift
+// builtins/array.ts:887 Array.prototype.unshift
 function ArrayPrototypeUnshift(...items) {
   let $1;
   const o = %ToObject(this);
@@ -746,7 +746,7 @@ function ArrayPrototypeUnshift(...items) {
   return len + argCount;
 }
 
-// builtins/array.ts:901
+// builtins/array.ts:903
 function FlattenIntoArray(target, source, sourceLen, start, depth, mapper, thisArg) {
   let $1;
   let targetIndex = start;
@@ -769,7 +769,7 @@ function FlattenIntoArray(target, source, sourceLen, start, depth, mapper, thisA
   return targetIndex;
 }
 
-// builtins/array.ts:926 Array.prototype.flat
+// builtins/array.ts:928 Array.prototype.flat
 function ArrayPrototypeFlat(depth) {
   const o = %ToObject(this);
   const sourceLen = LengthOfArrayLike(o);
@@ -785,7 +785,7 @@ function ArrayPrototypeFlat(depth) {
   return a;
 }
 
-// builtins/array.ts:945 Array.prototype.flatMap
+// builtins/array.ts:947 Array.prototype.flatMap
 function ArrayPrototypeFlatMap(mapperFunction, thisArg) {
   const o = %ToObject(this);
   const sourceLen = LengthOfArrayLike(o);
@@ -795,7 +795,7 @@ function ArrayPrototypeFlatMap(mapperFunction, thisArg) {
   return a;
 }
 
-// builtins/array.ts:964 %SortList
+// builtins/array.ts:966 %SortList
 function SortList(list, comparefn) {
   if (comparefn === undefined && %SortPrimitives(list)) {
     return;
@@ -815,7 +815,7 @@ function SortList(list, comparefn) {
   }
 }
 
-// builtins/array.ts:988 %CollectPresent
+// builtins/array.ts:990 %CollectPresent
 function CollectPresent(o, len, skipHoles) {
   const items = %ArrayCreate(0);
   if (%ArraySliceDense(o, 0, len, items)) {
@@ -831,7 +831,7 @@ function CollectPresent(o, len, skipHoles) {
   return items;
 }
 
-// builtins/array.ts:1009 Array.prototype.sort
+// builtins/array.ts:1011 Array.prototype.sort
 function ArrayPrototypeSort(comparefn) {
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
     throw %NewTypeError("not a function");
@@ -850,7 +850,7 @@ function ArrayPrototypeSort(comparefn) {
   return o;
 }
 
-// builtins/array.ts:1032 Array.prototype.toSorted
+// builtins/array.ts:1034 Array.prototype.toSorted
 function ArrayPrototypeToSorted(comparefn) {
   let $1;
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
@@ -864,7 +864,7 @@ function ArrayPrototypeToSorted(comparefn) {
   return items;
 }
 
-// builtins/array.ts:1050 Array.prototype.toReversed
+// builtins/array.ts:1052 Array.prototype.toReversed
 function ArrayPrototypeToReversed() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -875,7 +875,7 @@ function ArrayPrototypeToReversed() {
   return a;
 }
 
-// builtins/array.ts:1065 Array.prototype.toSpliced
+// builtins/array.ts:1067 Array.prototype.toSpliced
 function ArrayPrototypeToSpliced(...args) {
   let $1;
   const o = %ToObject(this);
@@ -911,7 +911,7 @@ function ArrayPrototypeToSpliced(...args) {
   return a;
 }
 
-// builtins/array.ts:1103 Array.prototype.with
+// builtins/array.ts:1105 Array.prototype.with
 function ArrayPrototypeWith(index, value) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -927,7 +927,7 @@ function ArrayPrototypeWith(index, value) {
   return a;
 }
 
-// builtins/array.ts:1125 Array.prototype.toString %TypedArray%.prototype.toString
+// builtins/array.ts:1127 Array.prototype.toString %TypedArray%.prototype.toString
 function ArrayPrototypeToString() {
   const array = %ToObject(this);
   const func = %Get(array, "join");
@@ -937,7 +937,7 @@ function ArrayPrototypeToString() {
   return ObjectToString(array);
 }
 
-// builtins/array.ts:1138 Array.prototype.toLocaleString
+// builtins/array.ts:1140 Array.prototype.toLocaleString
 function ArrayPrototypeToLocaleString() {
   const array = %ToObject(this);
   const len = LengthOfArrayLike(array);
@@ -954,7 +954,7 @@ function ArrayPrototypeToLocaleString() {
   return r;
 }
 
-// builtins/array.ts:1159 value Array.prototype[Symbol.unscopables]
+// builtins/array.ts:1161 value Array.prototype[Symbol.unscopables]
 function ArrayPrototypeUnscopables() {
   const u = %ObjectCreate(null);
   %CreateDataPropertyOrThrow(u, "at", true);
@@ -976,7 +976,7 @@ function ArrayPrototypeUnscopables() {
   return u;
 }
 
-// builtins/array.ts:1187 %ArraySetLength
+// builtins/array.ts:1189 %ArraySetLength
 function ArraySetLength(a, v, strict) {
   const newLen = ((%IsObject(v)) ? %ToNumberPrimitive(ToPrimitive(v, "number")) : %ToNumberPrimitive(v));
   const numberLen = ((%IsObject(v)) ? %ToNumberPrimitive(ToPrimitive(v, "number")) : %ToNumberPrimitive(v));
@@ -8430,7 +8430,7 @@ function RegExpBuiltinExec(r, s) {
   return %RegExpExecRaw(r, s, %IsNumber(lastIndex) ? %AsNumber(lastIndex) : ToLength(lastIndex), undefined);
 }
 
-// builtins/regexp.ts:244 RegExp.prototype.exec %RegExpPrototypeExec
+// builtins/regexp.ts:245 RegExp.prototype.exec %RegExpPrototypeExec
 function RegExpPrototypeExec(string) {
   if (!%IsRegExpObject(this)) {
     throw %NewTypeError("RegExp object expected");
@@ -8445,7 +8445,7 @@ function RegExpPrototypeExec(string) {
   return %RegExpExecRaw(r, s, %IsNumber(lastIndex) ? %AsNumber(lastIndex) : ToLength(lastIndex), undefined);
 }
 
-// builtins/regexp.ts:260
+// builtins/regexp.ts:261
 function RegExpExec(r, s) {
   let $1, $2;
   const fast = %RegExpExecOwn(r, s, false, undefined);
@@ -8469,7 +8469,7 @@ function RegExpExec(r, s) {
   return (($2 = %Get(r, "lastIndex"), %RegExpExecRaw(r, s, %IsNumber($2) ? %AsNumber($2) : ToLength($2), undefined)));
 }
 
-// builtins/regexp.ts:287 RegExp.prototype.test
+// builtins/regexp.ts:289 RegExp.prototype.test
 function RegExpPrototypeTest(s) {
   if (!%IsObject(this)) {
     throw %NewTypeError("RegExp object expected");
@@ -8489,7 +8489,7 @@ function RegExpPrototypeTest(s) {
   return RegExpExec(r, str) !== null;
 }
 
-// builtins/regexp.ts:309
+// builtins/regexp.ts:311
 function AdvanceStringIndex(s, index, unicode) {
   if (!unicode || index + 1 >= (%StrLength(s))) {
     return index + 1;
@@ -8498,23 +8498,23 @@ function AdvanceStringIndex(s, index, unicode) {
   return %IsNumber(cp) && %AsNumber(cp) > 65535 ? index + 2 : index + 1;
 }
 
-// builtins/regexp.ts:318
+// builtins/regexp.ts:320
 function FlagsInclude(flags, c) {
   return %StrIndexOf(flags, c, 0) >= 0;
 }
 
-// builtins/regexp.ts:323
+// builtins/regexp.ts:325
 function MatchString(result) {
   return ToString(%Get(%AsObj(result), 0));
 }
 
-// builtins/regexp.ts:328
+// builtins/regexp.ts:330
 function AdvanceAfterEmptyMatch(rx, s, fullUnicode) {
   const thisIndex = ToLength(%Get(rx, "lastIndex"));
   %Set(rx, "lastIndex", AdvanceStringIndex(s, thisIndex, fullUnicode));
 }
 
-// builtins/regexp.ts:338 RegExp.prototype[Symbol.match] %RegExpPrototypeMatch
+// builtins/regexp.ts:340 RegExp.prototype[Symbol.match] %RegExpPrototypeMatch
 function RegExpPrototypeMatch(string) {
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -8543,7 +8543,7 @@ function RegExpPrototypeMatch(string) {
   }
 }
 
-// builtins/regexp.ts:370 RegExp.prototype[Symbol.matchAll]
+// builtins/regexp.ts:372 RegExp.prototype[Symbol.matchAll]
 function RegExpPrototypeMatchAll(string) {
   const r = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -8563,7 +8563,7 @@ function RegExpPrototypeMatchAll(string) {
   return %CreateRegExpStringIterator(matcher, s, global, fullUnicode);
 }
 
-// builtins/regexp.ts:400 %RegExpStringIteratorPrototype%.next
+// builtins/regexp.ts:403 %RegExpStringIteratorPrototype%.next
 function RegExpStringIteratorNext() {
   if (%AsBool(%RegExpStringIteratorSlot(this, 4))) {
     return %CreateIterResultObject(undefined, true);
@@ -8585,12 +8585,12 @@ function RegExpStringIteratorNext() {
   return %CreateIterResultObject(match, false);
 }
 
-// builtins/regexp.ts:426 value %RegExpStringIteratorPrototype%[Symbol.toStringTag]
+// builtins/regexp.ts:429 value %RegExpStringIteratorPrototype%[Symbol.toStringTag]
 function RegExpStringIteratorToStringTag() {
   return "RegExp String Iterator";
 }
 
-// builtins/regexp.ts:434 RegExp.prototype[Symbol.replace]
+// builtins/regexp.ts:438 RegExp.prototype[Symbol.replace] %RegExpPrototypeReplace
 function RegExpPrototypeReplace(string, replaceValue) {
   let $1;
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
@@ -8603,6 +8603,34 @@ function RegExpPrototypeReplace(string, replaceValue) {
   }
   if (!functionalReplace && %IsPristineRegExp(rx) && %RegExpHasFlag(rx, "g")) {
     return %RegExpReplaceRaw(rx, s, replaceStr, undefined);
+  }
+  if (functionalReplace && %IsPristineRegExp(rx)) {
+    const spans = %RegExpMatchSpans(rx, s, undefined);
+    const matches = %RegExpSpanCount(rx, s, spans);
+    const texts = %RegExpSpanTexts(rx, s, spans);
+    const replacements = %RegExpSpanStarts(rx, s, spans);
+    let k = 0;
+    while (k < matches) {
+      let r = undefined;
+      if (texts === undefined) {
+        r = %CallWithArray(replaceValue, undefined, %RegExpReplaceArgs(rx, s, spans, k));
+      } else {
+        const at = %EachDense(9, %AsObj(texts), k, matches, replaceValue, s, replacements);
+        if (at === matches) {
+          break;
+        }
+        if (at < 0) {
+          k = -1 - at;
+          r = %Get(replacements, k);
+        } else {
+          k = at;
+          r = %Call(replaceValue, undefined, %Get(%AsObj(texts), k), %Get(replacements, k), s);
+        }
+      }
+      %CreateDataPropertyOrThrow(replacements, k, %IsString(r) ? %AsStr(r) : ToString(r));
+      k++;
+    }
+    return %RegExpReplaceJoin(rx, s, spans, replacements);
   }
   const flags = ToString(%Get(rx, "flags"));
   const global = (%StrIndexOf(flags, "g", 0) >= 0);
@@ -8680,7 +8708,7 @@ function RegExpPrototypeReplace(string, replaceValue) {
   return accumulatedResult + %StrSubstring(s, nextSourcePosition, lengthS);
 }
 
-// builtins/regexp.ts:527
+// builtins/regexp.ts:562
 function GetSubstitution(matched, str, position, captures, m, namedCaptures, template) {
   let i = %StrIndexOf(template, "$", 0);
   if (i < 0) {
@@ -8760,7 +8788,7 @@ function GetSubstitution(matched, str, position, captures, m, namedCaptures, tem
   return result;
 }
 
-// builtins/regexp.ts:619 RegExp.prototype[Symbol.search]
+// builtins/regexp.ts:655 RegExp.prototype[Symbol.search] %RegExpPrototypeSearch
 function RegExpPrototypeSearch(string) {
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -8779,7 +8807,7 @@ function RegExpPrototypeSearch(string) {
   return %Get(%AsObj(result), "index");
 }
 
-// builtins/regexp.ts:641 RegExp.prototype[Symbol.split]
+// builtins/regexp.ts:678 RegExp.prototype[Symbol.split] %RegExpPrototypeSplit
 function RegExpPrototypeSplit(string, limit) {
   let $1, $2;
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
@@ -9291,7 +9319,7 @@ function RegExpFromPattern(pattern, flags) {
   return %RegExpCreate(undefined, pattern === undefined ? "" : ToString(pattern), flags);
 }
 
-// builtins/string-regexp.ts:42 String.prototype.match
+// builtins/string-regexp.ts:43 String.prototype.match
 function StringPrototypeMatch(regexp) {
   let $1;
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
@@ -9305,7 +9333,7 @@ function StringPrototypeMatch(regexp) {
   return ($1 = (%RegExpCreate(undefined, regexp === undefined ? "" : ToString(regexp), "")), %Call(%GetV($1, %WellKnownSymbol("match")), $1, s));
 }
 
-// builtins/string-regexp.ts:58 String.prototype.matchAll
+// builtins/string-regexp.ts:59 String.prototype.matchAll
 function StringPrototypeMatchAll(regexp) {
   let $1;
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
@@ -9320,7 +9348,7 @@ function StringPrototypeMatchAll(regexp) {
   return ($1 = (%RegExpCreate(undefined, regexp === undefined ? "" : ToString(regexp), "g")), %Call(%GetV($1, %WellKnownSymbol("matchAll")), $1, s));
 }
 
-// builtins/string-regexp.ts:75 String.prototype.search
+// builtins/string-regexp.ts:77 String.prototype.search
 function StringPrototypeSearch(regexp) {
   let $1;
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
@@ -9334,7 +9362,7 @@ function StringPrototypeSearch(regexp) {
   return ($1 = (%RegExpCreate(undefined, regexp === undefined ? "" : ToString(regexp), "")), %Call(%GetV($1, %WellKnownSymbol("search")), $1, s));
 }
 
-// builtins/string-regexp.ts:88
+// builtins/string-regexp.ts:90
 function StringReplacement(functionalReplace, replaceValue, replaceStr, searchString, position, string) {
   if (functionalReplace) {
     return ToString(%Call(replaceValue, undefined, searchString, position, string));
@@ -9342,7 +9370,7 @@ function StringReplacement(functionalReplace, replaceValue, replaceStr, searchSt
   return GetSubstitution(searchString, string, position, %ArrayCreate(0), 0, undefined, replaceStr);
 }
 
-// builtins/string-regexp.ts:106 String.prototype.replace
+// builtins/string-regexp.ts:109 String.prototype.replace
 function StringPrototypeReplace(searchValue, replaceValue) {
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
   if (%IsObject(searchValue)) {
@@ -9367,7 +9395,7 @@ function StringPrototypeReplace(searchValue, replaceValue) {
   return %StrSubstring(string, 0, position) + replacement + %StrSubstring(string, following, (%StrLength(string)));
 }
 
-// builtins/string-regexp.ts:141 String.prototype.replaceAll
+// builtins/string-regexp.ts:145 String.prototype.replaceAll
 function StringPrototypeReplaceAll(searchValue, replaceValue) {
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
   if (%IsObject(searchValue)) {
@@ -9409,7 +9437,7 @@ function StringPrototypeReplaceAll(searchValue, replaceValue) {
   return result;
 }
 
-// builtins/string-regexp.ts:194 String.prototype.split
+// builtins/string-regexp.ts:198 String.prototype.split
 function StringPrototypeSplit(separator, limit) {
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
   if (%IsObject(separator)) {
@@ -9554,13 +9582,13 @@ function StringPrototypeCharCodeAt(pos) {
   return %StrCharCodeAt(s, (%ToIntegerOrInfinityNumber(((%IsObject(pos)) ? %ToNumberPrimitive(ToPrimitive(pos, "number")) : %ToNumberPrimitive(pos)))));
 }
 
-// builtins/string.ts:140 String.prototype.codePointAt
+// builtins/string.ts:141 String.prototype.codePointAt
 function StringPrototypeCodePointAt(pos) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   return %StrCodePointAt(s, (%ToIntegerOrInfinityNumber(((%IsObject(pos)) ? %ToNumberPrimitive(ToPrimitive(pos, "number")) : %ToNumberPrimitive(pos)))));
 }
 
-// builtins/string.ts:152 String.prototype.indexOf
+// builtins/string.ts:153 String.prototype.indexOf
 function StringPrototypeIndexOf(searchString, position) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const search = ToString(searchString);
@@ -9568,7 +9596,7 @@ function StringPrototypeIndexOf(searchString, position) {
   return %StrIndexOf(s, search, start);
 }
 
-// builtins/string.ts:163 String.prototype.lastIndexOf
+// builtins/string.ts:165 String.prototype.lastIndexOf
 function StringPrototypeLastIndexOf(searchString, position) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const search = ToString(searchString);
@@ -9582,7 +9610,7 @@ function StringPrototypeLastIndexOf(searchString, position) {
   return %StrLastIndexOf(s, search, pos < len - searchLen ? pos : len - searchLen);
 }
 
-// builtins/string.ts:182 String.prototype.includes
+// builtins/string.ts:184 String.prototype.includes
 function StringPrototypeIncludes(searchString, position) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   if (IsRegExp(searchString)) {
@@ -9593,7 +9621,7 @@ function StringPrototypeIncludes(searchString, position) {
   return %StrIndexOf(s, search, start) >= 0;
 }
 
-// builtins/string.ts:196 String.prototype.startsWith
+// builtins/string.ts:199 String.prototype.startsWith
 function StringPrototypeStartsWith(searchString, position) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   if (IsRegExp(searchString)) {
@@ -9609,7 +9637,7 @@ function StringPrototypeStartsWith(searchString, position) {
   return %StrSubstring(s, start, start + searchLength) === search;
 }
 
-// builtins/string.ts:215 String.prototype.endsWith
+// builtins/string.ts:219 String.prototype.endsWith
 function StringPrototypeEndsWith(searchString, endPosition) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   if (IsRegExp(searchString)) {
@@ -9625,13 +9653,13 @@ function StringPrototypeEndsWith(searchString, endPosition) {
   return %StrSubstring(s, end - searchLength, end) === search;
 }
 
-// builtins/string.ts:234 String.prototype.localeCompare
+// builtins/string.ts:239 String.prototype.localeCompare
 function StringPrototypeLocaleCompare(that) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   return %StrLocaleCompare(s, ToString(that));
 }
 
-// builtins/string.ts:246 String.prototype.slice
+// builtins/string.ts:251 String.prototype.slice
 function StringPrototypeSlice(start, end) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const len = (%StrLength(s));
@@ -9643,7 +9671,7 @@ function StringPrototypeSlice(start, end) {
   return %StrSubstring(s, from, to);
 }
 
-// builtins/string.ts:262 String.prototype.substring
+// builtins/string.ts:267 String.prototype.substring
 function StringPrototypeSubstring(start, end) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const len = (%StrLength(s));
@@ -9652,7 +9680,7 @@ function StringPrototypeSubstring(start, end) {
   return a < b ? %StrSubstring(s, a, b) : %StrSubstring(s, b, a);
 }
 
-// builtins/string.ts:274 String.prototype.substr
+// builtins/string.ts:280 String.prototype.substr
 function StringPrototypeSubstr(start, length) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const size = (%StrLength(s));
@@ -9671,7 +9699,7 @@ function StringPrototypeSubstr(start, length) {
   return %StrSubstring(s, intStart, intEnd);
 }
 
-// builtins/string.ts:297 String.prototype.concat
+// builtins/string.ts:304 String.prototype.concat
 function StringPrototypeConcat(...args) {
   let r = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const n = LengthOfArrayLike(args);
@@ -9681,7 +9709,7 @@ function StringPrototypeConcat(...args) {
   return r;
 }
 
-// builtins/string.ts:311 String.prototype.repeat
+// builtins/string.ts:318 String.prototype.repeat
 function StringPrototypeRepeat(count) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   const n = (%ToIntegerOrInfinityNumber(((%IsObject(count)) ? %ToNumberPrimitive(ToPrimitive(count, "number")) : %ToNumberPrimitive(count))));
@@ -9694,7 +9722,7 @@ function StringPrototypeRepeat(count) {
   return %StrRepeat(s, n);
 }
 
-// builtins/string.ts:324
+// builtins/string.ts:331
 function StringPad(s, maxLength, fillString, atStart) {
   const intMaxLength = ToLength(maxLength);
   const stringLength = (%StrLength(s));
@@ -9711,62 +9739,62 @@ function StringPad(s, maxLength, fillString, atStart) {
   return atStart ? truncated + s : s + truncated;
 }
 
-// builtins/string.ts:345 String.prototype.padEnd
+// builtins/string.ts:352 String.prototype.padEnd
 function StringPrototypePadEnd(maxLength, fillString) {
   return StringPad(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), maxLength, fillString, false);
 }
 
-// builtins/string.ts:354 String.prototype.padStart
+// builtins/string.ts:361 String.prototype.padStart
 function StringPrototypePadStart(maxLength, fillString) {
   return StringPad(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), maxLength, fillString, true);
 }
 
-// builtins/string.ts:364 String.prototype.toLowerCase
+// builtins/string.ts:372 String.prototype.toLowerCase
 function StringPrototypeToLowerCase() {
   return %StrToCase(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), false);
 }
 
-// builtins/string.ts:372 String.prototype.toUpperCase
+// builtins/string.ts:381 String.prototype.toUpperCase
 function StringPrototypeToUpperCase() {
   return %StrToCase(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), true);
 }
 
-// builtins/string.ts:380 String.prototype.toLocaleLowerCase
+// builtins/string.ts:390 String.prototype.toLocaleLowerCase
 function StringPrototypeToLocaleLowerCase() {
   return %StrToCase(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), false);
 }
 
-// builtins/string.ts:388 String.prototype.toLocaleUpperCase
+// builtins/string.ts:399 String.prototype.toLocaleUpperCase
 function StringPrototypeToLocaleUpperCase() {
   return %StrToCase(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), true);
 }
 
-// builtins/string.ts:396 String.prototype.trim
+// builtins/string.ts:408 String.prototype.trim
 function StringPrototypeTrim() {
   return %StrTrim(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), 0);
 }
 
-// builtins/string.ts:405 String.prototype.trimStart String.prototype.trimLeft
+// builtins/string.ts:418 String.prototype.trimStart String.prototype.trimLeft
 function StringPrototypeTrimStart() {
   return %StrTrim(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), 1);
 }
 
-// builtins/string.ts:414 String.prototype.trimEnd String.prototype.trimRight
+// builtins/string.ts:428 String.prototype.trimEnd String.prototype.trimRight
 function StringPrototypeTrimEnd() {
   return %StrTrim(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)), 2);
 }
 
-// builtins/string.ts:422 String.prototype.isWellFormed
+// builtins/string.ts:436 String.prototype.isWellFormed
 function StringPrototypeIsWellFormed() {
   return %StrIsWellFormed(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)));
 }
 
-// builtins/string.ts:430 String.prototype.toWellFormed
+// builtins/string.ts:444 String.prototype.toWellFormed
 function StringPrototypeToWellFormed() {
   return %StrToWellFormed(((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this)));
 }
 
-// builtins/string.ts:439 String.prototype.normalize
+// builtins/string.ts:453 String.prototype.normalize
 function StringPrototypeNormalize(form) {
   const s = ((this === undefined || this === null) ? %Throw(%NewTypeError("null or undefined are forbidden")) : ToString(this));
   let f = "NFC";
@@ -9792,13 +9820,13 @@ function StringPrototypeNormalize(form) {
   return %AsStr(r);
 }
 
-// builtins/string.ts:472 String.fromCharCode
+// builtins/string.ts:486 String.fromCharCode
 function StringFromCharCode(...codeUnits) {
   CoerceNumbers(codeUnits);
   return %StrFromCodeUnits(codeUnits);
 }
 
-// builtins/string.ts:482 String.fromCodePoint
+// builtins/string.ts:496 String.fromCodePoint
 function StringFromCodePoint(...codePoints) {
   if (%AllCodePoints(codePoints)) {
     return %StrFromCodePoints(codePoints);
@@ -9815,7 +9843,7 @@ function StringFromCodePoint(...codePoints) {
   return %StrFromCodePoints(codePoints);
 }
 
-// builtins/string.ts:503 String.raw
+// builtins/string.ts:517 String.raw
 function StringRaw(template, ...substitutions) {
   const cooked = %ToObject(template);
   const literals = %ToObject(%Get(cooked, "raw"));
@@ -12417,6 +12445,9 @@ function GlobalAtob(...args) {
 %InstallIntrinsic("RegExpPrototypeFlags", RegExpPrototypeFlags);
 %InstallIntrinsic("RegExpPrototypeExec", RegExpPrototypeExec);
 %InstallIntrinsic("RegExpPrototypeMatch", RegExpPrototypeMatch);
+%InstallIntrinsic("RegExpPrototypeReplace", RegExpPrototypeReplace);
+%InstallIntrinsic("RegExpPrototypeSearch", RegExpPrototypeSearch);
+%InstallIntrinsic("RegExpPrototypeSplit", RegExpPrototypeSplit);
 %InstallIntrinsic("SetPrototypeAdd", SetPrototypeAdd);
 %InstallIntrinsic("SetIteratorPrototypeNext", SetIteratorPrototypeNext);
 %InstallIntrinsic("ArraySpread", ArraySpread);
@@ -12438,7 +12469,9 @@ function GlobalAtob(...args) {
 %MarkFast(ArrayPrototypeIncludes);
 %MarkFast(ArrayConstructor);
 %MarkFast(ArrayPrototypePush);
+%MarkFast(ArrayPrototypeConcat);
 %MarkFast(ArrayPrototypeSlice);
+%MarkFast(ArrayPrototypeReverse);
 %MarkFast(ArrayPrototypePop);
 %MarkFast(ToString);
 %MarkFast(LengthOfArrayLike);
@@ -12459,20 +12492,41 @@ function GlobalAtob(...args) {
 %MarkFast(PromiseRejectFunction);
 %MarkFast(PromiseStaticResolve);
 %MarkFast(PromisePrototypeThen);
+%MarkFast(RegExpPrototypeExec);
+%MarkFast(RegExpPrototypeTest);
+%MarkFast(RegExpStringIteratorNext);
 %MarkFast(SetConstructor);
 %MarkFast(SetPrototypeAdd);
 %MarkFast(SetPrototypeHas);
+%MarkFast(StringPrototypeMatch);
+%MarkFast(StringPrototypeSearch);
+%MarkFast(StringPrototypeReplace);
+%MarkFast(StringPrototypeReplaceAll);
 %MarkFast(StringPrototypeSplit);
 %MarkFast(StringConstructor);
 %MarkFast(StringPrototypeAt);
 %MarkFast(StringPrototypeCharAt);
 %MarkFast(StringPrototypeCharCodeAt);
+%MarkFast(StringPrototypeCodePointAt);
 %MarkFast(StringPrototypeIndexOf);
+%MarkFast(StringPrototypeLastIndexOf);
 %MarkFast(StringPrototypeIncludes);
+%MarkFast(StringPrototypeStartsWith);
+%MarkFast(StringPrototypeEndsWith);
+%MarkFast(StringPrototypeLocaleCompare);
 %MarkFast(StringPrototypeSlice);
 %MarkFast(StringPrototypeSubstring);
+%MarkFast(StringPrototypeSubstr);
+%MarkFast(StringPrototypeConcat);
 %MarkFast(StringPrototypeRepeat);
 %MarkFast(StringPrototypePadEnd);
 %MarkFast(StringPrototypePadStart);
+%MarkFast(StringPrototypeToLowerCase);
+%MarkFast(StringPrototypeToUpperCase);
+%MarkFast(StringPrototypeToLocaleLowerCase);
+%MarkFast(StringPrototypeToLocaleUpperCase);
+%MarkFast(StringPrototypeTrim);
+%MarkFast(StringPrototypeTrimStart);
+%MarkFast(StringPrototypeTrimEnd);
 %MarkFast(StringFromCharCode);
 })();

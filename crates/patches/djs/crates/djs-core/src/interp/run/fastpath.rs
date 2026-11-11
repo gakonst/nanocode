@@ -193,7 +193,7 @@ impl Exec<'_> {
             *a = self.get(base + 2 + i as u32);
         }
         let this = self.get(base + 1);
-        let v = match ff.call(self.heap, this, &args[..argc as usize]) {
+        let v = match ff.call(self.heap, this, &args[..argc as usize], &mut self.fuel) {
             Ok(Some(v)) => v,
             Ok(None) => return Ok(false),
             // A host refusal stops the run (D1690). At the heap cap the entry declines

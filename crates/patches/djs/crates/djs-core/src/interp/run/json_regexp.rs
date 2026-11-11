@@ -4,8 +4,9 @@
 
 use super::intrinsics::{bad_argument, id};
 use super::*;
+use crate::builtins::dense::index as dense_index;
 use crate::builtins::{json, regexp as re};
-use crate::heap::{Atom, atoms};
+use crate::heap::atoms;
 use crate::regexp::{ExecLimits, ExecState, Flags, Outcome};
 use crate::value::Str;
 
@@ -37,20 +38,12 @@ const IS_ORIGINAL_REGEXP_EXEC: u16 = id("IsOriginalRegExpExec");
 const REGEXP_SPLIT_RAW: u16 = id("RegExpSplitRaw");
 const REGEXP_REPLACE_RAW: u16 = id("RegExpReplaceRaw");
 const REGEXP_PROTOTYPE_EXEC: u16 = id("RegExpPrototypeExec");
-const REGEXP_PROTOTYPE_MATCH: u16 = id("RegExpPrototypeMatch");
-const REGEXP_SPECIES: u16 = id("RegExpSpecies");
-/// The accessors of %RegExp.prototype% that a pristine RegExp must still have (D1503).
-const REGEXP_GETTERS: [(Atom, u16); 9] = [
-    (atoms::FLAGS, id("RegExpPrototypeFlags")),
-    (atoms::HAS_INDICES, id("RegExpPrototypeHasIndices")),
-    (atoms::GLOBAL, id("RegExpPrototypeGlobal")),
-    (atoms::IGNORE_CASE, id("RegExpPrototypeIgnoreCase")),
-    (atoms::MULTILINE, id("RegExpPrototypeMultiline")),
-    (atoms::DOT_ALL, id("RegExpPrototypeDotAll")),
-    (atoms::UNICODE, id("RegExpPrototypeUnicode")),
-    (atoms::UNICODE_SETS, id("RegExpPrototypeUnicodeSets")),
-    (atoms::STICKY, id("RegExpPrototypeSticky")),
-];
+const REGEXP_MATCH_SPANS: u16 = id("RegExpMatchSpans");
+const REGEXP_SPAN_COUNT: u16 = id("RegExpSpanCount");
+const REGEXP_REPLACE_ARGS: u16 = id("RegExpReplaceArgs");
+const REGEXP_SPAN_TEXTS: u16 = id("RegExpSpanTexts");
+const REGEXP_SPAN_STARTS: u16 = id("RegExpSpanStarts");
+const REGEXP_REPLACE_JOIN: u16 = id("RegExpReplaceJoin");
 
 /// Fuel for work proportional to a string's length: one unit per 16 code units (the
 /// leaves run to completion, so they pay afterwards).
@@ -185,6 +178,30 @@ impl Exec<'_> {
             }
             REGEXP_SPLIT_RAW if argc == 4 => return self.regexp_split_raw(id, base, next),
             REGEXP_REPLACE_RAW if argc == 4 => return self.regexp_replace_raw(id, base, next),
+            REGEXP_MATCH_SPANS if argc == 3 => return self.regexp_match_spans(id, base, next),
+            REGEXP_SPAN_COUNT | REGEXP_SPAN_TEXTS | REGEXP_SPAN_STARTS | REGEXP_REPLACE_ARGS
+            | REGEXP_REPLACE_JOIN => {
+                let (Some(r), Some(s), Some(spans)) = (
+                    re::as_regexp(self.heap, a0),
+                    arg(self, 1).as_string(),
+                    arg(self, 2).as_object(),
+                ) else {
+                    return bad_argument(id);
+                };
+                match id {
+                    REGEXP_SPAN_COUNT => Value::int(re::span_count(self.heap, r, spans) as i32),
+                    REGEXP_SPAN_TEXTS => re::span_texts(self.heap, r, s, spans)?,
+                    REGEXP_SPAN_STARTS => Value::object(re::span_starts(self.heap, r, spans)?),
+                    REGEXP_REPLACE_ARGS => match arg(self, 3).as_number().and_then(dense_index) {
+                        Some(k) => Value::object(re::replace_args(self.heap, r, s, spans, k)?),
+                        None => return bad_argument(id),
+                    },
+                    _ => match arg(self, 3).as_object() {
+                        Some(to) => Value::string(re::replace_join(self.heap, r, s, spans, to)?),
+                        None => return bad_argument(id),
+                    },
+                }
+            }
             IS_PRISTINE_REGEXP => Value::bool(self.regexp_pristine(a0)?),
             // Bulk fast paths for builtins (D1561): apply, fromCodePoint, Math.max.
             IS_DENSE_ARRAY => Value::bool(
@@ -513,57 +530,102 @@ impl Exec<'_> {
         Ok(None)
     }
 
-    /// Whether `v` is a RegExp whose protocol is unobservable (D1503): its own properties
-    /// are just a writable Number `lastIndex`, its prototype is %RegExp.prototype% with the
-    /// original `exec`, `flags`, flag getters, `constructor` and @@match, and %RegExp%'s
-    /// @@species getter is the original. Then RegExpExec, the flags, SpeciesConstructor
-    /// and IsRegExp read only data, and a fast path may skip them.
-    fn regexp_pristine(&mut self, v: Value) -> Result<bool, Fault> {
-        use crate::heap::Property;
-        let Some(r) = re::as_regexp(self.heap, v) else {
-            return Ok(false);
+    /// `%RegExpMatchSpans(r, s, state)`: the matches RegExp.prototype[@@replace] collects
+    /// from a pristine RegExp before it calls a replacer function: every match of a
+    /// global one from lastIndex 0, else the first from lastIndex (0 unless sticky).
+    /// The result is an Array of the capture positions of each match (the start and the
+    /// end of every group, -1 for one that did not participate), and lastIndex is what
+    /// that loop leaves: 0 for a global RegExp, the match's end or 0 for a sticky one.
+    /// Suspendable like `RegExpSplitRaw`: the progress (the array, the next start, the
+    /// matcher state) is kept in the state slot.
+    fn regexp_match_spans(&mut self, id: u16, base: u32, next: u32) -> Step {
+        let state_slot = base + 2;
+        let (Some(r), Some(s)) = (
+            re::as_regexp(self.heap, self.get(base)),
+            self.get(base + 1).as_string(),
+        ) else {
+            return bad_argument(id);
         };
-        let proto = intrinsic_obj(self.heap, Intrinsic::RegExpProto);
-        if self.heap.get_prototype_of(r) != Some(proto) || self.heap.own_keys(r).len() != 1 {
-            return Ok(false);
-        }
-        let last_index = atoms::LAST_INDEX;
-        match self.heap.get_own_property(r, last_index) {
-            Some(Property::Data { value, flags }) if flags.writable() && value.is_number() => {}
-            _ => return Ok(false),
-        }
-        let installed = |ex: &Self, id: u16| realm::installed_intrinsic(ex.heap, id);
-        let data = |ex: &Self, o: Obj, key: Atom| match ex.heap.get_own_property(o, key) {
-            Some(Property::Data { value, .. }) => Some(value),
-            _ => None,
+        let flat = self.heap.contiguous(s)?;
+        let size = self.heap.str_len(flat) as usize;
+        let flags = re::flags(self.heap, r);
+        let (global, sticky) = (flags.contains(Flags::GLOBAL), flags.contains(Flags::STICKY));
+        let unicode = flags.unicode_mode();
+        let state = self.get(state_slot);
+        let mut st = ExecState::new();
+        let (a, mut last, mut pending) = match state.as_internal() {
+            Some(_) => (
+                self.progress(state, 0).as_object().expect("spans array"),
+                self.progress(state, 1).as_int().unwrap_or(0) as usize,
+                self.load_exec_state(self.progress(state, 2), &mut st),
+            ),
+            None => {
+                let start = match re::last_index(self.heap, r) {
+                    // ToLength; past the string is no match below.
+                    Some(last) if sticky && !global && last > 0.0 => {
+                        last.min(size as f64 + 1.0) as usize
+                    }
+                    _ => 0,
+                };
+                // Never a script's to see: no prototype.
+                (self.heap.new_array(None, 0)?, start, false)
+            }
         };
-        let getter = |ex: &Self, o: Obj, key: Atom| match ex.heap.get_own_property(o, key) {
-            Some(Property::Accessor { getter, .. }) => Some(getter),
-            _ => None,
-        };
-        if data(self, proto, atoms::EXEC) != Some(installed(self, REGEXP_PROTOTYPE_EXEC)) {
-            return Ok(false);
-        }
-        let matcher = installed(self, REGEXP_PROTOTYPE_MATCH);
-        if data(self, proto, atoms::SYM_MATCH) != Some(matcher) {
-            return Ok(false);
-        }
-        for (key, id) in REGEXP_GETTERS {
-            if getter(self, proto, key) != Some(installed(self, id)) {
-                return Ok(false);
+        self.release_progress(state_slot, self.progress(state, 2));
+        // What lastIndex becomes, if it is written.
+        let mut end = (global || sticky).then_some(0);
+        loop {
+            if last > size {
+                break;
+            }
+            let resume = core::mem::take(&mut pending);
+            match self.run_matcher(r, flat, last, sticky, resume, &mut st) {
+                Outcome::OutOfFuel => {
+                    let rec = self.unbudgeted(|ex| {
+                        let saved = ex.save_exec_state(&st)?;
+                        ex.save_progress(&[Value::object(a), Value::int(last as i32), saved])
+                    })?;
+                    return self.suspend_in(state_slot, rec);
+                }
+                Outcome::StackOverflow => return regexp_overflow(),
+                Outcome::NoMatch => break,
+                Outcome::Match => {
+                    let caps = st.captures(re::program(self.heap, r));
+                    let (m0, m1) = caps.get(0).expect("group 0 matched");
+                    for g in 0..caps.len() {
+                        let (x, y) = caps.get(g).map_or((-1, -1), |(x, y)| (x as i32, y as i32));
+                        for v in [x, y] {
+                            if self.heap.array_append_fast(a, Value::int(v))?.is_none() {
+                                let key = self.heap.atom_from_index(self.heap.array_length(a))?;
+                                self.heap.create_data_property(a, key, Value::int(v))?;
+                            }
+                        }
+                    }
+                    if !global {
+                        end = sticky.then_some(m1);
+                        break;
+                    }
+                    last = if m1 == m0 {
+                        let view = self.heap.str_view(flat).expect("flat string");
+                        re::advance(view, m1, unicode)
+                    } else {
+                        m1
+                    };
+                }
             }
         }
-        let ctors = intrinsic_obj(self.heap, Intrinsic::Constructors);
-        let Some(ctor) = data(self, ctors, atoms::REG_EXP) else {
-            return Ok(false);
-        };
-        if data(self, proto, atoms::CONSTRUCTOR) != Some(ctor) {
-            return Ok(false);
+        if let Some(end) = end {
+            re::set_last_index(self.heap, r, Value::int(end as i32))?;
         }
-        let Some(ctor) = ctor.as_object() else {
-            return Ok(false);
-        };
-        Ok(getter(self, ctor, atoms::SYM_SPECIES) == Some(installed(self, REGEXP_SPECIES)))
+        self.sp = base;
+        self.push(Value::object(a));
+        self.pc = next;
+        Ok(None)
+    }
+
+    /// Whether `v` is a pristine RegExp (`re::pristine`, D1503).
+    fn regexp_pristine(&mut self, v: Value) -> Result<bool, Fault> {
+        Ok(re::pristine(self.heap, v).is_some())
     }
 
     /// `%RegExpSplitRaw(r, s, lim, state)`: RegExp.prototype[@@split] for a pristine

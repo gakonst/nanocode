@@ -278,6 +278,39 @@ fn push_code_point(out: &mut Vec<u16>, c: u32) {
 /// language-specific rules) and Final_Sigma for lowercase.
 pub(crate) fn to_case(heap: &mut Heap, s: Str, upper: bool) -> Result<Str, Fault> {
     use crate::unicode::case;
+    // An ASCII string read in place: unchanged (most lowercase calls), or one buffer for
+    // the mapped bytes, on the stack when short.
+    if let StrView::Latin1(b) = heap.str_view_flat(s)?
+        && crate::heap::string::is_ascii(b)
+    {
+        let changes = |c: &u8| {
+            if upper {
+                c.is_ascii_lowercase()
+            } else {
+                c.is_ascii_uppercase()
+            }
+        };
+        if !b.iter().any(changes) {
+            return Ok(s);
+        }
+        let map = |c: u8| {
+            if upper {
+                c.to_ascii_uppercase()
+            } else {
+                c.to_ascii_lowercase()
+            }
+        };
+        let mut stack = [0u8; 64];
+        if b.len() <= stack.len() {
+            let n = b.len();
+            for (d, &c) in stack.iter_mut().zip(b) {
+                *d = map(c);
+            }
+            return Ok(heap.alloc_latin1(&stack[..n])?);
+        }
+        let mapped: Vec<u8> = b.iter().map(|&c| map(c)).collect();
+        return Ok(heap.alloc_latin1(&mapped)?);
+    }
     let u = units(heap, s)?;
     if u.iter().all(|&c| c < 0x80) {
         let mapped: Vec<u8> = u
@@ -517,6 +550,20 @@ pub(crate) fn normalize(heap: &mut Heap, s: Str, form: u8) -> Result<Option<Str>
 /// the `unicode-normalization` feature), then the difference of the first differing code
 /// points, else -1/0/1 by length.
 pub(crate) fn locale_compare(heap: &mut Heap, a: Str, b: Str) -> Result<f64, Fault> {
+    // One-byte strings are their own NFC form and have no surrogates: compared in place.
+    let (a, b) = (heap.contiguous(a)?, heap.contiguous(b)?);
+    if let (Some(StrView::Latin1(x)), Some(StrView::Latin1(y))) =
+        (heap.str_view(a), heap.str_view(b))
+    {
+        if let Some((p, q)) = x.iter().zip(y).find(|(p, q)| p != q) {
+            return Ok(f64::from(*p) - f64::from(*q));
+        }
+        return Ok(match x.len().cmp(&y.len()) {
+            core::cmp::Ordering::Less => -1.0,
+            core::cmp::Ordering::Equal => 0.0,
+            core::cmp::Ordering::Greater => 1.0,
+        });
+    }
     let (ua, ub) = (units(heap, a)?, units(heap, b)?);
     #[cfg(feature = "unicode-normalization")]
     let (ua, ub) = {

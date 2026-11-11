@@ -253,6 +253,11 @@ impl ExecState {
         ExecState::default()
     }
 
+    /// The words of memory the state holds on to (its slots and backtrack stack).
+    pub fn capacity(&self) -> usize {
+        self.mem.capacity()
+    }
+
     /// The captures of the match just found.
     pub fn captures(&self, prog: Prog<'_>) -> Caps<'_> {
         Caps {

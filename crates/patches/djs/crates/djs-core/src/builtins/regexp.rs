@@ -7,15 +7,17 @@
 //! flag bits. `lastIndex` is an ordinary own data property (writable only).
 use crate::PushOut;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::heap::{
-    Heap, HeapError, ObjectClass, PropFlags, Property, PropertyDescriptor, StrView, atoms,
+    Atom, Heap, HeapError, ObjectClass, PropFlags, Property, PropertyDescriptor, StrView, atoms,
 };
 use crate::interp::conv::{Fault, type_error};
 use crate::interp::{ErrorKind, Intrinsic, realm};
-use crate::regexp::{self, Caps, Flags, Prog, Program};
+use crate::regexp::{self, Caps, ExecLimits, ExecState, Flags, Outcome, Prog, Program};
 use crate::value::{Obj, Str, Value};
 
 pub(crate) const SLOT_PROGRAM: u32 = 0;
@@ -613,6 +615,648 @@ pub(crate) fn substitute(
             }
         }
     }
+}
+
+// ---- The protocol's checks and the matcher in one go (the `@fast` entries of
+// builtins/fast.rs, which decline where the builtins suspend or throw) ----
+
+const REGEXP_PROTOTYPE_EXEC: u16 = super::fast::intrinsic_id("RegExpPrototypeExec");
+const REGEXP_PROTOTYPE_MATCH: u16 = super::fast::intrinsic_id("RegExpPrototypeMatch");
+const REGEXP_SPECIES: u16 = super::fast::intrinsic_id("RegExpSpecies");
+/// The accessors of %RegExp.prototype% that a pristine RegExp must still have (D1503).
+const REGEXP_GETTERS: [(Atom, u16); 9] = [
+    (
+        atoms::FLAGS,
+        super::fast::intrinsic_id("RegExpPrototypeFlags"),
+    ),
+    (
+        atoms::HAS_INDICES,
+        super::fast::intrinsic_id("RegExpPrototypeHasIndices"),
+    ),
+    (
+        atoms::GLOBAL,
+        super::fast::intrinsic_id("RegExpPrototypeGlobal"),
+    ),
+    (
+        atoms::IGNORE_CASE,
+        super::fast::intrinsic_id("RegExpPrototypeIgnoreCase"),
+    ),
+    (
+        atoms::MULTILINE,
+        super::fast::intrinsic_id("RegExpPrototypeMultiline"),
+    ),
+    (
+        atoms::DOT_ALL,
+        super::fast::intrinsic_id("RegExpPrototypeDotAll"),
+    ),
+    (
+        atoms::UNICODE,
+        super::fast::intrinsic_id("RegExpPrototypeUnicode"),
+    ),
+    (
+        atoms::UNICODE_SETS,
+        super::fast::intrinsic_id("RegExpPrototypeUnicodeSets"),
+    ),
+    (
+        atoms::STICKY,
+        super::fast::intrinsic_id("RegExpPrototypeSticky"),
+    ),
+];
+
+/// The methods of %RegExp.prototype% a fast path relies on, by their place in `SLOTS`
+/// (the getters of `REGEXP_GETTERS` follow them).
+pub(crate) const EXEC: usize = 0;
+pub(crate) const MATCH: usize = 1;
+pub(crate) const REPLACE: usize = 2;
+pub(crate) const SEARCH: usize = 3;
+pub(crate) const SPLIT: usize = 4;
+const CONSTRUCTOR: usize = 5;
+const GETTERS: usize = 6;
+
+/// The entry slot of %RegExp.prototype% where each of those properties was found last.
+/// Only a hint (the slot is read with its key): every VM of a base image has them in the
+/// same slots, so a check reads fifteen entries in place of fifteen table searches.
+static SLOTS: [AtomicU32; GETTERS + REGEXP_GETTERS.len()] =
+    [const { AtomicU32::new(0) }; GETTERS + REGEXP_GETTERS.len()];
+
+/// %RegExp.prototype%'s own property `key` (whose hint is `SLOTS[which]`).
+fn proto_property(heap: &Heap, which: usize, key: Atom) -> Option<Property> {
+    let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
+    let Some(slots) = heap.plain_entry_slots(proto) else {
+        return heap.get_own_property(proto, key);
+    };
+    let hint = SLOTS[which].load(Ordering::Relaxed);
+    if hint < slots
+        && let Some((k, p)) = heap.plain_entry(proto, hint)
+        && k == key
+    {
+        return Some(p);
+    }
+    let at = heap.own_entry_index(proto, key)?;
+    SLOTS[which].store(at, Ordering::Relaxed);
+    heap.plain_entry(proto, at).map(|(_, p)| p)
+}
+
+/// The own data property `key` of `o`.
+fn own_data(heap: &Heap, o: Obj, key: Atom) -> Option<Value> {
+    match heap.get_own_property(o, key) {
+        Some(Property::Data { value, .. }) => Some(value),
+        _ => None,
+    }
+}
+
+/// Whether %RegExp.prototype%'s property `key` (`which` of `SLOTS`) is the data property
+/// holding the builtin installed for intrinsic `id`.
+pub(crate) fn original_method(heap: &Heap, which: usize, key: Atom, id: u16) -> bool {
+    let f = realm::installed_intrinsic(heap, id);
+    f.as_object().is_some()
+        && matches!(proto_property(heap, which, key), Some(Property::Data { value, .. }) if value == f)
+}
+
+/// Whether RegExpExec ( R, S ) is RegExpBuiltinExec ( R, S ) without a lookup that could
+/// run user code (D3137): `r` has no own `exec` and its prototype is %RegExp.prototype%
+/// with the original one.
+pub(crate) fn exec_is_original(heap: &Heap, r: Obj) -> bool {
+    let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
+    heap.get_prototype_of(r) == Some(proto)
+        && heap.get_own_property(r, atoms::EXEC).is_none()
+        && original_method(heap, EXEC, atoms::EXEC, REGEXP_PROTOTYPE_EXEC)
+}
+
+/// `lastIndex` of `r` when RegExpBuiltinExec reads and writes it as data: a writable
+/// Number.
+pub(crate) fn last_index(heap: &Heap, r: Obj) -> Option<f64> {
+    match heap.get_own_property(r, atoms::LAST_INDEX) {
+        Some(Property::Data { value, flags }) if flags.writable() => value.as_number(),
+        _ => None,
+    }
+}
+
+/// Whether `v` is a RegExp whose protocol is unobservable (D1503): its own properties
+/// are just a writable Number `lastIndex`, its prototype is %RegExp.prototype% with the
+/// original `exec`, `flags`, flag getters, `constructor` and @@match, and %RegExp%'s
+/// @@species getter is the original. Then RegExpExec, the flags, SpeciesConstructor
+/// and IsRegExp read only data, and a fast path may skip them.
+pub(crate) fn pristine(heap: &Heap, v: Value) -> Option<Obj> {
+    let r = as_regexp(heap, v)?;
+    let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
+    if heap.get_prototype_of(r) != Some(proto) || !heap.only_own_key(r, atoms::LAST_INDEX) {
+        return None;
+    }
+    last_index(heap, r)?;
+    if !original_method(heap, EXEC, atoms::EXEC, REGEXP_PROTOTYPE_EXEC)
+        || !original_method(heap, MATCH, atoms::SYM_MATCH, REGEXP_PROTOTYPE_MATCH)
+    {
+        return None;
+    }
+    let installed = |id: u16| realm::installed_intrinsic(heap, id);
+    for (i, (key, id)) in REGEXP_GETTERS.into_iter().enumerate() {
+        match proto_property(heap, GETTERS + i, key) {
+            Some(Property::Accessor { getter, .. }) if getter == installed(id) => {}
+            _ => return None,
+        }
+    }
+    let ctors = realm::intrinsic_obj(heap, Intrinsic::Constructors);
+    let ctor = own_data(heap, ctors, atoms::REG_EXP)?;
+    match proto_property(heap, CONSTRUCTOR, atoms::CONSTRUCTOR) {
+        Some(Property::Data { value, .. }) if value == ctor => {}
+        _ => return None,
+    }
+    match heap.get_own_property(ctor.as_object()?, atoms::SYM_SPECIES) {
+        Some(Property::Accessor { getter, .. }) if getter == installed(REGEXP_SPECIES) => Some(r),
+        _ => None,
+    }
+}
+
+/// The most words of a matcher state that stay with the heap between matches (4 KiB):
+/// most patterns need a few frames, and a deep backtrack's stack is not kept.
+const SPARE_STATE_WORDS: usize = 1024;
+
+/// Runs `f` with the heap's spare matcher state, whose memory match after match reuses.
+fn with_state<T>(heap: &mut Heap, f: impl FnOnce(&mut Heap, &mut ExecState) -> T) -> T {
+    let mut st = core::mem::take(&mut heap.regexp_state);
+    let r = f(heap, &mut st);
+    if st.capacity() <= SPARE_STATE_WORDS {
+        heap.regexp_state = st;
+    }
+    r
+}
+
+/// The most matcher steps a `@fast` entry takes. An entry runs to its end and charges
+/// its steps afterwards (like the leaves that run to completion), so this is also how
+/// far it can run past the end of a fuel slice: about 50 µs at 3 ns a step. A match
+/// that needs more is the builtin's, which suspends when a slice ends; the entry then
+/// charges nothing. Whether a match stays below it depends on the RegExp and the string
+/// alone, never on the fuel left, so a run stops at the same point however its fuel is
+/// sliced (D1710).
+const FAST_STEPS: i64 = 16_384;
+
+/// Whether an entry that finds every match in a string of `len` code units should not
+/// start: passing a code unit costs a step, so a longer string does not fit.
+fn too_long(len: usize) -> bool {
+    len as u64 > FAST_STEPS as u64
+}
+
+/// Charges the steps of an entry's matcher runs that ended (with `left` of
+/// [`FAST_STEPS`]); one that did not end charges nothing.
+fn charge(fuel: &mut i64, left: i64, ended: bool) {
+    if ended {
+        *fuel -= FAST_STEPS - left;
+    }
+}
+
+/// Runs the matcher of `r` on the contiguous string `flat` from `start` for at most
+/// [`FAST_STEPS`]: `OutOfFuel` is a match that needs more.
+fn run(
+    heap: &Heap,
+    r: Obj,
+    flat: Str,
+    start: usize,
+    sticky: bool,
+    fuel: &mut i64,
+    st: &mut ExecState,
+) -> Outcome {
+    let mut left = FAST_STEPS;
+    let prog = program(heap, r);
+    let view = heap.str_view(flat).expect("flat string");
+    let limits = ExecLimits::default();
+    let o = regexp::exec_in(prog, input(view), start, sticky, &mut left, limits, st);
+    charge(fuel, left, matches!(o, Outcome::Match | Outcome::NoMatch));
+    o
+}
+
+/// ToLength of a Number `lastIndex`.
+fn to_length(last: f64) -> f64 {
+    if last > 0.0 {
+        djs_libm::trunc(last)
+    } else {
+        0.0
+    }
+}
+
+/// RegExpBuiltinExec ( R, S ) once `lastIndex` was read as `last` (`last_index`), in one
+/// go: the match array or null (with `test`, true or false), `lastIndex` updated. `None`,
+/// with nothing changed, when the match needs more than [`FAST_STEPS`] or the matcher's
+/// stack overflowed: the builtin runs the match again, and suspends or throws.
+pub(crate) fn exec_now(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    last: f64,
+    test: bool,
+    fuel: &mut i64,
+) -> Result<Option<Value>, Fault> {
+    let f = flags(heap, r);
+    let sticky = f.contains(Flags::STICKY);
+    let g_or_y = sticky || f.contains(Flags::GLOBAL);
+    let last = if g_or_y { to_length(last) } else { 0.0 };
+    let flat = heap.contiguous(s)?;
+    if last > heap.str_len(flat) as f64 {
+        if g_or_y {
+            heap.set_own_data_value(r, atoms::LAST_INDEX, Value::int(0));
+        }
+        return Ok(Some(if test { Value::FALSE } else { Value::NULL }));
+    }
+    // The match array before lastIndex: at the heap cap nothing has changed.
+    let found: Result<Option<(Value, usize)>, Fault> = with_state(heap, |heap, st| {
+        Ok(match run(heap, r, flat, last as usize, sticky, fuel, st) {
+            Outcome::OutOfFuel | Outcome::StackOverflow => None,
+            Outcome::NoMatch => Some((if test { Value::FALSE } else { Value::NULL }, 0)),
+            Outcome::Match => {
+                let caps = st.captures(program(heap, r));
+                let (_, end) = caps.get(0).expect("group 0 matched");
+                let v = if test {
+                    Value::TRUE
+                } else {
+                    match_result(heap, r, s, caps)?
+                };
+                Some((v, end))
+            }
+        })
+    });
+    let Some((v, next)) = found? else {
+        return Ok(None);
+    };
+    if g_or_y {
+        heap.set_own_data_value(r, atoms::LAST_INDEX, Value::int(next as i32));
+    }
+    Ok(Some(v))
+}
+
+/// Every match of the global RegExp `r` in the contiguous string `flat` from lastIndex
+/// 0, as @@match and @@replace find them (after an empty match the next one starts a
+/// character on, a code point with `u` or `v`). False when the matcher did not finish.
+fn each_match(
+    heap: &Heap,
+    r: Obj,
+    flat: Str,
+    fuel: &mut i64,
+    st: &mut ExecState,
+    mut each: impl FnMut(Caps<'_>, StrView<'_>, Prog<'_>),
+) -> bool {
+    let prog = program(heap, r);
+    let view = heap.str_view(flat).expect("flat string");
+    let input = input(view);
+    let unicode = prog.flags().unicode_mode();
+    let sticky = prog.flags().contains(Flags::STICKY);
+    let limits = ExecLimits::default();
+    if too_long(view.len()) {
+        return false;
+    }
+    let mut left = FAST_STEPS;
+    let mut last = 0;
+    let finished = loop {
+        if last > view.len() {
+            break true;
+        }
+        match regexp::exec_in(prog, input, last, sticky, &mut left, limits, st) {
+            Outcome::Match => {}
+            Outcome::NoMatch => break true,
+            Outcome::OutOfFuel | Outcome::StackOverflow => break false,
+        }
+        let caps = st.captures(prog);
+        let (m0, m1) = caps.get(0).expect("group 0 matched");
+        each(caps, view, prog);
+        last = if m1 == m0 {
+            advance(view, m1, unicode)
+        } else {
+            m1
+        };
+    };
+    charge(fuel, left, finished);
+    finished
+}
+
+/// RegExp.prototype[@@match] of a pristine global RegExp: the matched strings or null,
+/// and lastIndex 0. `None` as for `exec_now`.
+pub(crate) fn match_all_now(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    fuel: &mut i64,
+) -> Result<Option<Value>, Fault> {
+    let flat = heap.contiguous(s)?;
+    let mut cuts: Vec<(usize, usize)> = Vec::new();
+    let finished = with_state(heap, |heap, st| {
+        each_match(heap, r, flat, fuel, st, |caps, _, _| {
+            cuts.push_out(caps.get(0).expect("group 0 matched"));
+        })
+    });
+    if !finished {
+        return Ok(None);
+    }
+    let v = if cuts.is_empty() {
+        Value::NULL
+    } else {
+        let mut values = crate::buf::vec_with_capacity(cuts.len());
+        for (a, b) in cuts {
+            values.push_out(substring(heap, flat, a, b)?);
+        }
+        let proto = realm::intrinsic_obj(heap, Intrinsic::ArrayProto);
+        Value::object(heap.new_array_from_values(Some(proto), &values)?)
+    };
+    heap.set_own_data_value(r, atoms::LAST_INDEX, Value::int(0));
+    Ok(Some(v))
+}
+
+/// RegExp.prototype[@@replace] of a pristine RegExp with a string replacement template:
+/// every match of a global one (lastIndex 0 at the end), else the first from lastIndex
+/// (0 unless sticky, which also writes it). `None` as for `exec_now`.
+pub(crate) fn replace_now(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    template: Str,
+    fuel: &mut i64,
+) -> Result<Option<Value>, Fault> {
+    let flat = heap.contiguous(s)?;
+    let size = heap.str_len(flat) as usize;
+    let template = heap.str_to_utf16(template);
+    let narrow = !heap.str_view(flat).expect("flat string").is_two_byte()
+        && template.iter().all(|&u| u <= 0xFF);
+    let mut out = if narrow {
+        Units::Narrow(crate::buf::vec_with_capacity(size))
+    } else {
+        Units::Wide(crate::buf::vec_with_capacity(size))
+    };
+    let f = flags(heap, r);
+    let sticky = f.contains(Flags::STICKY);
+    let mut next_pos = None;
+    let last = if f.contains(Flags::GLOBAL) {
+        let finished = with_state(heap, |heap, st| {
+            each_match(heap, r, flat, fuel, st, |caps, view, prog| {
+                let (m0, m1) = caps.get(0).expect("group 0 matched");
+                out.range(view, next_pos.unwrap_or(0), m0);
+                substitute(&mut out, &template, view, caps, prog);
+                next_pos = Some(m1);
+            })
+        });
+        if !finished {
+            return Ok(None);
+        }
+        Some(0)
+    } else {
+        let start = match last_index(heap, r) {
+            Some(last) if sticky => to_length(last),
+            _ => 0.0,
+        };
+        let found = with_state(heap, |heap, st| {
+            if start > size as f64 {
+                return Some(false);
+            }
+            match run(heap, r, flat, start as usize, sticky, fuel, st) {
+                Outcome::OutOfFuel | Outcome::StackOverflow => None,
+                Outcome::NoMatch => Some(false),
+                Outcome::Match => {
+                    let prog = program(heap, r);
+                    let view = heap.str_view(flat).expect("flat string");
+                    let caps = st.captures(prog);
+                    let (m0, m1) = caps.get(0).expect("group 0 matched");
+                    out.range(view, 0, m0);
+                    substitute(&mut out, &template, view, caps, prog);
+                    next_pos = Some(m1);
+                    Some(true)
+                }
+            }
+        });
+        if found.is_none() {
+            return Ok(None);
+        }
+        sticky.then_some(next_pos.unwrap_or(0))
+    };
+    // The result before lastIndex: at the heap cap nothing has changed.
+    let result = match next_pos {
+        None => s,
+        Some(p) => {
+            out.range(heap.str_view(flat).expect("flat string"), p.min(size), size);
+            out.into_string(heap)?
+        }
+    };
+    if let Some(last) = last {
+        heap.set_own_data_value(r, atoms::LAST_INDEX, Value::int(last as i32));
+    }
+    Ok(Some(Value::string(result)))
+}
+
+/// RegExp.prototype[@@search] of a pristine RegExp: the index of the first match from 0
+/// or -1; lastIndex ends as it was. `None` as for `exec_now`.
+pub(crate) fn search_now(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    fuel: &mut i64,
+) -> Result<Option<Value>, Fault> {
+    let flat = heap.contiguous(s)?;
+    let sticky = flags(heap, r).contains(Flags::STICKY);
+    Ok(with_state(heap, |heap, st| {
+        match run(heap, r, flat, 0, sticky, fuel, st) {
+            Outcome::OutOfFuel | Outcome::StackOverflow => None,
+            Outcome::NoMatch => Some(Value::int(-1)),
+            Outcome::Match => {
+                let caps = st.captures(program(heap, r));
+                let (at, _) = caps.get(0).expect("group 0 matched");
+                Some(Value::int(at as i32))
+            }
+        }
+    }))
+}
+
+/// RegExp.prototype[@@split] of a pristine RegExp on a non-empty string with 0 < lim
+/// (what `%RegExpSplitRaw` does, D1503). `None` as for `exec_now`.
+pub(crate) fn split_now(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    lim: u32,
+    fuel: &mut i64,
+) -> Result<Option<Value>, Fault> {
+    let flat = heap.contiguous(s)?;
+    let size = heap.str_len(flat) as usize;
+    // The pieces: a range of the string, or an undefined capture.
+    let mut cuts: Vec<Option<(usize, usize)>> = Vec::new();
+    let full = |cuts: &Vec<Option<(usize, usize)>>| cuts.len() as u32 == lim;
+    let (mut p, mut q) = (0, 0);
+    if too_long(size) {
+        return Ok(None);
+    }
+    let mut left = FAST_STEPS;
+    let finished = with_state(heap, |heap, st| {
+        let prog = program(heap, r);
+        let view = heap.str_view(flat).expect("flat string");
+        let input = input(view);
+        let unicode = prog.flags().unicode_mode();
+        let limits = ExecLimits::default();
+        'matches: loop {
+            if q >= size {
+                break true;
+            }
+            match regexp::exec_in(prog, input, q, false, &mut left, limits, st) {
+                Outcome::Match => {}
+                Outcome::NoMatch => break true,
+                Outcome::OutOfFuel | Outcome::StackOverflow => break false,
+            }
+            let caps = st.captures(prog);
+            let (at, e) = caps.get(0).expect("group 0 matched");
+            if at >= size {
+                break true;
+            }
+            if e == p {
+                q = advance(view, at, unicode);
+                continue;
+            }
+            cuts.push_out(Some((p, at)));
+            if full(&cuts) {
+                break true;
+            }
+            for g in 1..caps.len() {
+                cuts.push_out(caps.get(g));
+                if full(&cuts) {
+                    break 'matches true;
+                }
+            }
+            p = e;
+            q = p;
+        }
+    });
+    charge(fuel, left, finished);
+    if !finished {
+        return Ok(None);
+    }
+    if !full(&cuts) {
+        cuts.push_out(Some((p.min(size), size)));
+    }
+    let mut values = crate::buf::vec_with_capacity(cuts.len());
+    for cut in cuts {
+        values.push_out(match cut {
+            Some((a, b)) => substring(heap, flat, a, b)?,
+            None => Value::UNDEFINED,
+        });
+    }
+    let proto = realm::intrinsic_obj(heap, Intrinsic::ArrayProto);
+    Ok(Some(Value::object(
+        heap.new_array_from_values(Some(proto), &values)?,
+    )))
+}
+
+// ---- A replacer function's matches (`%RegExpMatchSpans` and its readers) ----
+
+/// The Numbers per match in a spans array of `r`: the start and the end of every group.
+pub(crate) fn span_width(heap: &Heap, r: Obj) -> u32 {
+    2 * program(heap, r).capture_count() as u32
+}
+
+/// The number of matches in `spans`.
+pub(crate) fn span_count(heap: &Heap, r: Obj, spans: Obj) -> u32 {
+    heap.array_length(spans) / span_width(heap, r)
+}
+
+/// Element `i` of a spans array: a position, or `None` for a group that did not
+/// participate.
+fn span(heap: &Heap, spans: Obj, i: u32) -> Option<u32> {
+    heap.get_element_fast(spans, i)
+        .and_then(Value::as_int)
+        .and_then(|x| u32::try_from(x).ok())
+}
+
+/// The arguments of a replacer function for match `k` of `spans` (22.2.6.11 step
+/// 14.l): the matched string, the captures, the position, the string, and the groups
+/// object when the RegExp has named groups.
+pub(crate) fn replace_args(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    spans: Obj,
+    k: u32,
+) -> Result<Obj, Fault> {
+    let (width, names) = (span_width(heap, r), program(heap, r).has_group_names());
+    let at = width * k;
+    let mut values = crate::buf::vec_with_capacity(width as usize / 2 + 3);
+    for g in (0..width).step_by(2) {
+        values.push_out(
+            match (span(heap, spans, at + g), span(heap, spans, at + g + 1)) {
+                (Some(a), Some(b)) => substring(heap, s, a as usize, b as usize)?,
+                _ => Value::UNDEFINED,
+            },
+        );
+    }
+    let groups = if names {
+        Some(groups_object(heap, r, &values)?)
+    } else {
+        None
+    };
+    values.push_out(Value::int(span(heap, spans, at).unwrap_or(0) as i32));
+    values.push_out(Value::string(s));
+    values.extend(groups);
+    let proto = realm::intrinsic_obj(heap, Intrinsic::ArrayProto);
+    Ok(heap.new_array_from_values(Some(proto), &values)?)
+}
+
+/// The matched strings of `spans` as an Array, for a RegExp without capture groups;
+/// undefined otherwise.
+pub(crate) fn span_texts(heap: &mut Heap, r: Obj, s: Str, spans: Obj) -> Result<Value, Fault> {
+    if span_width(heap, r) != 2 {
+        return Ok(Value::UNDEFINED);
+    }
+    let count = span_count(heap, r, spans);
+    let mut values = crate::buf::vec_with_capacity(count as usize);
+    for k in 0..count {
+        values.push_out(
+            match (span(heap, spans, 2 * k), span(heap, spans, 2 * k + 1)) {
+                (Some(a), Some(b)) => substring(heap, s, a as usize, b as usize)?,
+                _ => Value::UNDEFINED,
+            },
+        );
+    }
+    Ok(Value::object(heap.new_array_from_values(None, &values)?))
+}
+
+/// The Array the replacements of `spans` go to: the position of each match for a RegExp
+/// without capture groups, else empty.
+pub(crate) fn span_starts(heap: &mut Heap, r: Obj, spans: Obj) -> Result<Obj, Fault> {
+    let mut values = Vec::new();
+    if span_width(heap, r) == 2 {
+        let count = span_count(heap, r, spans);
+        values.reserve_exact(count as usize);
+        for k in 0..count {
+            values.push_out(Value::int(span(heap, spans, 2 * k).unwrap_or(0) as i32));
+        }
+    }
+    Ok(heap.new_array_from_values(None, &values)?)
+}
+
+/// `s` with each match of `spans` replaced by the string at its index in
+/// `replacements`, written once.
+pub(crate) fn replace_join(
+    heap: &mut Heap,
+    r: Obj,
+    s: Str,
+    spans: Obj,
+    replacements: Obj,
+) -> Result<Str, Fault> {
+    let (width, count) = (span_width(heap, r), span_count(heap, r, spans));
+    if count == 0 {
+        return Ok(s);
+    }
+    let mut pieces = crate::buf::vec_with_capacity(2 * count as usize + 1);
+    let mut from = 0;
+    for k in 0..count {
+        let (Some(a), Some(b), Some(to)) = (
+            span(heap, spans, width * k),
+            span(heap, spans, width * k + 1),
+            heap.get_element_fast(replacements, k)
+                .and_then(Value::as_string),
+        ) else {
+            continue;
+        };
+        pieces.push_out((s, from, a));
+        pieces.push_out((to, 0, heap.str_len(to)));
+        from = b;
+    }
+    let len = heap.str_len(s);
+    if from < len {
+        pieces.push_out((s, from, len));
+    }
+    super::string::join(heap, &mut pieces)
 }
 
 /// A heap string from UTF-16 units (one byte per unit when possible).

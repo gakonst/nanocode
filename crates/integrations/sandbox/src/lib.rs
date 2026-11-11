@@ -8,6 +8,7 @@ pub mod confine;
 #[path = "confine_other.rs"]
 pub mod confine;
 pub mod egress;
+pub mod run;
 
 pub const SYSTEM: [&str; 7] = [
     "/usr",

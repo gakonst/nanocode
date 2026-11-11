@@ -4686,7 +4686,7 @@ impl State {
             requested,
             build: crate::environment::build(),
             template: None,
-            prefix: Some(self.sent_prefix()),
+            prefix: crate::environment::build().map(|_| self.sent_prefix()),
         })
     }
     fn sent_prefix(&self) -> Arc<crate::durability::Prefix> {

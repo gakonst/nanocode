@@ -17,7 +17,9 @@ use std::task::{Poll, Waker};
 use std::time::Duration;
 
 use bytes::Bytes;
-use nanocode_shell::{Call, Commands, FileSystem, Kind, Machine, Remove, Reply, Stat, Write};
+use nanocode_shell::{
+    Call, Commands, Failure, Fetch, FileSystem, Kind, Machine, Remove, Reply, Response, Stat, Write,
+};
 
 use crate::ops::{self, Answer, OpFuture};
 use crate::{export, sys, take_input};
@@ -419,6 +421,73 @@ impl Commands for JsCommands {
                         return if piped { 128 + 13 } else { status };
                     }
                 }
+            }
+        })
+    }
+}
+
+/// The network of the JS side: one request is one `K_FETCH`, answered when the
+/// response is whole.
+pub struct JsFetch;
+
+fn response(data: &[u8]) -> Option<Response> {
+    let mut r = Reader { data };
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let protocol = text(r.bytes()?);
+    let status = r.u32()? as u16;
+    let reason = text(r.bytes()?);
+    let mut headers = Vec::new();
+    for _ in 0..r.u32()? {
+        let name = text(r.bytes()?);
+        let value = text(r.bytes()?);
+        headers.push((name, value));
+    }
+    let body = Bytes::copy_from_slice(r.bytes()?);
+    let url = text(r.bytes()?);
+    let redirects = r.u32()?;
+    Some(Response {
+        protocol,
+        status,
+        reason,
+        headers,
+        body,
+        url,
+        redirects,
+    })
+}
+
+impl Fetch for JsFetch {
+    fn fetch(
+        &self,
+        request: nanocode_shell::Request,
+    ) -> Pin<Box<dyn Future<Output = Result<Response, Failure>>>> {
+        let mut w = Writer::new();
+        w.bytes(request.method.as_bytes())
+            .bytes(request.url.as_bytes())
+            .u32(request.headers.len() as u32);
+        for (name, value) in &request.headers {
+            w.bytes(name.as_bytes()).bytes(value.as_bytes());
+        }
+        w.bytes(&request.body)
+            .u32(request.follow.unwrap_or(sys::NO_FOLLOW));
+        let timeout = request.timeout.map_or(0.0, |t| t.as_secs_f64() * 1000.0);
+        w.raw(&timeout.to_le_bytes())
+            .raw(&(request.limit as f64).to_le_bytes());
+        let fut = OpFuture::new(ops::start(sys::K_FETCH, 0, &w.0));
+        Box::pin(async move {
+            let answer = fut.await;
+            let detail = || String::from_utf8_lossy(&answer.data).into_owned();
+            match answer.err {
+                0 => response(&answer.data)
+                    .ok_or_else(|| Failure::Other("the host's response is malformed".to_string())),
+                sys::FETCH_RESOLVE => Err(Failure::Resolve),
+                sys::FETCH_CONNECT => Err(Failure::Connect),
+                sys::FETCH_TIMEOUT => Err(Failure::Timeout),
+                sys::FETCH_REDIRECTS => Err(Failure::Redirects),
+                sys::FETCH_SECURE => Err(Failure::Secure(detail())),
+                sys::FETCH_TOO_LARGE => Err(Failure::TooLarge),
+                sys::FETCH_DENIED => Err(Failure::Denied(detail())),
+                _ => Err(Failure::Other(detail())),
             }
         })
     }

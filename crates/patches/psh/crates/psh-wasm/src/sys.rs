@@ -49,6 +49,29 @@ pub const K_PANIC: u32 = 10;
 /// instant, epoch seconds as decimal text.
 pub const K_UTC_OFFSET: u32 = 11;
 
+/// An HTTP request for curl and wget (nanocode's addition), where the JS side gave the
+/// shell a network (`psh_shell_fetch`): payload = the method, the URL, the headers (a
+/// count, then name and value each), the body (empty for none), how many redirects to
+/// follow as a u32 ([`NO_FOLLOW`]: none, a 3xx is the answer), the timeout in
+/// milliseconds as an f64 (0 for none) and the most body bytes to keep as an f64.
+/// Answered with `psh_complete`: error 0 and the response (the protocol, the status as
+/// a u32, the reason, the headers as they came, the body, the final URL and how many
+/// redirects were followed as a u32), or one of the `FETCH_*` failures with its detail
+/// as text.
+pub const K_FETCH: u32 = 12;
+/// `K_FETCH`'s redirect count for a request whose redirects are not followed.
+pub const NO_FOLLOW: u32 = u32::MAX;
+/// `K_FETCH` failures: the name did not resolve, nothing answered at the address, the
+/// timeout passed, more redirects than asked for, TLS, a body past the limit, the
+/// host's policy, anything else.
+pub const FETCH_RESOLVE: i32 = 1;
+pub const FETCH_CONNECT: i32 = 2;
+pub const FETCH_TIMEOUT: i32 = 3;
+pub const FETCH_REDIRECTS: i32 = 4;
+pub const FETCH_SECURE: i32 = 5;
+pub const FETCH_TOO_LARGE: i32 = 6;
+pub const FETCH_DENIED: i32 = 7;
+
 /// `K_FS` operations.
 pub const FS_STAT: u32 = 0;
 pub const FS_LSTAT: u32 = 1;

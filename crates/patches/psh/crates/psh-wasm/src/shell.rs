@@ -13,7 +13,7 @@ use nanocode_shell::{
     Answers, Config, Ended, HostInfo, Identity, Limit, Limits, Ran, Script, Shell, Step,
 };
 
-use crate::host::{JsCommands, JsFs, JsMachine, Reader, Writer};
+use crate::host::{JsCommands, JsFetch, JsFs, JsMachine, Reader, Writer};
 use crate::{export, set_output, sys, take_input};
 
 /// Step results other than done.
@@ -193,6 +193,19 @@ export! {
             }
             e.shell.renew();
             e.ran = None;
+            0
+        })
+        .unwrap_or(1)
+    }
+}
+
+export! {
+    /// Gives a shell the JS side's network (nanocode's addition): its curl and wget
+    /// then ask with `K_FETCH`. A shell that is not given one has none, and they end
+    /// saying so. Returns 0, or 1 for an unknown shell.
+    fn psh_shell_fetch(id: u32) -> u32 {
+        with_shell(id, |e| {
+            e.shell.set_fetch(Rc::new(JsFetch));
             0
         })
         .unwrap_or(1)

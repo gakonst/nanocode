@@ -231,10 +231,9 @@ impl Index {
         Ok(())
     }
 
-    fn valid(&self, source: &str, length: u64) -> bool {
+    fn valid(&self, length: u64) -> bool {
         let location_valid = |location| valid_location(location, self.offset);
-        self.source == source
-            && self.offset <= length
+        self.offset <= length
             && self.last.map_or(self.offset == 0, |last| {
                 location_valid(last)
                     && last.position.checked_add(last.length as u64) == Some(self.offset)
@@ -277,7 +276,11 @@ impl Journal {
                     states = index.states.len(),
                     "reused JSONL index"
                 );
-                self.persisted_offset = index.file.as_ref().map(|_| index.offset);
+                self.persisted_offset = index
+                    .file
+                    .as_ref()
+                    .filter(|_| !index.migrated)
+                    .map(|_| index.offset);
                 self.index = index;
             }
             Ok(None) => {}
@@ -420,10 +423,14 @@ impl Journal {
     }
 
     fn checked_index(&mut self, mut index: Index, saved: String) -> io::Result<Option<Index>> {
-        if !index.valid(&self.index.source, self.file.metadata()?.len())
+        if !index.valid(self.file.metadata()?.len())
             || digest_anchor(&mut self.reads, index.last)? != index.anchor
         {
             return Err(invalid());
+        }
+        if index.source != self.index.source {
+            index.source.clone_from(&self.index.source);
+            index.migrated = true;
         }
         index.saved = Some(saved);
         Ok(Some(index))

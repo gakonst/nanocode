@@ -717,7 +717,17 @@ impl Parser<'_, '_> {
             if keeps {
                 self.names_push(start, &["binary.left"]);
             }
+            // A chain of `**` recurses once per operator (the other operators climb a
+            // bounded number of levels): it counts toward the nesting limit, or a few
+            // thousand of them overflow the native stack.
+            let chained = matches!(op, BinOp::Pow);
+            if chained {
+                self.enter()?;
+            }
             let (_, rmix) = self.parse_binary(next_min, no_in)?;
+            if chained {
+                self.leave();
+            }
             self.syn_part(Role::Right, right, self.prev_end);
             if keeps {
                 self.names_pop(1);

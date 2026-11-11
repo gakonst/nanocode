@@ -73,6 +73,19 @@ impl HistoryMessage {
         Arc::try_unwrap(self.0).map_or_else(|entry| entry.message.clone(), |entry| entry.message)
     }
 
+    pub(super) fn recorded(message: Message, json: Arc<str>, record: EncodedPayload) -> Self {
+        Self(Arc::new(Entry {
+            message,
+            wire: OnceLock::new(),
+            json: OnceLock::from(json),
+            digests: OnceLock::new(),
+            cache: OnceLock::new(),
+            images: OnceLock::new(),
+            companions: OnceLock::new(),
+            record: OnceLock::from(record),
+        }))
+    }
+
     pub(super) fn cache_json(&self) -> serde_json::Result<()> {
         self.json().map(drop)
     }

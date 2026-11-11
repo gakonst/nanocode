@@ -279,7 +279,7 @@ impl Effect<'_> {
         &self,
         response: &mut MessageResponse,
         paged: bool,
-    ) -> Result<JournalWrite> {
+    ) -> Result<(JournalWrite, Option<Recorded>)> {
         #[derive(Serialize)]
         struct Receipt<'a> {
             content_record: EncodedPayload,
@@ -287,29 +287,46 @@ impl Effect<'_> {
             response: &'a MessageResponse,
         }
         if !paged {
-            return self.completion(response);
+            return Ok((self.completion(response)?, None));
         }
         let message = Message {
             role: Role::Assistant,
             content: std::mem::take(&mut response.content),
             output_config: None,
         };
-        let record =
-            serde_json::to_string(&message).map(|json| EncodedPayload::from_json(json.into()));
-        let output = record.as_ref().map_err(provider_error).and_then(|record| {
-            serde_json::value::to_raw_value(&Receipt {
-                content_record: record.reference(),
-                response,
-            })
-            .map_err(provider_error)
+        let recorded = serde_json::to_string(&message).map(|json| {
+            let json = Arc::<str>::from(json);
+            Recorded {
+                record: EncodedPayload::from_json(Arc::clone(&json)),
+                json,
+            }
         });
+        let output = recorded
+            .as_ref()
+            .map_err(provider_error)
+            .and_then(|recorded| {
+                serde_json::value::to_raw_value(&Receipt {
+                    content_record: recorded.record.reference(),
+                    response,
+                })
+                .map_err(provider_error)
+            });
         response.content = message.content;
-        Ok(JournalWrite::Complete {
-            step_id: self.step.clone(),
-            output: output?,
-            records: vec![record.map_err(provider_error)?],
-        })
+        let recorded = recorded.map_err(provider_error)?;
+        Ok((
+            JournalWrite::Complete {
+                step_id: self.step.clone(),
+                output: output?,
+                records: vec![recorded.record.clone()],
+            },
+            Some(recorded),
+        ))
     }
+}
+
+pub(super) struct Recorded {
+    pub(super) json: Arc<str>,
+    pub(super) record: EncodedPayload,
 }
 
 #[derive(Default)]

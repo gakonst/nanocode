@@ -553,6 +553,21 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
         state: Value,
         model: nanocode_agent_core::ModelSelection,
     ) -> PolicyFuture<'_, ()> {
+        match serde_json::value::to_raw_value(&state) {
+            Ok(state) => self.initial_checkpoint_encoded(state, model),
+            Err(error) => Box::pin(async move {
+                Err(agent_error(nanocode_durability::Error::InvalidPayload(
+                    error,
+                )))
+            }),
+        }
+    }
+
+    fn initial_checkpoint_encoded(
+        &self,
+        state: Box<RawValue>,
+        model: nanocode_agent_core::ModelSelection,
+    ) -> PolicyFuture<'_, ()> {
         Box::pin(async move {
             if self.initialized.load(std::sync::atomic::Ordering::SeqCst) {
                 return Ok(());
@@ -572,8 +587,7 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
                 .ready
                 .get()
                 .is_none()
-                .then(|| payload(&state))
-                .transpose()?;
+                .then(|| EncodedPayload::from_json(Arc::from(state.get())));
             let (acquired, committed) = self.acquire(prepared).await?;
             if let Some(deferred) = self.deferred.as_ref().filter(|_| !committed) {
                 deferred.existing.store(true, Ordering::SeqCst);
@@ -585,7 +599,12 @@ impl ClaudeExecutionPolicy for LazyClaudeExecution {
                 return Ok(());
             }
             if !committed {
-                acquired.execution.checkpoint(state).await?;
+                acquired
+                    .execution
+                    .owner
+                    .commit_checkpoint(EncodedPayload::from_json(Arc::from(state.get())))
+                    .await
+                    .map_err(agent_error)?;
             }
             self.initialized
                 .store(true, std::sync::atomic::Ordering::SeqCst);

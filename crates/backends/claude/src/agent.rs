@@ -4207,6 +4207,7 @@ impl From<NanocodeError> for ResponseFailure {
 }
 struct ResponseOutcome {
     message: crate::MessageResponse,
+    recorded: Option<durable::Recorded>,
     upgrade: Option<durable::CodeOnlyUpgrade>,
 
     replayed: bool,
@@ -5268,6 +5269,7 @@ impl State {
                 );
                 return Ok(ResponseOutcome {
                     message: response,
+                    recorded: None,
                     upgrade: None,
                     replayed: true,
                 });
@@ -5334,6 +5336,7 @@ impl State {
                 );
                 return Ok(ResponseOutcome {
                     message: response,
+                    recorded: None,
                     upgrade: Some(upgrade.clone()),
                     replayed: true,
                 });
@@ -5657,8 +5660,10 @@ impl State {
                     if let Some(shown) = shown.take() {
                         response.id = shown;
                     }
+                    let mut recorded = None;
                     if let Some(effect) = active_effect {
-                        let completion =
+                        let completion;
+                        (completion, recorded) =
                             effect.model_completion(&mut response, self.pages_messages())?;
                         match journal.as_deref_mut() {
                             Some(journal) => journal.complete(completion),
@@ -5687,6 +5692,7 @@ impl State {
                     );
                     return Ok(ResponseOutcome {
                         message: response,
+                        recorded,
                         upgrade,
                         replayed: false,
                     });
@@ -7405,12 +7411,19 @@ impl State {
                 pending.push(Message::text(Role::User, &upgrade.notice).into());
                 conversation.recovery_notices.push(upgrade.notice);
             }
+            let recorded = response.recorded;
             let mut response = response.message;
-            let assistant = HistoryMessage::from(Message {
+            let assistant = Message {
                 role: Role::Assistant,
                 content: std::mem::take(&mut response.content),
                 output_config: None,
-            });
+            };
+            let assistant = match recorded {
+                Some(recorded) => {
+                    HistoryMessage::recorded(assistant, recorded.json, recorded.record)
+                }
+                None => HistoryMessage::from(assistant),
+            };
             self.publish_side_view(Some(pending.iter().chain([&assistant]).cloned().collect()));
             if cursor.model_step_offset == 0 {
                 cursor.model_step_offset = 1;
@@ -8140,8 +8153,8 @@ impl LifecycleBackend for Driver {
             let snapshot = state.latest_boundary().await?;
             let model = claude_selection(&state.model());
             policy
-                .initial_checkpoint(
-                    serde_json::to_value(&snapshot).map_err(provider_error)?,
+                .initial_checkpoint_encoded(
+                    serde_json::value::to_raw_value(&snapshot).map_err(provider_error)?,
                     model,
                 )
                 .await

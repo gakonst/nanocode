@@ -295,6 +295,22 @@ pub trait ClaudeExecutionPolicy: Send + Sync {
         Box::pin(async { Ok(()) })
     }
 
+    #[allow(clippy::boxed_local)]
+    fn initial_checkpoint_encoded(
+        &self,
+        state: Box<RawValue>,
+        model: nanocode_agent_core::ModelSelection,
+    ) -> PolicyFuture<'_, ()> {
+        match serde_json::from_str(state.get()) {
+            Ok(state) => self.initial_checkpoint(state, model),
+            Err(error) => Box::pin(async move {
+                Err(NanocodeError::InvalidRequest(format!(
+                    "invalid encoded Claude execution state: {error}"
+                )))
+            }),
+        }
+    }
+
     fn discard_initial(&self) -> PolicyFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }

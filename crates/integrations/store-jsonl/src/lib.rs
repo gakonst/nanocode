@@ -5,6 +5,7 @@ mod index;
 mod migrate;
 mod records;
 mod sessions;
+mod shared;
 mod summaries;
 
 pub use compact::CompactionStats;
@@ -876,6 +877,7 @@ struct Journal {
     sidecar: bool,
     unsynced: bool,
     current: bool,
+    shared: Option<shared::Shared>,
 }
 
 impl Owners for index::Index {
@@ -921,6 +923,7 @@ impl Journal {
             sidecar,
             unsynced: false,
             current: false,
+            shared: None,
         };
         if sidecar {
             store.restore_index();
@@ -1754,6 +1757,7 @@ impl Journal {
                 continue;
             }
             let retained = match self.matches(id, record, &mut encoded, &mut stored)? {
+                Some(false) => Some(self.same_content(id, record)?),
                 Some(equal) => Some(equal),
                 None => staged
                     .get(record.key.as_str())
@@ -1769,6 +1773,16 @@ impl Journal {
             staged.insert(record.key.as_str(), record.value.as_str());
         }
         Ok(fresh)
+    }
+
+    fn same_content(&mut self, id: &str, record: &StoreRecord) -> Result<bool, StoreError> {
+        let Some(shared) = self.shared.clone() else {
+            return Ok(false);
+        };
+        let Some(existing) = self.record(id, &record.key)? else {
+            return Ok(false);
+        };
+        Ok(shared.load(existing)? == shared.load(record.value.clone())?)
     }
 
     fn matches(

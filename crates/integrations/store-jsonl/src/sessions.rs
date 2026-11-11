@@ -8,11 +8,12 @@ use std::{
 
 use nanocode_durability_core::{
     KnownSummary, ListedState, ListedSummary, OwnedState, OwnerId, OwnerToken, StoreError,
-    StoreRecord, StoreUpdate, StoredState,
+    StoreRecord, StoreReplacement, StoreUpdate, StoredState,
 };
 
 use super::{
     CompactionStats, Journal, Replacement, backend, identity, process_alive,
+    shared::Shared,
     summaries::{Summaries, Summary},
 };
 
@@ -26,6 +27,7 @@ pub(super) struct Sessions {
     clock: u64,
     summaries: Summaries,
     homes: HashMap<String, String>,
+    shared: Option<Shared>,
 }
 
 struct Opened {
@@ -128,6 +130,7 @@ impl Sessions {
             journals: HashMap::new(),
             clock: 0,
             homes,
+            shared: None,
         })
     }
 
@@ -162,6 +165,7 @@ impl Sessions {
 
     pub(super) fn open_home(home: &Path) -> Result<Self, StoreError> {
         let mut sessions = Self::open(home.join("sessions"))?;
+        sessions.shared = Shared::open(home)?;
         let legacy = home.join("sessions.jsonl");
         if legacy.is_file() {
             super::migrate::migrate(&mut sessions, &legacy)?;
@@ -201,7 +205,8 @@ impl Sessions {
             {
                 closed.journal.harden()?;
             }
-            let journal = Journal::open(&path, self.homes.values().any(|home| home == key))?;
+            let mut journal = Journal::open(&path, self.homes.values().any(|home| home == key))?;
+            journal.shared = self.shared.clone();
             for member in journal
                 .index
                 .states
@@ -282,6 +287,7 @@ impl Sessions {
         owner_id: OwnerId,
         update: StoreUpdate,
     ) -> Result<OwnedState, StoreError> {
+        let update = self.sharing(update);
         self.opened(id)?
             .acquire_batch(id, owner_id, update, None)
             .map(|(owned, _)| owned)
@@ -300,6 +306,7 @@ impl Sessions {
                 "JSONL stores {companion_id} in another session file than {id}"
             )));
         }
+        let update = self.sharing(update);
         let (owned, companion) = self.opened(id)?.acquire_batch(
             id,
             owner_id,
@@ -376,6 +383,7 @@ impl Sessions {
         payload: String,
         records: Vec<StoreRecord>,
     ) -> Result<u64, StoreError> {
+        let records = self.stored(records)?;
         match self.existing(id)? {
             Some(journal) => journal.replace(id, owner, expected, payload, records),
             None => Err(StoreError::Fenced),
@@ -393,7 +401,14 @@ impl Sessions {
         for (slot, replacement) in replacements.into_iter().enumerate() {
             match replacement {
                 Err(error) => results[slot] = Some(Err(error)),
-                Ok(replacement) => {
+                Ok(mut replacement) => {
+                    replacement.records = match self.stored(replacement.records) {
+                        Ok(records) => records,
+                        Err(error) => {
+                            results[slot] = Some(Err(error));
+                            continue;
+                        }
+                    };
                     let key = self.home(&replacement.state_id);
                     let group = *grouped.entry(key).or_insert_with(|| {
                         groups.push((Vec::new(), Vec::new()));
@@ -433,10 +448,11 @@ impl Sessions {
         id: &str,
         key: &str,
     ) -> Result<Option<String>, StoreError> {
-        match self.existing(id)? {
-            Some(journal) => journal.read_record(id, key),
-            None => Ok(None),
-        }
+        let value = match self.existing(id)? {
+            Some(journal) => journal.read_record(id, key)?,
+            None => None,
+        };
+        value.map(|value| self.loaded(value)).transpose()
     }
 
     pub(super) fn read_records(
@@ -444,10 +460,44 @@ impl Sessions {
         id: &str,
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
-        match self.existing(id)? {
-            Some(journal) => journal.read_records(id, keys),
-            None => Ok(vec![None; keys.len()]),
+        let values = match self.existing(id)? {
+            Some(journal) => journal.read_records(id, keys)?,
+            None => vec![None; keys.len()],
+        };
+        values
+            .into_iter()
+            .map(|value| value.map(|value| self.loaded(value)).transpose())
+            .collect()
+    }
+
+    fn stored(&self, records: Vec<StoreRecord>) -> Result<Vec<StoreRecord>, StoreError> {
+        match &self.shared {
+            Some(shared) => shared.store(records),
+            None => Ok(records),
         }
+    }
+
+    fn loaded(&self, value: String) -> Result<String, StoreError> {
+        match &self.shared {
+            Some(shared) => shared.load(value),
+            None => Ok(value),
+        }
+    }
+
+    fn sharing(&self, update: StoreUpdate) -> StoreUpdate {
+        let Some(shared) = self.shared.clone() else {
+            return update;
+        };
+        Box::new(move |state| {
+            update(state)?
+                .map(|replacement| {
+                    Ok(StoreReplacement {
+                        records: shared.store(replacement.records)?,
+                        payload: replacement.payload,
+                    })
+                })
+                .transpose()
+        })
     }
 
     pub(super) fn peek(&mut self, id: &str) -> Result<StoredState, StoreError> {

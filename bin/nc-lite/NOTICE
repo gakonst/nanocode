@@ -1,0 +1,1 @@
+prompt.md is adapted from the system prompt of fx (https://github.com/vercel-labs/fx), Copyright Vercel, Inc., licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). Changes: the name, and the lines about skills, context-update blocks and fx's own docs, which nc-lite does not have, are removed.

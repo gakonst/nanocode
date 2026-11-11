@@ -47,6 +47,7 @@ members = [
     "crates/tui",
     "bin/nanocode",
     "bin/cua-driver",
+    "bin/nc-lite",
 ]
 default-members = ["crates/nanocode"]
 exclude = ["crates/patches"]

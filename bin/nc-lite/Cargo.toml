@@ -1,0 +1,29 @@
+[package]
+name = "nc-lite"
+autotests = false
+autobenches = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license = "Apache-2.0"
+repository.workspace = true
+description = "nanocode cut down to what fx ships: one harness, plain tools, a JSONL store and an inline terminal interface"
+
+[[bin]]
+name = "nc-lite"
+path = "src/main.rs"
+test = false
+bench = false
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "events", "event-stream"] }
+nanocode = { path = "../../crates/nanocode", version = "0.7.0" }
+nanocode-tool-runtime.workspace = true
+pulldown-cmark = { version = "0.13.0", default-features = false }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+unicode-width = "0.2"
+
+[lints]
+workspace = true

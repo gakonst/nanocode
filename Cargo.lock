@@ -5968,6 +5968,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nc-lite"
+version = "0.7.0"
+dependencies = [
+ "crossterm",
+ "nanocode",
+ "nanocode-tool-runtime",
+ "pulldown-cmark",
+ "serde_json",
+ "tokio",
+ "unicode-width",
+]
+
+[[package]]
 name = "nix"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

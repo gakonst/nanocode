@@ -1,4 +1,4 @@
-use crate::SYSTEM;
+use crate::{SYSTEM, confine::CHANNEL};
 use std::{
     ffi::{OsStr, OsString},
     path::Path,
@@ -51,7 +51,16 @@ impl Bubblewrap {
     }
 
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
-        let mut command = Command::new(&self.bwrap);
+        self.sandboxed(Command::new(&self.bwrap), program)
+    }
+
+    pub fn command_with_channel(&self, launcher: &Path, program: impl AsRef<OsStr>) -> Command {
+        let mut command = Command::new(launcher);
+        command.arg(CHANNEL).arg(&self.bwrap);
+        self.sandboxed(command, program)
+    }
+
+    fn sandboxed(&self, mut command: Command, program: impl AsRef<OsStr>) -> Command {
         command
             .args(&self.arguments)
             .arg("--chdir")

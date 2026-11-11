@@ -11,15 +11,16 @@ use std::{
     io,
     iter::once,
     net::SocketAddr,
+    os::fd::{OwnedFd, RawFd},
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     sync::Arc,
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _},
-    net::{UnixListener, UnixStream},
-    process::{Child, ChildStdin, Command},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
+    net::{UnixStream, unix::pipe},
+    process::{Child, Command},
     task::JoinHandle,
     time::{error::Elapsed, timeout},
 };
@@ -27,11 +28,11 @@ use tokio::{
 const PIPE: usize = 64 * 1024;
 const SOCKET_NAME: usize = 16;
 const PROXY_SOCKET: &str = "proxy.sock";
-const HOST_SOCKET: &str = "host.sock";
 
 pub enum Confinement {
     Bubblewrap {
         bwrap: PathBuf,
+        launcher: PathBuf,
         root: PathBuf,
         work: PathBuf,
     },
@@ -92,12 +93,12 @@ pub enum Seen<'a> {
         root: &'a Path,
         work: &'a Path,
         proxy: PathBuf,
-        host: Option<PathBuf>,
+        host: Option<RawFd>,
     },
     InPlace {
         work: &'a Path,
         port: u16,
-        host: Option<&'a Path>,
+        host: Option<RawFd>,
     },
 }
 
@@ -170,19 +171,23 @@ impl Runner {
         let mut cleanup = Cleanup {
             work: self.scratch.join(&id),
             group: None,
-            host: None,
         };
         std::fs::create_dir_all(&cleanup.work)?;
         let socket = self.sockets.join(format!("{}.sock", &id[..SOCKET_NAME]));
         let channel = match call.host {
             Some(host) => {
-                let path = self.sockets.join(format!("{}.host", &id[..SOCKET_NAME]));
-                let listener = UnixListener::bind(&path)?;
-                cleanup.host = Some(path);
-                Some((listener, host))
+                let confine::Channel {
+                    host: stream,
+                    program,
+                    input,
+                } = confine::channel()?;
+                stream.set_nonblocking(true)?;
+                let input = pipe::Sender::from_owned_fd(OwnedFd::from(input))?;
+                Some((UnixStream::from_std(stream)?, host, program, input))
             }
             None => None,
         };
+        let host = channel.as_ref().map(|_| confine::CHANNEL_DESCRIPTOR);
         let allowlist = Allowlist {
             hosts: call.hosts.to_vec(),
             private_hosts: Vec::new(),
@@ -197,20 +202,24 @@ impl Runner {
             Confinement::Landlock { .. } => Egress::tcp(allowlist).await?,
         };
         let reads = || once(call.program).chain(call.reads.iter().copied());
-        let mut child = match &self.confinement {
-            Confinement::Bubblewrap { bwrap, root, work } => {
+        let mut command = match &self.confinement {
+            Confinement::Bubblewrap {
+                bwrap,
+                launcher,
+                root,
+                work,
+            } => {
                 let mut sandbox = Bubblewrap::new(bwrap, &cleanup.work, work);
                 for Read { path, name } in reads() {
                     sandbox.read(path, &root.join(name));
                 }
                 let proxy = root.join(PROXY_SOCKET);
                 sandbox.bind(&socket, &proxy);
-                let host = cleanup.host.as_ref().map(|host| {
-                    let inside = root.join(HOST_SOCKET);
-                    sandbox.bind(host, &inside);
-                    inside
-                });
-                let mut child = sandbox.command(root.join(call.program.name));
+                let program = root.join(call.program.name);
+                let mut child = match host {
+                    Some(_) => sandbox.command_with_channel(launcher, program),
+                    None => sandbox.command(program),
+                };
                 let seen = Seen::Mounted {
                     root,
                     work,
@@ -227,28 +236,42 @@ impl Runner {
                     write: cleanup.work.clone(),
                     port,
                 };
-                let mut child = policy.command(launcher, call.program.path)?;
+                let mut child = match host {
+                    Some(_) => policy.command_with_channel(launcher, call.program.path)?,
+                    None => policy.command(launcher, call.program.path)?,
+                };
                 let seen = Seen::InPlace {
                     work: &cleanup.work,
                     port,
-                    host: cleanup.host.as_deref(),
+                    host,
                 };
                 compose(&seen, &mut child);
                 child
             }
         };
-        let mut child = child
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (channel, input) = match channel {
+            Some((stream, host, program, input)) => {
+                command.stdin(Stdio::from(program));
+                (Some((stream, host)), Some(input))
+            }
+            None => {
+                command.stdin(Stdio::piped());
+                (None, None)
+            }
+        };
+        let mut child = command.spawn()?;
+        drop(command);
         if let Confinement::Landlock { .. } = self.confinement {
             cleanup.group = child
                 .id()
                 .and_then(|id| i32::try_from(id).ok())
                 .and_then(rustix::process::Pid::from_raw);
         }
-        let stdin = child.stdin.take().ok_or_else(|| missing("no stdin"))?;
+        let stdin: Box<dyn AsyncWrite + Send + Unpin> = match input {
+            Some(input) => Box::new(input),
+            None => Box::new(child.stdin.take().ok_or_else(|| missing("no stdin"))?),
+        };
         let overflow = Arc::new(Signal::new());
         let output = read_all(child.stdout.take(), self.caps.output, Arc::clone(&overflow));
         let errors = read_tail(child.stderr.take(), self.caps.errors);
@@ -256,11 +279,11 @@ impl Runner {
         let exchanged = exchange(&mut child, stdin, call.input, call.within, &overflow, watch);
         let ran = match channel {
             None => exchanged.await,
-            Some((listener, host)) => {
+            Some((stream, host)) => {
                 let base = call.admitted.map_or(0, Admitted::expected);
                 let mut held = Vec::new();
                 let charge = |bytes| self.budget.charge(&mut held, base, bytes);
-                let serving = serve(listener, host.as_ref(), self.caps, charge);
+                let serving = serve(stream, host.as_ref(), self.caps, charge);
                 tokio::pin!(exchanged, serving);
                 let mut served = false;
                 loop {
@@ -311,7 +334,6 @@ fn missing(what: &'static str) -> io::Error {
 struct Cleanup {
     work: PathBuf,
     group: Option<rustix::process::Pid>,
-    host: Option<PathBuf>,
 }
 
 impl Cleanup {
@@ -326,19 +348,15 @@ impl Drop for Cleanup {
     fn drop(&mut self) {
         self.kill();
         std::fs::remove_dir_all(&self.work).ok();
-        if let Some(host) = &self.host {
-            std::fs::remove_file(host).ok();
-        }
     }
 }
 
 async fn serve(
-    listener: UnixListener,
+    mut stream: UnixStream,
     host: &dyn Host,
     caps: Caps,
     mut charge: impl FnMut(usize) -> Result<(), Busy>,
 ) -> io::Result<()> {
-    let (mut stream, _) = listener.accept().await?;
     while let Some(header) = frame(&mut stream, caps.header).await? {
         let body = frame(&mut stream, caps.body)
             .await?
@@ -391,7 +409,7 @@ type Exchanged = (
 
 async fn exchange(
     child: &mut Child,
-    mut stdin: ChildStdin,
+    mut stdin: impl AsyncWrite + Unpin,
     input: Option<&str>,
     within: Duration,
     overflow: &Signal,

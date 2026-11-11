@@ -72,20 +72,26 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// One file system operation: answered during the call (the reply is there at once) or
-/// later (a future over the operation).
+/// One file system operation: answered by the call itself (its return value is the
+/// length of the answer in the input buffer, or a negative errno: the reply is there at
+/// once and no operation is kept), or later (`sys::LATER`: a future over the operation).
 fn fs<T: 'static>(
     fs_op: u32,
     payload: &[u8],
     read: impl FnOnce(Answer) -> io::Result<T> + 'static,
 ) -> Reply<T> {
-    let id = ops::start(sys::K_FS, fs_op, payload);
-    match ops::take_now(id) {
-        Some(answer) => Reply::Now(answer.result().and_then(read)),
-        None => {
+    let id = ops::next();
+    match sys::call(sys::K_FS, id, fs_op, payload) {
+        sys::LATER => {
+            ops::wait(id);
             let fut = OpFuture::new(id);
             Reply::Later(Box::pin(async move { fut.await.result().and_then(read) }))
         }
+        err if err < 0 => Reply::Now(Err(ops::errno_error(-err))),
+        len => Reply::Now(read(Answer {
+            err: 0,
+            data: take_input(len as usize),
+        })),
     }
 }
 

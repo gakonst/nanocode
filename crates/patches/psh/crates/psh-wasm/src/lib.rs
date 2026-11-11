@@ -16,6 +16,8 @@
 
 mod sys;
 
+#[cfg(all(feature = "shell", target_arch = "wasm32"))]
+mod cap;
 #[cfg(feature = "shell")]
 mod host;
 #[cfg(feature = "shell")]
@@ -36,6 +38,11 @@ mod json;
 mod parse_json;
 
 use std::cell::RefCell;
+
+// The shell module counts its live bytes against the JS side's budget (cap.rs).
+#[cfg(all(feature = "shell", target_arch = "wasm32"))]
+#[global_allocator]
+static ALLOCATOR: cap::Capped = cap::Capped;
 
 /// Bumped when an export, the payload layouts or the `host_call` kinds change; the JS
 /// glue checks it.

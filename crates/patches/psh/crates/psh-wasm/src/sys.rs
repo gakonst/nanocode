@@ -10,8 +10,12 @@
 #![cfg_attr(not(feature = "shell"), allow(dead_code))]
 
 /// A file system operation: arg = the `FS_*` operation, payload = its fields (see
-/// `host.rs`). Answered with `psh_complete`.
+/// `host.rs`). The call returns [`LATER`] when the JS side will answer with
+/// `psh_complete`, a negative errno when it failed at once, else the length of the
+/// answer it put into the input buffer.
 pub const K_FS: u32 = 1;
+/// `K_FS`'s return value for an answer that comes later.
+pub const LATER: i32 = i32::MIN;
 /// A timer: arg = milliseconds. Answered with `psh_complete`.
 pub const K_SLEEP: u32 = 2;
 /// The time since the Unix epoch: the JS side puts it into the input buffer (`psh_in`)

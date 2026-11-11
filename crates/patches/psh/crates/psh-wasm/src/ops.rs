@@ -78,21 +78,26 @@ thread_local! {
     static OPS: RefCell<HashMap<u32, Slot>> = RefCell::new(HashMap::new());
 }
 
-/// Starts an operation: registers it, then asks the JS side (which may answer at once).
+/// Starts an operation the JS side answers later: registers it, then asks.
 pub fn start(kind: u32, arg: u32, data: &[u8]) -> u32 {
-    let op = new_op();
+    let op = next();
+    wait(op);
     sys::call(kind, op, arg, data);
     op
 }
 
-fn new_op() -> u32 {
-    let op = NEXT.with(|n| {
+/// A fresh operation id.
+pub fn next() -> u32 {
+    NEXT.with(|n| {
         let op = n.get();
         n.set(op.wrapping_add(1).max(1));
         op
-    });
+    })
+}
+
+/// Registers an operation whose answer comes later (`psh_complete`).
+pub fn wait(op: u32) {
     OPS.with(|o| o.borrow_mut().insert(op, Slot::Waiting(None)));
-    op
 }
 
 /// The answer, if it came; else remembers the waker.
@@ -106,14 +111,6 @@ pub fn poll(op: u32, cx: &mut Context<'_>) -> Poll<Answer> {
                 Poll::Pending
             }
         }
-    })
-}
-
-/// The answer of an operation the JS side must have answered during its call.
-pub fn take_now(op: u32) -> Option<Answer> {
-    OPS.with(|o| match o.borrow_mut().remove(&op) {
-        Some(Slot::Done(a)) => Some(a),
-        _ => None,
     })
 }
 

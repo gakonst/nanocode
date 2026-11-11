@@ -25,7 +25,7 @@ pub struct Caching {
 
 pub type Key = Arc<Credential>;
 
-type Flights = Arc<Atom<imbl::HashMap<Key, Arc<Flight>>>>;
+type Flights = Arc<Atom<nanocode_sync::Map<Key, Arc<Flight>>>>;
 
 pub struct Client {
     pub credential: Key,
@@ -80,7 +80,7 @@ pub enum Purpose {
 pub struct Lookups<A> {
     caching: Caching,
     asker: Arc<Asker<A>>,
-    known: Atom<imbl::HashMap<Key, Answer>>,
+    known: Atom<nanocode_sync::Map<Key, Answer>>,
     flights: Flights,
 }
 

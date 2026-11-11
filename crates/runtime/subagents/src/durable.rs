@@ -888,7 +888,7 @@ pub(super) struct JournalCache {
     full: bool,
     folds_all: bool,
     dirty: std::collections::BTreeSet<AgentId>,
-    agents: imbl::HashMap<AgentId, CachedAgent>,
+    agents: nanocode_sync::Map<AgentId, CachedAgent>,
     tree: AgentTree,
     messages: AgentTree,
     logged_ids: imbl::Vector<super::model::MessageId>,
@@ -910,7 +910,7 @@ impl Default for JournalCache {
             full: true,
             folds_all: false,
             dirty: std::collections::BTreeSet::new(),
-            agents: imbl::HashMap::new(),
+            agents: nanocode_sync::Map::new(),
             tree: AgentTree::default(),
             messages: AgentTree::default(),
             logged_ids: imbl::Vector::new(),
@@ -1639,7 +1639,7 @@ impl JournalSnapshot {
         let mut records = self.records;
         let mut update = cache.clone();
         if update.full {
-            update.agents = imbl::HashMap::new();
+            update.agents = nanocode_sync::Map::new();
             update.tree = AgentTree::default();
             update.leaf_bytes = imbl::OrdMap::new();
             update.folded_bytes = 0;

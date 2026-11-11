@@ -88,7 +88,7 @@ struct Fenced {
     pending: Pending,
 }
 
-type Pending = Arc<nanocode_sync::Atom<imbl::HashMap<String, Arc<str>>>>;
+type Pending = Arc<nanocode_sync::Atom<nanocode_sync::Map<String, Arc<str>>>>;
 
 type DeferredKeys = Arc<nanocode_sync::Slot<Vec<String>>>;
 

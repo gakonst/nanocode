@@ -14,9 +14,9 @@ pub(crate) struct RunnerAgents {
     pending: Slot<Pending>,
     startup: Atom<Vec<Startup>>,
     activated: Signal,
-    code_mode_hosts: Atom<imbl::HashMap<String, bool>>,
-    agents: Atom<imbl::HashMap<String, (crate::WeakAgent, mpsc::UnboundedSender<Notice>)>>,
-    folded: Atom<imbl::HashMap<String, (crate::WeakAgent, String)>>,
+    code_mode_hosts: Atom<nanocode_sync::Map<String, bool>>,
+    agents: Atom<nanocode_sync::Map<String, (crate::WeakAgent, mpsc::UnboundedSender<Notice>)>>,
+    folded: Atom<nanocode_sync::Map<String, (crate::WeakAgent, String)>>,
     initialized: tokio::sync::OnceCell<Result<(), AttachmentError>>,
 }
 

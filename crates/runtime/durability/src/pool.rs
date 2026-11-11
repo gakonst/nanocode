@@ -17,7 +17,7 @@ pub(crate) struct Pools {
 
 pub(crate) struct Pool {
     state: String,
-    held: Atom<imbl::HashMap<String, Arc<str>>>,
+    held: Atom<nanocode_sync::Map<String, Arc<str>>>,
     listed: Atom<Option<Arc<BTreeSet<String>>>>,
     writer: Owned<Writer>,
 }

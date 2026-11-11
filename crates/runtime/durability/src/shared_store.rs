@@ -107,7 +107,7 @@ enum Latest {
     Open {
         payload: std::sync::Arc<str>,
         records: imbl::Vector<crate::StoreRecord>,
-        keys: imbl::HashSet<String>,
+        keys: nanocode_sync::Set<String>,
     },
     Taken,
 }
@@ -126,7 +126,7 @@ impl LatestWrite {
                 } => {
                     *current = std::sync::Arc::clone(&payload);
                     for record in records {
-                        if keys.insert(record.key.clone()).is_none() {
+                        if keys.insert(record.key.clone()) {
                             staged.push_back(record.clone());
                         }
                     }

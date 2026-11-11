@@ -21,7 +21,6 @@ futures-util.workspace = true
 http-body-util.workspace = true
 hyper = { workspace = true, features = ["client", "http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }
-imbl.workspace = true
 nanocode-sync.workspace = true
 rcgen.workspace = true
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }

@@ -8,6 +8,7 @@ mod map;
 mod reentry;
 #[cfg(not(target_family = "wasm"))]
 mod session;
+mod shared;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
 #[cfg(target_family = "wasm")]
@@ -27,6 +28,7 @@ pub use map::Throttle;
 pub use reentry::{Claim, Reentry};
 #[cfg(not(target_family = "wasm"))]
 pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
+pub use shared::{Map, Set};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{Duplex, pipe, splice};
 #[cfg(target_family = "wasm")]
@@ -1079,7 +1081,7 @@ where
 
 #[derive(Clone, Default)]
 struct Keyed {
-    lines: imbl::HashMap<Arc<str>, std::sync::Weak<Line>>,
+    lines: crate::Map<Arc<str>, std::sync::Weak<Line>>,
     swept: usize,
 }
 
@@ -1124,7 +1126,7 @@ struct Waiter<V, E, C> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-type Waiting<V, E, C> = imbl::HashMap<Arc<str>, imbl::Vector<Arc<Slot<Waiter<V, E, C>>>>>;
+type Waiting<V, E, C> = crate::Map<Arc<str>, imbl::Vector<Arc<Slot<Waiter<V, E, C>>>>>;
 
 #[cfg(not(target_family = "wasm"))]
 pub struct Coalesce<V, E, C = ()>(Atom<Waiting<V, E, C>>);
@@ -1132,7 +1134,7 @@ pub struct Coalesce<V, E, C = ()>(Atom<Waiting<V, E, C>>);
 #[cfg(not(target_family = "wasm"))]
 impl<V, E, C> Default for Coalesce<V, E, C> {
     fn default() -> Self {
-        Self(Atom::new(imbl::HashMap::new()))
+        Self(Atom::new(crate::Map::new()))
     }
 }
 

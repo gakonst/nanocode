@@ -13,7 +13,7 @@ pub type Wakeups = broadcast::Receiver<Arc<str>>;
 
 type Hook = Arc<dyn Fn(Option<&'static str>, &str) + Send + Sync>;
 
-type Waiting = imbl::HashMap<Arc<str>, imbl::OrdMap<u64, Arc<Notify>>>;
+type Waiting = crate::Map<Arc<str>, imbl::OrdMap<u64, Arc<Notify>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wake {

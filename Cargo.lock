@@ -5169,7 +5169,6 @@ name = "nanocode-agent-host"
 version = "0.7.0"
 dependencies = [
  "async-trait",
- "imbl",
  "nanocode-agent",
  "nanocode-agent-core",
  "nanocode-computer",
@@ -5696,7 +5695,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "imbl",
  "landlock",
  "libc",
  "nanocode-sync",

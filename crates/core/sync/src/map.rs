@@ -1,11 +1,11 @@
 use crate::Atom;
 use std::{borrow::Borrow, hash::Hash};
 
-pub struct AtomMap<K, V>(Atom<imbl::HashMap<K, V>>);
+pub struct AtomMap<K, V>(Atom<crate::Map<K, V>>);
 
 impl<K: Hash + Eq + Clone, V: Clone> Default for AtomMap<K, V> {
     fn default() -> Self {
-        Self(Atom::new(imbl::HashMap::new()))
+        Self(Atom::new(crate::Map::new()))
     }
 }
 
@@ -54,7 +54,7 @@ impl<K: Hash + Eq + Clone, V: Clone> AtomMap<K, V> {
         })
     }
 
-    pub fn update<R>(&self, change: impl FnMut(&mut imbl::HashMap<K, V>) -> R) -> R {
+    pub fn update<R>(&self, change: impl FnMut(&mut crate::Map<K, V>) -> R) -> R {
         self.0.update(change)
     }
 }
@@ -75,14 +75,14 @@ mod aged {
 
     #[derive(Clone)]
     pub(crate) struct Aged<K, V> {
-        entries: imbl::HashMap<K, (Instant, V)>,
+        entries: crate::Map<K, (Instant, V)>,
         ages: imbl::OrdSet<(Instant, K)>,
     }
 
     impl<K: Hash + Eq + Ord + Clone, V: Clone> Default for Aged<K, V> {
         fn default() -> Self {
             Self {
-                entries: imbl::HashMap::new(),
+                entries: crate::Map::new(),
                 ages: imbl::OrdSet::new(),
             }
         }

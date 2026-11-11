@@ -12,7 +12,7 @@ type Key = (Arc<str>, Arc<str>);
 #[derive(Clone, Default)]
 struct Records {
     used: usize,
-    values: imbl::HashMap<Key, Arc<str>>,
+    values: nanocode_sync::Map<Key, Arc<str>>,
     order: imbl::Vector<Key>,
 }
 

@@ -46,7 +46,7 @@ mod focus;
 pub use activity::{Restoration, SubagentActivity};
 pub use completion::{RunningSubagents, SubagentCompletion};
 
-type AgentMap<V> = imbl::HashMap<(String, AgentId), V>;
+type AgentMap<V> = nanocode_sync::Map<(String, AgentId), V>;
 
 type MissingRuntime = (
     AgentId,
@@ -555,8 +555,8 @@ enum RestorationState {
 type RestorationOutcome = watch::Receiver<RestorationState>;
 
 pub struct Registry {
-    session_handles: Atom<imbl::HashMap<String, AgentHandle>>,
-    roots: Atom<imbl::HashMap<String, String>>,
+    session_handles: Atom<nanocode_sync::Map<String, AgentHandle>>,
+    roots: Atom<nanocode_sync::Map<String, String>>,
     spawn_router: Atom<Option<Arc<dyn crate::SpawnRouter>>>,
     id: SubagentRuntimeId,
     state: nanocode_sync::Mailbox<RegistryState>,
@@ -586,22 +586,22 @@ pub struct Registry {
     steer_watchers: Atom<HashMap<String, mpsc::UnboundedSender<SteerWatch>>>,
     checkpoints: Atom<AgentMap<durable::JournalCheckpoint>>,
 
-    checkpoint_changes: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
+    checkpoint_changes: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
 
     pending_checkpoints: Atom<HashMap<String, usize>>,
 
     progress_captures: Atom<AgentMap<bool>>,
 
-    captured_once: Atom<imbl::HashSet<(String, AgentId)>>,
+    captured_once: Atom<nanocode_sync::Set<(String, AgentId)>>,
 
-    completed_tools: Atom<imbl::HashSet<(String, AgentId)>>,
-    pending_resume: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
+    completed_tools: Atom<nanocode_sync::Set<(String, AgentId)>>,
+    pending_resume: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
 
     manual_resume: std::sync::atomic::AtomicBool,
 
     journal_version: std::sync::atomic::AtomicU32,
 
-    deferred_resume: Atom<imbl::HashMap<String, imbl::OrdSet<AgentId>>>,
+    deferred_resume: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
 
     wait_reported: Atom<AgentMap<u64>>,
 
@@ -615,7 +615,7 @@ pub struct Registry {
 
     completion_retries: Atom<AgentMap<(u32, bool)>>,
     completion_dispatch: Atom<AgentMap<Sequencer>>,
-    completion_batches: Atom<imbl::HashMap<String, mpsc::UnboundedSender<(AgentId, u64)>>>,
+    completion_batches: Atom<nanocode_sync::Map<String, mpsc::UnboundedSender<(AgentId, u64)>>>,
     completion_routes: Atom<AgentMap<u64>>,
     result_readers: Atom<AgentMap<Readers>>,
     root_watches: Atom<HashSet<String>>,
@@ -3805,7 +3805,7 @@ impl Registry {
             drop(platform::spawn(async move {
                 let progressed = registry
                     .completed_tools
-                    .update(|completed| completed.remove(&key).is_some());
+                    .update(|completed| completed.remove(&key));
                 let (harness, commits) = registry.capture_target(&key.0, key.1).await;
                 if harness.is_none() {
                     return;
@@ -3851,7 +3851,7 @@ impl Registry {
                     .read(|completed| completed.contains(&key))
                     && registry
                         .completed_tools
-                        .update(|completed| completed.remove(&key).is_some());
+                        .update(|completed| completed.remove(&key));
                 let (harness, commits) = registry.capture_target(&key.0, key.1).await;
                 if let Some(harness) = harness
                     && let Ok(snapshot) = harness.snapshot().await

@@ -42,13 +42,13 @@ pub struct CodeModeExecutors {
 #[derive(Clone, Default)]
 struct State {
     executors: BTreeMap<Arc<str>, Arc<dyn CodeModeHost>>,
-    selections: imbl::HashMap<Box<str>, ExecutorSelection>,
-    roots: imbl::HashMap<Box<str>, Box<str>>,
-    backends: imbl::HashMap<Box<str>, Box<str>>,
+    selections: nanocode_sync::Map<Box<str>, ExecutorSelection>,
+    roots: nanocode_sync::Map<Box<str>, Box<str>>,
+    backends: nanocode_sync::Map<Box<str>, Box<str>>,
     default: Option<Arc<str>>,
     fallback: Option<Arc<str>>,
     awaiting: bool,
-    sessions: imbl::HashMap<Box<str>, SessionPlaces>,
+    sessions: nanocode_sync::Map<Box<str>, SessionPlaces>,
 }
 
 #[derive(Clone, Default)]

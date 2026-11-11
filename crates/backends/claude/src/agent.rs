@@ -3540,7 +3540,7 @@ struct State {
 
 #[derive(Clone, Default)]
 struct LiveNestedStarts {
-    open: imbl::HashSet<Arc<str>>,
+    open: nanocode_sync::Set<Arc<str>>,
     order: imbl::Vector<Arc<str>>,
 }
 impl LiveNestedStarts {
@@ -3565,7 +3565,7 @@ impl LiveNestedStarts {
         true
     }
     fn remove(&mut self, call_id: &str) -> bool {
-        self.open.remove(call_id).is_some()
+        self.open.remove(call_id)
     }
 }
 

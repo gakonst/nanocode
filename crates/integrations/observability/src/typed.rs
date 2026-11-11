@@ -10,21 +10,11 @@ use opentelemetry_sdk::{
 pub fn restore_integers(span: &mut SpanData) {
     for attribute in &mut span.attributes {
         if let Value::String(text) = &attribute.value
-            && let Some(integer) = unsigned_integer(text.as_str())
+            && let Some(integer) = crate::otlp::unsigned_integer(text.as_str())
         {
             attribute.value = Value::I64(integer);
         }
     }
-}
-
-fn unsigned_integer(text: &str) -> Option<i64> {
-    let digits = text.as_bytes();
-    let canonical = match digits {
-        [] => false,
-        [b'0'] => true,
-        [first, ..] => *first != b'0' && digits.iter().all(u8::is_ascii_digit),
-    };
-    canonical.then(|| text.parse().ok()).flatten()
 }
 
 #[derive(Debug)]

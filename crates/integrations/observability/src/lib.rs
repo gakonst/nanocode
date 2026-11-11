@@ -5,6 +5,7 @@ extern crate self as nanocode_observability;
 
 mod cli;
 mod file;
+mod otlp;
 mod typed;
 
 use std::{fs::OpenOptions, io, path::PathBuf, time::Duration};

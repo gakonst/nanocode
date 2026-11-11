@@ -1,6 +1,6 @@
 use std::{
     fs::{DirBuilder, File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, Write},
     path::Path,
     sync::{
         Arc,
@@ -10,16 +10,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use opentelemetry::Context;
-use opentelemetry_proto::{
-    tonic::collector::{
-        metrics::v1::ExportMetricsServiceRequest, trace::v1::ExportTraceServiceRequest,
-    },
-    transform::{
-        common::tonic::ResourceAttributesWithSchema,
-        trace::tonic::group_spans_by_resource_and_scope,
-    },
-};
+use opentelemetry::{Context, InstrumentationScope};
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_sdk::{
     Resource,
     error::{OTelSdkError, OTelSdkResult},
@@ -27,7 +19,9 @@ use opentelemetry_sdk::{
     trace::{Span, SpanData, SpanProcessor},
 };
 use serde::Serialize;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{
+    UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
+};
 
 const OTEL_BSP_MAX_QUEUE_SIZE: &str = "OTEL_BSP_MAX_QUEUE_SIZE";
 const OTEL_BSP_MAX_QUEUE_SIZE_DEFAULT: usize = 2_048;
@@ -161,8 +155,12 @@ impl Jsonl {
 
 #[derive(Debug)]
 enum TraceMessage {
-    Span(SpanData),
-    Resource(ResourceAttributesWithSchema),
+    Span {
+        scope: InstrumentationScope,
+        json: Vec<u8>,
+    },
+    Unencoded(String),
+    Resource(Resource),
     Flush(SyncSender<OTelSdkResult>),
     Shutdown(SyncSender<OTelSdkResult>),
 }
@@ -173,6 +171,7 @@ struct TraceQueue {
     queued: AtomicUsize,
     dropped: AtomicUsize,
     closed: AtomicBool,
+    span_bytes: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -189,13 +188,16 @@ impl TraceProcessor {
             ..TraceQueue::default()
         });
         let writer_queue = Arc::clone(&queue);
+        let origin = crate::otlp::Origin::of(&Resource::builder_empty().build())?;
         std::thread::Builder::new()
             .name("nanocode-otlp-traces".to_owned())
             .spawn(move || {
                 TraceWriter {
                     file,
-                    resource: ResourceAttributesWithSchema::default(),
-                    spans: Vec::new(),
+                    origin,
+                    batch: crate::otlp::Batch::default(),
+                    waiting: 0,
+                    line: Vec::new(),
                     error: None,
                     queue: writer_queue,
                     dropped: 0,
@@ -249,7 +251,18 @@ impl SpanProcessor for TraceProcessor {
             })
             .is_ok()
         {
-            if self.sender.send(TraceMessage::Span(span)).is_err() {
+            let mut json = Vec::with_capacity(self.queue.span_bytes.load(Ordering::Relaxed));
+            let message = match crate::otlp::span(&span, &mut json) {
+                Ok(()) => {
+                    self.queue.span_bytes.store(json.len(), Ordering::Relaxed);
+                    TraceMessage::Span {
+                        scope: span.instrumentation_scope,
+                        json,
+                    }
+                }
+                Err(error) => TraceMessage::Unencoded(error.to_string()),
+            };
+            if self.sender.send(message).is_err() {
                 self.queue.queued.fetch_sub(1, Ordering::Relaxed);
                 self.closed();
             }
@@ -269,7 +282,7 @@ impl SpanProcessor for TraceProcessor {
     fn set_resource(&mut self, resource: &Resource) {
         if self
             .sender
-            .send(TraceMessage::Resource(resource.into()))
+            .send(TraceMessage::Resource(resource.clone()))
             .is_err()
         {
             self.closed();
@@ -279,8 +292,10 @@ impl SpanProcessor for TraceProcessor {
 
 struct TraceWriter {
     file: File,
-    resource: ResourceAttributesWithSchema,
-    spans: Vec<SpanData>,
+    origin: crate::otlp::Origin,
+    batch: crate::otlp::Batch,
+    waiting: usize,
+    line: Vec<u8>,
     error: Option<OTelSdkError>,
     queue: Arc<TraceQueue>,
     dropped: usize,
@@ -288,18 +303,27 @@ struct TraceWriter {
 
 impl TraceWriter {
     fn run(mut self, mut receiver: UnboundedReceiver<TraceMessage>) {
-        while let Some(message) = receiver.blocking_recv() {
+        while let Some(message) = waited(&mut receiver) {
             let mut frontier = receiver.len();
             let mut message = Some(message);
             while let Some(next) = message.take() {
                 match next {
-                    TraceMessage::Span(mut span) => {
-                        crate::typed::restore_integers(&mut span);
-                        self.spans.push(span);
+                    TraceMessage::Span { scope, json } => {
+                        self.batch.push(scope, &json);
+                        self.waiting += 1;
+                    }
+                    TraceMessage::Unencoded(error) => {
+                        self.error.get_or_insert(write_failed(error));
+                        self.waiting += 1;
                     }
                     TraceMessage::Resource(resource) => {
                         self.write();
-                        self.resource = resource;
+                        match crate::otlp::Origin::of(&resource) {
+                            Ok(origin) => self.origin = origin,
+                            Err(error) => {
+                                self.error.get_or_insert(write_failed(error));
+                            }
+                        }
                     }
                     TraceMessage::Flush(reply) => drop(reply.send(self.result())),
                     TraceMessage::Shutdown(reply) => {
@@ -344,25 +368,34 @@ impl TraceWriter {
     }
 
     fn write(&mut self) {
-        let written = self.spans.len();
-        if written == 0 {
+        let taken = std::mem::take(&mut self.waiting);
+        if taken == 0 {
             return;
         }
-        let resource_spans =
-            group_spans_by_resource_and_scope(std::mem::take(&mut self.spans), &self.resource);
-        let mut output = BufWriter::new(&mut self.file);
-        let result =
-            serde_json::to_writer(&mut output, &ExportTraceServiceRequest { resource_spans })
+        self.queue.queued.fetch_sub(taken, Ordering::Relaxed);
+        if !self.batch.is_empty() {
+            self.line.clear();
+            let result = self
+                .batch
+                .line(&self.origin, &mut self.line)
                 .map_err(io::Error::from)
-                .and_then(|()| output.write_all(b"\n"))
-                .and_then(|()| output.flush());
-        drop(output);
-        if let Err(error) = result {
-            self.error.get_or_insert(write_failed(error));
+                .and_then(|()| self.file.write_all(&self.line));
+            if let Err(error) = result {
+                self.error.get_or_insert(write_failed(error));
+            }
         }
-        self.queue.queued.fetch_sub(written, Ordering::Relaxed);
         self.report_dropped();
     }
+}
+
+fn waited(receiver: &mut UnboundedReceiver<TraceMessage>) -> Option<TraceMessage> {
+    match receiver.try_recv() {
+        Ok(message) => return Some(message),
+        Err(TryRecvError::Disconnected) => return None,
+        Err(TryRecvError::Empty) => {}
+    }
+    std::thread::yield_now();
+    receiver.blocking_recv()
 }
 
 fn reject_after_shutdown(mut receiver: UnboundedReceiver<TraceMessage>) {
@@ -370,7 +403,7 @@ fn reject_after_shutdown(mut receiver: UnboundedReceiver<TraceMessage>) {
     let mut late = 0_usize;
     while let Ok(message) = receiver.try_recv() {
         match message {
-            TraceMessage::Span(_) => late += 1,
+            TraceMessage::Span { .. } | TraceMessage::Unencoded(_) => late += 1,
             TraceMessage::Resource(_) => {}
             TraceMessage::Flush(reply) | TraceMessage::Shutdown(reply) => {
                 drop(reply.send(Err(OTelSdkError::AlreadyShutdown)));

@@ -90,7 +90,7 @@ use common::util_fn;
 /// Every utility, with its names, mode (D015) and group.
 pub static REGISTRY: &[UtilEntry] = &[
     UtilEntry {
-        names: &["awk", "gawk"],
+        names: &["awk", "gawk", "mawk", "nawk"],
         mode: Mode::Always,
         destructive: false,
         run: util_fn!(awk::run),

@@ -489,7 +489,7 @@ fn table(name: &str, u: &Utility, args: &[Arg], start: usize) -> Outcome {
 /// output redirections.
 fn script_check(name: &str, args: &[Arg], i: usize, o: &mut Outcome) {
     let Some(script) = val(args, i) else {
-        if matches!(name, "sed" | "awk" | "gawk") {
+        if matches!(name, "sed" | "awk" | "gawk" | "mawk" | "nawk") {
             o.set_unknown("the script is not literal");
         }
         return;
@@ -506,7 +506,7 @@ fn script_check(name: &str, args: &[Arg], i: usize, o: &mut Outcome) {
             }
             None => o.set_unknown("the sed script did not parse"),
         },
-        "awk" | "gawk" if awk_has_effects(script) => {
+        "awk" | "gawk" | "mawk" | "nawk" if awk_has_effects(script) => {
             o.set_unknown("the awk program runs commands or writes files");
         }
         _ => {}

@@ -278,6 +278,32 @@ pub static UTILITIES: &[Utility] = &[
         ],
     ),
     v(
+        "mawk",
+        Read,
+        "Ffiv",
+        &["--field-separator", "--file", "--assign", "--include"],
+        Script("f"),
+        &[
+            ("-f", Opaque),
+            ("--file", Opaque),
+            ("-i", Opaque),
+            ("--include", Opaque),
+        ],
+    ),
+    v(
+        "nawk",
+        Read,
+        "Ffiv",
+        &["--field-separator", "--file", "--assign", "--include"],
+        Script("f"),
+        &[
+            ("-f", Opaque),
+            ("--file", Opaque),
+            ("-i", Opaque),
+            ("--include", Opaque),
+        ],
+    ),
+    v(
         "cut",
         Read,
         "bcdf",

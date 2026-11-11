@@ -31,7 +31,8 @@ impl Shared {
     }
 
     pub(super) fn store(&self, records: Vec<StoreRecord>) -> Result<Vec<StoreRecord>, StoreError> {
-        records
+        let mut added = false;
+        let records = records
             .into_iter()
             .map(|StoreRecord { key, value }| {
                 let value = if value.len() < self.threshold {
@@ -42,13 +43,18 @@ impl Shared {
                     }
                 } else {
                     let blob = BlobKey::of(value.as_bytes());
-                    self.put(&blob, value.as_bytes())
+                    added |= self
+                        .put(&blob, value.as_bytes())
                         .map_err(|error| backend(format!("shared record {blob}: {error}")))?;
                     format!("{MARK}{blob}")
                 };
                 Ok(StoreRecord { key, value })
             })
-            .collect()
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        if added {
+            sync_directory(&self.directory).map_err(backend)?;
+        }
+        Ok(records)
     }
 
     pub(super) fn load(&self, value: String) -> Result<String, StoreError> {
@@ -70,17 +76,17 @@ impl Shared {
         String::from_utf8(bytes).map_err(backend)
     }
 
-    fn put(&self, blob: &BlobKey, bytes: &[u8]) -> std::io::Result<()> {
+    fn put(&self, blob: &BlobKey, bytes: &[u8]) -> std::io::Result<bool> {
         let path = self.path(blob);
         if path.is_file() {
-            return Ok(());
+            return Ok(false);
         }
         let mut file = tempfile::NamedTempFile::new_in(&self.directory)?;
         file.write_all(bytes)?;
         sync_journal(file.as_file())?;
         match file.persist_noclobber(&path) {
-            Ok(_) => sync_directory(&self.directory),
-            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Ok(_) => Ok(true),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
             Err(error) => Err(error.error),
         }
     }
@@ -105,7 +111,7 @@ fn block_size(_: &Path) -> std::io::Result<Option<usize>> {
 
 #[cfg(unix)]
 fn sync_directory(directory: &Path) -> std::io::Result<()> {
-    fs::File::open(directory)?.sync_all()
+    sync_journal(&fs::File::open(directory)?)
 }
 
 #[cfg(not(unix))]

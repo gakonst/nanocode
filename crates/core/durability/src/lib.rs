@@ -12,7 +12,7 @@ pub use blob::{BlobKey, BlobStore, BlobUrl, SharedBlobStore, base64_data_url, ge
 pub use kv::{KeyValue, KeyValueStore, Versioned};
 pub use lock::{LockKey, LocksHeld};
 pub use payload::EncodedPayload;
-pub use row::RowStore;
+pub use row::{Examined, PageCodec, RowStore};
 pub use sql::{
     Collected, Migration, MissingColumn, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement,
     SqlStore, Unreachable, migrate_format, migrate_format_then,

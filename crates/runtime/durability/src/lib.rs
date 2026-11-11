@@ -31,14 +31,14 @@ pub use format::{AdmittedTurn, CheckpointFormat, FormatFuture};
 pub use memory::MemoryStore;
 pub use nanocode_durability_core::{
     BlobKey, BlobStore, BlobUrl, Colocation, Committed, EncodedPayload, Error, EventCursor,
-    EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange, IndexedState, KeyValue,
-    KeyValueStore, KnownSummary, ListedState, ListedSummary, LockKey, LocksHeld, Migration,
-    MissingColumn, OwnedCommit, OwnedState, OwnerId, OwnerToken, Result, RowStore, SharedBlobStore,
-    Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedStore, StagedWrites,
-    StateCommit, StateCursor, StatePage, StateQuery, StateReader, StateStore, StateSummary,
-    StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord, StoreReplacement, StoreUpdate,
-    StoredEvent, StoredState, SummaryUpdate, Versioned, base64_data_url, get_blob, migrate_format,
-    migrate_format_then,
+    EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange, Examined, IndexedState,
+    KeyValue, KeyValueStore, KnownSummary, ListedState, ListedSummary, LockKey, LocksHeld,
+    Migration, MissingColumn, OwnedCommit, OwnedState, OwnerId, OwnerToken, PageCodec, Result,
+    RowStore, SharedBlobStore, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore,
+    StagedStore, StagedWrites, StateCommit, StateCursor, StatePage, StateQuery, StateReader,
+    StateStore, StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord,
+    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryUpdate, Versioned,
+    base64_data_url, get_blob, migrate_format, migrate_format_then,
 };
 pub use paged::{PagedWriter, PayloadReader, Prepared, Sequence, SequenceLog, load_sequence};
 pub use pool::pool_state;

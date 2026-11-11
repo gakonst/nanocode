@@ -85,10 +85,10 @@ impl<C: PgConnections + 'static, R: PgConnections + 'static> Sql for SqlxSql<C, 
     }
 }
 
-struct SqlxTransaction<'c>(Owned<&'c mut PgConnection>);
+pub struct SqlxTransaction<'c>(Owned<&'c mut PgConnection>);
 
 impl<'c> SqlxTransaction<'c> {
-    fn new(connection: &'c mut PgConnection) -> Self {
+    pub fn new(connection: &'c mut PgConnection) -> Self {
         Self(Owned::new(connection))
     }
 }

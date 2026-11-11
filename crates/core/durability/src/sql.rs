@@ -487,6 +487,58 @@ pub struct Collected {
     pub deleted: u64,
 }
 
+pub(crate) async fn unreachable_in(
+    store: &mut dyn StateStore,
+    state_id: &str,
+) -> Result<Unreachable, StoreError> {
+    let head = store.peek(state_id).await?;
+    let held = store.list_records(state_id).await?;
+    let mut unreachable = Unreachable {
+        revision: head.revision,
+        keys: Vec::new(),
+        reachable: held.len(),
+    };
+    if !held.iter().all(|key| EncodedPayload::is_layout_key(key)) {
+        return Ok(unreachable);
+    }
+    let holds: HashSet<&str> = held.iter().map(String::as_str).collect();
+    let mut reached = HashSet::new();
+    let mut level = Vec::new();
+    let follow = |json: &str, reached: &mut HashSet<String>, level: &mut Vec<_>| {
+        for key in EncodedPayload::references(json) {
+            if holds.contains(key) && reached.insert(key.to_owned()) {
+                level.push(EncodedPayload::by_key(key));
+            }
+        }
+    };
+    follow(
+        head.payload.as_deref().unwrap_or_default(),
+        &mut reached,
+        &mut level,
+    );
+    while !level.is_empty() {
+        let loaded = EncodedPayload::load_many_noting(&level, &mut *store, state_id, &mut reached)
+            .await
+            .map_err(|error| {
+                StoreError::Backend(format!("state {state_id} is not whole: {error}"))
+            })?;
+        level.clear();
+        for payload in &loaded {
+            let json = payload
+                .json()
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            follow(json, &mut reached, &mut level);
+        }
+    }
+    unreachable.keys = held
+        .iter()
+        .filter(|key| !reached.contains(*key))
+        .cloned()
+        .collect();
+    unreachable.reachable = held.len() - unreachable.keys.len();
+    Ok(unreachable)
+}
+
 struct Replacement<'a> {
     dialect: SqlDialect,
     state_id: &'a str,
@@ -963,53 +1015,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
     }
 
     pub async fn unreachable(&mut self, state_id: &str) -> Result<Unreachable, StoreError> {
-        let head = self.state(state_id).await?;
-        let held = self.record_keys(state_id).await?;
-        let mut unreachable = Unreachable {
-            revision: head.revision,
-            keys: Vec::new(),
-            reachable: held.len(),
-        };
-        if !held.iter().all(|key| EncodedPayload::is_layout_key(key)) {
-            return Ok(unreachable);
-        }
-        let holds: HashSet<&str> = held.iter().map(String::as_str).collect();
-        let mut reached = HashSet::new();
-        let mut level = Vec::new();
-        let follow = |json: &str, reached: &mut HashSet<String>, level: &mut Vec<_>| {
-            for key in EncodedPayload::references(json) {
-                if holds.contains(key) && reached.insert(key.to_owned()) {
-                    level.push(EncodedPayload::by_key(key));
-                }
-            }
-        };
-        follow(
-            head.payload.as_deref().unwrap_or_default(),
-            &mut reached,
-            &mut level,
-        );
-        while !level.is_empty() {
-            let loaded =
-                EncodedPayload::load_many_noting(&level, &mut *self, state_id, &mut reached)
-                    .await
-                    .map_err(|error| {
-                        StoreError::Backend(format!("state {state_id} is not whole: {error}"))
-                    })?;
-            level.clear();
-            for payload in &loaded {
-                let json = payload
-                    .json()
-                    .map_err(|error| StoreError::Backend(error.to_string()))?;
-                follow(json, &mut reached, &mut level);
-            }
-        }
-        unreachable.keys = held
-            .iter()
-            .filter(|key| !reached.contains(*key))
-            .cloned()
-            .collect();
-        unreachable.reachable = held.len() - unreachable.keys.len();
-        Ok(unreachable)
+        unreachable_in(self, state_id).await
     }
 
     pub async fn collect(

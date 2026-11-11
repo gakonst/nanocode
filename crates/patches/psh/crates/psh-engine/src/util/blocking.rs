@@ -30,6 +30,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
 
+mod files;
+pub use files::SyncFiles;
+
 use super::{BUFFER, UtilCtx};
 use crate::host::{DirEntry, Host, HostFile, HostFuture, Metadata, NativePathFn, OpenOptions};
 

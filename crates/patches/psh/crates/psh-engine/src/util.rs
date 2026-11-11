@@ -25,7 +25,7 @@ mod blocking;
 mod nested;
 pub use blocking::{
     BlockingOptions, IN_FLIGHT, INLINE_INPUT_LIMIT, INLINE_OUTPUT_LIMIT, Stderr, Stdin, Stdout,
-    SyncCtx, SyncFile, SyncFn, SyncWriter,
+    SyncCtx, SyncFile, SyncFiles, SyncFn, SyncWriter,
 };
 
 /// 2: file system changes, `stat_extra`, names, time and umask (D1150).

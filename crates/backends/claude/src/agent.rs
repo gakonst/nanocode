@@ -3201,6 +3201,7 @@ impl AgentFactory for ClaudeNativeFactory {
 
 struct SystemText {
     environment: String,
+    date: String,
     instructions: Option<Arc<str>>,
     key: Option<String>,
     fresh: Option<Arc<str>>,
@@ -4450,6 +4451,7 @@ impl State {
         let key = durable::instructions_key(instructions.as_deref());
         let instructions = instructions.map(Arc::<str>::from);
         let current = SystemText {
+            date: crate::environment::date_of(&environment).to_owned(),
             environment,
             fresh: instructions.clone(),
             fresh_key: key.clone(),
@@ -4475,8 +4477,10 @@ impl State {
             self.kept_prefix.set(None);
             return current;
         };
+        let environment = crate::environment::dated(&current.environment, &kept.date);
         SystemText {
-            environment: crate::environment::dated(&current.environment, &kept.date),
+            date: crate::environment::date_of(&environment).to_owned(),
+            environment,
             instructions,
             key: kept.instructions.clone(),
             fresh: current.fresh,
@@ -4486,7 +4490,7 @@ impl State {
     fn context_notices(&self, conversation: &Conversation) -> Vec<String> {
         let context = self.context.get_or_init(|| self.resolve_context());
         let mut notices = Vec::new();
-        let shown = crate::environment::date_of(&context.environment);
+        let shown = context.date.as_str();
         if !self.fixed_date && !shown.is_empty() {
             let today = crate::environment::current_date();
             let told = delivered_notice(conversation, DATE_CHANGED)
@@ -4551,7 +4555,7 @@ impl State {
             return None;
         }
         Some(durable::SystemContext {
-            date: crate::environment::date_of(&context.environment).to_owned(),
+            date: context.date.clone(),
             instructions: context.key.clone(),
             text: context.instructions.clone(),
             requested,
@@ -7056,7 +7060,8 @@ impl State {
                         .into(),
                     },
                 };
-                self.flush_for_lifecycle(&event, journal).await?;
+                self.flush_for_lifecycle(&event, &mut cursor, conversation, journal)
+                    .await?;
                 let outcome = self
                     .lifecycle(&cursor, cancel, "session-start", event)
                     .await?;
@@ -7073,7 +7078,8 @@ impl State {
                 ));
             }
             let event = crate::ClaudeLifecycleEvent::UserPromptSubmit { prompt: submitted };
-            self.flush_for_lifecycle(&event, journal).await?;
+            self.flush_for_lifecycle(&event, &mut cursor, conversation, journal)
+                .await?;
             let outcome = self
                 .lifecycle(&cursor, cancel, "user-prompt-submit", event)
                 .await?;
@@ -7109,6 +7115,8 @@ impl State {
                     >= cursor.threshold
             {
                 let compaction_started = Instant::now();
+                self.stage_cursor(&mut cursor, conversation, journal)
+                    .await?;
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
@@ -8541,7 +8549,7 @@ impl LifecycleBackend for Driver {
                         operation = Some(id);
                     }
                     let mut journal = Journal::default();
-                    let cursor = state
+                    let mut cursor = state
                         .cursor(
                             &mut context,
                             operation.as_deref(),
@@ -8550,6 +8558,9 @@ impl LifecycleBackend for Driver {
                             HashSet::new(),
                             &mut journal,
                         )
+                        .await?;
+                    state
+                        .stage_cursor(&mut cursor, &mut context, &mut journal)
                         .await?;
                     state.flush_journal(&mut journal).await?;
                     let compaction_started = Instant::now();

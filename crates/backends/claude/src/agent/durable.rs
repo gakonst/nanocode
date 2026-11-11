@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Snapshot {
-    provider: String,
+    provider: std::borrow::Cow<'static, str>,
     version: u32,
     pub(super) conversation: Conversation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -62,7 +62,7 @@ pub(super) fn instructions_key(instructions: Option<&str>) -> Option<String> {
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
-            provider: "claude".into(),
+            provider: std::borrow::Cow::Borrowed("claude"),
             version: 1,
             conversation: Conversation::default(),
             developer_notices: Vec::new(),
@@ -539,6 +539,7 @@ impl State {
         let wire_profile = self
             .client
             .freeze_wire_profile(template.cache_control.is_some());
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut cursor = Cursor {
             recovered_code_index: None,
             lifecycle_turn_id: candidate_id("lifecycle"),
@@ -577,9 +578,19 @@ impl State {
         if self.policy.is_some() && self.task_board.is_some() {
             cursor.parallel = false;
         }
-        self.defer_cursor(&mut cursor, conversation, journal)
-            .await?;
         Ok(cursor)
+    }
+
+    pub(super) async fn stage_cursor(
+        &self,
+        cursor: &mut Cursor,
+        conversation: &mut Conversation,
+        journal: &mut Journal,
+    ) -> Result<()> {
+        if journal.operation.is_none() {
+            self.defer_cursor(cursor, conversation, journal).await?;
+        }
+        Ok(())
     }
 
     pub(super) fn persists(&self, cursor: &Cursor) -> bool {
@@ -643,7 +654,7 @@ impl State {
             return Ok(());
         };
         let prompt = TemplatePrompt {
-            system: cursor.template.system.as_deref(),
+            system: cursor.template.system.as_ref(),
             tools: &cursor.template.tools,
         };
         let record = template_record(&prompt, paging)?;
@@ -655,6 +666,8 @@ impl State {
     pub(super) async fn flush_for_lifecycle(
         &self,
         event: &crate::ClaudeLifecycleEvent,
+        cursor: &mut Cursor,
+        conversation: &mut Conversation,
         journal: &mut Journal,
     ) -> Result<()> {
         if self
@@ -662,6 +675,7 @@ impl State {
             .iter()
             .any(|hook| hook.handles_lifecycle(event))
         {
+            self.stage_cursor(cursor, conversation, journal).await?;
             self.flush_journal(journal).await?;
         }
         Ok(())
@@ -1133,7 +1147,7 @@ impl ToolIds {
     }
 
     fn admit_new(&mut self, admitted: &history::AdmittedIds) {
-        for id in &admitted.ordered()[self.seen..] {
+        for id in admitted.since(self.seen) {
             if self.listed.contains_key(id) {
                 self.unadmitted.remove(id);
             } else {
@@ -1168,7 +1182,7 @@ impl ToolIds {
 #[derive(Serialize)]
 struct TemplatePrompt<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<&'a Value>,
+    system: Option<&'a Arc<Value>>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     tools: &'a [ClaudeToolSpec],
 }
@@ -1255,14 +1269,18 @@ pub(super) struct Paging {
 }
 
 struct EncodedTemplate {
-    system: Option<Value>,
+    system: Option<Arc<Value>>,
     tools: Vec<ClaudeToolSpec>,
     record: EncodedPayload,
 }
 
 impl EncodedTemplate {
     fn encodes(&self, prompt: &TemplatePrompt<'_>) -> bool {
-        self.system.as_ref() == prompt.system && self.tools.as_slice() == prompt.tools
+        let system = match (&self.system, prompt.system) {
+            (Some(kept), Some(system)) => Arc::ptr_eq(kept, system) || kept == system,
+            (kept, system) => kept.is_none() && system.is_none(),
+        };
+        system && self.tools.as_slice() == prompt.tools
     }
 }
 
@@ -1342,7 +1360,7 @@ fn paged_snapshot(
         .map(|prefix| {
             let template = template_record(
                 &TemplatePrompt {
-                    system: prefix.system.as_deref(),
+                    system: prefix.system.as_ref(),
                     tools: &prefix.tools,
                 },
                 paging,
@@ -1400,7 +1418,7 @@ fn encode_cursor(cursor: &mut Cursor, paged: bool, paging: &mut Paging) -> Resul
         let system = cursor.template.system.take();
         let tools = std::mem::take(&mut cursor.template.tools);
         let prompt = TemplatePrompt {
-            system: system.as_deref(),
+            system: system.as_ref(),
             tools: &tools,
         };
         let encoded = paged_cursor(cursor, &detached, &pending, &prompt, paging);

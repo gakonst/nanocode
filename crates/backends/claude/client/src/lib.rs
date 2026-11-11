@@ -2594,7 +2594,7 @@ fn api_body<M: WireMessage>(
         thread: Option<&'a ThreadParam>,
         stream: bool,
     }
-    let system = system.as_deref().filter(|_| !continuing);
+    let system = system.as_ref().filter(|_| !continuing);
     let tools: &[ClaudeToolSpec] = if continuing { &[] } else { tools };
     let cached_system = match (cache, system) {
         (Some(cache), Some(system)) => Some(cache.system(system)?),
@@ -2605,7 +2605,7 @@ fn api_body<M: WireMessage>(
         _ => None,
     };
     let owned_system = match (&cached_system, system) {
-        (None, Some(system)) => Some(serde_json::value::to_raw_value(system)?),
+        (None, Some(system)) => Some(serde_json::value::to_raw_value(&**system)?),
         _ => None,
     };
     let owned_tools = match &cached_tools {

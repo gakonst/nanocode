@@ -35,7 +35,7 @@ pub(crate) struct Assembled {
 #[derive(Default)]
 pub struct WireCache {
     tools: Atom<Option<Arc<Encoded<Vec<ClaudeToolSpec>>>>>,
-    system: Atom<Option<Arc<Encoded<Value>>>>,
+    system: Atom<Option<Arc<Encoded<Arc<Value>>>>>,
     body: Slot<Assembled>,
     keepers: AtomicUsize,
 }
@@ -89,14 +89,17 @@ impl WireCache {
         )
     }
 
-    pub(crate) fn system(&self, system: &Value) -> Result<Arc<Encoded<Value>>, ClaudeError> {
-        static LIVE: LazyLock<Entries<Value>> = LazyLock::new(Atom::default);
+    pub(crate) fn system(
+        &self,
+        system: &Arc<Value>,
+    ) -> Result<Arc<Encoded<Arc<Value>>>, ClaudeError> {
+        static LIVE: LazyLock<Entries<Arc<Value>>> = LazyLock::new(Atom::default);
         remembered(
             &self.system,
             &LIVE,
-            system,
-            |value| value == system,
-            || system.clone(),
+            &**system,
+            |value| Arc::ptr_eq(value, system) || value == system,
+            || Arc::clone(system),
         )
     }
 
@@ -104,10 +107,10 @@ impl WireCache {
         Ok(self.tools(tools)?.fingerprint.clone())
     }
 
-    pub fn system_fingerprint(&self, system: Option<&Value>) -> Result<String, ClaudeError> {
+    pub fn system_fingerprint(&self, system: Option<&Arc<Value>>) -> Result<String, ClaudeError> {
         match system {
             Some(system) => Ok(self.system(system)?.fingerprint.clone()),
-            None => Ok(crate::fingerprint(&system)),
+            None => Ok(crate::fingerprint(&None::<&Value>)),
         }
     }
 }

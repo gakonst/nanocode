@@ -4,7 +4,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
 use std::{
     borrow::Cow,
-    collections::HashMap,
     ops::Deref,
     sync::{
         Arc, OnceLock,
@@ -251,16 +250,16 @@ impl<'de> Deserialize<'de> for CodeRound {
 static ADMITTED_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct AdmittedIds {
-    order: Vec<Arc<str>>,
-    positions: HashMap<Arc<str>, usize>,
+    order: imbl::Vector<Arc<str>>,
+    positions: nanocode_sync::Map<Arc<str>, usize>,
     epoch: u64,
 }
 
 impl Default for AdmittedIds {
     fn default() -> Self {
         Self {
-            order: Vec::new(),
-            positions: HashMap::new(),
+            order: imbl::Vector::new(),
+            positions: nanocode_sync::Map::new(),
             epoch: ADMITTED_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -292,11 +291,11 @@ impl AdmittedIds {
         self.positions.get(id).copied()
     }
 
-    pub(super) const fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
 
-    pub(super) const fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.order.len()
     }
 
@@ -304,14 +303,14 @@ impl AdmittedIds {
         self.epoch
     }
 
-    pub(super) fn ordered(&self) -> &[Arc<str>] {
-        &self.order
+    pub(super) fn since(&self, seen: usize) -> impl Iterator<Item = &Arc<str>> {
+        (seen..self.order.len()).map(|at| &self.order[at])
     }
 
     pub(super) fn insert(&mut self, id: Arc<str>) {
         if !self.positions.contains_key(&id) {
             self.positions.insert(Arc::clone(&id), self.order.len());
-            self.order.push(id);
+            self.order.push_back(id);
         }
     }
 }
@@ -334,7 +333,7 @@ impl Extend<Arc<str>> for AdmittedIds {
 
 impl IntoIterator for AdmittedIds {
     type Item = Arc<str>;
-    type IntoIter = std::vec::IntoIter<Arc<str>>;
+    type IntoIter = <imbl::Vector<Arc<str>> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.order.into_iter()

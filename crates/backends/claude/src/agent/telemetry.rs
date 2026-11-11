@@ -143,7 +143,7 @@ pub(super) fn record_prompt<M: WireMessage>(
     if let Ok(tools) = cache.tools_fingerprint(&request.tools) {
         span.record("prompt.tools", tools.as_str());
     }
-    if let Ok(system) = cache.system_fingerprint(request.system.as_deref()) {
+    if let Ok(system) = cache.system_fingerprint(request.system.as_ref()) {
         span.record("prompt.system", system.as_str());
     }
     if let Some(first) = messages.first() {

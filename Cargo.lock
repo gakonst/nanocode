@@ -8247,6 +8247,7 @@ dependencies = [
  "ignore",
  "jaq-core",
  "libm",
+ "memchr",
  "psh-classify",
  "psh-engine",
  "psh-regex",

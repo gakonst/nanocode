@@ -42,6 +42,8 @@ pub enum End {
 pub struct Reader {
     names: Vec<Vec<u8>>,
     next: usize,
+    /// The name of the file being read, shared by its lines.
+    name: Rc<[u8]>,
     cur: Option<Input>,
     buf: Vec<u8>,
     start: usize,
@@ -57,7 +59,7 @@ pub struct Line {
     pub text: Vec<u8>,
     /// It ended in the delimiter (or more input follows it).
     pub nl: bool,
-    pub name: Vec<u8>,
+    pub name: Rc<[u8]>,
 }
 
 impl Reader {
@@ -65,6 +67,7 @@ impl Reader {
         Reader {
             names,
             next: 0,
+            name: Rc::from(&b"-"[..]),
             cur: None,
             buf: Vec::new(),
             start: 0,
@@ -119,6 +122,7 @@ impl Reader {
             }
             let name = self.names[self.next].clone();
             self.next += 1;
+            self.name = Rc::from(name.as_slice());
             self.cur = None;
             match Input::open(ctx, &name).await {
                 Ok(input) => {
@@ -142,15 +146,16 @@ impl Reader {
         }
     }
 
-    pub async fn next_line(&mut self, ctx: &mut UtilCtx<'_>) -> Option<Line> {
+    /// The next line, in `text` (a buffer to reuse; cleared first).
+    pub async fn next_line(&mut self, ctx: &mut UtilCtx<'_>, mut text: Vec<u8>) -> Option<Line> {
         if !self.fill(ctx).await {
             return None;
         }
-        let name = self.cur_name();
-        let mut text = Vec::new();
+        let name = self.name.clone();
+        text.clear();
         loop {
             let rest = &self.buf[self.start..];
-            if let Some(i) = rest.iter().position(|&b| b == self.delim) {
+            if let Some(i) = memchr::memchr(self.delim, rest) {
                 text.extend_from_slice(&rest[..i]);
                 self.start += i + 1;
                 return Some(Line {
@@ -339,7 +344,11 @@ pub struct Run<'p> {
     ps: Vec<u8>,
     ps_nl: bool,
     line_no: u64,
-    line_name: Vec<u8>,
+    line_name: Rc<[u8]>,
+    /// The last pattern space's buffer, for the next line.
+    spare: Vec<u8>,
+    /// The last substitution's buffer, for the next one.
+    scratch: Vec<u8>,
     tflag: bool,
     appends: Vec<Append>,
     ranges: Vec<RangeState>,
@@ -370,7 +379,9 @@ impl<'p> Run<'p> {
             ps: Vec::new(),
             ps_nl: true,
             line_no: 0,
-            line_name: Vec::new(),
+            line_name: Rc::from(&b""[..]),
+            spare: Vec::new(),
+            scratch: Vec::new(),
             tflag: false,
             appends: Vec::new(),
             ranges: vec![RangeState::default(); prog.cmds.len()],
@@ -392,7 +403,8 @@ impl<'p> Run<'p> {
         let mut steps: u32 = 0;
         loop {
             if !restart {
-                let Some(line) = reader.next_line(ctx).await else {
+                let spare = std::mem::take(&mut self.spare);
+                let Some(line) = reader.next_line(ctx, spare).await else {
                     break;
                 };
                 self.load(line);
@@ -456,7 +468,7 @@ impl<'p> Run<'p> {
     }
 
     fn load(&mut self, line: Line) {
-        self.ps = line.text;
+        self.spare = std::mem::replace(&mut self.ps, line.text);
         self.ps_nl = line.nl;
         self.line_name = line.name;
         self.line_no += 1;
@@ -826,7 +838,7 @@ impl<'p> Run<'p> {
                 }
                 self.flush_appends(ctx).await;
                 self.drain(ctx).await?;
-                match reader.next_line(ctx).await {
+                match reader.next_line(ctx, Vec::new()).await {
                     Some(line) => {
                         self.load(line);
                         Flow::Next
@@ -840,7 +852,7 @@ impl<'p> Run<'p> {
                 }
                 self.flush_appends(ctx).await;
                 self.drain(ctx).await?;
-                match reader.next_line(ctx).await {
+                match reader.next_line(ctx, Vec::new()).await {
                     Some(line) => {
                         let mut ps = std::mem::take(&mut self.ps);
                         ps.push(nl);
@@ -935,7 +947,7 @@ impl<'p> Run<'p> {
                 Flow::Next
             }
             Kind::FileName => {
-                let mut t = self.line_name.clone();
+                let mut t = self.line_name.to_vec();
                 t.push(b'\n');
                 self.emit_text(&t);
                 Flow::Next
@@ -966,15 +978,30 @@ impl<'p> Run<'p> {
         };
         let ps = &self.ps;
         let utf8 = self.set.utf8;
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.scratch);
+        out.clear();
         let mut pos = 0;
         let mut from = 0;
         let mut count = 0;
         let mut prev_end: Option<usize> = None;
         let mut did = false;
+        // Only a replacement that names a subexpression needs their positions.
+        let grouped = s.repl.iter().any(|r| matches!(r, Repl::Group(n) if *n > 0));
+        let mut whole = [None];
         while from <= ps.len() {
-            let Some(caps) = re.exec_at(ps, from, ExecOptions::default()) else {
-                break;
+            let held;
+            let caps: &[Option<(usize, usize)>] = if grouped {
+                let Some(found) = re.exec_at(ps, from, ExecOptions::default()) else {
+                    break;
+                };
+                held = found;
+                &held
+            } else {
+                let Some(found) = re.find_at(ps, from, ExecOptions::default()) else {
+                    break;
+                };
+                whole[0] = Some(found);
+                &whole
             };
             let (s0, e0) = caps[0].unwrap_or((from, from));
             let step = |at: usize| if utf8 { char_len(&ps[at..]) } else { 1 };
@@ -989,7 +1016,7 @@ impl<'p> Run<'p> {
             count += 1;
             if count >= s.nth {
                 out.extend_from_slice(&ps[pos..s0]);
-                expand(&mut out, &s.repl, ps, &caps, utf8);
+                expand(&mut out, &s.repl, ps, caps, utf8);
                 pos = e0;
                 did = true;
                 if !s.global {
@@ -1008,7 +1035,9 @@ impl<'p> Run<'p> {
         }
         if did {
             out.extend_from_slice(&ps[pos..]);
-            self.ps = out;
+            self.scratch = std::mem::replace(&mut self.ps, out);
+        } else {
+            self.scratch = out;
         }
         Ok(did)
     }
@@ -1095,7 +1124,13 @@ async fn read_rline(
 }
 
 /// Appends the replacement for one match, applying `\U \L \u \l \E`.
-fn expand(out: &mut Vec<u8>, repl: &[Repl], text: &[u8], caps: &psh_regex::Captures, utf8: bool) {
+fn expand(
+    out: &mut Vec<u8>,
+    repl: &[Repl],
+    text: &[u8],
+    caps: &[Option<(usize, usize)>],
+    utf8: bool,
+) {
     let mut mode: Option<CaseOp> = None;
     let mut once: Option<CaseOp> = None;
     let put = |out: &mut Vec<u8>, s: &[u8], mode: Option<CaseOp>, once: &mut Option<CaseOp>| {

@@ -477,6 +477,11 @@ impl Snapshot {
         self.0.frozen_builtins
     }
 
+    /// Whether `other` is this snapshot (a clone of it): the same image.
+    pub(crate) fn same_image(&self, other: &Snapshot) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub(crate) fn fingerprint_cell(&self) -> &crate::park::Fingerprint {
         &self.0.fingerprint
     }

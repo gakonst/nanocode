@@ -19,14 +19,8 @@ use crate::{Error, Instance, Limits, Snapshot};
 /// A run's header in the delta: its offset and its length (`u32`, little-endian).
 const RUN: usize = 8;
 
-/// What the scan of a heap that does not track its written pages compares at once
-/// before it looks for the words that differ.
+/// What the scan compares at once before it looks for the words that differ.
 const BLOCK: usize = 1024;
-
-/// The image in blocks of [`BLOCK`].
-fn blocks(len: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..len.div_ceil(BLOCK)).map(move |i| (i * BLOCK, ((i + 1) * BLOCK).min(len)))
-}
 
 /// The first bytes of [`Parked::to_bytes`].
 const MAGIC: &[u8; 8] = b"djspark1";
@@ -57,23 +51,32 @@ fn delta(image: &[u8], heap: &[u8], blocks: impl Iterator<Item = (usize, usize)>
     let shared = image.len().min(heap.len());
     let mut out = Vec::new();
     let mut run: Option<(usize, usize)> = None;
-    for (at, end) in blocks {
+    for (start, end) in blocks {
         let end = end.min(shared);
-        if at < end && image[at..end] != heap[at..end] {
-            let mut w = at;
-            while w < end {
-                let e = (w + 8).min(end);
-                if image[w..e] != heap[w..e] {
+        let mut at = start;
+        while at < end {
+            // A block at a time, then the words of one that differs.
+            let stop = (at + BLOCK).min(end);
+            let (old, new) = (&image[at..stop], &heap[at..stop]);
+            if old != new {
+                // (Words as integers: a comparison of slices is a call.)
+                let word = |b: &[u8]| b.try_into().map_or(0, u64::from_ne_bytes);
+                let words = old.chunks(8).zip(new.chunks(8));
+                for (i, (a, b)) in words.enumerate() {
+                    if a.len() == 8 && word(a) == word(b) || a == b {
+                        continue;
+                    }
+                    let (w, e) = (at + 8 * i, at + 8 * i + a.len());
                     match &mut run {
-                        Some((_, stop)) if w <= *stop + RUN => *stop = e,
+                        Some((_, last)) if w <= *last + RUN => *last = e,
                         _ => {
                             flush(&mut out, heap, run.take());
                             run = Some((w, e));
                         }
                     }
                 }
-                w = e;
             }
+            at = stop;
         }
     }
     if heap.len() > shared {
@@ -101,9 +104,9 @@ fn runs(delta: &[u8]) -> impl Iterator<Item = (u32, u32)> + '_ {
     })
 }
 
-/// The heap of `len` bytes that `delta` was taken from, in a buffer with room to grow:
-/// `None` if the runs do not fit it (bytes that are not a delta of this image).
-fn patched(image: &[u8], len: usize, delta: &[u8], memory: usize) -> Option<Vec<u8>> {
+/// A copy of the first `len` bytes of `image` (all of it if shorter) in a buffer with
+/// room for a heap of `len` bytes to grow.
+fn copied(image: &[u8], len: usize, memory: usize) -> Option<Vec<u8>> {
     let room = if cfg!(target_arch = "wasm32") {
         0
     } else {
@@ -111,6 +114,13 @@ fn patched(image: &[u8], len: usize, delta: &[u8], memory: usize) -> Option<Vec<
     };
     let mut bytes = Vec::with_capacity(Heap::image_capacity(len.checked_add(room)?, memory));
     bytes.extend_from_slice(&image[..image.len().min(len)]);
+    Some(bytes)
+}
+
+/// The heap of `len` bytes that `delta` was taken from, made of `bytes`, a copy of the
+/// image: `None` if the runs do not fit it (bytes that are not a delta of this image).
+fn patched(mut bytes: Vec<u8>, len: usize, delta: &[u8]) -> Option<Vec<u8>> {
+    bytes.truncate(len);
     let mut rest = delta;
     while !rest.is_empty() {
         let (head, tail) = rest.split_at_checked(RUN)?;
@@ -135,7 +145,11 @@ impl Instance {
     /// ([`crate::CallId`]s) stays valid for the resumed instance. For a host with many
     /// calls that wait ([`crate::Step::Wait`]) at once: a parked call holds its changes
     /// (kilobytes for a call that started and waits) instead of the heap.
-    pub fn park(mut self) -> Result<Parked, Error> {
+    ///
+    /// With the parked call comes the instance back in the snapshot's state, when that
+    /// cost only what the call wrote ([`Instance::reset_written`]): a spare for another
+    /// call, or for [`Parked::resume_in`].
+    pub fn park(mut self) -> Result<(Parked, Option<Instance>), Error> {
         let snapshot = self.snapshot.clone();
         // The image form: the dead stack slots cleared, so they are no difference.
         let (heap, delta) = self.guard(|vm| {
@@ -144,17 +158,19 @@ impl Instance {
             // The pages the calls wrote, when the heap tracked them: only they differ.
             let delta = match vm.heap().arena().written(image.len()) {
                 Some(written) => delta(image, vm.bytes(), written),
-                None => delta(image, vm.bytes(), blocks(image.len())),
+                None => delta(image, vm.bytes(), std::iter::once((0, image.len()))),
             };
             (len, delta)
         })?;
-        Ok(Parked {
+        let parked = Parked {
             snapshot,
             limits: self.limits,
             call: self.call.take(),
             heap,
             delta,
-        })
+        };
+        let spare = self.reset_written()?.then_some(self);
+        Ok((parked, spare))
     }
 }
 
@@ -162,10 +178,24 @@ impl Parked {
     /// The instance again, as it was parked: a copy of the image with the difference
     /// applied. A call's deadline is as it was.
     pub fn resume(self) -> Result<Instance, Error> {
-        self.load(true)
+        self.load(true, None)
     }
 
-    fn load(self, trusted: bool) -> Result<Instance, Error> {
+    /// [`Parked::resume`] in the heap of `spare`, an instance of the same snapshot whose
+    /// call is over or abandoned: it is reset and the difference applied, so resuming
+    /// costs what the parked call had written, not a copy of the image.
+    pub fn resume_in(self, mut spare: Instance) -> Result<Instance, Error> {
+        if !self.snapshot.same_image(&spare.snapshot) {
+            return Err(Error::Usage(
+                "the spare instance is of another snapshot".into(),
+            ));
+        }
+        spare.reset()?;
+        let bytes = spare.guard(|vm| vm.take_heap())?;
+        self.load(true, Some(bytes))
+    }
+
+    fn load(self, trusted: bool, spare: Option<Vec<u8>>) -> Result<Instance, Error> {
         let Parked {
             snapshot,
             limits,
@@ -174,7 +204,10 @@ impl Parked {
             delta,
         } = self;
         let foreign = || Error::Usage("the parked state is not of this snapshot".into());
-        let bytes = patched(snapshot.image(), heap, &delta, limits.memory).ok_or_else(foreign)?;
+        let bytes = spare
+            .or_else(|| copied(snapshot.image(), heap, limits.memory))
+            .and_then(|bytes| patched(bytes, heap, &delta))
+            .ok_or_else(foreign)?;
         let opts = vm_options(limits.memory, snapshot.frozen_builtins());
         let mut vm = guard_vm(|| {
             if trusted {
@@ -286,7 +319,7 @@ impl Snapshot {
             heap,
             delta: bytes[head + 36..].to_vec(),
         }
-        .load(false)
+        .load(false, None)
     }
 }
 

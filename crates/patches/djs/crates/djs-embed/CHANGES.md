@@ -9,7 +9,9 @@ every incompatible change is listed here with what to do instead.
 - `Instance::resolve_unhandled`, `Instance::seed_random`, `Instance::set_time_zone_offset`.
 - `Instance::park` and `Parked`: an instance between two steps held as what differs from
   its snapshot's image (kilobytes for a call that waits, instead of its heap), and
-  `Parked::resume`, which makes the instance again. `Parked::to_bytes` and
+  `Parked::resume`, which makes the instance again. `park` also gives the instance back,
+  reset, when that cost only what the call wrote, and `Parked::resume_in` resumes in
+  such a spare's heap, so neither side copies the image. `Parked::to_bytes` and
   `Snapshot::parked` are the same state as bytes a host can store and load in another
   process of the same build; `Snapshot::fingerprint` tells whether two snapshots share
   an image.

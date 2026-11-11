@@ -449,7 +449,13 @@ impl EmbeddedHost {
             return Ok(());
         };
         let body = match machine.body {
-            Body::Awake(instance) => Body::Parked(instance.park().map_err(failure)?),
+            Body::Awake(instance) => {
+                let (parked, spare) = instance.park().map_err(failure)?;
+                if let Some(spare) = spare {
+                    machine.prepared.keep(spare);
+                }
+                Body::Parked(parked)
+            }
             body @ Body::Parked(_) => body,
         };
         self.machine = Some(Machine { body, ..machine });
@@ -461,7 +467,13 @@ impl EmbeddedHost {
             return Ok(());
         };
         let body = match machine.body {
-            Body::Parked(parked) => Body::Awake(parked.resume().map_err(failure)?),
+            Body::Parked(parked) => Body::Awake(
+                match machine.prepared.spare() {
+                    Some(spare) => parked.resume_in(spare),
+                    None => parked.resume(),
+                }
+                .map_err(failure)?,
+            ),
             body @ Body::Awake(_) => body,
         };
         self.machine = Some(Machine { body, ..machine });

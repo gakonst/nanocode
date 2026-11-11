@@ -170,7 +170,7 @@ pub(crate) struct Prepared {
 
 impl Prepared {
     pub(crate) fn instance(&self) -> Result<Instance, djs_embed::Error> {
-        match self.spares.iter().find_map(Slot::take) {
+        match self.spare() {
             Some(instance) => Ok(instance),
             None => self.snapshot.instantiate(Limits {
                 memory: usize::MAX,
@@ -180,10 +180,17 @@ impl Prepared {
         }
     }
 
+    pub(crate) fn spare(&self) -> Option<Instance> {
+        self.spares.iter().find_map(Slot::take)
+    }
+
     pub(crate) fn recycle(&self, mut instance: Instance) {
-        if !matches!(instance.reset_written(), Ok(true)) {
-            return;
+        if matches!(instance.reset_written(), Ok(true)) {
+            self.keep(instance);
         }
+    }
+
+    pub(crate) fn keep(&self, mut instance: Instance) {
         for slot in &self.spares {
             if slot.is_empty() {
                 match slot.put(instance) {

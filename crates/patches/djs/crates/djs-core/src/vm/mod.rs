@@ -342,6 +342,17 @@ impl Vm {
         Ok(())
     }
 
+    /// Takes the heap's bytes out: for an embedder that makes another VM of the buffer
+    /// (and of what it adds to it). This VM has no heap left and must be dropped.
+    #[cfg(feature = "embed")]
+    pub fn take_heap(&mut self) -> Vec<u8> {
+        let len = self.heap.arena().len() as usize;
+        let mut bytes = self.heap.arena_mut().take_bytes();
+        // (The buffer's length is the zeroed frontier.)
+        bytes.truncate(len);
+        bytes
+    }
+
     /// [`Vm::reset_to`] for a VM that tracks `image` ([`Vm::track_image`]): only the
     /// pages written since are copied back (`Heap::restore_image`). `false`: a
     /// collection ran, and only [`Vm::reset_to`] can.

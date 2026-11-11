@@ -67,7 +67,9 @@ pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
 pub use nanocode_code_mode_engine::JournalEntry;
 pub use nanocode_code_mode_engine::bytes;
-use nanocode_code_mode_engine::{CellTools, EmbeddedHost as ExecutionWorker, RuntimeEvent};
+use nanocode_code_mode_engine::{
+    CellTools, EmbeddedHost as ExecutionWorker, Interrupt, RuntimeEvent,
+};
 #[cfg(target_family = "wasm")]
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
@@ -203,6 +205,7 @@ struct LiveCell {
     turn_id: AtomicU64,
     observation: Arc<Owned<CellObservationState>>,
     lifecycle: Arc<CellLifecycle>,
+    interrupt: Interrupt,
     terminate: Slot<oneshot::Sender<()>>,
     finished: Arc<Signal>,
     relay: Slot<CellRelay>,
@@ -1440,6 +1443,7 @@ impl LiveCell {
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
         let (terminate, terminate_rx) = oneshot::channel();
+        let interrupt = Interrupt::new();
         let lifecycle = Arc::new(CellLifecycle::new());
         let actor_span = info_span!(
             target: "nanocode_code_mode",
@@ -1485,6 +1489,7 @@ impl LiveCell {
                 shared_stored,
                 updates_tx,
                 terminate_rx,
+                interrupt.clone(),
                 Arc::clone(&lifecycle),
                 journaling,
             )
@@ -1507,6 +1512,7 @@ impl LiveCell {
                 content_seen,
             })),
             lifecycle,
+            interrupt,
             terminate: Slot::new(Some(terminate)),
             finished,
             relay: Slot::default(),
@@ -1577,6 +1583,7 @@ impl LiveCell {
         if self.lifecycle.request_termination()
             && let Some(terminate) = self.terminate.take()
         {
+            self.interrupt.raise();
             let _ = terminate.send(());
         }
     }
@@ -2731,6 +2738,7 @@ async fn run_cell_actor(
     shared_stored: Arc<Atom<HashMap<String, Arc<RawValue>>>>,
     updates: mpsc::UnboundedSender<CellUpdate>,
     mut terminate: oneshot::Receiver<()>,
+    interrupt: Interrupt,
     lifecycle: Arc<CellLifecycle>,
     journaling: Option<ActorJournaling>,
 ) {
@@ -2790,6 +2798,7 @@ async fn run_cell_actor(
                 catalog,
                 prelude,
                 engine_journaling,
+                interrupt,
             )
             .map_err(HostFailure::new)?;
         host.drive_cell(

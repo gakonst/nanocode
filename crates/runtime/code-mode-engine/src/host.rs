@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use djs_embed::{CallId, Instance, Parked, Step, Value};
+use djs_embed::{CallId, Instance, Interrupt, Parked, Step, Value};
 use nanocode_platform::Instant;
 use serde_json::value::RawValue;
 
@@ -85,11 +85,13 @@ enum Ran {
     Sliced,
     Idle,
     Finished,
+    Interrupted,
 }
 
 struct Machine {
     body: Body,
     prepared: Arc<Prepared>,
+    interrupt: Interrupt,
     pump: Option<CallId>,
     phase: Phase,
     results: VecDeque<(u64, String, bool)>,
@@ -117,6 +119,7 @@ impl Machine {
                     });
                     return Ok(Ran::Finished);
                 }
+                Err(djs_embed::Error::Interrupted) => return Ok(Ran::Interrupted),
                 Err(error) => return Err(failure(error)),
             };
             match step {
@@ -342,6 +345,7 @@ impl EmbeddedHost {
         Self::spawn()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn start_cell(
         &mut self,
         execution_id: u64,
@@ -350,6 +354,7 @@ impl EmbeddedHost {
         tools: Arc<CellTools>,
         prelude: Option<Arc<str>>,
         journaling: Option<CellJournaling>,
+        interrupt: Interrupt,
     ) -> Result<(), String> {
         self.machine = None;
         let prepared = prepared(&tools, prelude.as_ref());
@@ -368,6 +373,7 @@ impl EmbeddedHost {
         };
         let seed = random_seed()?;
         let mut instance = prepared.instance().map_err(failure)?;
+        instance.set_interrupt(Some(&interrupt)).map_err(failure)?;
         instance.seed_random(seed).map_err(failure)?;
         #[cfg(not(target_family = "wasm"))]
         instance
@@ -379,6 +385,7 @@ impl EmbeddedHost {
         self.machine = Some(Machine {
             body: Body::Awake(instance),
             prepared,
+            interrupt,
             pump: None,
             phase: Phase::Running,
             results: VecDeque::new(),
@@ -408,6 +415,10 @@ impl EmbeddedHost {
                         continue;
                     }
                     Ok(Ran::Idle) => continue,
+                    Ok(Ran::Interrupted) => {
+                        self.stop();
+                        continue;
+                    }
                     Ok(Ran::Finished) => Ok(Idle::Finished),
                     Err(error) => Err(error),
                 },
@@ -477,13 +488,17 @@ impl EmbeddedHost {
             return Ok(());
         };
         let body = match machine.body {
-            Body::Parked(parked) => Body::Awake(
-                match machine.prepared.spare() {
+            Body::Parked(parked) => {
+                let mut instance = match machine.prepared.spare() {
                     Some(spare) => parked.resume_in(spare),
                     None => parked.resume(),
                 }
-                .map_err(failure)?,
-            ),
+                .map_err(failure)?;
+                instance
+                    .set_interrupt(Some(&machine.interrupt))
+                    .map_err(failure)?;
+                Body::Awake(instance)
+            }
             body @ Body::Awake(_) => body,
         };
         self.machine = Some(Machine { body, ..machine });

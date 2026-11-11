@@ -5,6 +5,7 @@ mod host;
 mod journal;
 
 pub use cell::{CellTools, RuntimeEvent};
+pub use djs_embed::Interrupt;
 pub use host::EmbeddedHost;
 #[cfg(target_family = "wasm")]
 pub use host::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};

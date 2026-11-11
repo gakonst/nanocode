@@ -7000,16 +7000,15 @@ impl State {
             .ok_or(NanocodeError::TurnStopped)?
             .developer_notice_ids
             .clone();
-        let mut cursor = self
-            .cursor(
-                conversation,
-                request.request_id.as_deref(),
-                speed,
-                Some(&request.prompt),
-                developer_notice_ids,
-                journal,
-            )
-            .await?;
+        let mut cursor = Box::pin(self.cursor(
+            conversation,
+            request.request_id.as_deref(),
+            speed,
+            Some(&request.prompt),
+            developer_notice_ids,
+            journal,
+        ))
+        .await?;
         if let (Some(policy), Some(operation)) = (&self.policy, &cursor.operation) {
             let mut turns = self.steering.acquire().await;
             let turn = turns
@@ -7145,15 +7144,14 @@ impl State {
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
-                    &self
-                        .compact_locked(
-                            conversation,
-                            cancel,
-                            CompactionMode::Automatic,
-                            &cursor,
-                            "prepare-compact",
-                        )
-                        .await?,
+                    &Box::pin(self.compact_locked(
+                        conversation,
+                        cancel,
+                        CompactionMode::Automatic,
+                        &cursor,
+                        "prepare-compact",
+                    ))
+                    .await?,
                 );
                 self.emit_compacted(&request.events, 0, compaction_started);
             }
@@ -7237,15 +7235,14 @@ impl State {
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
-                    &self
-                        .compact_locked(
-                            conversation,
-                            cancel,
-                            CompactionMode::Automatic,
-                            &cursor,
-                            &format!("compact-{index}"),
-                        )
-                        .await?,
+                    &Box::pin(self.compact_locked(
+                        conversation,
+                        cancel,
+                        CompactionMode::Automatic,
+                        &cursor,
+                        &format!("compact-{index}"),
+                    ))
+                    .await?,
                 );
                 self.emit_compacted(&request.events, index, compaction_started);
                 pending = conversation.packed_messages();
@@ -7904,15 +7901,14 @@ impl State {
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
-                    &self
-                        .compact_locked(
-                            conversation,
-                            cancel,
-                            CompactionMode::ContextRecovery,
-                            &cursor,
-                            &format!("context-recovery-{index}"),
-                        )
-                        .await?,
+                    &Box::pin(self.compact_locked(
+                        conversation,
+                        cancel,
+                        CompactionMode::ContextRecovery,
+                        &cursor,
+                        &format!("context-recovery-{index}"),
+                    ))
+                    .await?,
                 );
                 self.emit_compacted(&request.events, index, compaction_started);
 

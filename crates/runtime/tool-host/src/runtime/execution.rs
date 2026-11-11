@@ -707,6 +707,9 @@ impl NativeToolRuntime {
         if self.is_code_only() {
             return native;
         }
+        if self.exposure.unwrap_or_default() == ToolExposure::DirectOnly {
+            native.clear();
+        }
         native.append(&mut direct);
         native.extend(
             self.registry

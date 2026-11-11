@@ -208,9 +208,7 @@ impl RuntimeBackend for CodexHarness {
                     let builder = providers.iter().fold(builder, |builder, provider| {
                         builder.shared_provider(provider.clone())
                     });
-                    builder
-                        .exposure(nanocode_tool_host::ToolExposure::CodeModeOnly)
-                        .build()
+                    builder.build()
                 });
             }
             if spec.options.stateless_http {

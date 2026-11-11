@@ -160,7 +160,6 @@ pub(crate) fn install_default_tools_with_providers(
         .fold(selected.into_builder(), |builder, provider| {
             builder.shared_provider(provider.clone())
         })
-        .exposure(nanocode_tool_host::ToolExposure::CodeModeOnly)
         .build()
         .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))?;
     selected = selected.add_shared_tools(additive)?;

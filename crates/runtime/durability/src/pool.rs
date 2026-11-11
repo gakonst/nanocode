@@ -1,7 +1,8 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use nanocode_durability_core::{
-    OwnedState, OwnerId, StateStore, StoreError, StoreRecord, StoredState,
+    OwnedState, OwnerId, Settle, StateCommit, StateStore, StoreError, StoreRecord, StoredState,
+    SummaryUpdate,
 };
 use nanocode_sync::{Atom, AtomMap, Owned};
 
@@ -248,18 +249,23 @@ impl Pool {
             let payload = serde_json::to_string(&HeadRef { pool: &all })
                 .map_err(|error| StoreError::Backend(error.to_string()))?;
             match store
-                .replace(
+                .commit(
                     &self.state,
                     &owned.owner,
                     owned.state.revision,
-                    &payload,
-                    &added,
+                    StateCommit {
+                        payload: &payload,
+                        records: &added,
+                        events: &[],
+                        summary: &SummaryUpdate::Unchanged,
+                        settle: Settle::Ordered,
+                    },
                 )
                 .await
             {
-                Ok(revision) => {
+                Ok(committed) => {
                     owned.state = StoredState {
-                        revision,
+                        revision: committed.revision,
                         payload: Some(payload),
                     };
                     *keys = all;

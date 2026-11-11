@@ -1,6 +1,7 @@
 use crate::{
     answers::{self, Answers},
     command::Commands,
+    fetch::{Fetch, Network, Stepping},
     file::{Capture, Source},
     fs::FileSystem,
     host::{Host, Vfs},
@@ -23,6 +24,7 @@ fn utilities() -> &'static [UtilEntry] {
     ALL.get_or_init(|| {
         let mut all = psh_utils::REGISTRY.to_vec();
         all.extend_from_slice(psh_utils::HOST_FACTS);
+        all.extend_from_slice(&crate::net::UTILITIES);
         all
     })
 }
@@ -156,6 +158,7 @@ pub struct Shell {
     stderr: Rc<Capture>,
     spent: u64,
     cancelled: bool,
+    network: Option<Network>,
 }
 
 impl Shell {
@@ -216,7 +219,15 @@ impl Shell {
             stderr,
             spent: 0,
             cancelled: false,
+            network: None,
         }
+    }
+
+    pub fn set_fetch(&mut self, fetch: Rc<dyn Fetch>) {
+        self.network = Some(Network {
+            fetch,
+            limit: self.vfs.limits.file,
+        });
     }
 
     pub fn start(&mut self, script: Script) {
@@ -271,6 +282,7 @@ impl Shell {
         if slice == 0 && budget != 0 {
             self.vfs.refuse(Limit::Fuel);
         }
+        let _stepping = Stepping::with(self.network.clone());
         match self.engine.step(slice) {
             psh_engine::Step::Done(status) => Step::Done(Box::new(self.ran(status))),
             psh_engine::Step::Blocked => Step::Blocked,

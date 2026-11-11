@@ -1,4 +1,7 @@
-use std::ops::DerefMut;
+use std::{
+    ops::DerefMut,
+    time::{Duration, Instant},
+};
 
 use futures_util::TryStreamExt as _;
 use nanocode_durability_core::{
@@ -17,6 +20,8 @@ pub trait PgConnections: Send + Sync {
     fn lanes(&self) -> usize {
         1
     }
+
+    fn ran(&self, _operation: &'static str, _took: Duration, _committed: bool) {}
 }
 
 pub struct SqlxSql<C, R> {
@@ -47,6 +52,17 @@ async fn transact<C: PgConnections>(
     Ok(results)
 }
 
+async fn observed<C: PgConnections>(
+    connections: &C,
+    operation: &'static str,
+    statements: &[SqlStatement<'_>],
+) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+    let started = Instant::now();
+    let results = transact(connections, statements).await;
+    connections.ran(operation, started.elapsed(), results.is_ok());
+    results
+}
+
 impl<C: PgConnections + 'static, R: PgConnections + 'static> Sql for SqlxSql<C, R> {
     fn concurrent(self: std::sync::Arc<Self>) -> Option<std::sync::Arc<dyn Sql>> {
         (self.writers() > 1 || self.readers() > 1).then_some(self as std::sync::Arc<dyn Sql>)
@@ -62,21 +78,21 @@ impl<C: PgConnections + 'static, R: PgConnections + 'static> Sql for SqlxSql<C, 
 
     fn transaction<'a>(
         &'a self,
-        _operation: &'static str,
+        operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        Box::pin(transact(&self.writes, statements))
+        Box::pin(observed(&self.writes, operation, statements))
     }
 
     fn run<'a>(
         &'a self,
         access: SqlAccess,
-        _operation: &'static str,
+        operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
         match access {
-            SqlAccess::Read => Box::pin(transact(&self.reads, statements)),
-            _ => Box::pin(transact(&self.writes, statements)),
+            SqlAccess::Read => Box::pin(observed(&self.reads, operation, statements)),
+            _ => Box::pin(observed(&self.writes, operation, statements)),
         }
     }
 

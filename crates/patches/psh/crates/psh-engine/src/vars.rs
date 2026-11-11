@@ -8,6 +8,45 @@
 //! bash (black box) on thousands of keys and matches it exactly (D1261).
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// The hash of the engine's own tables (variable names, spans): FxHash, a rotate, an
+/// xor and a multiply per word. The keys come from the script the shell is running,
+/// which can do anything a collision could, so the keyed SipHash of `HashMap`'s
+/// default bought nothing and was 7% of a loop's samples.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NameHasher(u64);
+
+impl NameHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for NameHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.add(u64::from(n));
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.add(u64::from(n));
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A `HashMap` hashed with [`NameHasher`].
+pub(crate) type NameMap<K, V> = HashMap<K, V, BuildHasherDefault<NameHasher>>;
 
 /// A variable's value.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -271,7 +310,7 @@ impl Assoc {
 /// The variable table of a vproc.
 #[derive(Clone, Default)]
 pub(crate) struct Vars {
-    map: HashMap<String, Var>,
+    map: NameMap<String, Var>,
 }
 
 impl Vars {
@@ -289,7 +328,11 @@ impl Vars {
     }
 
     pub(crate) fn entry(&mut self, name: &str) -> &mut Var {
-        self.map.entry(name.to_string()).or_default()
+        // The name is copied only for a variable that is new.
+        if !self.map.contains_key(name) {
+            self.map.insert(name.to_string(), Var::default());
+        }
+        self.map.get_mut(name).expect("the variable is in the table")
     }
 
     pub(crate) fn remove(&mut self, name: &str) -> Option<Var> {

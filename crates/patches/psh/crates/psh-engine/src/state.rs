@@ -149,7 +149,7 @@ pub(crate) struct Code {
     pub line_base: u32,
     /// The arithmetic words of this chunk that are literal text, parsed
     /// (`arith::literal`), by the word's span.
-    pub arith: RefCell<HashMap<(u32, u32), Rc<crate::arith::Literal>>>,
+    pub arith: RefCell<crate::vars::NameMap<(u32, u32), Rc<crate::arith::Literal>>>,
 }
 
 impl Code {
@@ -700,6 +700,12 @@ impl Vp {
 
     /// The scalar value of a variable (element 0 of an array), following namerefs.
     pub(crate) fn var(&self, name: &str) -> Option<&[u8]> {
+        // A name that is no reference is its own target, and `target` would copy it.
+        match self.vars.get(name) {
+            Some(v) if !v.nameref => return v.get(),
+            None if !name.contains('[') => return None,
+            _ => {}
+        }
         match self.target(name) {
             Ok((n, Some(sub))) => self.elem_literal(&n, &sub),
             Ok((n, None)) => self.vars.value(&n),
@@ -779,6 +785,14 @@ impl Vp {
         value: Vec<u8>,
         append: bool,
     ) -> Result<(), String> {
+        // A name that is no reference is its own target, and `target` would copy it.
+        let own = match self.vars.get(name) {
+            Some(v) => !v.nameref,
+            None => !name.contains('['),
+        };
+        if own {
+            return self.assign_target(name, value, append);
+        }
         let (name, sub) = match self.target(name) {
             Ok(t) => t,
             // An assignment through a circular reference fails (bash warns).
@@ -787,13 +801,18 @@ impl Vp {
         if let Some(sub) = sub {
             return self.assign_elem(&name, &sub, value, append);
         }
-        let value = self.prepare_value(&name, value, append)?;
+        self.assign_target(&name, value, append)
+    }
+
+    /// `assign_with` once namerefs are followed: `name` is the variable itself.
+    fn assign_target(&mut self, name: &str, value: Vec<u8>, append: bool) -> Result<(), String> {
+        let value = self.prepare_value(name, value, append)?;
         let allexport = self.opts.get(crate::options::SetOpt::Allexport);
-        let var = self.vars.entry(&name);
+        let var = self.vars.entry(name);
         var.set(value);
         var.exported |= allexport;
         if var.dynamic.is_some() {
-            self.assigned_dynamic(&name);
+            self.assigned_dynamic(name);
         }
         Ok(())
     }

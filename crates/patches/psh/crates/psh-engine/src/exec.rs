@@ -134,6 +134,18 @@ async fn xtrace_command(vp: &mut Vp, assigns: &[(String, Vec<u8>)], argv: &[Vec<
 
 /// `PIPESTATUS`: the statuses of the last foreground pipeline's commands.
 fn set_pipestatus(vp: &mut Vp, statuses: &[i32]) {
+    // After most commands the array has the elements it had: their digits are
+    // rewritten where they are (building the array anew was 7% of a loop's samples).
+    if let Some(var) = vp.vars.get_mut("PIPESTATUS")
+        && let crate::vars::Value::Indexed(map) = &mut var.value
+        && map.keys().copied().eq(0..statuses.len() as i64)
+    {
+        for (value, status) in map.values_mut().zip(statuses) {
+            value.clear();
+            let _ = std::io::Write::write_fmt(value, format_args!("{status}"));
+        }
+        return;
+    }
     let map = statuses
         .iter()
         .enumerate()
@@ -999,7 +1011,7 @@ async fn prefix_assigns(
     subst_status: &mut Option<i32>,
 ) -> Result<(), Unwind> {
     for a in &s.assigns {
-        let name = code.ast.text(a.name).to_string();
+        let name = code.ast.text(a.name);
         let r = match (&a.index, &a.value) {
             (None, AssignValue::Scalar(w)) => {
                 let (v, st) = Box::pin(expand::assign_value(vp, code, w)).await?;
@@ -1011,15 +1023,15 @@ async fn prefix_assigns(
                         builtins::set::xtrace(vp, &line).await;
                     }
                     // Assigned at once: later assignments see earlier ones (`a=1 b=$a`).
-                    vp.assign_with(&name, v, a.append)
+                    vp.assign_with(name, v, a.append)
                 } else {
                     // The value with the variable's attributes (`-i` adds on `+=`); it
                     // is set for the command's duration only.
-                    let target = vp.resolve(&name).into_owned();
+                    let target = vp.resolve(name).into_owned();
                     vp.prepare_value_unchecked(&target, v, a.append).map(|v| {
                         temps.push((target.clone(), vp.vars.get(&target).cloned()));
                         vp.vars.entry(&target).set(v.clone());
-                        assigns.push((name, v));
+                        assigns.push((name.to_string(), v));
                     })
                 }
             }
@@ -1027,12 +1039,12 @@ async fn prefix_assigns(
                 let (sub, st1) = Box::pin(expand::expand_single(vp, code, idx, Ctx::Word)).await?;
                 let (v, st2) = Box::pin(expand::assign_value(vp, code, w)).await?;
                 *subst_status = st2.or(st1).or(*subst_status);
-                vp.assign_elem(&name, &sub, v, a.append)
+                vp.assign_elem(name, &sub, v, a.append)
             }
             (None, AssignValue::Array(lit)) => {
                 let (items, st) = Box::pin(expand::expand_array_lit(vp, code, lit)).await?;
                 *subst_status = st.or(*subst_status);
-                vp.assign_array(&name, items, a.append)
+                vp.assign_array(name, items, a.append)
             }
             (Some(idx), AssignValue::Array(_)) => Err(format!(
                 "{name}[{}]: cannot assign list to array member",

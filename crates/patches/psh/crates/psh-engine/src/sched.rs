@@ -248,6 +248,13 @@ impl Sched {
         }
     }
 
+    /// Drops the waits a signal would end: those of a script that is over (a shell
+    /// that runs script after script would otherwise look through all of them at
+    /// every wait).
+    pub(crate) fn forget_signal_waiters(&self) {
+        self.signal_waiters.borrow_mut().clear();
+    }
+
     pub(crate) fn wake_signal_waiters(&self) {
         let ws: Vec<Waker> = self.signal_waiters.borrow_mut().drain(..).collect();
         for w in ws {

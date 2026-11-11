@@ -387,6 +387,7 @@ impl Shell {
         assert!(self.main.is_none(), "a script is already running");
         self.shared.control.store(0, Ordering::SeqCst);
         self.shared.signals.store(0, Ordering::SeqCst);
+        self.core.sched.forget_signal_waiters();
         self.core.died_of.set(None);
         let mut vp = self.vp.take().expect("shell state");
         // The copy kept for a cancelled run shares the variables.

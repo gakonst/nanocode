@@ -50,6 +50,14 @@ struct Counter {
 }
 
 impl Counter {
+    /// `feed` when only lines and bytes are asked for (`wc -l`, `wc -c`): a newline is one
+    /// byte in every encoding `feed` reads, so counting that byte gives the same lines
+    /// without decoding a character at a time (which was 31% of `… | wc -l` in wasm).
+    fn feed_lines(&mut self, data: &[u8]) {
+        self.c.bytes += data.len() as u64;
+        self.c.lines += data.iter().filter(|&&b| b == b'\n').count() as u64;
+    }
+
     fn feed(&mut self, data: &[u8], utf8: bool) {
         self.c.bytes += data.len() as u64;
         let mut buf;
@@ -149,6 +157,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         (l, w, c) = (true, true, true);
     }
     let utf8 = ctx.utf8();
+    let lines_only = !(w || m || big_l);
     let files = common::operands_or_stdin(&p);
     let mut results: Vec<(Option<Counts>, Vec<u8>)> = Vec::new();
     let mut status = 0;
@@ -186,6 +195,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         loop {
             match input.read(ctx, &mut buf).await {
                 Ok(0) => break,
+                Ok(n) if lines_only => counter.feed_lines(&buf[..n]),
                 Ok(n) => counter.feed(&buf[..n], utf8),
                 Err(e) => {
                     common::file_error(ctx, name, &e).await;

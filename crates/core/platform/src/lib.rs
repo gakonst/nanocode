@@ -64,8 +64,51 @@ pub fn unix_millis() -> u64 {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
+const KERNEL_ENTROPY_READ: usize = 256;
+
+#[cfg(not(target_family = "wasm"))]
+struct Entropy {
+    bytes: [u8; KERNEL_ENTROPY_READ],
+    unread: usize,
+}
+
+#[cfg(not(target_family = "wasm"))]
+thread_local! {
+    static ENTROPY: std::cell::RefCell<Entropy> = const {
+        std::cell::RefCell::new(Entropy {
+            bytes: [0; KERNEL_ENTROPY_READ],
+            unread: 0,
+        })
+    };
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn kernel_random(bytes: &mut [u8]) -> std::io::Result<()> {
     getrandom::fill(bytes).map_err(std::io::Error::other)
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
+    if bytes.len() >= KERNEL_ENTROPY_READ {
+        return kernel_random(bytes);
+    }
+    let buffered = ENTROPY.try_with(|entropy| {
+        let mut entropy = entropy.borrow_mut();
+        if entropy.unread < bytes.len() {
+            kernel_random(&mut entropy.bytes)?;
+            entropy.unread = KERNEL_ENTROPY_READ;
+        }
+        let start = entropy.unread - bytes.len();
+        let taken = &mut entropy.bytes[start..start + bytes.len()];
+        bytes.copy_from_slice(taken);
+        taken.fill(0);
+        entropy.unread = start;
+        Ok(())
+    });
+    match buffered {
+        Ok(filled) => filled,
+        Err(_) => kernel_random(bytes),
+    }
 }
 
 #[cfg(target_family = "wasm")]
@@ -73,12 +116,6 @@ pub fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
     host::current().fill_random(bytes)
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub fn uuid_v4() -> uuid::Uuid {
-    uuid::Uuid::new_v4()
-}
-
-#[cfg(target_family = "wasm")]
 pub fn uuid_v4() -> uuid::Uuid {
     let mut bytes = [0; 16];
     fill_random(&mut bytes).expect("the host could not provide UUID randomness");

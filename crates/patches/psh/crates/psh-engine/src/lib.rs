@@ -197,6 +197,13 @@ impl ControlHandle {
         self.shared.wake_outer();
     }
 
+    /// Whether [`ControlHandle::cancel`] was called and the run has not ended yet
+    /// (nanocode's addition): what a host command that computes inside one step asks,
+    /// since the step cannot end under it.
+    pub fn cancelled(&self) -> bool {
+        self.shared.control.load(Ordering::SeqCst) & CANCEL != 0
+    }
+
     /// Sends signal `sig` (Linux numbering, as `kill -l`) to the shell (D1284): at its
     /// next safepoint the shell runs the trap for it, ignores it (`trap '' SIG`), or
     /// takes the default action: the EXIT trap, then the run ends with `128+sig`. Unlike

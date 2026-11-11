@@ -1,5 +1,5 @@
 use crate::{
-    command::{Call, Commands, Stream},
+    command::{Call, Commands, Session, Stream},
     file::{self, Device, bad_descriptor},
     fs::{FileSystem, Kind, Remove, Reply, Stat, Write, join, normalize},
     machine::{Identity, Machine},
@@ -126,14 +126,74 @@ impl Vfs {
         }
     }
 
-    fn list(&self, path: &[u8]) -> Reply<Vec<Vec<u8>>> {
+    pub(crate) fn mkdir(self: &Rc<Self>, path: Vec<u8>, mode: u32) -> Reply<()> {
+        match self.charge() {
+            Ok(()) => {
+                let reply = self.fs.mkdir(&path, mode);
+                self.change(reply, move |changes| {
+                    changes.removed.remove(&path);
+                    changes.made.insert(path);
+                })
+            }
+            Err(error) => Reply::Now(Err(error)),
+        }
+    }
+
+    pub(crate) fn remove(self: &Rc<Self>, path: Vec<u8>, what: Remove) -> Reply<()> {
+        match self.charge() {
+            Ok(()) => {
+                let reply = self.fs.remove(&path, what);
+                self.change(reply, move |changes| changes.removed(path))
+            }
+            Err(error) => Reply::Now(Err(error)),
+        }
+    }
+
+    pub(crate) fn rename(self: &Rc<Self>, from: Vec<u8>, to: Vec<u8>) -> Reply<()> {
+        match self.charge() {
+            Ok(()) => {
+                let reply = self.fs.rename(&from, &to);
+                self.change(reply, move |changes| changes.moved(from, to))
+            }
+            Err(error) => Reply::Now(Err(error)),
+        }
+    }
+
+    pub(crate) fn symlink(self: &Rc<Self>, target: &[u8], link: Vec<u8>) -> Reply<()> {
+        match self.charge() {
+            Ok(()) => {
+                let reply = self.fs.symlink(target, &link);
+                self.change(reply, move |changes| {
+                    changes.removed.remove(&link);
+                    changes.linked.insert(link);
+                })
+            }
+            Err(error) => Reply::Now(Err(error)),
+        }
+    }
+
+    pub(crate) fn set_mtime(&self, path: &[u8], mtime_ns: i64) -> Reply<()> {
+        match self.charge() {
+            Ok(()) => self.fs.set_mtime(path, mtime_ns),
+            Err(error) => Reply::Now(Err(error)),
+        }
+    }
+
+    pub(crate) fn lacks(&self, name: &[u8]) {
+        self.missing.borrow_mut().push(name.to_vec());
+        if self.strict {
+            self.refuse(Limit::Missing);
+        }
+    }
+
+    pub(crate) fn list(&self, path: &[u8]) -> Reply<Vec<Vec<u8>>> {
         match self.charge() {
             Ok(()) => self.fs.list(path),
             Err(error) => Reply::Now(Err(error)),
         }
     }
 
-    fn read_link(&self, path: &[u8]) -> Reply<Vec<u8>> {
+    pub(crate) fn read_link(&self, path: &[u8]) -> Reply<Vec<u8>> {
         match self.charge() {
             Ok(()) => self.fs.read_link(path),
             Err(error) => Reply::Now(Err(error)),
@@ -370,6 +430,7 @@ impl psh_engine::Host for Host {
             stdin: stream(0),
             stdout: stream(1),
             stderr: stream(2),
+            shell: Session(self.0.clone()),
         };
         let spawned = self.0.spawned.get() + 1;
         self.0.spawned.set(spawned);
@@ -389,19 +450,7 @@ impl psh_engine::Host for Host {
     }
 
     fn mkdir(&self, path: &[u8], mode: u32) -> HostFuture<io::Result<()>> {
-        let path = normalize(path);
-        match self.0.charge() {
-            Ok(()) => {
-                let reply = self.0.fs.mkdir(&path, mode);
-                self.0
-                    .change(reply, move |changes| {
-                        changes.removed.remove(&path);
-                        changes.made.insert(path);
-                    })
-                    .boxed()
-            }
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        self.0.mkdir(normalize(path), mode).boxed()
     }
 
     fn remove_file(&self, path: &[u8]) -> HostFuture<io::Result<()>> {
@@ -413,32 +462,11 @@ impl psh_engine::Host for Host {
     }
 
     fn rename(&self, from: &[u8], to: &[u8]) -> HostFuture<io::Result<()>> {
-        let (from, to) = (normalize(from), normalize(to));
-        match self.0.charge() {
-            Ok(()) => {
-                let reply = self.0.fs.rename(&from, &to);
-                self.0
-                    .change(reply, move |changes| changes.moved(from, to))
-                    .boxed()
-            }
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        self.0.rename(normalize(from), normalize(to)).boxed()
     }
 
     fn symlink(&self, target: &[u8], link: &[u8]) -> HostFuture<io::Result<()>> {
-        let link = normalize(link);
-        match self.0.charge() {
-            Ok(()) => {
-                let reply = self.0.fs.symlink(target, &link);
-                self.0
-                    .change(reply, move |changes| {
-                        changes.removed.remove(&link);
-                        changes.linked.insert(link);
-                    })
-                    .boxed()
-            }
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        self.0.symlink(target, normalize(link)).boxed()
     }
 
     fn read_link(&self, path: &[u8]) -> HostFuture<io::Result<Vec<u8>>> {
@@ -459,10 +487,7 @@ impl psh_engine::Host for Host {
         let Some(mtime_ns) = mtime_ns else {
             return Box::pin(std::future::ready(Ok(())));
         };
-        match self.0.charge() {
-            Ok(()) => self.0.fs.set_mtime(&normalize(path), mtime_ns).boxed(),
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        self.0.set_mtime(&normalize(path), mtime_ns).boxed()
     }
 
     fn user_name(&self, uid: u32) -> Option<Vec<u8>> {
@@ -494,25 +519,13 @@ impl psh_engine::Host for Host {
     }
 
     fn not_found(&self, name: &[u8]) {
-        self.0.missing.borrow_mut().push(name.to_vec());
-        if self.0.strict {
-            self.0.refuse(Limit::Missing);
-        }
+        self.0.lacks(name);
     }
 }
 
 impl Host {
     fn remove(&self, path: &[u8], what: Remove) -> HostFuture<io::Result<()>> {
-        let path = normalize(path);
-        match self.0.charge() {
-            Ok(()) => {
-                let reply = self.0.fs.remove(&path, what);
-                self.0
-                    .change(reply, move |changes| changes.removed(path))
-                    .boxed()
-            }
-            Err(error) => Box::pin(std::future::ready(Err(error))),
-        }
+        self.0.remove(normalize(path), what).boxed()
     }
 }
 

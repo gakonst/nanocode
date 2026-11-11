@@ -9,7 +9,7 @@ use nanocode_durability_core::{OwnerToken, StateSummary};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{Journal, Location, Record, State, identity, records::RecordMap};
+use super::{Journal, Location, Record, State, identity, records::RecordMap, summaries::Anchor};
 
 const MAGIC: &[u8] = b"nanocode-jsonl-index-v3\n";
 const ENTRY_MAGIC: &[u8] = b"nanocode-jsonl-index-v2\n";
@@ -919,6 +919,15 @@ impl Journal {
 }
 
 impl Journal {
+    pub(super) fn anchor(&mut self) -> Option<Anchor> {
+        let last = self.index.last?;
+        let digest = digest_anchor(&mut self.reads, Some(last)).ok()?;
+        Some(Anchor {
+            position: last.position,
+            digest,
+        })
+    }
+
     pub(super) fn index_due(&mut self) {
         if self.sidecar
             && self.ready
@@ -943,7 +952,7 @@ impl Drop for Journal {
     }
 }
 
-fn digest_anchor(file: &mut File, location: Option<Location>) -> io::Result<[u8; 32]> {
+pub(super) fn digest_anchor(file: &mut File, location: Option<Location>) -> io::Result<[u8; 32]> {
     let mut digest = Sha256::new();
     if let Some(location) = location {
         file.seek(SeekFrom::Start(location.position))?;

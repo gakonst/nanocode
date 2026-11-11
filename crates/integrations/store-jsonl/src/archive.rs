@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
+
 use super::sync_journal;
 
 const SUFFIX: &str = ".zst";
@@ -47,20 +49,21 @@ pub(super) fn decompress(archive: &[u8]) -> io::Result<Vec<u8>> {
     zstd::bulk::Decompressor::with_dictionary(DICTIONARY)?.decompress(frame, capacity)
 }
 
-pub(super) fn archive(path: &Path) -> io::Result<bool> {
+pub(super) fn archive(path: &Path) -> io::Result<Option<[u8; 32]>> {
     let before = fs::metadata(path)?;
     let bytes = fs::read(path)?;
     let directory = path.parent().unwrap_or_else(|| Path::new("."));
     let target = archived(path);
-    write(directory, &target, &compress(&bytes)?, true)?;
+    let archive = compress(&bytes)?;
+    write(directory, &target, &archive, true)?;
     let after = fs::metadata(path)?;
     if !unchanged(&before, &after) || after.len() != bytes.len() as u64 {
         fs::remove_file(&target)?;
-        return Ok(false);
+        return Ok(None);
     }
     fs::remove_file(path)?;
     sync_directory(directory)?;
-    Ok(true)
+    Ok(Some(Sha256::digest(&archive).into()))
 }
 
 pub(super) fn restore(path: &Path) -> io::Result<()> {

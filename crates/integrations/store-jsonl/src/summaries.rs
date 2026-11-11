@@ -8,7 +8,7 @@ use std::{
 use nanocode_durability_core::{StateSummary, StoreError};
 use serde::{Deserialize, Serialize};
 
-use super::{archive, backend, identity};
+use super::{Location, archive, backend, identity, index::digest_anchor};
 
 const FILE: &str = ".summaries.json.zst";
 const LEGACY: &str = ".summaries.json";
@@ -18,6 +18,7 @@ pub(super) struct Summaries {
     legacy: PathBuf,
     loaded: Option<String>,
     entries: HashMap<String, Summary>,
+    copied: Vec<(String, Summary)>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -26,6 +27,28 @@ pub(super) struct Summary {
     pub(super) length: u64,
     pub(super) revision: u64,
     pub(super) summary: Option<StateSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) anchor: Option<Anchor>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(super) struct Anchor {
+    pub(super) position: u64,
+    pub(super) digest: [u8; 32],
+}
+
+impl Anchor {
+    fn holds(self, path: &Path, length: u64) -> bool {
+        let digest = || {
+            let length = usize::try_from(length.checked_sub(self.position)?).ok()?;
+            let location = Location {
+                position: self.position,
+                length,
+            };
+            digest_anchor(&mut File::open(path).ok()?, Some(location)).ok()
+        };
+        digest() == Some(self.digest)
+    }
 }
 
 impl Summaries {
@@ -35,6 +58,7 @@ impl Summaries {
             legacy: directory.join(LEGACY),
             loaded: None,
             entries: HashMap::new(),
+            copied: Vec::new(),
         }
     }
 
@@ -78,12 +102,49 @@ impl Summaries {
             .cloned()
     }
 
-    pub(super) fn moved(&mut self, from: &str, to: &str, length: u64) -> Result<(), StoreError> {
+    pub(super) fn copied(
+        &mut self,
+        state_id: &str,
+        file: &str,
+        path: &Path,
+        length: u64,
+        revision: Option<u64>,
+    ) -> Option<Summary> {
+        let known = self
+            .entries
+            .get_mut(state_id)
+            .filter(|known| known.length == length)?;
+        let same = match (revision, known.anchor) {
+            (Some(revision), _) => known.revision == revision,
+            (None, Some(anchor)) => anchor.holds(path, length),
+            (None, None) => false,
+        };
+        if !same {
+            return None;
+        }
+        known.file = file.to_owned();
+        self.copied.push((state_id.to_owned(), known.clone()));
+        Some(known.clone())
+    }
+
+    pub(super) fn settle(&mut self) -> Result<(), StoreError> {
+        let copied = std::mem::take(&mut self.copied);
+        self.remember(copied)
+    }
+
+    pub(super) fn moved(
+        &mut self,
+        from: &str,
+        to: &str,
+        length: u64,
+        anchor: Option<Anchor>,
+    ) -> Result<(), StoreError> {
         self.refresh();
         let mut moved = false;
         for entry in self.entries.values_mut().filter(|entry| entry.file == from) {
             entry.file = to.to_owned();
             entry.length = length;
+            entry.anchor = anchor;
             moved = true;
         }
         if moved { self.persist() } else { Ok(()) }

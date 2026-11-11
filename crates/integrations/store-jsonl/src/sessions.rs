@@ -14,7 +14,7 @@ use nanocode_durability_core::{
 use super::{
     CompactionStats, Journal, Replacement, archive, backend, identity, process_alive,
     shared::Shared,
-    summaries::{Summaries, Summary},
+    summaries::{Anchor, Summaries, Summary},
 };
 
 const OPEN_JOURNALS: usize = 32;
@@ -36,6 +36,14 @@ pub(super) struct Sessions {
 struct Opened {
     journal: Journal,
     used: u64,
+}
+
+struct Listed {
+    state_id: String,
+    file: Metadata,
+    path: PathBuf,
+    member: bool,
+    revision: Option<u64>,
 }
 
 pub(super) fn session_key(state_id: &str) -> &str {
@@ -278,7 +286,7 @@ impl Sessions {
             .ok_or_else(|| backend("JSONL session file was not created"))
     }
 
-    fn files(&self) -> Result<Vec<(String, Metadata)>, StoreError> {
+    fn files(&self) -> Result<Vec<(String, Metadata, PathBuf)>, StoreError> {
         let mut files = Vec::new();
         for entry in fs::read_dir(&self.directory).map_err(backend)? {
             let entry = entry.map_err(backend)?;
@@ -290,11 +298,11 @@ impl Sessions {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(backend(error)),
             };
-            if metadata.is_file() && !files.iter().any(|(listed, _)| *listed == key) {
-                files.push((key, metadata));
+            if metadata.is_file() && !files.iter().any(|(listed, _, _)| *listed == key) {
+                files.push((key, metadata, entry.path()));
             }
         }
-        files.sort_by_key(|(_, metadata)| Reverse(created(metadata)));
+        files.sort_by_key(|(_, metadata, _)| Reverse(created(metadata)));
         Ok(files)
     }
 
@@ -521,6 +529,7 @@ impl Sessions {
 
     pub(super) fn peek(&mut self, id: &str) -> Result<StoredState, StoreError> {
         let unknown = self.unknown.contains_key(id);
+        let member = unknown && self.homes.contains_key(session_key(id));
         let Some(journal) = self.existing(id)? else {
             return Ok(StoredState::default());
         };
@@ -531,6 +540,7 @@ impl Sessions {
                 length: journal.index.offset,
                 revision: state.revision,
                 summary: None,
+                anchor: if member { None } else { journal.anchor() },
             };
             self.unknown.insert(id.to_owned(), Some(seen));
         }
@@ -551,7 +561,7 @@ impl Sessions {
         }
     }
 
-    fn listed(&mut self) -> Result<Vec<(String, Metadata, Option<u64>)>, StoreError> {
+    fn listed(&mut self) -> Result<Vec<Listed>, StoreError> {
         let mut members = HashMap::<String, Vec<String>>::new();
         for (member, home) in &self.homes {
             members
@@ -560,18 +570,31 @@ impl Sessions {
                 .push(member.clone());
         }
         let mut listed = Vec::new();
-        for (key, metadata) in self.files()? {
+        for (key, file, path) in self.files()? {
             let mut colocated = members.remove(&key).unwrap_or_default();
             colocated.sort_unstable_by(|a, b| b.cmp(a));
+            let mut revision = None;
             if !colocated.is_empty()
                 && let Some(journal) = self.existing(&key)?
             {
                 listed.extend(colocated.into_iter().filter_map(|member| {
-                    let revision = journal.index.states.get(&member)?.revision;
-                    Some((member, metadata.clone(), Some(revision)))
+                    Some(Listed {
+                        revision: Some(journal.index.states.get(&member)?.revision),
+                        state_id: member,
+                        file: file.clone(),
+                        path: path.clone(),
+                        member: true,
+                    })
                 }));
+                revision = journal.index.states.get(&key).map(|state| state.revision);
             }
-            listed.push((key, metadata, None));
+            listed.push(Listed {
+                state_id: key,
+                file,
+                path,
+                member: false,
+                revision,
+            });
         }
         Ok(listed)
     }
@@ -581,7 +604,7 @@ impl Sessions {
             .listed()?
             .into_iter()
             .take(limit)
-            .map(|(key, _, _)| key)
+            .map(|listed| listed.state_id)
             .collect())
     }
 
@@ -589,15 +612,29 @@ impl Sessions {
         let listed = self.listed()?;
         self.summaries.refresh();
         self.unknown.clear();
-        listed
+        let listed = listed
             .into_iter()
             .take(limit)
-            .map(|(state_id, metadata, colocated)| {
-                let file = identity(&metadata)?;
-                let known = match colocated {
-                    Some(revision) => self.summaries.colocated(&state_id, &file, revision),
-                    None => self.summaries.listed(&state_id, &file, metadata.len()),
+            .map(|listed| {
+                let Listed {
+                    state_id,
+                    file,
+                    path,
+                    member,
+                    revision,
+                } = listed;
+                let length = file.len();
+                let file = identity(&file)?;
+                let known = match revision {
+                    Some(revision) if member => {
+                        self.summaries.colocated(&state_id, &file, revision)
+                    }
+                    _ => self.summaries.listed(&state_id, &file, length),
                 };
+                let known = known.or_else(|| {
+                    self.summaries
+                        .copied(&state_id, &file, &path, length, revision)
+                });
                 if known.is_none() {
                     self.unknown.insert(state_id.clone(), None);
                 }
@@ -614,7 +651,9 @@ impl Sessions {
                     state_id,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        self.summaries.settle()?;
+        Ok(listed)
     }
 
     pub(super) fn remember_summaries(
@@ -636,11 +675,13 @@ impl Sessions {
                 ));
                 continue;
             }
+            let journal_key = self.home(&summary.state_id);
             let Some(journal) = self.existing(&summary.state_id)? else {
                 continue;
             };
             let revision = journal.peek(&summary.state_id)?.revision;
             if summary.revision == revision && revision > 0 {
+                let member = session_key(&summary.state_id) != journal_key;
                 remembered.push((
                     summary.state_id,
                     Summary {
@@ -648,6 +689,7 @@ impl Sessions {
                         length: journal.index.offset,
                         revision,
                         summary: summary.summary,
+                        anchor: if member { None } else { journal.anchor() },
                     },
                 ));
             }
@@ -683,13 +725,17 @@ impl Sessions {
             drop(opened);
             let compacted = identity(&fs::metadata(&path).map_err(backend)?)?;
             if compacted != from {
-                self.summaries.moved(&from, &compacted, 0)?;
+                self.summaries.moved(&from, &compacted, 0, None)?;
             }
             let from = compacted;
-            if archive::archive(&path).map_err(backend)? {
+            if let Some(digest) = archive::archive(&path).map_err(backend)? {
                 let stored = fs::metadata(archive::archived(&path)).map_err(backend)?;
+                let anchor = Anchor {
+                    position: 0,
+                    digest,
+                };
                 self.summaries
-                    .moved(&from, &identity(&stored)?, stored.len())?;
+                    .moved(&from, &identity(&stored)?, stored.len(), Some(anchor))?;
                 archived += 1;
             }
         }
@@ -702,7 +748,7 @@ impl Sessions {
             after_bytes: 0,
             records_removed: 0,
         };
-        for (key, _) in self.files()? {
+        for (key, _, _) in self.files()? {
             let Some(journal) = self.existing(&key)? else {
                 continue;
             };

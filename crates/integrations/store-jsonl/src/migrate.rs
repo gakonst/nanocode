@@ -328,6 +328,7 @@ fn summary(
             length,
             revision,
             summary: summary.clone(),
+            anchor: None,
         })
 }
 

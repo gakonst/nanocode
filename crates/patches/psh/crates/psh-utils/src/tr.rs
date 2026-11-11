@@ -398,6 +398,22 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         plan.squeeze = Some(s);
     }
     let delete_complement = delete && complement;
+    // Sets of single bytes: what becomes of each byte (deleted, or the byte it turns
+    // into and whether its repeats are squeezed) is worked out once, not per byte read.
+    let bytes: Option<Vec<Option<(u8, bool)>>> = (!chars).then(|| {
+        (0..=u32::from(u8::MAX))
+            .map(|u| {
+                let deleted = if delete_complement {
+                    !set1_lookup.contains(&u)
+                } else {
+                    plan.delete.contains(&u)
+                };
+                let t = if translating { plan.translate(u) } else { u };
+                let squeezed = plan.squeeze.as_ref().is_some_and(|sq| sq.contains(t));
+                (!deleted).then_some((t as u8, squeezed))
+            })
+            .collect()
+    });
 
     let mut buf = vec![0u8; 64 * 1024];
     let mut pending: Vec<u8> = Vec::new();
@@ -416,6 +432,19 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         let mut data = std::mem::take(&mut pending);
         data.extend_from_slice(&buf[..n]);
         let mut i = 0;
+        if let Some(bytes) = &bytes {
+            for &b in &data {
+                let Some((t, squeezed)) = bytes[usize::from(b)] else {
+                    continue;
+                };
+                if squeezed && last_out == Some(u32::from(t)) {
+                    continue;
+                }
+                last_out = Some(u32::from(t));
+                out.push(t);
+            }
+            i = data.len();
+        }
         while i < data.len() {
             let (u, len) = if chars {
                 let b = data[i];

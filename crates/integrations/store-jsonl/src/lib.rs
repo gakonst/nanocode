@@ -2919,7 +2919,10 @@ impl StateStore for JsonlStore {
     }
 
     fn flush(&mut self) -> StoreFuture<'_, Result<(), StoreError>> {
-        self.write(|_| Ok(()))
+        self.write(|sessions| {
+            sessions.flush();
+            Ok(())
+        })
     }
 }
 

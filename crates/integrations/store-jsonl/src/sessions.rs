@@ -234,6 +234,12 @@ impl Sessions {
         }
     }
 
+    pub(super) fn flush(&mut self) {
+        for opened in self.journals.values_mut() {
+            opened.journal.flush_index();
+        }
+    }
+
     pub(super) fn unsynced(&mut self) -> Vec<std::sync::Arc<fs::File>> {
         self.journals
             .values_mut()

@@ -197,15 +197,19 @@ impl Index {
         let _span = tracing::info_span!("durability.jsonl.index.records").entered();
         let file = self.file.as_mut().ok_or_else(invalid)?;
         let bytes = read_block(file, block)?;
+        let mut hashes = Vec::new();
         let records: RecordMap = match block.format {
             Some(BlockFormat::Entries) => {
                 serde_json::from_slice::<HashMap<String, Location>>(&bytes)
                     .map_err(io::Error::other)?
                     .into_iter()
-                    .map(|(key, location)| (key, Record::Entry(location)))
+                    .map(|(key, location)| {
+                        hashes.push(super::key_hash(&key));
+                        (key, Record::Entry(location))
+                    })
                     .collect()
             }
-            Some(BlockFormat::Records) => decode_records(&bytes)?,
+            Some(BlockFormat::Records) => decode_records(&bytes, &mut hashes)?,
             None => return Err(invalid()),
         };
         if !records
@@ -215,10 +219,8 @@ impl Index {
             return Err(invalid());
         }
         let state = self.states.get_mut(id).ok_or_else(invalid)?;
-        for key in records.keys() {
-            self.holders
-                .entry(super::key_hash(&key))
-                .or_insert(state.created);
+        for hash in hashes {
+            self.holders.entry(hash).or_insert(state.created);
         }
         let later = std::mem::replace(&mut state.records, records);
         if !state.records.merge(later) {
@@ -805,7 +807,7 @@ fn encode_records(records: &RecordMap, output: &mut impl Write) -> io::Result<()
     Ok(())
 }
 
-fn decode_records(mut bytes: &[u8]) -> io::Result<RecordMap> {
+fn decode_records(mut bytes: &[u8], hashes: &mut Vec<u64>) -> io::Result<RecordMap> {
     let mut records = RecordMap::default();
     while !bytes.is_empty() {
         let length = usize::try_from(take_u64(&mut bytes)?).map_err(io::Error::other)?;
@@ -828,6 +830,7 @@ fn decode_records(mut bytes: &[u8]) -> io::Result<RecordMap> {
         if !records.add(key, record) {
             return Err(invalid());
         }
+        hashes.push(super::key_hash(key));
     }
     Ok(records)
 }

@@ -9440,8 +9440,6 @@ dependencies = [
 [[package]]
 name = "rustpython-pylib"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a90d294a244005c8ee19bb3c2ae6682fc72c3a5dae749b5fb603989b4ba5d65"
 dependencies = [
  "glob",
  "rustpython-compiler-core",

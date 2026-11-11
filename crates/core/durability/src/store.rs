@@ -163,12 +163,20 @@ pub enum SummaryUpdate {
     Remove,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Settle {
+    #[default]
+    Durable,
+    Ordered,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct StateCommit<'a> {
     pub payload: &'a str,
     pub records: &'a [StoreRecord],
     pub events: &'a [StoreEvent],
     pub summary: &'a SummaryUpdate,
+    pub settle: Settle,
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +188,7 @@ pub struct OwnedCommit {
     pub records: Vec<StoreRecord>,
     pub events: Vec<StoreEvent>,
     pub summary: SummaryUpdate,
+    pub settle: Settle,
 }
 
 impl OwnedCommit {
@@ -189,6 +198,7 @@ impl OwnedCommit {
             records: &self.records,
             events: &self.events,
             summary: &self.summary,
+            settle: self.settle,
         }
     }
 }

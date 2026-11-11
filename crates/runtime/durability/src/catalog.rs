@@ -1262,6 +1262,7 @@ mod store {
                         records: &records,
                         events: &[],
                         summary: &summary,
+                        settle: crate::Settle::Durable,
                     },
                 )
                 .await?;

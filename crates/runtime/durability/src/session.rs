@@ -15,7 +15,7 @@ use tracing::Instrument;
 
 use crate::{
     Committed, DurableState, EncodedPayload, Error, OperationStatus, OwnerId, OwnerToken, Result,
-    SessionRecord, StateCommit, StateStore, SteerState, StepStatus, StoreError, StoreEvent,
+    SessionRecord, Settle, StateCommit, StateStore, SteerState, StepStatus, StoreError, StoreEvent,
     StoreReplacement, StoredState, SummaryUpdate, Transition,
     catalog::{is_listed, prompt_text, summarize},
     shared_store::SharedStore,
@@ -2012,6 +2012,11 @@ impl Driver {
         writes: Vec<OwnerWrite>,
         deferred: bool,
     ) -> Result<Vec<WriteOutcome>> {
+        let settle = if deferred {
+            Settle::Ordered
+        } else {
+            Settle::Durable
+        };
         let deferred = deferred
             && self.unsaved_results.is_empty()
             && !writes.iter().any(|write| {
@@ -2090,7 +2095,7 @@ impl Driver {
             if let Some(limit) = self.terminal_receipt_limit {
                 let _ = next.retain_terminal_receipts(limit);
             }
-            self.persist(next).await?;
+            self.persist_settling(next, settle).await?;
         }
         Ok(outcomes)
     }
@@ -2155,7 +2160,15 @@ impl Driver {
         Ok(preview)
     }
 
-    async fn persist(&mut self, mut next: DurableState) -> Result<SessionReceipt> {
+    async fn persist(&mut self, next: DurableState) -> Result<SessionReceipt> {
+        self.persist_settling(next, Settle::Durable).await
+    }
+
+    async fn persist_settling(
+        &mut self,
+        mut next: DurableState,
+        settle: Settle,
+    ) -> Result<SessionReceipt> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -2233,6 +2246,7 @@ impl Driver {
                         records: &records,
                         events: &events,
                         summary: &summary,
+                        settle,
                     },
                 )
                 .await

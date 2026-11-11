@@ -1,8 +1,11 @@
 use nanocode_durability::{
-    EncodedPayload, OwnedState, OwnerId, SharedStore, StateStore, StoreRecord, StoredState,
+    EncodedPayload, OwnedState, OwnerId, Settle, SharedStore, StateCommit, StateStore, StoreRecord,
+    StoredState, SummaryUpdate,
 };
 use nanocode_sync::{Atom, Owned};
-use nanocode_tool_host::code_mode::{CellJournal, CellJournalSink, CellJournalUpdate};
+use nanocode_tool_host::code_mode::{
+    CellJournal, CellJournalSink, CellJournalUpdate, JournaledCallState,
+};
 use nanocode_tool_host::embedded::HostFuture;
 use serde_json::Value;
 use std::{
@@ -213,6 +216,7 @@ async fn replace(
     owned: &mut OwnedState,
     cells: &BTreeMap<u64, Cell>,
     records: &[StoreRecord],
+    settle: Settle,
 ) -> Result<(), String> {
     let mut head = HeadRef {
         version: VERSION,
@@ -232,19 +236,24 @@ async fn replace(
         }
     }
     let payload = serde_json::to_string(&head).map_err(|error| error.to_string())?;
-    let revision = store
+    let committed = store
         .clone()
-        .replace(
+        .commit(
             &state_id(session_id),
             &owned.owner,
             owned.state.revision,
-            &payload,
-            records,
+            StateCommit {
+                payload: &payload,
+                records,
+                events: &[],
+                summary: &SummaryUpdate::Unchanged,
+                settle,
+            },
         )
         .await
         .map_err(|error| error.to_string())?;
     owned.state = StoredState {
-        revision,
+        revision: committed.revision,
         payload: Some(payload),
     };
     Ok(())
@@ -271,6 +280,15 @@ impl CellJournalSink for DurableCellJournals {
             .header
             .as_mut()
             .map(|header| Self::catalog(&std::mem::take(&mut header.tools)));
+        let settle = if update
+            .calls
+            .iter()
+            .all(|call| matches!(call.state, JournaledCallState::Completed { .. }))
+        {
+            Settle::Ordered
+        } else {
+            Settle::Durable
+        };
         Box::pin(async move {
             let mut session = session.acquire().await;
             let (owned, cells, catalogs) = owned(&store, &update.session_id, &mut session).await?;
@@ -311,7 +329,7 @@ impl CellJournalSink for DurableCellJournals {
             keys.push(link.key().to_owned());
             link.stage(&mut records);
             cells.insert(cell_id, Cell::Chained(keys));
-            replace(&store, &session_id, owned, cells, &records).await
+            replace(&store, &session_id, owned, cells, &records, settle).await
         })
     }
 
@@ -327,7 +345,7 @@ impl CellJournalSink for DurableCellJournals {
                     return Ok(());
                 };
                 let records = blanked(cell_id, cell);
-                replace(&store, &session_id, owned, cells, &records).await
+                replace(&store, &session_id, owned, cells, &records, Settle::Ordered).await
             };
             if let Err(error) = forgotten.await {
                 tracing::warn!(cell_id, %error, "a Code Mode cell journal could not be forgotten");

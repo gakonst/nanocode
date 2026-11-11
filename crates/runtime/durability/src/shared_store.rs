@@ -6,8 +6,8 @@ use tracing::Instrument;
 
 use crate::{
     Committed, EventHits, EventPage, EventQuery, EventRange, KnownSummary, ListedState,
-    OwnedCommit, OwnedState, OwnerId, OwnerToken, StateCommit, StatePage, StateQuery, StateReader,
-    StateStore, StoreError, StoreEvent, StoreFuture, StoredState, SummaryUpdate,
+    OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, StateCommit, StatePage, StateQuery,
+    StateReader, StateStore, StoreError, StoreEvent, StoreFuture, StoredState, SummaryUpdate,
 };
 #[cfg(not(target_family = "wasm"))]
 use crate::{Error, StoreUpdate};
@@ -71,6 +71,7 @@ enum Command {
         records: Vec<crate::StoreRecord>,
         events: Vec<StoreEvent>,
         summary: SummaryUpdate,
+        settle: Settle,
         result: oneshot::Sender<Result<Committed, StoreError>>,
     },
     Peek {
@@ -685,6 +686,7 @@ impl Grouped {
                         records: Vec::new(),
                         events: Vec::new(),
                         summary: SummaryUpdate::Unchanged,
+                        settle: Settle::Durable,
                     },
                     Reply::Replace(result),
                 )
@@ -705,6 +707,7 @@ impl Grouped {
                     records,
                     events: Vec::new(),
                     summary: SummaryUpdate::Unchanged,
+                    settle: Settle::Durable,
                 },
                 Reply::Replace(result),
             ),
@@ -725,6 +728,7 @@ impl Grouped {
                         records,
                         events: Vec::new(),
                         summary: SummaryUpdate::Unchanged,
+                        settle: Settle::Durable,
                     },
                     Reply::Replace(result),
                 )
@@ -737,6 +741,7 @@ impl Grouped {
                 records,
                 events,
                 summary,
+                settle,
                 result,
             } => (
                 OwnedCommit {
@@ -747,6 +752,7 @@ impl Grouped {
                     records,
                     events,
                     summary,
+                    settle,
                 },
                 Reply::Commit(result),
             ),
@@ -803,6 +809,7 @@ impl Grouped {
                         records,
                         events,
                         summary,
+                        settle,
                     },
                 reply,
                 content,
@@ -830,6 +837,7 @@ impl Grouped {
                     records,
                     events,
                     summary,
+                    settle,
                     result,
                 },
             },
@@ -954,6 +962,7 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
                         records: replacement.records,
                         events: Vec::new(),
                         summary: SummaryUpdate::Unchanged,
+                        settle: Settle::Durable,
                     });
                     answers.push(Answer::Acquired {
                         result: acquisition.result,
@@ -1078,6 +1087,7 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
                 records: new_records,
                 events,
                 summary,
+                settle,
                 result,
             } => {
                 drop(
@@ -1092,6 +1102,7 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
                                     records: &new_records,
                                     events: &events,
                                     summary: &summary,
+                                    settle,
                                 },
                             )
                             .await,
@@ -1291,6 +1302,7 @@ impl StateStore for SharedStore {
                         records: commit.records.to_vec(),
                         events: commit.events.to_vec(),
                         summary: commit.summary.clone(),
+                        settle: commit.settle,
                         result,
                     },
                     span,

@@ -584,6 +584,7 @@ impl SessionStore {
                                     records: &[],
                                     events: &[],
                                     summary: &SummaryUpdate::Unchanged,
+                                    settle: crate::Settle::Durable,
                                 },
                             )
                             .await?;
@@ -807,6 +808,7 @@ impl BranchImport {
                     records: &records,
                     events: &[],
                     summary: &SummaryUpdate::Unchanged,
+                    settle: crate::Settle::Durable,
                 },
             )
             .await?;
@@ -886,6 +888,7 @@ impl BranchImport {
                     records: &published.stage_records(),
                     events: &[],
                     summary: &summary,
+                    settle: crate::Settle::Durable,
                 },
             )
             .await?;

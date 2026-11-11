@@ -14,8 +14,8 @@ use sessions::Sessions;
 
 use nanocode_durability_core::{
     Colocation, Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
-    StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord, StoreReplacement, StoreUpdate,
-    StoredState,
+    Settle, StateCommit, StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord,
+    StoreReplacement, StoreUpdate, StoredState,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
 use sha2::{Digest, Sha256};
@@ -2921,11 +2921,49 @@ impl StateStore for JsonlStore {
         self.write(move |sessions| sessions.replace(&id, &owner, expected, payload, records))
     }
 
+    fn commit<'a>(
+        &'a mut self,
+        id: &'a str,
+        owner: &'a OwnerToken,
+        expected: u64,
+        commit: StateCommit<'a>,
+    ) -> StoreFuture<'a, Result<Committed, StoreError>> {
+        if !commit.events.is_empty() {
+            return Box::pin(async {
+                Err(StoreError::NotCommitted(
+                    "this store does not record state events".to_owned(),
+                ))
+            });
+        }
+        let (id, owner, payload, records) = (
+            id.to_owned(),
+            owner.clone(),
+            commit.payload.to_owned(),
+            commit.records.to_vec(),
+        );
+        let replace = move |sessions: &mut Sessions| {
+            sessions.replace(&id, &owner, expected, payload, records)
+        };
+        let replaced = match commit.settle {
+            Settle::Durable => self.write(replace),
+            Settle::Ordered => self.mark(replace),
+        };
+        Box::pin(async move {
+            Ok(Committed {
+                revision: replaced.await?,
+                first_event: None,
+            })
+        })
+    }
+
     fn commit_many(
         &mut self,
         commits: Vec<OwnedCommit>,
     ) -> StoreFuture<'_, Vec<Result<Committed, StoreError>>> {
         let count = commits.len();
+        let ordered = commits
+            .iter()
+            .all(|commit| commit.settle == Settle::Ordered);
         let replacements = commits
             .into_iter()
             .map(|commit| {
@@ -2944,7 +2982,12 @@ impl StateStore for JsonlStore {
                 }
             })
             .collect();
-        let replaced = self.write(move |sessions| Ok(sessions.replace_many(replacements)));
+        let replace = move |sessions: &mut Sessions| Ok(sessions.replace_many(replacements));
+        let replaced = if ordered {
+            self.mark(replace)
+        } else {
+            self.write(replace)
+        };
         Box::pin(async move {
             match replaced.await {
                 Ok(results) => results

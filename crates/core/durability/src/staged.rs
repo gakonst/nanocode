@@ -189,6 +189,7 @@ impl StagedWrites {
                             records: &records,
                             events: &[],
                             summary: &SummaryUpdate::Unchanged,
+                            settle: crate::Settle::Durable,
                         },
                     )
                     .await?

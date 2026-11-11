@@ -34,7 +34,7 @@ pub use nanocode_durability_core::{
     EventHit, EventHits, EventOrder, EventPage, EventQuery, EventRange, Examined, IndexedState,
     KeyValue, KeyValueStore, KnownSummary, ListedState, ListedSummary, LockKey, LocksHeld,
     Migration, MissingColumn, OwnedCommit, OwnedState, OwnerId, OwnerToken, PageCodec, Result,
-    RowStore, SharedBlobStore, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore,
+    RowStore, Settle, SharedBlobStore, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore,
     StagedStore, StagedWrites, StateCommit, StateCursor, StatePage, StateQuery, StateReader,
     StateStore, StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord,
     StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryUpdate, Versioned,

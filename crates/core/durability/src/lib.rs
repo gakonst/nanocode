@@ -25,9 +25,9 @@ pub use state::{
 pub use store::{
     Colocation, Committed, EventCursor, EventHit, EventHits, EventOrder, EventPage, EventQuery,
     EventRange, IndexedState, KnownSummary, ListedState, ListedSummary, OwnedCommit, OwnedState,
-    OwnerId, OwnerToken, StateCommit, StateCursor, StatePage, StateQuery, StateReader, StateStore,
-    StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord, StoreReplacement,
-    StoreUpdate, StoredEvent, StoredState, SummaryUpdate,
+    OwnerId, OwnerToken, Settle, StateCommit, StateCursor, StatePage, StateQuery, StateReader,
+    StateStore, StateSummary, StoreError, StoreEvent, StoreFuture, StoreHandles, StoreRecord,
+    StoreReplacement, StoreUpdate, StoredEvent, StoredState, SummaryUpdate,
 };
 
 pub type Result<T> = std::result::Result<T, Error>;

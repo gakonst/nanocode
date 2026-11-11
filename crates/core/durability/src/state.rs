@@ -473,7 +473,7 @@ struct NodePage<'a> {
 
 struct PageOperations<'a> {
     ids: &'a [String],
-    operations: &'a BTreeMap<String, OperationState>,
+    operations: &'a BTreeMap<String, Box<OperationState>>,
 }
 
 impl serde::Serialize for PageOperations<'_> {
@@ -510,13 +510,17 @@ impl Archive {
 
 #[derive(Clone, Copy)]
 pub struct Operations<'a> {
-    head: &'a BTreeMap<String, OperationState>,
+    head: &'a BTreeMap<String, Box<OperationState>>,
     archive: &'a Archive,
 }
 
 impl<'a> Operations<'a> {
     pub fn iter(self) -> impl Iterator<Item = (&'a String, &'a OperationState)> + 'a {
-        self.archive.operations.iter().chain(self.head.iter())
+        self.archive.operations.iter().chain(
+            self.head
+                .iter()
+                .map(|(operation_id, operation)| (operation_id, &**operation)),
+        )
     }
 
     pub fn values(self) -> impl Iterator<Item = &'a OperationState> + 'a {
@@ -541,6 +545,7 @@ impl<'a> Operations<'a> {
     pub fn get(self, operation_id: &str) -> Option<&'a OperationState> {
         self.head
             .get(operation_id)
+            .map(|operation| &**operation)
             .or_else(|| self.archive.operations.get(operation_id))
     }
 
@@ -551,6 +556,7 @@ impl<'a> Operations<'a> {
         }
         self.head
             .iter()
+            .map(|(operation_id, operation)| (operation_id, &**operation))
             .min_by_key(|(_, operation)| operation.accepted_order)
     }
 }
@@ -558,7 +564,7 @@ impl<'a> Operations<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct JournalState {
     revision: u64,
-    operations: BTreeMap<String, OperationState>,
+    operations: BTreeMap<String, Box<OperationState>>,
     archive: Arc<Archive>,
     latest_checkpoint: Option<(u64, EncodedPayload)>,
     sealed: SealedReceipts,
@@ -571,7 +577,7 @@ pub struct JournalState {
 #[serde(deny_unknown_fields)]
 pub struct DurableCheckpoint {
     format: u8,
-    operations: BTreeMap<String, OperationState>,
+    operations: BTreeMap<String, Box<OperationState>>,
     latest_checkpoint: Option<EncodedPayload>,
     #[serde(default, skip_serializing_if = "SealedReceipts::is_empty")]
     sealed: SealedReceipts,
@@ -587,7 +593,7 @@ pub struct RetainedCheckpoint<R> {
     pub nanocode_session: Option<R>,
 }
 
-struct WireOperations<'a>(&'a BTreeMap<String, OperationState>);
+struct WireOperations<'a>(&'a BTreeMap<String, Box<OperationState>>);
 
 impl serde::Serialize for WireOperations<'_> {
     fn serialize<S: serde::Serializer>(
@@ -765,7 +771,7 @@ impl JournalState {
         let mut head = self
             .operations
             .iter()
-            .map(|(id, operation)| (id.as_str(), operation))
+            .map(|(id, operation)| (id.as_str(), &**operation))
             .collect::<Vec<_>>();
         sort_accepted(&mut head);
         let settled = head
@@ -798,7 +804,7 @@ impl JournalState {
             let archive = Arc::make_mut(&mut self.archive);
             for operation_id in sealed {
                 if let Some(operation) = self.operations.remove(&operation_id) {
-                    archive.insert(operation_id, operation);
+                    archive.insert(operation_id, *operation);
                 }
             }
         }
@@ -811,7 +817,9 @@ impl JournalState {
 
     #[must_use]
     pub fn steers_loaded(&self) -> bool {
-        self.operations.values().all(OperationState::steers_loaded)
+        self.operations
+            .values()
+            .all(|operation| operation.steers_loaded())
     }
 
     #[must_use]
@@ -858,7 +866,7 @@ impl JournalState {
             .operations
             .iter()
             .filter(|(_, operation)| !operation.status.is_terminal())
-            .map(|(id, operation)| (id.as_str(), operation))
+            .map(|(id, operation)| (id.as_str(), &**operation))
             .collect::<Vec<_>>();
         sort_accepted(&mut operations);
         operations
@@ -876,7 +884,7 @@ impl JournalState {
             .iter()
             .filter(|(id, operation)| !operation.status.is_terminal() && predicate(id.as_str()))
             .min_by_key(|(_, operation)| operation.accepted_order)
-            .map(|(id, operation)| (id.as_str(), operation))
+            .map(|(id, operation)| (id.as_str(), &**operation))
     }
 
     #[must_use]
@@ -946,7 +954,12 @@ impl JournalState {
         if !self.sealed.is_empty() && self.unloaded == 0 {
             self.sealed = SealedReceipts::default();
             let archive = Arc::unwrap_or_clone(std::mem::take(&mut self.archive));
-            self.operations.extend(archive.operations);
+            self.operations.extend(
+                archive
+                    .operations
+                    .into_iter()
+                    .map(|(operation_id, operation)| (operation_id, Box::new(operation))),
+            );
             changed = true;
         }
         let before = self.operations.len();
@@ -965,7 +978,10 @@ impl JournalState {
         changed
     }
 
-    fn retain_terminal_operations(operations: &mut BTreeMap<String, OperationState>, limit: usize) {
+    fn retain_terminal_operations(
+        operations: &mut BTreeMap<String, Box<OperationState>>,
+        limit: usize,
+    ) {
         let mut terminal_orders = operations
             .values()
             .filter(|operation| operation.status.is_terminal())
@@ -1380,7 +1396,7 @@ impl JournalState {
             } => {
                 self.operations.insert(
                     operation_id,
-                    OperationState {
+                    Box::new(OperationState {
                         steer_receipts: imbl::OrdMap::new(),
                         continuation: None,
                         retired_model_calls: 0,
@@ -1391,7 +1407,7 @@ impl JournalState {
                         steers: imbl::Vector::new(),
                         steered: SealedSteers::default(),
                         accepted_order: revision,
-                    },
+                    }),
                 );
             }
             Transition::StepStarted {

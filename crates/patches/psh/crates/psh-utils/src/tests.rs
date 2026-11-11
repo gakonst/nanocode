@@ -85,7 +85,10 @@ fn specs_match_the_classifier() {
 
 /// Utilities with an option parser of their own (copied with the utility), checked
 /// against the classifier from their own flag tables.
-const OWN_PARSER: &[&str] = &["rg", "git", "tar", "gzip", "zip", "unzip", "patch"];
+const OWN_PARSER: &[&str] = &[
+    "rg", "git", "tar", "gzip", "zip", "unzip", "patch", "xxd", "od", "hexdump", "strings",
+    "base32",
+];
 
 #[test]
 fn force_names_from_the_variable() {

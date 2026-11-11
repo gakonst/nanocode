@@ -63,6 +63,7 @@ mod git;
 mod jq;
 
 mod codec;
+mod dump;
 mod gzip;
 mod patch;
 mod tar;
@@ -131,6 +132,36 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(patch::run),
+    },
+    UtilEntry {
+        names: &["xxd"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dump::xxd),
+    },
+    UtilEntry {
+        names: &["od"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dump::od),
+    },
+    UtilEntry {
+        names: &["hexdump"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dump::hexdump),
+    },
+    UtilEntry {
+        names: &["strings"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dump::strings),
+    },
+    UtilEntry {
+        names: &["base32"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(dump::base32),
     },
     UtilEntry {
         names: &["find"],

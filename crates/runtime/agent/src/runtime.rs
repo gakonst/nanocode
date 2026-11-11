@@ -23,7 +23,7 @@ use std::{
     },
 };
 
-use nanocode_sync::{Inbox, Swap, SwapOption};
+use nanocode_sync::{Atom, Inbox, Swap, SwapOption};
 
 type Result<T> = nanocode_agent_core::Result<T>;
 
@@ -1421,7 +1421,8 @@ type Reopener = Arc<dyn Fn(String) -> BackendFuture<AgentResult> + Send + Sync>;
 pub(crate) struct Ownership {
     admissions: AtomicUsize,
     drained: AtomicBool,
-    owned: Swap<Vec<(usize, WeakAgent)>>,
+    owned: Atom<nanocode_sync::Map<usize, (usize, WeakAgent)>>,
+    adopted: AtomicUsize,
     children: Inbox<WeakAgent>,
     tracked: AtomicUsize,
     opening: Swap<HashMap<String, Arc<Opening>>>,
@@ -1500,11 +1501,14 @@ impl Ownership {
     }
 
     fn agent(&self, session_id: &str) -> Option<Agent> {
-        self.owned
-            .load()
-            .iter()
-            .filter(|(_, agent)| agent.session_id() == session_id)
-            .find_map(|(_, agent)| agent.upgrade())
+        self.owned.read(|owned| {
+            owned
+                .values()
+                .filter(|(_, agent)| agent.session_id() == session_id)
+                .filter_map(|(adopted, agent)| Some((adopted, agent.upgrade()?)))
+                .min_by_key(|(adopted, _)| **adopted)
+                .map(|(_, agent)| agent)
+        })
     }
 
     async fn claim_opening(self: &Arc<Self>, session_id: &str) -> SessionOpening {
@@ -1609,7 +1613,12 @@ impl Ownership {
                 self.drained.store(true, Ordering::Release);
                 let mut failures = Vec::new();
                 loop {
-                    let next = self.owned.load().last().cloned();
+                    let next = self.owned.read(|owned| {
+                        owned
+                            .iter()
+                            .max_by_key(|(_, (adopted, _))| *adopted)
+                            .map(|(key, (_, agent))| (*key, agent.clone()))
+                    });
                     let Some((key, agent)) = next else { break };
                     if let Some(Err(error)) = agent.shutdown().await {
                         failures.push(error.to_string());
@@ -1639,16 +1648,8 @@ impl Ownership {
     }
 
     fn forget(&self, key: usize) -> Option<String> {
-        let previous = self.owned.rcu(|owned| {
-            owned
-                .iter()
-                .filter(|(owned, agent)| *owned != key && agent.is_live())
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-        previous
-            .iter()
-            .find(|(owned, _)| *owned == key)
+        self.owned
+            .update(|owned| owned.remove(&key))
             .map(|(_, agent)| agent.session_id().to_owned())
     }
 }
@@ -1683,13 +1684,12 @@ impl AgentOwner for Ownership {
             return false;
         }
         let weak = agent.downgrade();
-        self.owned.rcu(|owned| {
-            owned
-                .iter()
-                .filter(|(_, agent)| agent.is_live())
-                .cloned()
-                .chain(std::iter::once((key, weak.clone())))
-                .collect::<Vec<_>>()
+        let adopted = self.adopted.fetch_add(1, Ordering::AcqRel);
+        self.owned.update(|owned| {
+            owned.insert(key, (adopted, weak.clone()));
+            if owned.len().is_power_of_two() {
+                owned.retain(|_, (_, agent)| agent.is_live());
+            }
         });
         if let Some(services) = self.services() {
             #[cfg(not(target_family = "wasm"))]

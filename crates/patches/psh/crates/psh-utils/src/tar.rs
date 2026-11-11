@@ -333,6 +333,11 @@ struct Tar<'c, 'v> {
     lines_to_stderr: bool,
     /// The archive being written, as a path of the file system without its dots.
     itself: Option<Vec<u8>>,
+    /// The directories an extraction found or made, and the ones it made: a
+    /// directory is asked for once, and a file in one that was just made is not
+    /// asked for at all.
+    known: std::collections::HashSet<Vec<u8>>,
+    made: std::collections::HashSet<Vec<u8>>,
 }
 
 /// A path without its empty and dot parts.
@@ -824,9 +829,15 @@ impl Tar<'_, '_> {
                 at.push(b'/');
             }
             at.extend_from_slice(part);
-            if self.ctx.stat(&at, true).await.is_err() {
-                let _ = self.ctx.mkdir(&at, 0o777 & !self.ctx.umask()).await;
+            if self.known.contains(&at) {
+                continue;
             }
+            if self.ctx.stat(&at, true).await.is_err()
+                && self.ctx.mkdir(&at, 0o777 & !self.ctx.umask()).await.is_ok()
+            {
+                self.made.insert(at.clone());
+            }
+            self.known.insert(at.clone());
         }
     }
 
@@ -1037,13 +1048,20 @@ impl Tar<'_, '_> {
                 }
                 continue;
             }
+            let mut new_place = false;
             if let Some(slash) = path.iter().rposition(|&b| b == b'/')
                 && slash > 0
             {
                 let parent = path[..slash].to_vec();
                 self.mkdirs(&parent).await;
+                new_place = self.made.contains(&parent);
             }
-            let existing = self.ctx.stat(&path, false).await.ok();
+            // Nothing is in the way in a directory this extraction made.
+            let existing = if new_place && entry.kind == b'0' {
+                None
+            } else {
+                self.ctx.stat(&path, false).await.ok()
+            };
             if let Some(old) = &existing {
                 if self.o.keep_old {
                     self.fail(&format!("{shown}: Cannot open: File exists"))
@@ -1069,7 +1087,11 @@ impl Tar<'_, '_> {
                             .await;
                         continue;
                     }
-                    let _ = self.ctx.set_mode(&path, mode).await;
+                    // The file was made with its mode, unless a directory's entry
+                    // of that name kept an old file in its place.
+                    if existing.is_some_and(|old| old.kind == FileKind::Dir) {
+                        let _ = self.ctx.set_mode(&path, mode).await;
+                    }
                     if !self.o.touch {
                         let t = entry.mtime * 1_000_000_000;
                         let _ = self.ctx.set_times(&path, Some(t), Some(t), true).await;
@@ -1186,6 +1208,8 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         warned_slash: false,
         lines_to_stderr: false,
         itself: None,
+        known: std::collections::HashSet::new(),
+        made: std::collections::HashSet::new(),
     };
     if mode == b'c' {
         tar.create().await

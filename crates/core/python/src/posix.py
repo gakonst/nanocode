@@ -300,6 +300,7 @@ class _File:
 
 _files = {}
 _next = 3
+_run = 0
 
 
 def _file(fd):
@@ -361,9 +362,9 @@ def _store(file):
 
 
 def _reset():
-    global _next, _cwd, _umask
+    global _cwd, _umask, _run
     _files.clear()
-    _next = 3
+    _run += 1
     _cwd = _host.cwd()
     _umask = 0o022
     environ.clear()

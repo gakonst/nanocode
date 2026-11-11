@@ -2,16 +2,19 @@ mod host;
 mod imports;
 mod psh;
 
-use std::{collections::BTreeSet, io, rc::Rc, time::Duration};
+use std::{collections::BTreeSet, io, rc::Rc, sync::Arc, time::Duration};
 
 use rustpython_vm::{
-    Interpreter, PyObjectRef, PyResult, Settings, VirtualMachine,
+    AsObject, Interpreter, PyObjectRef, PyResult, Settings, VirtualMachine,
     builtins::{PyBaseExceptionRef, PyDictRef},
+    common::rc::PyRc,
     function::IntoFuncArgs,
     scope::Scope,
+    vm::limit::Limiter,
 };
 
 pub use psh::UTILITY;
+pub use rustpython_vm::vm::limit::Metered;
 
 const _: [&str; 2] = [include_str!("posix.py"), include_str!("boot.py")];
 
@@ -58,12 +61,21 @@ pub struct Limits {
     pub output: u64,
     pub file: u64,
     pub sleep: Duration,
+    pub steps: u64,
+    pub time: Duration,
+    pub memory: Option<u64>,
+    pub depth: usize,
 }
+
+pub type Stop = Arc<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Limit {
     Output,
     Sleep,
+    Steps,
+    Time,
+    Memory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +110,7 @@ pub enum Ended {
     Exited(i32),
     Needs(Vec<Missing>),
     Refused(Limit),
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -114,6 +127,7 @@ pub struct Run {
     pub cwd: Vec<u8>,
     pub env: Vec<(Vec<u8>, Vec<u8>)>,
     pub limits: Limits,
+    pub stop: Stop,
 }
 
 #[derive(Debug)]
@@ -184,12 +198,16 @@ enum Prepared {
 pub struct Python {
     interpreter: Option<Interpreter>,
     boot: PyDictRef,
+    depth: usize,
 }
 
 impl Drop for Python {
     fn drop(&mut self) {
         if let Some(interpreter) = self.interpreter.take() {
-            interpreter.enter(|_| self.boot.clear());
+            interpreter.enter(|vm| {
+                self.boot.clear();
+                vm.set_limiter(Some(PyRc::new(host::Shut) as PyRc<dyn Limiter>));
+            });
             interpreter.finalize(None);
         }
     }
@@ -215,10 +233,11 @@ impl Python {
             .add_native_module(host)
             .add_frozen_modules(rustpython_pylib::FROZEN_STDLIB)
             .build();
-        let boot = interpreter.enter(|vm| vm.ctx.new_dict());
+        let (boot, depth) = interpreter.enter(|vm| (vm.ctx.new_dict(), vm.recursion_limit.get()));
         Ok(Self {
             interpreter: Some(interpreter),
             boot,
+            depth,
         })
     }
 
@@ -232,19 +251,37 @@ impl Python {
         if !run.cwd.starts_with(b"/") {
             return refused("the working directory is not an absolute path".to_owned());
         }
+        if run.limits.memory.is_some() && host::held().is_none() {
+            return refused(
+                "a memory limit needs this program's allocator to be Metered".to_owned(),
+            );
+        }
         let invocation = match invocation(&run.argv) {
             Ok(invocation) => invocation,
             Err(message) => return refused(message),
         };
+        let depth = run.limits.depth;
         let entered = host::enter(host::State::new(files, run));
         let ended = self
             .interpreter
             .as_ref()
             .expect("the interpreter lives as long as its owner")
-            .enter(|vm| self.execute(vm, &invocation));
+            .enter(|vm| {
+                vm.recursion_cap.set(depth);
+                vm.recursion_limit.set(depth.min(self.depth));
+                vm.set_limiter(Some(PyRc::new(host::Budget) as PyRc<dyn Limiter>));
+                let ended =
+                    vm.with_memory_ceiling(host::memory(), || self.execute(vm, &invocation));
+                vm.set_limiter(None);
+                ended
+            });
         let state = entered.leave();
         Ran {
-            ended: state.refused.map_or(ended, Ended::Refused),
+            ended: match state.refused {
+                _ if state.cancelled => Ended::Cancelled,
+                Some(limit) => Ended::Refused(limit),
+                None => ended,
+            },
             stdout: state.stdout,
             stderr: state.stderr,
             changes: state.changes,
@@ -377,8 +414,20 @@ impl Python {
     }
 
     fn exit(&self, vm: &VirtualMachine, error: Option<PyBaseExceptionRef>) -> i32 {
-        let code = error.map_or(0, |error| vm.handle_exit_exception(error));
-        if let Err(error) = self.call(vm, "_finish", ()) {
+        let stopped = host::ending();
+        vm.set_limiter(Some(PyRc::new(host::Budget) as PyRc<dyn Limiter>));
+        let code = match error {
+            Some(_) if stopped => 0,
+            Some(error) if error.fast_isinstance(vm.ctx.exceptions.keyboard_interrupt) => {
+                vm.print_exception(&error);
+                130
+            }
+            Some(error) => vm.handle_exit_exception(error),
+            None => 0,
+        };
+        if let Err(error) = self.call(vm, "_finish", (stopped,))
+            && vm.stopped.borrow().is_none()
+        {
             vm.print_exception(&error);
         }
         code.cast_signed()

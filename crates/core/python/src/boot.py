@@ -32,6 +32,7 @@ class FileIO(_io._RawIOBase):
         flags |= posix.O_RDWR if self._readable and self._writable else posix.O_RDONLY if self._readable else posix.O_WRONLY
         self._mode = ('x' if 'x' in mode else 'r' if 'r' in mode else 'w' if 'w' in mode else 'a') + 'b' + ('+' if plus else '')
         self._closefd = closefd
+        self._run = posix._run
         if isinstance(file, int):
             if file < 0:
                 raise ValueError('negative file descriptor')
@@ -53,7 +54,7 @@ class FileIO(_io._RawIOBase):
     closefd = property(lambda self: self._closefd)
 
     def _open(self):
-        if self._fd < 0:
+        if self._fd < 0 or self._run != posix._run:
             raise ValueError('I/O operation on closed file')
         return self._fd
 
@@ -94,6 +95,8 @@ class FileIO(_io._RawIOBase):
     def write(self, data):
         if not self._writable:
             raise _io.UnsupportedOperation('File not open for writing')
+        if self._run != posix._run:
+            return len(data)
         return posix.write(self._open(), data)
 
     def seek(self, pos, whence=0):
@@ -115,7 +118,7 @@ class FileIO(_io._RawIOBase):
         try:
             _io._RawIOBase.close(self)
         finally:
-            if self._closefd:
+            if self._closefd and self._run == posix._run:
                 posix.close(fd)
 
     def __repr__(self):
@@ -331,17 +334,25 @@ def _absent(module):
     return [module, 'standard' if _standard(top) else 'package', 'No module named %r' % (top,)]
 
 
-def _finish():
-    try:
-        import atexit
-        atexit._run_exitfuncs()
-    except BaseException:
-        pass
-    main = sys.modules.get('__main__')
-    if main is not None:
-        main.__dict__.clear()
+def _flush():
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.flush()
-        except BaseException:
+        except Exception:
             pass
+
+
+def _finish(stopped):
+    import atexit
+    _flush()
+    if stopped:
+        atexit._clear()
+    else:
+        try:
+            atexit._run_exitfuncs()
+        except Exception:
+            pass
+    main = sys.modules.get('__main__')
+    if main is not None:
+        main.__dict__.clear()
+    _flush()

@@ -109,6 +109,8 @@ where
         let total = n
             .checked_mul(self.as_ref().len())
             .ok_or_else(|| vm.no_memory_error())?;
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(core::mem::size_of_val(self.as_ref()).saturating_mul(n))?;
         let mut v = Vec::new();
         v.try_reserve_exact(total)
             .map_err(|_| vm.no_memory_error())?;
@@ -138,6 +140,8 @@ where
         if n == 0 {
             self.as_vec_mut().clear();
         } else if n != 1 && !self.as_ref().is_empty() {
+            // nanocode: the embedder's memory bound (vm/limit.rs).
+            vm.reserve(core::mem::size_of_val(self.as_ref()).saturating_mul(n - 1))?;
             let len = self.as_ref().len();
             let v = self.as_vec_mut();
             v.try_reserve_exact(len * (n - 1))

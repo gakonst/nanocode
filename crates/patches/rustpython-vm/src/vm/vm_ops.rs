@@ -185,6 +185,8 @@ impl VirtualMachine {
         if len == 0 {
             return Ok(Vec::new());
         }
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        self.reserve(len)?;
         let layout = core::alloc::Layout::array::<u8>(len).map_err(|_| self.no_memory_error())?;
         // SAFETY: `len` is not zero, so neither is the layout's size.
         let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };

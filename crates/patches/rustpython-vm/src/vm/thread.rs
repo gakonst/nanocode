@@ -1472,13 +1472,17 @@ impl VirtualMachine {
             what_event: Cell::new(None),
             tracing_depth: Cell::new(0),
             recursion_limit: self.recursion_limit.clone(),
+            fuel: Cell::new(u64::MAX),
+            recursion_cap: Cell::new(self.recursion_cap.get()),
+            limiter: RefCell::new(None),
+            stopped: RefCell::new(None),
             signal_handlers: core::cell::OnceCell::new(),
             signal_rx: None,
             repr_guards: RefCell::default(),
             state: self.state.clone(),
             initialized: self.initialized,
             recursion_depth: Cell::new(0),
-            #[cfg(any(miri, target_env = "musl"))]
+            #[cfg(any(miri, target_env = "musl", target_arch = "wasm32"))]
             native_recursion_depth: Cell::new(0),
             c_stack_soft_limit: Cell::new(Self::calculate_c_stack_soft_limit()),
             async_gen_firstiter: RefCell::new(None),

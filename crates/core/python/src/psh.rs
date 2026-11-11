@@ -152,7 +152,12 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
             output: INLINE_OUTPUT_LIMIT as u64,
             file: INLINE_INPUT_LIMIT as u64,
             sleep: Duration::MAX,
+            steps: u64::MAX,
+            time: Duration::MAX,
+            memory: None,
+            depth: usize::MAX,
         },
+        stop: ctx.canceller(),
     };
     let ran = match execute(run, ctx.files()) {
         Ok(ran) => ran,
@@ -175,8 +180,12 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
             ctx.error(match limit {
                 Limit::Output => "it printed more than this shell keeps",
                 Limit::Sleep => "it cannot wait in this shell",
+                Limit::Steps => "it ran more steps than this shell allows",
+                Limit::Time => "it ran longer than this shell allows",
+                Limit::Memory => "it held more memory than this shell allows",
             });
             126
         }
+        Ended::Cancelled => 128 + psh_engine::host::SIGTERM,
     }
 }

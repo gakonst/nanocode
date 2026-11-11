@@ -11,6 +11,7 @@ pub use compile::VmCompileError;
 mod context;
 pub mod crossinterp;
 mod interpreter;
+pub mod limit;
 mod method;
 #[cfg(feature = "rustpython-compiler")]
 mod python_run;
@@ -101,6 +102,17 @@ pub struct VirtualMachine {
     pub(crate) what_event: Cell<Option<crate::stdlib::sys::monitoring::MonitoringEvent>>,
     tracing_depth: Cell<usize>,
     pub recursion_limit: Cell<usize>,
+    /// nanocode: instructions, iterator steps and regex ticks left before the
+    /// limiter is asked again ([`limit`]). `u64::MAX` while there is no limiter.
+    pub fuel: Cell<u64>,
+    /// nanocode: the most `sys.setrecursionlimit` may set, for an embedder whose stack
+    /// is not the interpreter's to measure. `usize::MAX` unless the embedder says.
+    pub recursion_cap: Cell<usize>,
+    /// nanocode: the embedder's budget ([`limit::Limiter`]).
+    pub limiter: RefCell<Option<PyRc<dyn limit::Limiter>>>,
+    /// nanocode: what the limiter refused with. While it is set every step raises
+    /// it again and no handler catches it.
+    pub stopped: RefCell<Option<PyBaseExceptionRef>>,
     pub(crate) signal_handlers: OnceCell<SignalHandlers>,
     pub(crate) signal_rx: Option<signal::UserSignalReceiver>,
     pub repr_guards: RefCell<HashSet<usize>>,
@@ -110,7 +122,7 @@ pub struct VirtualMachine {
     /// Depth of native recursion that pushes no Python frame, counted only
     /// where the stack pointer cannot be read. Everywhere else the native
     /// stack itself answers, and nothing needs counting.
-    #[cfg(any(miri, target_env = "musl"))]
+    #[cfg(any(miri, target_env = "musl", target_arch = "wasm32"))]
     native_recursion_depth: Cell<usize>,
     /// C stack soft limit for detecting stack overflow (like c_stack_soft_limit)
     #[cfg_attr(any(miri, target_env = "musl"), allow(dead_code))]
@@ -1266,13 +1278,17 @@ impl VirtualMachine {
             what_event: Cell::new(None),
             tracing_depth: Cell::new(0),
             recursion_limit: Cell::new(if cfg!(debug_assertions) { 256 } else { 1000 }),
+            fuel: Cell::new(u64::MAX),
+            recursion_cap: Cell::new(usize::MAX),
+            limiter: RefCell::new(None),
+            stopped: RefCell::new(None),
             signal_handlers,
             signal_rx: None,
             repr_guards: RefCell::default(),
             state,
             initialized: false,
             recursion_depth: Cell::new(0),
-            #[cfg(any(miri, target_env = "musl"))]
+            #[cfg(any(miri, target_env = "musl", target_arch = "wasm32"))]
             native_recursion_depth: Cell::new(0),
             c_stack_soft_limit: Cell::new(Self::calculate_c_stack_soft_limit()),
             async_gen_firstiter: RefCell::new(None),
@@ -1666,9 +1682,9 @@ impl VirtualMachine {
             err_msg: self.new_pyobj(msg),
             object,
         };
-        if let Err(e) = unraisablehook.call((args,), self) {
-            println!("{}", e.as_object().repr(self).unwrap());
-        }
+        // nanocode: a hook that fails has nowhere to say so; upstream printed the
+        // failure to the process's stdout, which is the embedder's, not the script's.
+        let _ = unraisablehook.call((args,), self);
     }
 
     /// Write unraisable exception to stderr during finalization.
@@ -2599,7 +2615,11 @@ impl VirtualMachine {
         #[cfg(any(miri, target_env = "musl"))]
         let counted_too_deep =
             self.native_recursion_depth.get() >= Self::NATIVE_RECURSION_LIMIT_UNMEASURED;
-        #[cfg(not(any(miri, target_env = "musl")))]
+        // nanocode: wasm cannot read the engine's stack either, and its depth is the
+        // embedder's to say: the recursion limit, which `recursion_cap` bounds.
+        #[cfg(target_arch = "wasm32")]
+        let counted_too_deep = self.native_recursion_depth.get() >= self.recursion_limit.get();
+        #[cfg(not(any(miri, target_env = "musl", target_arch = "wasm32")))]
         let counted_too_deep = false;
 
         if counted_too_deep || self.check_c_stack_overflow() {
@@ -2608,7 +2628,7 @@ impl VirtualMachine {
             );
         }
 
-        #[cfg(any(miri, target_env = "musl"))]
+        #[cfg(any(miri, target_env = "musl", target_arch = "wasm32"))]
         let _native_depth_guard = {
             self.native_recursion_depth.update(|d| d + 1);
             scopeguard::guard((), |()| {

@@ -706,6 +706,8 @@ impl PyBytesInner {
         if len as isize >= width {
             return Ok(Vec::from(&self.elements[..]));
         }
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(width.cast_unsigned())?;
         pad(&self.elements, width as usize, fillchar, len).ok_or_else(|| vm.no_memory_error())
     }
 
@@ -938,6 +940,8 @@ impl PyBytesInner {
     }
 
     pub fn zfill(&self, width: isize, vm: &VirtualMachine) -> PyResult<Vec<u8>> {
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(width.max(0).cast_unsigned())?;
         self.elements
             .py_zfill(width)
             .ok_or_else(|| vm.no_memory_error())

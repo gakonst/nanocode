@@ -234,6 +234,8 @@ fn reserve_result_bits(bits: Option<u64>, vm: &VirtualMachine) -> PyResult<()> {
     // Results below this size are not worth the extra allocation.
     const CHECK_FROM_BITS: u64 = 1 << 26;
     let bits = bits.ok_or_else(|| vm.no_memory_error())?;
+    // nanocode: the embedder's memory bound (vm/limit.rs).
+    vm.reserve(usize::try_from(bits / 8).map_err(|_| vm.no_memory_error())?)?;
     if bits < CHECK_FROM_BITS {
         return Ok(());
     }

@@ -1313,6 +1313,8 @@ pub mod sys {
         let limit = limit.to_usize().filter(|&u| u >= 1).ok_or_else(|| {
             vm.new_value_error("recursion limit must be greater than or equal to one")
         })?;
+        // nanocode: no higher than the embedder's stack allows (`recursion_cap`).
+        let limit = limit.min(vm.recursion_cap.get());
         let recursion_depth = vm.current_recursion_depth();
 
         if limit > recursion_depth {

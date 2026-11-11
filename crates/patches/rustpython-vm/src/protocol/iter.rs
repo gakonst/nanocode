@@ -40,6 +40,11 @@ where
     }
 
     pub fn next(&self, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
+        // nanocode: a step of the budget (vm/limit.rs); Rust-driven iteration never
+        // reaches the dispatch loop.
+        if vm.spend() {
+            vm.refuel()?;
+        }
         let iternext = self
             .0
             .borrow()

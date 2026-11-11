@@ -1,8 +1,11 @@
 use std::{cell::RefCell, io, rc::Rc, time::Duration};
 
 use nanocode_platform::{Instant, UNIX_EPOCH};
+use rustpython_vm::{PyResult, VirtualMachine, builtins::PyBaseExceptionRef, vm::limit::Limiter};
 
-use crate::{Changes, Files, Limit, Limits, Run};
+use crate::{Changes, Files, Limit, Limits, Run, Stop};
+
+const SLICE: u64 = 1 << 12;
 
 pub(crate) use _host::module_def;
 
@@ -13,12 +16,18 @@ pub struct State {
     cwd: Vec<u8>,
     env: Vec<(Vec<u8>, Vec<u8>)>,
     limits: Limits,
+    stop: Stop,
     slept: Duration,
     started: Instant,
+    steps: u64,
+    slice: u64,
+    held: Option<i64>,
+    grace: bool,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub changes: Changes,
     pub refused: Option<Limit>,
+    pub cancelled: bool,
 }
 
 impl State {
@@ -30,14 +39,120 @@ impl State {
             cwd: run.cwd,
             env: run.env,
             limits: run.limits,
+            stop: run.stop,
             slept: Duration::ZERO,
             started: Instant::now(),
+            steps: 0,
+            slice: 0,
+            held: held(),
+            grace: false,
             stdout: Vec::new(),
             stderr: Vec::new(),
             changes: Changes::default(),
             refused: None,
+            cancelled: false,
         }
     }
+
+    const fn stopped(&self) -> bool {
+        self.refused.is_some() || self.cancelled
+    }
+
+    fn used(&self) -> Option<u64> {
+        let grown = held()?.saturating_sub(self.held?);
+        Some(u64::try_from(grown).unwrap_or(0))
+    }
+
+    fn over(&self, more: u64) -> bool {
+        match (self.limits.memory, self.used()) {
+            (Some(limit), Some(used)) => used.saturating_add(more) > limit,
+            _ => false,
+        }
+    }
+
+    fn refuel(&mut self) -> Option<u64> {
+        self.steps = self.steps.saturating_add(std::mem::take(&mut self.slice));
+        if self.stopped() {
+            return std::mem::take(&mut self.grace).then_some(SLICE);
+        }
+        if (self.stop)() {
+            self.cancelled = true;
+            return None;
+        }
+        let left = self.limits.steps.saturating_sub(self.steps);
+        self.refused = if left == 0 {
+            Some(Limit::Steps)
+        } else if self.started.elapsed() >= self.limits.time {
+            Some(Limit::Time)
+        } else if self.over(0) {
+            Some(Limit::Memory)
+        } else {
+            None
+        };
+        if self.refused.is_some() {
+            return None;
+        }
+        self.slice = left.min(SLICE);
+        Some(self.slice)
+    }
+}
+
+pub fn held() -> Option<i64> {
+    let held = rustpython_vm::vm::limit::held()?;
+    i64::try_from(held).ok()
+}
+
+fn halt(vm: &VirtualMachine) -> PyBaseExceptionRef {
+    let stop = vm.new_exception_empty(vm.ctx.exceptions.system_exit.to_owned());
+    *vm.stopped.borrow_mut() = Some(stop.clone());
+    vm.fuel.set(0);
+    stop
+}
+
+pub struct Budget;
+
+impl Limiter for Budget {
+    fn refuel(&self, vm: &VirtualMachine) -> PyResult<u64> {
+        with(|state| Ok(state.refuel()))
+            .ok()
+            .flatten()
+            .ok_or_else(|| halt(vm))
+    }
+
+    fn reserve(&self, vm: &VirtualMachine, bytes: usize) -> PyResult<()> {
+        let refused = with(|state| {
+            let over = !state.stopped() && state.over(bytes as u64);
+            if over {
+                state.refused = Some(Limit::Memory);
+            }
+            Ok(over || state.stopped())
+        });
+        match refused {
+            Ok(false) => Ok(()),
+            _ => Err(halt(vm)),
+        }
+    }
+}
+
+pub struct Shut;
+
+impl Limiter for Shut {
+    fn refuel(&self, vm: &VirtualMachine) -> PyResult<u64> {
+        Err(halt(vm))
+    }
+
+    fn reserve(&self, vm: &VirtualMachine, _: usize) -> PyResult<()> {
+        Err(halt(vm))
+    }
+}
+
+pub fn ending() -> bool {
+    rustpython_vm::vm::limit::lift_memory_ceiling();
+    with(|state| {
+        state.grace = state.stopped();
+        Ok(state.grace)
+    })
+    .unwrap_or(true)
 }
 
 thread_local! {
@@ -70,6 +185,13 @@ fn with<T>(run: impl FnOnce(&mut State) -> io::Result<T>) -> io::Result<T> {
         Some(state) => run(state),
         None => Err(io::Error::other("no Python run is active")),
     })
+}
+
+pub fn memory() -> Option<usize> {
+    with(|state| Ok(state.limits.memory))
+        .ok()
+        .flatten()
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
 }
 
 pub fn input() -> Vec<u8> {
@@ -156,7 +278,7 @@ fn wait(_: Duration) -> io::Result<()> {
 
 #[rustpython_vm::pymodule]
 mod _host {
-    use super::{Limit, State, UNIX_EPOCH, text, wait, with};
+    use super::{Limit, State, UNIX_EPOCH, halt, text, wait, with};
     use crate::{Kind, Remove, Write};
     use rustpython_vm::{
         PyObjectRef, PyResult, VirtualMachine,
@@ -337,11 +459,11 @@ mod _host {
     #[pyfunction]
     fn output(fd: u8, data: ArgBytesLike, vm: &VirtualMachine) -> PyResult<usize> {
         let data = data.borrow_buf();
-        state(vm, |state| {
+        let kept = state(vm, |state| {
             let used = (state.stdout.len() + state.stderr.len() + data.len()) as u64;
             if used > state.limits.output {
                 state.refused.get_or_insert(Limit::Output);
-                return Err(io::ErrorKind::FileTooLarge.into());
+                return Ok(false);
             }
             let stream = if fd == 2 {
                 &mut state.stderr
@@ -349,12 +471,14 @@ mod _host {
                 &mut state.stdout
             };
             stream.extend_from_slice(&data);
-            Ok(data.len())
-        })
+            Ok(true)
+        })?;
+        if kept { Ok(data.len()) } else { Err(halt(vm)) }
     }
 
     #[pyfunction]
     fn random(size: usize, vm: &VirtualMachine) -> PyResult<PyBytesRef> {
+        vm.reserve(size)?;
         let mut bytes = vec![0; size];
         nanocode_platform::fill_random(&mut bytes).map_err(|error| failure(vm, &error, None))?;
         Ok(vm.ctx.new_bytes(bytes))
@@ -376,17 +500,17 @@ mod _host {
     fn sleep(seconds: f64, vm: &VirtualMachine) -> PyResult<()> {
         let duration = Duration::try_from_secs_f64(seconds)
             .map_err(|_| vm.new_value_error("sleep length must be non-negative"))?;
-        state(vm, |state| {
+        let slept = state(vm, |state| {
             let slept = state.slept.saturating_add(duration);
-            if slept > state.limits.sleep {
+            let left = state.limits.time.saturating_sub(state.started.elapsed());
+            if slept > state.limits.sleep || wait(duration.min(left)).is_err() {
                 state.refused.get_or_insert(Limit::Sleep);
-                return Err(io::ErrorKind::TimedOut.into());
+            } else if duration > left {
+                state.refused.get_or_insert(Limit::Time);
             }
-            wait(duration).inspect_err(|_| {
-                state.refused.get_or_insert(Limit::Sleep);
-            })?;
             state.slept = slept;
-            Ok(())
-        })
+            Ok(!state.stopped())
+        })?;
+        if slept { Ok(()) } else { Err(halt(vm)) }
     }
 }

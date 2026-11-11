@@ -856,6 +856,8 @@ impl PyStr {
         if self.len() as isize >= width {
             return Ok(self.as_wtf8().to_owned());
         }
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(width.cast_unsigned())?;
         pad(self.as_wtf8(), width as usize, fillchar, self.len())
             .ok_or_else(|| vm.no_memory_error())
     }
@@ -1419,6 +1421,8 @@ impl Py<PyStr> {
 
     #[pymethod]
     fn zfill(&self, width: PySsize, vm: &VirtualMachine) -> PyResult<Wtf8Buf> {
+        // nanocode: the embedder's memory bound (vm/limit.rs).
+        vm.reserve(width.max(0).cast_unsigned())?;
         let filled = self
             .as_wtf8()
             .py_zfill(width)

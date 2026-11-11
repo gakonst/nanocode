@@ -18,7 +18,14 @@ pub struct Request<'a, S> {
     pub pattern_codes: &'a [u32],
     pub match_all: bool,
     pub must_advance: bool,
+    /// nanocode: asked every [`MOVES_PER_TICK`] moves of the matcher; `false` ends the
+    /// match as unmatched, and the caller knows why.
+    pub tick: Option<fn() -> bool>,
 }
+
+/// nanocode: how many moves of the matcher pass between two asks of [`Request::tick`]:
+/// a move is a few nanoseconds, the ask a call through a pointer.
+pub const MOVES_PER_TICK: u32 = 1 << 10;
 
 impl<'a, S: StrDrive> Request<'a, S> {
     pub fn new(
@@ -38,6 +45,7 @@ impl<'a, S: StrDrive> Request<'a, S> {
             pattern_codes,
             match_all,
             must_advance: false,
+            tick: None,
         }
     }
 }
@@ -302,12 +310,21 @@ enum Jump {
 fn _match<S: StrDrive>(req: &Request<'_, S>, state: &mut State, mut ctx: MatchContext) -> bool {
     let mut context_stack = vec![];
     let mut popped_result = false;
+    let mut moves = 0;
 
     #[allow(
         clippy::never_loop,
         reason = "'result loop is not an actual loop but break label"
     )]
     'coro: loop {
+        // nanocode: the embedder's budget (rustpython-vm's vm/limit.rs).
+        moves += 1;
+        if moves == MOVES_PER_TICK {
+            moves = 0;
+            if req.tick.is_some_and(|tick| !tick()) {
+                return false;
+            }
+        }
         popped_result = 'result: loop {
             let yielded = 'context: loop {
                 match ctx.jump {

@@ -3693,6 +3693,10 @@ impl ExecutingFrame<'_> {
             #[cold]
             #[inline(never)]
             fn eval_breaker_work(vm: &VirtualMachine) -> PyResult<()> {
+                // nanocode: the fuel is spent (vm/limit.rs).
+                if vm.fuel.get() == 0 {
+                    vm.refuel()?;
+                }
                 vm.check_signals()?;
                 // Run a scheduled automatic collection here — a safepoint with
                 // no interpreter locks held — instead of synchronously inside
@@ -3701,7 +3705,7 @@ impl ExecutingFrame<'_> {
                 vm.run_scheduled_gc();
                 Ok(())
             }
-            if vm.eval_breaker_tripped()
+            if (vm.spend() || vm.eval_breaker_tripped())
                 && let Err(exception) = eval_breaker_work(vm)
             {
                 #[cold]
@@ -8634,6 +8638,10 @@ impl ExecutingFrame<'_> {
         // use exception table for exception handling
         match reason {
             UnwindReason::Raising { exception, offset } => {
+                // nanocode: nothing catches what the limiter refused with (vm/limit.rs).
+                if vm.stopped.borrow().is_some() {
+                    return Err(exception);
+                }
                 // Look up handler from the raising instruction. lasti may
                 // already have been restored by RERAISE to the original raise.
                 if let Some(entry) =

@@ -59,7 +59,10 @@ mod _sre {
         fn slice(&self, start: usize, end: usize, vm: &VirtualMachine) -> PyObjectRef;
 
         fn create_request(self, pattern: &Pattern, start: usize, end: usize) -> Request<'_, Self> {
-            Request::new(self, start, end, &pattern.code, false)
+            // nanocode: the matcher spends the interpreter's fuel (vm/limit.rs).
+            let mut request = Request::new(self, start, end, &pattern.code, false);
+            request.tick = Some(crate::vm::limit::tick);
+            request
         }
     }
 
@@ -376,12 +379,18 @@ mod _sre {
             // Bind once: the branches only borrow the subject, and callers pass
             // a temporary (`&x.clone()`) that would otherwise be rebuilt per arm.
             let subject = $string;
-            if $pattern.isbytes {
+            let found = if $pattern.isbytes {
                 Pattern::with_bytes(subject, $vm, $f)
             } else if Pattern::is_ascii_str(subject) {
                 Pattern::with_ascii_str(subject, $vm, $f)
             } else {
                 Pattern::with_utf8_str(subject, $vm, $f)
+            };
+            // nanocode: a match the limiter ended is not "no match" (vm/limit.rs).
+            let stopped = $vm.stopped.borrow().clone();
+            match stopped {
+                Some(stop) => Err(stop),
+                None => found,
             }
         }};
     }

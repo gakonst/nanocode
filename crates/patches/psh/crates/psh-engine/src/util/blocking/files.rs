@@ -8,6 +8,8 @@
 
 use std::io::{self, Read, Write};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{Io, SyncCtx, native_read_dir, native_stat, poll_once, would_block};
 use crate::host::{DirEntry, Host, HostFuture, Metadata, NativePathFn, OpenOptions};
@@ -38,6 +40,20 @@ impl SyncCtx {
 
 fn block_on_once<T>(mut fut: HostFuture<io::Result<T>>) -> io::Result<T> {
     poll_once(|cx| fut.as_mut().poll(cx)).unwrap_or_else(|| Err(would_block()))
+}
+
+impl SyncCtx {
+    /// Whether the stop was requested ([`SyncCtx::cancelled`]), as a value another
+    /// thread can keep and ask: the thread that keeps `python3`'s interpreter does.
+    pub fn canceller(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        match &self.io {
+            Io::Thread { pipe, .. } => {
+                let pipe = pipe.clone();
+                Arc::new(move || pipe.cancelled.load(Ordering::SeqCst))
+            }
+            Io::Inline { .. } => Arc::new(|| false),
+        }
+    }
 }
 
 fn too_large() -> io::Error {

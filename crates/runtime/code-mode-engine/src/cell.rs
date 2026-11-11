@@ -1,24 +1,15 @@
 use std::{
-    cell::RefCell,
-    collections::{BTreeSet, HashMap},
-    rc::Rc,
+    borrow::Cow,
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
+use djs_embed::{HostCall, HostFn, Snapshot, Source, Throw};
 use nanocode_platform::Instant;
 use nanocode_sync::Atom;
-use rquickjs::{
-    CatchResultExt, Coerced, Context, Ctx, Exception, FromJs, Function, Module, Object, Persistent,
-    Promise, Runtime, WriteOptions,
-    context::EvalOptions,
-    function::{Func, Opt, Rest},
-    loader::{ImportAttributes, Resolver, bundle::Bundle},
-    promise::PromiseState,
-};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, value::RawValue};
-use tokio::sync::mpsc;
 
 use nanocode_tool_contracts::ToolOutputContent;
 
@@ -84,201 +75,220 @@ impl RuntimeEvent {
     }
 }
 
-pub(crate) const BOOTSTRAP: &str = include_str!("bootstrap.js");
+const BOOTSTRAP: &str = include_str!("bootstrap.js");
+const CODE_TOOLS: &str = include_str!("code-tools.mjs");
+const CODE_VALUES: &str = include_str!("code-values.mjs");
 
-pub(crate) const CODE_TOOLS: &str = include_str!("code-tools.mjs");
-pub(crate) const CODE_VALUES: &str = include_str!("code-values.mjs");
+pub(crate) const BOOTSTRAP_MODULE: &str = "nanocode:bootstrap";
+pub(crate) const RUN_CELL: &str = "runCell";
+const PRELUDE_SCRIPT: &str = "nanocode:prelude";
 
-const BOOTSTRAP_MODULE: &str = "nanocode:bootstrap";
-const PRELUDE_MODULE: &str = "nanocode:prelude";
+const TOOL: u32 = 1;
+const CONTENT: u32 = 2;
+const TEXT: u32 = 3;
+const LOAD: u32 = 4;
+const NOTIFY: u32 = 5;
+const YIELD: u32 = 6;
+const SET_TIMEOUT: u32 = 7;
+const CLEAR_TIMEOUT: u32 = 8;
+const VALUE: u32 = 9;
+const SETTLED: u32 = 10;
+pub(crate) const NEXT: u32 = 11;
 
-type BootstrapBundle = &'static [(&'static str, &'static [u8])];
+const HOST_FNS: [(u32, &str); 10] = [
+    (TOOL, "__nanocodeTool"),
+    (CONTENT, "__nanocodeContent"),
+    (TEXT, "__nanocodeText"),
+    (LOAD, "__nanocodeLoad"),
+    (NOTIFY, "__nanocodeNotify"),
+    (YIELD, "__nanocodeYield"),
+    (SET_TIMEOUT, "__nanocodeSetTimeout"),
+    (CLEAR_TIMEOUT, "__nanocodeClearTimeout"),
+    (VALUE, "__nanocodeValue"),
+    (SETTLED, "__nanocodeSettled"),
+];
 
-thread_local! {
-    static LOADING_BOOTSTRAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+#[derive(Clone)]
+pub(crate) enum Unprepared {
+    Prelude(String),
+    Bootstrap(String),
 }
 
-struct BootstrapResolver;
-
-impl Resolver for BootstrapResolver {
-    fn resolve<'js>(
-        &mut self,
-        _ctx: &Ctx<'js>,
-        base: &str,
-        name: &str,
-        _attributes: Option<ImportAttributes<'js>>,
-    ) -> rquickjs::Result<String> {
-        if (name == BOOTSTRAP_MODULE || name == PRELUDE_MODULE) && LOADING_BOOTSTRAP.get() {
-            Ok(name.to_owned())
-        } else {
-            Err(rquickjs::Error::new_resolving(base, name))
-        }
+fn build(prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
+    let values = CODE_VALUES
+        .split_once("export const")
+        .ok_or_else(|| {
+            Unprepared::Bootstrap("shared value helper export marker is missing".to_owned())
+        })?
+        .0;
+    let mut builder = Snapshot::builder()
+        .frozen_builtins(false)
+        .host_fn(HostFn::asynchronous(NEXT, "__nanocodeNext"));
+    for (id, name) in HOST_FNS {
+        builder = builder.host_fn(HostFn::sync(id, name));
     }
+    if let Some(source) = prelude {
+        for (id, name) in crate::bytes::HOST_FNS {
+            builder = builder.host_fn(HostFn::sync(id, name));
+        }
+        builder = builder.source(Source::script(
+            PRELUDE_SCRIPT,
+            format!("globalThis.__nanocodePrelude = function (tools, call) {{\n{source}\n}};\n"),
+        ));
+    }
+    let bootstrap = format!(
+        "{CODE_TOOLS}\n{values}\nexport const {RUN_CELL} = {}(createCodeTools, createValueHelpers());\n",
+        BOOTSTRAP.trim_end()
+    );
+    builder
+        .source(Source::module(BOOTSTRAP_MODULE, bootstrap))
+        .build()
+        .map_err(|error| match error {
+            djs_embed::Error::Syntax { source, message } if source == PRELUDE_SCRIPT => {
+                Unprepared::Prelude(format!(
+                    "failed to compile the Code Mode prelude: {message}"
+                ))
+            }
+            error => Unprepared::Bootstrap(format!(
+                "failed to compile the embedded Code Mode bootstrap: {error}"
+            )),
+        })
 }
 
-fn bootstrap_bundle(runtime: &Runtime) -> Result<BootstrapBundle, String> {
-    static BUNDLE: OnceLock<Result<BootstrapBundle, String>> = OnceLock::new();
-    BUNDLE.get_or_init(|| compile_bootstrap(runtime)).clone()
-}
-
-pub(crate) fn install_bootstrap(runtime: &Runtime) -> Result<(), String> {
-    install_prelude(runtime, None)
-}
-
-pub(crate) fn install_prelude(runtime: &Runtime, prelude: Option<&str>) -> Result<(), String> {
-    let bootstrap = bootstrap_bundle(runtime)?;
-    let bundle = match prelude {
-        Some(source) => prelude_bundle(runtime, bootstrap, source)?,
-        None => bootstrap,
-    };
-    runtime.set_loader(BootstrapResolver, Bundle(bundle));
-    Ok(())
-}
-
-fn prelude_bundle(
-    runtime: &Runtime,
-    bootstrap: BootstrapBundle,
-    source: &str,
-) -> Result<BootstrapBundle, String> {
-    type Preludes = Vec<(Arc<str>, BootstrapBundle)>;
+pub(crate) fn snapshot(prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
+    type Preludes = Vec<(Arc<str>, Snapshot)>;
+    static BARE: OnceLock<Result<Snapshot, Unprepared>> = OnceLock::new();
     static PRELUDES: OnceLock<Atom<Preludes>> = OnceLock::new();
+    let Some(source) = prelude else {
+        return BARE.get_or_init(|| build(None)).clone();
+    };
     let preludes = PRELUDES.get_or_init(Atom::default);
     let find = |list: &Preludes| {
         list.iter()
             .find(|(text, _)| **text == *source)
-            .map(|(_, bundle)| *bundle)
+            .map(|(_, snapshot)| snapshot.clone())
     };
-    if let Some(bundle) = preludes.read(find) {
-        return Ok(bundle);
+    if let Some(snapshot) = preludes.read(find) {
+        return Ok(snapshot);
     }
-    let bytecode = compile_module(
-        runtime,
-        PRELUDE_MODULE,
-        format!("export default function (tools, call) {{\n{source}\n}}\n"),
-    )
-    .map_err(|error| format!("failed to compile the QuickJS prelude: {error}"))?;
-    let bundle: BootstrapBundle = Box::leak(Box::new([
-        bootstrap[0],
-        (PRELUDE_MODULE, &*Box::leak(bytecode.into_boxed_slice())),
-    ]));
+    let built = build(Some(source))?;
     let source: Arc<str> = Arc::from(source);
     Ok(preludes.update(|list| {
         find(list).unwrap_or_else(|| {
-            list.push((Arc::clone(&source), bundle));
-            bundle
+            list.push((Arc::clone(&source), built.clone()));
+            built.clone()
         })
     }))
 }
 
-fn compile_module(runtime: &Runtime, name: &str, source: String) -> Result<Vec<u8>, String> {
-    let context = Context::full(runtime).map_err(|error| error.to_string())?;
-    context.with(|ctx| {
-        Module::declare(ctx.clone(), name, source)
-            .and_then(|module| {
-                module.write(WriteOptions {
-                    strip_source: true,
-                    ..WriteOptions::default()
-                })
-            })
-            .catch(&ctx)
-            .map_err(|error| error.to_string())
-    })
-}
-
-fn compile_bootstrap(runtime: &Runtime) -> Result<BootstrapBundle, String> {
-    let values = CODE_VALUES
-        .split_once("export const")
-        .ok_or_else(|| "shared value helper export marker is missing".to_owned())?
-        .0;
-    let source = format!(
-        "export const bootstrap = {};\n{CODE_TOOLS}\n{values}\nexport {{ createValueHelpers }};\n",
-        BOOTSTRAP.trim_end()
-    );
-    let bytecode = compile_module(runtime, BOOTSTRAP_MODULE, source)
-        .map_err(|error| format!("failed to compile the embedded QuickJS bootstrap: {error}"))?;
-    let bytecode: &'static [u8] = Box::leak(bytecode.into_boxed_slice());
-    Ok(Box::leak(Box::new([(BOOTSTRAP_MODULE, bytecode)])))
-}
-
-pub(crate) type SavedFunction = Persistent<Function<'static>>;
-
-pub(crate) type Rejections = Rc<RefCell<Vec<Rejection>>>;
-
-pub(crate) struct Rejection {
-    promise: Persistent<rquickjs::Value<'static>>,
-    reason: Persistent<rquickjs::Value<'static>>,
-}
-
-pub(crate) fn track_rejections(runtime: &Runtime) -> Rejections {
-    let rejections = Rejections::default();
-    let tracked = Rc::clone(&rejections);
-    runtime.set_host_promise_rejection_tracker(Some(Box::new(
-        move |ctx, promise, reason, handled| {
-            let Ok(mut rejections) = tracked.try_borrow_mut() else {
-                return;
-            };
-            if handled {
-                rejections.retain(|rejection| {
-                    rejection
-                        .promise
-                        .clone()
-                        .restore(&ctx)
-                        .is_ok_and(|rejected| rejected != promise)
-                });
-            } else {
-                rejections.push(Rejection {
-                    promise: Persistent::save(&ctx, promise),
-                    reason: Persistent::save(&ctx, reason),
-                });
-            }
-        },
-    )));
-    rejections
+pub(crate) enum Reply<'a> {
+    Nothing,
+    Number(f64),
+    Text(Cow<'a, str>),
+    Lossy(Vec<u8>),
+    Bytes(Vec<u8>),
 }
 
 pub(crate) struct ExecutionState {
     pub(crate) execution_id: u64,
-    pub(crate) event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    pub(crate) events: VecDeque<RuntimeEvent>,
     stored: HashMap<String, Arc<RawValue>>,
-    pending_tools: HashMap<u64, (SavedFunction, SavedFunction)>,
+    pending_tools: HashSet<u64>,
     pending_timeouts: HashMap<u64, PendingTimeout>,
     timeout_order: BTreeSet<(Instant, u64)>,
     next_tool_id: u64,
     next_timeout_id: u64,
-    rejections: Rejections,
-    uncaught: Option<SavedFunction>,
-    failure: Option<String>,
-    pending_text: RefCell<Option<String>>,
-    journal: Option<RefCell<JournalWriter>>,
+    pending_text: Option<String>,
+    journal: Option<JournalWriter>,
     replay: Option<Replay>,
+    settling: bool,
+    started: Instant,
 }
 
-pub(crate) struct Replay {
+struct Replay {
     entries: Vec<JournalEntry>,
     pos: usize,
     diverged: Option<String>,
 }
 
-pub(crate) enum Expectation {
+enum Expectation {
     Live(JournalEntry),
     Replayed(JournalEntry),
     Diverged,
 }
 
+pub(crate) enum Replaying {
+    Live,
+    Input(JournalEntry),
+    Diverged(String),
+}
+
 const PENDING_TEXT_BYTES: usize = 64 * 1024;
 
 impl ExecutionState {
+    pub(crate) fn new() -> Self {
+        Self {
+            execution_id: 0,
+            events: VecDeque::new(),
+            stored: HashMap::new(),
+            pending_tools: HashSet::new(),
+            pending_timeouts: HashMap::new(),
+            timeout_order: BTreeSet::new(),
+            next_tool_id: 1,
+            next_timeout_id: 1,
+            pending_text: None,
+            journal: None,
+            replay: None,
+            settling: false,
+            started: Instant::now(),
+        }
+    }
+
+    pub(crate) fn begin(
+        &mut self,
+        execution_id: u64,
+        stored: HashMap<String, Arc<RawValue>>,
+        journaling: Option<CellJournaling>,
+    ) {
+        let (journal, replay) = journaling.map_or((None, None), |journaling| {
+            (
+                Some(journaling.journal.writer()),
+                journaling.replay.map(|entries| Replay {
+                    entries,
+                    pos: 0,
+                    diverged: None,
+                }),
+            )
+        });
+        *self = Self {
+            execution_id,
+            events: std::mem::take(&mut self.events),
+            stored,
+            journal,
+            replay,
+            ..Self::new()
+        };
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.pending_tools.clear();
+        self.pending_timeouts.clear();
+        self.timeout_order.clear();
+        self.journal = None;
+        self.replay = None;
+    }
+
     const fn journaling(&self) -> bool {
         self.journal.is_some() || self.replay.is_some()
     }
 
-    fn record(&self, entry: JournalEntry, weight: usize) {
-        if let Some(journal) = &self.journal {
-            journal.borrow_mut().record(entry, weight);
+    fn record(&mut self, entry: JournalEntry, weight: usize) {
+        if let Some(journal) = &mut self.journal {
+            journal.record(entry, weight);
         }
     }
 
-    pub(crate) fn expect(&mut self, wanted: JournalEntry, weight: usize) -> Expectation {
+    fn expect(&mut self, wanted: JournalEntry, weight: usize) -> Expectation {
         if self
             .replay
             .as_ref()
@@ -308,7 +318,7 @@ impl ExecutionState {
         }
     }
 
-    pub(crate) fn finish_replay(&mut self) {
+    fn finish_replay(&mut self) {
         if self.replay.take().is_none() {
             return;
         }
@@ -326,9 +336,44 @@ impl ExecutionState {
             }
         }
         self.timeout_order.extend(scheduled);
-        let _ = self.send(RuntimeEvent::Replayed {
+        self.send(RuntimeEvent::Replayed {
             cell_id: self.execution_id,
         });
+    }
+
+    pub(crate) fn replaying(&mut self, finished: bool) -> Replaying {
+        let Some(replay) = self.replay.as_ref() else {
+            return Replaying::Live;
+        };
+        if let Some(reason) = &replay.diverged {
+            return Replaying::Diverged(reason.clone());
+        }
+        let position = replay.pos;
+        let Some(entry) = replay.entries.get(position).cloned() else {
+            self.finish_replay();
+            return Replaying::Live;
+        };
+        if finished {
+            return Replaying::Diverged(format!(
+                "the script finished before journal entry {position} ({})",
+                entry.describe()
+            ));
+        }
+        let known = match &entry {
+            JournalEntry::Result { id, .. } => self.pending_tools.contains(id),
+            JournalEntry::Timer { id } => self.pending_timeouts.contains_key(id),
+            _ => false,
+        };
+        if !known {
+            return Replaying::Diverged(format!(
+                "the script did not reach {} that the journal recorded at entry {position}",
+                entry.describe()
+            ));
+        }
+        if let Some(replay) = self.replay.as_mut() {
+            replay.pos += 1;
+        }
+        Replaying::Input(entry)
     }
 
     pub(crate) fn random_bytes(&mut self, live: Vec<u8>) -> Vec<u8> {
@@ -343,51 +388,334 @@ impl ExecutionState {
         }
     }
 
-    pub(crate) fn send(
-        &self,
-        event: RuntimeEvent,
-    ) -> Result<(), mpsc::error::SendError<RuntimeEvent>> {
+    pub(crate) fn send(&mut self, event: RuntimeEvent) {
         self.flush_text();
-        if let Some(journal) = &self.journal {
-            journal.borrow_mut().publish();
+        if let Some(journal) = &mut self.journal {
+            journal.publish();
         }
-        self.event_tx.send(event)
+        self.events.push_back(event);
     }
 
-    pub(crate) fn flush_text(&self) {
-        let Some(text) = self.pending_text.borrow_mut().take() else {
+    pub(crate) fn flush_text(&mut self) {
+        let Some(text) = self.pending_text.take() else {
             return;
         };
-        let _ = self.event_tx.send(RuntimeEvent::Content {
+        self.events.push_back(RuntimeEvent::Content {
             cell_id: self.execution_id,
             content: ToolOutputContent::InputText { text },
         });
     }
 
-    fn push_text(&self, text: String) {
-        let full = {
-            let mut pending = self.pending_text.borrow_mut();
-            match pending.as_mut() {
-                Some(buffered) => {
-                    buffered.push('\n');
-                    buffered.push_str(&text);
-                }
-                None => *pending = Some(text),
+    fn push_text(&mut self, text: String) {
+        match self.pending_text.as_mut() {
+            Some(buffered) => {
+                buffered.push('\n');
+                buffered.push_str(&text);
             }
-            pending
-                .as_ref()
-                .is_some_and(|buffered| buffered.len() >= PENDING_TEXT_BYTES)
-        };
-        if full {
+            None => self.pending_text = Some(text),
+        }
+        if self
+            .pending_text
+            .as_ref()
+            .is_some_and(|buffered| buffered.len() >= PENDING_TEXT_BYTES)
+        {
             self.flush_text();
+        }
+    }
+
+    pub(crate) fn settling(&mut self) -> bool {
+        std::mem::take(&mut self.settling)
+    }
+
+    pub(crate) fn host_call(&mut self, call: &HostCall<'_>) -> Result<Reply<'_>, Throw> {
+        match call.fn_id() {
+            TOOL => {
+                let name = text(call, 0)?;
+                let input_json = text(call, 1)?;
+                let host = call.arg(2).as_bool().unwrap_or(false);
+                self.tool(name, &input_json, host)
+                    .map(|id| Reply::Number(id as f64))
+            }
+            CONTENT => self.content(&text(call, 0)?).map(|()| Reply::Nothing),
+            TEXT => {
+                self.push_text(text(call, 0)?);
+                Ok(Reply::Nothing)
+            }
+            LOAD => {
+                let key = text(call, 0)?;
+                Ok(self.stored.get(&key).map_or(Reply::Nothing, |value| {
+                    Reply::Text(Cow::Borrowed(value.get()))
+                }))
+            }
+            NOTIFY => {
+                let text = text(call, 0)?;
+                self.send(RuntimeEvent::Notify {
+                    cell_id: self.execution_id,
+                    text,
+                });
+                Ok(Reply::Nothing)
+            }
+            YIELD => {
+                self.send(RuntimeEvent::Yielded {
+                    cell_id: self.execution_id,
+                });
+                Ok(Reply::Nothing)
+            }
+            SET_TIMEOUT => {
+                let delay_ms = normalize_delay_ms(call.arg(0).as_number().unwrap_or(0.0));
+                Ok(Reply::Number(self.set_timeout(delay_ms) as f64))
+            }
+            CLEAR_TIMEOUT => {
+                let id = normalize_delay_ms(call.arg(0).as_number().unwrap_or(0.0));
+                if let Some(deadline) = self
+                    .pending_timeouts
+                    .remove(&id)
+                    .and_then(|timeout| timeout.deadline)
+                {
+                    self.timeout_order.remove(&(deadline, id));
+                }
+                Ok(Reply::Nothing)
+            }
+            VALUE => {
+                let kind = call.arg(0).as_number().unwrap_or(0.0) as u8;
+                let live = match kind {
+                    0 => wall_ms() as f64,
+                    1 => self.started.elapsed().as_secs_f64() * 1000.0,
+                    _ => call.arg(1).as_number().unwrap_or(0.0),
+                };
+                Ok(Reply::Number(self.value(kind, live)))
+            }
+            SETTLED => {
+                self.settling = true;
+                Ok(Reply::Nothing)
+            }
+            _ => crate::bytes::host_call(self, call),
+        }
+    }
+
+    fn tool(&mut self, name: String, input_json: &str, host: bool) -> Result<u64, Throw> {
+        let input = serde_json::from_str(input_json)
+            .map_err(|error| Throw::type_error(format!("invalid tool input: {error}")))?;
+        let id = self.next_tool_id;
+        self.next_tool_id = self.next_tool_id.saturating_add(1);
+        self.pending_tools.insert(id);
+        let cell_id = self.execution_id;
+        if !self.journaling() {
+            self.send(RuntimeEvent::ToolCall {
+                cell_id,
+                id,
+                name,
+                input,
+                host,
+            });
+            return Ok(id);
+        }
+        let weight = name.len().saturating_add(input_json.len());
+        match self.expect(
+            JournalEntry::Call {
+                id,
+                name,
+                input,
+                host,
+            },
+            weight,
+        ) {
+            Expectation::Live(JournalEntry::Call {
+                id,
+                name,
+                input,
+                host,
+            }) => self.send(RuntimeEvent::ToolCall {
+                cell_id,
+                id,
+                name,
+                input,
+                host,
+            }),
+            Expectation::Live(_) | Expectation::Replayed(_) => self.flush_text(),
+            Expectation::Diverged => {}
+        }
+        Ok(id)
+    }
+
+    fn content(&mut self, content_json: &str) -> Result<(), Throw> {
+        let content: ToolOutputContent = serde_json::from_str(content_json)
+            .map_err(|error| Throw::type_error(format!("invalid output content: {error}")))?;
+        let content = match content {
+            ToolOutputContent::InputAudio { ref audio_url }
+                if crate::audio::wav_duration_seconds(audio_url)
+                    .is_some_and(|duration| duration < 0.025) =>
+            {
+                ToolOutputContent::InputText {
+                    text: "Audio output omitted because the clip is shorter than 25 ms; use a longer clip.".to_owned(),
+                }
+            }
+            content => content,
+        };
+        match content {
+            ToolOutputContent::InputText { text } => self.push_text(text),
+            content => self.send(RuntimeEvent::Content {
+                cell_id: self.execution_id,
+                content,
+            }),
+        }
+        Ok(())
+    }
+
+    fn set_timeout(&mut self, delay_ms: u64) -> u64 {
+        let id = self.next_timeout_id;
+        self.next_timeout_id = self.next_timeout_id.saturating_add(1);
+        let mut deadline = Instant::now().checked_add(Duration::from_millis(delay_ms));
+        let mut planned = None;
+        if self.journaling() {
+            let wanted = JournalEntry::Timeout {
+                id,
+                delay_ms,
+                at_ms: wall_ms(),
+            };
+            match self.expect(wanted, 0) {
+                Expectation::Replayed(JournalEntry::Timeout { at_ms, .. }) => {
+                    planned = Some((at_ms, delay_ms));
+                    deadline = None;
+                }
+                Expectation::Diverged => deadline = None,
+                Expectation::Live(_) | Expectation::Replayed(_) => {}
+            }
+        }
+        if let Some(deadline) = deadline {
+            self.timeout_order.insert((deadline, id));
+        }
+        self.pending_timeouts
+            .insert(id, PendingTimeout { deadline, planned });
+        id
+    }
+
+    fn value(&mut self, kind: u8, live: f64) -> f64 {
+        if !self.journaling() {
+            return live;
+        }
+        let wanted = match kind {
+            0 => JournalEntry::Clock { value: live },
+            1 => JournalEntry::Monotonic { value: live },
+            _ => JournalEntry::Random { value: live },
+        };
+        match self.expect(wanted, 0) {
+            Expectation::Replayed(
+                JournalEntry::Clock { value }
+                | JournalEntry::Monotonic { value }
+                | JournalEntry::Random { value },
+            ) => value,
+            _ => live,
+        }
+    }
+
+    pub(crate) fn resolve_tool(
+        &mut self,
+        id: u64,
+        encoded: &str,
+        success: bool,
+    ) -> Result<(), String> {
+        if !self.pending_tools.remove(&id) {
+            return Err(format!(
+                "embedded Code Mode received a result for unknown tool call {id}"
+            ));
+        }
+        if self.journal.is_some() {
+            self.record(
+                JournalEntry::Result {
+                    id,
+                    encoded: encoded.to_owned(),
+                    success,
+                },
+                encoded.len(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn fire_timeout(&mut self, id: u64) -> bool {
+        let Some(timeout) = self.pending_timeouts.remove(&id) else {
+            return false;
+        };
+        if let Some(deadline) = timeout.deadline {
+            self.timeout_order.remove(&(deadline, id));
+        }
+        self.record(JournalEntry::Timer { id }, 0);
+        true
+    }
+
+    pub(crate) fn next_timeout_wait(&self) -> Option<Duration> {
+        let now = Instant::now();
+        self.timeout_order
+            .first()
+            .map(|(deadline, _)| deadline.saturating_duration_since(now))
+    }
+
+    pub(crate) fn next_due_timeout(&self, at: Instant) -> Option<u64> {
+        self.timeout_order
+            .first()
+            .filter(|(deadline, _)| *deadline <= at)
+            .map(|(_, id)| *id)
+    }
+
+    pub(crate) fn send_terminal(&mut self, encoded: &str) -> Result<(), String> {
+        let terminal: ExecutionTerminal = serde_json::from_str(encoded)
+            .map_err(|error| format!("embedded Code Mode returned an invalid result: {error}"))?;
+        let cell_id = self.execution_id;
+        let stored = terminal
+            .stored
+            .into_iter()
+            .map(|(key, value)| (key, Arc::from(value)))
+            .collect();
+        let event = match (terminal.kind, terminal.message) {
+            (TerminalKind::Done, _) => RuntimeEvent::Done { cell_id, stored },
+            (TerminalKind::Error, Some(message)) => RuntimeEvent::Error {
+                cell_id,
+                message,
+                stored,
+            },
+            (TerminalKind::Error, None) => {
+                return Err(
+                    "embedded Code Mode returned an error result without a message".to_owned(),
+                );
+            }
+        };
+        self.send(event);
+        Ok(())
+    }
+
+    pub(crate) fn send_waiting(&mut self) {
+        if self.journal.is_some() {
+            self.send(RuntimeEvent::Waiting {
+                cell_id: self.execution_id,
+            });
+        }
+    }
+
+    pub(crate) fn send_checkpoint(&mut self) {
+        if self.replay.is_none()
+            && self
+                .journal
+                .as_ref()
+                .is_some_and(JournalWriter::unpublished)
+        {
+            self.send(RuntimeEvent::Waiting {
+                cell_id: self.execution_id,
+            });
         }
     }
 }
 
-pub(crate) struct PendingTimeout {
-    callback: SavedFunction,
+struct PendingTimeout {
     deadline: Option<Instant>,
     planned: Option<(u64, u64)>,
+}
+
+pub(crate) fn text(call: &HostCall<'_>, index: usize) -> Result<String, Throw> {
+    call.arg(index)
+        .as_str()
+        .map(Cow::into_owned)
+        .ok_or_else(|| Throw::type_error(format!("argument {index} must be a string")))
 }
 
 fn wall_ms() -> u64 {
@@ -414,13 +742,13 @@ fn divergence(position: usize, found: Option<&JournalEntry>, wanted: &JournalEnt
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TerminalKind {
+enum TerminalKind {
     Done,
     Error,
 }
 
 #[derive(Deserialize)]
-pub(crate) struct ExecutionTerminal {
+struct ExecutionTerminal {
     #[serde(rename = "type")]
     kind: TerminalKind,
     message: Option<String>,
@@ -428,165 +756,10 @@ pub(crate) struct ExecutionTerminal {
     stored: HashMap<String, Box<RawValue>>,
 }
 
-pub(crate) fn new_state(
-    execution_id: u64,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
-    stored: HashMap<String, Arc<RawValue>>,
-    rejections: Rejections,
-) -> Rc<RefCell<ExecutionState>> {
-    rejections.borrow_mut().clear();
-    Rc::new(RefCell::new(ExecutionState {
-        execution_id,
-        event_tx,
-        stored,
-        pending_tools: HashMap::new(),
-        pending_timeouts: HashMap::new(),
-        timeout_order: BTreeSet::new(),
-        next_tool_id: 1,
-        next_timeout_id: 1,
-        rejections,
-        uncaught: None,
-        failure: None,
-        pending_text: RefCell::new(None),
-        journal: None,
-        replay: None,
-    }))
-}
-
-pub(crate) fn begin_execution(
-    state: &Rc<RefCell<ExecutionState>>,
-    execution_id: u64,
-    stored: HashMap<String, Arc<RawValue>>,
-    journaling: Option<CellJournaling>,
-) {
-    let mut state = state.borrow_mut();
-    state.rejections.borrow_mut().clear();
-    state.execution_id = execution_id;
-    state.stored = stored;
-    let (journal, replay) = journaling.map_or((None, None), |journaling| {
-        (
-            Some(RefCell::new(journaling.journal.writer())),
-            journaling.replay.map(|entries| Replay {
-                entries,
-                pos: 0,
-                diverged: None,
-            }),
-        )
-    });
-    state.journal = journal;
-    state.replay = replay;
-}
-
-pub(crate) fn clear_pending(state: &Rc<RefCell<ExecutionState>>) {
-    let mut state = state.borrow_mut();
-    state.pending_tools.clear();
-    state.pending_timeouts.clear();
-    state.timeout_order.clear();
-    state.uncaught = None;
-    state.journal = None;
-    state.replay = None;
-    let rejections = std::mem::take(&mut *state.rejections.borrow_mut());
-    drop(state);
-    drop(rejections);
-}
-
-#[cfg(not(target_family = "wasm"))]
-pub(crate) fn start_execution<'js>(
-    ctx: &Ctx<'js>,
-    state: &Rc<RefCell<ExecutionState>>,
-    run_cell: &Function<'js>,
-    source: String,
-    tools: &CellTools,
-    prelude: bool,
-) -> Result<Promise<'js>, String> {
-    let prelude = if prelude {
-        import_prelude(ctx)?.into_value()
-    } else {
-        rquickjs::Value::new_undefined(ctx.clone())
-    };
-    run_execution(ctx, state, run_cell, source, tools, prelude)
-}
-
-pub(crate) fn prepare_execution<'js>(
-    ctx: &Ctx<'js>,
-    state: &Rc<RefCell<ExecutionState>>,
-    bytes: bool,
-) -> Result<Function<'js>, String> {
-    install_native_functions(ctx, state)?;
-
-    LOADING_BOOTSTRAP.set(true);
-    let module = Module::import(ctx, BOOTSTRAP_MODULE)
-        .and_then(|imported| imported.finish::<Object<'js>>())
-        .catch(ctx)
-        .map_err(|error| format!("failed to load the embedded QuickJS bootstrap: {error}"));
-    LOADING_BOOTSTRAP.set(false);
-    let module = module?;
-    let create_tools = module
-        .get::<_, Function<'js>>("createCodeTools")
-        .catch(ctx)
-        .map_err(|error| format!("failed to evaluate shared tool facade: {error}"))?;
-    let value_helpers = module
-        .get::<_, Function<'js>>("createValueHelpers")
-        .and_then(|create| create.call::<_, Object<'js>>(()))
-        .catch(ctx)
-        .map_err(|error| format!("failed to evaluate shared value helpers: {error}"))?;
-    let bootstrap = module
-        .get::<_, Function<'js>>("bootstrap")
-        .catch(ctx)
-        .map_err(|error| format!("failed to evaluate embedded QuickJS bootstrap: {error}"))?;
-    let run_cell = bootstrap
-        .call::<_, Function<'js>>((create_tools, value_helpers))
-        .catch(ctx)
-        .map_err(|error| format!("failed to initialize embedded QuickJS bootstrap: {error}"))?;
-    let uncaught = run_cell
-        .get::<_, Function<'js>>("uncaught")
-        .catch(ctx)
-        .map_err(|error| format!("failed to read the QuickJS rejection handler: {error}"))?;
-    state.borrow_mut().uncaught = Some(Persistent::save(ctx, uncaught));
-    remove_native_globals(ctx)?;
-    if bytes {
-        crate::bytes::install(ctx, state)?;
-    }
-    Ok(run_cell)
-}
-
-pub(crate) fn import_prelude<'js>(ctx: &Ctx<'js>) -> Result<Function<'js>, String> {
-    LOADING_BOOTSTRAP.set(true);
-    let prelude = Module::import(ctx, PRELUDE_MODULE)
-        .and_then(|imported| imported.finish::<Object<'js>>())
-        .and_then(|module| module.get::<_, Function<'js>>("default"))
-        .catch(ctx)
-        .map_err(|error| format!("failed to load the QuickJS prelude: {error}"));
-    LOADING_BOOTSTRAP.set(false);
-    prelude
-}
-
-pub(crate) fn run_execution<'js>(
-    ctx: &Ctx<'js>,
-    state: &Rc<RefCell<ExecutionState>>,
-    run_cell: &Function<'js>,
-    source: String,
-    tools: &CellTools,
-    prelude: rquickjs::Value<'js>,
-) -> Result<Promise<'js>, String> {
-    let promise = run_cell
-        .call::<_, Promise<'js>>((
-            source,
-            tools.definitions.as_str(),
-            tools.descriptions.as_str(),
-            tools.schemas.as_str(),
-            prelude,
-        ))
-        .catch(ctx)
-        .map_err(|error| format!("embedded QuickJS execution failed to start: {error}"))?;
-    drain_jobs(ctx, state);
-    Ok(promise)
-}
-
 pub struct CellTools {
-    definitions: String,
-    descriptions: String,
-    schemas: String,
+    pub(crate) definitions: String,
+    pub(crate) descriptions: String,
+    pub(crate) schemas: String,
 }
 
 const DESCRIPTION_FIELD: &str = "description";
@@ -610,21 +783,21 @@ impl CellTools {
         }
 
         let definitions = serde_json::to_string(&tools.iter().map(Definition).collect::<Vec<_>>())
-            .map_err(|error| format!("failed to encode QuickJS tool metadata: {error}"))?;
+            .map_err(|error| format!("failed to encode Code Mode tool metadata: {error}"))?;
         let descriptions = serde_json::to_string(
             &tools
                 .iter()
                 .map(|tool| tool.get(DESCRIPTION_FIELD).unwrap_or(&Value::Null))
                 .collect::<Vec<_>>(),
         )
-        .map_err(|error| format!("failed to encode QuickJS tool descriptions: {error}"))?;
+        .map_err(|error| format!("failed to encode Code Mode tool descriptions: {error}"))?;
         let schemas = serde_json::to_string(
             &tools
                 .iter()
                 .map(|tool| SCHEMA_FIELDS.map(|field| tool.get(field).unwrap_or(&Value::Null)))
                 .collect::<Vec<_>>(),
         )
-        .map_err(|error| format!("failed to encode QuickJS tool schemas: {error}"))?;
+        .map_err(|error| format!("failed to encode Code Mode tool schemas: {error}"))?;
         Ok(Self {
             definitions,
             descriptions,
@@ -633,628 +806,10 @@ impl CellTools {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-pub(crate) fn install_native_functions<'js>(
-    ctx: &Ctx<'js>,
-    state: &Rc<RefCell<ExecutionState>>,
-) -> Result<(), String> {
-    let globals = ctx.globals();
-
-    let tool_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeTool",
-            Func::from(
-                move |ctx: Ctx<'js>,
-                      name: String,
-                      input_json: String,
-                      host: Opt<bool>|
-                      -> rquickjs::Result<Promise<'js>> {
-                    let input = serde_json::from_str(&input_json).map_err(|error| {
-                        Exception::throw_type(&ctx, &format!("invalid tool input: {error}"))
-                    })?;
-                    let (promise, resolve, reject) = Promise::new(&ctx)?;
-                    let mut state = tool_state.borrow_mut();
-                    let id = state.next_tool_id;
-                    state.next_tool_id = state.next_tool_id.saturating_add(1);
-                    state.pending_tools.insert(
-                        id,
-                        (
-                            Persistent::save(&ctx, resolve),
-                            Persistent::save(&ctx, reject),
-                        ),
-                    );
-                    let host = host.0.unwrap_or(false);
-                    if !state.journaling() {
-                        let _ = state.send(RuntimeEvent::ToolCall {
-                            cell_id: state.execution_id,
-                            id,
-                            name,
-                            input,
-                            host,
-                        });
-                        return Ok(promise);
-                    }
-                    let weight = name.len().saturating_add(input_json.len());
-                    match state.expect(
-                        JournalEntry::Call {
-                            id,
-                            name,
-                            input,
-                            host,
-                        },
-                        weight,
-                    ) {
-                        Expectation::Live(JournalEntry::Call {
-                            id,
-                            name,
-                            input,
-                            host,
-                        }) => {
-                            let _ = state.send(RuntimeEvent::ToolCall {
-                                cell_id: state.execution_id,
-                                id,
-                                name,
-                                input,
-                                host,
-                            });
-                        }
-                        Expectation::Live(_) | Expectation::Replayed(_) => state.flush_text(),
-                        Expectation::Diverged => {}
-                    }
-                    Ok(promise)
-                },
-            ),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS tool callback: {error}"))?;
-
-    let content_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeContent",
-            Func::from(
-                move |ctx: Ctx<'js>, content_json: String| -> rquickjs::Result<()> {
-                    let content: ToolOutputContent = serde_json::from_str(&content_json).map_err(|error| {
-                        Exception::throw_type(&ctx, &format!("invalid output content: {error}"))
-                    })?;
-
-                    let content = match content {
-                        ToolOutputContent::InputAudio { ref audio_url }
-                            if crate::audio::wav_duration_seconds(audio_url)
-                                .is_some_and(|duration| duration < 0.025) =>
-                        {
-                            ToolOutputContent::InputText {
-                                text: "Audio output omitted because the clip is shorter than 25 ms; use a longer clip.".to_owned(),
-                            }
-                        }
-                        content => content,
-                    };
-                    let state = content_state.borrow();
-                    match content {
-                        ToolOutputContent::InputText { text } => state.push_text(text),
-                        content => {
-                            let _ = state.send(RuntimeEvent::Content {
-                                cell_id: state.execution_id,
-                                content,
-                            });
-                        }
-                    }
-                    Ok(())
-                },
-            ),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS content callback: {error}"))?;
-
-    let text_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeText",
-            Func::from(move |text: String| text_state.borrow().push_text(text)),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS text callback: {error}"))?;
-
-    let load_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeLoad",
-            Func::from(
-                move |ctx: Ctx<'js>,
-                      key: String|
-                      -> rquickjs::Result<Option<rquickjs::String<'js>>> {
-                    load_state
-                        .borrow()
-                        .stored
-                        .get(&key)
-                        .map(|value| rquickjs::String::from_str(ctx, value.get()))
-                        .transpose()
-                },
-            ),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS load callback: {error}"))?;
-
-    globals
-        .set(
-            "__nanocodeScript",
-            Func::from(
-                |ctx: Ctx<'js>, source: String| -> rquickjs::Result<Promise<'js>> {
-                    let mut options = EvalOptions::default();
-                    options.global = true;
-                    options.strict = false;
-                    options.promise = true;
-                    options.filename = Some("<input>".to_owned());
-                    ctx.eval_with_options(source, options)
-                },
-            ),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS script callback: {error}"))?;
-
-    let notify_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeNotify",
-            Func::from(move |text: String| {
-                let state = notify_state.borrow();
-                let _ = state.send(RuntimeEvent::Notify {
-                    cell_id: state.execution_id,
-                    text,
-                });
-            }),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS notify callback: {error}"))?;
-
-    let yield_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeYield",
-            Func::from(move || {
-                let state = yield_state.borrow();
-                let _ = state.send(RuntimeEvent::Yielded {
-                    cell_id: state.execution_id,
-                });
-            }),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS yield callback: {error}"))?;
-
-    let timeout_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeSetTimeout",
-            Func::from(
-                move |ctx: Ctx<'js>, args: Rest<rquickjs::Value<'js>>| -> rquickjs::Result<u64> {
-                    let callback = args
-                        .first()
-                        .and_then(|value| value.as_function())
-                        .cloned()
-                        .ok_or_else(|| {
-                            throw_message(&ctx, "setTimeout expects a function callback")
-                        })?;
-                    let delay_ms = args
-                        .get(1)
-                        .cloned()
-                        .map(|value| Coerced::<f64>::from_js(&ctx, value))
-                        .transpose()?
-                        .map_or(0.0, |value| value.0);
-                    let delay_ms = normalize_delay_ms(delay_ms);
-                    let mut state = timeout_state.borrow_mut();
-                    let id = state.next_timeout_id;
-                    state.next_timeout_id = state.next_timeout_id.saturating_add(1);
-                    let mut deadline = Instant::now().checked_add(Duration::from_millis(delay_ms));
-                    let mut planned = None;
-                    if state.journaling() {
-                        let wanted = JournalEntry::Timeout {
-                            id,
-                            delay_ms,
-                            at_ms: wall_ms(),
-                        };
-                        match state.expect(wanted, 0) {
-                            Expectation::Replayed(JournalEntry::Timeout { at_ms, .. }) => {
-                                planned = Some((at_ms, delay_ms));
-                                deadline = None;
-                            }
-                            Expectation::Diverged => deadline = None,
-                            Expectation::Live(_) | Expectation::Replayed(_) => {}
-                        }
-                    }
-                    if let Some(deadline) = deadline {
-                        state.timeout_order.insert((deadline, id));
-                    }
-                    state.pending_timeouts.insert(
-                        id,
-                        PendingTimeout {
-                            callback: Persistent::save(&ctx, callback),
-                            deadline,
-                            planned,
-                        },
-                    );
-                    Ok(id)
-                },
-            ),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS timer callback: {error}"))?;
-
-    let value_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeValue",
-            Func::from(move |kind: u8, live: f64| -> f64 {
-                let mut state = value_state.borrow_mut();
-                if !state.journaling() {
-                    return live;
-                }
-                let wanted = match kind {
-                    0 => JournalEntry::Clock { value: live },
-                    1 => JournalEntry::Monotonic { value: live },
-                    _ => JournalEntry::Random { value: live },
-                };
-                match state.expect(wanted, 0) {
-                    Expectation::Replayed(
-                        JournalEntry::Clock { value }
-                        | JournalEntry::Monotonic { value }
-                        | JournalEntry::Random { value },
-                    ) => value,
-                    _ => live,
-                }
-            }),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS value callback: {error}"))?;
-
-    let clear_timeout_state = Rc::clone(state);
-    globals
-        .set(
-            "__nanocodeClearTimeout",
-            Func::from(
-                move |ctx: Ctx<'js>, args: Rest<rquickjs::Value<'js>>| -> rquickjs::Result<()> {
-                    let Some(value) = args
-                        .first()
-                        .filter(|value| !value.is_null() && !value.is_undefined())
-                    else {
-                        return Ok(());
-                    };
-                    let id = match Coerced::<f64>::from_js(&ctx, value.clone()) {
-                        Ok(id) => id.0,
-                        Err(_) => {
-                            let _ = ctx.catch();
-                            return Err(throw_message(
-                                &ctx,
-                                "clearTimeout expects a numeric timeout id",
-                            ));
-                        }
-                    };
-                    if id.is_finite() && id > 0.0 {
-                        let id = normalize_delay_ms(id);
-                        let mut state = clear_timeout_state.borrow_mut();
-                        if let Some(deadline) = state
-                            .pending_timeouts
-                            .remove(&id)
-                            .and_then(|timeout| timeout.deadline)
-                        {
-                            state.timeout_order.remove(&(deadline, id));
-                        }
-                    }
-                    Ok(())
-                },
-            ),
-        )
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS timer cleanup: {error}"))?;
-    Ok(())
-}
-
-pub(crate) fn remove_native_globals(ctx: &Ctx<'_>) -> Result<(), String> {
-    let globals = ctx.globals();
-    for name in [
-        "__nanocodeTool",
-        "__nanocodeContent",
-        "__nanocodeText",
-        "__nanocodeLoad",
-        "__nanocodeNotify",
-        "__nanocodeScript",
-        "__nanocodeYield",
-        "__nanocodeSetTimeout",
-        "__nanocodeClearTimeout",
-        "__nanocodeValue",
-        "console",
-        "Atomics",
-        "SharedArrayBuffer",
-        "WebAssembly",
-    ] {
-        globals
-            .remove(name)
-            .catch(ctx)
-            .map_err(|error| format!("failed to remove QuickJS global `{name}`: {error}"))?;
-    }
-    Ok(())
-}
-
-pub(crate) fn completed_terminal(
-    ctx: &Ctx<'_>,
-    promise: &Promise<'_>,
-) -> Result<Option<ExecutionTerminal>, String> {
-    match promise.state() {
-        PromiseState::Pending => Ok(None),
-        PromiseState::Resolved => {
-            let encoded = promise
-                .result::<String>()
-                .ok_or_else(|| "embedded QuickJS promise lost its result".to_owned())?
-                .catch(ctx)
-                .map_err(|error| format!("failed to read embedded QuickJS result: {error}"))?;
-            serde_json::from_str(&encoded)
-                .map(Some)
-                .map_err(|error| format!("embedded QuickJS returned an invalid result: {error}"))
-        }
-        PromiseState::Rejected => {
-            let result = promise
-                .result::<String>()
-                .ok_or_else(|| "embedded QuickJS promise lost its rejection".to_owned())?
-                .catch(ctx);
-            match result {
-                Err(error) => Err(format!("embedded QuickJS execution rejected: {error}")),
-                Ok(_) => {
-                    Err("rejected embedded QuickJS promise returned a successful value".to_owned())
-                }
-            }
-        }
-    }
-}
-
-pub(crate) fn send_terminal(
-    state: &Rc<RefCell<ExecutionState>>,
-    terminal: ExecutionTerminal,
-) -> Result<(), String> {
-    let mut state = state.borrow_mut();
-    let cell_id = state.execution_id;
-    let stored = shared_values(terminal.stored);
-    let event = match (terminal.kind, terminal.message) {
-        (TerminalKind::Done, _) => match state.failure.take() {
-            Some(message) => RuntimeEvent::Error {
-                cell_id,
-                message,
-                stored,
-            },
-            None => RuntimeEvent::Done { cell_id, stored },
-        },
-        (TerminalKind::Error, Some(message)) => RuntimeEvent::Error {
-            cell_id,
-            message,
-            stored,
-        },
-        (TerminalKind::Error, None) => {
-            return Err("embedded QuickJS returned an error result without a message".to_owned());
-        }
-    };
-    state
-        .send(event)
-        .map_err(|_| "embedded QuickJS execution observer closed".to_owned())
-}
-
-pub(crate) fn shared_values(
-    stored: HashMap<String, Box<RawValue>>,
-) -> HashMap<String, Arc<RawValue>> {
-    stored
-        .into_iter()
-        .map(|(key, value)| (key, Arc::from(value)))
-        .collect()
-}
-
-pub(crate) fn send_waiting(state: &Rc<RefCell<ExecutionState>>) -> Result<(), String> {
-    let state = state.borrow();
-    if state.journal.is_none() {
-        return Ok(());
-    }
-    state
-        .send(RuntimeEvent::Waiting {
-            cell_id: state.execution_id,
-        })
-        .map_err(|_| "embedded QuickJS execution observer closed".to_owned())
-}
-
-pub(crate) fn send_checkpoint(state: &Rc<RefCell<ExecutionState>>) -> Result<(), String> {
-    let state = state.borrow();
-    let Some(journal) = &state.journal else {
-        return Ok(());
-    };
-    if state.replay.is_some() || !journal.borrow().unpublished() {
-        return Ok(());
-    }
-    state
-        .send(RuntimeEvent::Waiting {
-            cell_id: state.execution_id,
-        })
-        .map_err(|_| "embedded QuickJS execution observer closed".to_owned())
-}
-
-pub(crate) fn resolve_tool(
-    ctx: &Ctx<'_>,
-    state: &Rc<RefCell<ExecutionState>>,
-    id: u64,
-    encoded: String,
-    success: bool,
-) -> Result<(), String> {
-    let (resolve, reject) = state
-        .borrow_mut()
-        .pending_tools
-        .remove(&id)
-        .ok_or_else(|| format!("embedded QuickJS received a result for unknown tool call {id}"))?;
-    {
-        let state = state.borrow();
-        if state.journal.is_some() {
-            let weight = encoded.len();
-            state.record(
-                JournalEntry::Result {
-                    id,
-                    encoded: encoded.clone(),
-                    success,
-                },
-                weight,
-            );
-        }
-    }
-    let function = if success { resolve } else { reject };
-    let function = function
-        .restore(ctx)
-        .map_err(|error| format!("failed to restore QuickJS tool promise: {error}"))?;
-    function
-        .call::<_, ()>((encoded,))
-        .catch(ctx)
-        .map_err(|error| format!("failed to settle QuickJS tool promise: {error}"))
-}
-
-pub(crate) fn invoke_timeout(
-    ctx: &Ctx<'_>,
-    state: &Rc<RefCell<ExecutionState>>,
-    id: u64,
-) -> Result<(), String> {
-    let timeout = {
-        let mut state = state.borrow_mut();
-        let timeout = state.pending_timeouts.remove(&id);
-        if let Some(deadline) = timeout.as_ref().and_then(|timeout| timeout.deadline) {
-            state.timeout_order.remove(&(deadline, id));
-        }
-        timeout
-    };
-    let Some(timeout) = timeout else {
-        return Ok(());
-    };
-    state.borrow().record(JournalEntry::Timer { id }, 0);
-    let callback = timeout
-        .callback
-        .restore(ctx)
-        .map_err(|error| format!("failed to restore QuickJS timeout callback: {error}"))?;
-    callback
-        .call::<_, ()>(())
-        .catch(ctx)
-        .map_err(|error| format!("embedded QuickJS timeout callback failed: {error}"))
-}
-
-pub(crate) fn replay_inputs(
-    ctx: &Ctx<'_>,
-    state: &Rc<RefCell<ExecutionState>>,
-    promise: &Promise<'_>,
-) -> Result<Option<String>, String> {
-    loop {
-        let (position, next) = {
-            let state = state.borrow();
-            let Some(replay) = state.replay.as_ref() else {
-                return Ok(None);
-            };
-            if let Some(reason) = &replay.diverged {
-                return Ok(Some(reason.clone()));
-            }
-            (replay.pos, replay.entries.get(replay.pos).cloned())
-        };
-        let Some(entry) = next else {
-            state.borrow_mut().finish_replay();
-            return Ok(None);
-        };
-        if !matches!(promise.state(), PromiseState::Pending) {
-            return Ok(Some(format!(
-                "the script finished before journal entry {position} ({})",
-                entry.describe()
-            )));
-        }
-        let known = {
-            let state = state.borrow();
-            match &entry {
-                JournalEntry::Result { id, .. } => state.pending_tools.contains_key(id),
-                JournalEntry::Timer { id } => state.pending_timeouts.contains_key(id),
-                _ => false,
-            }
-        };
-        if !known {
-            return Ok(Some(format!(
-                "the script did not reach {} that the journal recorded at entry {position}",
-                entry.describe()
-            )));
-        }
-        if let Some(replay) = state.borrow_mut().replay.as_mut() {
-            replay.pos += 1;
-        }
-        match entry {
-            JournalEntry::Result {
-                id,
-                encoded,
-                success,
-            } => resolve_tool(ctx, state, id, encoded, success)?,
-            JournalEntry::Timer { id } => invoke_timeout(ctx, state, id)?,
-            _ => {}
-        }
-        drain_jobs(ctx, state);
-    }
-}
-
-pub(crate) fn next_timeout_wait(state: &Rc<RefCell<ExecutionState>>) -> Option<Duration> {
-    let now = Instant::now();
-    state
-        .borrow()
-        .timeout_order
-        .first()
-        .map(|(deadline, _)| deadline.saturating_duration_since(now))
-}
-
-pub(crate) fn next_due_timeout(state: &Rc<RefCell<ExecutionState>>, at: Instant) -> Option<u64> {
-    state
-        .borrow()
-        .timeout_order
-        .first()
-        .filter(|(deadline, _)| *deadline <= at)
-        .map(|(_, id)| *id)
-}
-
-pub(crate) fn drain_jobs(ctx: &Ctx<'_>, state: &Rc<RefCell<ExecutionState>>) {
-    loop {
-        while ctx.execute_pending_job() {}
-        let (rejections, uncaught) = {
-            let state = state.borrow();
-            let rejections = std::mem::take(&mut *state.rejections.borrow_mut());
-            (rejections, state.uncaught.clone())
-        };
-        if rejections.is_empty() {
-            state.borrow().flush_text();
-            return;
-        }
-        for rejection in rejections {
-            let reported = uncaught
-                .clone()
-                .ok_or(())
-                .and_then(|uncaught| uncaught.restore(ctx).map_err(drop))
-                .and_then(|uncaught| {
-                    let reason = rejection.reason.restore(ctx).map_err(drop)?;
-                    uncaught
-                        .call::<_, Option<String>>((reason, true))
-                        .catch(ctx)
-                        .map_err(drop)
-                });
-            let message = match reported {
-                Ok(message) => message,
-                Err(()) => Some("Unhandled promise rejection".to_owned()),
-            };
-            if let Some(message) = message {
-                state.borrow_mut().failure.get_or_insert(message);
-            }
-        }
-    }
-}
-
-pub(crate) fn normalize_delay_ms(value: f64) -> u64 {
+fn normalize_delay_ms(value: f64) -> u64 {
     if !value.is_finite() || value <= 0.0 {
         0
     } else {
         value.trunc() as u64
-    }
-}
-
-pub(crate) fn throw_message(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
-    match rquickjs::String::from_str(ctx.clone(), message) {
-        Ok(message) => ctx.throw(message.into_value()),
-        Err(error) => error,
     }
 }

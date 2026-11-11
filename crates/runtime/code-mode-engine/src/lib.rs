@@ -1,15 +1,11 @@
 mod audio;
 pub mod bytes;
 mod cell;
+mod host;
 mod journal;
-#[cfg(not(target_family = "wasm"))]
-mod native;
-#[cfg(target_family = "wasm")]
-mod wasm;
 
 pub use cell::{CellTools, RuntimeEvent};
-pub use journal::{CellJournaling, JOURNAL_LIMIT_BYTES, JournalEntry, SharedJournal};
-#[cfg(not(target_family = "wasm"))]
-pub use native::EmbeddedHost;
+pub use host::EmbeddedHost;
 #[cfg(target_family = "wasm")]
-pub use wasm::{DEFAULT_INTERRUPT_CHECKS, EmbeddedHost, set_interrupt_checks};
+pub use host::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
+pub use journal::{CellJournaling, JOURNAL_LIMIT_BYTES, JournalEntry, SharedJournal};

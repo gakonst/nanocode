@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     sync::{
         Arc, OnceLock,
@@ -17,11 +18,10 @@ use base64::{
         general_purpose::STANDARD as STANDARD_ENGINE,
     },
 };
+use djs_embed::{ErrorKind, HostCall, Throw};
 use nanocode_platform::Instant;
-use rquickjs::{
-    ArrayBuffer, CatchResultExt, Ctx, Exception, Object, Value,
-    function::{Func, Opt},
-};
+
+use crate::cell::{ExecutionState, Reply};
 
 struct Buffer {
     at: Instant,
@@ -63,196 +63,114 @@ pub fn take(id: u64) -> Option<Vec<u8>> {
         .take()
 }
 
-const CHUNK: usize = 1 << 20;
+const PUT: u32 = 20;
+const TAKE: u32 = 21;
+const TEXT: u32 = 22;
+const DISCARD: u32 = 23;
+const DECODE: u32 = 24;
+const ENCODE: u32 = 25;
+const TO_BASE64: u32 = 26;
+const FROM_BASE64: u32 = 27;
+const DIGEST: u32 = 28;
+const RANDOM: u32 = 29;
 
-const LATIN1: &str = "(buffer, offset, length) => { const view = new Uint8Array(buffer, offset ?? 0, length ?? buffer.byteLength - (offset ?? 0)); let text = \"\"; for (let at = 0; at < view.length; at += 8192) text += String.fromCharCode.apply(null, view.subarray(at, at + 8192)); return text; }";
+pub(crate) const HOST_FNS: [(u32, &str); 10] = [
+    (PUT, "__nanocodeBytesPut"),
+    (TAKE, "__nanocodeBytesTake"),
+    (TEXT, "__nanocodeBytesText"),
+    (DISCARD, "__nanocodeBytesDiscard"),
+    (DECODE, "__nanocodeBytesDecode"),
+    (ENCODE, "__nanocodeBytesEncode"),
+    (TO_BASE64, "__nanocodeBytesToBase64"),
+    (FROM_BASE64, "__nanocodeBytesFromBase64"),
+    (DIGEST, "__nanocodeBytesDigest"),
+    (RANDOM, "__nanocodeBytesRandom"),
+];
 
-const SLICE: &str = "(text, start, size) => { let end = Math.min(text.length, start + size); if (end < text.length) { const code = text.charCodeAt(end - 1); if (code >= 0xd800 && code < 0xdc00) end--; } return [start === 0 && end === text.length ? text : text.substring(start, end), end, text.length]; }";
+fn index(call: &HostCall<'_>, at: usize) -> Option<usize> {
+    call.arg(at).as_number().map(|number| number as usize)
+}
 
-fn chunks<'js>(
-    ctx: &Ctx<'js>,
-    buffer: &ArrayBuffer<'js>,
-    offset: Opt<usize>,
-    length: Opt<usize>,
-    mut each: impl FnMut(&[u8]),
-) -> rquickjs::Result<usize> {
-    if buffer.as_raw().is_none() {
-        return Err(Exception::throw_type(ctx, "the ArrayBuffer is detached"));
+fn view<'a>(
+    call: &'a HostCall<'_>,
+    buffer: usize,
+    offset: usize,
+    length: usize,
+) -> Result<&'a [u8], Throw> {
+    let bytes = call
+        .arg(buffer)
+        .as_bytes()
+        .ok_or_else(|| Throw::type_error("expected an ArrayBuffer"))?;
+    let start = index(call, offset).unwrap_or(0);
+    let end = index(call, length)
+        .map_or(Some(bytes.len()), |length| start.checked_add(length))
+        .filter(|end| *end <= bytes.len() && start <= *end)
+        .ok_or_else(|| Throw::range_error("byte range is outside the ArrayBuffer"))?;
+    Ok(&bytes[start..end])
+}
+
+fn source<'a>(
+    call: &'a HostCall<'_>,
+    value: usize,
+    offset: usize,
+    length: usize,
+) -> Result<Cow<'a, [u8]>, Throw> {
+    let argument = call.arg(value);
+    if let Some(text) = argument.as_str() {
+        return Ok(Cow::Owned(text.into_owned().into_bytes()));
     }
-    let size = buffer.len();
-    let start = offset.0.unwrap_or(0);
-    let end = length
-        .0
-        .map_or(Some(size), |length| start.checked_add(length))
-        .filter(|end| *end <= size && start <= *end)
-        .ok_or_else(|| Exception::throw_range(ctx, "byte range is outside the ArrayBuffer"))?;
-    let latin1: rquickjs::Function<'js> = ctx.eval(LATIN1)?;
-    let mut bytes = Vec::with_capacity((end - start).min(CHUNK));
-    let mut at = start;
-    while at < end {
-        let length = (end - at).min(CHUNK);
-        let text: rquickjs::String<'js> = latin1.call((buffer.clone(), at, length))?;
-        let text = text.to_cstring()?;
-        let mut units = AsRef::<[u8]>::as_ref(&text).iter();
-        bytes.clear();
-        while let Some(&byte) = units.next() {
-            bytes.push(if byte < 0x80 {
-                byte
-            } else {
-                ((byte & 0x03) << 6) | (units.next().copied().unwrap_or(0) & 0x3f)
-            });
-        }
-        each(&bytes);
-        at += length;
+    if argument.as_bytes().is_none() {
+        return Err(Throw::type_error("expected a string or an ArrayBuffer"));
     }
-    Ok(end - start)
+    view(call, value, offset, length).map(Cow::Borrowed)
 }
 
-fn view<'js>(
-    ctx: &Ctx<'js>,
-    buffer: &ArrayBuffer<'js>,
-    offset: Opt<usize>,
-    length: Opt<usize>,
-) -> rquickjs::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    chunks(ctx, buffer, offset, length, |chunk| {
-        bytes.extend_from_slice(chunk)
-    })?;
-    Ok(bytes)
-}
-
-fn hash<'js, D: sha2::Digest>(
-    ctx: &Ctx<'js>,
-    buffer: &ArrayBuffer<'js>,
-    offset: Opt<usize>,
-    length: Opt<usize>,
-) -> rquickjs::Result<Vec<u8>> {
-    let mut hasher = D::new();
-    chunks(ctx, buffer, offset, length, |chunk| hasher.update(chunk))?;
-    Ok(hasher.finalize().to_vec())
-}
-
-fn utf8<'js>(ctx: &Ctx<'js>, text: rquickjs::String<'js>) -> rquickjs::Result<Vec<u8>> {
-    let slice: rquickjs::Function<'js> = ctx.eval(SLICE)?;
-    let mut bytes = Vec::new();
-    let mut at = 0_usize;
-    loop {
-        let result: rquickjs::Array<'js> = slice.call((text.clone(), at, CHUNK))?;
-        let piece: rquickjs::String<'js> = result.get(0)?;
-        let end = result.get::<f64>(1)? as usize;
-        let total = result.get::<f64>(2)? as usize;
-        if at == 0 {
-            bytes.reserve_exact(total);
-        }
-        let start = bytes.len();
-        bytes.extend_from_slice(AsRef::<[u8]>::as_ref(&piece.to_cstring()?));
-        let mut index = start;
-        while index + 2 < bytes.len() {
-            if bytes[index] == 0xed && bytes[index + 1] >= 0xa0 {
-                bytes[index..index + 3].copy_from_slice("\u{fffd}".as_bytes());
-                index += 3;
-            } else {
-                index += 1;
-            }
-        }
-        if end >= total || end <= at {
-            return Ok(bytes);
-        }
-        at = end;
+fn text(bytes: Vec<u8>, fatal: bool) -> Result<Reply<'static>, Throw> {
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(Reply::Text(Cow::Owned(text))),
+        Err(_) if fatal => Err(Throw::type_error("The encoded data was not valid utf-8")),
+        Err(error) => Ok(Reply::Lossy(error.into_bytes())),
     }
 }
 
-fn source<'js>(
-    ctx: &Ctx<'js>,
-    value: &Value<'js>,
-    offset: Opt<usize>,
-    length: Opt<usize>,
-) -> rquickjs::Result<Vec<u8>> {
-    if let Some(text) = value.as_string() {
-        return utf8(ctx, text.clone());
-    }
-    let buffer = ArrayBuffer::from_value(value.clone())
-        .ok_or_else(|| Exception::throw_type(ctx, "expected a string or an ArrayBuffer"))?;
-    view(ctx, &buffer, offset, length)
+fn stored(call: &HostCall<'_>, at: usize) -> Result<Vec<u8>, Throw> {
+    let id = call.arg(at).as_number().unwrap_or(0.0);
+    take(id as u64).ok_or_else(|| {
+        Throw::new(
+            ErrorKind::ReferenceError,
+            format!("byte buffer {id} is gone"),
+        )
+    })
 }
 
-fn text<'js>(ctx: &Ctx<'js>, bytes: &[u8], fatal: bool) -> rquickjs::Result<rquickjs::String<'js>> {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => rquickjs::String::from_str(ctx.clone(), text),
-        Err(_) if fatal => Err(Exception::throw_type(
-            ctx,
-            "The encoded data was not valid utf-8",
+fn digest<D: sha2::Digest>(bytes: &[u8]) -> Vec<u8> {
+    D::digest(bytes).to_vec()
+}
+
+pub(crate) fn host_call(
+    state: &mut ExecutionState,
+    call: &HostCall<'_>,
+) -> Result<Reply<'static>, Throw> {
+    match call.fn_id() {
+        PUT => Ok(Reply::Number(
+            put(source(call, 0, 1, 2)?.into_owned()) as f64
         )),
-        Err(_) => rquickjs::String::from_str(ctx.clone(), &String::from_utf8_lossy(bytes)),
-    }
-}
-
-pub(crate) fn install<'js>(
-    ctx: &Ctx<'js>,
-    state: &std::rc::Rc<std::cell::RefCell<crate::cell::ExecutionState>>,
-) -> Result<(), String> {
-    let bytes = Object::new(ctx.clone())
-        .catch(ctx)
-        .map_err(|error| error.to_string())?;
-    let put_bytes = Func::from(
-        |ctx: Ctx<'js>,
-         value: Value<'js>,
-         offset: Opt<usize>,
-         length: Opt<usize>|
-         -> rquickjs::Result<f64> {
-            source(&ctx, &value, offset, length).map(|bytes| put(bytes) as f64)
-        },
-    );
-    let take_bytes = Func::from(
-        |ctx: Ctx<'js>, id: f64| -> rquickjs::Result<ArrayBuffer<'js>> {
-            let bytes = take(id as u64).ok_or_else(|| {
-                Exception::throw_reference(&ctx, &format!("byte buffer {id} is gone"))
-            })?;
-            ArrayBuffer::new(ctx, bytes)
-        },
-    );
-    let decode = Func::from(
-        |ctx: Ctx<'js>,
-         buffer: ArrayBuffer<'js>,
-         offset: Opt<usize>,
-         length: Opt<usize>,
-         fatal: Opt<bool>|
-         -> rquickjs::Result<rquickjs::String<'js>> {
-            let bytes = view(&ctx, &buffer, offset, length)?;
-            text(&ctx, &bytes, fatal.0.unwrap_or(false))
-        },
-    );
-    let take_text = Func::from(
-        |ctx: Ctx<'js>, id: f64, fatal: Opt<bool>| -> rquickjs::Result<rquickjs::String<'js>> {
-            let bytes = take(id as u64).ok_or_else(|| {
-                Exception::throw_reference(&ctx, &format!("byte buffer {id} is gone"))
-            })?;
-            text(&ctx, &bytes, fatal.0.unwrap_or(false))
-        },
-    );
-    let discard = Func::from(|id: f64| {
-        take(id as u64);
-    });
-    let encode = Func::from(
-        |ctx: Ctx<'js>, value: Value<'js>| -> rquickjs::Result<ArrayBuffer<'js>> {
-            let bytes = source(&ctx, &value, Opt(None), Opt(None))?;
-            ArrayBuffer::new(ctx, bytes)
-        },
-    );
-    let to_base64 = Func::from(
-        |ctx: Ctx<'js>,
-         buffer: ArrayBuffer<'js>,
-         offset: Opt<usize>,
-         length: Opt<usize>|
-         -> rquickjs::Result<rquickjs::String<'js>> {
-            let text = STANDARD_ENGINE.encode(view(&ctx, &buffer, offset, length)?);
-            rquickjs::String::from_str(ctx.clone(), &text)
-        },
-    );
-    let from_base64 = Func::from(
-        |ctx: Ctx<'js>, text: rquickjs::String<'js>| -> rquickjs::Result<ArrayBuffer<'js>> {
-            let mut clean = text
-                .to_string()?
+        TAKE => stored(call, 0).map(Reply::Bytes),
+        TEXT => text(stored(call, 0)?, call.arg(1).as_bool().unwrap_or(false)),
+        DISCARD => {
+            take(call.arg(0).as_number().unwrap_or(0.0) as u64);
+            Ok(Reply::Nothing)
+        }
+        DECODE => text(
+            view(call, 0, 1, 2)?.to_vec(),
+            call.arg(3).as_bool().unwrap_or(false),
+        ),
+        ENCODE => Ok(Reply::Bytes(source(call, 0, 1, 2)?.into_owned())),
+        TO_BASE64 => Ok(Reply::Text(Cow::Owned(
+            STANDARD_ENGINE.encode(view(call, 0, 1, 2)?),
+        ))),
+        FROM_BASE64 => {
+            let mut clean = crate::cell::text(call, 0)?
                 .bytes()
                 .filter_map(|byte| match byte {
                     b'-' => Some(b'+'),
@@ -264,57 +182,28 @@ pub(crate) fn install<'js>(
             if clean.len() % 4 == 1 {
                 clean.pop();
             }
-            let bytes = LENIENT.decode(&clean).map_err(|error| {
-                Exception::throw_type(&ctx, &format!("invalid base64: {error}"))
-            })?;
-            ArrayBuffer::new(ctx, bytes)
-        },
-    );
-    let digest = Func::from(
-        |ctx: Ctx<'js>,
-         algorithm: rquickjs::String<'js>,
-         buffer: ArrayBuffer<'js>,
-         offset: Opt<usize>,
-         length: Opt<usize>|
-         -> rquickjs::Result<ArrayBuffer<'js>> {
-            let digest = match algorithm.to_string()?.as_str() {
-                "SHA-1" => hash::<sha1::Sha1>(&ctx, &buffer, offset, length)?,
-                "SHA-256" => hash::<sha2::Sha256>(&ctx, &buffer, offset, length)?,
-                "SHA-384" => hash::<sha2::Sha384>(&ctx, &buffer, offset, length)?,
-                "SHA-512" => hash::<sha2::Sha512>(&ctx, &buffer, offset, length)?,
-                other => {
-                    return Err(Exception::throw_type(
-                        &ctx,
-                        &format!("unsupported digest {other}"),
-                    ));
-                }
+            LENIENT
+                .decode(&clean)
+                .map(Reply::Bytes)
+                .map_err(|error| Throw::type_error(format!("invalid base64: {error}")))
+        }
+        DIGEST => {
+            let bytes = view(call, 1, 2, 3)?;
+            let digest = match crate::cell::text(call, 0)?.as_str() {
+                "SHA-1" => digest::<sha1::Sha1>(bytes),
+                "SHA-256" => digest::<sha2::Sha256>(bytes),
+                "SHA-384" => digest::<sha2::Sha384>(bytes),
+                "SHA-512" => digest::<sha2::Sha512>(bytes),
+                other => return Err(Throw::type_error(format!("unsupported digest {other}"))),
             };
-            ArrayBuffer::new(ctx, digest)
-        },
-    );
-    let random_state = std::rc::Rc::clone(state);
-    let random = Func::from(
-        move |ctx: Ctx<'js>, length: usize| -> rquickjs::Result<ArrayBuffer<'js>> {
-            let mut bytes = vec![0; length];
-            nanocode_platform::fill_random(&mut bytes).map_err(|error| {
-                Exception::throw_internal(&ctx, &format!("no randomness: {error}"))
-            })?;
-            let bytes = random_state.borrow_mut().random_bytes(bytes);
-            ArrayBuffer::new(ctx, bytes)
-        },
-    );
-    bytes
-        .set("put", put_bytes)
-        .and_then(|()| bytes.set("take", take_bytes))
-        .and_then(|()| bytes.set("text", take_text))
-        .and_then(|()| bytes.set("discard", discard))
-        .and_then(|()| bytes.set("decode", decode))
-        .and_then(|()| bytes.set("encode", encode))
-        .and_then(|()| bytes.set("toBase64", to_base64))
-        .and_then(|()| bytes.set("fromBase64", from_base64))
-        .and_then(|()| bytes.set("digest", digest))
-        .and_then(|()| bytes.set("random", random))
-        .and_then(|()| ctx.globals().set("__nanocodeBytes", bytes))
-        .catch(ctx)
-        .map_err(|error| format!("failed to install QuickJS byte buffers: {error}"))
+            Ok(Reply::Bytes(digest))
+        }
+        RANDOM => {
+            let mut bytes = vec![0; index(call, 0).unwrap_or(0)];
+            nanocode_platform::fill_random(&mut bytes)
+                .map_err(|error| Throw::error(format!("no randomness: {error}")))?;
+            Ok(Reply::Bytes(state.random_bytes(bytes)))
+        }
+        other => Err(Throw::error(format!("unknown host function {other}"))),
+    }
 }

@@ -2293,7 +2293,7 @@ impl CellCalls<'_, '_> {
 }
 
 impl EmbeddedHost {
-    fn hold_cell(&self, cell_id: u64, record: Option<&CellRecord>) -> bool {
+    fn hold_cell(&mut self, cell_id: u64, record: Option<&CellRecord>) -> bool {
         let Some(record) = record else {
             return false;
         };
@@ -2306,7 +2306,7 @@ impl EmbeddedHost {
     }
 
     fn release_cell(
-        &self,
+        &mut self,
         cell_id: u64,
         record: &CellRecord,
         calls: &mut CellCalls<'_, '_>,
@@ -2340,7 +2340,7 @@ impl EmbeddedHost {
     }
 
     fn resume_replayed(
-        &self,
+        &mut self,
         cell_id: u64,
         plan: &ReplayPlan,
         held: bool,

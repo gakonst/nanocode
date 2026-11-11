@@ -8,11 +8,7 @@ pub struct OwnerId(String);
 
 impl OwnerId {
     pub fn new() -> Self {
-        #[cfg(not(target_family = "wasm"))]
-        let id = uuid::Uuid::now_v7();
-        #[cfg(target_family = "wasm")]
-        let id = nanocode_platform::uuid_v7();
-        Self(id.to_string())
+        Self(nanocode_platform::uuid_v7().to_string())
     }
 
     pub fn as_str(&self) -> &str {

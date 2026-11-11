@@ -104,6 +104,7 @@ pub struct FunctionTool {
     handler: Handler,
     parallel: bool,
     content_results: bool,
+    json_strings: bool,
     output_schema: Option<Value>,
 }
 
@@ -131,6 +132,7 @@ impl FunctionTool {
             handler,
             parallel: false,
             content_results: false,
+            json_strings: false,
             output_schema: None,
         }
     }
@@ -176,6 +178,12 @@ impl FunctionTool {
     }
 
     #[must_use]
+    pub const fn json_strings(mut self, enabled: bool) -> Self {
+        self.json_strings = enabled;
+        self
+    }
+
+    #[must_use]
     pub fn output_schema(mut self, schema: Value) -> Self {
         self.output_schema = Some(schema);
         self
@@ -184,7 +192,7 @@ impl FunctionTool {
     fn output(&self, output: Value) -> ToolOutput {
         if !self.content_results {
             return match output {
-                Value::String(output) => ToolOutput::text(output),
+                Value::String(output) if !self.json_strings => ToolOutput::text(output),
                 output => ToolOutput::from_json(output, true),
             };
         }

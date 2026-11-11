@@ -8,7 +8,7 @@ use std::io::Write;
 use std::rc::Rc;
 
 use super::cmd::quote_path;
-use super::patch::{TextDiff, check, is_binary};
+use super::patch::{Space, TextDiff, check, is_binary};
 use super::repo::Repo;
 use super::store::{Data, Oid, join};
 use super::wild::Pathspec;
@@ -531,6 +531,7 @@ pub struct DiffOpts {
     pub name_status: bool,
     pub check: bool,
     pub summary: bool,
+    pub space: Space,
     pub context: usize,
     /// The least similarity of a rename (out of 60000), or no rename detection.
     pub renames: Option<u32>,
@@ -589,6 +590,7 @@ impl DiffOpts {
             name_status: false,
             check: false,
             summary: false,
+            space: Space::Exact,
             context,
             renames,
             full_index: false,
@@ -659,6 +661,9 @@ impl DiffOpts {
             "--name-status" => self.name_status = true,
             "--check" => self.check = true,
             "--summary" => self.summary = true,
+            "-w" | "--ignore-all-space" => self.space = Space::All,
+            "-b" | "--ignore-space-change" => self.space = Space::Change,
+            "--ignore-space-at-eol" => self.space = Space::AtEol,
             "--patch-with-stat" => {
                 self.patch = true;
                 self.stat = true;
@@ -943,7 +948,7 @@ impl Printer<'_, '_> {
             let (added, deleted) = if same {
                 (0, 0)
             } else {
-                let diff = TextDiff::new(&old, &new);
+                let diff = TextDiff::with(&old, &new, self.opts.space);
                 (diff.added() as u64, diff.removed() as u64)
             };
             stats.push(Stat {
@@ -1195,7 +1200,7 @@ impl Printer<'_, '_> {
             out.write_all(b" differ\n")?;
             return Ok(());
         }
-        let diff = TextDiff::new(&old, &new);
+        let diff = TextDiff::with(&old, &new, self.opts.space);
         if diff.changes.is_empty() {
             return Ok(());
         }
@@ -1218,8 +1223,24 @@ impl Printer<'_, '_> {
     }
 
     /// Prints the changes in every format asked for. True when there were any.
+    /// Whether a change is one when white space is passed over: a file whose text
+    /// differs only there is no change at all.
+    fn differs(&self, change: &Change) -> Res<bool> {
+        let (Some(old), Some(new)) = (&change.old, &change.new) else {
+            return Ok(true);
+        };
+        if old.mode != new.mode || change.from.is_some() {
+            return Ok(true);
+        }
+        let (a, b) = (content(self.repo, old)?, content(self.repo, new)?);
+        if is_binary(&a) || is_binary(&b) {
+            return Ok(true);
+        }
+        Ok(!TextDiff::with(&a, &b, self.opts.space).changes.is_empty())
+    }
+
     pub fn print(&self, out: &mut dyn Write, changes: &[Change]) -> Res<bool> {
-        let changes = self.filtered(changes);
+        let mut changes = self.filtered(changes);
         let mut found = !changes.is_empty();
         if self.opts.quiet && !self.opts.check {
             return Ok(found);
@@ -1239,6 +1260,17 @@ impl Printer<'_, '_> {
                 out.write_all(&quote_path(&change.path))?;
                 out.write_all(b"\n")?;
             }
+        }
+        // git 2.50 names a file that differs only in white space passed over, and
+        // leaves it out of the counts and the patch.
+        if self.opts.space != Space::Exact {
+            let mut kept = Vec::with_capacity(changes.len());
+            for change in changes {
+                if self.differs(change)? {
+                    kept.push(change);
+                }
+            }
+            changes = kept;
         }
         if self.opts.check {
             found = false;

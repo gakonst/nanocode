@@ -15,6 +15,54 @@ pub fn is_binary(data: &[u8]) -> bool {
     data[..data.len().min(8000)].contains(&0)
 }
 
+/// The white space a comparison of lines passes over (-w, -b,
+/// --ignore-space-at-eol).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Space {
+    #[default]
+    Exact,
+    AtEol,
+    Change,
+    All,
+}
+
+/// A text with the white space a comparison passes over taken out of each line: as
+/// many lines as it had.
+fn squeezed(text: &[u8], space: Space) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    for line in text.split_inclusive(|&b| b == b'\n') {
+        let (body, end) = match line.strip_suffix(b"\n") {
+            Some(body) => (body, &b"\n"[..]),
+            None => (line, &b""[..]),
+        };
+        let mut kept = body.len();
+        while kept > 0 && body[kept - 1].is_ascii_whitespace() {
+            kept -= 1;
+        }
+        let body = &body[..kept];
+        match space {
+            Space::Exact | Space::AtEol => out.extend_from_slice(body),
+            Space::All => out.extend(body.iter().filter(|b| !b.is_ascii_whitespace())),
+            Space::Change => {
+                let mut blank = false;
+                for &b in body {
+                    if b.is_ascii_whitespace() {
+                        blank = true;
+                        continue;
+                    }
+                    if blank {
+                        out.push(b' ');
+                        blank = false;
+                    }
+                    out.push(b);
+                }
+            }
+        }
+        out.extend_from_slice(end);
+    }
+    out
+}
+
 /// Two texts by line and the lines that differ.
 pub struct TextDiff<'a> {
     pub old: Vec<&'a [u8]>,
@@ -25,7 +73,17 @@ pub struct TextDiff<'a> {
 
 impl<'a> TextDiff<'a> {
     pub fn new(old: &'a [u8], new: &'a [u8]) -> TextDiff<'a> {
-        let input = InternedInput::new(byte_lines(old), byte_lines(new));
+        TextDiff::with(old, new, Space::Exact)
+    }
+
+    /// The lines that differ when the white space named is passed over.
+    pub fn with(old: &'a [u8], new: &'a [u8], space: Space) -> TextDiff<'a> {
+        let squeezed =
+            (space != Space::Exact).then(|| (squeezed(old, space), squeezed(new, space)));
+        let input = match &squeezed {
+            Some((a, b)) => InternedInput::new(byte_lines(a), byte_lines(b)),
+            None => InternedInput::new(byte_lines(old), byte_lines(new)),
+        };
         let mut diff = Diff::compute(Algorithm::Myers, &input);
         diff.postprocess_lines(&input);
         let changes = diff
@@ -108,9 +166,11 @@ impl<'a> TextDiff<'a> {
                 out.write_all(function)?;
             }
             out.write_all(b"\n")?;
-            let mut at = s1;
+            // The lines around a change are the new text's, as git prints them: the
+            // two differ there when white space is passed over.
+            let mut at = s2;
             for (old, new) in &self.changes[i..=j] {
-                for line in &self.old[at..old.start] {
+                for line in &self.new[at..new.start] {
                     line_out(out, b' ', line)?;
                 }
                 for line in &self.old[old.clone()] {
@@ -119,9 +179,9 @@ impl<'a> TextDiff<'a> {
                 for line in &self.new[new.clone()] {
                     line_out(out, b'+', line)?;
                 }
-                at = old.end;
+                at = new.end;
             }
-            for line in &self.old[at..e1] {
+            for line in &self.new[at..e2] {
                 line_out(out, b' ', line)?;
             }
             i = j + 1;

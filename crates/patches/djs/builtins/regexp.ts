@@ -368,6 +368,7 @@ function RegExpPrototypeMatch(this: Value, string: Value): Value {
 /**
  * RegExp.prototype [ %Symbol.matchAll% ] ( string ), 22.2.6.9.
  * @builtin RegExp.prototype[Symbol.matchAll]
+ * @intrinsic
  */
 function RegExpPrototypeMatchAll(this: Value, string: Value): Obj {
   const r: Obj = ThisRegExpObject(this);

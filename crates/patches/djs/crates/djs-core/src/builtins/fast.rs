@@ -198,6 +198,7 @@ pub(crate) static FAST: &[FastFn] = &[
     m("RegExpStringIteratorNext", regexp_string_iterator_next),
     m("StringPrototypeMatch", string_match),
     m("StringPrototypeSearch", string_search),
+    f("StringPrototypeMatchAll", string_match_all),
     // ---- Math and the number functions of a primitive (as bytecode a call cost a
     // frame for one libm call: 3.5x QuickJS) ----
     f("MathAbs", |h, _, a| math(h, a, djs_libm::fabs)),
@@ -240,6 +241,14 @@ pub(crate) static FAST: &[FastFn] = &[
     f("ArrayPrototypeShift", array_shift),
     f("ArrayPrototypeUnshift", array_unshift),
     f("ArrayPrototypeSplice", array_splice),
+    // ---- Date: the clock and a timestamp's text ----
+    f("DateNowBuiltin", |h, _, _| {
+        Ok(Some(realm::intrinsic(h, Intrinsic::Clock)))
+    }),
+    f("DatePrototypeGetTime", |h, this, _| {
+        Ok(this_date(h, this).map(conv::number))
+    }),
+    f("DatePrototypeToISOString", date_to_iso_string),
     // ---- btoa and atob of a string ----
     f("GlobalBtoa", btoa),
     f("GlobalAtob", atob),
@@ -855,6 +864,7 @@ const REGEXP_REPLACE: u16 = intrinsic_id("RegExpPrototypeReplace");
 const REGEXP_SEARCH: u16 = intrinsic_id("RegExpPrototypeSearch");
 const REGEXP_SPLIT: u16 = intrinsic_id("RegExpPrototypeSplit");
 const REGEXP_MATCH: u16 = intrinsic_id("RegExpPrototypeMatch");
+const REGEXP_MATCH_ALL: u16 = intrinsic_id("RegExpPrototypeMatchAll");
 
 /// The pristine RegExp `v` (`regexp::pristine`: no own property but lastIndex, so its
 /// methods are %RegExp.prototype%'s) when the method under the well-known symbol `key`
@@ -1130,6 +1140,38 @@ fn string_match(heap: &mut Heap, this: Value, args: &[Value], fuel: &mut i64) ->
         Some(last) => regexp::exec_now(heap, r, s, last, false, fuel),
         None => Ok(None),
     }
+}
+
+/// String.prototype.matchAll ( regexp ) of a pristine global RegExp (without `g` it is
+/// the builtin's TypeError): the iterator over a copy of it that starts at its
+/// lastIndex, as RegExpPrototypeMatchAll makes it.
+fn string_match_all(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some(r) = symbol_method(
+        heap,
+        arg(args, 0),
+        regexp::MATCH_ALL,
+        atoms::SYM_MATCH_ALL,
+        REGEXP_MATCH_ALL,
+    ) else {
+        return Ok(None);
+    };
+    let (Some(last), true) = (
+        regexp::last_index(heap, r),
+        regexp::has_flag(heap, r, u16::from(b'g')),
+    ) else {
+        return Ok(None);
+    };
+    let Some(s) = this_str(heap, this)? else {
+        return Ok(None);
+    };
+    let matcher = regexp::copy(heap, r, conv::number(regexp::to_length(last)))?;
+    let mut flags = regexp::IT_GLOBAL;
+    if regexp::flags(heap, r).unicode_mode() {
+        flags |= regexp::IT_UNICODE;
+    }
+    Ok(Some(Value::object(regexp::string_iterator(
+        heap, matcher, s, flags,
+    )?)))
 }
 
 /// String.prototype.search ( regexp ) of a pristine RegExp.
@@ -1765,6 +1807,27 @@ fn empty_collection(heap: &mut Heap, args: &[Value], class: ObjectClass, proto: 
     }
     let proto = realm::intrinsic_obj(heap, proto);
     Ok(Some(Value::object(heap.collection_new(class, proto)?)))
+}
+
+/// The time value of a Date `this`.
+fn this_date(heap: &Heap, this: Value) -> Option<f64> {
+    this.as_object()
+        .filter(|&o| heap.object_class(o) == ObjectClass::Date)
+        .map(|o| heap.object_slot(o, 0).as_number().unwrap_or(f64::NAN))
+}
+
+/// Date.prototype.toISOString ( ); an invalid Date is the builtin's RangeError.
+fn date_to_iso_string(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    let Some(t) = this_date(heap, this) else {
+        return Ok(None);
+    };
+    let offset = realm::intrinsic(heap, Intrinsic::TimeZoneOffset)
+        .as_int()
+        .unwrap_or(0) as i64;
+    match crate::builtins::date::format(t, 2, 3, offset) {
+        Some(s) => some_str(heap.alloc_str(&s)?),
+        None => Ok(None),
+    }
 }
 
 /// `new Date()`, and `new Date(v)` where DateValueFromArgs runs no user code: a Date

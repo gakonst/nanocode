@@ -398,22 +398,30 @@ pub(crate) fn match_result(
         )
     };
     let n = caps.len();
-    let mut values = crate::buf::vec_with_capacity(n);
-    for i in 0..n {
-        values.push_out(match caps.get(i) {
-            Some((a, b)) => substring(heap, s, a, b)?,
-            None => Value::UNDEFINED,
-        });
+    // A few groups (most patterns) on the stack.
+    let mut few = [Value::UNDEFINED; 8];
+    let mut many = Vec::new();
+    let values = if n <= few.len() {
+        &mut few[..n]
+    } else {
+        many.resize(n, Value::UNDEFINED);
+        &mut many[..]
+    };
+    for (i, v) in values.iter_mut().enumerate() {
+        if let Some((a, b)) = caps.get(i) {
+            *v = substring(heap, s, a, b)?;
+        }
     }
+    let values = &*values;
     let array_proto = realm::intrinsic_obj(heap, Intrinsic::ArrayProto);
-    let a = heap.new_array_from_values(Some(array_proto), &values)?;
+    let a = heap.new_array_from_values(Some(array_proto), values)?;
     let (start, _) = caps.get(0).expect("group 0 matched");
     let index = atoms::INDEX;
     heap.create_data_property(a, index, Value::int(start as i32))?;
     let input = atoms::INPUT;
     heap.create_data_property(a, input, Value::string(s))?;
     let groups = if has_names {
-        groups_object(heap, r, &values)?
+        groups_object(heap, r, values)?
     } else {
         Value::UNDEFINED
     };
@@ -670,12 +678,13 @@ pub(crate) const MATCH: usize = 1;
 pub(crate) const REPLACE: usize = 2;
 pub(crate) const SEARCH: usize = 3;
 pub(crate) const SPLIT: usize = 4;
-const CONSTRUCTOR: usize = 5;
-const GETTERS: usize = 6;
+pub(crate) const MATCH_ALL: usize = 5;
+const CONSTRUCTOR: usize = 6;
+const GETTERS: usize = 7;
 
 /// The entry slot of %RegExp.prototype% where each of those properties was found last.
 /// Only a hint (the slot is read with its key): every VM of a base image has them in the
-/// same slots, so a check reads fifteen entries in place of fifteen table searches.
+/// same slots, so a check reads its entries in place of as many table searches.
 static SLOTS: [AtomicU32; GETTERS + REGEXP_GETTERS.len()] =
     [const { AtomicU32::new(0) }; GETTERS + REGEXP_GETTERS.len()];
 
@@ -826,12 +835,27 @@ fn run(
 }
 
 /// ToLength of a Number `lastIndex`.
-fn to_length(last: f64) -> f64 {
+pub(crate) fn to_length(last: f64) -> f64 {
     if last > 0.0 {
-        djs_libm::trunc(last)
+        djs_libm::trunc(last).min(9007199254740991.0)
     } else {
         0.0
     }
+}
+
+/// A new RegExp with the program, the source and the flags of `r` and `lastIndex`
+/// `last`: RegExpCreate of `r`'s source and flags (`create_like`), without the flags
+/// string.
+pub(crate) fn copy(heap: &mut Heap, r: Obj, last: Value) -> Result<Obj, Fault> {
+    let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
+    let o = heap.alloc_object(ObjectClass::RegExp, Some(proto), 3)?;
+    for slot in [SLOT_PROGRAM, SLOT_SOURCE, SLOT_FLAGS] {
+        let v = heap.object_slot(r, slot);
+        heap.set_object_slot(o, slot, v);
+    }
+    let d = PropertyDescriptor::data(last, PropFlags::WRITABLE);
+    heap.define_own_property(o, atoms::LAST_INDEX, &d)?;
+    Ok(o)
 }
 
 /// RegExpBuiltinExec ( R, S ) once `lastIndex` was read as `last` (`last_index`), in one

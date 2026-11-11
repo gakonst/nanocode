@@ -55,6 +55,7 @@ function StringPrototypeMatch(this: Value, regexp: Value): Value {
 /**
  * String.prototype.matchAll ( regexp ), 22.1.3.14.
  * @builtin String.prototype.matchAll
+ * @fast
  */
 function StringPrototypeMatchAll(this: Value, regexp: Value): Value {
   RequireThisCoercible(this);

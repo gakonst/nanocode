@@ -59,11 +59,12 @@ pub(crate) fn btoa(heap: &mut Heap, s: Str) -> Result<Option<Str>, HeapError> {
 
 /// atob of the string `s`: `None` for an invalid one.
 pub(crate) fn atob(heap: &mut Heap, s: Str) -> Result<Option<Str>, HeapError> {
-    let units: Vec<u16> = match heap.str_view_flat(s)? {
-        StrView::Latin1(b) => b.iter().map(|&c| u16::from(c)).collect(),
-        view => view.units().collect(),
+    let bytes = match heap.str_view_flat(s)? {
+        // (A code unit above 0x7F is no digit, white space or padding.)
+        StrView::Latin1(b) => super::typed::from_base64_latin1(b),
+        view => atob_units(&view.units().collect::<Vec<u16>>()),
     };
-    match atob_units(&units) {
+    match bytes {
         Some(bytes) => Ok(Some(heap.alloc_latin1(&bytes)?)),
         None => Ok(None),
     }

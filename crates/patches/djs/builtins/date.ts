@@ -57,6 +57,7 @@ function DateConstructor(...values: Value[]): Value {
 /**
  * Date.now ( ), 21.4.3.1.
  * @builtin Date.now
+ * @fast
  */
 function DateNowBuiltin(): f64 {
   return DateNow();
@@ -365,6 +366,7 @@ function DateSetter(date: Value, args: Obj, first: i32, maxCount: f64, local: bo
 /**
  * Date.prototype.getTime ( ), 21.4.4.10.
  * @builtin Date.prototype.getTime
+ * @fast
  */
 function DatePrototypeGetTime(this: Value): f64 {
   return DateValue(this);
@@ -425,6 +427,7 @@ function DatePrototypeToTimeString(this: Value): Str {
  * Date.prototype.toISOString ( ).
  * @builtin Date.prototype.toISOString
  * @intrinsic
+ * @fast
  */
 function DatePrototypeToISOString(this: Value): Str {
   return DateFormat(DateValue(this), 2, 3);

@@ -518,6 +518,7 @@ pub const INTRINSICS: &[IntrinsicInfo] = &[
     i("RegExpPrototypeFlags", B, 0, false),
     i("RegExpPrototypeExec", B, 1, false),
     i("RegExpPrototypeMatch", B, 1, false),
+    i("RegExpPrototypeMatchAll", B, 1, false),
     i("RegExpPrototypeReplace", B, 2, false),
     i("RegExpPrototypeSearch", B, 1, false),
     i("RegExpPrototypeSplit", B, 2, false),

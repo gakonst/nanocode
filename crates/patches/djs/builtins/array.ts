@@ -330,7 +330,14 @@ function ArrayFrom(this: Value, items: Value, mapfn?: Value, thisArg?: Value): O
   }
   // With a mapping function, the elements whose Get observes nothing in one callback
   // frame (D2306).
-  const start: f64 = mapping && len > 0 ? EachDense(8, arrayLike, 0, len, mapfn, thisArg, a) : 0;
+  let start: f64 = 0;
+  if (mapping) {
+    start = len > 0 ? EachDense(8, arrayLike, 0, len, mapfn, thisArg, a) : 0;
+  } else if (plain && len > 0 && ArraySliceDense(arrayLike, 0, len, a)) {
+    // Dense elements into a fresh Array in one copy: Get and CreateDataPropertyOrThrow
+    // observe nothing.
+    start = len;
+  }
   for (let k: f64 = start; k < len; k++) {
     const kValue: Value = Get(arrayLike, k);
     const mappedValue: Value = mapping ? Call(mapfn, thisArg, kValue, k) : kValue;

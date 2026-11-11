@@ -279,7 +279,12 @@ function ArrayFrom(items, mapfn, thisArg) {
   if (!plain && %IsConstructor(this)) {
     a = iterable ? %Construct(this) : %Construct(this, len);
   }
-  const start = mapping && len > 0 ? %EachDense(8, arrayLike, 0, len, mapfn, thisArg, a) : 0;
+  let start = 0;
+  if (mapping) {
+    start = len > 0 ? %EachDense(8, arrayLike, 0, len, mapfn, thisArg, a) : 0;
+  } else if (plain && len > 0 && %ArraySliceDense(arrayLike, 0, len, a)) {
+    start = len;
+  }
   for (let k = start; k < len; k++) {
     const kValue = %Get(arrayLike, k);
     const mappedValue = mapping ? %Call(mapfn, thisArg, kValue, k) : kValue;
@@ -291,12 +296,12 @@ function ArrayFrom(items, mapfn, thisArg) {
   return a;
 }
 
-// builtins/array.ts:350 get Array[Symbol.species] %ArraySpecies
+// builtins/array.ts:357 get Array[Symbol.species] %ArraySpecies
 function ArraySpecies() {
   return this;
 }
 
-// builtins/array.ts:360 Array.prototype.at
+// builtins/array.ts:367 Array.prototype.at
 function ArrayPrototypeAt(index) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -308,7 +313,7 @@ function ArrayPrototypeAt(index) {
   return %Get(o, k);
 }
 
-// builtins/array.ts:375 Array.prototype.lastIndexOf
+// builtins/array.ts:382 Array.prototype.lastIndexOf
 function ArrayPrototypeLastIndexOf(searchElement, ...rest) {
   let $1;
   const o = %ToObject(this);
@@ -343,7 +348,7 @@ function ArrayPrototypeLastIndexOf(searchElement, ...rest) {
   return -1;
 }
 
-// builtins/array.ts:413 %FindViaPredicate
+// builtins/array.ts:420 %FindViaPredicate
 function FindViaPredicate(o, len, fromEnd, predicate, thisArg, wantIndex) {
   if (!%IsCallable(predicate)) {
     throw %NewTypeError("not a function");
@@ -369,31 +374,31 @@ function FindViaPredicate(o, len, fromEnd, predicate, thisArg, wantIndex) {
   return undefined;
 }
 
-// builtins/array.ts:443 Array.prototype.find
+// builtins/array.ts:450 Array.prototype.find
 function ArrayPrototypeFind(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), false, predicate, thisArg, false);
 }
 
-// builtins/array.ts:452 Array.prototype.findIndex
+// builtins/array.ts:459 Array.prototype.findIndex
 function ArrayPrototypeFindIndex(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), false, predicate, thisArg, true);
 }
 
-// builtins/array.ts:461 Array.prototype.findLast
+// builtins/array.ts:468 Array.prototype.findLast
 function ArrayPrototypeFindLast(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), true, predicate, thisArg, false);
 }
 
-// builtins/array.ts:470 Array.prototype.findLastIndex
+// builtins/array.ts:477 Array.prototype.findLastIndex
 function ArrayPrototypeFindLastIndex(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), true, predicate, thisArg, true);
 }
 
-// builtins/array.ts:479 %EveryOrSome
+// builtins/array.ts:486 %EveryOrSome
 function EveryOrSome(o, callbackfn, thisArg, wantAll) {
   const len = LengthOfArrayLike(o);
   if (!%IsCallable(callbackfn)) {
@@ -414,17 +419,17 @@ function EveryOrSome(o, callbackfn, thisArg, wantAll) {
   return wantAll;
 }
 
-// builtins/array.ts:504 Array.prototype.every
+// builtins/array.ts:511 Array.prototype.every
 function ArrayPrototypeEvery(callbackfn, thisArg) {
   return EveryOrSome(%ToObject(this), callbackfn, thisArg, true);
 }
 
-// builtins/array.ts:512 Array.prototype.some
+// builtins/array.ts:519 Array.prototype.some
 function ArrayPrototypeSome(callbackfn, thisArg) {
   return EveryOrSome(%ToObject(this), callbackfn, thisArg, false);
 }
 
-// builtins/array.ts:520 Array.prototype.filter
+// builtins/array.ts:527 Array.prototype.filter
 function ArrayPrototypeFilter(callbackfn, thisArg) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -446,7 +451,7 @@ function ArrayPrototypeFilter(callbackfn, thisArg) {
   return a;
 }
 
-// builtins/array.ts:548 Array.prototype.reduce
+// builtins/array.ts:555 Array.prototype.reduce
 function ArrayPrototypeReduce(callbackfn, initialValue) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -481,7 +486,7 @@ function ArrayPrototypeReduce(callbackfn, initialValue) {
   return accumulator;
 }
 
-// builtins/array.ts:589 Array.prototype.reduceRight
+// builtins/array.ts:596 Array.prototype.reduceRight
 function ArrayPrototypeReduceRight(callbackfn, initialValue) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -508,7 +513,7 @@ function ArrayPrototypeReduceRight(callbackfn, initialValue) {
   return accumulator;
 }
 
-// builtins/array.ts:618
+// builtins/array.ts:625
 function IsConcatSpreadable(o) {
   if (!%IsObject(o)) {
     return false;
@@ -520,7 +525,7 @@ function IsConcatSpreadable(o) {
   return %IsArray(o);
 }
 
-// builtins/array.ts:635 Array.prototype.concat
+// builtins/array.ts:642 Array.prototype.concat
 function ArrayPrototypeConcat(...items) {
   let $1, $2, $3;
   const o = %ToObject(this);
@@ -549,7 +554,7 @@ function ArrayPrototypeConcat(...items) {
   return a;
 }
 
-// builtins/array.ts:667 Array.prototype.slice
+// builtins/array.ts:674 Array.prototype.slice
 function ArrayPrototypeSlice(start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -572,7 +577,7 @@ function ArrayPrototypeSlice(start, end) {
   return a;
 }
 
-// builtins/array.ts:696 Array.prototype.splice
+// builtins/array.ts:703 Array.prototype.splice
 function ArrayPrototypeSplice(...args) {
   let $1, $2;
   const o = %ToObject(this);
@@ -607,7 +612,7 @@ function ArrayPrototypeSplice(...args) {
   return a;
 }
 
-// builtins/array.ts:734
+// builtins/array.ts:741
 function MoveElements(o, len, start, deleteCount, itemCount) {
   if (deleteCount !== itemCount && %ArraySpliceDense(o, start, deleteCount, itemCount)) {
     return;
@@ -638,7 +643,7 @@ function MoveElements(o, len, start, deleteCount, itemCount) {
   }
 }
 
-// builtins/array.ts:769 Array.prototype.copyWithin
+// builtins/array.ts:776 Array.prototype.copyWithin
 function ArrayPrototypeCopyWithin(target, start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -665,7 +670,7 @@ function ArrayPrototypeCopyWithin(target, start, end) {
   return o;
 }
 
-// builtins/array.ts:799 Array.prototype.fill
+// builtins/array.ts:806 Array.prototype.fill
 function ArrayPrototypeFill(value, start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -677,7 +682,7 @@ function ArrayPrototypeFill(value, start, end) {
   return o;
 }
 
-// builtins/array.ts:815 Array.prototype.reverse
+// builtins/array.ts:822 Array.prototype.reverse
 function ArrayPrototypeReverse() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -708,7 +713,7 @@ function ArrayPrototypeReverse() {
   return o;
 }
 
-// builtins/array.ts:850 Array.prototype.pop
+// builtins/array.ts:857 Array.prototype.pop
 function ArrayPrototypePop() {
   const o = %ToObject(this);
   if (%ArrayCanPopDense(o)) {
@@ -726,7 +731,7 @@ function ArrayPrototypePop() {
   return element;
 }
 
-// builtins/array.ts:872 Array.prototype.shift
+// builtins/array.ts:879 Array.prototype.shift
 function ArrayPrototypeShift() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -740,7 +745,7 @@ function ArrayPrototypeShift() {
   return first;
 }
 
-// builtins/array.ts:891 Array.prototype.unshift
+// builtins/array.ts:898 Array.prototype.unshift
 function ArrayPrototypeUnshift(...items) {
   let $1;
   const o = %ToObject(this);
@@ -757,7 +762,7 @@ function ArrayPrototypeUnshift(...items) {
   return len + argCount;
 }
 
-// builtins/array.ts:907
+// builtins/array.ts:914
 function FlattenIntoArray(target, source, sourceLen, start, depth, mapper, thisArg) {
   let $1;
   let targetIndex = start;
@@ -780,7 +785,7 @@ function FlattenIntoArray(target, source, sourceLen, start, depth, mapper, thisA
   return targetIndex;
 }
 
-// builtins/array.ts:932 Array.prototype.flat
+// builtins/array.ts:939 Array.prototype.flat
 function ArrayPrototypeFlat(depth) {
   const o = %ToObject(this);
   const sourceLen = LengthOfArrayLike(o);
@@ -796,7 +801,7 @@ function ArrayPrototypeFlat(depth) {
   return a;
 }
 
-// builtins/array.ts:951 Array.prototype.flatMap
+// builtins/array.ts:958 Array.prototype.flatMap
 function ArrayPrototypeFlatMap(mapperFunction, thisArg) {
   const o = %ToObject(this);
   const sourceLen = LengthOfArrayLike(o);
@@ -806,7 +811,7 @@ function ArrayPrototypeFlatMap(mapperFunction, thisArg) {
   return a;
 }
 
-// builtins/array.ts:970 %SortList
+// builtins/array.ts:977 %SortList
 function SortList(list, comparefn) {
   if (comparefn === undefined && %SortPrimitives(list)) {
     return;
@@ -826,7 +831,7 @@ function SortList(list, comparefn) {
   }
 }
 
-// builtins/array.ts:994 %CollectPresent
+// builtins/array.ts:1001 %CollectPresent
 function CollectPresent(o, len, skipHoles) {
   const items = %ArrayCreate(0);
   if (%ArraySliceDense(o, 0, len, items)) {
@@ -842,7 +847,7 @@ function CollectPresent(o, len, skipHoles) {
   return items;
 }
 
-// builtins/array.ts:1015 Array.prototype.sort
+// builtins/array.ts:1022 Array.prototype.sort
 function ArrayPrototypeSort(comparefn) {
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
     throw %NewTypeError("not a function");
@@ -861,7 +866,7 @@ function ArrayPrototypeSort(comparefn) {
   return o;
 }
 
-// builtins/array.ts:1038 Array.prototype.toSorted
+// builtins/array.ts:1045 Array.prototype.toSorted
 function ArrayPrototypeToSorted(comparefn) {
   let $1;
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
@@ -875,7 +880,7 @@ function ArrayPrototypeToSorted(comparefn) {
   return items;
 }
 
-// builtins/array.ts:1056 Array.prototype.toReversed
+// builtins/array.ts:1063 Array.prototype.toReversed
 function ArrayPrototypeToReversed() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -886,7 +891,7 @@ function ArrayPrototypeToReversed() {
   return a;
 }
 
-// builtins/array.ts:1071 Array.prototype.toSpliced
+// builtins/array.ts:1078 Array.prototype.toSpliced
 function ArrayPrototypeToSpliced(...args) {
   let $1;
   const o = %ToObject(this);
@@ -922,7 +927,7 @@ function ArrayPrototypeToSpliced(...args) {
   return a;
 }
 
-// builtins/array.ts:1109 Array.prototype.with
+// builtins/array.ts:1116 Array.prototype.with
 function ArrayPrototypeWith(index, value) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -938,7 +943,7 @@ function ArrayPrototypeWith(index, value) {
   return a;
 }
 
-// builtins/array.ts:1131 Array.prototype.toString %TypedArray%.prototype.toString
+// builtins/array.ts:1138 Array.prototype.toString %TypedArray%.prototype.toString
 function ArrayPrototypeToString() {
   const array = %ToObject(this);
   const func = %Get(array, "join");
@@ -948,7 +953,7 @@ function ArrayPrototypeToString() {
   return ObjectToString(array);
 }
 
-// builtins/array.ts:1144 Array.prototype.toLocaleString
+// builtins/array.ts:1151 Array.prototype.toLocaleString
 function ArrayPrototypeToLocaleString() {
   const array = %ToObject(this);
   const len = LengthOfArrayLike(array);
@@ -965,7 +970,7 @@ function ArrayPrototypeToLocaleString() {
   return r;
 }
 
-// builtins/array.ts:1165 value Array.prototype[Symbol.unscopables]
+// builtins/array.ts:1172 value Array.prototype[Symbol.unscopables]
 function ArrayPrototypeUnscopables() {
   const u = %ObjectCreate(null);
   %CreateDataPropertyOrThrow(u, "at", true);
@@ -987,7 +992,7 @@ function ArrayPrototypeUnscopables() {
   return u;
 }
 
-// builtins/array.ts:1193 %ArraySetLength
+// builtins/array.ts:1200 %ArraySetLength
 function ArraySetLength(a, v, strict) {
   const newLen = ((%IsObject(v)) ? %ToNumberPrimitive(ToPrimitive(v, "number")) : %ToNumberPrimitive(v));
   const numberLen = ((%IsObject(v)) ? %ToNumberPrimitive(ToPrimitive(v, "number")) : %ToNumberPrimitive(v));
@@ -1506,17 +1511,17 @@ function DateConstructor(...values) {
   return %DateCreate(($1 = new.target, ($2 = %ConstructorPrototype($1, "DatePrototype"), ($2 !== undefined) ? %AsObj($2) : GetPrototypeFromConstructorSlow($1, "DatePrototype"))), tv);
 }
 
-// builtins/date.ts:61 Date.now
+// builtins/date.ts:62 Date.now
 function DateNowBuiltin() {
   return %DateNow();
 }
 
-// builtins/date.ts:69 Date.parse
+// builtins/date.ts:70 Date.parse
 function DateParseBuiltin(string) {
   return %DateParse(ToString(string));
 }
 
-// builtins/date.ts:78 Date.UTC
+// builtins/date.ts:79 Date.UTC
 function DateUTC(...values) {
   let $1;
   const n = LengthOfArrayLike(values);
@@ -1531,157 +1536,157 @@ function DateUTC(...values) {
   return %DateFromFields(fields, false);
 }
 
-// builtins/date.ts:95 Date.prototype.getFullYear
+// builtins/date.ts:96 Date.prototype.getFullYear
 function DatePrototypeGetFullYear() {
   return %DateGetField(%DateValue(this), 0, true);
 }
 
-// builtins/date.ts:103 Date.prototype.getUTCFullYear
+// builtins/date.ts:104 Date.prototype.getUTCFullYear
 function DatePrototypeGetUTCFullYear() {
   return %DateGetField(%DateValue(this), 0, false);
 }
 
-// builtins/date.ts:111 Date.prototype.getMonth
+// builtins/date.ts:112 Date.prototype.getMonth
 function DatePrototypeGetMonth() {
   return %DateGetField(%DateValue(this), 1, true);
 }
 
-// builtins/date.ts:119 Date.prototype.getUTCMonth
+// builtins/date.ts:120 Date.prototype.getUTCMonth
 function DatePrototypeGetUTCMonth() {
   return %DateGetField(%DateValue(this), 1, false);
 }
 
-// builtins/date.ts:127 Date.prototype.getDate
+// builtins/date.ts:128 Date.prototype.getDate
 function DatePrototypeGetDate() {
   return %DateGetField(%DateValue(this), 2, true);
 }
 
-// builtins/date.ts:135 Date.prototype.getUTCDate
+// builtins/date.ts:136 Date.prototype.getUTCDate
 function DatePrototypeGetUTCDate() {
   return %DateGetField(%DateValue(this), 2, false);
 }
 
-// builtins/date.ts:143 Date.prototype.getDay
+// builtins/date.ts:144 Date.prototype.getDay
 function DatePrototypeGetDay() {
   return %DateGetField(%DateValue(this), 7, true);
 }
 
-// builtins/date.ts:151 Date.prototype.getUTCDay
+// builtins/date.ts:152 Date.prototype.getUTCDay
 function DatePrototypeGetUTCDay() {
   return %DateGetField(%DateValue(this), 7, false);
 }
 
-// builtins/date.ts:159 Date.prototype.getHours
+// builtins/date.ts:160 Date.prototype.getHours
 function DatePrototypeGetHours() {
   return %DateGetField(%DateValue(this), 3, true);
 }
 
-// builtins/date.ts:167 Date.prototype.getUTCHours
+// builtins/date.ts:168 Date.prototype.getUTCHours
 function DatePrototypeGetUTCHours() {
   return %DateGetField(%DateValue(this), 3, false);
 }
 
-// builtins/date.ts:175 Date.prototype.getMinutes
+// builtins/date.ts:176 Date.prototype.getMinutes
 function DatePrototypeGetMinutes() {
   return %DateGetField(%DateValue(this), 4, true);
 }
 
-// builtins/date.ts:183 Date.prototype.getUTCMinutes
+// builtins/date.ts:184 Date.prototype.getUTCMinutes
 function DatePrototypeGetUTCMinutes() {
   return %DateGetField(%DateValue(this), 4, false);
 }
 
-// builtins/date.ts:191 Date.prototype.getSeconds
+// builtins/date.ts:192 Date.prototype.getSeconds
 function DatePrototypeGetSeconds() {
   return %DateGetField(%DateValue(this), 5, true);
 }
 
-// builtins/date.ts:199 Date.prototype.getUTCSeconds
+// builtins/date.ts:200 Date.prototype.getUTCSeconds
 function DatePrototypeGetUTCSeconds() {
   return %DateGetField(%DateValue(this), 5, false);
 }
 
-// builtins/date.ts:207 Date.prototype.getMilliseconds
+// builtins/date.ts:208 Date.prototype.getMilliseconds
 function DatePrototypeGetMilliseconds() {
   return %DateGetField(%DateValue(this), 6, true);
 }
 
-// builtins/date.ts:215 Date.prototype.getUTCMilliseconds
+// builtins/date.ts:216 Date.prototype.getUTCMilliseconds
 function DatePrototypeGetUTCMilliseconds() {
   return %DateGetField(%DateValue(this), 6, false);
 }
 
-// builtins/date.ts:224 Date.prototype.setMilliseconds
+// builtins/date.ts:225 Date.prototype.setMilliseconds
 function DatePrototypeSetMilliseconds(...args) {
   return DateSetter(this, args, 6, 1, true);
 }
 
-// builtins/date.ts:233 Date.prototype.setUTCMilliseconds
+// builtins/date.ts:234 Date.prototype.setUTCMilliseconds
 function DatePrototypeSetUTCMilliseconds(...args) {
   return DateSetter(this, args, 6, 1, false);
 }
 
-// builtins/date.ts:242 Date.prototype.setSeconds
+// builtins/date.ts:243 Date.prototype.setSeconds
 function DatePrototypeSetSeconds(...args) {
   return DateSetter(this, args, 5, 2, true);
 }
 
-// builtins/date.ts:251 Date.prototype.setUTCSeconds
+// builtins/date.ts:252 Date.prototype.setUTCSeconds
 function DatePrototypeSetUTCSeconds(...args) {
   return DateSetter(this, args, 5, 2, false);
 }
 
-// builtins/date.ts:260 Date.prototype.setMinutes
+// builtins/date.ts:261 Date.prototype.setMinutes
 function DatePrototypeSetMinutes(...args) {
   return DateSetter(this, args, 4, 3, true);
 }
 
-// builtins/date.ts:269 Date.prototype.setUTCMinutes
+// builtins/date.ts:270 Date.prototype.setUTCMinutes
 function DatePrototypeSetUTCMinutes(...args) {
   return DateSetter(this, args, 4, 3, false);
 }
 
-// builtins/date.ts:278 Date.prototype.setHours
+// builtins/date.ts:279 Date.prototype.setHours
 function DatePrototypeSetHours(...args) {
   return DateSetter(this, args, 3, 4, true);
 }
 
-// builtins/date.ts:287 Date.prototype.setUTCHours
+// builtins/date.ts:288 Date.prototype.setUTCHours
 function DatePrototypeSetUTCHours(...args) {
   return DateSetter(this, args, 3, 4, false);
 }
 
-// builtins/date.ts:296 Date.prototype.setDate
+// builtins/date.ts:297 Date.prototype.setDate
 function DatePrototypeSetDate(...args) {
   return DateSetter(this, args, 2, 1, true);
 }
 
-// builtins/date.ts:305 Date.prototype.setUTCDate
+// builtins/date.ts:306 Date.prototype.setUTCDate
 function DatePrototypeSetUTCDate(...args) {
   return DateSetter(this, args, 2, 1, false);
 }
 
-// builtins/date.ts:314 Date.prototype.setMonth
+// builtins/date.ts:315 Date.prototype.setMonth
 function DatePrototypeSetMonth(...args) {
   return DateSetter(this, args, 1, 2, true);
 }
 
-// builtins/date.ts:323 Date.prototype.setUTCMonth
+// builtins/date.ts:324 Date.prototype.setUTCMonth
 function DatePrototypeSetUTCMonth(...args) {
   return DateSetter(this, args, 1, 2, false);
 }
 
-// builtins/date.ts:332 Date.prototype.setFullYear
+// builtins/date.ts:333 Date.prototype.setFullYear
 function DatePrototypeSetFullYear(...args) {
   return DateSetter(this, args, 0, 3, true);
 }
 
-// builtins/date.ts:341 Date.prototype.setUTCFullYear
+// builtins/date.ts:342 Date.prototype.setUTCFullYear
 function DatePrototypeSetUTCFullYear(...args) {
   return DateSetter(this, args, 0, 3, false);
 }
 
-// builtins/date.ts:349
+// builtins/date.ts:350
 function DateSetter(date, args, first, maxCount, local) {
   let $1;
   const t = %DateValue(date);
@@ -1697,75 +1702,75 @@ function DateSetter(date, args, first, maxCount, local) {
   return %DateSetValue(date, %DateSetFields(t, first, nums, local));
 }
 
-// builtins/date.ts:369 Date.prototype.getTime
+// builtins/date.ts:371 Date.prototype.getTime
 function DatePrototypeGetTime() {
   return %DateValue(this);
 }
 
-// builtins/date.ts:378 Date.prototype.valueOf %DatePrototypeValueOf
+// builtins/date.ts:380 Date.prototype.valueOf %DatePrototypeValueOf
 function DatePrototypeValueOf() {
   return %DateValue(this);
 }
 
-// builtins/date.ts:386 Date.prototype.getTimezoneOffset
+// builtins/date.ts:388 Date.prototype.getTimezoneOffset
 function DatePrototypeGetTimezoneOffset() {
   return %DateTimezoneOffset(%DateValue(this));
 }
 
-// builtins/date.ts:394 Date.prototype.setTime
+// builtins/date.ts:396 Date.prototype.setTime
 function DatePrototypeSetTime(time) {
   %DateValue(this);
   const t = ((%IsObject(time)) ? %ToNumberPrimitive(ToPrimitive(time, "number")) : %ToNumberPrimitive(time));
   return %DateSetValue(this, ((!(t >= -8.64e15 && t <= 8.64e15)) ? 0 / 0 : %ToIntegerOrInfinityNumber(t)));
 }
 
-// builtins/date.ts:404 Date.prototype.toString
+// builtins/date.ts:406 Date.prototype.toString
 function DatePrototypeToString() {
   return %DateFormat(%DateValue(this), 1, 3);
 }
 
-// builtins/date.ts:412 Date.prototype.toDateString
+// builtins/date.ts:414 Date.prototype.toDateString
 function DatePrototypeToDateString() {
   return %DateFormat(%DateValue(this), 1, 1);
 }
 
-// builtins/date.ts:420 Date.prototype.toTimeString
+// builtins/date.ts:422 Date.prototype.toTimeString
 function DatePrototypeToTimeString() {
   return %DateFormat(%DateValue(this), 1, 2);
 }
 
-// builtins/date.ts:429 Date.prototype.toISOString %DatePrototypeToISOString
+// builtins/date.ts:432 Date.prototype.toISOString %DatePrototypeToISOString
 function DatePrototypeToISOString() {
   return %DateFormat(%DateValue(this), 2, 3);
 }
 
-// builtins/date.ts:437 Date.prototype.toLocaleString
+// builtins/date.ts:440 Date.prototype.toLocaleString
 function DatePrototypeToLocaleString() {
   return %DateFormat(%DateValue(this), 3, 3);
 }
 
-// builtins/date.ts:445 Date.prototype.toLocaleDateString
+// builtins/date.ts:448 Date.prototype.toLocaleDateString
 function DatePrototypeToLocaleDateString() {
   return %DateFormat(%DateValue(this), 3, 1);
 }
 
-// builtins/date.ts:453 Date.prototype.toLocaleTimeString
+// builtins/date.ts:456 Date.prototype.toLocaleTimeString
 function DatePrototypeToLocaleTimeString() {
   return %DateFormat(%DateValue(this), 3, 2);
 }
 
-// builtins/date.ts:462 Date.prototype.toUTCString Date.prototype.toGMTString
+// builtins/date.ts:465 Date.prototype.toUTCString Date.prototype.toGMTString
 function DatePrototypeToUTCString() {
   return %DateFormat(%DateValue(this), 0, 3);
 }
 
-// builtins/date.ts:470 Date.prototype.getYear
+// builtins/date.ts:473 Date.prototype.getYear
 function DatePrototypeGetYear() {
   const y = %DateGetField(%DateValue(this), 0, true);
   return y - 1900;
 }
 
-// builtins/date.ts:480 Date.prototype.toJSON %DatePrototypeToJSON
+// builtins/date.ts:483 Date.prototype.toJSON %DatePrototypeToJSON
 function DatePrototypeToJSON(key) {
   const o = %ToObject(this);
   const tv = ToPrimitive(o, "number");
@@ -1778,7 +1783,7 @@ function DatePrototypeToJSON(key) {
   return %Call(%Get(o, "toISOString"), o);
 }
 
-// builtins/date.ts:498 Date.prototype[Symbol.toPrimitive] %DatePrototypeToPrimitive
+// builtins/date.ts:501 Date.prototype[Symbol.toPrimitive] %DatePrototypeToPrimitive
 function DatePrototypeToPrimitive(hint) {
   if (!%IsObject(this)) {
     throw %NewTypeError("not an object");
@@ -6098,7 +6103,7 @@ function RegExpPrototypeMatch(string) {
   }
 }
 
-// builtins/regexp.ts:372 RegExp.prototype[Symbol.matchAll]
+// builtins/regexp.ts:373 RegExp.prototype[Symbol.matchAll] %RegExpPrototypeMatchAll
 function RegExpPrototypeMatchAll(string) {
   const r = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -6118,7 +6123,7 @@ function RegExpPrototypeMatchAll(string) {
   return %CreateRegExpStringIterator(matcher, s, global, fullUnicode);
 }
 
-// builtins/regexp.ts:403 %RegExpStringIteratorPrototype%.next
+// builtins/regexp.ts:404 %RegExpStringIteratorPrototype%.next
 function RegExpStringIteratorNext() {
   if (%AsBool(%RegExpStringIteratorSlot(this, 4))) {
     return %CreateIterResultObject(undefined, true);
@@ -6140,12 +6145,12 @@ function RegExpStringIteratorNext() {
   return %CreateIterResultObject(match, false);
 }
 
-// builtins/regexp.ts:429 value %RegExpStringIteratorPrototype%[Symbol.toStringTag]
+// builtins/regexp.ts:430 value %RegExpStringIteratorPrototype%[Symbol.toStringTag]
 function RegExpStringIteratorToStringTag() {
   return "RegExp String Iterator";
 }
 
-// builtins/regexp.ts:438 RegExp.prototype[Symbol.replace] %RegExpPrototypeReplace
+// builtins/regexp.ts:439 RegExp.prototype[Symbol.replace] %RegExpPrototypeReplace
 function RegExpPrototypeReplace(string, replaceValue) {
   let $1;
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
@@ -6263,7 +6268,7 @@ function RegExpPrototypeReplace(string, replaceValue) {
   return accumulatedResult + %StrSubstring(s, nextSourcePosition, lengthS);
 }
 
-// builtins/regexp.ts:562
+// builtins/regexp.ts:563
 function GetSubstitution(matched, str, position, captures, m, namedCaptures, template) {
   let i = %StrIndexOf(template, "$", 0);
   if (i < 0) {
@@ -6343,7 +6348,7 @@ function GetSubstitution(matched, str, position, captures, m, namedCaptures, tem
   return result;
 }
 
-// builtins/regexp.ts:655 RegExp.prototype[Symbol.search] %RegExpPrototypeSearch
+// builtins/regexp.ts:656 RegExp.prototype[Symbol.search] %RegExpPrototypeSearch
 function RegExpPrototypeSearch(string) {
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -6362,7 +6367,7 @@ function RegExpPrototypeSearch(string) {
   return %Get(%AsObj(result), "index");
 }
 
-// builtins/regexp.ts:678 RegExp.prototype[Symbol.split] %RegExpPrototypeSplit
+// builtins/regexp.ts:679 RegExp.prototype[Symbol.split] %RegExpPrototypeSplit
 function RegExpPrototypeSplit(string, limit) {
   let $1, $2;
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
@@ -6888,7 +6893,7 @@ function StringPrototypeMatch(regexp) {
   return ($1 = (%RegExpCreate(undefined, regexp === undefined ? "" : ToString(regexp), "")), %Call(%GetV($1, %WellKnownSymbol("match")), $1, s));
 }
 
-// builtins/string-regexp.ts:59 String.prototype.matchAll
+// builtins/string-regexp.ts:60 String.prototype.matchAll
 function StringPrototypeMatchAll(regexp) {
   let $1;
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
@@ -6903,7 +6908,7 @@ function StringPrototypeMatchAll(regexp) {
   return ($1 = (%RegExpCreate(undefined, regexp === undefined ? "" : ToString(regexp), "g")), %Call(%GetV($1, %WellKnownSymbol("matchAll")), $1, s));
 }
 
-// builtins/string-regexp.ts:77 String.prototype.search
+// builtins/string-regexp.ts:78 String.prototype.search
 function StringPrototypeSearch(regexp) {
   let $1;
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
@@ -6917,7 +6922,7 @@ function StringPrototypeSearch(regexp) {
   return ($1 = (%RegExpCreate(undefined, regexp === undefined ? "" : ToString(regexp), "")), %Call(%GetV($1, %WellKnownSymbol("search")), $1, s));
 }
 
-// builtins/string-regexp.ts:90
+// builtins/string-regexp.ts:91
 function StringReplacement(functionalReplace, replaceValue, replaceStr, searchString, position, string) {
   if (functionalReplace) {
     return ToString(%Call(replaceValue, undefined, searchString, position, string));
@@ -6925,7 +6930,7 @@ function StringReplacement(functionalReplace, replaceValue, replaceStr, searchSt
   return GetSubstitution(searchString, string, position, %ArrayCreate(0), 0, undefined, replaceStr);
 }
 
-// builtins/string-regexp.ts:109 String.prototype.replace
+// builtins/string-regexp.ts:110 String.prototype.replace
 function StringPrototypeReplace(searchValue, replaceValue) {
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
   if (%IsObject(searchValue)) {
@@ -6950,7 +6955,7 @@ function StringPrototypeReplace(searchValue, replaceValue) {
   return %StrSubstring(string, 0, position) + replacement + %StrSubstring(string, following, (%StrLength(string)));
 }
 
-// builtins/string-regexp.ts:145 String.prototype.replaceAll
+// builtins/string-regexp.ts:146 String.prototype.replaceAll
 function StringPrototypeReplaceAll(searchValue, replaceValue) {
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
   if (%IsObject(searchValue)) {
@@ -6992,7 +6997,7 @@ function StringPrototypeReplaceAll(searchValue, replaceValue) {
   return result;
 }
 
-// builtins/string-regexp.ts:198 String.prototype.split
+// builtins/string-regexp.ts:199 String.prototype.split
 function StringPrototypeSplit(separator, limit) {
   ((this === undefined || this === null) ? %Throw(%NewTypeError("cannot convert to object")) : undefined);
   if (%IsObject(separator)) {
@@ -8457,6 +8462,7 @@ function GlobalAtob(...args) {
 %InstallIntrinsic("RegExpPrototypeFlags", RegExpPrototypeFlags);
 %InstallIntrinsic("RegExpPrototypeExec", RegExpPrototypeExec);
 %InstallIntrinsic("RegExpPrototypeMatch", RegExpPrototypeMatch);
+%InstallIntrinsic("RegExpPrototypeMatchAll", RegExpPrototypeMatchAll);
 %InstallIntrinsic("RegExpPrototypeReplace", RegExpPrototypeReplace);
 %InstallIntrinsic("RegExpPrototypeSearch", RegExpPrototypeSearch);
 %InstallIntrinsic("RegExpPrototypeSplit", RegExpPrototypeSplit);
@@ -8491,6 +8497,9 @@ function GlobalAtob(...args) {
 %MarkFast(LengthOfArrayLike);
 %MarkFast(ToPropertyKey);
 %MarkFast(DateConstructor);
+%MarkFast(DateNowBuiltin);
+%MarkFast(DatePrototypeGetTime);
+%MarkFast(DatePrototypeToISOString);
 %MarkFast(MapConstructor);
 %MarkFast(MapPrototypeGet);
 %MarkFast(MapPrototypeHas);
@@ -8536,6 +8545,7 @@ function GlobalAtob(...args) {
 %MarkFast(SetPrototypeAdd);
 %MarkFast(SetPrototypeHas);
 %MarkFast(StringPrototypeMatch);
+%MarkFast(StringPrototypeMatchAll);
 %MarkFast(StringPrototypeSearch);
 %MarkFast(StringPrototypeReplace);
 %MarkFast(StringPrototypeReplaceAll);

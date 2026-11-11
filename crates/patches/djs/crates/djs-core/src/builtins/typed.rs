@@ -330,6 +330,32 @@ fn decode_chunk(chunk: &[u32], strict: bool, out: &mut Vec<u8>) -> bool {
     true
 }
 
+/// atob's FromBase64 (the base64 alphabet, loose) of one-byte code units: the leading
+/// whole groups of four digits straight from the bytes, the rest (white space, padding,
+/// a partial group) through [`from_base64`], which decodes it the same after whole
+/// groups. `None` for an invalid string.
+pub(crate) fn from_base64_latin1(s: &[u8]) -> Option<Vec<u8>> {
+    let mut bytes = crate::buf::vec_with_capacity(s.len() / 4 * 3 + 3);
+    let (groups, _) = s.as_chunks::<4>();
+    let mut read = 0;
+    for g in groups {
+        let v = |k: usize| b64_value(u16::from(g[k]));
+        let (Some(a), Some(b), Some(c), Some(e)) = (v(0), v(1), v(2), v(3)) else {
+            break;
+        };
+        let n = (a << 18) | (b << 12) | (c << 6) | e;
+        bytes.extend_from_slice(&[(n >> 16) as u8, (n >> 8) as u8, n as u8]);
+        read += 4;
+    }
+    let rest: Vec<u16> = s[read..].iter().map(|&c| u16::from(c)).collect();
+    let d = from_base64(&rest, false, 0, usize::MAX);
+    if d.error {
+        return None;
+    }
+    bytes.extend_from_slice(&d.bytes);
+    Some(bytes)
+}
+
 /// FromBase64 ( string, alphabet, lastChunkHandling [ , maxLength ] ). `last`: 0 loose,
 /// 1 strict, 2 stop-before-partial.
 pub(crate) fn from_base64(s: &[u16], url: bool, last: u8, max: usize) -> Decoded {

@@ -29,7 +29,7 @@ pub(crate) use direct::Fifos;
 
 const MAX_JOBS: usize = 997;
 const DEPTH: usize = 2;
-const UNDIFFED: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
+pub(super) const UNDIFFED: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 type Output = pipe::Receiver;
 
@@ -931,7 +931,7 @@ impl Watch {
     }
 }
 
-fn startup_files(
+pub(super) fn startup_files(
     login: bool,
     environment: &HashMap<OsString, OsString>,
     zdotdir: Option<&OsStr>,

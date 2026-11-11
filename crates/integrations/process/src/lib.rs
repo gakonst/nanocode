@@ -15,6 +15,8 @@ pub use marked::terminate_marked;
 mod output;
 mod process;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+mod login;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod server;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod warm;
@@ -258,6 +260,7 @@ pub struct ShellSessions {
     sessions: Arc<Sessions>,
     next_session_id: AtomicI64,
     default_shell: selection::Shell,
+    login_shell: selection::Shell,
     environment: Arc<Vec<(OsString, OsString)>>,
     secrets: Option<SecretEnvironment>,
     per_caller: bool,
@@ -284,6 +287,7 @@ impl ShellSessions {
             sessions: Arc::new(Sessions::new()),
             next_session_id: AtomicI64::new(1),
             default_shell: selection::default_user_shell(),
+            login_shell: selection::system_user_shell(),
             environment,
             secrets: None,
             per_caller: false,
@@ -380,6 +384,35 @@ impl ShellSessions {
             let (mut environment, secrets) =
                 process::sanitized_environment(&self.environment, &host_secrets);
             let login = command.login.unwrap_or(true);
+            let yield_time = duration_ms(
+                command.yield_time_ms,
+                DEFAULT_EXEC_YIELD_MS,
+                250,
+                MAX_EXEC_YIELD_MS,
+            );
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            if login && shell.is_psh() {
+                let reported = timeout(
+                    yield_time,
+                    login::environment(&self.login_shell, &workdir, &environment, &host_secrets),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "the login shell {} did not report its environment within {yield_time:?}",
+                        self.login_shell.path().display()
+                    ))
+                });
+                match reported {
+                    Ok(reported) => environment = reported,
+                    Err(error) => {
+                        return ExecCommandResult::failed(
+                            started_at.elapsed(),
+                            format!("exec_command failed for `{}`: {error}", command.script),
+                        );
+                    }
+                }
+            }
             let terminations = self.terminations.load(Ordering::SeqCst);
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             let served = match command.tty || command.shell.is_some() {
@@ -476,12 +509,6 @@ impl ShellSessions {
                 session: Some(Arc::clone(&session)),
                 sessions: Arc::clone(&self.sessions),
             };
-            let yield_time = duration_ms(
-                command.yield_time_ms,
-                DEFAULT_EXEC_YIELD_MS,
-                250,
-                MAX_EXEC_YIELD_MS,
-            );
             let max_output_tokens = command.max_output_tokens;
             session
                 .last_used

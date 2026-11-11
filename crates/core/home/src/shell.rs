@@ -292,10 +292,11 @@ pub fn get_shell_by_model_provided_path(path: &str) -> Shell {
 }
 
 pub fn default_user_shell() -> Shell {
+    CHOSEN.get().cloned().unwrap_or_else(system_user_shell)
+}
+
+pub fn system_user_shell() -> Shell {
     static SHELL: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
-    if let Some(chosen) = CHOSEN.get() {
-        return chosen.clone();
-    }
     SHELL
         .get_or_init(|| default_user_shell_from_path(user_shell_path().as_deref()))
         .clone()

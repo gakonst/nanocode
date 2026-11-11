@@ -89,7 +89,7 @@ fn identity(directory: &Path) -> Option<(u64, u64)> {
         .map(|metadata| (metadata.dev(), metadata.ino()))
 }
 
-fn startup_files(login: bool, environment: &[(OsString, OsString)]) -> Vec<PathBuf> {
+pub(super) fn startup_files(login: bool, environment: &[(OsString, OsString)]) -> Vec<PathBuf> {
     let variable = |name: &str| {
         environment
             .iter()

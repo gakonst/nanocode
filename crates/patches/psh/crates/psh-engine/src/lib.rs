@@ -60,6 +60,18 @@ use psh_syntax::{LineIndex, Options, Parser};
 
 pub use host::{Host, HostFile};
 
+/// Whether `name` is a builtin of the shell (one of bash's: psh runs it or stops at it),
+/// for an embedder that decides from a script's text where to run it.
+pub fn is_builtin(name: &[u8]) -> bool {
+    builtins::find(name).is_some() || builtins::BASH_BUILTINS.contains(&name)
+}
+
+/// Whether `source` reads `$$` or `BASHPID` (also in the `bash -c` strings and backquotes
+/// it holds), for an embedder whose shells share its process id.
+pub fn uses_pid(source: &[u8]) -> bool {
+    pidscan::uses_pid(source)
+}
+
 use fd::{FdObj, FdTable};
 use sched::{CANCEL, Join, PAUSE, RunEnd, Sched, Shared};
 use state::{Code, Core, Unwind, Var, Vars, Vp};

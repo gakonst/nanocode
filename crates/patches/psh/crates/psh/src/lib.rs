@@ -19,6 +19,8 @@
 
 mod classify_json;
 mod cli;
+#[cfg(unix)]
+pub mod embed;
 mod json;
 mod parse_json;
 mod utils;
@@ -109,43 +111,10 @@ const NESTED_OFF_VAR: &str = "PSH_NESTED_OFF";
 fn shell_config() -> ShellConfig {
     let (host, [stdin, stdout, stderr]) = os_host();
     let mut cfg = ShellConfig::new(host);
-    cfg.utilities = psh_utils::policy(false);
     cfg.env = std::env::vars_os()
         .map(|(k, v)| (os_bytes(k), os_bytes(v)))
         .collect();
-    // PSH_UTILS_FORCE (D1192): utilities that run in-process even in F/W mode; the
-    // variable is psh's, so it is not passed on.
-    if let Some(i) = cfg
-        .env
-        .iter()
-        .position(|(k, _)| k == psh_utils::FORCE_VAR.as_bytes())
-    {
-        let (_, v) = cfg.env.remove(i);
-        cfg.utilities.force_names = psh_utils::force_names(&v);
-    }
-    // PSH_UTILS_OFF: utilities that run the real program instead (`all`: every one), for
-    // a host whose commands must get the system's own tools; psh's, so not passed on.
-    if let Some(i) = cfg
-        .env
-        .iter()
-        .position(|(k, _)| k == psh_utils::OFF_VAR.as_bytes())
-    {
-        let (_, v) = cfg.env.remove(i);
-        if v == b"all" {
-            cfg.utilities.off_all = true;
-        } else {
-            cfg.utilities.off_names = psh_utils::off_names(&v);
-        }
-    }
-    // PSH_NESTED_OFF (D1412): `bash` and `sh` go to PATH; psh's, so not passed on.
-    if let Some(i) = cfg
-        .env
-        .iter()
-        .position(|(k, _)| k == NESTED_OFF_VAR.as_bytes())
-    {
-        let (_, v) = cfg.env.remove(i);
-        cfg.nested_shells = v.is_empty();
-    }
+    (cfg.utilities, cfg.nested_shells) = settings(&mut cfg.env);
     // A nested `bash` that runs the real program never runs psh itself (D1413).
     cfg.own_program = std::env::current_exe().ok().map(|p| {
         let b = os_bytes(p.into_os_string());
@@ -173,6 +142,33 @@ fn shell_config() -> ShellConfig {
     cfg.stdout = stdout;
     cfg.stderr = stderr;
     cfg
+}
+
+/// psh's own variables, taken out of `env`: the utilities they leave on, and whether a
+/// command named `bash` or `sh` runs in psh.
+fn settings(env: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (psh_engine::util::UtilPolicy, bool) {
+    let mut take = |name: &str| {
+        let i = env.iter().position(|(k, _)| k == name.as_bytes())?;
+        Some(env.remove(i).1)
+    };
+    let mut utilities = psh_utils::policy(false);
+    // PSH_UTILS_FORCE (D1192): utilities that run in-process even in F/W mode; the
+    // variable is psh's, so it is not passed on.
+    if let Some(v) = take(psh_utils::FORCE_VAR) {
+        utilities.force_names = psh_utils::force_names(&v);
+    }
+    // PSH_UTILS_OFF: utilities that run the real program instead (`all`: every one), for
+    // a host whose commands must get the system's own tools; psh's, so not passed on.
+    if let Some(v) = take(psh_utils::OFF_VAR) {
+        if v == b"all" {
+            utilities.off_all = true;
+        } else {
+            utilities.off_names = psh_utils::off_names(&v);
+        }
+    }
+    // PSH_NESTED_OFF (D1412): `bash` and `sh` go to PATH; psh's, so not passed on.
+    let nested = take(NESTED_OFF_VAR).is_none_or(|v| v.is_empty());
+    (utilities, nested)
 }
 
 /// A shell invocation error: bash's message, then the usage, status 2.

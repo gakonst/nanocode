@@ -22,7 +22,12 @@ use opentelemetry_semantic_conventions::{SCHEMA_URL, attribute::SERVICE_VERSION}
 use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
 use tracing_opentelemetry::MetricsLayer;
 use tracing_subscriber::{
-    EnvFilter, Layer, fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt,
+    EnvFilter, Layer,
+    filter::{FilterExt, Targets},
+    fmt::format::FmtSpan,
+    layer::{Filter, SubscriberExt},
+    registry::LookupSpan,
+    util::SubscriberInitExt,
 };
 
 pub use cli::ObservabilityOutputArgs;
@@ -187,7 +192,7 @@ impl ObservabilityBuilder {
                     .buffered_lines_limit(LOCAL_LOG_BUFFERED_LINES_LIMIT)
                     .lossy(false)
                     .finish(output);
-                let filter = EnvFilter::try_new(self.filter.as_str())?;
+                let filter = scope(self.filter.as_str())?;
                 let layer = match self.format {
                     LogFormat::Pretty => tracing_subscriber::fmt::layer()
                         .pretty()
@@ -238,22 +243,22 @@ impl ObservabilityBuilder {
             Some(provider) => Some(
                 tracing_opentelemetry::layer()
                     .with_tracer(provider.tracer(self.service_name.clone()))
-                    .with_filter(EnvFilter::try_new(self.otel_filter.as_str())?)
-                    .with_filter(tracing_subscriber::filter::filter_fn(move |metadata| {
-                        metadata.target() != METRICS_TARGET
-                            && (terminal || !terminal_target(metadata.target()))
-                    })),
+                    .with_context_activation(false)
+                    .with_filter(scope(self.otel_filter.as_str())?.and(
+                        tracing_subscriber::filter::filter_fn(move |metadata| {
+                            metadata.target() != METRICS_TARGET
+                                && (terminal || !terminal_target(metadata.target()))
+                        }),
+                    )),
             ),
             None => None,
         };
         let metrics_layer = match &meter_provider {
-            Some(provider) => Some(
-                MetricsLayer::new(provider.clone())
-                    .with_filter(EnvFilter::try_new(self.otel_filter.as_str())?)
-                    .with_filter(tracing_subscriber::filter::filter_fn(move |metadata| {
-                        terminal || !terminal_target(metadata.target())
-                    })),
-            ),
+            Some(provider) => Some(MetricsLayer::new(provider.clone()).with_filter(
+                scope(self.otel_filter.as_str())?.and(tracing_subscriber::filter::filter_fn(
+                    move |metadata| terminal || !terminal_target(metadata.target()),
+                )),
+            )),
             None => None,
         };
         tracing_subscriber::registry()
@@ -319,6 +324,22 @@ impl ObservabilityBuilder {
         }
         builder.with_schema_url(attributes, SCHEMA_URL).build()
     }
+}
+
+fn scope<S>(directives: &str) -> Result<Box<dyn Filter<S> + Send + Sync>, ObservabilityError>
+where
+    S: tracing::Subscriber + for<'span> LookupSpan<'span>,
+{
+    let filter = EnvFilter::try_new(directives)?;
+    let targets = directives
+        .split(',')
+        .map(str::trim)
+        .filter(|directive| !directive.is_empty())
+        .collect::<Vec<_>>();
+    if targets.is_empty() || directives.contains('[') {
+        return Ok(Box::new(filter));
+    }
+    Ok(Box::new(targets.join(",").parse::<Targets>()?))
 }
 
 fn tracer_provider(

@@ -5615,8 +5615,6 @@ name = "nanocode-observability"
 version = "0.7.0"
 dependencies = [
  "clap",
- "imbl",
- "nanocode-sync",
  "nanocode-tls",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5773,6 +5771,19 @@ dependencies = [
  "imbl",
  "nanocode-platform",
  "tokio",
+]
+
+[[package]]
+name = "nanocode-telemetry"
+version = "0.7.0"
+dependencies = [
+ "imbl",
+ "nanocode-sync",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

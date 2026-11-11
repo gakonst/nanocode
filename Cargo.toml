@@ -43,6 +43,7 @@ members = [
     "crates/integrations/chatgpt-extension",
     "crates/integrations/sandbox",
     "crates/integrations/observability",
+    "crates/integrations/telemetry",
     "crates/integrations/store-sql",
     "crates/integrations/store-jsonl",
     "crates/tui",

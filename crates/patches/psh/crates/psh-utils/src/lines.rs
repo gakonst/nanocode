@@ -78,7 +78,9 @@ pub async fn tac(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         // Where each record starts: after a separator, or at one with -b.
         let mut starts = vec![0];
         let mut at = 0;
-        while at + sep.len() <= data.len() {
+        let first = sep[0];
+        while let Some(found) = data[at..].iter().position(|&b| b == first) {
+            at += found;
             if data[at..].starts_with(&sep) {
                 let cut = if before { at } else { at + sep.len() };
                 if cut != 0 && cut != data.len() {

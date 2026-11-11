@@ -5,10 +5,11 @@ use miniz_oxide::deflate::compress_to_vec;
 use miniz_oxide::inflate::TINFLStatus;
 use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
 
-/// The CRC-32 of gzip and zip (polynomial 0xedb88320), a byte at a time.
+/// The CRC-32 of gzip and zip (polynomial 0xedb88320), eight bytes at a step
+/// (slicing-by-8: one table per byte of the step).
 pub fn crc32(data: &[u8]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
+    const TABLES: [[u32; 256]; 8] = {
+        let mut tables = [[0u32; 256]; 8];
         let mut i = 0;
         while i < 256 {
             let mut c = i as u32;
@@ -21,14 +22,37 @@ pub fn crc32(data: &[u8]) -> u32 {
                 };
                 k += 1;
             }
-            table[i] = c;
+            tables[0][i] = c;
             i += 1;
         }
-        table
+        let mut t = 1;
+        while t < 8 {
+            let mut i = 0;
+            while i < 256 {
+                let before = tables[t - 1][i];
+                tables[t][i] = tables[0][(before & 0xff) as usize] ^ (before >> 8);
+                i += 1;
+            }
+            t += 1;
+        }
+        tables
     };
     let mut c = !0u32;
-    for &b in data {
-        c = TABLE[((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
+    let mut chunks = data.chunks_exact(8);
+    for chunk in &mut chunks {
+        let low = c ^ u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let high = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        c = TABLES[7][(low & 0xff) as usize]
+            ^ TABLES[6][(low >> 8 & 0xff) as usize]
+            ^ TABLES[5][(low >> 16 & 0xff) as usize]
+            ^ TABLES[4][(low >> 24) as usize]
+            ^ TABLES[3][(high & 0xff) as usize]
+            ^ TABLES[2][(high >> 8 & 0xff) as usize]
+            ^ TABLES[1][(high >> 16 & 0xff) as usize]
+            ^ TABLES[0][(high >> 24) as usize];
+    }
+    for &b in chunks.remainder() {
+        c = TABLES[0][((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
     }
     !c
 }

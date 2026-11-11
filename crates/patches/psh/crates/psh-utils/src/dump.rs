@@ -213,24 +213,27 @@ pub async fn xxd(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             let digits = if bits { 8 } else { 2 };
             let groups = if group == 0 { 1 } else { per.div_ceil(group) };
             let width = per * digits + groups;
+            let digit: &[u8; 16] = if upper {
+                b"0123456789ABCDEF"
+            } else {
+                b"0123456789abcdef"
+            };
+            out.reserve(data.len() / per * (width + 12 + per));
             for (n, chunk) in data.chunks(per).enumerate() {
-                let mut line = format!("{:08x}:", seek as usize + n * per);
-                let before = line.len();
+                out.extend_from_slice(format!("{:08x}:", seek as usize + n * per).as_bytes());
+                let before = out.len();
                 for (k, &b) in chunk.iter().enumerate() {
                     if (group == 0 && k == 0) || (group != 0 && k % group == 0) {
-                        line.push(' ');
+                        out.push(b' ');
                     }
                     if bits {
-                        line.push_str(&format!("{b:08b}"));
+                        out.extend((0..8).rev().map(|bit| b'0' + (b >> bit & 1)));
                     } else {
-                        line.push_str(&hex(b));
+                        out.push(digit[(b >> 4) as usize]);
+                        out.push(digit[(b & 15) as usize]);
                     }
                 }
-                while line.len() - before < width {
-                    line.push(' ');
-                }
-                line.push_str("  ");
-                out.extend_from_slice(line.as_bytes());
+                out.resize(before + width + 2, b' ');
                 out.extend(chunk.iter().map(|&b| printable(b)));
                 out.push(b'\n');
             }
@@ -534,8 +537,33 @@ pub async fn od(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 padded.resize(t.size, 0);
                 let next = pad * (fields - 1 - j) / fields;
                 let field = remaining - next + t.width;
-                line.push_str(&format!(" {:>field$}", od_value(t, &padded)));
                 remaining = next;
+                // The common types without a string of their own for each value.
+                if field == t.width && t.size == 1 && matches!(t.kind, b'c' | b'x' | b'o') {
+                    let b = padded[0];
+                    match t.kind {
+                        b'x' => {
+                            line.push(' ');
+                            line.push(char::from(b"0123456789abcdef"[(b >> 4) as usize]));
+                            line.push(char::from(b"0123456789abcdef"[(b & 15) as usize]));
+                            continue;
+                        }
+                        b'o' => {
+                            line.push(' ');
+                            line.push(char::from(b'0' + (b >> 6)));
+                            line.push(char::from(b'0' + (b >> 3 & 7)));
+                            line.push(char::from(b'0' + (b & 7)));
+                            continue;
+                        }
+                        _ if (0x20..0x7f).contains(&b) => {
+                            line.push_str("   ");
+                            line.push(char::from(b));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                line.push_str(&format!(" {:>field$}", od_value(t, &padded)));
             }
             if t.text {
                 let missing = fields - present;
@@ -638,7 +666,11 @@ pub async fn hexdump(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                         line.push(' ');
                     }
                     match chunk.get(k) {
-                        Some(b) => line.push_str(&format!("{b:02x} ")),
+                        Some(b) => {
+                            line.push(char::from(b"0123456789abcdef"[(b >> 4) as usize]));
+                            line.push(char::from(b"0123456789abcdef"[(b & 15) as usize]));
+                            line.push(' ');
+                        }
                         None => line.push_str("   "),
                     }
                 }

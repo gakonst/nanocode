@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -75,18 +75,44 @@ fn chunk_key(hash: &str) -> String {
     format!("c:{hash}")
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug)]
 pub struct EncodedPayload {
-    key: Arc<str>,
-    #[serde(skip)]
-    content: Option<Arc<str>>,
-    #[serde(skip)]
-    layout: Option<Arc<Layout>>,
-    #[serde(skip)]
+    body: Body,
     pending: Arc<[crate::StoreRecord]>,
-    #[serde(skip)]
     children: Arc<[Self]>,
+}
+
+#[derive(Clone, Debug)]
+enum Body {
+    Reference(Arc<str>),
+    Content {
+        json: Arc<str>,
+        keyed: Arc<OnceLock<Keyed>>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct Keyed {
+    key: Arc<str>,
+    layout: Option<Arc<Layout>>,
+}
+
+impl serde::Serialize for EncodedPayload {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EncodedPayload {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let key = <std::borrow::Cow<'_, str> as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Self::by_key(&key))
+    }
 }
 
 #[derive(Debug)]
@@ -164,24 +190,51 @@ fn close_group(
     nodes.push((hash, text));
 }
 
-fn keyed(json: &str) -> (Arc<str>, Option<Arc<Layout>>) {
+fn keyed(json: &str) -> Keyed {
     if json.len() < INLINE_BYTES {
-        return (record_key(json).into(), None);
+        return Keyed {
+            key: record_key(json).into(),
+            layout: None,
+        };
     }
     let layout = Layout::of(json);
-    (record_key(&layout.root).into(), Some(Arc::new(layout)))
+    Keyed {
+        key: record_key(&layout.root).into(),
+        layout: Some(Arc::new(layout)),
+    }
 }
 
 impl EncodedPayload {
     pub fn key(&self) -> &str {
-        &self.key
+        self.shared_key()
+    }
+
+    fn shared_key(&self) -> &Arc<str> {
+        match &self.body {
+            Body::Reference(key) => key,
+            Body::Content { json, keyed } => &keyed.get_or_init(|| self::keyed(json)).key,
+        }
+    }
+
+    const fn content(&self) -> Option<&Arc<str>> {
+        match &self.body {
+            Body::Reference(_) => None,
+            Body::Content { json, .. } => Some(json),
+        }
+    }
+
+    fn of(body: Body) -> Self {
+        Self {
+            body,
+            pending: Arc::default(),
+            children: Arc::default(),
+        }
     }
 
     pub fn matches_key(&self, key: &str) -> bool {
-        self.key.as_ref() == key
+        self.key() == key
             || self
-                .content
-                .as_deref()
+                .content()
                 .is_some_and(|content| key_matches(key, content))
     }
 
@@ -252,24 +305,14 @@ impl EncodedPayload {
     }
 
     pub fn from_json(json: Arc<str>) -> Self {
-        let (key, layout) = keyed(&json);
-        Self {
-            key,
-            content: Some(json),
-            layout,
-            pending: Arc::default(),
-            children: Arc::default(),
-        }
+        Self::of(Body::Content {
+            json,
+            keyed: Arc::default(),
+        })
     }
 
     pub fn by_key(key: &str) -> Self {
-        Self {
-            key: key.into(),
-            content: None,
-            layout: None,
-            pending: Arc::default(),
-            children: Arc::default(),
-        }
+        Self::of(Body::Reference(key.into()))
     }
 
     pub fn decode<T: DeserializeOwned>(&self) -> Result<T> {
@@ -277,7 +320,7 @@ impl EncodedPayload {
     }
 
     pub fn json(&self) -> Result<&str> {
-        self.content.as_deref().ok_or_else(|| {
+        self.content().map(|content| &**content).ok_or_else(|| {
             Error::InvalidState(
                 "resolve the payload through its durable session before reading it".into(),
             )
@@ -290,7 +333,7 @@ impl EncodedPayload {
     }
 
     pub fn reference(&self) -> Self {
-        Self::by_key(&self.key)
+        Self::of(Body::Reference(Arc::clone(self.shared_key())))
     }
 
     pub fn with_records(mut self, records: Vec<crate::StoreRecord>) -> Self {
@@ -317,28 +360,31 @@ impl EncodedPayload {
     }
 
     fn release(&mut self) {
-        self.content = None;
-        self.layout = None;
+        self.body = Body::Reference(Arc::clone(self.shared_key()));
         self.pending = Arc::default();
         self.children = Arc::default();
     }
 
     fn stage_tree(&self, records: &mut Vec<crate::StoreRecord>, known: &dyn Fn(&str) -> bool) {
-        if known(&self.key) {
+        if known(self.key()) {
             return;
         }
         self.stage_closure(records, known);
-        let Some(content) = &self.content else {
+        let Body::Content {
+            json: content,
+            keyed,
+        } = &self.body
+        else {
             return;
         };
-        let layout = match &self.layout {
+        let layout = match keyed.get().and_then(|keyed| keyed.layout.as_ref()) {
             Some(layout) => Arc::clone(layout),
-            None if content.len() >= INLINE_BYTES && self.key.starts_with(KEY_PREFIX) => {
+            None if content.len() >= INLINE_BYTES && self.key().starts_with(KEY_PREFIX) => {
                 Arc::new(Layout::of(content))
             }
             None => {
                 records.push(crate::StoreRecord {
-                    key: self.key.to_string(),
+                    key: self.key().to_owned(),
                     value: format!("={content}"),
                 });
                 return;
@@ -365,15 +411,20 @@ impl EncodedPayload {
             }
         }
         records.push(crate::StoreRecord {
-            key: self.key.to_string(),
+            key: self.key().to_owned(),
             value: layout.root.clone(),
         });
     }
 
     fn inline_within(&self, limit: usize) -> Option<&str> {
-        self.content.as_deref().filter(|content| {
-            content.len() < limit && self.layout.is_none() && self.key.starts_with(KEY_PREFIX)
-        })
+        let Body::Content { json, keyed } = &self.body else {
+            return None;
+        };
+        (json.len() < limit
+            && keyed
+                .get()
+                .is_none_or(|keyed| keyed.layout.is_none() && keyed.key.starts_with(KEY_PREFIX)))
+        .then_some(&**json)
     }
 
     pub(crate) fn is_step_inline(&self) -> bool {
@@ -437,28 +488,28 @@ impl EncodedPayload {
         state_id: &str,
         read: &mut HashSet<String>,
     ) -> Result<Self> {
-        if self.content.is_some() {
+        if self.content().is_some() {
             return Ok(self.clone());
         }
         let record = store
-            .read_record(state_id, &self.key)
+            .read_record(state_id, self.key())
             .await?
-            .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key)))?;
-        read.insert(self.key.to_string());
+            .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key())))?;
+        read.insert(self.key().to_owned());
         self.load_record(&mut Noting { store, read }, state_id, record)
             .await
     }
 
     pub async fn read(&self, reader: &mut dyn crate::StateReader, state_id: &str) -> Result<Self> {
-        if self.content.is_some() {
+        if self.content().is_some() {
             return Ok(self.clone());
         }
         let record = reader
-            .read_records(state_id, std::slice::from_ref(&self.key.to_string()))
+            .read_records(state_id, std::slice::from_ref(&self.key().to_owned()))
             .await?
             .pop()
             .flatten()
-            .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key)))?;
+            .ok_or_else(|| Error::InvalidState(format!("missing payload record {}", self.key())))?;
         self.load_record(reader, state_id, record).await
     }
 
@@ -470,10 +521,10 @@ impl EncodedPayload {
         if values.is_empty() {
             return Ok(Vec::new());
         }
-        if values.iter().any(|value| value.content.is_some()) {
+        if values.iter().any(|value| value.content().is_some()) {
             let missing: Vec<Self> = values
                 .iter()
-                .filter(|value| value.content.is_none())
+                .filter(|value| value.content().is_none())
                 .cloned()
                 .collect();
             let mut loaded = Box::pin(Self::read_many(&missing, reader, state_id))
@@ -481,7 +532,7 @@ impl EncodedPayload {
                 .into_iter();
             return values
                 .iter()
-                .map(|value| match value.content {
+                .map(|value| match value.content() {
                     Some(_) => Ok(value.clone()),
                     None => loaded
                         .next()
@@ -489,7 +540,7 @@ impl EncodedPayload {
                 })
                 .collect();
         }
-        let keys: Vec<_> = values.iter().map(|value| value.key.to_string()).collect();
+        let keys: Vec<_> = values.iter().map(|value| value.key().to_owned()).collect();
         let records = reader.read_records(state_id, &keys).await?;
         if records.len() != values.len() {
             return Err(Error::InvalidState("record batch length mismatch".into()));
@@ -499,7 +550,7 @@ impl EncodedPayload {
             .zip(records)
             .map(|(value, record)| {
                 record.ok_or_else(|| {
-                    Error::InvalidState(format!("missing payload record {}", value.key))
+                    Error::InvalidState(format!("missing payload record {}", value.key()))
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -523,10 +574,10 @@ impl EncodedPayload {
         if values.is_empty() {
             return Ok(Vec::new());
         }
-        if values.iter().any(|value| value.content.is_some()) {
+        if values.iter().any(|value| value.content().is_some()) {
             let missing: Vec<Self> = values
                 .iter()
-                .filter(|value| value.content.is_none())
+                .filter(|value| value.content().is_none())
                 .cloned()
                 .collect();
             let mut loaded = Box::pin(Self::load_many_noting(&missing, store, state_id, read))
@@ -534,7 +585,7 @@ impl EncodedPayload {
                 .into_iter();
             return values
                 .iter()
-                .map(|value| match value.content {
+                .map(|value| match value.content() {
                     Some(_) => Ok(value.clone()),
                     None => loaded
                         .next()
@@ -542,7 +593,7 @@ impl EncodedPayload {
                 })
                 .collect();
         }
-        let keys: Vec<_> = values.iter().map(|value| value.key.to_string()).collect();
+        let keys: Vec<_> = values.iter().map(|value| value.key().to_owned()).collect();
         let mut source = Noting { store, read };
         let records = source.records(state_id, &keys).await?;
         if records.len() != values.len() {
@@ -553,7 +604,7 @@ impl EncodedPayload {
             .zip(records)
             .map(|(value, record)| {
                 record.ok_or_else(|| {
-                    Error::InvalidState(format!("missing payload record {}", value.key))
+                    Error::InvalidState(format!("missing payload record {}", value.key()))
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -614,7 +665,7 @@ impl EncodedPayload {
                 store: &mut *store,
                 reached: &mut reached,
             };
-            let keys: Vec<_> = level.iter().map(|value| value.key.to_string()).collect();
+            let keys: Vec<_> = level.iter().map(|value| value.key().to_owned()).collect();
             let records = source
                 .records(state_id, &keys)
                 .await?
@@ -657,10 +708,10 @@ impl EncodedPayload {
             pending.push(if record.starts_with('=') {
                 Assembly::Inline
             } else if record.starts_with(MANIFEST_PREFIX) || record.starts_with(TREE_PREFIX) {
-                if record_key(record) != value.key.as_ref() {
+                if record_key(record) != value.key() {
                     return Err(Error::InvalidState(format!(
                         "payload manifest checksum mismatch {}",
-                        value.key
+                        value.key()
                     )));
                 }
                 Assembly::Tree(vec![record.clone()])
@@ -682,19 +733,19 @@ impl EncodedPayload {
                     return Err(Error::InvalidState("invalid payload chunk manifest".into()));
                 }
             };
-            if !verified && !key_matches(&value.key, content) {
+            if !verified && !key_matches(value.key(), content) {
                 return Err(Error::InvalidState(format!(
                     "payload record checksum mismatch {}",
-                    value.key
+                    value.key()
                 )));
             }
-            loaded.push(Self {
-                key: value.key.clone(),
-                content: Some(content.into()),
-                layout: None,
-                pending: Arc::default(),
-                children: Arc::default(),
-            });
+            loaded.push(Self::of(Body::Content {
+                json: content.into(),
+                keyed: Arc::new(OnceLock::from(Keyed {
+                    key: Arc::clone(value.shared_key()),
+                    layout: None,
+                })),
+            }));
         }
         Ok(loaded)
     }
@@ -713,12 +764,12 @@ impl EncodedPayload {
         let mut content = String::new();
         for index in 0..count {
             let chunk = store
-                .records(state_id, &[format!("{}/{index}", self.key)])
+                .records(state_id, &[format!("{}/{index}", self.key())])
                 .await?
                 .pop()
                 .flatten()
                 .ok_or_else(|| {
-                    Error::InvalidState(format!("missing payload chunk {}/{index}", self.key))
+                    Error::InvalidState(format!("missing payload chunk {}/{index}", self.key()))
                 })?;
             content.push_str(&chunk);
         }
@@ -742,7 +793,7 @@ impl EncodedPayload {
                 if !leaves && !level.iter().all(|text| text.starts_with(TREE_PREFIX)) {
                     return Err(Error::InvalidState(format!(
                         "payload manifest tree mixes levels {}",
-                        values[index].key
+                        values[index].key()
                     )));
                 }
                 let hashes: String = level.iter().map(|text| &text[1..]).collect();
@@ -769,13 +820,13 @@ impl EncodedPayload {
                 let child = child.ok_or_else(|| {
                     Error::InvalidState(format!(
                         "missing payload manifest {key} of {}",
-                        values[index].key
+                        values[index].key()
                     ))
                 })?;
                 if content_hash(&child) != hash {
                     return Err(Error::InvalidState(format!(
                         "payload manifest checksum mismatch {key} of {}",
-                        values[index].key
+                        values[index].key()
                     )));
                 }
                 if let Assembly::Tree(level) = &mut pending[index] {
@@ -815,7 +866,7 @@ impl EncodedPayload {
             let chunk = chunk.ok_or_else(|| {
                 Error::InvalidState(format!(
                     "missing payload chunk {key} of {}",
-                    values[index].key
+                    values[index].key()
                 ))
             })?;
             if let Assembly::Leaves(hashes, true) = &pending[index]
@@ -823,7 +874,7 @@ impl EncodedPayload {
             {
                 return Err(Error::InvalidState(format!(
                     "payload chunk checksum mismatch {key} of {}",
-                    values[index].key
+                    values[index].key()
                 )));
             }
             contents[index].push_str(&chunk);
@@ -966,7 +1017,16 @@ fn sha256_key(value: &str) -> String {
 
 impl PartialEq for EncodedPayload {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        match (&self.body, &other.body) {
+            (
+                Body::Content { json, keyed },
+                Body::Content {
+                    json: other_json,
+                    keyed: other_keyed,
+                },
+            ) if keyed.get().is_none() && other_keyed.get().is_none() => json == other_json,
+            _ => self.key() == other.key(),
+        }
     }
 }
 impl Eq for EncodedPayload {}
@@ -978,7 +1038,7 @@ fn serialize_within<S: serde::Serializer>(
 ) -> std::result::Result<S::Ok, S::Error> {
     match payload.inline_within(limit) {
         Some(content) => serializer.collect_str(&format_args!("={content}")),
-        None => serializer.serialize_str(&payload.key),
+        None => serializer.serialize_str(payload.key()),
     }
 }
 

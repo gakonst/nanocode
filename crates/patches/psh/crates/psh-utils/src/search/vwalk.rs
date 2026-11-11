@@ -181,13 +181,11 @@ impl Chain<'_> {
         let s = &self.shared;
         let stat = |name: &[u8]| self.host.stat(&self.host.abs(&join(dir, name)), true);
         let check_vcs_dir = vcs && s.require_git && (s.git_ignore || s.git_exclude);
-        let git_type = if check_vcs_dir || (vcs && s.git_exclude) {
-            stat(b".git").ok().map(|m| m.kind)
-        } else {
-            None
-        };
-        // psh: `.jj` decides nothing where `.git` is.
-        let has_jj = check_vcs_dir && git_type.is_none() && stat(b".jj").is_ok();
+        let git = (check_vcs_dir || (vcs && s.git_exclude)).then(|| stat(b".git"));
+        // psh: `.jj` decides nothing where `.git` is, or may be once the host answers.
+        let no_git = matches!(&git, Some(Err(e)) if e.kind() != io::ErrorKind::WouldBlock);
+        let git_type = git.and_then(Result::ok).map(|m| m.kind);
+        let has_jj = check_vcs_dir && no_git && stat(b".jj").is_ok();
         let has_git = check_vcs_dir && (git_type.is_some() || has_jj);
         let mut errs = Errs::default();
         let dir_path = to_path(dir);
@@ -291,17 +289,20 @@ impl Chain<'_> {
         }
         // psh: the git rules of a directory above the nearest repository never apply
         // (`matched_ignore` stops at the first directory with one), so from `base` up
-        // only the directories as far as that one are asked for theirs.
-        let is_repo = |dir: &[u8]| {
-            let stat = |name: &[u8]| self.host.stat(&self.host.abs(&join(dir, name)), true);
-            stat(b".git").is_ok() || stat(b".jj").is_ok()
+        // only the directories as far as that one are asked for theirs. A host that
+        // answers later has not said yet when the walk first runs (it runs again on
+        // the answers): nothing above a directory it has not answered for is asked.
+        let absent = |dir: &[u8], name: &[u8]| {
+            let found = self.host.stat(&self.host.abs(&join(dir, name)), true);
+            matches!(found, Err(e) if e.kind() != io::ErrorKind::WouldBlock)
         };
+        let bare = |dir: &[u8]| absent(dir, b".git") && absent(dir, b".jj");
         let asked = if !(s.require_git && s.git_ignore) {
             parents.len()
-        } else if is_repo(&base) {
+        } else if !bare(&base) {
             0
         } else {
-            let nearest = parents.iter().position(|parent| is_repo(parent));
+            let nearest = parents.iter().position(|parent| !bare(parent));
             nearest.map_or(parents.len(), |at| at + 1)
         };
         let mut errs = Errs::default();

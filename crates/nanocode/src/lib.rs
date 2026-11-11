@@ -15,8 +15,6 @@ pub use nanocode_agent::{
 pub use nanocode_agent::{ModelInfo, model_catalog};
 pub use nanocode_platform as platform;
 pub use nanocode_process_contracts as process;
-#[cfg(not(target_family = "wasm"))]
-pub use nanocode_python as python;
 
 pub use nanocode_agent::HarnessRequest;
 pub use nanocode_backend_claude::ClaudeHarness;

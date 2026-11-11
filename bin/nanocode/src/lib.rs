@@ -109,7 +109,7 @@ pub fn run() -> ExitCode {
 pub fn run_with(clients: ModelClients) -> ExitCode {
     #[cfg(unix)]
     if let Some(code) = nanocode_psh::serve_if_requested(|arguments| {
-        psh::run_with(arguments, &[nanocode::python::UTILITY])
+        psh::run_with(arguments, &[nanocode_python::UTILITY])
     }) {
         return code;
     }

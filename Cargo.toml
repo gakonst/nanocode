@@ -182,6 +182,7 @@ uuid = { version = "1", features = ["serde", "v5"] }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 
 [patch.crates-io]
+arc-swap = { path = "crates/patches/arc-swap" }
 iana-time-zone = { path = "crates/patches/iana-time-zone" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }

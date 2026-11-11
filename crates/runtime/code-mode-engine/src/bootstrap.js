@@ -52,6 +52,10 @@
   const clockNow = () => nativeValue(0);
   function JournaledDate(...args) {
     if (new.target === undefined) return new OriginalDate(clockNow()).toString();
+    if (new.target === JournaledDate) {
+      if (args.length === 1) return new OriginalDate(args[0]);
+      if (args.length === 0) return new OriginalDate(clockNow());
+    }
     return Reflect.construct(OriginalDate, args.length === 0 ? [clockNow()] : args, new.target);
   }
   Object.setPrototypeOf(JournaledDate, OriginalDate);

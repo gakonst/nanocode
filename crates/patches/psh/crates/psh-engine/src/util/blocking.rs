@@ -66,6 +66,7 @@ enum Waiting {
     Stat((Vec<u8>, bool), HostFuture<io::Result<Metadata>>),
     Dir(Vec<u8>, HostFuture<io::Result<Vec<DirEntry>>>),
     File(Vec<u8>, HostFuture<io::Result<Rc<dyn HostFile>>>),
+    Link(Vec<u8>, HostFuture<io::Result<Vec<u8>>>),
 }
 
 /// What an inline blocking body asked of a host that answers later, and the answers
@@ -75,6 +76,7 @@ pub(crate) struct Replay {
     stats: HashMap<(Vec<u8>, bool), Result<Metadata, Refused>>,
     dirs: HashMap<Vec<u8>, Result<Vec<DirEntry>, Refused>>,
     files: HashMap<Vec<u8>, Result<Held, Refused>>,
+    links: HashMap<Vec<u8>, Result<Vec<u8>, Refused>>,
     waiting: Vec<Waiting>,
     /// stdin, read to its end by the first run.
     stdin: Option<Held>,
@@ -105,6 +107,10 @@ impl Replay {
                     };
                     let r = r.map(|data| Held(Rc::new(data))).map_err(refused);
                     this.borrow_mut().files.insert(key, r);
+                }
+                Waiting::Link(key, fut) => {
+                    let r = fut.await.map_err(refused);
+                    this.borrow_mut().links.insert(key, r);
                 }
             }
         }
@@ -428,6 +434,38 @@ impl SyncCtx {
                     Some(r) => r,
                     None => {
                         replay.borrow_mut().waiting.push(Waiting::Dir(abs, fut));
+                        Err(would_block())
+                    }
+                }
+            }
+        }
+    }
+
+    /// A symlink's target as stored (nanocode's addition, for git's worktree checks).
+    pub fn read_link(&self, p: &[u8]) -> io::Result<Vec<u8>> {
+        let abs = self.path(p);
+        match &self.io {
+            Io::Thread { native, .. } => {
+                let target = std::fs::read_link(native(&abs)?)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStringExt;
+                    Ok(target.into_os_string().into_vec())
+                }
+                #[cfg(not(unix))]
+                {
+                    Ok(target.to_string_lossy().into_owned().into_bytes())
+                }
+            }
+            Io::Inline { host, replay, .. } => {
+                if let Some(answer) = replay.borrow().links.get(&abs) {
+                    return answer.clone().map_err(revive);
+                }
+                let mut fut = host.read_link(&abs);
+                match poll_once(|cx| fut.as_mut().poll(cx)) {
+                    Some(r) => r,
+                    None => {
+                        replay.borrow_mut().waiting.push(Waiting::Link(abs, fut));
                         Err(would_block())
                     }
                 }

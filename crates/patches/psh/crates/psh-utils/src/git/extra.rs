@@ -669,6 +669,8 @@ pub fn grep(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
         } else {
             git.work_tree()?.to_vec()
         };
+        // A host that answers later is asked for every file before this run ends.
+        let mut blocked = None;
         for entry in &index.entries {
             if entry.stage != 0 || entry.mode & 0o170000 != 0o100000 || !spec.matches(&entry.path) {
                 continue;
@@ -677,14 +679,28 @@ pub fn grep(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
                 repo.blob(&entry.oid)?.to_vec()
             } else {
                 let full = join(&root, &entry.path);
-                match repo.fs.stat_opt(&full, false)? {
-                    Some(meta) if meta.kind == psh_engine::host::FileKind::File => {
-                        repo.fs.read(&full)?
+                let read = match repo.fs.stat_opt(&full, false) {
+                    Ok(Some(meta)) if meta.kind == psh_engine::host::FileKind::File => {
+                        repo.fs.read(&full)
                     }
-                    _ => continue,
+                    Ok(_) => continue,
+                    Err(e) => Err(e),
+                };
+                match read {
+                    Ok(data) => data,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        blocked = Some(e);
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
                 }
             };
-            search(io, b"", &entry.path, &data)?;
+            if blocked.is_none() {
+                search(io, b"", &entry.path, &data)?;
+            }
+        }
+        if let Some(e) = blocked {
+            return Err(e.into());
         }
     } else {
         for (label, oid) in &revs {

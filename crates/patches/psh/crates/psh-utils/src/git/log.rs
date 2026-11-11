@@ -1138,6 +1138,7 @@ pub fn ls_files(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
     };
     let mut lines: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut matched = false;
+    let mut blocked = None;
     if others {
         let env = |key: &[u8]| -> Option<Vec<u8>> {
             git.env
@@ -1157,7 +1158,14 @@ pub fn ls_files(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
         }
         matched = true;
         let state = if modified || deleted {
-            Some(work.state(entry)?)
+            // A host that answers later is asked for every file before this run ends.
+            match work.state(entry) {
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    blocked = Some(e);
+                    continue;
+                }
+                other => Some(other?),
+            }
         } else {
             None
         };
@@ -1184,6 +1192,9 @@ pub fn ls_files(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
         if modified && matches!(state, Some(State::Gone | State::Changed(_))) {
             lines.push((entry.path.clone(), line));
         }
+    }
+    if let Some(e) = blocked {
+        return Err(Error::Io(e));
     }
     if unmatch && !matched && !paths.is_empty() {
         io.warn(&format!(

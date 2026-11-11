@@ -276,6 +276,7 @@ fn two_way(
     index: &mut Index,
     old: Option<&Oid>,
     new: Option<&Oid>,
+    merge: bool,
 ) -> Res<Option<String>> {
     let mut changes = Vec::new();
     trees(&git.repo, old, new, b"", &Pathspec::default(), &mut changes)?;
@@ -360,15 +361,24 @@ fn two_way(
             }
             text.push_str(tail);
         };
+        let (by, before) = if merge {
+            ("merge", "merge")
+        } else {
+            ("checkout", "switch branches")
+        };
         list(
-            "error: Your local changes to the following files would be overwritten by checkout:\n",
+            &format!(
+                "error: Your local changes to the following files would be overwritten by {by}:\n"
+            ),
             &local,
-            "Please commit your changes or stash them before you switch branches.\n",
+            &format!("Please commit your changes or stash them before you {before}.\n"),
         );
         list(
-            "error: The following untracked working tree files would be overwritten by checkout:\n",
+            &format!(
+                "error: The following untracked working tree files would be overwritten by {by}:\n"
+            ),
             &untracked,
-            "Please move or remove them before you switch branches.\n",
+            &format!("Please move or remove them before you {before}.\n"),
         );
         text.push_str("Aborting\n");
         return Ok(Some(text));
@@ -743,9 +753,14 @@ fn run(git: &Git<'_>, io: &mut Io<'_>, args: &[String], switch: bool) -> Res<i32
     let new_tree = tree_of(new)?;
     if force {
         index = hard(git, &work, index, new_tree.as_ref())?;
-    } else if let Some(refusal) =
-        two_way(git, &work, &mut index, old_tree.as_ref(), new_tree.as_ref())?
-    {
+    } else if let Some(refusal) = two_way(
+        git,
+        &work,
+        &mut index,
+        old_tree.as_ref(),
+        new_tree.as_ref(),
+        false,
+    )? {
         return Err(Error::Says(refusal, 1));
     }
     let was = match &head_ref {
@@ -858,4 +873,418 @@ pub fn checkout(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
 
 pub fn switch(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
     run(git, io, args, true)
+}
+
+/// git merge where it only moves the branch forward: what is merged has HEAD among
+/// its ancestors, so the files go from one commit to the other as a checkout takes
+/// them.
+pub fn merge(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
+    let (mut only, mut quiet, mut stat) = (false, false, true);
+    let mut specs = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--ff-only" => only = true,
+            "--ff" | "--no-edit" | "--no-verify" => {}
+            "-q" | "--quiet" => quiet = true,
+            "--stat" => stat = true,
+            "-n" | "--no-stat" => stat = false,
+            a if a.starts_with('-') => {
+                return Err(Error::Lacks(
+                    format!("'merge' with '{a}'"),
+                    "git that merges histories: it only moves a branch forward",
+                ));
+            }
+            _ => specs.push(arg.clone()),
+        }
+    }
+    let [spec] = specs.as_slice() else {
+        return Err(Error::Lacks(
+            "'merge' of none or several commits".to_string(),
+            "git that merges histories: it only moves a branch forward",
+        ));
+    };
+    let repo = &git.repo;
+    let root = git.work_tree()?.to_vec();
+    super::status::in_progress(git)?;
+    let theirs = match rev::resolve(repo, spec, &git.prefix)? {
+        Some(oid) => rev::commit_of(repo, oid)?,
+        None => {
+            return Err(Error::Says(
+                format!("merge: {spec} - not something we can merge\n"),
+                1,
+            ));
+        }
+    };
+    let Some(head) = repo.head()? else {
+        return Err(Error::Lacks(
+            "'merge' into a branch with no commits".to_string(),
+            "git that merges histories: it only moves a branch forward",
+        ));
+    };
+    let head = rev::commit_of(repo, head)?;
+    if rev::is_ancestor(repo, theirs, head)? {
+        if !quiet {
+            writeln!(io.out, "Already up to date.")?;
+        }
+        return Ok(0);
+    }
+    if !rev::is_ancestor(repo, head, theirs)? {
+        if only {
+            return Err(Error::Says(
+                "hint: Diverging branches can't be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nhint:\nhint: or:\nhint:\nhint: \tgit rebase\nhint:\nhint: Disable this message with \"git config set advice.diverging false\"\nfatal: Not possible to fast-forward, aborting.\n".to_string(),
+                128,
+            ));
+        }
+        return Err(Error::Lacks(
+            format!("'merge' of '{spec}', whose history has diverged from HEAD's"),
+            "git that merges histories: it only moves a branch forward",
+        ));
+    }
+    git.lock_index()?;
+    git.hooks(&["post-merge"])?;
+    let (ours, new) = (repo.commit(&head)?.tree, repo.commit(&theirs)?.tree);
+    let work = Work::new(repo, &root)?;
+    let mut index = edit(&work)?;
+    if !quiet {
+        writeln!(
+            io.out,
+            "Updating {}..{}",
+            repo.short(&head)?,
+            repo.short(&theirs)?
+        )?;
+    }
+    if let Some(refusal) = two_way(git, &work, &mut index, Some(&ours), Some(&new), true)? {
+        return Err(Error::Says(refusal, 1));
+    }
+    git.write(
+        join(&repo.git_dir, b"ORIG_HEAD"),
+        format!("{}\n", head.hex()).into_bytes(),
+    );
+    git.move_head(theirs, &format!("merge {spec}: Fast-forward"))?;
+    git.set_index(index);
+    if quiet {
+        return Ok(0);
+    }
+    writeln!(io.out, "Fast-forward")?;
+    if stat {
+        let mut changes = Vec::new();
+        trees(
+            repo,
+            Some(&ours),
+            Some(&new),
+            b"",
+            &Pathspec::default(),
+            &mut changes,
+        )?;
+        let mut opts = super::diff::DiffOpts::new(repo, git.columns)?;
+        if let Some(minimum) = opts.renames {
+            changes = super::diff::detect_renames(repo, changes, minimum)?;
+        }
+        opts.stat = true;
+        opts.summary = true;
+        super::diff::Printer { repo, opts: &opts }.print(io.out, &changes)?;
+    }
+    Ok(0)
+}
+
+/// Every file under a directory, and the directory, out of the way: the files, then
+/// the directories from the deepest up.
+fn remove_tree(git: &Git<'_>, top: &[u8]) -> Res<()> {
+    let fs = git.repo.fs;
+    let mut dirs = Vec::new();
+    let mut stack = vec![top.to_vec()];
+    while let Some(at) = stack.pop() {
+        for name in fs.list(&at)? {
+            let child = join(&at, &name);
+            match fs.stat_opt(&child, false)? {
+                Some(meta) if meta.kind == psh_engine::host::FileKind::Dir => stack.push(child),
+                Some(_) => git.op(Op::Remove(child)),
+                None => {}
+            }
+        }
+        dirs.push(at);
+    }
+    dirs.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    for dir in dirs {
+        git.op(Op::Rmdir(dir));
+    }
+    Ok(())
+}
+
+/// A path an argument names, from the working directory.
+fn named_path(git: &Git<'_>, arg: &str) -> Vec<u8> {
+    if arg.starts_with('/') {
+        super::repo::normalize(arg.as_bytes())
+    } else {
+        super::repo::normalize(&join(&git.cwd, arg.as_bytes()))
+    }
+}
+
+/// The linked worktrees: each one's directory under worktrees/ and where it is.
+fn linked(git: &Git<'_>) -> Res<Vec<(Vec<u8>, Vec<u8>)>> {
+    let fs = git.repo.fs;
+    let dir = join(&git.repo.common_dir, b"worktrees");
+    let mut found = Vec::new();
+    for name in fs.list(&dir)? {
+        let own = join(&dir, &name);
+        if let Some(text) = fs.read_opt(&join(&own, b"gitdir"))? {
+            let text = String::from_utf8_lossy(&text).trim().to_string();
+            let path = text
+                .strip_suffix("/.git")
+                .unwrap_or(&text)
+                .as_bytes()
+                .to_vec();
+            found.push((own, path));
+        }
+    }
+    Ok(found)
+}
+
+/// git worktree add: another working tree of the repository, on a branch of its own
+/// or at a commit.
+pub fn worktree_add(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
+    let (mut detach, mut quiet) = (false, false);
+    let mut create: Option<(String, bool)> = None;
+    let mut words: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
+            "-d" | "--detach" => detach = true,
+            "-q" | "--quiet" => quiet = true,
+            "-f" | "--force" | "--checkout" | "--no-track" | "--no-guess-remote" => {}
+            "-b" | "-B" => {
+                i += 1;
+                let name = args.get(i).ok_or_else(|| {
+                    Error::Usage(format!("error: switch '{}' requires a value", &arg[1..]))
+                })?;
+                create = Some((name.clone(), arg == "-B"));
+            }
+            _ if arg.starts_with('-') => return Err(option("worktree add", arg)),
+            _ => words.push(arg),
+        }
+        i += 1;
+    }
+    let (place, spec) = match words.as_slice() {
+        [place] => (*place, None),
+        [place, spec] => (*place, Some(*spec)),
+        _ => {
+            return Err(Error::Usage(
+                "usage: git worktree add [-f] [--detach] [--checkout] [--lock [--reason <string>]]\n                        [--orphan] [(-b | -B) <new-branch>] <path> [<commit-ish>]".to_string(),
+            ));
+        }
+    };
+    let repo = &git.repo;
+    let fs = repo.fs;
+    let full = named_path(git, place);
+    if let Some(meta) = fs.stat_opt(&full, false)?
+        && (meta.kind != psh_engine::host::FileKind::Dir || !fs.list(&full)?.is_empty())
+    {
+        return Err(Error::Fatal(format!("'{place}' already exists")));
+    }
+    let base =
+        String::from_utf8_lossy(full.rsplit(|&b| b == b'/').next().unwrap_or(&full)).into_owned();
+    let trees_dir = join(&repo.common_dir, b"worktrees");
+    let mut name = base.clone();
+    let mut n = 1;
+    while fs
+        .stat_opt(&join(&trees_dir, name.as_bytes()), false)?
+        .is_some()
+    {
+        name = format!("{base}{n}");
+        n += 1;
+    }
+    let commit = |spec: &str| -> Res<Oid> {
+        match rev::resolve(repo, spec, &git.prefix)? {
+            Some(oid) => rev::commit_of(repo, oid),
+            None => Err(Error::Fatal(format!("invalid reference: {spec}"))),
+        }
+    };
+    let existing = |short: &str| -> Res<Option<String>> {
+        let full = format!("refs/heads/{short}");
+        Ok(repo.resolve_ref(&full)?.map(|_| full))
+    };
+    // The branch it is on (and what a new one is made from), or none at a commit.
+    let (branch, made, at) = match (&create, spec) {
+        (Some((new, reset)), spec) => {
+            if !valid_ref(&format!("refs/heads/{new}")) {
+                return Err(Error::Fatal(format!("'{new}' is not a valid branch name")));
+            }
+            if existing(new)?.is_some() && !reset {
+                return Err(Error::Fatal(format!(
+                    "a branch named '{new}' already exists"
+                )));
+            }
+            let from = spec.unwrap_or("HEAD");
+            (
+                Some(format!("refs/heads/{new}")),
+                Some(from.to_string()),
+                commit(from)?,
+            )
+        }
+        (None, Some(spec)) => match existing(spec)? {
+            Some(full) if !detach => (Some(full), None, commit(spec)?),
+            _ => (None, None, commit(spec)?),
+        },
+        (None, None) if detach => (None, None, commit("HEAD")?),
+        (None, None) => match existing(&base)? {
+            Some(full) => (Some(full), None, commit(&base)?),
+            None => {
+                if !valid_ref(&format!("refs/heads/{base}")) {
+                    return Err(Error::Fatal(format!("'{base}' is not a valid branch name")));
+                }
+                (
+                    Some(format!("refs/heads/{base}")),
+                    Some("HEAD".to_string()),
+                    commit("HEAD")?,
+                )
+            }
+        },
+    };
+    let note = match (&branch, &made) {
+        (Some(full), Some(_)) => format!("new branch '{}'", shorten(full)),
+        (Some(full), None) => format!("checking out '{}'", shorten(full)),
+        (None, _) => format!("detached HEAD {}", repo.short(&at)?),
+    };
+    if !quiet {
+        io.warn(&format!("Preparing worktree ({note})\n"));
+    }
+    if let (Some(full), None) = (&branch, &made)
+        && let Some(tree) = super::commit::used_by(git, full)?
+    {
+        return Err(Error::Fatal(format!(
+            "'{}' is already used by worktree at '{}'",
+            shorten(full),
+            String::from_utf8_lossy(&tree)
+        )));
+    }
+    git.hooks(&["post-checkout"])?;
+    if let Some(root) = &repo.work_tree {
+        Work::new(repo, root)?.smudges()?;
+    }
+    let dir = join(&trees_dir, name.as_bytes());
+    if let (Some(full), Some(from)) = (&branch, &made) {
+        git.set_ref(full, at, &format!("branch: Created from {from}"))?;
+    }
+    // Where it is, as the file system names the directory above it.
+    let above = full
+        .iter()
+        .rposition(|&b| b == b'/')
+        .map_or(&full[..], |cut| &full[..cut.max(1)]);
+    let real = join(&fs.physical(above), base.as_bytes());
+    let head = match &branch {
+        Some(full) => format!("ref: {full}\n"),
+        None => format!("{}\n", at.hex()),
+    };
+    git.write(join(&dir, b"HEAD"), head.into_bytes());
+    git.write(join(&dir, b"commondir"), b"../..\n".to_vec());
+    let mut gitdir = join(&real, b".git");
+    gitdir.push(b'\n');
+    git.write(join(&dir, b"gitdir"), gitdir);
+    git.write(
+        join(&dir, b"ORIG_HEAD"),
+        format!("{}\n", at.hex()).into_bytes(),
+    );
+    let who = git.ident(super::write::Who::Committer, false)?;
+    let mut log = format!("{} {} {who}\n", Oid::ZERO.hex(), at.hex());
+    if branch.is_some() {
+        log.push_str(&format!("{0} {0} {who}\treset: moving to HEAD\n", at.hex()));
+    }
+    git.write(join(&dir, b"logs/HEAD"), log.into_bytes());
+    let mut pointer = b"gitdir: ".to_vec();
+    pointer.extend_from_slice(&join(
+        &join(&fs.physical(&repo.common_dir), b"worktrees"),
+        name.as_bytes(),
+    ));
+    pointer.push(b'\n');
+    git.write(join(&full, b".git"), pointer);
+    let tree = repo.commit(&at)?.tree;
+    let mut files = Vec::new();
+    flatten(repo, &tree, b"", &Pathspec::default(), &mut files)?;
+    let mut index = Index::default();
+    let mut out = Out::default();
+    for (path, mode, oid) in files {
+        if mode == 0o160000 {
+            return Err(submodule());
+        }
+        out.write(&mut index, path, mode, oid);
+    }
+    index.tree = Some(prime(repo, &tree, b"")?);
+    out.plan(git, &full)?;
+    git.plan.borrow_mut().index = Some(super::write::IndexOut {
+        path: join(&dir, b"index"),
+        root: full,
+        index,
+    });
+    if !quiet {
+        io.out
+            .write_all(head_line(git, "HEAD is now at", &at)?.as_bytes())?;
+    }
+    Ok(0)
+}
+
+/// git worktree remove and prune.
+pub fn worktree_remove(git: &Git<'_>, io: &mut Io<'_>, args: &[String], prune: bool) -> Res<i32> {
+    let fs = git.repo.fs;
+    if prune {
+        for (own, path) in linked(git)? {
+            if fs.stat_opt(&path, true)?.is_none() {
+                remove_tree(git, &own)?;
+            }
+        }
+        return Ok(0);
+    }
+    let mut force = false;
+    let mut places = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "-f" | "--force" => force = true,
+            a if a.starts_with('-') => return Err(option("worktree remove", a)),
+            a => places.push(a),
+        }
+    }
+    let [place] = places.as_slice() else {
+        return Err(Error::Usage(
+            "usage: git worktree remove [-f] <worktree>".to_string(),
+        ));
+    };
+    let wanted = named_path(git, place);
+    let real = fs.physical(&wanted);
+    let Some((own, path)) = linked(git)?
+        .into_iter()
+        .find(|(_, path)| *path == wanted || *path == real)
+    else {
+        return Err(Error::Fatal(format!("'{place}' is not a working tree")));
+    };
+    if !force {
+        // Its own index against its own files: nothing changed, nothing untracked.
+        let env = |name: &[u8]| -> Option<Vec<u8>> {
+            git.env
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        let theirs = super::repo::Repo::discover(fs, &path, &env, &[])?;
+        let work = Work::new(&theirs, &path)?;
+        let all = Pathspec::default();
+        let others =
+            super::worktree::untracked(&work, super::worktree::Untracked::Normal, &all, &env)?;
+        let head_tree = match theirs.head()? {
+            Some(head) => Some(theirs.commit(&rev::commit_of(&theirs, head)?)?.tree),
+            None => None,
+        };
+        let dirty = !others.is_empty()
+            || !work.unstaged(&all)?.is_empty()
+            || !work.staged(head_tree.as_ref(), &all)?.is_empty();
+        work.answered()?;
+        if dirty {
+            return Err(Error::Fatal(format!(
+                "'{place}' contains modified or untracked files, use --force to delete it"
+            )));
+        }
+    }
+    let _ = io;
+    remove_tree(git, &path)?;
+    remove_tree(git, &own)?;
+    Ok(0)
 }

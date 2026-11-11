@@ -427,13 +427,17 @@ impl Git<'_> {
         if !(wanted && kept) && self.repo.fs.stat_opt(&path, true)?.is_none() {
             return Ok(());
         }
-        let line = format!(
-            "{} {} {}\t{}\n",
+        let mut line = format!(
+            "{} {} {}",
             old.unwrap_or(Oid::ZERO).hex(),
             new.unwrap_or(Oid::ZERO).hex(),
-            self.ident(Who::Committer, false)?,
-            message.replace('\n', " ")
+            self.ident(Who::Committer, false)?
         );
+        if !message.is_empty() {
+            line.push('\t');
+            line.push_str(&message.replace('\n', " "));
+        }
+        line.push('\n');
         self.op(Op::Append {
             path,
             data: line.into_bytes(),

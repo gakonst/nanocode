@@ -22,6 +22,11 @@ pub fn worktree(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
         [list] if list == "list" => false,
         [list, flag] if list == "list" && flag == "--porcelain" => true,
         [list, ..] if list == "list" => return Err(option("worktree list", &args[1])),
+        [add, rest @ ..] if add == "add" => return super::checkout::worktree_add(git, io, rest),
+        [remove, rest @ ..] if remove == "remove" => {
+            return super::checkout::worktree_remove(git, io, rest, false);
+        }
+        [prune] if prune == "prune" => return super::checkout::worktree_remove(git, io, &[], true),
         _ => return Err(writes("worktree")),
     };
     struct Tree {

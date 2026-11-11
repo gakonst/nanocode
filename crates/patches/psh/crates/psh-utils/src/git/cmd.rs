@@ -41,6 +41,7 @@ pub fn dispatch(git: &Git<'_>, io: &mut Io<'_>, command: &str, args: &[String]) 
         "checkout" => super::checkout::checkout(git, io, args),
         "switch" => super::checkout::switch(git, io, args),
         "clean" => super::stage::clean(git, io, args),
+        "merge" => super::checkout::merge(git, io, args),
         "worktree" => super::extra::worktree(git, io, args),
         _ => Err(Error::Lacks(
             format!("'{command}' is not one of its commands"),

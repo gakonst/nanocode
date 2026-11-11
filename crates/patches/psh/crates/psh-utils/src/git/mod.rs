@@ -126,7 +126,6 @@ const WRITES: &[&str] = &[
     "hash-object",
     "lfs",
     "maintenance",
-    "merge",
     "mergetool",
     "notes",
     "pack-refs",

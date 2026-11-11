@@ -569,7 +569,7 @@ pub fn tag(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
 }
 
 /// The worktree a branch is checked out in, when one has it.
-fn used_by(git: &Git<'_>, full: &str) -> Res<Option<Vec<u8>>> {
+pub fn used_by(git: &Git<'_>, full: &str) -> Res<Option<Vec<u8>>> {
     let repo = &git.repo;
     let fs = repo.fs;
     let on = |head: &[u8]| -> Res<bool> {

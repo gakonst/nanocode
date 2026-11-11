@@ -160,6 +160,7 @@ async fn run_with(
     }
     let env = vp.env(&assigns);
     let name = String::from_utf8_lossy(&argv[0]).into_owned();
+    let replay = Rc::new(std::cell::RefCell::new(blocking::Replay::default()));
     let mut ctx = UtilCtx {
         vp,
         name,
@@ -167,6 +168,7 @@ async fn run_with(
         out: Vec::new(),
         write_error: None,
         zone: None,
+        replay: replay.clone(),
     };
     // A signal that ends the shell ends the utility, as it ends the wait for an
     // external (D1903). The vproc is the utility's now: watch with what it needs.
@@ -177,25 +179,39 @@ async fn run_with(
             ctx.vp.traps.clone(),
         )
     });
-    let status = {
-        let mut fut = std::pin::pin!((entry.run)(&mut ctx, &argv));
-        std::future::poll_fn(|cx| {
-            if let Some((core, sigs, traps)) = &watch
-                && let Some(sig) = crate::signals::breaking_in(core, sigs, traps, Gives::Fatal)
-            {
-                return Poll::Ready(Err(sig));
-            }
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(st) => Poll::Ready(Ok(st)),
-                Poll::Pending => {
-                    if let Some((core, sigs, _)) = &watch {
-                        sigs.on_signal(core, cx.waker());
-                    }
-                    Poll::Pending
+    let status = loop {
+        let ran = {
+            let mut fut = std::pin::pin!((entry.run)(&mut ctx, &argv));
+            std::future::poll_fn(|cx| {
+                if let Some((core, sigs, traps)) = &watch
+                    && let Some(sig) = crate::signals::breaking_in(core, sigs, traps, Gives::Fatal)
+                {
+                    return Poll::Ready(Err(sig));
                 }
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(st) => Poll::Ready(Ok(Some(st))),
+                    // A blocking body asked a host that answers later: this run is
+                    // dropped and the utility starts again on the answers.
+                    Poll::Pending if replay.borrow().again => Poll::Ready(Ok(None)),
+                    Poll::Pending => {
+                        if let Some((core, sigs, _)) = &watch {
+                            sigs.on_signal(core, cx.waker());
+                        }
+                        Poll::Pending
+                    }
+                }
+            })
+            .await
+        };
+        match ran {
+            Ok(Some(st)) => break Ok(st),
+            Ok(None) => {
+                blocking::Replay::settle(&replay).await;
+                ctx.out.clear();
+                ctx.write_error = None;
             }
-        })
-        .await
+            Err(sig) => break Err(sig),
+        }
     };
     match status {
         Ok(status) => {
@@ -224,6 +240,8 @@ pub struct UtilCtx<'v> {
     write_error: Option<io::ErrorKind>,
     /// The time zone, once [`UtilCtx::load_zone`] ran (`Some(None)`: none readable).
     zone: Option<Option<crate::builtins::strftime::Zone>>,
+    /// What a blocking body asked of a host that answers later (`blocking::Replay`).
+    replay: Rc<std::cell::RefCell<blocking::Replay>>,
 }
 
 /// How [`UtilCtx::spawn`] changes the environment of the command it runs.

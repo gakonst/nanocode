@@ -12,12 +12,17 @@
 //! - **Inline** (wasm, sandbox and test hosts): the function runs on the engine thread.
 //!   stdin, when the utility asks for it, is read to its end first, within
 //!   [`INLINE_INPUT_LIMIT`]; output is collected in order and written after the function
-//!   returns; file operations are Host futures polled once, so a host that cannot answer
-//!   at once gets an error, never a hang.
+//!   returns; file operations are Host futures polled once. A host that cannot answer
+//!   at once (a file system behind a database or a JS promise) is asked again: the body
+//!   gets an error for that operation, and when it returns, what it printed is dropped,
+//!   the open questions are awaited and the utility runs once more on the answers
+//!   ([`Replay`]). Blocking bodies only read the file system, so a second run changes
+//!   nothing.
 //!
 //! [`Host::native_paths`]: crate::host::Host::native_paths
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -26,7 +31,92 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use super::{BUFFER, UtilCtx};
-use crate::host::{DirEntry, Host, HostFile, Metadata, NativePathFn, OpenOptions};
+use crate::host::{DirEntry, Host, HostFile, HostFuture, Metadata, NativePathFn, OpenOptions};
+
+/// An error as a replay keeps it (`io::Error` cannot be cloned): its kind, and its text
+/// when it carries one of its own.
+type Refused = (io::ErrorKind, Option<String>);
+
+fn refused(e: io::Error) -> Refused {
+    (e.kind(), e.get_ref().map(|inner| inner.to_string()))
+}
+
+fn revive((kind, text): Refused) -> io::Error {
+    match text {
+        Some(text) => io::Error::new(kind, text),
+        None => kind.into(),
+    }
+}
+
+/// Bytes a replay hands to every run of the body: a file read to its end, or stdin.
+#[derive(Clone)]
+struct Held(Rc<Vec<u8>>);
+
+impl AsRef<[u8]> for Held {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// A question the host had not answered when the body asked.
+enum Waiting {
+    Stat((Vec<u8>, bool), HostFuture<io::Result<Metadata>>),
+    Dir(Vec<u8>, HostFuture<io::Result<Vec<DirEntry>>>),
+    File(Vec<u8>, HostFuture<io::Result<Rc<dyn HostFile>>>),
+}
+
+/// What an inline blocking body asked of a host that answers later, and the answers
+/// once they came: the utility runs again and finds them here.
+#[derive(Default)]
+pub(crate) struct Replay {
+    stats: HashMap<(Vec<u8>, bool), Result<Metadata, Refused>>,
+    dirs: HashMap<Vec<u8>, Result<Vec<DirEntry>, Refused>>,
+    files: HashMap<Vec<u8>, Result<Held, Refused>>,
+    waiting: Vec<Waiting>,
+    /// stdin, read to its end by the first run.
+    stdin: Option<Held>,
+    /// The body ran on answers that were not all there: the utility runs again.
+    pub(crate) again: bool,
+}
+
+impl Replay {
+    /// Waits for every open question and keeps its answer (a file: its bytes).
+    pub(crate) async fn settle(this: &Rc<RefCell<Replay>>) {
+        let waiting = std::mem::take(&mut this.borrow_mut().waiting);
+        for w in waiting {
+            match w {
+                Waiting::Stat(key, fut) => {
+                    let r = fut.await.map_err(refused);
+                    this.borrow_mut().stats.insert(key, r);
+                }
+                Waiting::Dir(key, fut) => {
+                    let r = fut.await.map_err(refused);
+                    this.borrow_mut().dirs.insert(key, r);
+                }
+                Waiting::File(key, fut) => {
+                    let r = match fut.await {
+                        Ok(file) => read_all(&*file).await,
+                        Err(e) => Err(e),
+                    };
+                    let r = r.map(|data| Held(Rc::new(data))).map_err(refused);
+                    this.borrow_mut().files.insert(key, r);
+                }
+            }
+        }
+        this.borrow_mut().again = false;
+    }
+}
+
+async fn read_all(file: &dyn HostFile) -> io::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    let mut buf = vec![0u8; BUFFER];
+    loop {
+        match std::future::poll_fn(|cx| file.poll_read(cx, &mut buf)).await? {
+            0 => return Ok(data),
+            n => data.extend_from_slice(&buf[..n]),
+        }
+    }
+}
 
 /// Output a worker thread may have queued before it waits for the engine.
 pub const IN_FLIGHT: usize = 1024 * 1024;
@@ -71,8 +161,9 @@ enum Io {
     },
     Inline {
         host: Rc<dyn Host>,
-        stdin: io::Cursor<Vec<u8>>,
+        stdin: io::Cursor<Held>,
         out: Arc<Mutex<InlineOut>>,
+        replay: Rc<RefCell<Replay>>,
     },
 }
 
@@ -145,6 +236,8 @@ pub struct SyncFile {
 enum FileInner {
     Os(std::fs::File),
     Host(Rc<dyn HostFile>),
+    /// A file a replay read to its end.
+    Held(io::Cursor<Held>),
 }
 
 impl Read for SyncFile {
@@ -155,6 +248,7 @@ impl Read for SyncFile {
                 Some(r) => r,
                 None => Err(would_block()),
             },
+            FileInner::Held(f) => f.read(buf),
         }
     }
 }
@@ -174,11 +268,6 @@ fn poll_once<T>(mut f: impl FnMut(&mut Context<'_>) -> Poll<T>) -> Option<T> {
         Poll::Ready(v) => Some(v),
         Poll::Pending => None,
     }
-}
-
-fn block_on_once<T>(fut: crate::host::HostFuture<io::Result<T>>) -> io::Result<T> {
-    let mut fut = fut;
-    poll_once(|cx| fut.as_mut().poll(cx)).unwrap_or_else(|| Err(would_block()))
 }
 
 impl SyncCtx {
@@ -264,14 +353,27 @@ impl SyncCtx {
             Io::Thread { native, .. } => Ok(SyncFile {
                 inner: FileInner::Os(std::fs::File::open(native(&abs)?)?),
             }),
-            Io::Inline { host, .. } => {
+            Io::Inline { host, replay, .. } => {
+                if let Some(answer) = replay.borrow().files.get(&abs) {
+                    let held = answer.clone().map_err(revive)?;
+                    return Ok(SyncFile {
+                        inner: FileInner::Held(io::Cursor::new(held)),
+                    });
+                }
                 let opts = OpenOptions {
                     read: true,
                     ..OpenOptions::default()
                 };
-                Ok(SyncFile {
-                    inner: FileInner::Host(block_on_once(host.open(&abs, opts))?),
-                })
+                let mut fut = host.open(&abs, opts);
+                match poll_once(|cx| fut.as_mut().poll(cx)) {
+                    Some(r) => Ok(SyncFile {
+                        inner: FileInner::Host(r?),
+                    }),
+                    None => {
+                        replay.borrow_mut().waiting.push(Waiting::File(abs, fut));
+                        Err(would_block())
+                    }
+                }
             }
         }
     }
@@ -281,7 +383,20 @@ impl SyncCtx {
         let abs = self.path(p);
         match &self.io {
             Io::Thread { native, .. } => native_stat(&native(&abs)?, follow),
-            Io::Inline { host, .. } => block_on_once(host.stat(&abs, follow)),
+            Io::Inline { host, replay, .. } => {
+                let key = (abs, follow);
+                if let Some(answer) = replay.borrow().stats.get(&key) {
+                    return answer.clone().map_err(revive);
+                }
+                let mut fut = host.stat(&key.0, follow);
+                match poll_once(|cx| fut.as_mut().poll(cx)) {
+                    Some(r) => r,
+                    None => {
+                        replay.borrow_mut().waiting.push(Waiting::Stat(key, fut));
+                        Err(would_block())
+                    }
+                }
+            }
         }
     }
 
@@ -290,7 +405,19 @@ impl SyncCtx {
         let abs = self.path(p);
         match &self.io {
             Io::Thread { native, .. } => native_read_dir(&native(&abs)?),
-            Io::Inline { host, .. } => block_on_once(host.read_dir(&abs)),
+            Io::Inline { host, replay, .. } => {
+                if let Some(answer) = replay.borrow().dirs.get(&abs) {
+                    return answer.clone().map_err(revive);
+                }
+                let mut fut = host.read_dir(&abs);
+                match poll_once(|cx| fut.as_mut().poll(cx)) {
+                    Some(r) => r,
+                    None => {
+                        replay.borrow_mut().waiting.push(Waiting::Dir(abs, fut));
+                        Err(would_block())
+                    }
+                }
+            }
         }
     }
 
@@ -592,8 +719,9 @@ impl UtilCtx<'_> {
             stdin_readable,
             io: Io::Inline {
                 host,
-                stdin: io::Cursor::new(Vec::new()),
+                stdin: io::Cursor::new(Held(Rc::default())),
                 out: Arc::default(),
+                replay: self.replay.clone(),
             },
             out: Vec::new(),
             write_error: None,
@@ -602,19 +730,34 @@ impl UtilCtx<'_> {
             Some(native) => self.run_thread(sync, native, arg, f).await,
             None => {
                 if opts.stdin {
-                    match self.read_limited(INLINE_INPUT_LIMIT).await {
-                        Ok(data) => {
-                            if let Io::Inline { stdin, .. } = &mut sync.io {
-                                *stdin = io::Cursor::new(data);
+                    // A replayed run reads what the first one read.
+                    let held = self.replay.borrow().stdin.clone();
+                    let held = match held {
+                        Some(held) => held,
+                        None => match self.read_limited(INLINE_INPUT_LIMIT).await {
+                            Ok(data) => {
+                                let held = Held(Rc::new(data));
+                                self.replay.borrow_mut().stdin = Some(held.clone());
+                                held
                             }
-                        }
-                        Err(msg) => {
-                            self.error(&msg).await;
-                            return 2;
-                        }
+                            Err(msg) => {
+                                self.error(&msg).await;
+                                return 2;
+                            }
+                        },
+                    };
+                    if let Io::Inline { stdin, .. } = &mut sync.io {
+                        *stdin = io::Cursor::new(held);
                     }
                 }
                 let status = run_guarded(&mut sync, arg, f);
+                if !self.replay.borrow().waiting.is_empty() {
+                    // The body ran on answers the host had not given: nothing it
+                    // printed is kept, and the utility's runner starts it again once
+                    // they are there (`util::run_with`). This run ends here.
+                    self.replay.borrow_mut().again = true;
+                    return std::future::pending().await;
+                }
                 let _ = sync.flush();
                 let Io::Inline { out, .. } = sync.io else {
                     unreachable!()

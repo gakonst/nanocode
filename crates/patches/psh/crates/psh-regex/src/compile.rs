@@ -49,6 +49,10 @@ pub(crate) struct Prog {
     /// No alternation, repetition or back-reference: a match has one path through the
     /// program, which is walked from each start without sets of threads.
     pub straight: bool,
+    /// For such a pattern that ends at the end of the text (a closing `$` without
+    /// `newline`): the characters a match holds, so that it can only start that many
+    /// before the end.
+    pub tail: Option<usize>,
 }
 
 pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
@@ -81,9 +85,25 @@ pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
                 | Inst::Match
         )
     });
+    let closing = c
+        .insts
+        .iter()
+        .rev()
+        .find(|i| !matches!(i, Inst::Match | Inst::Save(_)));
+    let ends = match closing {
+        Some(Inst::Assert(Assert::Eol)) => !opts.newline,
+        Some(Inst::Assert(Assert::BufEnd)) => true,
+        _ => false,
+    };
+    let held = c
+        .insts
+        .iter()
+        .filter(|i| matches!(i, Inst::Lit(_) | Inst::Fold(_) | Inst::Any | Inst::Set(_)));
+    let tail = (straight && ends && !anchored).then(|| held.count());
     Ok(Prog {
         prefix,
         straight,
+        tail,
         insts: c.insts,
         sets: c.sets,
         opts,

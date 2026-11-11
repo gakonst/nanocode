@@ -261,6 +261,16 @@ impl M<'_> {
             self.prog.prefix.first().copied()
         };
         let mut start = self.start;
+        if let Some(held) = self.prog.tail {
+            // One byte a character over the last `held` bytes: the match is those.
+            let from = self.text.len().checked_sub(held)?;
+            if !self.utf8() || self.text[from..].is_ascii() {
+                if from < start {
+                    return None;
+                }
+                return self.path(from, slots).map(|end| (from, end));
+            }
+        }
         loop {
             if let Some(first) = first {
                 start += self.text.get(start..)?.iter().position(|&b| b == first)?;

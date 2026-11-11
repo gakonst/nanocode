@@ -171,11 +171,25 @@ impl Summaries {
             .cloned()
     }
 
-    pub(super) fn colocated(&self, state_id: &str, file: &str, revision: u64) -> Option<Summary> {
+    pub(super) fn current(&self, state_id: &str, file: &str, length: u64) -> bool {
         self.entries
             .get(state_id)
-            .filter(|known| known.file == file && known.revision == revision)
-            .cloned()
+            .is_some_and(|known| known.file == file && known.length == length)
+    }
+
+    pub(super) fn colocated(
+        &mut self,
+        state_id: &str,
+        file: &str,
+        length: u64,
+        revision: u64,
+    ) -> Option<Summary> {
+        let known = self
+            .entries
+            .get_mut(state_id)
+            .filter(|known| known.file == file && known.revision == revision)?;
+        known.length = length;
+        Some(known.clone())
     }
 
     pub(super) fn copied(

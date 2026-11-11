@@ -645,9 +645,19 @@ impl Sessions {
             let mut colocated = members.remove(&key).unwrap_or_default();
             colocated.sort_unstable_by(|a, b| b.cmp(a));
             let mut revision = None;
-            if !colocated.is_empty()
-                && let Some(journal) = self.existing(&key)?
+            let source = identity(&file)?;
+            if colocated
+                .iter()
+                .all(|member| self.summaries.current(member, &source, file.len()))
             {
+                listed.extend(colocated.into_iter().map(|member| Listed {
+                    state_id: member,
+                    file: file.clone(),
+                    path: path.clone(),
+                    member: true,
+                    revision: None,
+                }));
+            } else if let Some(journal) = self.existing(&key)? {
                 listed.extend(colocated.into_iter().filter_map(|member| {
                     Some(Listed {
                         revision: Some(journal.index.states.get(&member)?.revision),
@@ -680,8 +690,8 @@ impl Sessions {
     }
 
     pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
-        let listed = self.listed()?;
         self.summaries.refresh();
+        let listed = self.listed()?;
         self.unknown.clear();
         self.release();
         let listed = listed
@@ -699,7 +709,7 @@ impl Sessions {
                 let file = identity(&file)?;
                 let known = match revision {
                     Some(revision) if member => {
-                        self.summaries.colocated(&state_id, &file, revision)
+                        self.summaries.colocated(&state_id, &file, length, revision)
                     }
                     _ => self.summaries.listed(&state_id, &file, length),
                 };

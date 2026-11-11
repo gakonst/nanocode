@@ -11,7 +11,7 @@ const BILLING: &str = "x-anthropic-billing-header:";
 const PLACEHOLDER: &[u8] = b"cch=00000";
 const MARKER: &[u8] = b"\"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header:";
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionIdentity {
     pub install_id: Option<String>,

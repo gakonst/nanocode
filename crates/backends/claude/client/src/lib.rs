@@ -1528,7 +1528,7 @@ enum ClientAuth {
     Provider(Arc<dyn ClaudeAuthProvider>),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[doc(hidden)]
 pub struct FrozenWireProfile {

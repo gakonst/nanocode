@@ -5004,7 +5004,7 @@ impl State {
     async fn response(
         &self,
         messages: &[HistoryMessage],
-        tools: Vec<ClaudeToolSpec>,
+        tools: Option<Vec<ClaudeToolSpec>>,
         cancel: &Cancellation,
         events: Option<&AgentEventPublisher>,
         index: u32,
@@ -5027,7 +5027,7 @@ impl State {
     async fn observed_response(
         &self,
         messages: &[HistoryMessage],
-        tools: Vec<ClaudeToolSpec>,
+        tools: Option<Vec<ClaudeToolSpec>>,
         cancel: &Cancellation,
         events: Option<&AgentEventPublisher>,
         index: u32,
@@ -5091,7 +5091,7 @@ impl State {
     async fn request_response(
         &self,
         messages: &[HistoryMessage],
-        tools: Vec<ClaudeToolSpec>,
+        tools: Option<Vec<ClaudeToolSpec>>,
         cancel: &Cancellation,
         events: Option<&AgentEventPublisher>,
         index: u32,
@@ -5162,18 +5162,21 @@ impl State {
             );
         };
         let client = self.client.restore_wire_profile(context.wire_profile);
-        let mut recovery = (!context.disable_tools
-            && tools
-                .iter()
-                .any(|tool| matches!(tool, ClaudeToolSpec::Server(_))))
-        .then(ServerRecovery::default);
         let mut request = context
             .template
             .cloned()
             .unwrap_or_else(|| self.request_template(self.speed(), EffortPin::Unpinned));
+        if let Some(tools) = tools {
+            request.tools = tools;
+        }
+        let mut recovery = (!context.disable_tools
+            && request
+                .tools
+                .iter()
+                .any(|tool| matches!(tool, ClaudeToolSpec::Server(_))))
+        .then(ServerRecovery::default);
 
         let mut suffix: Vec<HistoryMessage> = Vec::new();
-        request.tools = tools;
         request.container = context.container.map(str::to_owned);
         if request.diagnostics.is_some() {
             request.diagnostics = Some(json!({"previous_message_id":context.previous_message_id}));
@@ -5343,6 +5346,8 @@ impl State {
                 .prepare_cached_wire(&request, inlined, true, Some(&self.wire_cache))
                 .map_err(provider_error)?;
         }
+        let request = Arc::new(request);
+        let sent = Arc::new(sent);
         let outgoing = inlined.as_deref().unwrap_or(&sent);
         let thread = self
             .message_thread
@@ -5440,8 +5445,8 @@ impl State {
                     .store(nanocode_platform::unix_millis() / 1000, Ordering::SeqCst);
                 if events.is_some() && request.cache_control.is_some() && turn.is_none() {
                     self.keep(keep::KeptRequest {
-                        request: request.clone(),
-                        sent: sent.clone(),
+                        request: Arc::clone(&request),
+                        sent: Arc::clone(&sent),
                         wire_profile: context.wire_profile.cloned(),
                         origin: context.origin.clone(),
                         reach: attempt_started.elapsed(),
@@ -6203,7 +6208,7 @@ impl State {
                         let outcome = self
                             .response(
                                 &messages,
-                                tools.clone(),
+                                Some(tools.clone()),
                                 cancel,
                                 None,
                                 0,
@@ -6353,7 +6358,7 @@ impl State {
         let outcome = self
             .response(
                 messages,
-                tools.to_vec(),
+                Some(tools.to_vec()),
                 cancel,
                 None,
                 0,
@@ -7261,7 +7266,7 @@ impl State {
                 let response = self
                     .response(
                         &pending,
-                        cursor.template.tools.clone(),
+                        None,
                         cancel,
                         Some(&request.events),
                         index,

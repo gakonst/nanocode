@@ -149,8 +149,15 @@ impl State {
         template: &MessagesRequest,
         wire_profile: Option<&FrozenWireProfile>,
     ) {
-        self.side_request
-            .set(Some(Arc::new((template.clone(), wire_profile.cloned()))));
+        let published = self.side_request.read(|latest| {
+            latest
+                .as_ref()
+                .is_some_and(|latest| latest.0 == *template && latest.1.as_ref() == wire_profile)
+        });
+        if !published {
+            self.side_request
+                .set(Some(Arc::new((template.clone(), wire_profile.cloned()))));
+        }
     }
 
     fn side_template(&self) -> SideRequest {
@@ -201,7 +208,7 @@ impl State {
         let response = self
             .response(
                 &messages,
-                template.tools.clone(),
+                None,
                 &Cancellation::default(),
                 None,
                 0,

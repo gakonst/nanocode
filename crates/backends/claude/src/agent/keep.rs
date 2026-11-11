@@ -13,8 +13,8 @@ use tokio::sync::Notify;
 use tracing::Instrument as _;
 
 pub(super) struct KeptRequest {
-    pub(super) request: MessagesRequest,
-    pub(super) sent: Vec<HistoryMessage>,
+    pub(super) request: Arc<MessagesRequest>,
+    pub(super) sent: Arc<Vec<HistoryMessage>>,
     pub(super) wire_profile: Option<FrozenWireProfile>,
     pub(super) origin: Option<Arc<str>>,
     pub(super) reach: Duration,
@@ -151,7 +151,7 @@ impl State {
 
     async fn refresh(&self, kept: &KeptRequest) -> Result<crate::Usage> {
         let client = self.client.restore_wire_profile(kept.wire_profile.as_ref());
-        let mut request = kept.request.clone();
+        let mut request = MessagesRequest::clone(&kept.request);
         request.max_tokens = 0;
         let inlined = images::inline_images(&self.images, &kept.sent).await?;
         let wire = client

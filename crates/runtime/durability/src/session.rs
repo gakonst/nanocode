@@ -559,6 +559,11 @@ impl From<Command> for CommandRequest {
     }
 }
 
+struct Persisted {
+    revision: u64,
+    events: Range<u64>,
+}
+
 enum Resolution {
     Committed(Committed),
     Absent,
@@ -1488,8 +1493,10 @@ impl Driver {
             });
         }
         self.stage(write)?;
-        self.applied(Transition::CheckpointCommitted { checkpoint })
-            .await
+        let persisted = self
+            .applied(Transition::CheckpointCommitted { checkpoint })
+            .await?;
+        Ok(self.receipt(persisted))
     }
 
     async fn abandon_stale(&mut self, except: &str) -> Result<()> {
@@ -2163,7 +2170,15 @@ impl Driver {
         Ok(outcomes)
     }
 
-    async fn applied(&mut self, entry: Transition) -> Result<SessionReceipt> {
+    fn receipt(&self, persisted: Persisted) -> SessionReceipt {
+        SessionReceipt {
+            revision: persisted.revision,
+            events: persisted.events,
+            record: self.state.session().cloned(),
+        }
+    }
+
+    async fn applied(&mut self, entry: Transition) -> Result<Persisted> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -2200,7 +2215,8 @@ impl Driver {
         })?;
         let mut next = self.state.clone();
         next.advance_revision(revision)?;
-        self.persist(next).await
+        let persisted = self.persist(next).await?;
+        Ok(self.receipt(persisted))
     }
 
     async fn preview(&mut self, state: &DurableState) -> Result<Option<String>> {
@@ -2223,7 +2239,7 @@ impl Driver {
         Ok(preview)
     }
 
-    async fn persist(&mut self, next: DurableState) -> Result<SessionReceipt> {
+    async fn persist(&mut self, next: DurableState) -> Result<Persisted> {
         self.persist_settling(next, Settle::Durable).await
     }
 
@@ -2231,7 +2247,7 @@ impl Driver {
         &mut self,
         mut next: DurableState,
         settle: Settle,
-    ) -> Result<SessionReceipt> {
+    ) -> Result<Persisted> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -2375,10 +2391,9 @@ impl Driver {
         self.staged.clear();
         self.unsaved_results.clear();
         self.state = next;
-        Ok(SessionReceipt {
+        Ok(Persisted {
             revision: committed.revision,
             events: assigned,
-            record: self.state.session().cloned(),
         })
     }
 

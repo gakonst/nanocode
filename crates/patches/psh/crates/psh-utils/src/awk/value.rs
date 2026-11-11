@@ -127,8 +127,17 @@ fn scan_number(s: &[u8]) -> (f64, usize) {
         }
     }
     let digits_start = i;
+    let mut whole = 0u64;
     while i < s.len() && s[i].is_ascii_digit() {
+        whole = whole.wrapping_mul(10).wrapping_add(u64::from(s[i] - b'0'));
         i += 1;
+    }
+    // Digits only, few enough that every such number is a double exactly: no parse.
+    if (1..=f64::DIGITS as usize).contains(&(i - digits_start))
+        && !matches!(s.get(i), Some(b'.' | b'e' | b'E'))
+    {
+        let n = whole as f64;
+        return (if s[0] == b'-' { -n } else { n }, i);
     }
     let mut got_digit = i > digits_start;
     if i < s.len() && s[i] == b'.' {

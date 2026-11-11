@@ -87,7 +87,7 @@ pub struct Interp<'c, 'v> {
     // The record.
     line: S,
     line_is_str: bool,
-    fields: Vec<Value>,
+    fields: Vec<Field>,
     fields_ok: bool,
     nf: usize,
     /// FS as it was when the record was read (POSIX).
@@ -138,6 +138,14 @@ pub struct Interp<'c, 'v> {
 
 fn s(b: &[u8]) -> S {
     Rc::from(b)
+}
+
+/// A field of the record: where it is in the line until the program reads it, so a
+/// record costs a value only for the fields that are used.
+#[derive(Clone)]
+enum Field {
+    At(usize, usize),
+    Is(Value),
 }
 
 impl<'c, 'v> Interp<'c, 'v> {
@@ -307,7 +315,11 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     /// A new record from input ($0 a strnum).
     pub fn set_line(&mut self, line: &[u8]) {
-        self.line = s(line);
+        self.set_record(s(line));
+    }
+
+    fn set_record(&mut self, line: S) {
+        self.line = line;
         self.line_is_str = false;
         self.assigned[5] = None;
         self.fields_ok = false;
@@ -324,11 +336,35 @@ impl<'c, 'v> Interp<'c, 'v> {
         let paragraph = matches!(self.rs_mode, Rs::Paragraph);
         self.fields.clear();
         let mut fields = std::mem::take(&mut self.fields);
+        let base = line.as_ptr() as usize;
         split_into(&line, &fs, paragraph, self.utf8, |f| {
-            fields.push(Value::strnum(f))
+            // A field is a part of the line: only its place is kept.
+            fields.push(match (f.as_ptr() as usize).checked_sub(base) {
+                Some(at) if at + f.len() <= line.len() => Field::At(at, at + f.len()),
+                _ => Field::Is(Value::strnum(f)),
+            })
         });
         self.fields = fields;
         self.nf = self.fields.len();
+    }
+
+    /// The value of a field that is still a place in the line (the line itself when
+    /// the field is all of it).
+    fn field_value(&self, from: usize, to: usize) -> Value {
+        if from == 0 && to == self.line.len() {
+            Value::StrNum(self.line.clone())
+        } else {
+            Value::strnum(&self.line[from..to])
+        }
+    }
+
+    /// Every field as a value: before the line they are places in is replaced.
+    fn settle_fields(&mut self) {
+        for k in 0..self.fields.len() {
+            if let Field::At(from, to) = self.fields[k] {
+                self.fields[k] = Field::Is(self.field_value(from, to));
+            }
+        }
     }
 
     fn get_field(&mut self, i: f64) -> R<Value> {
@@ -345,11 +381,15 @@ impl<'c, 'v> Interp<'c, 'v> {
         }
         self.ensure_fields();
         // A field past NF is "" (a string: `$9 == 0` is false, as in gawk).
-        Ok(self
-            .fields
-            .get(i - 1)
-            .cloned()
-            .unwrap_or(Value::Str(s(b""))))
+        Ok(match self.fields.get(i - 1) {
+            None => Value::Str(s(b"")),
+            Some(Field::Is(v)) => v.clone(),
+            Some(&Field::At(from, to)) => {
+                let v = self.field_value(from, to);
+                self.fields[i - 1] = Field::Is(v.clone());
+                v
+            }
+        })
     }
 
     fn set_field(&mut self, i: f64, v: Value) -> R<()> {
@@ -368,14 +408,15 @@ impl<'c, 'v> Interp<'c, 'v> {
             return Ok(());
         }
         self.ensure_fields();
+        self.settle_fields();
         if self.fields.len() < i {
-            self.fields.resize(i, Value::Uninit);
+            self.fields.resize(i, Field::Is(Value::Uninit));
         }
         // A number stays a number; the record gets its string.
-        self.fields[i - 1] = match v {
+        self.fields[i - 1] = Field::Is(match v {
             Value::Uninit => Value::Str(s(b"")),
             v => v,
-        };
+        });
         self.nf = self.fields.len();
         self.rebuild();
         Ok(())
@@ -387,7 +428,10 @@ impl<'c, 'v> Interp<'c, 'v> {
             if k > 0 {
                 line.extend_from_slice(&self.ofs);
             }
-            line.extend_from_slice(&self.to_str(f));
+            match f {
+                Field::At(from, to) => line.extend_from_slice(&self.line[*from..*to]),
+                Field::Is(v) => line.extend_from_slice(&self.to_str(v)),
+            }
         }
         self.line = Rc::from(line);
         self.line_is_str = true;
@@ -402,8 +446,9 @@ impl<'c, 'v> Interp<'c, 'v> {
             return fatal("NF set too large");
         }
         self.ensure_fields();
+        self.settle_fields();
         let n = n as usize;
-        self.fields.resize(n, Value::Uninit);
+        self.fields.resize(n, Field::Is(Value::Uninit));
         self.nf = n;
         self.rebuild();
         Ok(())
@@ -1156,7 +1201,7 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     /// The next record of the main input (ARGV's files, else stdin): NR and FNR are
     /// counted. None at the end of the input.
-    pub async fn next_main_record(&mut self) -> R<Option<Vec<u8>>> {
+    pub async fn next_main_record(&mut self) -> R<Option<S>> {
         loop {
             if self.main.is_none() {
                 if self.main_done {
@@ -1171,7 +1216,7 @@ impl<'c, 'v> Interp<'c, 'v> {
             let reader = self.main.as_mut().unwrap();
             match reader.read(self.ctx, &rs).await {
                 Ok(Some((rec, rt))) => {
-                    self.rt = Rc::from(rt);
+                    self.rt = rt;
                     self.nr += 1.0;
                     self.assigned[0] = None;
                     self.fnr += 1.0;
@@ -1330,7 +1375,7 @@ impl<'c, 'v> Interp<'c, 'v> {
                 };
                 match reader.read(self.ctx, &rs).await {
                     Ok(Some((rec, rt))) => {
-                        self.rt = Rc::from(rt);
+                        self.rt = rt;
                         if cmd {
                             self.nr += 1.0;
                             self.assigned[0] = None;
@@ -1351,7 +1396,7 @@ impl<'c, 'v> Interp<'c, 'v> {
         };
         match target {
             Target::Record => {
-                self.set_line(&rec);
+                self.set_record(rec);
                 if matches!(src, GetlineSrc::File) {
                     // NR and FNR are left alone for a file.
                 }
@@ -1441,7 +1486,7 @@ impl<'c, 'v> Interp<'c, 'v> {
             let Some(rec) = self.next_main_record().await? else {
                 return Ok(());
             };
-            self.set_line(&rec);
+            self.set_record(rec);
             for (i, action) in prog.actions.iter().enumerate() {
                 let matched = match action.pattern.len() {
                     0 => true,

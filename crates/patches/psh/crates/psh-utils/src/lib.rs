@@ -65,6 +65,7 @@ mod jq;
 mod codec;
 mod dump;
 mod gzip;
+mod lines;
 mod patch;
 mod tar;
 mod xargs;
@@ -162,6 +163,60 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(dump::base32),
+    },
+    UtilEntry {
+        names: &["tac"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::tac),
+    },
+    UtilEntry {
+        names: &["rev"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::rev),
+    },
+    UtilEntry {
+        names: &["fold"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::fold),
+    },
+    UtilEntry {
+        names: &["expand"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::expand),
+    },
+    UtilEntry {
+        names: &["unexpand"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::unexpand),
+    },
+    UtilEntry {
+        names: &["column"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::column),
+    },
+    UtilEntry {
+        names: &["join"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::join),
+    },
+    UtilEntry {
+        names: &["shuf"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::shuf),
+    },
+    UtilEntry {
+        names: &["split"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(lines::split),
     },
     UtilEntry {
         names: &["find"],

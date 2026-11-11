@@ -87,7 +87,7 @@ fn specs_match_the_classifier() {
 /// against the classifier from their own flag tables.
 const OWN_PARSER: &[&str] = &[
     "rg", "git", "tar", "gzip", "zip", "unzip", "patch", "xxd", "od", "hexdump", "strings",
-    "base32",
+    "base32", "tac", "rev", "fold", "expand", "unexpand", "column", "join", "shuf", "split",
 ];
 
 #[test]

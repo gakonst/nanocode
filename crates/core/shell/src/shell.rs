@@ -209,6 +209,11 @@ impl Shell {
             unanswered: RefCell::new(None),
             control: OnceCell::new(),
             spawned: Cell::new(0),
+            without: without.clone(),
+            children: Cell::new(0),
+            left: Cell::new(0),
+            slice: Cell::new(0),
+            utilities,
         });
         let stdin = Rc::new(Source::new(vfs.clone()));
         let stdout = Rc::new(Capture::new(config.limits.output));
@@ -253,6 +258,7 @@ impl Shell {
         self.spent = self.engine.spent();
         self.cancelled = false;
         self.vfs.operations.set(0);
+        self.vfs.children.set(0);
         self.vfs.refused.set(None);
         self.vfs.unanswered.take();
         self.vfs.missing.borrow_mut().clear();
@@ -300,6 +306,8 @@ impl Shell {
         if slice == 0 && budget != 0 {
             self.vfs.refuse(Limit::Fuel);
         }
+        self.vfs.left.set(left);
+        self.vfs.slice.set(budget);
         let _stepping = Stepping::with(self.network.clone());
         match self.engine.step(slice) {
             psh_engine::Step::Done(status) => Step::Done(Box::new(self.ran(status))),
@@ -318,7 +326,7 @@ impl Shell {
     }
 
     fn fuel(&self) -> u64 {
-        self.engine.spent() - self.spent
+        self.engine.spent() - self.spent + self.vfs.children.get()
     }
 
     fn ran(&mut self, status: i32) -> Ran {

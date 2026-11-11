@@ -43,6 +43,11 @@ pub(crate) struct Vfs {
     pub(crate) unanswered: RefCell<Option<String>>,
     pub(crate) control: OnceCell<ControlHandle>,
     pub(crate) spawned: Cell<u32>,
+    pub(crate) without: Vec<Vec<u8>>,
+    pub(crate) children: Cell<u64>,
+    pub(crate) left: Cell<u64>,
+    pub(crate) slice: Cell<u32>,
+    pub(crate) utilities: &'static [psh_engine::util::UtilEntry],
 }
 
 impl Vfs {

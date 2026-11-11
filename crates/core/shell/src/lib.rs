@@ -10,7 +10,7 @@ mod net;
 mod shell;
 
 pub use answers::Answers;
-pub use command::{Call, Commands, NoCommands, Session, Stream};
+pub use command::{Call, Child, Commands, Exited, NoCommands, Session, Stream};
 pub use fetch::{Failure, Fetch, Request, Response};
 pub use fs::{FileSystem, Kind, Remove, Reply, Stat, Write, join, normalize, parent};
 pub use machine::{Identity, Machine};

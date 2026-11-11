@@ -330,16 +330,9 @@ struct Options {
     file: Option<Vec<u8>>,
 }
 
-fn lines_of(data: &[u8]) -> Vec<Vec<u8>> {
-    data.split_inclusive(|&b| b == b'\n')
-        .map(|l| {
-            let mut l = l.to_vec();
-            if l.last() != Some(&b'\n') {
-                l.push(b'\n');
-            }
-            l
-        })
-        .collect()
+/// The lines of a file whose last line ends in a newline.
+fn lines_of(data: &[u8]) -> Vec<&[u8]> {
+    data.split_inclusive(|&b| b == b'\n').collect()
 }
 
 fn same_line(a: &[u8], b: &[u8], loose: bool) -> bool {
@@ -367,7 +360,7 @@ fn same_line(a: &[u8], b: &[u8], loose: bool) -> bool {
 /// and is updated.
 #[allow(clippy::too_many_arguments)]
 fn locate(
-    file: &[Vec<u8>],
+    file: &[&[u8]],
     old: &[&[u8]],
     prefix: usize,
     suffix: usize,
@@ -824,9 +817,14 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             _ => say!("{verb} file {shown}\n"),
         }
         let meta = ctx.stat(&path, true).await.ok();
-        let mut file = lines_of(&data);
         let mut open_end = !data.is_empty() && data.last() != Some(&b'\n');
-        let mut result: Vec<Vec<u8>> = Vec::new();
+        // The file's lines where they are, each ending in a newline.
+        let mut whole = data.clone();
+        if open_end {
+            whole.push(b'\n');
+        }
+        let file = lines_of(&whole);
+        let mut result: Vec<u8> = Vec::with_capacity(whole.len());
         let mut frozen = 0usize;
         let mut offset = 0isize;
         let mut failed: Vec<Vec<u8>> = Vec::new();
@@ -957,18 +955,16 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             // Apply: the file's lines up to it, then the hunk: its context is the
             // file's own lines, its minus lines are passed over, its plus lines go in.
             let mut cursor = found.max(1) - 1;
-            result.extend(
-                file[frozen.min(cursor)..cursor.min(file.len())]
-                    .iter()
-                    .cloned(),
-            );
+            for line in &file[frozen.min(cursor)..cursor.min(file.len())] {
+                result.extend_from_slice(line);
+            }
             for (mark, line) in &hunk.lines {
                 match mark {
-                    b'+' => result.push(line.clone()),
+                    b'+' => result.extend_from_slice(line),
                     b'-' => cursor += 1,
                     _ => {
                         if let Some(own) = file.get(cursor) {
-                            result.push(own.clone());
+                            result.extend_from_slice(own);
                         }
                         cursor += 1;
                     }
@@ -990,9 +986,10 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 say!(".\n");
             }
         }
-        result.extend(file[frozen.min(file.len())..].iter().cloned());
-        file = result;
-        let mut new_data = file.concat();
+        for line in &file[frozen.min(file.len())..] {
+            result.extend_from_slice(line);
+        }
+        let mut new_data = result;
         if open_end && new_data.last() == Some(&b'\n') {
             new_data.pop();
         }
@@ -1082,15 +1079,18 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             .new_mode
             .map(|m| m & 0o777)
             .or(meta.map(|m| m.mode & 0o777));
-        let options = OpenOptions {
-            mode,
-            ..OpenOptions::write()
-        };
         // GNU puts a new file in the old one's place: one that may not be written
         // still can be patched.
-        if meta.is_some_and(|m| m.mode & 0o200 == 0) && out_path == path {
+        let replaced = meta.is_some_and(|m| m.mode & 0o200 == 0) && out_path == path;
+        if replaced {
             let _ = ctx.remove_file(&path).await;
         }
+        // A file written where it was keeps its mode without being told it.
+        let in_place = existed && out_path == path && !replaced && patch.new_mode.is_none();
+        let options = OpenOptions {
+            mode: if in_place { None } else { mode },
+            ..OpenOptions::write()
+        };
         let written = match ctx.open(&out_path, options).await {
             Ok(file) => file.write_all(&new_data).await,
             Err(e) => Err(e),
@@ -1105,7 +1105,10 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             .await;
             return 2;
         }
-        if let Some(mode) = mode {
+        // A file that was there keeps its mode unless the patch gives it another.
+        if let Some(mode) = mode
+            && (patch.new_mode.is_some() || out_path != path)
+        {
             let _ = ctx.set_mode(&out_path, mode).await;
         }
         if out_path != path && o.output.is_none() && existed {

@@ -1,0 +1,436 @@
+psh
+Copyright (c) 2026 Earendil Inc.
+Licensed under the MIT license or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+psh contains code copied from the projects below, under their licenses. Each file
+listed carries the project's copyright notice in a header comment.
+
+-------------------------------------------------------------------------------
+brush (https://github.com/reubeno/brush)
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2024 reuben olinsky
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code copied from brush:
+
+crates/psh-syntax/src/ast.rs (adapted from brush-parser's ast.rs and word.rs)
+
+-------------------------------------------------------------------------------
+oh-my-pi (https://github.com/can1357/oh-my-pi), crates/pi-shell (its OS host only,
+src/sys; never its bash engine)
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2025-2026 Can Bölük
+Copyright (c) 2026 Stencil Labs, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code adapted from oh-my-pi's pi-shell/src/sys:
+
+crates/psh-os/src/unix/ready.rs (from sys/ready.rs: the readiness thread, select on macOS)
+crates/psh-os/src/unix/spawn.rs (from sys/spawn/unix.rs: posix_spawn attributes, waiter pool, waitid loop)
+crates/psh-os/src/windows/spawn.rs (from sys/spawn/windows.rs: suspended CreateProcessW into a job, handle list, environment block, ctrl-break and job termination)
+
+-------------------------------------------------------------------------------
+The Rust standard library (https://github.com/rust-lang/rust), library/std
+-------------------------------------------------------------------------------
+
+Copyright (c) The Rust Project Developers. Licensed under the MIT license or the
+Apache License, Version 2.0, at your option (the texts are those of LICENSE-MIT and
+LICENSE-APACHE in this repository, with this copyright line).
+
+Files containing code adapted from std:
+
+crates/psh-os/src/windows/cmdline.rs (from sys/args/windows.rs: MSVCRT argument quoting and the batch file quoting of CVE-2024-24576)
+crates/psh-os/src/windows/file.rs (the named-pipe pattern of sys/pal/windows/pipe.rs for pump pipes)
+
+-------------------------------------------------------------------------------
+ripgrep (https://github.com/BurntSushi/ripgrep, commit 91f5d22) and walkdir
+(https://github.com/BurntSushi/walkdir, 2.5.0); dual-licensed MIT or Unlicense,
+used under the MIT License
+-------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Andrew Gallant
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Files containing code adapted from ripgrep and walkdir:
+
+crates/psh-utils/src/search/vwalk.rs (the ignore chain of ignore/src/dir.rs; the traversal rules of ignore/src/walk.rs and walkdir's lib.rs)
+crates/psh-utils/src/search/gitconfig.rs (gitconfig_excludes_path and its helpers from ignore/src/gitignore.rs)
+crates/psh-utils/src/rg/flags/ (crates/core/flags/ of ripgrep, the whole directory: the flag definitions, parser, help and man page templates, completions; patched)
+crates/psh-utils/src/rg/main.rs, search.rs, haystack.rs, messages.rs (crates/core/main.rs, search.rs, haystack.rs, messages.rs of ripgrep; patched)
+third_party/grep-printer/ (grep-printer 0.3.1 from crates.io, the whole crate, with its LICENSE-MIT and UNLICENSE; patched as listed in its PATCHES.md)
+crates/psh-utils/src/rg/json.rs (the JSON printer of grep-printer 0.3.1: src/json.rs, src/jsont.rs, CounterWriter from src/counter.rs, Replacer and the context helpers from src/util.rs)
+crates/psh-utils/src/rg/cli.rs (parse_human_readable_size from grep-cli 0.1.12's src/human.rs; patterns_from_reader and InvalidPatternError from its src/pattern.rs)
+
+-------------------------------------------------------------------------------
+fd (https://github.com/sharkdp/fd, commit 193d0df); dual-licensed MIT or Apache-2.0,
+used under the MIT License
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2017-present The fd developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code copied from fd:
+
+crates/psh-utils/src/fd/filter/ (src/filter/mod.rs, size.rs, owner.rs, time.rs; patched)
+crates/psh-utils/src/fd/fmt/ (src/fmt/mod.rs, input.rs; on byte paths)
+crates/psh-utils/src/fd/exec.rs (src/exec/mod.rs, command.rs, job.rs; adapted to psh's command runner)
+crates/psh-utils/src/fd/output.rs (src/output.rs and the path helpers of src/dir_entry.rs; adapted)
+crates/psh-utils/src/fd/patterns.rs (src/patterns.rs and src/regex_helper.rs; patched)
+crates/psh-utils/src/fd/sanitize.rs (src/sanitize.rs, whole)
+crates/psh-utils/src/fd/walk.rs (the walker setup, filters and receiver of src/walk.rs, src/filetypes.rs, is_empty of src/filesystem.rs; adapted)
+crates/psh-utils/src/fd/colors.rs (DEFAULT_LS_COLORS of src/main.rs)
+crates/psh-utils/src/fd/help-long.txt, help-short.txt (fd 10.5.1's --help and -h output, generated by clap from src/cli.rs)
+
+-------------------------------------------------------------------------------
+lscolors (https://github.com/sharkdp/lscolors, 0.21.0); dual-licensed MIT or
+Apache-2.0, used under the MIT License
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) David Peter
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code adapted from lscolors:
+
+crates/psh-utils/src/fd/colors.rs (Indicator, LsColors' builder, indicator_for, style_for, style_for_indicator, the suffix map's precedence; Style::from_ansi_sequence of src/style.rs)
+
+-------------------------------------------------------------------------------
+nu-ansi-term (https://github.com/nushell/nu-ansi-term, 0.50.3), used under the MIT
+License
+-------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2014 Benjamin Sago
+Copyright (c) 2021-2022 The Nushell Project Developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code adapted from nu-ansi-term:
+
+crates/psh-utils/src/fd/colors.rs (Style's prefix and suffix of src/ansi.rs)
+
+-------------------------------------------------------------------------------
+lexopt (https://github.com/blyxxyz/lexopt, 0.3.2), used under the MIT License
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2021 Jan Verbeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+Files containing code copied from lexopt:
+
+crates/psh-utils/src/rg/lexopt.rs (src/lib.rs, whole)
+
+-------------------------------------------------------------------------------
+textwrap (https://github.com/mgeisler/textwrap, 0.16.2), used under the MIT License
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2016 Martin Geisler
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code adapted from textwrap:
+
+crates/psh-utils/src/rg/textwrap.rs (refill, unfill, fill, wrap_single_line, wrap_first_fit, break_words, indent)
+
+-------------------------------------------------------------------------------
+GoAWK (https://github.com/benhoyt/goawk, f69bde0)
+-------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) 2022 Ben Hoyt
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Files containing code ported from GoAWK:
+
+crates/psh-utils/src/awk/lexer.rs (lexer/lexer.go, lexer/token.go)
+crates/psh-utils/src/awk/parser.rs (parser/parser.go)
+crates/psh-utils/src/awk/ast.rs (internal/ast/ast.go)
+crates/psh-utils/src/awk/resolve.rs (internal/resolver/resolve.go)
+crates/psh-utils/src/awk/compile.rs (internal/compiler/compiler.go, opcodes.go)
+crates/psh-utils/src/awk/interp.rs (interp/vm.go, interp.go, io.go, functions.go)
+crates/psh-utils/src/awk/value.rs (interp/value.go)
+tests/vendor-awk/goawk/cases.txt (the cases of interp/interp_test.go, converted)
+
+-------------------------------------------------------------------------------
+The One True Awk (https://github.com/onetrue-awk/awk, 72e9b56): its test programs
+and data only (tests/vendor-awk/onetrueawk/), no code
+-------------------------------------------------------------------------------
+
+Copyright (C) Lucent Technologies 1997
+All Rights Reserved
+
+Permission to use, copy, modify, and distribute this software and
+its documentation for any purpose and without fee is hereby
+granted, provided that the above copyright notice appear in all
+copies and that both that the copyright notice and this
+permission notice and warranty disclaimer appear in supporting
+documentation, and that the name Lucent Technologies or any of
+its entities not be used in advertising or publicity pertaining
+to distribution of the software without specific, written prior
+permission.
+
+LUCENT DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
+IN NO EVENT SHALL LUCENT OR ANY OF ITS ENTITIES BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+-------------------------------------------------------------------------------
+jaq (https://github.com/01mf02/jaq, 3.1.2, by Michael Färber), used under the MIT
+License (its LICENSE-MIT, which names no copyright holder)
+-------------------------------------------------------------------------------
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Files containing code adapted from jaq:
+
+crates/psh-utils/src/jq/val.rs (jaq-json 2.0.3's Val: the ValT trait methods and their update logic)
+crates/psh-utils/src/jq/funs.rs (jaq-std 3.0.4's lib.rs: the shape of the natives, sort_by/group_by/min_by)
+crates/psh-utils/src/jq/defs.jq (jaq-core 3.1.2's defs.jq: null, true, false, empty, not)
+tests/utils/jq/upstream/jaq-3.1.2/*.test (converted from jaq-core, jaq-std and jaq-json's tests/*.rs)
+
+-------------------------------------------------------------------------------
+jq (https://github.com/jqlang/jq, 1.7.1, commit 71c2ab5), used under the MIT License;
+its documentation under CC BY 3.0
+-------------------------------------------------------------------------------
+
+jq is copyright (C) 2012 Stephen Dolan
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+
+jq's documentation (everything found under the docs/ subdirectory in the source tree)
+is licensed under the Creative Commons CC BY 3.0 license:
+https://creativecommons.org/licenses/by/3.0/
+
+Files containing code or text from jq:
+
+crates/psh-utils/src/jq/defs.jq (src/builtin.jq, adapted)
+tests/utils/jq/upstream/jq-1.7.1/{jq,onig,optional,base64}.test (tests/, verbatim; MIT)
+tests/utils/jq/upstream/jq-1.7.1/{man,manonig}.test (tests/, verbatim; generated from the
+  manual, docs/content/manual/manual.yml: CC BY 3.0, by the jq authors)
+tests/utils/jq/upstream/jq-1.7.1/COPYING (jq's license, verbatim)
+
+-------------------------------------------------------------------------------
+Elanor (https://github.com/earendil-works/elanor), Earendil's design system: the guide's
+site ships its published files unchanged, each under the license next to it
+-------------------------------------------------------------------------------
+
+crates/psh-docs/assets/elanor/tokens.css (ISC, tokens.LICENSE)
+crates/psh-docs/assets/elanor/fonts/ (Mallos Serif and Commit Mono, SIL Open Font
+  License 1.1, fonts/licenses/)
+crates/psh-docs/assets/elanor/icons/ (Material Symbols, Apache-2.0, icons/LICENSE and
+  icons/NOTICE)
+crates/psh-docs/assets/elanor/logos/ (Earendil's marks, used as BRAND-GUIDELINES.md says)

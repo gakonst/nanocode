@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# Patched copies of dependencies (D1135): not members, so fmt and clippy leave them as
+# they are.
+exclude = ["third_party"]
+
+[workspace.package]
+edition = "2024"
+# MSRV: pi-env's pinned toolchain. Develop on current stable, use nothing newer.
+rust-version = "1.96"
+version = "0.0.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+psh-syntax = { path = "crates/psh-syntax" }
+psh-engine = { path = "crates/psh-engine" }
+psh-classify = { path = "crates/psh-classify" }
+psh-os = { path = "crates/psh-os" }
+psh-utils = { path = "crates/psh-utils" }
+psh-regex = { path = "crates/psh-regex" }
+
+# Every crate opts in with `[lints] workspace = true`. `unsafe` is forbidden outside the
+# OS host crates (AGENTS.md); psh-os declares its own lint table when it lands.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# The wasm modules (scripts/build-wasm): small rather than fast, one codegen unit, no
+# symbols. Panics abort on wasm32 anyway.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# grep-printer reads std::time::Instant, which panics on wasm32-unknown-unknown; the
+# patched copy has a clock that exists there (D1135, third_party/grep-printer/PATCHES.md).
+[patch.crates-io]
+grep-printer = { path = "third_party/grep-printer" }
+

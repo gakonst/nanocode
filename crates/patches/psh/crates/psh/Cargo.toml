@@ -1,0 +1,25 @@
+[package]
+name = "psh"
+description = "The psh shell binary"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+psh-engine.workspace = true
+psh-syntax.workspace = true
+psh-classify.workspace = true
+psh-os.workspace = true
+# The in-process utilities (D1080).
+psh-utils.workspace = true
+# JSON output of `--parse` and `--classify` (D029). Serialization only, so no parsing speedups;
+# deser-core is deser-json's own dependency, named for the `Serialize` trait.
+deser-json = { version = "0.10.1", default-features = false, features = ["std"] }
+deser-core = { version = "0.10.2", default-features = false, features = ["std"] }
+# psh's own command line: its modes, help page, usage and errors (D035, D1340).
+argument = "0.1.0"
+
+[lints]
+workspace = true

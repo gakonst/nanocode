@@ -1,0 +1,139 @@
+// Copied from fd (https://github.com/sharkdp/fd, commit 193d0df), src/filter/owner.rs,
+// with the psh patches marked `psh:` (D1138):
+// Copyright (c) 2017-present The fd developers. Licensed under the MIT License (see NOTICE).
+
+// psh: no nix. Numeric ids are parsed here; a user or group name needs the system's
+// user database, which the utility context cannot search by name: `NeedsNames` makes
+// the front end run the real fd (D1082). Metadata is the Host's.
+use psh_engine::host::Metadata;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum OwnerError {
+    Invalid(String),
+    NeedsNames,
+}
+
+type Result<T> = std::result::Result<T, OwnerError>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerFilter {
+    uid: Check<u32>,
+    gid: Check<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Check<T> {
+    Equal(T),
+    NotEq(T),
+    Ignore,
+}
+
+impl OwnerFilter {
+    const IGNORE: Self = Self {
+        uid: Check::Ignore,
+        gid: Check::Ignore,
+    };
+
+    /// Parses an owner constraint
+    /// Returns an error if the string is invalid
+    /// Returns Ok(None) when string is acceptable but a noop (such as "" or ":")
+    pub fn from_string(input: &str) -> Result<Self> {
+        let mut it = input.split(':');
+        let (fst, snd) = (it.next(), it.next());
+
+        if it.next().is_some() {
+            return Err(OwnerError::Invalid(format!(
+                "more than one ':' present in owner string '{}'. See 'fd --help'.",
+                input
+            )));
+        }
+
+        let uid = Check::parse(fst, |s| s.parse().map_err(|_| OwnerError::NeedsNames))?;
+        let gid = Check::parse(snd, |s| s.parse().map_err(|_| OwnerError::NeedsNames))?;
+
+        Ok(Self { uid, gid })
+    }
+
+    /// If self is a no-op (ignore both uid and gid) then return `None`, otherwise wrap in a `Some`
+    pub fn filter_ignore(self) -> Option<Self> {
+        if self == Self::IGNORE {
+            None
+        } else {
+            Some(self)
+        }
+    }
+
+    pub fn matches(&self, md: &Metadata) -> bool {
+        self.uid.check(md.uid) && self.gid.check(md.gid)
+    }
+}
+
+impl<T: PartialEq> Check<T> {
+    fn check(&self, v: T) -> bool {
+        match self {
+            Self::Equal(x) => v == *x,
+            Self::NotEq(x) => v != *x,
+            Self::Ignore => true,
+        }
+    }
+
+    fn parse<F>(s: Option<&str>, f: F) -> Result<Self>
+    where
+        F: Fn(&str) -> Result<T>,
+    {
+        let (s, equality) = match s {
+            Some("") | None => return Ok(Self::Ignore),
+            Some(s) if s.starts_with('!') => (&s[1..], false),
+            Some(s) => (s, true),
+        };
+
+        f(s).map(|x| {
+            if equality {
+                Self::Equal(x)
+            } else {
+                Self::NotEq(x)
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod owner_parsing {
+    use super::OwnerFilter;
+
+    macro_rules! owner_tests {
+        ($($name:ident: $value:expr => $result:pat,)*) => {
+            $(
+                #[test]
+                fn $name() {
+                    let o = OwnerFilter::from_string($value);
+                    match o {
+                        $result => {},
+                        _ => panic!("{:?} does not match {}", o, stringify!($result)),
+                    }
+                }
+            )*
+        };
+    }
+
+    use super::Check::*;
+    owner_tests! {
+        empty:      ""      => Ok(OwnerFilter::IGNORE),
+        uid_only:   "5"     => Ok(OwnerFilter { uid: Equal(5), gid: Ignore     }),
+        uid_gid:    "9:3"   => Ok(OwnerFilter { uid: Equal(9), gid: Equal(3)   }),
+        gid_only:   ":8"    => Ok(OwnerFilter { uid: Ignore,   gid: Equal(8)   }),
+        colon_only: ":"     => Ok(OwnerFilter::IGNORE),
+        trailing:   "5:"    => Ok(OwnerFilter { uid: Equal(5), gid: Ignore     }),
+
+        uid_negate: "!5"    => Ok(OwnerFilter { uid: NotEq(5), gid: Ignore     }),
+        both_negate:"!4:!3" => Ok(OwnerFilter { uid: NotEq(4), gid: NotEq(3)   }),
+        uid_not_gid:"6:!8"  => Ok(OwnerFilter { uid: Equal(6), gid: NotEq(8)   }),
+
+        more_colons:"3:5:"  => Err(_),
+        only_colons:"::"    => Err(_),
+
+        // psh: names run the real fd.
+        user_name:  "john"  => Err(super::OwnerError::NeedsNames),
+        group_name: ":staff" => Err(super::OwnerError::NeedsNames),
+    }
+}

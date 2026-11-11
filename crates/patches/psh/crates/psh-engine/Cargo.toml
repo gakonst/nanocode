@@ -1,0 +1,17 @@
+[package]
+name = "psh-engine"
+description = "The psh interpreter: a synchronous, stepped engine behind a Host trait"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Only psh-syntax and psh-regex (`[[ =~ ]]`). Builds for wasm32-unknown-unknown (gate);
+# all OS access goes through the Host trait.
+[dependencies]
+psh-syntax.workspace = true
+psh-regex.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "psh-regex"
+description = "POSIX regular expressions (ERE and BRE, leftmost-longest, back-references) for psh"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero dependencies, no_std + alloc: used by the engine (`[[ =~ ]]`) and later by the
+# utilities, and it builds for wasm32-unknown-unknown.
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "psh-syntax"
+description = "The psh parser: lexer, parser, AST with byte spans, printer"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Zero dependencies, no_std + alloc: it builds for wasm32-unknown-unknown and any host
+# that only wants to parse or classify (the gate checks both).
+[dependencies]
+
+[lints]
+workspace = true

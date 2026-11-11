@@ -1,0 +1,5 @@
+# ripgrep's rustfmt settings (vendor/ripgrep/rustfmt.toml at 91f5d22), so the copied code
+# stays a small diff from upstream.
+max_width = 79
+use_small_heuristics = "max"
+edition = "2024"

@@ -1,0 +1,15 @@
+[package]
+name = "psh-classify"
+description = "Understanding commands: effects and categories from the psh AST"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Only psh-syntax; no_std + alloc, builds for wasm32-unknown-unknown (gate).
+[dependencies]
+psh-syntax.workspace = true
+
+[lints]
+workspace = true

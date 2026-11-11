@@ -1,0 +1,39 @@
+[package]
+name = "psh-wasm"
+description = "psh for wasm32-unknown-unknown: the parser module and the stepped shell over a JS host (ARCH.md \"WASM and the browser\")"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# cdylib: the .wasm module; rlib: so native unit tests can drive the exports over a
+# fake JS side.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[features]
+default = ["shell"]
+# The whole shell (psh-engine over the JS host). Without it, the parser module: parse and
+# classify only (scripts/build-wasm --parser).
+shell = ["dep:psh-engine", "dep:psh-utils"]
+
+[dependencies]
+psh-syntax.workspace = true
+psh-classify.workspace = true
+psh-engine = { workspace = true, optional = true }
+# The in-process utilities: in wasm they are the toolset (D1080).
+psh-utils = { workspace = true, optional = true }
+# JSON of parse and classify results, as `psh --parse`/`--classify` print it (D029).
+deser-json = { version = "0.10.1", default-features = false, features = ["std"] }
+deser-core = { version = "0.10.2", default-features = false, features = ["std"] }
+
+# The export layer is the one place outside psh-os with `unsafe`: the JS imports and the
+# `no_mangle` exports (D1110). Every use is allowed where it is and says why it is sound.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

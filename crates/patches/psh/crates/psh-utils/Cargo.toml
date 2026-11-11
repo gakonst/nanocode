@@ -1,0 +1,41 @@
+[package]
+name = "psh-utils"
+description = "psh's in-process utilities (ARCH.md \"psh-utils\")"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The utility API (psh_engine::util, D1081).
+psh-engine.workspace = true
+# The per-utility option tables the utilities check their parsers against (D1090).
+psh-classify.workspace = true
+# POSIX patterns: the parser behind the BRE/ERE translator and the leftmost-longest,
+# back-reference matcher where the regex crate cannot answer (D1131).
+psh-regex.workspace = true
+# The search utilities (rg, fd, grep; later find and sed) on the ripgrep crates: exactly
+# the D020/D021 set. grep-printer without serde (D020); no grep-cli, no grep-pcre2.
+grep-matcher = "0.1.9"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
+grep-printer = { version = "0.3.1", default-features = false }
+ignore = "0.4.34"
+globset = "0.4.21"
+regex = "1.13.1"
+regex-automata = "0.4.18"
+regex-syntax = "0.8.11"
+bstr = "1.12"
+termcolor = "1.4"
+# rg --json (D029, D1136). deser-core is named for its `Serialize` trait.
+deser-json = { version = "0.10.1", default-features = false, features = ["std"] }
+deser-core = { version = "0.10.2", default-features = false, features = ["std"] }
+
+# jq (0018): the jaq interpreter (D028, D1180); psh's own values, builtins and JSON.
+jaq-core = "3.1.2"
+# jq's math builtins with C libm's results (D1180).
+libm = "0.2.16"
+
+[lints]
+workspace = true

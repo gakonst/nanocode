@@ -5,7 +5,10 @@ use std::{
     time::Duration,
 };
 
-use futures_util::future::{AbortHandle, Abortable};
+use futures_util::{
+    FutureExt as _,
+    future::{AbortHandle, Abortable},
+};
 use nanocode_agent_core::backend::BackendFuture;
 use nanocode_platform::{Instant, MaybeSend};
 use tokio::sync::oneshot;
@@ -59,16 +62,15 @@ where
 {
     let (send, result) = oneshot::channel();
     let (abort, registration) = AbortHandle::new_pair();
-    spawn_detached(Box::pin(async move {
-        let _ = Abortable::new(
-            async move {
-                let output = future.await;
+    spawn_detached(Box::pin(
+        Abortable::new(
+            future.map(move |output| {
                 let _ = send.send(output);
-            },
+            }),
             registration,
         )
-        .await;
-    }));
+        .map(drop),
+    ));
     Task { result, abort }
 }
 

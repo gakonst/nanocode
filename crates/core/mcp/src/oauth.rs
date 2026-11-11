@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    ops::RangeInclusive,
 };
 
 use base64::{
@@ -10,10 +11,13 @@ use base64::{
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq as _;
 use url::{Url, form_urlencoded};
 
 pub const DISCOVERY_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const PKCE_VERIFIER_BYTES: usize = 32;
+pub const PKCE_CHALLENGE_LEN: usize = 43;
+pub const PKCE_VERIFIER_LEN: RangeInclusive<usize> = 43..=128;
 pub const STATE_BYTES: usize = 16;
 pub const OFFLINE_ACCESS: &str = "offline_access";
 pub const APPLICATION_TYPE: &str = "native";
@@ -554,6 +558,29 @@ impl Pkce {
             verifier,
             challenge,
         }
+    }
+
+    #[must_use]
+    pub fn valid_challenge(challenge: &str, method: &str) -> bool {
+        method == "S256"
+            && challenge.len() == PKCE_CHALLENGE_LEN
+            && URL_SAFE_NO_PAD
+                .decode(challenge)
+                .is_ok_and(|digest| digest.len() == PKCE_VERIFIER_BYTES)
+    }
+
+    #[must_use]
+    pub fn valid_verifier(verifier: &str) -> bool {
+        PKCE_VERIFIER_LEN.contains(&verifier.len())
+            && verifier
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte))
+    }
+
+    #[must_use]
+    pub fn verifies(verifier: &str, challenge: &str) -> bool {
+        let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        bool::from(digest.as_bytes().ct_eq(challenge.as_bytes()))
     }
 }
 

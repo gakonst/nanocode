@@ -31,6 +31,15 @@ pub trait TypedHandler<Args, Error>: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Value, Error>> + MaybeSend;
 
     fn failed(&self, error: Error) -> Failure;
+
+    fn invalid(
+        &self,
+        _input: &ToolInput,
+        error: Error,
+        _context: ToolContext<'_>,
+    ) -> impl Future<Output = Failure> + MaybeSend {
+        std::future::ready(self.failed(error))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,7 +62,7 @@ struct Typed<H, Args, Error>(H, PhantomData<fn() -> (Args, Error)>);
 trait TypedCall: Send + Sync + 'static {
     fn call<'a>(
         &'a self,
-        input: &ToolInput,
+        input: &'a ToolInput,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Value, String>>;
 }
@@ -66,18 +75,18 @@ where
 {
     fn call<'a>(
         &'a self,
-        input: &ToolInput,
+        input: &'a ToolInput,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Value, String>> {
         let call = match input.decode_json::<Args>() {
             Ok(args) => Ok(self.0.call(args, context)),
-            Err(ToolInputError::Decode(error)) => Err(self.0.failed(error.into())),
-            Err(error) => Err(self.0.failed(serde_json::Error::custom(error).into())),
+            Err(ToolInputError::Decode(error)) => Err(error),
+            Err(error) => Err(serde_json::Error::custom(error)),
         };
         Box::pin(async move {
             match call {
                 Ok(call) => call.await.or_else(|error| self.0.failed(error).into()),
-                Err(failure) => failure.into(),
+                Err(error) => self.0.invalid(input, error.into(), context).await.into(),
             }
         })
     }

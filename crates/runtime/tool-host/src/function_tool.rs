@@ -1,7 +1,7 @@
 use std::{future::Future, marker::PhantomData, sync::Arc};
 
 pub use nanocode_platform::MaybeSend;
-use nanocode_tools::{ToolOutputContent, schema_for};
+use nanocode_tools::{ToolInputError, ToolOutputContent, schema_for};
 use schemars::JsonSchema;
 use serde::de::{DeserializeOwned, Error as _};
 use serde_json::{Map, Value, json};
@@ -50,7 +50,15 @@ impl From<Failure> for Result<Value, String> {
 
 struct Typed<H, Args, Error>(H, PhantomData<fn() -> (Args, Error)>);
 
-impl<H, Args, Error> FunctionHandler for Typed<H, Args, Error>
+trait TypedCall: Send + Sync + 'static {
+    fn call<'a>(
+        &'a self,
+        input: &ToolInput,
+        context: ToolContext<'a>,
+    ) -> HostFuture<'a, Result<Value, String>>;
+}
+
+impl<H, Args, Error> TypedCall for Typed<H, Args, Error>
 where
     H: TypedHandler<Args, Error>,
     Args: DeserializeOwned + 'static,
@@ -58,13 +66,13 @@ where
 {
     fn call<'a>(
         &'a self,
-        _name: &'a str,
-        input: Value,
+        input: &ToolInput,
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Result<Value, String>> {
-        let call = match serde_json::from_value(input) {
+        let call = match input.decode_json::<Args>() {
             Ok(args) => Ok(self.0.call(args, context)),
-            Err(error) => Err(self.0.failed(error.into())),
+            Err(ToolInputError::Decode(error)) => Err(self.0.failed(error.into())),
+            Err(error) => Err(self.0.failed(serde_json::Error::custom(error).into())),
         };
         Box::pin(async move {
             match call {
@@ -73,23 +81,21 @@ where
             }
         })
     }
+}
 
-    fn invalid_input(&self, _name: &str, error: &str) -> Option<Result<Value, String>> {
-        Some(
-            self.0
-                .failed(serde_json::Error::custom(error).into())
-                .into(),
-        )
-    }
+enum Handler {
+    Json(Arc<dyn FunctionHandler>),
+    Typed(Arc<dyn TypedCall>),
 }
 
 pub struct FunctionTool {
     name: String,
     description: String,
     parameters: Value,
-    handler: Arc<dyn FunctionHandler>,
+    handler: Handler,
     parallel: bool,
     content_results: bool,
+    output_schema: Option<Value>,
 }
 
 impl FunctionTool {
@@ -100,6 +106,15 @@ impl FunctionTool {
         parameters: Value,
         handler: Arc<dyn FunctionHandler>,
     ) -> Self {
+        Self::with_handler(name, description, parameters, Handler::Json(handler))
+    }
+
+    fn with_handler(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        handler: Handler,
+    ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
@@ -107,6 +122,7 @@ impl FunctionTool {
             handler,
             parallel: false,
             content_results: false,
+            output_schema: None,
         }
     }
 
@@ -134,8 +150,8 @@ impl FunctionTool {
         Args: DeserializeOwned + 'static,
         Error: From<serde_json::Error> + 'static,
     {
-        let handler = Arc::new(Typed(handler, PhantomData));
-        Self::new(name, description, parameters, handler)
+        let handler = Handler::Typed(Arc::new(Typed(handler, PhantomData)));
+        Self::with_handler(name, description, parameters, handler)
     }
 
     #[must_use]
@@ -147,6 +163,12 @@ impl FunctionTool {
     #[must_use]
     pub const fn content_results(mut self, enabled: bool) -> Self {
         self.content_results = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn output_schema(mut self, schema: Value) -> Self {
+        self.output_schema = Some(schema);
         self
     }
 
@@ -238,7 +260,10 @@ impl Tool for FunctionTool {
             self.parameters.clone(),
         );
         if !self.content_results {
-            return definition;
+            return match &self.output_schema {
+                Some(schema) => definition.with_output_schema(schema.clone()),
+                None => definition,
+            };
         }
         definition.with_output_schema(json!({
             "type": "object",
@@ -268,17 +293,17 @@ impl Tool for FunctionTool {
         Self: 'async_trait,
     {
         Box::pin(async move {
-            let input = match input.decode_json() {
-                Ok(input) => input,
-                Err(error) => {
-                    return match self.handler.invalid_input(&self.name, &error.to_string()) {
-                        Some(Ok(output)) => Ok(self.output(output)),
-                        Some(Err(error)) => Ok(ToolOutput::error(error)),
-                        None => Err(error.into()),
-                    };
-                }
+            let result = match &self.handler {
+                Handler::Typed(handler) => handler.call(&input, context).await,
+                Handler::Json(handler) => match input.decode_json() {
+                    Ok(input) => handler.call(&self.name, input, context).await,
+                    Err(error) => match handler.invalid_input(&self.name, &error.to_string()) {
+                        Some(result) => result,
+                        None => return Err(error.into()),
+                    },
+                },
             };
-            Ok(match self.handler.call(&self.name, input, context).await {
+            Ok(match result {
                 Ok(output) => self.output(output),
                 Err(error) => ToolOutput::error(error),
             })

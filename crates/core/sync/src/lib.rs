@@ -905,10 +905,14 @@ impl<S: Send + 'static> Mailbox<S> {
     }
 }
 
-async fn replied<R>(receiver: oneshot::Receiver<R>) -> R {
-    match receiver.await {
-        Ok(output) => output,
-        Err(_) => panic!("a mailbox job panicked before it replied"),
+async fn replied<R>(mut receiver: oneshot::Receiver<R>) -> R {
+    let reply = match receiver.try_recv() {
+        Err(oneshot::error::TryRecvError::Empty) => receiver.await.ok(),
+        reply => reply.ok(),
+    };
+    match reply {
+        Some(output) => output,
+        None => panic!("a mailbox job panicked before it replied"),
     }
 }
 

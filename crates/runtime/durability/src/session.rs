@@ -2514,6 +2514,21 @@ pub(crate) fn reduce_peeked(stored: StoredState) -> Result<DurableState> {
     reduce(stored)
 }
 
+pub(crate) fn retains_no_operation(payload: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Head<'a> {
+        #[serde(borrow)]
+        nanocode_durable_state: Retained<'a>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Retained<'a> {
+        #[serde(borrow)]
+        operations: &'a serde_json::value::RawValue,
+    }
+    serde_json::from_str::<Head<'_>>(payload)
+        .is_ok_and(|head| head.nanocode_durable_state.operations.get() == "{}")
+}
+
 #[derive(Clone)]
 pub struct WeakDurableSession {
     commands: mpsc::WeakSender<CommandRequest>,

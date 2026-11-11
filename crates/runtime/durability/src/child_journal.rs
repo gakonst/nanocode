@@ -412,6 +412,13 @@ impl ChildJournalStore for SharedJournal {
                 .peek(&session_id)
                 .await
                 .map_err(std::io::Error::other)?;
+            if stored
+                .payload
+                .as_deref()
+                .is_some_and(crate::session::retains_no_operation)
+            {
+                return Ok(None);
+            }
             let state = crate::session::reduce_peeked(stored).map_err(std::io::Error::other)?;
             let Some((id, operation)) = state.pending_operations().into_iter().next() else {
                 return Ok(None);

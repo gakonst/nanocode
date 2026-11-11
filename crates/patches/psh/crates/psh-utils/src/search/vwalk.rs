@@ -609,7 +609,12 @@ pub fn run(
         .as_ref()
         .map_or(cwd.clone(), |r| to_path(&host.abs(r)));
     let overrides = build_overrides(&glob_root, &o.globs).unwrap_or_else(|_| Override::empty());
-    let global = if o.git_global {
+    // psh: a host without the machine's configuration has neither file.
+    let (git_global, git_exclude) = (
+        o.git_global && host.configured(),
+        o.git_exclude && host.configured(),
+    );
+    let global = if git_global {
         global_gitignore(host, &cwd, o.ignore_case_insensitive)
     } else {
         Gitignore::empty()
@@ -639,9 +644,9 @@ pub fn run(
             hidden: o.hidden,
             ignore: o.ignore,
             parents: o.parents,
-            git_global: o.git_global,
+            git_global,
             git_ignore: o.git_ignore,
-            git_exclude: o.git_exclude,
+            git_exclude,
             require_git: o.require_git,
             case_insensitive: o.ignore_case_insensitive,
             custom_names: o.custom_ignore_filenames.clone(),

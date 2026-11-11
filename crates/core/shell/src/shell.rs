@@ -209,6 +209,7 @@ impl Shell {
         engine.utilities = psh_utils::policy(true);
         engine.utilities.entries = utilities();
         engine.utilities.off_names = without;
+        engine.utilities.unconfigured = vfs.answers.is_some();
         let engine = psh_engine::Shell::new(engine);
         let _ = vfs.control.set(engine.control());
         Self {

@@ -35,6 +35,12 @@ pub trait WalkHost {
     fn read_dir(&self, abs: &[u8]) -> io::Result<Vec<DirEntry>>;
     fn read_file(&self, abs: &[u8]) -> io::Result<Vec<u8>>;
 
+    /// Whether git's global excludes and a repository's `info/exclude` are looked for
+    /// (`SyncCtx::configured`).
+    fn configured(&self) -> bool {
+        true
+    }
+
     /// A shell path made absolute against the cwd.
     fn abs(&self, p: &[u8]) -> Vec<u8> {
         if is_absolute(p) {
@@ -60,6 +66,10 @@ impl WalkHost for SyncCtx {
 
     fn cancelled(&self) -> bool {
         SyncCtx::cancelled(self)
+    }
+
+    fn configured(&self) -> bool {
+        SyncCtx::configured(self)
     }
 
     fn stat(&self, abs: &[u8], follow: bool) -> io::Result<Metadata> {

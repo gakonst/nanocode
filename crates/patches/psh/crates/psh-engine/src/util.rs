@@ -76,6 +76,11 @@ pub struct UtilPolicy {
     /// There are no real programs (wasm, a sandbox host): `PathFallback` and
     /// `WindowsShadow` utilities always run.
     pub sandbox: bool,
+    /// The host holds the files a script names and nothing of the machine's own setup
+    /// (nanocode-shell standing in for a machine): utilities do not look there for
+    /// per-user or per-machine configuration. `rg` takes no global git excludes and no
+    /// `info/exclude`, and dates take the host's offset instead of `/etc/localtime`.
+    pub unconfigured: bool,
 }
 
 /// The utility that runs for `name`, if any: off switches and modes applied.
@@ -646,7 +651,11 @@ impl UtilCtx<'_> {
     pub async fn load_zone(&mut self) {
         if self.zone.is_none() {
             let tz = self.var(b"TZ").map(<[u8]>::to_vec);
-            let z = crate::builtins::strftime::load(self.vp.host(), tz.as_deref()).await;
+            let z = if tz.is_none() && self.vp.core.utilities.unconfigured {
+                None
+            } else {
+                crate::builtins::strftime::load(self.vp.host(), tz.as_deref()).await
+            };
             self.zone = Some(z);
         }
     }

@@ -337,6 +337,9 @@ pub(crate) async fn zone(vp: &Vp) -> Zone {
         .get("TZ")
         .filter(|v| v.exported)
         .and_then(|v| v.get().map(<[u8]>::to_vec));
+    if tz.is_none() && vp.core.utilities.unconfigured {
+        return Zone::utc();
+    }
     load(vp.host(), tz.as_deref())
         .await
         .unwrap_or_else(Zone::utc)

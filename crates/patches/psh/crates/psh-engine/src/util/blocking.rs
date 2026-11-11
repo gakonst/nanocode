@@ -160,6 +160,8 @@ pub struct SyncCtx {
     env: Vec<(Vec<u8>, Vec<u8>)>,
     terminal: [bool; 3],
     stdin_readable: bool,
+    /// [`UtilPolicy::unconfigured`](super::UtilPolicy) is off.
+    configured: bool,
     io: Io,
     out: Vec<u8>,
     write_error: Option<io::ErrorKind>,
@@ -302,6 +304,12 @@ impl SyncCtx {
             .iter()
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.as_slice())
+    }
+
+    /// Whether the host has the machine's own configuration files to look for
+    /// ([`UtilPolicy::unconfigured`](super::UtilPolicy) is off).
+    pub fn configured(&self) -> bool {
+        self.configured
     }
 
     /// Whether descriptor `n` (0, 1 or 2) was a terminal when the utility started.
@@ -769,6 +777,7 @@ impl UtilCtx<'_> {
             env: self.env.clone(),
             terminal,
             stdin_readable,
+            configured: !self.vp.core.utilities.unconfigured,
             io: Io::Inline {
                 host,
                 stdin: io::Cursor::new(Held(Rc::default())),
@@ -876,6 +885,7 @@ impl UtilCtx<'_> {
             env,
             terminal,
             stdin_readable,
+            configured,
             ..
         } = sync;
         let thread_pipe = pipe.clone();
@@ -888,6 +898,7 @@ impl UtilCtx<'_> {
                     env,
                     terminal,
                     stdin_readable,
+                    configured,
                     io: Io::Thread {
                         pipe: thread_pipe.clone(),
                         native,

@@ -5832,7 +5832,8 @@ impl State {
         let notices_before = conversation.recovery_notices.len();
 
         self.publish_round_boundary(&conversation).await;
-        let body = self.wire_cache.keep_body();
+        let body =
+            (!matches!(self.lineage.origin, Origin::Subagent)).then(|| self.wire_cache.keep_body());
         let execution: AgentFuture<'_, Result<TurnResult>> =
             Box::pin(self.run_locked(&mut conversation, &request, speed, &cancel));
         let mut result = execution.await;

@@ -12,6 +12,7 @@ autobenches = false
 
 [dependencies]
 nanocode-platform.workspace = true
+nanocode-shell.workspace = true
 psh-engine.workspace = true
 ruff_python_ast.workspace = true
 ruff_python_parser.workspace = true

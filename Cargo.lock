@@ -6316,6 +6316,7 @@ name = "nanocode-python"
 version = "0.7.0"
 dependencies = [
  "nanocode-platform",
+ "nanocode-shell",
  "psh-engine",
  "rustpython-pylib",
  "rustpython-ruff_python_ast",

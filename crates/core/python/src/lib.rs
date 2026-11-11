@@ -1,6 +1,7 @@
 mod host;
 mod imports;
 mod psh;
+mod shell;
 
 use std::{collections::BTreeSet, io, rc::Rc, sync::Arc, time::Duration};
 
@@ -15,6 +16,7 @@ use rustpython_vm::{
 
 pub use psh::UTILITY;
 pub use rustpython_vm::vm::limit::Metered;
+pub use shell::{Budget, Command};
 
 const _: [&str; 2] = [include_str!("posix.py"), include_str!("boot.py")];
 

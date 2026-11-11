@@ -24,6 +24,8 @@ every incompatible change is listed here with what to do instead.
   inside a long native operation (a split or a join of hundreds of megabytes, where the
   slice's fuel is not checked for seconds); the step ends with `Error::Interrupted` at
   its next allocation.
+- `Builder::setup_probe`: one sync host function that setup answers itself, with whether
+  the VM has nothing queued (no job, no promise rejected without a handler).
 - A native instance's arena starts with 64 KiB beyond its image and grows to its
   collection threshold at once (wasm32 as upstream).
 

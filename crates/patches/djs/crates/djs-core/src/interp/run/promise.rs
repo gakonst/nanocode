@@ -512,6 +512,16 @@ pub(crate) fn has_jobs(heap: &Heap) -> bool {
     q != 0 && heap.arena().get(state::interp(heap), Interp::JOB_HEAD) < heap.value_array_len(q)
 }
 
+/// Whether nothing is left to run or to report: no queued job and no promise rejected
+/// without a handler (`Vm::quiet`).
+pub(crate) fn quiet(heap: &Heap) -> bool {
+    let r = heap
+        .arena()
+        .get::<Ref>(state::interp(heap), Interp::REJECTIONS)
+        .0;
+    !has_jobs(heap) && (r == 0 || heap.value_array_len(r) == 0)
+}
+
 /// Takes the oldest job: `[f, a0, a1, a2, a3]`.
 pub(crate) fn dequeue(heap: &mut Heap) -> Option<[Value; JOB_SIZE as usize]> {
     if !has_jobs(heap) {

@@ -1266,6 +1266,13 @@ impl Vm {
         }
     }
 
+    /// Whether the VM has nothing queued at this moment: no job and no promise rejected
+    /// without a handler. While it is parked on a sync host call, this tells the host
+    /// whether the code that ran so far left work behind (djs-embed's setup probe).
+    pub fn quiet(&self) -> bool {
+        run::promise::quiet(&self.heap)
+    }
+
     /// The reasons of the promises that were rejected without a handler and still have
     /// none (HostPromiseRejectionTracker, D1373), oldest first; they are forgotten. Check
     /// after `run` returns `Done`, `Threw` or `Idle` (the job queue is empty then), the way

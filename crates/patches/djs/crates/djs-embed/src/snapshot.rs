@@ -130,6 +130,8 @@ pub struct Builder {
     modules: Vec<SyntheticModule>,
     loader: Option<SharedLoader>,
     sources: Vec<Source>,
+    /// The setup probe's id ([`Builder::setup_probe`])
+    probe: Option<u32>,
     frozen_builtins: bool,
     memory: usize,
     fuel: u64,
@@ -143,6 +145,7 @@ impl Default for Builder {
             modules: Vec::new(),
             loader: None,
             sources: Vec::new(),
+            probe: None,
             frozen_builtins: true,
             memory: 64 << 20,
             fuel: 1_000_000_000,
@@ -153,6 +156,18 @@ impl Default for Builder {
 impl Builder {
     /// Defines a host function as a global (`name`, not enumerable).
     pub fn host_fn(mut self, f: HostFn) -> Builder {
+        self.host_fns.push(f);
+        self
+    }
+
+    /// Defines `f` (a sync host function) as the setup probe: the one host function a
+    /// setup source may call. Setup answers it itself, with `true` when the VM has
+    /// nothing queued at that moment: no job and no promise rejected without a handler.
+    /// For setup code that runs an embedder's script once, in place of every call, only
+    /// if that is the same thing: the script must leave no job behind that a call would
+    /// have run later. In a call it is a host function like any other.
+    pub fn setup_probe(mut self, f: HostFn) -> Builder {
+        self.probe = Some(f.id);
         self.host_fns.push(f);
         self
     }
@@ -327,6 +342,11 @@ impl Builder {
                     }
                     Status::OutOfFuel => {}
                     Status::HostOutOfMemory => return Err(Error::OutOfMemory),
+                    Status::HostCall { fn_id, call_id } if self.probe == Some(fn_id) => {
+                        let quiet = Raw::bool(vm.quiet());
+                        vm.resolve_host_call(call_id, Ok(quiet))
+                            .map_err(|e| Error::Usage(format!("{e:?}")))?;
+                    }
                     Status::HostCall { fn_id, .. } => {
                         vm.abort();
                         return Err(Error::Usage(format!(

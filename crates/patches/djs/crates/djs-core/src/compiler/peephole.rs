@@ -20,6 +20,8 @@ use crate::bytecode::{Insn, Label, Op};
 #[derive(Default)]
 pub(super) struct Scratch {
     at: Vec<usize>,
+    /// The indices of the jumps, in code order.
+    jumps: Vec<usize>,
     label_after: Vec<bool>,
     out: Vec<Insn>,
     repl: Vec<Insn>,
@@ -29,9 +31,7 @@ pub(super) struct Scratch {
 /// create.
 pub(super) fn simplify(code: &mut Vec<Insn>, label_count: &mut u32, scratch: &mut Scratch) {
     // Without a jump there is nothing to thread (the rules make none).
-    let branches = code
-        .iter()
-        .any(|i| matches!(i.op, Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue));
+    let mut branches = true;
     // Threading again is only worth it after a rule changed a jump (0092: each pass
     // costs a few % of compile time). Cycles of jumps could retarget each other
     // forever: a few rounds are enough for everything else.
@@ -47,6 +47,7 @@ pub(super) fn simplify(code: &mut Vec<Insn>, label_count: &mut u32, scratch: &mu
                     break;
                 }
             }
+            branches = !scratch.jumps.is_empty();
         }
         if round > 0 && !threaded {
             break;
@@ -72,7 +73,14 @@ fn rewrite_all(code: &mut Vec<Insn>, repl: &mut Vec<Insn>) -> bool {
     let mut i = 0;
     while i < code.len() {
         repl.clear();
-        match rewrite(&code[i..], repl) {
+        // Most instructions start no rule: those are only moved down.
+        let found = if starts_rule(code[i].op) {
+            rewrite(&code[i..], repl)
+        } else {
+            debug_assert!(rewrite(&code[i..], repl).is_none());
+            None
+        };
+        match found {
             Some(n) => {
                 jumps |= code[i..i + n]
                     .iter()
@@ -114,6 +122,7 @@ fn thread_jumps(
     const NONE: usize = usize::MAX;
     let Scratch {
         at,
+        jumps,
         label_after,
         out,
         ..
@@ -121,16 +130,26 @@ fn thread_jumps(
     // For each label id: the index of the first instruction after it that is no label.
     at.clear();
     at.resize(*label_count as usize, NONE);
+    jumps.clear();
     let mut pending = 0;
     for (k, insn) in code.iter().enumerate() {
-        if insn.op == Op::Label {
-            pending += 1;
-            continue;
+        match insn.op {
+            Op::Label => {
+                pending += 1;
+                continue;
+            }
+            Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue => jumps.push(k),
+            _ => {}
         }
-        for l in &code[k - pending..k] {
-            at[l.imm(0) as usize] = k;
+        if pending != 0 {
+            for l in &code[k - pending..k] {
+                at[l.imm(0) as usize] = k;
+            }
+            pending = 0;
         }
-        pending = 0;
+    }
+    if jumps.is_empty() {
+        return (false, false);
     }
     // The first instruction a jump lands on, past the `dup`s and `drop`s this pass
     // removed (marked `nop`): processing from the end, a whole `a || b || c` chain is
@@ -152,11 +171,10 @@ fn thread_jumps(
     let mut labels = false;
     label_after.clear();
     label_after.resize(code.len(), false);
-    for k in (0..code.len()).rev() {
+    // (A jump changes only in its own turn: what else this writes is a `nop` over a
+    // `dup` or a `drop`.)
+    for &k in jumps.iter().rev() {
         let insn = code[k];
-        if !matches!(insn.op, Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue) {
-            continue;
-        }
         let Some(mut t) = target(code, &insn) else {
             continue;
         };
@@ -242,8 +260,27 @@ fn jumps_to_next(code: &[Insn]) -> bool {
         .any(|i| i.imm(0) == t.0)
 }
 
+/// Whether a rule of [`rewrite`] starts with `op`.
+fn starts_rule(op: Op) -> bool {
+    matches!(
+        op,
+        Op::NameSet
+            | Op::Insert2
+            | Op::Insert3
+            | Op::Insert4
+            | Op::Dup
+            | Op::ToNumeric
+            | Op::JumpIfFalse
+            | Op::JumpIfTrue
+            | Op::Jump
+            | Op::Not
+            | Op::PushTrue
+            | Op::PushFalse
+    )
+}
+
 /// If a rule matches at the start of `code`, pushes its replacement and returns the
-/// number of instructions it consumed.
+/// number of instructions it consumed. A rule's first opcode is in [`starts_rule`].
 fn rewrite(code: &[Insn], out: &mut Vec<Insn>) -> Option<usize> {
     let op = |k: usize| code.get(k).map(|i| i.op);
     let incdec = |o: Option<Op>| matches!(o, Some(Op::Inc | Op::Dec));

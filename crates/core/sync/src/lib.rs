@@ -2,6 +2,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 mod armed;
 #[cfg(not(target_family = "wasm"))]
+mod lanes;
+#[cfg(not(target_family = "wasm"))]
 mod lease;
 mod map;
 #[cfg(not(target_family = "wasm"))]
@@ -19,6 +21,8 @@ mod weighed;
 #[cfg(not(target_family = "wasm"))]
 pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
 pub use armed::Armed;
+#[cfg(not(target_family = "wasm"))]
+pub use lanes::{Bounds, Lanes, together};
 #[cfg(not(target_family = "wasm"))]
 pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
 pub use map::AtomMap;

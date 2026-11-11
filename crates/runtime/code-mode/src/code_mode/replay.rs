@@ -70,7 +70,7 @@ pub struct CellJournalHeader {
     pub version: u32,
     pub origin_call_id: String,
     pub script: String,
-    pub tools: Vec<Value>,
+    pub tools: Arc<[Value]>,
     #[serde(default)]
     pub stored: BTreeMap<String, Value>,
     #[serde(default)]
@@ -91,7 +91,7 @@ pub struct CellJournalUpdate {
     #[serde(default)]
     pub entries: Vec<JournalEntry>,
     #[serde(default)]
-    pub calls: Vec<JournaledCall>,
+    pub calls: Vec<Arc<JournaledCall>>,
     #[serde(default)]
     pub observer_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,7 +132,7 @@ impl CellJournal {
             observer_yield_ms: None,
             observer_since_ms: None,
             script: header.script,
-            tools: header.tools,
+            tools: header.tools.to_vec(),
             stored: header.stored,
             prelude: header.prelude,
             yield_time_ms: header.yield_time_ms,
@@ -186,19 +186,22 @@ impl CellJournal {
             } = entry
                 && !delivered.contains(id)
             {
-                calls.entry(*id).or_insert_with(|| JournaledCall {
-                    id: *id,
-                    call_id: format!("{}/code-{id}", journal.origin_call_id),
-                    name: name.clone(),
-                    input: input.clone(),
-                    host: *host,
-                    state: JournaledCallState::Queued,
+                calls.entry(*id).or_insert_with(|| {
+                    Arc::new(JournaledCall {
+                        id: *id,
+                        call_id: format!("{}/code-{id}", journal.origin_call_id),
+                        name: name.clone(),
+                        input: input.clone(),
+                        host: *host,
+                        state: JournaledCallState::Queued,
+                    })
                 });
             }
         }
         journal.calls = calls
             .into_values()
             .filter(|call| !delivered.contains(&call.id))
+            .map(Arc::unwrap_or_clone)
             .collect();
         Some(journal)
     }
@@ -808,7 +811,7 @@ impl CellRecord {
                 _ => drop(latest.insert(call.id, call)),
             }
         }
-        let calls: Vec<_> = latest.into_values().map(Arc::unwrap_or_clone).collect();
+        let calls: Vec<_> = latest.into_values().collect();
         let (from, seq) = match &*saving {
             Saving::Stopped => return,
             Saving::Unsaved => (0, 0),
@@ -868,7 +871,7 @@ impl CellRecord {
             version: CELL_JOURNAL_VERSION,
             origin_call_id: self.origin_call_id.clone(),
             script: self.script.clone(),
-            tools: self.tools.to_vec(),
+            tools: Arc::clone(&self.tools),
             stored: self.stored_json(),
             prelude: self.prelude,
             yield_time_ms: self.yield_time_ms,

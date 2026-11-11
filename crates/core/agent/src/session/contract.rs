@@ -93,6 +93,70 @@ pub enum Origin {
 
 const CHECKPOINT_FORMAT: &str = "nanocode-session-checkpoint/1";
 
+#[doc(hidden)]
+#[derive(Clone)]
+pub enum CheckpointPayload {
+    Tree(serde_json::Value),
+    Json(Box<serde_json::value::RawValue>),
+}
+
+impl CheckpointPayload {
+    pub fn decode<T: serde::de::DeserializeOwned>(&self) -> serde_json::Result<T> {
+        match self {
+            Self::Tree(tree) => T::deserialize(tree),
+            Self::Json(json) => serde_json::from_str(json.get()),
+        }
+    }
+}
+
+impl From<serde_json::Value> for CheckpointPayload {
+    fn from(tree: serde_json::Value) -> Self {
+        Self::Tree(tree)
+    }
+}
+
+impl From<Box<serde_json::value::RawValue>> for CheckpointPayload {
+    fn from(json: Box<serde_json::value::RawValue>) -> Self {
+        Self::Json(json)
+    }
+}
+
+impl PartialEq for CheckpointPayload {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Tree(tree), Self::Tree(other)) => tree == other,
+            (Self::Json(json), Self::Json(other)) if json.get() == other.get() => true,
+            _ => match (self.decode(), other.decode()) {
+                (Ok(tree), Ok(other)) => {
+                    let (tree, other): (serde_json::Value, serde_json::Value) = (tree, other);
+                    tree == other
+                }
+                _ => false,
+            },
+        }
+    }
+}
+
+impl Serialize for CheckpointPayload {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Tree(tree) => tree.serialize(serializer),
+            Self::Json(json) => json.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CheckpointPayload {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        serde_json::Value::deserialize(deserializer).map(Self::Tree)
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionCheckpoint {
@@ -109,7 +173,7 @@ pub struct SessionCheckpoint {
     conversation_id: String,
     turn_id: Option<String>,
     has_conversation: bool,
-    payload: serde_json::Value,
+    payload: CheckpointPayload,
 }
 
 impl SessionCheckpoint {
@@ -124,7 +188,7 @@ impl SessionCheckpoint {
         conversation_id: impl Into<String>,
         turn_id: Option<String>,
         has_conversation: bool,
-        payload: serde_json::Value,
+        payload: impl Into<CheckpointPayload>,
     ) -> Self {
         Self {
             format: CHECKPOINT_FORMAT.to_owned(),
@@ -137,7 +201,7 @@ impl SessionCheckpoint {
             conversation_id: conversation_id.into(),
             turn_id,
             has_conversation,
-            payload,
+            payload: payload.into(),
         }
     }
 
@@ -257,13 +321,13 @@ impl SessionCheckpoint {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn payload(&self) -> &serde_json::Value {
+    pub const fn payload(&self) -> &CheckpointPayload {
         &self.payload
     }
 
     #[doc(hidden)]
     #[must_use]
-    pub fn into_payload(self) -> serde_json::Value {
+    pub fn into_payload(self) -> CheckpointPayload {
         self.payload
     }
 

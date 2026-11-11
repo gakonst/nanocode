@@ -909,7 +909,9 @@ impl ClaudeBuilder {
         let session_id = checkpoint.session_id().to_owned();
         let lineage = checkpoint.lineage().clone();
         let conversation_id = checkpoint.conversation_id().to_owned();
-        let stored: NativeChildState = serde_json::from_value(checkpoint.into_payload())
+        let stored: NativeChildState = checkpoint
+            .payload()
+            .decode()
             .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?;
         if stored.version != 1
             || ModelSelection::new(HarnessFamily::Claude, stored.model.clone()) != model
@@ -4103,6 +4105,14 @@ struct NativePolicy {
     auto_compact_window_tokens: Option<u64>,
 }
 
+#[derive(Serialize)]
+struct NativeChild<'a> {
+    #[serde(flatten)]
+    policy: &'a NativePolicy,
+    version: u32,
+    snapshot: &'a Snapshot,
+}
+
 struct ClaudeBoundary {
     snapshot: Arc<Snapshot>,
     policy: NativePolicy,
@@ -4120,16 +4130,12 @@ impl ClaudeBoundary {
         } else {
             effort_thinking(self.policy.effort)
         };
-        let mut payload =
-            serde_json::to_value(&self.policy).map_err(|error| invalid_checkpoint(&error))?;
-        let fields = payload
-            .as_object_mut()
-            .expect("Claude checkpoint policy is an object");
-        fields.insert("version".into(), json!(1));
-        fields.insert(
-            "snapshot".into(),
-            serde_json::to_value(&*self.snapshot).map_err(|error| invalid_checkpoint(&error))?,
-        );
+        let payload = serde_json::value::to_raw_value(&NativeChild {
+            policy: &self.policy,
+            version: 1,
+            snapshot: &self.snapshot,
+        })
+        .map_err(|error| invalid_checkpoint(&error))?;
         Ok(SessionCheckpoint::native(
             self.session_id.clone(),
             model,
@@ -4259,7 +4265,9 @@ impl State {
         if checkpoint.conversation_id() != self.conversation_id {
             return Err(NanocodeError::CheckpointLineageMismatch);
         }
-        let stored: NativeChildState = serde_json::from_value(checkpoint.into_payload())
+        let stored: NativeChildState = checkpoint
+            .payload()
+            .decode()
             .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?;
         stored.snapshot.validated()
     }

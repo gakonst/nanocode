@@ -2385,7 +2385,7 @@ impl PersistedNative {
         if self.session_id.trim().is_empty() {
             return Err(LegacyCheckpointError::Native("empty session ID".into()));
         }
-        let payload = serde_json::from_str(&self.payload).map_err(|error| {
+        let payload: Value = serde_json::from_str(&self.payload).map_err(|error| {
             LegacyCheckpointError::Native(format!("payload is not JSON: {error}"))
         })?;
         Ok(SessionCheckpoint::native(

@@ -4,9 +4,10 @@ use nanocode_durability::{
 use nanocode_sync::{Atom, Owned};
 use nanocode_tool_host::code_mode::{CellJournal, CellJournalSink, CellJournalUpdate};
 use nanocode_tool_host::embedded::HostFuture;
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 const VERSION: u32 = 2;
@@ -14,6 +15,7 @@ const VERSION: u32 = 2;
 pub(crate) struct DurableCellJournals {
     store: SharedStore,
     sessions: Atom<HashMap<String, Arc<Owned<Session>>>>,
+    catalogs: Atom<Vec<(Weak<[Value]>, EncodedPayload)>>,
 }
 
 #[derive(Default)]
@@ -68,7 +70,26 @@ impl DurableCellJournals {
         Arc::new(Self {
             store,
             sessions: Atom::default(),
+            catalogs: Atom::default(),
         })
+    }
+
+    fn catalog(&self, tools: &Arc<[Value]>) -> Result<EncodedPayload, String> {
+        let known = self.catalogs.read(|catalogs| {
+            catalogs
+                .iter()
+                .find(|(held, _)| std::ptr::eq(held.as_ptr(), Arc::as_ptr(tools)))
+                .map(|(_, catalog)| catalog.clone())
+        });
+        if let Some(catalog) = known {
+            return Ok(catalog);
+        }
+        let catalog = EncodedPayload::encode(&**tools).map_err(|error| error.to_string())?;
+        self.catalogs.update(|catalogs| {
+            catalogs.retain(|(held, _)| held.strong_count() > 0);
+            catalogs.push((Arc::downgrade(tools), catalog.clone()));
+        });
+        Ok(catalog)
     }
 
     fn session(&self, session_id: &str) -> Arc<Owned<Session>> {
@@ -245,17 +266,20 @@ impl CellJournalSink for DurableCellJournals {
     fn save(&self, mut update: CellJournalUpdate) -> HostFuture<'static, Result<(), String>> {
         let store = self.store.clone();
         let session = self.session(&update.session_id);
+        let catalog = update
+            .header
+            .as_mut()
+            .map(|header| self.catalog(&std::mem::take(&mut header.tools)));
         Box::pin(async move {
             let mut session = session.acquire().await;
             let (owned, cells, catalogs) = owned(&store, &update.session_id, &mut session).await?;
             let mut records = Vec::new();
-            let (mut keys, catalog) = match &mut update.header {
-                Some(header) => {
+            let (mut keys, catalog) = match catalog {
+                Some(catalog) => {
                     if let Some(replaced) = cells.remove(&update.cell_id) {
                         records.extend(blanked(update.cell_id, replaced));
                     }
-                    let mut catalog = EncodedPayload::encode(&std::mem::take(&mut header.tools))
-                        .map_err(|error| error.to_string())?;
+                    let mut catalog = catalog?;
                     if catalogs.insert(catalog.key().to_owned()) {
                         let mut pooled = Vec::new();
                         catalog.stage(&mut pooled);

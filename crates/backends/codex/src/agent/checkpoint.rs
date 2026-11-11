@@ -40,7 +40,9 @@ impl ChildState {
         let lineage = checkpoint.lineage().clone();
         let conversation_id = Arc::<str>::from(checkpoint.conversation_id());
         let has_conversation = checkpoint.has_conversation();
-        let payload: CodexPayload = serde_json::from_value(checkpoint.into_payload())
+        let payload: CodexPayload = checkpoint
+            .payload()
+            .decode()
             .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?;
         if payload.conversation.is_some() != has_conversation {
             return Err(NanocodeError::InvalidCheckpoint(

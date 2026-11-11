@@ -1621,7 +1621,9 @@ pub fn session_checkpoint(
 pub fn decode_session_checkpoint(checkpoint: &SessionCheckpoint) -> Result<ClaudeCheckpointView> {
     checkpoint.validate()?;
     checkpoint.require_family(HarnessFamily::Claude)?;
-    let stored: NativeChildState = serde_json::from_value(checkpoint.payload().clone())
+    let stored: NativeChildState = checkpoint
+        .payload()
+        .decode()
         .map_err(|error| NanocodeError::InvalidCheckpoint(error.to_string()))?;
     let mut view = stored.snapshot.validated()?.view()?;
     view.model = Some(checkpoint.model());

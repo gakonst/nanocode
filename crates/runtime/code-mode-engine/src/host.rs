@@ -4,9 +4,10 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
-use djs_embed::{CallId, Instance, Limits, Step, Value};
+use djs_embed::{CallId, Instance, Limits, Parked, Step, Value};
 use nanocode_platform::Instant;
 use serde_json::value::RawValue;
 
@@ -57,9 +58,21 @@ fn random_seed() -> Result<u64, String> {
     Ok(mixed ^ (mixed >> 31))
 }
 
+const PARK_AFTER: Duration = Duration::from_millis(1);
+
+#[derive(Clone, Copy)]
 enum Phase {
     Running,
-    Idle,
+    Idle(Instant),
+}
+
+enum Body {
+    Awake(Instance),
+    Parked(Parked),
+}
+
+fn parked() -> String {
+    "the embedded Code Mode cell is parked".to_owned()
 }
 
 #[derive(Clone, Copy)]
@@ -75,7 +88,7 @@ enum Ran {
 }
 
 struct Machine {
-    instance: Instance,
+    body: Body,
     pump: Option<CallId>,
     phase: Phase,
     results: VecDeque<(u64, String, bool)>,
@@ -87,10 +100,13 @@ struct Machine {
 
 impl Machine {
     fn run(&mut self, state: &mut ExecutionState) -> Result<Ran, String> {
-        let slice = self.instance.limits().slice;
-        let started = self.instance.fuel_used();
+        let Body::Awake(instance) = &mut self.body else {
+            return Err(parked());
+        };
+        let slice = instance.limits().slice;
+        let started = instance.fuel_used();
         loop {
-            let step = match self.instance.step() {
+            let step = match instance.step() {
                 Ok(step) => step,
                 Err(djs_embed::Error::OutOfMemory) => {
                     state.send(RuntimeEvent::Error {
@@ -105,7 +121,7 @@ impl Machine {
             match step {
                 Step::Yield => return Ok(Ran::Sliced),
                 Step::HostCall(id) => {
-                    let call = self.instance.host_call(id).map_err(failure)?;
+                    let call = instance.host_call(id).map_err(failure)?;
                     let reply = state.host_call(&call);
                     let reply = match &reply {
                         Ok(Reply::Nothing) => Ok(Value::Undefined),
@@ -116,14 +132,14 @@ impl Machine {
                         Err(throw) => Err(throw.clone()),
                     };
                     call.reply(reply).map_err(failure)?;
-                    if self.instance.fuel_used().saturating_sub(started) >= slice {
+                    if instance.fuel_used().saturating_sub(started) >= slice {
                         return Ok(Ran::Sliced);
                     }
                 }
                 Step::Wait(started) => {
                     if !started.is_empty() {
                         for id in started {
-                            if self.instance.host_call(id).map_err(failure)?.fn_id() == NEXT {
+                            if instance.host_call(id).map_err(failure)?.fn_id() == NEXT {
                                 self.pump = Some(id);
                             }
                         }
@@ -132,19 +148,17 @@ impl Machine {
                     let pump = self.pump.ok_or_else(|| {
                         "the embedded Code Mode bootstrap is not waiting for input".to_owned()
                     })?;
-                    if self.instance.resolve_unhandled(pump).map_err(failure)? > 0 {
+                    if instance.resolve_unhandled(pump).map_err(failure)? > 0 {
                         self.pump = None;
                         continue;
                     }
                     if state.settling() {
-                        self.instance
-                            .resolve(pump, Ok(Value::Null))
-                            .map_err(failure)?;
+                        instance.resolve(pump, Ok(Value::Null)).map_err(failure)?;
                         self.pump = None;
                         continue;
                     }
                     state.flush_text();
-                    self.phase = Phase::Idle;
+                    self.phase = Phase::Idle(Instant::now());
                     return Ok(Ran::Idle);
                 }
                 Step::Done => {
@@ -155,8 +169,7 @@ impl Machine {
                         });
                         return Ok(Ran::Finished);
                     }
-                    let encoded = self
-                        .instance
+                    let encoded = instance
                         .result()
                         .map_err(failure)?
                         .as_str()
@@ -172,10 +185,13 @@ impl Machine {
     }
 
     fn deliver(&mut self, value: Value<'_>, settled: Settled) -> Result<(), String> {
+        let Body::Awake(instance) = &mut self.body else {
+            return Err(parked());
+        };
         let pump = self.pump.take().ok_or_else(|| {
             "the embedded Code Mode bootstrap is not waiting for input".to_owned()
         })?;
-        self.instance.resolve(pump, Ok(value)).map_err(failure)?;
+        instance.resolve(pump, Ok(value)).map_err(failure)?;
         self.phase = Phase::Running;
         self.settled = Some(settled);
         #[cfg(target_family = "wasm")]
@@ -211,6 +227,9 @@ impl Machine {
     }
 
     fn idle(&mut self, state: &mut ExecutionState) -> Result<Idle, String> {
+        if matches!(self.body, Body::Parked(_)) && !self.held && !self.results.is_empty() {
+            return Ok(Idle::Wake);
+        }
         match state.replaying(false) {
             Replaying::Live => {}
             Replaying::Diverged(reason) => {
@@ -235,8 +254,16 @@ impl Machine {
             }
             Replaying::Input(_) => return Ok(Idle::Busy),
         }
+        let awake = matches!(self.body, Body::Awake(_));
         if self.held {
-            return Ok(Idle::Quiet(None));
+            return Ok(if awake {
+                Idle::Park
+            } else {
+                Idle::Quiet {
+                    timer: None,
+                    park: None,
+                }
+            });
         }
         if let Some((id, encoded, success)) = self.results.pop_front() {
             self.deliver_result(state, id, &encoded, success)?;
@@ -250,14 +277,35 @@ impl Machine {
         if !state.events.is_empty() {
             return Ok(Idle::Busy);
         }
-        Ok(Idle::Quiet(state.next_timeout_wait()))
+        let timer = state.next_timeout_wait();
+        if awake && !state.awaits_tools() && timer.is_none_or(|timer| timer >= PARK_AFTER) {
+            return Ok(Idle::Park);
+        }
+        Ok(Idle::Quiet {
+            timer,
+            park: self
+                .park_due()
+                .map(|due| due.saturating_duration_since(Instant::now())),
+        })
+    }
+
+    fn park_due(&self) -> Option<Instant> {
+        match (&self.body, self.phase) {
+            (Body::Awake(_), Phase::Idle(since)) => since.checked_add(PARK_AFTER),
+            (Body::Awake(_), Phase::Running) | (Body::Parked(_), _) => None,
+        }
     }
 }
 
 enum Idle {
     Busy,
     Finished,
-    Quiet(Option<std::time::Duration>),
+    Wake,
+    Park,
+    Quiet {
+        timer: Option<Duration>,
+        park: Option<Duration>,
+    },
 }
 
 fn failure(error: djs_embed::Error) -> String {
@@ -324,7 +372,7 @@ impl EmbeddedHost {
             .start_export(BOOTSTRAP_MODULE, RUN_CELL, &[Value::Str(source)])
             .map_err(failure)?;
         self.machine = Some(Machine {
-            instance,
+            body: Body::Awake(instance),
             pump: None,
             phase: Phase::Running,
             results: VecDeque::new(),
@@ -357,24 +405,71 @@ impl EmbeddedHost {
                     Ok(Ran::Finished) => Ok(Idle::Finished),
                     Err(error) => Err(error),
                 },
-                Phase::Idle => machine.idle(&mut self.state),
+                Phase::Idle(_) => machine.idle(&mut self.state),
             };
-            match quiet {
-                Ok(Idle::Busy) => {}
-                Ok(Idle::Finished) => self.stop(),
-                Ok(Idle::Quiet(None)) => return std::future::pending().await,
-                Ok(Idle::Quiet(Some(wait))) => {
-                    nanocode_platform::sleep(wait).await;
-                    if let Some(machine) = self.machine.as_mut()
-                        && let Some(id) = self.state.next_due_timeout(Instant::now())
-                        && let Err(error) = machine.deliver_timeout(&mut self.state, id)
-                    {
-                        self.fail(error);
-                    }
+            let rested = match quiet {
+                Ok(Idle::Busy) => Ok(()),
+                Ok(Idle::Finished) => {
+                    self.stop();
+                    Ok(())
                 }
-                Err(error) => self.fail(error),
+                Ok(Idle::Wake) => self.wake(),
+                Ok(Idle::Park) => self.park(),
+                Ok(Idle::Quiet { timer, park }) => {
+                    let wait = match (timer, park) {
+                        (None, None) => return std::future::pending().await,
+                        (Some(wait), None) | (None, Some(wait)) => wait,
+                        (Some(timer), Some(park)) => timer.min(park),
+                    };
+                    nanocode_platform::sleep(wait).await;
+                    self.rested()
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = rested {
+                self.fail(error);
             }
         }
+    }
+
+    fn rested(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+        if let Some(id) = self.state.next_due_timeout(now) {
+            self.wake()?;
+            return match self.machine.as_mut() {
+                Some(machine) => machine.deliver_timeout(&mut self.state, id),
+                None => Ok(()),
+            };
+        }
+        let due = self.machine.as_ref().and_then(Machine::park_due);
+        if due.is_some_and(|due| due <= now) {
+            self.park()?;
+        }
+        Ok(())
+    }
+
+    fn park(&mut self) -> Result<(), String> {
+        let Some(machine) = self.machine.take() else {
+            return Ok(());
+        };
+        let body = match machine.body {
+            Body::Awake(instance) => Body::Parked(instance.park().map_err(failure)?),
+            body @ Body::Parked(_) => body,
+        };
+        self.machine = Some(Machine { body, ..machine });
+        Ok(())
+    }
+
+    fn wake(&mut self) -> Result<(), String> {
+        let Some(machine) = self.machine.take() else {
+            return Ok(());
+        };
+        let body = match machine.body {
+            Body::Parked(parked) => Body::Awake(parked.resume().map_err(failure)?),
+            body @ Body::Awake(_) => body,
+        };
+        self.machine = Some(Machine { body, ..machine });
+        Ok(())
     }
 
     #[cfg(not(target_family = "wasm"))]

@@ -666,6 +666,10 @@ impl ExecutionState {
         Ok(())
     }
 
+    pub(crate) fn awaits_tools(&self) -> bool {
+        !self.pending_tools.is_empty()
+    }
+
     pub(crate) fn fire_timeout(&mut self, id: u64) -> bool {
         let Some(timeout) = self.pending_timeouts.remove(&id) else {
             return false;

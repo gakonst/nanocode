@@ -362,9 +362,9 @@ impl CodeModeObserver for Progress<'_> {
                 name: name.to_owned(),
                 input: input.clone(),
             },
-            CodeModeUpdate::NestedCallCompleted(call) => {
-                ClaudeNestedToolUpdate::Completed(nested_call(call))
-            }
+            CodeModeUpdate::NestedCallCompleted(call) => ClaudeNestedToolUpdate::Completed(
+                nested_call(call, call.input.clone(), call.structured_result.clone()),
+            ),
             CodeModeUpdate::Notification(notification) => ClaudeNestedToolUpdate::Notification {
                 call_id: notification.call_id.clone(),
                 text: notification.text.clone(),
@@ -373,32 +373,56 @@ impl CodeModeObserver for Progress<'_> {
     }
 }
 
-fn nested_call(call: &NestedToolCall) -> Value {
-    json!({
-        "call_id": call.call_id,
-        "name": call.name,
-        "input": call.input,
-        "output": call.output,
-        "structured_result": call.structured_result,
-        "metadata": call.metadata,
-        "success": call.success,
-        "started_after_ns": call.started_after_ns,
-        "duration_ns": call.duration_ns,
-    })
+fn nested_call(call: &NestedToolCall, input: Value, structured_result: Value) -> Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert("call_id".into(), call.call_id.as_str().into());
+    fields.insert("name".into(), call.name.as_str().into());
+    fields.insert("input".into(), input);
+    fields.insert("output".into(), json!(call.output));
+    fields.insert("structured_result".into(), structured_result);
+    fields.insert("metadata".into(), json!(call.metadata));
+    fields.insert("success".into(), call.success.into());
+    fields.insert("started_after_ns".into(), call.started_after_ns.into());
+    fields.insert("duration_ns".into(), call.duration_ns.into());
+    Value::Object(fields)
 }
 
-fn code_reply(execution: CodeModeExecution, call_id: &str) -> ClaudeToolReply {
-    let metadata = json!({
-        "_nanocode_code": {
-            "calls": execution.nested_calls.iter().map(nested_call).collect::<Vec<_>>(),
-            "origin_call_id": execution
-                .cell
-                .as_ref()
-                .map_or(call_id, |cell| cell.origin_call_id.as_str()),
-            "running": execution.cell.as_ref().is_some_and(|cell| cell.running),
-        }
-    });
-    let mut reply = reply(execution.output, execution.success, Some(metadata), None);
+fn code_reply(mut execution: CodeModeExecution, call_id: &str) -> ClaudeToolReply {
+    let calls = execution
+        .nested_calls
+        .iter_mut()
+        .map(|call| {
+            let input = std::mem::take(&mut call.input);
+            let structured_result = std::mem::take(&mut call.structured_result);
+            nested_call(call, input, structured_result)
+        })
+        .collect();
+    let mut code = serde_json::Map::new();
+    code.insert("calls".into(), Value::Array(calls));
+    code.insert(
+        "origin_call_id".into(),
+        execution
+            .cell
+            .as_ref()
+            .map_or(call_id, |cell| cell.origin_call_id.as_str())
+            .into(),
+    );
+    code.insert(
+        "running".into(),
+        execution
+            .cell
+            .as_ref()
+            .is_some_and(|cell| cell.running)
+            .into(),
+    );
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("_nanocode_code".into(), Value::Object(code));
+    let mut reply = reply(
+        execution.output,
+        execution.success,
+        Some(Value::Object(metadata)),
+        None,
+    );
     for notification in execution.notifications {
         match &mut reply.content {
             ToolResultContent::Text(text) => {

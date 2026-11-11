@@ -91,6 +91,65 @@ pub fn inflate(data: &[u8]) -> Option<(Vec<u8>, usize)> {
     }
 }
 
+/// What inflates of a gzip file that ends early or is damaged: the bytes before the
+/// damage.
+pub fn gunzip_partial(data: &[u8]) -> Vec<u8> {
+    if data.len() < 10 {
+        return Vec::new();
+    }
+    let flags = data[3];
+    let mut pos = 10;
+    if flags & 4 != 0 {
+        let len = match (data.get(pos), data.get(pos + 1)) {
+            (Some(&a), Some(&b)) => usize::from(u16::from_le_bytes([a, b])),
+            _ => return Vec::new(),
+        };
+        pos += 2 + len;
+    }
+    for bit in [8u8, 16] {
+        if flags & bit != 0 {
+            match data
+                .get(pos..)
+                .and_then(|rest| rest.iter().position(|&b| b == 0))
+            {
+                Some(nul) => pos += nul + 1,
+                None => return Vec::new(),
+            }
+        }
+    }
+    if flags & 2 != 0 {
+        pos += 2;
+    }
+    let Some(body) = data.get(pos..) else {
+        return Vec::new();
+    };
+    let mut state = Box::<DecompressorOxide>::default();
+    let mut out = vec![0u8; body.len().saturating_mul(3).max(64 * 1024)];
+    let (mut read, mut written) = (0, 0);
+    loop {
+        let (status, used, wrote) = decompress(
+            &mut state,
+            &body[read..],
+            &mut out,
+            written,
+            inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
+                | inflate_flags::TINFL_FLAG_HAS_MORE_INPUT,
+        );
+        read += used;
+        written += wrote;
+        match status {
+            TINFLStatus::HasMoreOutput => {
+                let len = out.len();
+                out.resize(len * 2, 0);
+            }
+            _ => {
+                out.truncate(written);
+                return out;
+            }
+        }
+    }
+}
+
 /// One member of a gzip file.
 pub struct Member {
     pub data: Vec<u8>,

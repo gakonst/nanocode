@@ -30,6 +30,7 @@ struct Options {
     dereference: bool,
     no_recursion: bool,
     numeric: bool,
+    wildcards: bool,
     strip: usize,
     excludes: Vec<Vec<u8>>,
     /// Operands in order; a -C among them changes directory for what follows.
@@ -72,6 +73,17 @@ fn parse(argv: &[Vec<u8>]) -> Result<Options, Result<Lacks, String>> {
         args = expanded;
     }
     let lacks = |what: &str| Err(Ok(Lacks(what.to_string())));
+    // One of create, extract and list, once.
+    let set = |o: &mut Options, mode: u8| -> Result<(), Result<Lacks, String>> {
+        if o.mode.is_some_and(|m| m != mode) {
+            return Err(Err(
+                "You may not specify more than one '-Acdtrux', '--delete' or  '--test-label' option"
+                    .to_string(),
+            ));
+        }
+        o.mode = Some(mode);
+        Ok(())
+    };
     let mut i = 0;
     let mut only_operands = false;
     while i < args.len() {
@@ -103,9 +115,9 @@ fn parse(argv: &[Vec<u8>]) -> Result<Options, Result<Lacks, String>> {
                 None => (text, None),
             };
             match name.as_str() {
-                "create" => o.mode = Some(b'c'),
-                "extract" | "get" => o.mode = Some(b'x'),
-                "list" => o.mode = Some(b't'),
+                "create" => set(&mut o, b'c')?,
+                "extract" | "get" => set(&mut o, b'x')?,
+                "list" => set(&mut o, b't')?,
                 "file" => o.file = Some(value("file", attached.as_deref())?),
                 "directory" => {
                     let dir = value("directory", attached.as_deref())?;
@@ -122,6 +134,7 @@ fn parse(argv: &[Vec<u8>]) -> Result<Options, Result<Lacks, String>> {
                 "dereference" => o.dereference = true,
                 "no-recursion" => o.no_recursion = true,
                 "numeric-owner" => o.numeric = true,
+                "wildcards" => o.wildcards = true,
                 "exclude" => o.excludes.push(value("exclude", attached.as_deref())?),
                 "strip-components" => {
                     let n = value("strip-components", attached.as_deref())?;
@@ -132,7 +145,6 @@ fn parse(argv: &[Vec<u8>]) -> Result<Options, Result<Lacks, String>> {
                 "no-same-owner"
                 | "no-same-permissions"
                 | "overwrite"
-                | "wildcards"
                 | "no-wildcards"
                 | "recursion"
                 | "force-local"
@@ -162,7 +174,7 @@ fn parse(argv: &[Vec<u8>]) -> Result<Options, Result<Lacks, String>> {
             k += 1;
             let attached = (k < arg.len()).then(|| arg[k..].to_vec());
             match c {
-                b'c' | b'x' | b't' => o.mode = Some(c),
+                b'c' | b'x' | b't' => set(&mut o, c)?,
                 b'z' => o.gzip = true,
                 b'a' => o.auto = true,
                 b'v' => o.verbose += 1,
@@ -319,6 +331,23 @@ struct Tar<'c, 'v> {
     warned_slash: bool,
     /// Verbose lines go to stderr when the archive or the files go to stdout.
     lines_to_stderr: bool,
+    /// The archive being written, as a path of the file system without its dots.
+    itself: Option<Vec<u8>>,
+}
+
+/// A path without its empty and dot parts.
+fn plain_path(path: &[u8]) -> Vec<u8> {
+    let parts: Vec<&[u8]> = path
+        .split(|&b| b == b'/')
+        .filter(|p| !p.is_empty() && *p != b".")
+        .collect();
+    let mut out = if path.first() == Some(&b'/') {
+        b"/".to_vec()
+    } else {
+        Vec::new()
+    };
+    out.extend_from_slice(&parts.join(&b'/'));
+    out
 }
 
 impl Tar<'_, '_> {
@@ -353,6 +382,15 @@ impl Tar<'_, '_> {
         while let Some((disk, name)) = stack.pop() {
             self.ctx.check().await;
             if excluded(&self.o.excludes, &name) {
+                continue;
+            }
+            if self.itself.as_deref() == Some(plain_path(&disk).as_slice()) {
+                let shown = String::from_utf8_lossy(&name).into_owned();
+                self.ctx
+                    .error(&format!(
+                        "{shown}: archive cannot contain itself; not dumped"
+                    ))
+                    .await;
                 continue;
             }
             let meta = match self.ctx.stat(&disk, self.o.dereference).await {
@@ -395,6 +433,14 @@ impl Tar<'_, '_> {
                         Ok(entries) => {
                             let mut names: Vec<Vec<u8>> =
                                 entries.into_iter().map(|e| e.name).collect();
+                            // GNU has made the archive by now, and finds it there.
+                            if let Some(itself) = &self.itself
+                                && let Some(base) = itself.rsplit(|&b| b == b'/').next()
+                                && plain_path(&join(&disk, base)) == *itself
+                                && !names.iter().any(|n| n == base)
+                            {
+                                names.push(base.to_vec());
+                            }
                             names.sort();
                             for child in names.into_iter().rev() {
                                 stack.push((join(&disk, &child), join(&entry.name, &child)));
@@ -409,6 +455,8 @@ impl Tar<'_, '_> {
                 }
                 FileKind::Symlink => {
                     entry.kind = b'2';
+                    // As Linux has a link's mode, whatever the host says of it.
+                    entry.mode = 0o777;
                     match self.ctx.read_link(&disk).await {
                         Ok(target) => entry.link = target,
                         Err(e) => {
@@ -456,6 +504,9 @@ impl Tar<'_, '_> {
     async fn create(&mut self) -> i32 {
         let to_stdout = self.o.file.as_deref().is_none_or(|f| f == b"-");
         self.lines_to_stderr = to_stdout;
+        if !to_stdout {
+            self.itself = self.o.file.as_deref().map(plain_path);
+        }
         let items = std::mem::take(&mut self.o.items);
         let mut dir: Vec<u8> = Vec::new();
         let mut any = false;
@@ -603,6 +654,9 @@ fn members(data: &[u8]) -> Result<Vec<(Entry, std::ops::Range<usize>)>, &'static
     let mut long_link: Option<Vec<u8>> = None;
     let mut pax: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut any = false;
+    if data.len() < BLOCK {
+        return Err("This does not look like a tar archive");
+    }
     while pos + BLOCK <= data.len() {
         let h = &data[pos..pos + BLOCK];
         if h.iter().all(|&b| b == 0) {
@@ -799,6 +853,17 @@ impl Tar<'_, '_> {
             data = match codec::gunzip(&data) {
                 Ok((plain, _)) => plain,
                 Err(GzipError::NotGzip | GzipError::Corrupt(_)) => {
+                    // What could be read is listed before the damage is reported.
+                    if !extract
+                        && self.o.verbose == 0
+                        && let Ok(list) = members(&codec::gunzip_partial(&data))
+                    {
+                        for (entry, body) in &list {
+                            if body.end - body.start == entry.size as usize {
+                                self.line(&entry.name).await;
+                            }
+                        }
+                    }
                     self.ctx
                         .error_raw(b"\ngzip: stdin: unexpected end of file\n")
                         .await;
@@ -838,13 +903,26 @@ impl Tar<'_, '_> {
         let mut dir: Vec<u8> = Vec::new();
         for item in std::mem::take(&mut self.o.items) {
             match item {
-                Item::Chdir(to) => dir = to,
+                Item::Chdir(to) => {
+                    if let Err(e) = self.ctx.read_dir(&to).await {
+                        let shown = String::from_utf8_lossy(&to).into_owned();
+                        self.ctx
+                            .error(&format!("{shown}: Cannot open: {}", error_text(&e)))
+                            .await;
+                        self.ctx
+                            .error("Error is not recoverable: exiting now")
+                            .await;
+                        return 2;
+                    }
+                    dir = to;
+                }
                 Item::Path(p) => {
                     let p = p.strip_suffix(b"/").unwrap_or(&p).to_vec();
                     wanted.push((p, false));
                 }
             }
         }
+        let wildcards = self.o.wildcards;
         let umask = self.ctx.umask();
         let mut dirs: Vec<(Vec<u8>, i64, u32)> = Vec::new();
         for (entry, body) in &list {
@@ -857,6 +935,7 @@ impl Tar<'_, '_> {
                         || (plain.len() > want.len()
                             && plain.starts_with(want)
                             && plain[want.len()] == b'/')
+                        || (wildcards && crate::git::wildmatch(want, plain, false))
                     {
                         *found = true;
                         hit = true;
@@ -1106,6 +1185,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         status: 0,
         warned_slash: false,
         lines_to_stderr: false,
+        itself: None,
     };
     if mode == b'c' {
         tar.create().await

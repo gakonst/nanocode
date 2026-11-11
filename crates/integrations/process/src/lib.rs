@@ -74,6 +74,21 @@ pub(crate) fn redact(bytes: &[u8], redactor: &nanocode_process_contracts::Redact
     output
 }
 
+pub(crate) fn delegated(shell: selection::Shell, script: &str) -> selection::Shell {
+    if !shell.is_psh() {
+        return shell;
+    }
+    let nanocode_psh::Plan::System(reason) = nanocode_psh::plan(script) else {
+        return shell;
+    };
+    let Some(bash) = selection::system_bash_shell() else {
+        tracing::warn!(%reason, "no system bash to hand the command to; psh reports what it lacks");
+        return shell;
+    };
+    tracing::info!(%reason, shell = %bash.path().display(), "the command runs in the system bash");
+    bash
+}
+
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
 const MAX_SESSIONS: usize = 64;
 pub const DEFAULT_OUTPUT_LIMIT_BYTES: usize = 1024 * 1024;
@@ -351,9 +366,12 @@ impl ShellSessions {
             let started_at = Instant::now();
             let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
             let workdir = resolve_workdir(workspace, command.workdir.as_deref());
-            let shell = command.shell.as_deref().map_or_else(
-                || self.default_shell.clone(),
-                selection::get_shell_by_model_provided_path,
+            let shell = delegated(
+                command.shell.as_deref().map_or_else(
+                    || self.default_shell.clone(),
+                    selection::get_shell_by_model_provided_path,
+                ),
+                &command.script,
             );
             let host_secrets = self
                 .secrets

@@ -33,7 +33,9 @@ pub(super) async fn spawn(
     login: bool,
     environment: &[(OsString, OsString)],
 ) -> Option<process::SpawnedProcess> {
-    if shell.name() != "bash" || script.len() > SCRIPT_BYTES || script.contains('\0') {
+    let psh = shell.is_psh();
+    let bash = shell.name() == "bash" && script.len() <= SCRIPT_BYTES;
+    if !(psh || bash) || script.contains('\0') {
         return None;
     }
     let (moved, base): (Vec<_>, Vec<_>) = environment
@@ -42,15 +44,24 @@ pub(super) async fn spawn(
         .partition(|(name, _)| SessionEnvironment::controls(name));
     let mut input = Vec::with_capacity(script.len() + 128);
     for (name, value) in &moved {
-        input.extend_from_slice(b"builtin export ");
-        input.extend_from_slice(name.as_bytes());
-        input.push(b'=');
-        quote(&mut input, value.as_bytes());
-        input.push(b';');
+        if psh {
+            input.extend_from_slice(name.as_bytes());
+            input.push(b'=');
+            input.extend_from_slice(value.as_bytes());
+            input.push(0);
+        } else {
+            input.extend_from_slice(b"builtin export ");
+            input.extend_from_slice(name.as_bytes());
+            input.push(b'=');
+            quote(&mut input, value.as_bytes());
+            input.push(b';');
+        }
     }
     input.push(0);
     input.extend_from_slice(script.as_bytes());
-    input.push(0);
+    if !psh {
+        input.push(0);
+    }
     let pool = POOL.get_or_init(Pool::new);
     let (lane, evicted) = pool.lane(shell, login, workdir, &base);
     let (taken, discarded) = lane.take(pool);
@@ -344,11 +355,16 @@ impl Pool {
         }
         let fresh = Arc::new(Lane {
             shell: shell.path().to_owned(),
-            args: shell.args(LOADER, login),
+            args: shell
+                .warm_args(login)
+                .unwrap_or_else(|| shell.args(LOADER, login)),
             login,
             workdir: workdir.to_owned(),
             environment: environment.to_vec(),
-            files: startup_files(login, environment),
+            files: match shell.is_psh() {
+                true => Vec::new(),
+                false => startup_files(login, environment),
+            },
             idle: Inbox::default(),
             count: AtomicUsize::new(0),
             depth: AtomicUsize::new(0),

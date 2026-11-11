@@ -5648,6 +5648,7 @@ dependencies = [
  "getrandom 0.4.3",
  "nanocode-home",
  "nanocode-process-contracts",
+ "nanocode-psh",
  "nanocode-sync",
  "nix 0.31.3",
  "portable-pty",
@@ -5664,6 +5665,15 @@ dependencies = [
  "nanocode-home",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nanocode-psh"
+version = "0.7.0"
+dependencies = [
+ "nanocode-home",
+ "psh-classify",
+ "psh-syntax",
 ]
 
 [[package]]
@@ -7406,6 +7416,17 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "psh-classify"
+version = "0.0.0"
+dependencies = [
+ "psh-syntax",
+]
+
+[[package]]
+name = "psh-syntax"
+version = "0.0.0"
 
 [[package]]
 name = "psm"

@@ -9,10 +9,11 @@ use nix::unistd::{Uid, User};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ShellType {
     Zsh,
     Bash,
+    Psh(Vec<String>),
     PowerShell,
     Sh,
     Cmd,
@@ -24,7 +25,21 @@ pub struct Shell {
     path: PathBuf,
 }
 
+static CHOSEN: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
+
+pub fn choose(shell: Shell) -> Result<(), Shell> {
+    CHOSEN.set(shell)
+}
+
 impl Shell {
+    #[must_use]
+    pub const fn psh(program: PathBuf, arguments: Vec<String>) -> Self {
+        Self {
+            shell_type: ShellType::Psh(arguments),
+            path: program,
+        }
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -32,15 +47,39 @@ impl Shell {
     pub const fn name(&self) -> &'static str {
         match self.shell_type {
             ShellType::Zsh => "zsh",
-            ShellType::Bash => "bash",
+            ShellType::Bash | ShellType::Psh(_) => "bash",
             ShellType::PowerShell => "powershell",
             ShellType::Sh => "sh",
             ShellType::Cmd => "cmd",
         }
     }
 
+    pub const fn is_psh(&self) -> bool {
+        matches!(self.shell_type, ShellType::Psh(_))
+    }
+
+    pub fn warm_args(&self, login: bool) -> Option<Vec<String>> {
+        let ShellType::Psh(arguments) = &self.shell_type else {
+            return None;
+        };
+        let mut args = arguments.clone();
+        args.push("--warm".to_owned());
+        if login {
+            args.push("-l".to_owned());
+        }
+        Some(args)
+    }
+
     pub fn args(&self, script: &str, login: bool) -> Vec<String> {
-        match self.shell_type {
+        match &self.shell_type {
+            ShellType::Psh(arguments) => arguments
+                .iter()
+                .cloned()
+                .chain([
+                    if login { "-lc" } else { "-c" }.to_owned(),
+                    script.to_owned(),
+                ])
+                .collect(),
             ShellType::Zsh | ShellType::Bash | ShellType::Sh => vec![
                 if login { "-lc" } else { "-c" }.to_owned(),
                 script.to_owned(),
@@ -172,7 +211,7 @@ fn find_in_path(binary: &str) -> Option<PathBuf> {
 }
 
 fn shell_path(
-    shell_type: ShellType,
+    shell_type: &ShellType,
     provided_path: Option<&Path>,
     binary_name: &str,
     fallback_paths: &[&str],
@@ -182,7 +221,7 @@ fn shell_path(
     }
 
     let user_shell = user_shell_path()
-        .filter(|path| detect_shell_type(path) == Some(shell_type))
+        .filter(|path| detect_shell_type(path).as_ref() == Some(shell_type))
         .and_then(|path| file_exists(&path));
     if let Some(path) = user_shell {
         return Some(path);
@@ -196,20 +235,21 @@ fn shell_path(
 }
 
 fn shell(shell_type: ShellType, provided_path: Option<&Path>) -> Option<Shell> {
-    let path = match shell_type {
-        ShellType::Zsh => shell_path(shell_type, provided_path, "zsh", &["/bin/zsh"]),
+    let path = match &shell_type {
+        ShellType::Zsh => shell_path(&shell_type, provided_path, "zsh", &["/bin/zsh"]),
         ShellType::Bash => shell_path(
-            shell_type,
+            &shell_type,
             provided_path,
             "bash",
             &["/bin/bash", "/usr/bin/bash"],
         ),
+        ShellType::Psh(_) => provided_path.and_then(file_exists),
         ShellType::PowerShell => {
-            shell_path(shell_type, provided_path, "pwsh", &["/usr/local/bin/pwsh"])
-                .or_else(|| shell_path(shell_type, provided_path, "powershell", &[]))
+            shell_path(&shell_type, provided_path, "pwsh", &["/usr/local/bin/pwsh"])
+                .or_else(|| shell_path(&shell_type, provided_path, "powershell", &[]))
         }
-        ShellType::Sh => shell_path(shell_type, provided_path, "sh", &["/bin/sh"]),
-        ShellType::Cmd => shell_path(shell_type, provided_path, "cmd", &[]),
+        ShellType::Sh => shell_path(&shell_type, provided_path, "sh", &["/bin/sh"]),
+        ShellType::Cmd => shell_path(&shell_type, provided_path, "cmd", &[]),
     }?;
     Some(Shell { shell_type, path })
 }
@@ -237,6 +277,10 @@ fn ultimate_fallback_shell() -> Shell {
 }
 
 pub fn bash_shell() -> Option<Shell> {
+    CHOSEN.get().cloned().or_else(system_bash_shell)
+}
+
+pub fn system_bash_shell() -> Option<Shell> {
     shell(ShellType::Bash, None)
 }
 
@@ -249,6 +293,9 @@ pub fn get_shell_by_model_provided_path(path: &str) -> Shell {
 
 pub fn default_user_shell() -> Shell {
     static SHELL: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
+    if let Some(chosen) = CHOSEN.get() {
+        return chosen.clone();
+    }
     SHELL
         .get_or_init(|| default_user_shell_from_path(user_shell_path().as_deref()))
         .clone()

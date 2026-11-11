@@ -1,0 +1,30 @@
+[package]
+autotests = false
+autobenches = false
+name = "nanocode-psh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["ai", "agents", "shell", "bash", "psh"]
+categories.workspace = true
+description = "psh as the shell of an agent's commands: the program a host's own executable serves, and whether a command line is psh's to run"
+include = ["src/**", "Cargo.toml"]
+
+[dependencies]
+psh-classify.workspace = true
+psh-syntax.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nanocode-home.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

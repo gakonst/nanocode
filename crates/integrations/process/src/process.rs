@@ -634,7 +634,7 @@ pub(super) fn export_secrets_after_profile<'a>(
     secret_overrides: &[(OsString, OsString)],
     environment: &mut Vec<(OsString, OsString)>,
 ) -> std::borrow::Cow<'a, str> {
-    if !login || !matches!(shell.name(), "zsh" | "bash" | "sh") {
+    if !login || shell.is_psh() || !matches!(shell.name(), "zsh" | "bash" | "sh") {
         return script.into();
     }
     let mut prefix = String::new();

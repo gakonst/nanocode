@@ -51,7 +51,10 @@ pub(crate) fn run_bash_with_environment<'call>(
             )
             .collect();
         let (environment, secrets) = process::sanitized_environment(&overrides, &[]);
-        let shell = selection::bash_shell().ok_or("Bash executable not found")?;
+        let shell = crate::delegated(
+            selection::bash_shell().ok_or("Bash executable not found")?,
+            command,
+        );
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let warm = super::warm::spawn(command, workspace, &shell, false, &environment).await;
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]

@@ -21,7 +21,7 @@ use super::io::{OutKind, Output, RecordReader, Rs, Src, find_nonempty};
 use super::lexer::Builtin;
 use super::printf::{self, Env};
 use super::resolve::Special;
-use super::value::{S, Value, int_str, is_integral, special_str};
+use super::value::{S, Value, int_str, is_integral, parse_prefix, special_str};
 
 /// How the record loop or a block ends early.
 pub enum Flow {
@@ -84,8 +84,16 @@ pub struct Interp<'c, 'v> {
     for_in: Vec<ForIn>,
     steps: u32,
 
-    // The record.
-    line: S,
+    // The record: its bytes, and the text of them a value shares, made when the
+    // program first reads $0 (or a field that is all of it) as a value.
+    rec: Vec<u8>,
+    line: Option<S>,
+    /// The record read last, before it becomes $0 or a getline variable's value.
+    input: Vec<u8>,
+    /// What `print` wrote last: its buffer serves the next `print`.
+    printed: Vec<u8>,
+    /// The emptied argument list of the last builtin call, for the next.
+    call_args: Vec<Value>,
     line_is_str: bool,
     fields: Vec<Field>,
     fields_ok: bool,
@@ -166,7 +174,11 @@ impl<'c, 'v> Interp<'c, 'v> {
             frames: Vec::new(),
             for_in: Vec::new(),
             steps: 0,
-            line: s(b""),
+            rec: Vec::new(),
+            line: None,
+            input: Vec::new(),
+            printed: Vec::new(),
+            call_args: Vec::new(),
             line_is_str: false,
             fields: Vec::new(),
             fields_ok: true,
@@ -211,6 +223,26 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     pub fn num_to_str(&self, n: f64, fmt: &S) -> S {
         if is_integral(n) {
+            // What an i64 holds is written into a buffer on the stack: one allocation,
+            // for the text itself.
+            if n.abs() < 1e18 {
+                let (mut digits, mut at) = ([0u8; 20], 20);
+                let whole = n as i64;
+                let mut left = whole.unsigned_abs();
+                loop {
+                    at -= 1;
+                    digits[at] = b'0' + (left % 10) as u8;
+                    left /= 10;
+                    if left == 0 {
+                        break;
+                    }
+                }
+                if whole < 0 {
+                    at -= 1;
+                    digits[at] = b'-';
+                }
+                return s(&digits[at..]);
+            }
             if n.is_finite() {
                 return s(int_str(n).as_bytes());
             }
@@ -315,15 +347,37 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     /// A new record from input ($0 a strnum).
     pub fn set_line(&mut self, line: &[u8]) {
-        self.set_record(s(line));
+        self.rec.clear();
+        self.rec.extend_from_slice(line);
+        self.new_record();
     }
 
-    fn set_record(&mut self, line: S) {
-        self.line = line;
+    /// The record read last becomes $0: the two buffers change places.
+    fn take_input(&mut self) {
+        std::mem::swap(&mut self.rec, &mut self.input);
+        self.new_record();
+    }
+
+    fn new_record(&mut self) {
+        self.line = None;
         self.line_is_str = false;
         self.assigned[5] = None;
         self.fields_ok = false;
-        self.record_fs = self.fs_split.clone();
+        if !Rc::ptr_eq(&self.record_fs, &self.fs_split) {
+            self.record_fs = self.fs_split.clone();
+        }
+    }
+
+    /// $0 as the text a value shares.
+    fn line(&mut self) -> S {
+        match &self.line {
+            Some(line) => line.clone(),
+            None => {
+                let line = s(&self.rec);
+                self.line = Some(line.clone());
+                line
+            }
+        }
     }
 
     fn ensure_fields(&mut self) {
@@ -331,16 +385,14 @@ impl<'c, 'v> Interp<'c, 'v> {
             return;
         }
         self.fields_ok = true;
-        let line = self.line.clone();
-        let fs = self.record_fs.clone();
         let paragraph = matches!(self.rs_mode, Rs::Paragraph);
-        self.fields.clear();
         let mut fields = std::mem::take(&mut self.fields);
-        let base = line.as_ptr() as usize;
-        split_into(&line, &fs, paragraph, self.utf8, |f| {
+        fields.clear();
+        let (base, len) = (self.rec.as_ptr() as usize, self.rec.len());
+        split_into(&self.rec, &self.record_fs, paragraph, self.utf8, |f| {
             // A field is a part of the line: only its place is kept.
             fields.push(match (f.as_ptr() as usize).checked_sub(base) {
-                Some(at) if at + f.len() <= line.len() => Field::At(at, at + f.len()),
+                Some(at) if at + f.len() <= len => Field::At(at, at + f.len()),
                 _ => Field::Is(Value::strnum(f)),
             })
         });
@@ -350,11 +402,55 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     /// The value of a field that is still a place in the line (the line itself when
     /// the field is all of it).
-    fn field_value(&self, from: usize, to: usize) -> Value {
-        if from == 0 && to == self.line.len() {
-            Value::StrNum(self.line.clone())
+    fn field_value(&mut self, from: usize, to: usize) -> Value {
+        if from == 0 && to == self.rec.len() {
+            Value::StrNum(self.line())
         } else {
-            Value::strnum(&self.line[from..to])
+            Value::strnum(&self.rec[from..to])
+        }
+    }
+
+    /// A field as `print` writes it, appended to `out` from where it lies in the
+    /// record. A field past NF is empty.
+    fn field_text(&mut self, i: usize, out: &mut Vec<u8>) {
+        if i == 0 {
+            return out.extend_from_slice(&self.rec);
+        }
+        self.ensure_fields();
+        match self.fields.get(i - 1) {
+            None => {}
+            Some(Field::Is(v)) => out.extend_from_slice(&self.to_output_str(v)),
+            Some(&Field::At(from, to)) => out.extend_from_slice(&self.rec[from..to]),
+        }
+    }
+
+    /// The characters in a field, counted where it lies in the record.
+    fn field_length(&mut self, i: usize) -> usize {
+        if i == 0 {
+            return self.char_pos(&self.rec, self.rec.len());
+        }
+        self.ensure_fields();
+        match self.fields.get(i - 1) {
+            None => 0,
+            Some(Field::Is(v)) => {
+                let text = self.to_str(v);
+                self.char_pos(&text, text.len())
+            }
+            Some(&Field::At(from, to)) => self.char_pos(&self.rec[from..to], to - from),
+        }
+    }
+
+    /// The number a field is in arithmetic, read where it lies in the record: no
+    /// value is made for it. A field past NF is 0.
+    fn field_num(&mut self, i: usize) -> f64 {
+        if i == 0 {
+            return parse_prefix(&self.rec);
+        }
+        self.ensure_fields();
+        match self.fields.get(i - 1) {
+            None => 0.0,
+            Some(Field::Is(v)) => v.num(),
+            Some(&Field::At(from, to)) => parse_prefix(&self.rec[from..to]),
         }
     }
 
@@ -373,10 +469,11 @@ impl<'c, 'v> Interp<'c, 'v> {
         }
         let i = i as usize;
         if i == 0 {
+            let line = self.line();
             return Ok(if self.line_is_str {
-                Value::Str(self.line.clone())
+                Value::Str(line)
             } else {
-                Value::StrNum(self.line.clone())
+                Value::StrNum(line)
             });
         }
         self.ensure_fields();
@@ -429,11 +526,12 @@ impl<'c, 'v> Interp<'c, 'v> {
                 line.extend_from_slice(&self.ofs);
             }
             match f {
-                Field::At(from, to) => line.extend_from_slice(&self.line[*from..*to]),
+                Field::At(from, to) => line.extend_from_slice(&self.rec[*from..*to]),
                 Field::Is(v) => line.extend_from_slice(&self.to_str(v)),
             }
         }
-        self.line = Rc::from(line);
+        self.rec = line;
+        self.line = None;
         self.line_is_str = true;
         self.assigned[5] = None;
     }
@@ -712,6 +810,14 @@ impl<'c, 'v> Interp<'c, 'v> {
                     let v = self.get_field(*i as f64)?;
                     self.push(v);
                 }
+                Op::FieldNum(i) => {
+                    let n = self.field_num(*i as usize);
+                    self.push(Value::Num(n));
+                }
+                Op::FieldLength(i) => {
+                    let n = self.field_length(*i as usize);
+                    self.push(Value::Num(n as f64));
+                }
                 Op::Load(v) => {
                     let x = self.load(*v);
                     self.push(x);
@@ -759,7 +865,7 @@ impl<'c, 'v> Interp<'c, 'v> {
                 Op::DeleteAll(a) => self.array(*a).borrow_mut().clear(),
                 Op::MatchRecord(i) => {
                     let re = prog.regexes[*i as usize].clone();
-                    let m = re.is_match(&self.line);
+                    let m = re.is_match(&self.rec);
                     self.push(Value::bool(m));
                 }
                 Op::MatchConst(i, neg) => {
@@ -815,7 +921,7 @@ impl<'c, 'v> Interp<'c, 'v> {
                             if r == 0.0 {
                                 return fatal("division by zero attempted in `%'");
                             }
-                            l % r
+                            remainder(l, r)
                         }
                         _ => pow(l, r),
                     };
@@ -1013,12 +1119,27 @@ impl<'c, 'v> Interp<'c, 'v> {
                         self.push(Value::Uninit);
                     }
                 }
+                Op::PrintFields(fields, redir) => {
+                    let mut out = std::mem::take(&mut self.printed);
+                    out.clear();
+                    for (k, i) in fields.iter().enumerate() {
+                        if k > 0 {
+                            out.extend_from_slice(&self.ofs);
+                        }
+                        self.field_text(*i as usize, &mut out);
+                    }
+                    out.extend_from_slice(&self.ors);
+                    let written = self.write_out(*redir, &out).await;
+                    self.printed = out;
+                    written?;
+                }
                 Op::Print(n, redir) => {
                     let n = *n as usize;
                     let at = self.stack.len() - n;
-                    let mut out = Vec::new();
+                    let mut out = std::mem::take(&mut self.printed);
+                    out.clear();
                     if n == 0 {
-                        out.extend_from_slice(&self.line);
+                        out.extend_from_slice(&self.rec);
                     } else {
                         for (k, v) in self.stack[at..].iter().enumerate() {
                             if k > 0 {
@@ -1029,7 +1150,9 @@ impl<'c, 'v> Interp<'c, 'v> {
                     }
                     self.stack.truncate(at);
                     out.extend_from_slice(&self.ors);
-                    self.write_out(*redir, &out).await?;
+                    let written = self.write_out(*redir, &out).await;
+                    self.printed = out;
+                    written?;
                 }
                 Op::Printf(n, redir) => {
                     let n = *n as usize;
@@ -1199,29 +1322,44 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     // ---- Input.
 
-    /// The next record of the main input (ARGV's files, else stdin): NR and FNR are
-    /// counted. None at the end of the input.
-    pub async fn next_main_record(&mut self) -> R<Option<S>> {
+    /// [`Self::next_main_record`] when the record is in what the reader holds.
+    fn buffered_main_record(&mut self) -> bool {
+        let Some(reader) = self.main.as_mut() else {
+            return false;
+        };
+        let Some(rt) = reader.buffered(&self.rs_mode, &mut self.input) else {
+            return false;
+        };
+        self.rt = rt;
+        self.nr += 1.0;
+        self.assigned[0] = None;
+        self.fnr += 1.0;
+        self.assigned[1] = None;
+        true
+    }
+
+    /// The next record of the main input (ARGV's files, else stdin) into `input`: NR
+    /// and FNR are counted. False at the end of the input.
+    pub async fn next_main_record(&mut self) -> R<bool> {
         loop {
             if self.main.is_none() {
                 if self.main_done {
-                    return Ok(None);
+                    return Ok(false);
                 }
                 if !self.open_next_file().await? {
                     self.main_done = true;
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
-            let rs = self.rs_mode.clone();
             let reader = self.main.as_mut().unwrap();
-            match reader.read(self.ctx, &rs).await {
-                Ok(Some((rec, rt))) => {
+            match reader.read(self.ctx, &self.rs_mode, &mut self.input).await {
+                Ok(Some(rt)) => {
                     self.rt = rt;
                     self.nr += 1.0;
                     self.assigned[0] = None;
                     self.fnr += 1.0;
                     self.assigned[1] = None;
-                    return Ok(Some(rec));
+                    return Ok(true);
                 }
                 Ok(None) => self.main = None,
                 Err(e) => {
@@ -1318,13 +1456,12 @@ impl<'c, 'v> Interp<'c, 'v> {
             Target::Field | Target::Array(_) => Some(self.pop()),
             _ => None,
         };
-        let record = match src {
+        let got = match src {
             GetlineSrc::Main => {
                 // A prompt written before is visible first.
                 let _ = self.ctx.flush().await;
                 match self.next_main_record().await {
-                    Ok(Some(r)) => Some(r),
-                    Ok(None) => None,
+                    Ok(got) => got,
                     Err(Flow::Fatal(m) | Flow::FatalPlain(m)) => {
                         self.ctx.error(&m).await;
                         self.push(Value::Num(-1.0));
@@ -1373,16 +1510,16 @@ impl<'c, 'v> Interp<'c, 'v> {
                 } else {
                     self.files_in.get_mut(&*name).unwrap()
                 };
-                match reader.read(self.ctx, &rs).await {
-                    Ok(Some((rec, rt))) => {
+                match reader.read(self.ctx, &rs, &mut self.input).await {
+                    Ok(Some(rt)) => {
                         self.rt = rt;
                         if cmd {
                             self.nr += 1.0;
                             self.assigned[0] = None;
                         }
-                        Some(rec)
+                        true
                     }
-                    Ok(None) => None,
+                    Ok(None) => false,
                     Err(_) => {
                         self.push(Value::Num(-1.0));
                         return Ok(());
@@ -1390,25 +1527,30 @@ impl<'c, 'v> Interp<'c, 'v> {
                 }
             }
         };
-        let Some(rec) = record else {
+        if !got {
             self.push(Value::Num(0.0));
             return Ok(());
-        };
+        }
         match target {
             Target::Record => {
-                self.set_record(rec);
+                self.take_input();
                 if matches!(src, GetlineSrc::File) {
                     // NR and FNR are left alone for a file.
                 }
             }
-            Target::Var(v) => self.store(v, Value::strnum(&rec))?,
+            Target::Var(v) => {
+                let value = Value::strnum(&self.input);
+                self.store(v, value)?
+            }
             Target::Field => {
                 let i = index.unwrap().num();
-                self.set_field(i, Value::strnum(&rec))?;
+                let value = Value::strnum(&self.input);
+                self.set_field(i, value)?;
             }
             Target::Array(a) => {
                 let k = self.key(&index.unwrap());
-                self.array(a).borrow_mut().set(k, Value::strnum(&rec));
+                let value = Value::strnum(&self.input);
+                self.array(a).borrow_mut().set(k, value);
             }
         }
         self.push(Value::Num(1.0));
@@ -1483,10 +1625,10 @@ impl<'c, 'v> Interp<'c, 'v> {
     async fn records(&mut self) -> R<()> {
         let prog = self.prog.clone();
         'records: loop {
-            let Some(rec) = self.next_main_record().await? else {
+            if !self.buffered_main_record() && !self.next_main_record().await? {
                 return Ok(());
-            };
-            self.set_record(rec);
+            }
+            self.take_input();
             for (i, action) in prog.actions.iter().enumerate() {
                 let matched = match action.pattern.len() {
                     0 => true,
@@ -1511,7 +1653,7 @@ impl<'c, 'v> Interp<'c, 'v> {
                     continue;
                 }
                 if action.body.is_none() {
-                    let mut out = self.line.to_vec();
+                    let mut out = self.rec.clone();
                     out.extend_from_slice(&self.ors);
                     self.write_stdout(&out).await?;
                     continue;
@@ -1534,7 +1676,10 @@ impl<'c, 'v> Interp<'c, 'v> {
     async fn call_builtin(&mut self, b: Builtin, n: usize) -> R<()> {
         use Builtin as B;
         let at = self.stack.len() - n;
-        let args: Vec<Value> = self.stack.drain(at..).collect();
+        // The arguments move into the list the last call left: no list per call.
+        let mut args = std::mem::take(&mut self.call_args);
+        args.clear();
+        args.extend(self.stack.drain(at..));
         let v = match b {
             B::Length => {
                 let t = self.to_str(&args[0]);
@@ -1714,6 +1859,8 @@ impl<'c, 'v> Interp<'c, 'v> {
             }
             B::Split | B::Sprintf => unreachable!("compiled to their own instructions"),
         };
+        args.clear();
+        self.call_args = args;
         self.push(v);
         Ok(())
     }
@@ -1747,6 +1894,18 @@ impl<'c, 'v> Interp<'c, 'v> {
         z ^= z >> 31;
         (z >> 11) as f64 / (1u64 << 53) as f64
     }
+}
+
+/// `l % r` (C's fmod). Whole numbers a double holds exactly take the integer
+/// remainder: the same value, the sign of `l` kept on a zero, without the library's
+/// bit-by-bit division.
+fn remainder(l: f64, r: f64) -> f64 {
+    let exact = (1u64 << f64::MANTISSA_DIGITS) as f64;
+    if l.abs() < exact && r.abs() < exact && l == l.trunc() && r == r.trunc() {
+        let m = ((l as i64) % (r as i64)) as f64;
+        return if l.is_sign_negative() { -m.abs() } else { m };
+    }
+    l % r
 }
 
 fn pow(l: f64, r: f64) -> f64 {

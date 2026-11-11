@@ -74,6 +74,10 @@ pub enum Op {
     /// index -> $index
     Field,
     FieldInt(u32),
+    /// $N as the number it is in arithmetic: no string value is made for it.
+    FieldNum(u32),
+    /// length($N), counted in the record.
+    FieldLength(u32),
     Load(Var),
     /// index -> a[index] (created if missing)
     ArrayGet(Arr),
@@ -153,6 +157,8 @@ pub enum Op {
     Nulls(u32),
     /// [dest] args... ->
     Print(u32, Redir),
+    /// [dest] -> : `print` of fields with constant indexes, without a value for each.
+    PrintFields(Rc<[u32]>, Redir),
     Printf(u32, Redir),
     /// [file/cmd] [index] -> status
     Getline(super::ast::GetlineSrc, Target),
@@ -400,10 +406,7 @@ impl Compiler<'_> {
                         self.add(if *decr { Op::Sub } else { Op::Add });
                         self.assign_rote_index(expr)?;
                     }
-                    Expr::AugAssign(l, op, r) => {
-                        self.aug_assign(l, *op, r)?;
-                        self.add(Op::Drop);
-                    }
+                    Expr::AugAssign(l, op, r) => self.aug_assign(l, *op, r, false)?,
                     _ => {
                         self.expr(e)?;
                         self.add(Op::Drop);
@@ -423,15 +426,21 @@ impl Compiler<'_> {
                 if let Some(d) = dest {
                     self.expr(d)?;
                 }
-                for a in args {
-                    self.expr(a)?;
-                }
                 let r = match redirect {
                     Redirect::None => Redir::None,
                     Redirect::Write => Redir::Write,
                     Redirect::Append => Redir::Append,
                     Redirect::Pipe => Redir::Pipe,
                 };
+                // `print $2, $1`: the fields are written from the record as they lie.
+                let fields: Option<Vec<u32>> = args.iter().map(constant_field).collect();
+                if let (Stmt::Print { .. }, Some(fields), false) = (s, fields, args.is_empty()) {
+                    self.add(Op::PrintFields(Rc::from(fields), r));
+                    return Ok(());
+                }
+                for a in args {
+                    self.expr(a)?;
+                }
                 let n = args.len() as u32;
                 self.add(if matches!(s, Stmt::Print { .. }) {
                     Op::Print(n, r)
@@ -645,6 +654,21 @@ impl Compiler<'_> {
         Ok(())
     }
 
+    /// An operand of arithmetic: a field with a constant index is read as its number.
+    fn operand(&mut self, e: &Expr) -> CResult {
+        match e {
+            Expr::Group(inner) => self.operand(inner),
+            Expr::Field(i) => match **i {
+                Expr::Num(n) if n >= 0.0 && n == n.trunc() && n < 1e9 => {
+                    self.add(Op::FieldNum(n as u32));
+                    Ok(())
+                }
+                _ => self.expr(e),
+            },
+            _ => self.expr(e),
+        }
+    }
+
     fn bin(&mut self, op: BinOp) {
         self.add(match op {
             BinOp::Add => Op::Add,
@@ -667,26 +691,43 @@ impl Compiler<'_> {
     }
 
     /// `l op= r`, leaving the new value on the stack.
-    fn aug_assign(&mut self, l: &Expr, op: BinOp, r: &Expr) -> CResult {
+    /// `l op= r`; its value stays on the stack when `keep` (it is an expression).
+    fn aug_assign(&mut self, l: &Expr, op: BinOp, r: &Expr, keep: bool) -> CResult {
         match l {
             // The right side first, as gawk: `x += x++`, `$f() += g()` calls g first.
+            // A right side that only reads cannot change the variable: the old value
+            // is loaded first, and nothing is swapped.
+            Expr::Var(..) if reads_only(r) => {
+                self.expr(l)?;
+                self.operand(r)?;
+                self.bin(op);
+                if keep {
+                    self.add(Op::Dup);
+                }
+                self.assign(l)?;
+            }
             Expr::Var(..) => {
-                self.expr(r)?;
+                self.operand(r)?;
                 self.expr(l)?;
                 self.add(Op::Swap);
                 self.bin(op);
-                self.add(Op::Dup);
+                if keep {
+                    self.add(Op::Dup);
+                }
                 self.assign(l)?;
             }
             _ => {
                 // r [index old] -> [index old r] -> [index new] -> [new new index].
-                self.expr(r)?;
+                self.operand(r)?;
                 self.dupe_index_lvalue(l)?;
                 self.add(Op::Rote);
                 self.bin(op);
                 self.add(Op::Dup);
                 self.add(Op::Rote);
                 self.store_indexed(l);
+                if !keep {
+                    self.add(Op::Drop);
+                }
             }
         }
         Ok(())
@@ -803,8 +844,13 @@ impl Compiler<'_> {
                             msg: "error: division by zero attempted".into(),
                         });
                     }
-                    self.expr(l)?;
-                    self.expr(r)?;
+                    if arithmetic(*op) {
+                        self.operand(l)?;
+                        self.operand(r)?;
+                    } else {
+                        self.expr(l)?;
+                        self.expr(r)?;
+                    }
                     self.bin(*op);
                 }
             },
@@ -866,7 +912,7 @@ impl Compiler<'_> {
                     _ => unreachable!(),
                 }
             }
-            Expr::AugAssign(l, op, r) => self.aug_assign(l, *op, r)?,
+            Expr::AugAssign(l, op, r) => self.aug_assign(l, *op, r, true)?,
             Expr::Cond(c, t, f) => {
                 self.expr(c)?;
                 let if_mark = self.jump_forward(Op::JumpFalse);
@@ -877,7 +923,10 @@ impl Compiler<'_> {
                 self.patch(else_mark);
             }
             Expr::Unary(op, v) => {
-                self.expr(v)?;
+                match op {
+                    UnOp::Not => self.expr(v)?,
+                    UnOp::Neg | UnOp::Plus => self.operand(v)?,
+                }
                 self.add(match op {
                     UnOp::Not => Op::Not,
                     UnOp::Neg => Op::Neg,
@@ -1045,14 +1094,15 @@ impl Compiler<'_> {
                     let a = self.array(name);
                     self.add(Op::LengthArray(a));
                 }
-                Some(e) => {
-                    self.expr(e)?;
-                    self.add(Op::Call(b, 1));
-                }
-                None => {
-                    self.add(Op::FieldInt(0));
-                    self.add(Op::Call(b, 1));
-                }
+                // The length of a field is counted where it lies in the record.
+                Some(e) => match constant_field(e) {
+                    Some(i) => self.add(Op::FieldLength(i)),
+                    None => {
+                        self.expr(e)?;
+                        self.add(Op::Call(b, 1));
+                    }
+                },
+                None => self.add(Op::FieldLength(0)),
             },
             B::Sprintf => {
                 for a in args {
@@ -1082,6 +1132,37 @@ impl Compiler<'_> {
             _ => self.expr(e)?,
         }
         Ok(())
+    }
+}
+
+/// The index of `$N` written with a constant N.
+fn constant_field(e: &Expr) -> Option<u32> {
+    match e {
+        Expr::Group(inner) => constant_field(inner),
+        Expr::Field(i) => match **i {
+            Expr::Num(n) if n >= 0.0 && n == n.trunc() && n < 1e9 => Some(n as u32),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether `op` takes both its operands as numbers.
+fn arithmetic(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::Pow
+    )
+}
+
+/// Whether evaluating `e` assigns nothing and calls nothing: constants, variables and
+/// fields under operators.
+fn reads_only(e: &Expr) -> bool {
+    match e {
+        Expr::Num(_) | Expr::Str(_) | Expr::Var(..) => true,
+        Expr::Field(inner) | Expr::Group(inner) | Expr::Unary(_, inner) => reads_only(inner),
+        Expr::Binary(l, _, r) => reads_only(l) && reads_only(r),
+        _ => false,
     }
 }
 

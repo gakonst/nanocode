@@ -28,9 +28,6 @@ pub enum Src {
 
 const CHUNK: usize = 64 * 1024;
 
-/// A record and its terminator (RT).
-type Record = (Rc<[u8]>, Rc<[u8]>);
-
 pub struct RecordReader {
     pub src: Src,
     buf: Vec<u8>,
@@ -86,17 +83,46 @@ impl RecordReader {
         }
     }
 
-    /// The next record and its terminator (RT), or None at the end.
-    pub async fn read(&mut self, ctx: &mut UtilCtx<'_>, rs: &Rs) -> io::Result<Option<Record>> {
+    /// [`Self::read`] for a record that ends within what is already read, when RS is
+    /// one byte: there is nothing to wait for, so no future is made for the record.
+    pub fn buffered(&mut self, rs: &Rs, rec: &mut Vec<u8>) -> Option<Rc<[u8]>> {
+        let Rs::Byte(sep) = rs else {
+            return None;
+        };
+        let at = self.pos + bstr::ByteSlice::find_byte(&self.buf[self.pos..], *sep)?;
+        rec.clear();
+        rec.extend_from_slice(&self.buf[self.pos..at]);
+        self.pos = at + 1;
+        if !matches!(&*self.rt, [had] if had == sep) {
+            self.rt = Rc::from(&[*sep][..]);
+        }
+        Some(self.rt.clone())
+    }
+
+    /// The next record into `rec` (what it held is replaced), giving its terminator
+    /// (RT); None at the end. The caller's buffer is filled, so a record costs no
+    /// allocation of its own.
+    pub async fn read(
+        &mut self,
+        ctx: &mut UtilCtx<'_>,
+        rs: &Rs,
+        rec: &mut Vec<u8>,
+    ) -> io::Result<Option<Rc<[u8]>>> {
+        rec.clear();
         match rs {
-            Rs::Byte(b) => self.read_seq(ctx, &[*b]).await,
-            Rs::Seq(s) => self.read_seq(ctx, s).await,
-            Rs::Paragraph => self.read_paragraph(ctx).await,
-            Rs::Regex(re) => self.read_regex(ctx, re).await,
+            Rs::Byte(b) => self.read_seq(ctx, &[*b], rec).await,
+            Rs::Seq(s) => self.read_seq(ctx, s, rec).await,
+            Rs::Paragraph => self.read_paragraph(ctx, rec).await,
+            Rs::Regex(re) => self.read_regex(ctx, re, rec).await,
         }
     }
 
-    async fn read_seq(&mut self, ctx: &mut UtilCtx<'_>, sep: &[u8]) -> io::Result<Option<Record>> {
+    async fn read_seq(
+        &mut self,
+        ctx: &mut UtilCtx<'_>,
+        sep: &[u8],
+        rec: &mut Vec<u8>,
+    ) -> io::Result<Option<Rc<[u8]>>> {
         let mut searched = self.pos;
         loop {
             let hay = &self.buf[searched..];
@@ -107,20 +133,25 @@ impl RecordReader {
             };
             if let Some(i) = found {
                 let at = searched + i;
-                let rec = Rc::from(&self.buf[self.pos..at]);
+                rec.extend_from_slice(&self.buf[self.pos..at]);
                 self.pos = at + sep.len();
-                if *self.rt != *sep {
+                // One byte against one byte needs no call.
+                let same = match (&*self.rt, sep) {
+                    ([had], [found]) => had == found,
+                    (had, found) => had == found,
+                };
+                if !same {
                     self.rt = Rc::from(sep);
                 }
-                return Ok(Some((rec, self.rt.clone())));
+                return Ok(Some(self.rt.clone()));
             }
             searched = self.buf.len().saturating_sub(sep.len() - 1).max(self.pos);
             let base = self.pos;
             if !self.fill(ctx).await? {
                 if self.pos < self.buf.len() {
-                    let rec = Rc::from(&self.buf[self.pos..]);
+                    rec.extend_from_slice(&self.buf[self.pos..]);
                     self.pos = self.buf.len();
-                    return Ok(Some((rec, Rc::from(&b""[..]))));
+                    return Ok(Some(Rc::from(&b""[..])));
                 }
                 return Ok(None);
             }
@@ -129,7 +160,11 @@ impl RecordReader {
         }
     }
 
-    async fn read_paragraph(&mut self, ctx: &mut UtilCtx<'_>) -> io::Result<Option<Record>> {
+    async fn read_paragraph(
+        &mut self,
+        ctx: &mut UtilCtx<'_>,
+        rec: &mut Vec<u8>,
+    ) -> io::Result<Option<Rc<[u8]>>> {
         // Leading newlines are skipped.
         loop {
             while self.pos < self.buf.len() && self.buf[self.pos] == b'\n' {
@@ -166,22 +201,22 @@ impl RecordReader {
                     }
                 }
                 let at = searched + i;
-                let rec = Rc::from(&self.buf[self.pos..at]);
+                rec.extend_from_slice(&self.buf[self.pos..at]);
                 let rt = Rc::from(&self.buf[at..end]);
                 self.pos = end;
-                return Ok(Some((rec, rt)));
+                return Ok(Some(rt));
             }
             searched = self.buf.len().saturating_sub(1).max(self.pos);
             let base = self.pos;
             if !self.fill(ctx).await? {
-                let mut rec = self.buf[self.pos..].to_vec();
+                rec.extend_from_slice(&self.buf[self.pos..]);
                 self.pos = self.buf.len();
                 let mut rt = Vec::new();
                 while rec.last() == Some(&b'\n') {
                     rec.pop();
                     rt.push(b'\n');
                 }
-                return Ok(Some((Rc::from(rec), Rc::from(rt))));
+                return Ok(Some(Rc::from(rt)));
             }
             searched -= base - self.pos;
         }
@@ -191,7 +226,8 @@ impl RecordReader {
         &mut self,
         ctx: &mut UtilCtx<'_>,
         re: &Regex,
-    ) -> io::Result<Option<Record>> {
+        rec: &mut Vec<u8>,
+    ) -> io::Result<Option<Rc<[u8]>>> {
         loop {
             let hay = &self.buf[self.pos..];
             let m =
@@ -199,10 +235,10 @@ impl RecordReader {
             match m {
                 // A match that reaches the end of the data may grow with more input.
                 Some((s, e)) if self.pos + e < self.buf.len() || self.eof => {
-                    let rec = Rc::from(&hay[..s]);
+                    rec.extend_from_slice(&hay[..s]);
                     let rt = Rc::from(&hay[s..e]);
                     self.pos += e;
-                    return Ok(Some((rec, rt)));
+                    return Ok(Some(rt));
                 }
                 _ => {}
             }
@@ -211,15 +247,15 @@ impl RecordReader {
                     .map(|(s, e)| (s - self.pos, e - self.pos))
                 {
                     let hay = &self.buf[self.pos..];
-                    let rec = Rc::from(&hay[..s]);
+                    rec.extend_from_slice(&hay[..s]);
                     let rt = Rc::from(&hay[s..e]);
                     self.pos += e;
-                    return Ok(Some((rec, rt)));
+                    return Ok(Some(rt));
                 }
                 if self.pos < self.buf.len() {
-                    let rec = Rc::from(&self.buf[self.pos..]);
+                    rec.extend_from_slice(&self.buf[self.pos..]);
                     self.pos = self.buf.len();
-                    return Ok(Some((rec, Rc::from(&b""[..]))));
+                    return Ok(Some(Rc::from(&b""[..])));
                 }
                 return Ok(None);
             }

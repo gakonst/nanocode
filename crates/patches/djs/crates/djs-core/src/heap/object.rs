@@ -476,13 +476,14 @@ impl Heap {
             .cell_size(slots)
             .ok_or(HeapError::OutOfMemory)?;
         let o = self.alloc_cell(CellKind::Object, size)?;
+        // (A new cell: its writes need no note in a tracked prefix.)
         let a = self.arena_mut();
-        a.set(o, Object::CLASS, class as u32);
-        a.set(o, Object::PROTO, Ref(proto.map_or(0, |p| p.0)));
+        a.set_untracked(o, Object::CLASS, class as u32);
+        a.set_untracked(o, Object::PROTO, Ref(proto.map_or(0, |p| p.0)));
         for i in 0..slots {
-            a.write(Object::SLOTS.at(o, i), Value::UNDEFINED);
+            a.write_untracked(Object::SLOTS.at(o, i), Value::UNDEFINED);
         }
-        self.set_cell_flags(o, OBJ_EXTENSIBLE);
+        a.set_untracked(o, crate::heap::Header::FLAGS, OBJ_EXTENSIBLE);
         Ok(Obj(o))
     }
 
@@ -815,7 +816,8 @@ impl Heap {
         slots: u32,
     ) -> Result<Obj, HeapError> {
         let f = self.alloc_object(ObjectClass::Function, proto, slots)?;
-        self.arena_mut().set(f.0, Object::ELEMENTS, Ref(t));
+        self.arena_mut()
+            .set_untracked(f.0, Object::ELEMENTS, Ref(t));
         Ok(f)
     }
 

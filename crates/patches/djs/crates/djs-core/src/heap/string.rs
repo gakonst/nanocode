@@ -461,7 +461,7 @@ impl Heap {
             (CellKind::Str8, Str8::DATA.cell_size(len))
         };
         let off = self.alloc_cell(kind, size.ok_or(HeapError::StringTooLong)?)?;
-        self.arena_mut().set(off, Str8::LEN, len);
+        self.arena_mut().set_untracked(off, Str8::LEN, len);
         Ok(off)
     }
 
@@ -526,7 +526,7 @@ impl Heap {
         }
         let size = Str8::DATA.cell_size(len).ok_or(HeapError::StringTooLong)?;
         let off = self.alloc_cell_init(CellKind::Str8, size, Str8::DATA.offset, data)?;
-        self.arena_mut().set(off, Str8::LEN, len);
+        self.arena_mut().set_untracked(off, Str8::LEN, len);
         Ok(Str(off))
     }
 
@@ -1229,9 +1229,9 @@ impl Heap {
         }
         let r = self.alloc_cell(CellKind::Rope, Rope::LAYOUT.min_size)?;
         let ar = self.arena_mut();
-        ar.set(r, Rope::LEN, len);
-        ar.set(r, Rope::LEFT, Ref(a.0));
-        ar.set(r, Rope::RIGHT, Ref(b.0));
+        ar.set_untracked(r, Rope::LEN, len);
+        ar.set_untracked(r, Rope::LEFT, Ref(a.0));
+        ar.set_untracked(r, Rope::RIGHT, Ref(b.0));
         if two_byte {
             self.set_cell_flags(r, flags::ROPE_TWO_BYTE);
         }

@@ -130,6 +130,7 @@ fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
 }
 
 fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
+    ctx.no_replay();
     let argv: Result<Vec<String>, _> = argv.into_iter().skip(1).map(String::from_utf8).collect();
     let Ok(argv) = argv else {
         ctx.error("an argument is not UTF-8");

@@ -9,8 +9,8 @@
 use std::io::{self, Read, Write};
 use std::rc::Rc;
 
-use super::{Io, SyncCtx, block_on_once, native_read_dir, native_stat, poll_once, would_block};
-use crate::host::{DirEntry, Host, Metadata, NativePathFn, OpenOptions};
+use super::{Io, SyncCtx, native_read_dir, native_stat, poll_once, would_block};
+use crate::host::{DirEntry, Host, HostFuture, Metadata, NativePathFn, OpenOptions};
 
 /// [`SyncCtx::files`].
 #[derive(Clone)]
@@ -34,6 +34,10 @@ impl SyncCtx {
             },
         }
     }
+}
+
+fn block_on_once<T>(mut fut: HostFuture<io::Result<T>>) -> io::Result<T> {
+    poll_once(|cx| fut.as_mut().poll(cx)).unwrap_or_else(|| Err(would_block()))
 }
 
 fn too_large() -> io::Error {

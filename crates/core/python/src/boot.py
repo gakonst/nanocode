@@ -350,6 +350,78 @@ if not hasattr(time, 'timezone'):
     time.tzname = ('UTC', 'UTC')
 
 
+def _bounded():
+    import zlib
+    inflate, first = zlib.decompressobj, zlib.DEF_BUF_SIZE
+
+    class Inflate:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def decompress(self, data, max_length=0):
+            stream, chunks, size, left = self._stream, [], first, max_length
+            while True:
+                chunk = stream.decompress(data, min(size, left) if max_length else size)
+                chunks.append(chunk)
+                left -= len(chunk)
+                data = stream.unconsumed_tail
+                if not data or stream.eof or (max_length and left <= 0):
+                    break
+                size += size
+            return chunks[0] if len(chunks) == 1 else b''.join(chunks)
+
+        def copy(self):
+            return Inflate(self._stream.copy())
+
+        def __getattr__(self, name):
+            return getattr(self._stream, name)
+
+    def decompressobj(wbits=zlib.MAX_WBITS, zdict=b''):
+        return Inflate(inflate(wbits, zdict) if zdict else inflate(wbits))
+
+    def decompress(data, /, wbits=zlib.MAX_WBITS, bufsize=first):
+        stream = decompressobj(wbits)
+        data = stream.decompress(data) + stream.flush()
+        if not stream.eof:
+            raise zlib.error('Error -5 while decompressing data: incomplete or truncated stream')
+        return data
+
+    def bounded(kind):
+        class Bounded:
+            def __init__(self, *args, **options):
+                self._stream = kind(*args, **options)
+
+            def decompress(self, data, max_length=-1):
+                stream, chunks, size, left = self._stream, [], first, max_length
+                while True:
+                    chunk = stream.decompress(data, size if max_length < 0 else min(size, left))
+                    chunks.append(chunk)
+                    left -= len(chunk)
+                    data = b''
+                    if stream.eof or stream.needs_input or (max_length >= 0 and left <= 0):
+                        break
+                    size += size
+                return chunks[0] if len(chunks) == 1 else b''.join(chunks)
+
+            def __getattr__(self, name):
+                return getattr(self._stream, name)
+
+        Bounded.__name__ = Bounded.__qualname__ = kind.__name__
+        return Bounded
+
+    zlib.decompressobj, zlib.decompress = decompressobj, decompress
+    zlib._ZlibDecompressor = bounded(zlib._ZlibDecompressor)
+    for name, kind in (('_bz2', 'BZ2Decompressor'), ('_lzma', 'LZMADecompressor')):
+        try:
+            module = __import__(name)
+        except ImportError:
+            continue
+        setattr(module, kind, bounded(getattr(module, kind)))
+
+
+_bounded()
+
+
 def _start(argv, first):
     posix._reset()
     while _loaded:

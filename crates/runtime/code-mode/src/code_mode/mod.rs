@@ -67,6 +67,7 @@ pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
 pub use nanocode_code_mode_engine::JournalEntry;
 pub use nanocode_code_mode_engine::bytes;
+pub use nanocode_code_mode_engine::set_cell_memory;
 use nanocode_code_mode_engine::{
     CellTools, EmbeddedHost as ExecutionWorker, Interrupt, RuntimeEvent,
 };

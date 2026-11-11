@@ -1,7 +1,10 @@
 use std::{
     borrow::Cow,
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
-    sync::{Arc, OnceLock, Weak},
+    sync::{
+        Arc, OnceLock, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -184,12 +187,19 @@ pub(crate) struct Prepared {
     spares: Box<[Slot<Instance>]>,
 }
 
+static CELL_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub fn set_cell_memory(bytes: usize) {
+    CELL_MEMORY.store(bytes, Ordering::Relaxed);
+}
+
 impl Prepared {
     pub(crate) fn instance(&self) -> Result<Instance, djs_embed::Error> {
-        match self.spare() {
+        let memory = CELL_MEMORY.load(Ordering::Relaxed);
+        match self.spare().filter(|spare| spare.limits().memory == memory) {
             Some(instance) => Ok(instance),
             None => self.snapshot.instantiate(Limits {
-                memory: usize::MAX,
+                memory,
                 fuel: u64::MAX,
                 ..Limits::default()
             }),

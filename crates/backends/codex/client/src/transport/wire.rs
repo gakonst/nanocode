@@ -1,27 +1,36 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::value::{RawValue, to_raw_value};
+use serde_json::value::RawValue;
 
 use super::ResponsesError;
 
-pub struct EncodedRequest(Box<RawValue>);
+pub struct EncodedRequest(String);
 
 impl EncodedRequest {
     pub fn new<T: Serialize + ?Sized>(request: &T) -> Result<Self, ResponsesError> {
-        to_raw_value(request)
+        serde_json::to_string(request)
+            .map(Self)
+            .map_err(ResponsesError::EncodeRequest)
+    }
+
+    pub(crate) fn create(
+        request: &crate::client::responses::ResponseCreate<'_>,
+    ) -> Result<Self, ResponsesError> {
+        request
+            .encode()
             .map(Self)
             .map_err(ResponsesError::EncodeRequest)
     }
 
     #[must_use]
-    pub fn raw(&self) -> &RawValue {
+    pub fn json(&self) -> &str {
         &self.0
     }
 
     #[must_use]
     pub fn into_string(self) -> String {
-        String::from(Box::<str>::from(self.0))
+        self.0
     }
 }
 

@@ -137,13 +137,13 @@ impl ResponsesHttp {
                             auth,
                             session_id,
                             thread_id,
-                            request.raw().get(),
+                            request.json(),
                         )
                         .await
                 }
                 None => {
                     gateway
-                        .send(client, api_base_url, auth, request.raw().get())
+                        .send(client, api_base_url, auth, request.json())
                         .await
                 }
             };
@@ -174,7 +174,7 @@ impl ResponsesHttp {
                 header::USER_AGENT,
                 concat!("nanocode/", env!("CARGO_PKG_VERSION")),
             );
-        let body = request.raw().get().to_owned();
+        let body = request.json().to_owned();
         builder = if auth.mode() == OpenAiAuthMode::ChatGpt && self.gateway.is_none() {
             let encoded = tokio::task::spawn_blocking(move || {
                 zstd::stream::encode_all(body.as_bytes(), ZSTD_LEVEL)
@@ -608,7 +608,7 @@ impl ResponsesHttp {
                     auth,
                     session_id,
                     thread_id,
-                    request.raw().get(),
+                    request.json(),
                 )
                 .await;
         }
@@ -657,7 +657,7 @@ impl ResponsesHttp {
                         .as_deref()
                         .map_or(&[][..], super::ResponsesGateway::headers),
                 ),
-                request.raw().get(),
+                request.json(),
             )
             .await
             .map_err(map_host_error)?;

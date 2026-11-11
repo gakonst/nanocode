@@ -33,7 +33,7 @@ pub(crate) async fn run(
     let encode_started_at = Instant::now();
     let encoded = service.encode_request(connection, request, ResponsesTransport::Https)?;
     let encode_duration_ns = elapsed_ns(encode_started_at);
-    let request_bytes = encoded.raw().get().len();
+    let request_bytes = encoded.json().len();
     let transport = ResponsesTransport::Https.as_str();
     let span = tracing::Span::current();
     span.record("request.bytes", request_bytes);
@@ -44,10 +44,10 @@ pub(crate) async fn run(
         transport,
         phase = request.kind.phase(),
         model.call_index = request.call_index,
-        api.request = %encoded.raw().get(),
+        api.request = %encoded.json(),
         "OpenAI Responses API request"
     );
-    request.trace_encoded_input(encoded.raw().get());
+    request.trace_encoded_input(encoded.json());
     request.observer.emit(
         AgentEventKind::ApiEvent,
         ApiEvent {
@@ -55,7 +55,7 @@ pub(crate) async fn run(
             transport,
             phase: request.kind.phase(),
             model_call_index: request.call_index,
-            event: ApiEventData::Encoded(encoded.raw()),
+            event: ApiEventData::Encoded(encoded.json()),
         },
     )?;
     let send_started_at = Instant::now();

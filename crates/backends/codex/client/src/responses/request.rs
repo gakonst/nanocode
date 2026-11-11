@@ -725,23 +725,23 @@ impl RequestInput<'_> {
         }
     }
 
-    fn items<S: SerializeSeq>(
+    fn items<'b>(
         &self,
-        sequence: &mut S,
+        pieces: &mut Vec<Cow<'b, str>>,
         items: &[ResponseItem],
-    ) -> Result<(), S::Error> {
+    ) -> Result<(), serde_json::Error> {
         for item in items.iter().filter(|item| self.supports(item)) {
-            sequence.serialize_element(&self.element(item))?;
+            pieces.push(Cow::Owned(serde_json::to_string(&self.element(item))?));
         }
         Ok(())
     }
 
-    fn history<S: SerializeSeq>(
+    fn history<'b>(
         &self,
-        sequence: &mut S,
-        history: &ResponseHistory,
+        pieces: &mut Vec<Cow<'b, str>>,
+        history: &'b ResponseHistory,
         start: usize,
-    ) -> Result<(), S::Error> {
+    ) -> Result<(), serde_json::Error> {
         let committed_len = history.head.as_ref().map_or(0, |segment| segment.len);
         let start = start.min(history.len());
         let mut segments = Vec::new();
@@ -764,17 +764,30 @@ impl RequestInput<'_> {
                 .filter(|_| skip == 0)
             {
                 Some(encoded) => {
-                    for item in encoded {
-                        sequence.serialize_element(item)?;
-                    }
+                    pieces.extend(encoded.iter().map(|item| Cow::Borrowed(item.get())));
                 }
-                None => self.items(sequence, &segment.items[skip..])?,
+                None => self.items(pieces, &segment.items[skip..])?,
             }
         }
-        self.items(
-            sequence,
-            &history.tail[start.saturating_sub(committed_len)..],
-        )
+        self.items(pieces, &history.tail[start.saturating_sub(committed_len)..])
+    }
+}
+
+impl<'a> RequestInput<'a> {
+    fn pieces(&self) -> Result<Vec<Cow<'a, str>>, serde_json::Error> {
+        let mut pieces = Vec::new();
+        match self.prefix {
+            Some(prefix) => pieces.extend(prefix.iter().map(|item| Cow::Borrowed(item.get()))),
+            None => self.items(&mut pieces, self.input.first)?,
+        }
+        self.items(&mut pieces, self.input.second)?;
+        if let Some(history) = self.input.history {
+            self.history(&mut pieces, history, self.input.history_start)?;
+        }
+        if let Some(item) = self.input.tail {
+            self.items(&mut pieces, std::slice::from_ref(item))?;
+        }
+        Ok(pieces)
     }
 }
 
@@ -783,25 +796,7 @@ impl Serialize for RequestInput<'_> {
     where
         S: serde::Serializer,
     {
-        let mut sequence = serializer.serialize_seq(None)?;
-        match self.prefix {
-            Some(prefix) => {
-                for item in prefix {
-                    sequence.serialize_element(item)?;
-                }
-            }
-            None => self.items(&mut sequence, self.input.first)?,
-        }
-        self.items(&mut sequence, self.input.second)?;
-        if let Some(history) = self.input.history {
-            self.history(&mut sequence, history, self.input.history_start)?;
-        }
-        if let Some(item) = self.input.tail
-            && self.supports(item)
-        {
-            sequence.serialize_element(&self.element(item))?;
-        }
-        sequence.end()
+        serializer.serialize_seq(Some(0))?.end()
     }
 }
 
@@ -937,6 +932,30 @@ pub(crate) struct ResponseCreate<'a> {
 }
 
 impl<'a> ResponseCreate<'a> {
+    pub(crate) fn encode(&self) -> Result<String, serde_json::Error> {
+        const INPUT: &str = "\"input\":[";
+        let frame = serde_json::to_string(self)?;
+        let at = frame
+            .find(INPUT)
+            .map(|at| at + INPUT.len())
+            .ok_or_else(|| {
+                <serde_json::Error as serde::ser::Error>::custom("a Responses request has no input")
+            })?;
+        let pieces = self.input.pieces()?;
+        let mut json = String::with_capacity(
+            frame.len() + pieces.iter().map(|piece| piece.len() + 1).sum::<usize>(),
+        );
+        json.push_str(&frame[..at]);
+        for (index, piece) in pieces.iter().enumerate() {
+            if index > 0 {
+                json.push(',');
+            }
+            json.push_str(piece);
+        }
+        json.push_str(&frame[at..]);
+        Ok(json)
+    }
+
     #[must_use]
     pub(crate) fn warmup(
         config: &'a ModelConfig,

@@ -9,7 +9,7 @@ use crate::client::{attempt::ResponsesAttemptKind, service_error::FailurePhase};
 pub const TRANSPORT: &str = "responses_websocket_v2";
 
 pub(crate) enum ApiEventData<'a> {
-    Encoded(&'a RawValue),
+    Encoded(&'a str),
     Received(&'a str),
 }
 
@@ -18,20 +18,14 @@ impl Serialize for ApiEventData<'_> {
     where
         S: Serializer,
     {
-        let text = match self {
-            Self::Encoded(raw) => raw.get(),
-            Self::Received(text) => text,
-        };
+        let (Self::Encoded(text) | Self::Received(text)) = self;
         if memchr::memchr2(b'\n', b'\r', text.as_bytes()).is_some() {
             let value = serde_json::from_str::<Value>(text).map_err(serde::ser::Error::custom)?;
             value.serialize(serializer)
         } else {
-            match self {
-                Self::Encoded(raw) => raw.serialize(serializer),
-                Self::Received(text) => serde_json::from_str::<&RawValue>(text)
-                    .map_err(serde::ser::Error::custom)?
-                    .serialize(serializer),
-            }
+            serde_json::from_str::<&RawValue>(text)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer)
         }
     }
 }

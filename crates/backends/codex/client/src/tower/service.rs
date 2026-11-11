@@ -520,7 +520,7 @@ impl ResponsesService {
             let encoded =
                 self.encode_request(connection, request.as_ref(), ResponsesTransport::WebSocket)?;
             let encode_duration_ns = elapsed_ns(encode_started_at);
-            let request_bytes = encoded.raw().get().len();
+            let request_bytes = encoded.json().len();
             let span = tracing::Span::current();
             span.record("request.bytes", request_bytes);
             span.record("request.encode.duration_ns", encode_duration_ns);
@@ -530,10 +530,10 @@ impl ResponsesService {
                 transport = TRANSPORT,
                 phase = request.kind.phase(),
                 model.call_index = request.call_index,
-                api.request = %encoded.raw().get(),
+                api.request = %encoded.json(),
                 "OpenAI Responses API request"
             );
-            request.trace_encoded_input(encoded.raw().get());
+            request.trace_encoded_input(encoded.json());
             request.observer.emit(
                 AgentEventKind::ApiEvent,
                 ApiEvent {
@@ -541,7 +541,7 @@ impl ResponsesService {
                     transport: TRANSPORT,
                     phase: request.kind.phase(),
                     model_call_index: request.call_index,
-                    event: ApiEventData::Encoded(encoded.raw()),
+                    event: ApiEventData::Encoded(encoded.json()),
                 },
             )?;
             if connection.socket.is_none() {
@@ -618,7 +618,7 @@ impl ResponsesService {
             ));
         }
         let encoded = match request.kind {
-            ResponsesAttemptKind::Warmup => EncodedRequest::new(&ResponseCreate::warmup(
+            ResponsesAttemptKind::Warmup => EncodedRequest::create(&ResponseCreate::warmup(
                 &self.config,
                 request.model(),
                 request.thinking(),
@@ -634,7 +634,7 @@ impl ResponsesService {
                 ));
             }
             ResponsesAttemptKind::Generation | ResponsesAttemptKind::Compaction => {
-                EncodedRequest::new(&ResponseCreate::generation_with_policy(
+                EncodedRequest::create(&ResponseCreate::generation_with_policy(
                     &self.config,
                     CreatePolicy::new(
                         transport,

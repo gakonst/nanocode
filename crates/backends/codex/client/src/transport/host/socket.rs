@@ -87,7 +87,7 @@ impl ResponsesSocket {
             return Ok(SendOutcome::Disconnected);
         }
         self.connection
-            .send(request.raw().get())
+            .send(request.json())
             .await
             .map_err(|error| {
                 let reconnectable = error.is_reconnectable();

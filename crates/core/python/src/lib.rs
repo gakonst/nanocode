@@ -322,6 +322,7 @@ impl Python {
     fn execute(&self, vm: &VirtualMachine, invocation: &Invocation) -> Ended {
         let prepared = match self.prepare(vm, invocation) {
             Ok(prepared) => prepared,
+            Err(_) if vm.stopped.borrow().is_some() => return Ended::Exited(1),
             Err(error) => {
                 let mut text = String::new();
                 let _ = vm.write_exception(&mut text, &error);

@@ -1,4 +1,4 @@
-use crate::{ClaudeError, ContentBlock, Message, MessageDigests, WireMessage};
+use crate::{CacheLayout, ClaudeError, ContentBlock, Message, MessageDigests, WireMessage};
 use nanocode_durability::EncodedPayload;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -20,6 +20,7 @@ struct Entry {
     wire: OnceLock<Box<str>>,
     json: OnceLock<Arc<str>>,
     digests: OnceLock<MessageDigests>,
+    cache: OnceLock<CacheLayout>,
     images: OnceLock<usize>,
     companions: OnceLock<bool>,
     record: OnceLock<EncodedPayload>,
@@ -32,6 +33,7 @@ impl Clone for Entry {
             wire: OnceLock::new(),
             json: OnceLock::new(),
             digests: OnceLock::new(),
+            cache: OnceLock::new(),
             images: OnceLock::new(),
             companions: OnceLock::new(),
             record: OnceLock::new(),
@@ -45,6 +47,7 @@ impl HistoryMessage {
         entry.wire = OnceLock::new();
         entry.json = OnceLock::new();
         entry.digests = OnceLock::new();
+        entry.cache = OnceLock::new();
         entry.images = OnceLock::new();
         entry.companions = OnceLock::new();
         entry.record = OnceLock::new();
@@ -99,6 +102,7 @@ impl From<Message> for HistoryMessage {
             wire: OnceLock::new(),
             json: OnceLock::new(),
             digests: OnceLock::new(),
+            cache: OnceLock::new(),
             images: OnceLock::new(),
             companions: OnceLock::new(),
             record: OnceLock::new(),
@@ -176,6 +180,14 @@ impl WireMessage for HistoryMessage {
         }
         let digests = MessageDigests::of(&self.encoded(false, encode)?);
         Ok(*self.0.digests.get_or_init(|| digests))
+    }
+
+    fn cache_layout(&self) -> Result<Cow<'_, CacheLayout>, ClaudeError> {
+        if let Some(layout) = self.0.cache.get() {
+            return Ok(Cow::Borrowed(layout));
+        }
+        let layout = CacheLayout::of(&self.0.message)?;
+        Ok(Cow::Borrowed(self.0.cache.get_or_init(|| layout)))
     }
 }
 

@@ -5817,9 +5817,11 @@ impl State {
         let notices_before = conversation.recovery_notices.len();
 
         self.publish_round_boundary(&conversation).await;
+        let body = self.wire_cache.keep_body();
         let execution: AgentFuture<'_, Result<TurnResult>> =
             Box::pin(self.run_locked(&mut conversation, &request, speed, &cancel));
         let mut result = execution.await;
+        drop(body);
 
         let mut model_call_index = 0;
         if let Some(turn) = self.steering.acquire().await.get_mut(&request.key) {

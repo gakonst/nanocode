@@ -1,10 +1,13 @@
-use std::sync::{Arc, LazyLock, Weak};
+use std::sync::{
+    Arc, LazyLock, Weak,
+    atomic::{AtomicUsize, Ordering},
+};
 
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, Slot};
 use serde::Serialize;
 use serde_json::{Value, value::RawValue};
 
-use crate::{ClaudeError, ClaudeToolSpec};
+use crate::{ClaudeError, ClaudeToolSpec, MessageDigests};
 
 pub(crate) struct Encoded<T> {
     value: T,
@@ -16,9 +19,35 @@ pub(crate) struct Encoded<T> {
 type Entries<T> = Atom<Vec<Weak<Encoded<T>>>>;
 
 #[derive(Default)]
+pub(crate) struct Hashed {
+    pub(crate) digests: Vec<MessageDigests>,
+    pub(crate) read: blake3::Hasher,
+    pub(crate) sent: blake3::Hasher,
+}
+
+pub(crate) struct Assembled {
+    pub(crate) body: Arc<String>,
+    pub(crate) start: usize,
+    pub(crate) ends: Vec<usize>,
+    pub(crate) hashed: Hashed,
+}
+
+#[derive(Default)]
 pub struct WireCache {
     tools: Atom<Option<Arc<Encoded<Vec<ClaudeToolSpec>>>>>,
     system: Atom<Option<Arc<Encoded<Value>>>>,
+    body: Slot<Assembled>,
+    keepers: AtomicUsize,
+}
+
+pub struct KeptBody<'a>(&'a WireCache);
+
+impl Drop for KeptBody<'_> {
+    fn drop(&mut self) {
+        if self.0.keepers.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.0.body.take();
+        }
+    }
 }
 
 impl std::fmt::Debug for WireCache {
@@ -28,6 +57,24 @@ impl std::fmt::Debug for WireCache {
 }
 
 impl WireCache {
+    pub fn keep_body(&self) -> KeptBody<'_> {
+        self.keepers.fetch_add(1, Ordering::SeqCst);
+        KeptBody(self)
+    }
+
+    pub(crate) fn assembled(&self) -> Option<Assembled> {
+        self.body.take()
+    }
+
+    pub(crate) fn assemble(&self, assembled: Assembled) {
+        if self.keepers.load(Ordering::SeqCst) > 0 {
+            self.body.put(assembled);
+        }
+        if self.keepers.load(Ordering::SeqCst) == 0 {
+            self.body.take();
+        }
+    }
+
     pub(crate) fn tools(
         &self,
         tools: &[ClaudeToolSpec],

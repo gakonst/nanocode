@@ -36,7 +36,8 @@ pub use thread::{
     CreateReason, MESSAGE_THREADS_BETA, MessageThread, THREAD_IDLE_EXPIRY, ThreadErrorCode,
     ThreadMode, ThreadParam, ThreadRecovery, ThreadTurn,
 };
-pub use wire_cache::WireCache;
+use wire_cache::Assembled;
+pub use wire_cache::{KeptBody, WireCache};
 
 pub const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
 
@@ -595,14 +596,31 @@ impl CacheControl {
 
 const CACHE_BREAKPOINTS: usize = 4;
 
-#[derive(Default)]
-struct CacheLayout {
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct CacheLayout {
     explicit: Vec<CacheTtl>,
 
     last_eligible: Option<Option<CacheTtl>>,
 }
 
 impl CacheLayout {
+    pub fn of(message: &Message) -> Result<Self, ClaudeError> {
+        let mut layout = Self::default();
+        for block in &message.content {
+            let (control, eligible) = block.cache_slot();
+            layout.block(control, eligible)?;
+        }
+        Ok(layout)
+    }
+
+    fn extend(&mut self, blocks: &Self) {
+        self.explicit.extend_from_slice(&blocks.explicit);
+        if blocks.last_eligible.is_some() {
+            self.last_eligible = blocks.last_eligible;
+        }
+    }
+
     fn block(&mut self, control: Option<&Value>, eligible: bool) -> Result<(), ClaudeError> {
         let ttl = control
             .map(|value| {
@@ -678,6 +696,10 @@ pub trait WireMessage {
     ) -> Result<MessageDigests, ClaudeError> {
         Ok(MessageDigests::of(&self.encoded(false, encode)?))
     }
+
+    fn cache_layout(&self) -> Result<std::borrow::Cow<'_, CacheLayout>, ClaudeError> {
+        CacheLayout::of(self.message()).map(std::borrow::Cow::Owned)
+    }
 }
 
 #[doc(hidden)]
@@ -734,6 +756,10 @@ impl<T: WireMessage + ?Sized> WireMessage for &T {
     ) -> Result<MessageDigests, ClaudeError> {
         (**self).digests(encode)
     }
+
+    fn cache_layout(&self) -> Result<std::borrow::Cow<'_, CacheLayout>, ClaudeError> {
+        (**self).cache_layout()
+    }
 }
 
 impl WireMessage for std::borrow::Cow<'_, Message> {
@@ -742,10 +768,10 @@ impl WireMessage for std::borrow::Cow<'_, Message> {
     }
 }
 
-fn validate_cache_layout<'a>(
+fn validate_cache_layout<M: WireMessage>(
     tools: &[ClaudeToolSpec],
     system: Option<&Value>,
-    messages: impl Iterator<Item = &'a Message>,
+    messages: &[M],
     automatic: Option<&CacheControl>,
 ) -> Result<usize, ClaudeError> {
     let mut layout = CacheLayout::default();
@@ -774,10 +800,7 @@ fn validate_cache_layout<'a>(
         _ => {}
     }
     for message in messages {
-        for block in &message.content {
-            let (control, eligible) = block.cache_slot();
-            layout.block(control, eligible)?;
-        }
+        layout.extend(&*message.cache_layout()?);
     }
     layout.validate(automatic)
 }
@@ -898,7 +921,7 @@ impl MessagesRequest {
         validate_cache_layout(
             &self.tools,
             self.system.as_deref(),
-            messages.iter().map(WireMessage::message),
+            messages,
             self.cache_control.as_ref(),
         )
     }
@@ -999,15 +1022,16 @@ impl MessagesRequest {
             Some(Value::String(text)) if !text.is_empty() => {
                 vec![serde_json::json!({"type":"text","text":text})]
             }
+            Some(Value::Array(blocks))
+                if blocks
+                    .iter()
+                    .any(|block| block.get("cache_control").is_some()) =>
+            {
+                return Ok(());
+            }
             Some(Value::Array(blocks)) => blocks.clone(),
             _ => return Ok(()),
         };
-        if blocks
-            .iter()
-            .any(|block| block.get("cache_control").is_some())
-        {
-            return Ok(());
-        }
         let Some(block) = blocks.iter_mut().rev().find(|block| {
             block.get("type").and_then(Value::as_str) == Some("text")
                 && block
@@ -1718,7 +1742,7 @@ impl ClaudeClient {
         streaming: bool,
     ) -> Result<String, ClaudeError> {
         self.wire_body(request, &request.messages, streaming, None)
-            .map(|wire| wire.body)
+            .map(|wire| Arc::unwrap_or_clone(wire.body))
     }
 
     fn wire_body<M: WireMessage>(
@@ -1738,7 +1762,7 @@ impl ClaudeClient {
                 self.subscription_cache_tail,
             )?;
             Ok(WireBody {
-                body,
+                body: Arc::new(body),
                 messages,
                 system: None,
                 tools: None,
@@ -1781,7 +1805,7 @@ impl ClaudeClient {
         }
         let wire = self.wire_body(head, messages, streaming, cache)?;
         Ok(PreparedWire {
-            body: Arc::new(wire.body),
+            body: wire.body,
             messages: wire.messages,
             system: wire.system,
             tools: wire.tools,
@@ -1832,7 +1856,7 @@ impl ClaudeClient {
     ) -> Result<Box<serde_json::value::RawValue>, ClaudeError> {
         let wire = self.wire_body(request, &request.messages, true, None)?;
         PreparedWire {
-            body: Arc::new(wire.body),
+            body: wire.body,
             messages: wire.messages,
             system: wire.system,
             tools: wire.tools,
@@ -1877,8 +1901,7 @@ impl ClaudeClient {
                 Some(param),
                 None,
             )?
-            .body
-            .into(),
+            .body,
         );
         Ok(())
     }
@@ -2493,7 +2516,7 @@ impl PreparedWire {
 }
 
 struct WireBody {
-    body: String,
+    body: Arc<String>,
     messages: std::ops::Range<usize>,
     system: Option<Encoding>,
     tools: Option<Encoding>,
@@ -2598,17 +2621,10 @@ fn api_body<M: WireMessage>(
         .map(|encoded| &*encoded.raw)
         .or(owned_tools.as_deref());
     let encode = |message: &Message| serde_json::to_string(message).map_err(ClaudeError::from);
-    let encoded = messages
+    let digests = messages
         .iter()
-        .map(|message| message.encoded(false, &encode))
+        .map(|message| message.digests(&encode))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut read = Vec::with_capacity(messages.len() * blake3::OUT_LEN);
-    let mut sent = Vec::with_capacity(messages.len() * blake3::OUT_LEN);
-    for message in messages {
-        let digests = message.digests(&encode)?;
-        read.extend_from_slice(digests.read.as_bytes());
-        sent.extend_from_slice(digests.sent.as_bytes());
-    }
     let head = serde_json::to_string(&Head {
         model,
         max_tokens: *max_tokens,
@@ -2628,23 +2644,62 @@ fn api_body<M: WireMessage>(
         thread,
         stream: streaming,
     })?;
-    let mut body = String::with_capacity(
-        head.len()
-            + tail.len()
-            + "\"messages\":[],".len()
-            + encoded
-                .iter()
-                .map(|message| message.len() + 1)
-                .sum::<usize>(),
-    );
-    body.push_str(&head[..head.len() - 1]);
-    body.push_str(",\"messages\":[");
-    let start = body.len();
-    for (index, message) in encoded.iter().enumerate() {
-        if index > 0 {
+    const OPEN: &str = ",\"messages\":[";
+    let opening = &head[..head.len() - 1];
+    let start = opening.len() + OPEN.len();
+    let cache = cache.filter(|_| streaming && thread.is_none());
+    let kept = cache
+        .and_then(WireCache::assembled)
+        .filter(|kept| kept.start == start && kept.body.starts_with(opening))
+        .and_then(|kept| Some((Arc::try_unwrap(kept.body).ok()?, kept.ends, kept.hashed)));
+    let shared = kept.as_ref().map_or(0, |(_, _, hashed)| {
+        hashed
+            .digests
+            .iter()
+            .zip(&digests)
+            .take_while(|(kept, message)| kept.sent == message.sent)
+            .count()
+    });
+    let encoded = messages[shared..]
+        .iter()
+        .map(|message| message.encoded(false, &encode))
+        .collect::<Result<Vec<_>, _>>()?;
+    let added = tail.len()
+        + "],".len()
+        + encoded
+            .iter()
+            .map(|message| message.len() + 1)
+            .sum::<usize>();
+    let (mut body, mut ends, hashed) = match kept {
+        Some((mut body, mut ends, hashed)) => {
+            body.truncate(shared.checked_sub(1).map_or(start, |last| ends[last]));
+            ends.truncate(shared);
+            body.reserve(added);
+            (
+                body,
+                ends,
+                Some(hashed).filter(|hashed| hashed.digests.len() == shared),
+            )
+        }
+        None => {
+            let mut body = String::with_capacity(start + added);
+            body.push_str(opening);
+            body.push_str(OPEN);
+            (body, Vec::with_capacity(messages.len()), None)
+        }
+    };
+    let mut hashed = hashed.unwrap_or_default();
+    for message in &digests[hashed.digests.len()..] {
+        hashed.read.update(message.read.as_bytes());
+        hashed.sent.update(message.sent.as_bytes());
+    }
+    hashed.digests = digests;
+    for message in &encoded {
+        if !ends.is_empty() {
             body.push(',');
         }
         body.push_str(message);
+        ends.push(body.len());
     }
     let end = body.len();
     body.push_str("],");
@@ -2665,12 +2720,23 @@ fn api_body<M: WireMessage>(
             digest: cached_tools.as_ref().map(|encoded| encoded.digest),
         })
     });
+    let conversation = (hashed.read.finalize(), hashed.sent.finalize());
+    drop(encoded);
+    let body = Arc::new(body);
+    if let Some(cache) = cache {
+        cache.assemble(Assembled {
+            body: Arc::clone(&body),
+            start,
+            ends,
+            hashed,
+        });
+    }
     Ok(WireBody {
         body,
         messages: start..end,
         system,
         tools,
-        digests: Some((blake3::hash(&read), blake3::hash(&sent))),
+        digests: Some(conversation),
     })
 }
 

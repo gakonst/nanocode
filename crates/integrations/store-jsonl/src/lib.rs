@@ -1248,9 +1248,9 @@ impl Journal {
             .seek(SeekFrom::Start(self.index.offset))
             .map_err(backend)?;
         let mut position = self.index.offset;
-        let mut carried = Vec::new();
+        let mut carried = (Vec::new(), Vec::new());
         loop {
-            let mut block = std::mem::take(&mut carried);
+            let (mut block, mut lengths) = std::mem::take(&mut carried);
             let first = position - block.len() as u64;
             let wanted = block.len().saturating_mul(2).max(RECOVERY_BLOCK_BYTES);
             let mut torn = false;
@@ -1262,6 +1262,7 @@ impl Journal {
                     torn = true;
                     break;
                 }
+                lengths.push(block.len() - before);
                 position = position
                     .checked_add((block.len() - before) as u64)
                     .ok_or_else(|| backend("JSONL offset overflow"))?;
@@ -1269,18 +1270,14 @@ impl Journal {
                     return Err(backend("JSONL entry crossed an appended boundary"));
                 }
             }
-            let mut lines = Vec::new();
+            let mut lines = Vec::with_capacity(lengths.len());
             let mut start = 0;
             let mut scanned = 0;
-            while scanned < block.len() {
-                let length = block[scanned..]
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map_or(block.len() - scanned, |at| at + 1);
+            for length in &lengths {
                 lines.push((
                     Location {
                         position: first + scanned as u64,
-                        length,
+                        length: *length,
                     },
                     &block[scanned..scanned + length],
                 ));
@@ -1346,7 +1343,7 @@ impl Journal {
             });
             drop(group);
             drop(lines);
-            carried = block.split_off(kept);
+            carried = (block.split_off(kept), lengths.split_off(start));
         }
     }
 

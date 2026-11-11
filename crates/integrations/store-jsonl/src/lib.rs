@@ -3,6 +3,7 @@
 mod compact;
 mod index;
 mod migrate;
+mod records;
 mod sessions;
 mod summaries;
 
@@ -785,7 +786,7 @@ fn value_digest(id: &str, key: &str, bytes: &[u8]) -> [u8; 32] {
 struct State {
     revision: u64,
     location: Location,
-    records: HashMap<String, Record>,
+    records: records::RecordMap,
     created: usize,
 }
 
@@ -1287,7 +1288,7 @@ impl Journal {
                 let mut keys = HashSet::with_capacity(records.len());
                 let repeated = records.iter().any(|record| {
                     !keys.insert(&*record.key)
-                        || known.is_some_and(|known| known.contains_key(&*record.key))
+                        || known.is_some_and(|known| known.contains_key(&record.key))
                 });
                 if repeated {
                     let Records { records } = serde_json::from_slice(line).map_err(backend)?;
@@ -1323,7 +1324,7 @@ impl Journal {
                 let mut keys = HashSet::with_capacity(records.len());
                 if records.iter().any(|record| {
                     !keys.insert(&*record.key)
-                        || known.is_some_and(|known| known.contains_key(&*record.key))
+                        || known.is_some_and(|known| known.contains_key(&record.key))
                 }) {
                     let Records { records } = serde_json::from_slice(line).map_err(backend)?;
                     self.validate_records(id, &records)?;
@@ -1361,8 +1362,7 @@ impl Journal {
     fn added<'k>(&mut self, id: &str, records: impl Iterator<Item = (&'k str, Record)>) {
         if let Some(state) = self.index.states.get_mut(id) {
             for (key, record) in records {
-                if !state.records.contains_key(key) {
-                    state.records.insert(key.into(), record);
+                if state.records.add(key, record) {
                     self.index
                         .holders
                         .entry(key_hash(key))
@@ -1423,7 +1423,7 @@ impl Journal {
                 State {
                     revision,
                     location,
-                    records: HashMap::new(),
+                    records: records::RecordMap::default(),
                     created: self.index.created.len(),
                 },
             );
@@ -1437,8 +1437,7 @@ impl Journal {
         state.revision = revision;
         state.location = location;
         for (key, record) in records {
-            if !state.records.contains_key(key) {
-                state.records.insert(key.into(), record);
+            if state.records.add(key, record) {
                 self.index
                     .holders
                     .entry(key_hash(key))
@@ -1517,7 +1516,7 @@ impl Journal {
             .index
             .states
             .get(id)
-            .map(|state| state.records.keys().cloned().collect())
+            .map(|state| state.records.keys().collect())
             .unwrap_or_default())
     }
 

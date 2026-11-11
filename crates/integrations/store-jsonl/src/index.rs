@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{HashMap, HashSet},
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
@@ -9,7 +9,7 @@ use nanocode_durability_core::{OwnerToken, StateSummary};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{Journal, Location, Record, State, identity};
+use super::{Journal, Location, Record, State, identity, records::RecordMap};
 
 const MAGIC: &[u8] = b"nanocode-jsonl-index-v3\n";
 const ENTRY_MAGIC: &[u8] = b"nanocode-jsonl-index-v2\n";
@@ -166,8 +166,8 @@ impl Index {
                 .get(&state.location.position)
                 .copied()
                 .ok_or_else(invalid)?;
-            for (key, record) in &mut state.records {
-                *record = relocated(key, *record).ok_or_else(invalid)?;
+            for (key, record) in state.records.iter_mut() {
+                *record = relocated(&key, *record).ok_or_else(invalid)?;
             }
         }
         Ok(())
@@ -197,7 +197,7 @@ impl Index {
         let _span = tracing::info_span!("durability.jsonl.index.records").entered();
         let file = self.file.as_mut().ok_or_else(invalid)?;
         let bytes = read_block(file, block)?;
-        let records = match block.format {
+        let records: RecordMap = match block.format {
             Some(BlockFormat::Entries) => {
                 serde_json::from_slice::<HashMap<String, Location>>(&bytes)
                     .map_err(io::Error::other)?
@@ -217,25 +217,12 @@ impl Index {
         let state = self.states.get_mut(id).ok_or_else(invalid)?;
         for key in records.keys() {
             self.holders
-                .entry(super::key_hash(key))
+                .entry(super::key_hash(&key))
                 .or_insert(state.created);
         }
-        for (key, later) in std::mem::replace(&mut state.records, records) {
-            match state.records.entry(key) {
-                Entry::Vacant(added) => {
-                    added.insert(later);
-                }
-                Entry::Occupied(stored) => {
-                    let same = matches!(
-                        (stored.get(), later),
-                        (Record::Value { digest, .. }, Record::Value { digest: repeated, .. })
-                            if *digest == repeated
-                    );
-                    if !same {
-                        return Err(invalid());
-                    }
-                }
-            }
+        let later = std::mem::replace(&mut state.records, records);
+        if !state.records.merge(later) {
+            return Err(invalid());
         }
         self.deferred.remove(id);
         self.pristine.insert(id.to_owned(), block);
@@ -405,7 +392,7 @@ impl Journal {
                 State {
                     revision: state.revision,
                     location: state.location,
-                    records: HashMap::new(),
+                    records: RecordMap::default(),
                     created,
                 },
             );
@@ -798,9 +785,9 @@ fn valid_location(location: Location, end: u64) -> bool {
             .is_some_and(|position| position <= end)
 }
 
-fn encode_records(records: &HashMap<String, Record>, output: &mut impl Write) -> io::Result<()> {
+fn encode_records(records: &RecordMap, output: &mut impl Write) -> io::Result<()> {
     let mut sorted = records.iter().collect::<Vec<_>>();
-    sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    sorted.sort_unstable_by(|left, right| left.0.cmp(&right.0));
     for (key, record) in sorted {
         output.write_all(&(key.len() as u64).to_le_bytes())?;
         output.write_all(key.as_bytes())?;
@@ -818,8 +805,8 @@ fn encode_records(records: &HashMap<String, Record>, output: &mut impl Write) ->
     Ok(())
 }
 
-fn decode_records(mut bytes: &[u8]) -> io::Result<HashMap<String, Record>> {
-    let mut records = HashMap::new();
+fn decode_records(mut bytes: &[u8]) -> io::Result<RecordMap> {
+    let mut records = RecordMap::default();
     while !bytes.is_empty() {
         let length = usize::try_from(take_u64(&mut bytes)?).map_err(io::Error::other)?;
         let key = std::str::from_utf8(take(&mut bytes, length)?).map_err(io::Error::other)?;
@@ -838,7 +825,7 @@ fn decode_records(mut bytes: &[u8]) -> io::Result<HashMap<String, Record>> {
             },
             _ => return Err(invalid()),
         };
-        if records.insert(key.to_owned(), record).is_some() {
+        if !records.add(key, record) {
             return Err(invalid());
         }
     }

@@ -7,7 +7,14 @@ use nanocode_agent_core::{AgentUsage, Lineage, ModelSelection, SessionCheckpoint
 use nanocode_durability_core::EncodedPayload;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, value::RawValue};
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    future::Future,
+    ops::Range,
+    pin::Pin,
+    sync::Arc,
+};
 
 use nanocode_sync::Atom;
 
@@ -456,10 +463,112 @@ impl Changed {
     }
 }
 
-fn changed_fields(stored: &str, json: &str) -> Option<Arc<str>> {
-    type Fields<'a> = std::collections::BTreeMap<&'a str, &'a RawValue>;
-    let stored: Fields<'_> = serde_json::from_str(stored).ok()?;
-    let fields: Fields<'_> = serde_json::from_str(json).ok()?;
+type Field = (Range<usize>, Range<usize>);
+
+struct Counted<'a> {
+    bytes: &'a mut Vec<u8>,
+    written: &'a Cell<usize>,
+}
+
+impl std::io::Write for Counted<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes.extend_from_slice(bytes);
+        self.written.set(self.bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct Fields<'a> {
+    depth: usize,
+    key: usize,
+    value: usize,
+    written: &'a Cell<usize>,
+    fields: &'a RefCell<Vec<Field>>,
+}
+
+impl serde_json::ser::Formatter for Fields<'_> {
+    fn begin_object<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.depth += 1;
+        writer.write_all(b"{")
+    }
+
+    fn end_object<W: ?Sized + std::io::Write>(&mut self, writer: &mut W) -> std::io::Result<()> {
+        self.depth -= 1;
+        writer.write_all(b"}")
+    }
+
+    fn begin_object_key<W: ?Sized + std::io::Write>(
+        &mut self,
+        writer: &mut W,
+        first: bool,
+    ) -> std::io::Result<()> {
+        if !first {
+            writer.write_all(b",")?;
+        }
+        if self.depth == 1 {
+            self.key = self.written.get();
+        }
+        Ok(())
+    }
+
+    fn begin_object_value<W: ?Sized + std::io::Write>(
+        &mut self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        writer.write_all(b":")?;
+        if self.depth == 1 {
+            self.value = self.written.get();
+        }
+        Ok(())
+    }
+
+    fn end_object_value<W: ?Sized + std::io::Write>(&mut self, _: &mut W) -> std::io::Result<()> {
+        if self.depth == 1 {
+            self.fields
+                .borrow_mut()
+                .push((self.key + 1..self.value - 2, self.value..self.written.get()));
+        }
+        Ok(())
+    }
+}
+
+fn fielded<T: Serialize>(record: &T) -> std::io::Result<(Arc<str>, Arc<[Field]>)> {
+    let (written, fields) = (Cell::new(0), RefCell::new(Vec::new()));
+    let mut bytes = Vec::new();
+    let mut serializer = serde_json::Serializer::with_formatter(
+        Counted {
+            bytes: &mut bytes,
+            written: &written,
+        },
+        Fields {
+            depth: 0,
+            key: 0,
+            value: 0,
+            written: &written,
+            fields: &fields,
+        },
+    );
+    record
+        .serialize(&mut serializer)
+        .map_err(std::io::Error::other)?;
+    let json = String::from_utf8(bytes).map_err(std::io::Error::other)?;
+    Ok((json.into(), fields.into_inner().into()))
+}
+
+fn named<'a>(json: &'a str, fields: &[Field]) -> Option<Vec<(&'a str, &'a str)>> {
+    fields
+        .iter()
+        .map(|(name, value)| Some((json.get(name.clone())?, json.get(value.clone())?)))
+        .collect()
+}
+
+fn changed_fields(stored: &str, kept: &[Field], json: &str, fields: &[Field]) -> Option<Arc<str>> {
+    let stored = named(stored, kept)?;
+    let fields = named(json, fields)?;
     let mut changed = String::from("{");
     let mut add = |field: &str, value: &str| {
         if changed.len() > 1 {
@@ -471,15 +580,12 @@ fn changed_fields(stored: &str, json: &str) -> Option<Arc<str>> {
         changed.push_str(value);
     };
     for (field, value) in &fields {
-        if stored
-            .get(field)
-            .is_none_or(|stored| stored.get() != value.get())
-        {
-            add(field, value.get());
+        if !stored.contains(&(*field, *value)) {
+            add(field, value);
         }
     }
-    for field in stored.keys() {
-        if !fields.contains_key(field) {
+    for (field, _) in &stored {
+        if !fields.iter().any(|(kept, _)| kept == field) {
             add(field, "null");
         }
     }
@@ -937,10 +1043,22 @@ pub(super) struct CachedAgent {
     written: Written,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 enum Written {
-    Changing(Arc<str>),
+    Changing(Arc<str>, Option<Arc<[Field]>>),
     Settled(Arc<str>),
+}
+
+impl PartialEq for Written {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Changing(json, _), Self::Changing(other, _))
+            | (Self::Settled(json), Self::Settled(other)) => json == other,
+            (Self::Changing(..), Self::Settled(_)) | (Self::Settled(_), Self::Changing(..)) => {
+                false
+            }
+        }
+    }
 }
 
 impl CachedAgent {
@@ -951,7 +1069,7 @@ impl CachedAgent {
             checkpoint_ref: record.checkpoint_ref.clone(),
             profile: Arc::clone(&record.profile),
             written: if record.changing() {
-                Written::Changing(json)
+                Written::Changing(json, None)
             } else {
                 Written::Settled(key)
             },
@@ -1679,11 +1797,9 @@ impl JournalSnapshot {
                 }
                 let record = agent_record(entry.agent, stored, entry.unchanged, &mut records)?;
                 settled = settled && record.settled();
-                let json: Arc<str> = serde_json::to_string(&record)
-                    .map_err(std::io::Error::other)?
-                    .into();
+                let (json, named) = fielded(&record)?;
                 let written = if record.changing() {
-                    Written::Changing(Arc::clone(&json))
+                    Written::Changing(Arc::clone(&json), Some(Arc::clone(&named)))
                 } else {
                     Written::Settled(record_key(Arc::clone(&json)))
                 };
@@ -1714,11 +1830,13 @@ impl JournalSnapshot {
                 update.unfolded.insert(id);
                 let stored = stored
                     .and_then(|stored| match stored.written {
-                        Written::Changing(json) => Some(json),
-                        Written::Settled(_) => None,
+                        Written::Changing(json, Some(kept)) => Some((json, kept)),
+                        Written::Changing(_, None) | Written::Settled(_) => None,
                     })
                     .filter(|_| update.changes_fields());
-                match stored.and_then(|stored| changed_fields(&stored, &json)) {
+                match stored
+                    .and_then(|(stored, kept)| changed_fields(&stored, &kept, &json, &named))
+                {
                     Some(changed) => fields.push((id.get(), changed)),
                     None => changed.push((id.get(), json)),
                 }

@@ -1492,14 +1492,19 @@ fn turn_output(result: &TurnResult, last: Option<&HistoryMessage>) -> Result<Box
         .map(HistoryMessage::record)
         .transpose()
         .map_err(provider_error)?;
-    match record {
-        Some(record) => serde_json::value::to_raw_value(
-            &json!({"final_record": record.key(), "usage": result.usage()}),
-        ),
-        None => serde_json::value::to_raw_value(
-            &json!({"final_message": final_message, "usage": result.usage()}),
-        ),
+    #[derive(Serialize)]
+    struct Output<'a> {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        final_message: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        final_record: Option<&'a str>,
+        usage: Option<&'a TurnUsage>,
     }
+    serde_json::value::to_raw_value(&Output {
+        final_message: record.is_none().then_some(final_message),
+        final_record: record.as_ref().map(EncodedPayload::key),
+        usage: result.usage(),
+    })
     .map_err(provider_error)
 }
 

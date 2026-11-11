@@ -26,19 +26,19 @@ pub(crate) fn bad_descriptor() -> io::Error {
 }
 
 pub(crate) struct Source {
-    data: RefCell<Bytes>,
+    data: RefCell<Option<Bytes>>,
     at: Cell<usize>,
 }
 
 impl Source {
-    pub(crate) const fn new(data: Bytes) -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
-            data: RefCell::new(data),
+            data: RefCell::new(None),
             at: Cell::new(0),
         }
     }
 
-    pub(crate) fn set(&self, data: Bytes) {
+    pub(crate) fn set(&self, data: Option<Bytes>) {
         *self.data.borrow_mut() = data;
         self.at.set(0);
     }
@@ -47,6 +47,9 @@ impl Source {
 impl HostFile for Source {
     fn poll_read(&self, _cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
         let data = self.data.borrow();
+        let Some(data) = data.as_ref() else {
+            return Poll::Ready(Ok(0));
+        };
         let at = self.at.get();
         let count = buf.len().min(data.len() - at);
         buf[..count].copy_from_slice(&data[at..at + count]);
@@ -59,7 +62,11 @@ impl HostFile for Source {
     }
 
     fn kind(&self) -> Option<FileKind> {
-        Some(FileKind::File)
+        Some(if self.data.borrow().is_some() {
+            FileKind::Fifo
+        } else {
+            FileKind::CharDevice
+        })
     }
 }
 

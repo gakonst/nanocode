@@ -1,5 +1,7 @@
+use crate::file::Capture;
 use psh_engine::HostFile;
 use std::{
+    any::Any,
     future::{Future, poll_fn},
     io,
     pin::Pin,
@@ -36,6 +38,11 @@ pub struct Call {
 pub struct Stream(pub(crate) Rc<dyn HostFile>);
 
 impl Stream {
+    pub fn captured(&self) -> bool {
+        let file: &dyn Any = self.0.as_ref();
+        file.is::<Capture>()
+    }
+
     pub async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         poll_fn(|cx| self.0.poll_read(cx, buf)).await
     }

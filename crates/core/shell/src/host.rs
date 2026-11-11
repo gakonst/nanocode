@@ -323,7 +323,8 @@ impl psh_engine::Host for Host {
         let known = spec
             .program
             .strip_prefix(PROGRAMS)
-            .is_some_and(|name| self.0.commands.has(name));
+            .is_some_and(|name| self.0.commands.has(name))
+            || self.0.commands.has(&spec.program);
         if !known {
             return Err(RunInShell::error());
         }

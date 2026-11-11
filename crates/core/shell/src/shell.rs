@@ -121,7 +121,7 @@ pub struct Script {
     pub name: Vec<u8>,
     pub args: Vec<Vec<u8>>,
     pub options: Vec<Vec<u8>>,
-    pub stdin: Bytes,
+    pub stdin: Option<Bytes>,
 }
 
 pub struct Config {
@@ -162,7 +162,7 @@ impl Shell {
             control: OnceCell::new(),
             spawned: Cell::new(0),
         });
-        let stdin = Rc::new(Source::new(Bytes::new()));
+        let stdin = Rc::new(Source::new());
         let stdout = Rc::new(Capture::new(config.limits.output));
         let stderr = Rc::new(Capture::new(config.limits.output));
         let mut engine = ShellConfig::new(Rc::new(Host(vfs.clone())));

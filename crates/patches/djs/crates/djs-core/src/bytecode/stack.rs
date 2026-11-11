@@ -60,6 +60,33 @@ pub enum StackError {
 
 const UNKNOWN: u32 = u32::MAX;
 
+/// Per opcode, what the walk needs of an instruction whose immediates do not matter:
+/// the values it pops in bits 0-7 and pushes in bits 8-15, its size in bits 16-23 and
+/// [`NO_FALLTHROUGH`]. [`DECODE`] marks the others: a count of values in an immediate,
+/// a jump's target.
+const EFFECT: [u32; OP_COUNT] = {
+    let mut t = [0u32; OP_COUNT];
+    let mut i = 0;
+    while i < OP_COUNT {
+        let info = &OPS[i];
+        t[i] = info.pop as u32 | (info.push as u32) << 8 | (info.size as u32) << 16;
+        if info.no_fallthrough() {
+            t[i] |= NO_FALLTHROUGH;
+        }
+        if info.pop_imm.is_some()
+            || info.pop_arity.is_some()
+            || info.push_imm.is_some()
+            || info.has(flags::JUMP | flags::BRANCH)
+        {
+            t[i] |= DECODE;
+        }
+        i += 1;
+    }
+    t
+};
+const NO_FALLTHROUGH: u32 = 1 << 30;
+const DECODE: u32 = 1 << 31;
+
 /// A handler depth that [`stack_depths`] skips: to be computed from the code.
 pub const UNKNOWN_DEPTH: u32 = u32::MAX;
 
@@ -227,28 +254,41 @@ fn walk(
     // of both gives.
     while let Some(mut pc) = work.pop() {
         loop {
-            let insn = decode(code, pc).map_err(StackError::Decode)?;
-            let info = insn.info();
+            // (An opcode: the pass above saw every start.)
+            let effect = code
+                .get(pc as usize)
+                .and_then(|&b| Op::from_u8(b))
+                .map_or(DECODE, |op| EFFECT[op as usize]);
             let d = depth[pc as usize];
-            let pops = insn.pops();
+            let (pops, pushes, target) = if effect & DECODE == 0 {
+                (effect & 0xFF, effect >> 8 & 0xFF, None)
+            } else {
+                let insn = decode(code, pc).map_err(StackError::Decode)?;
+                let jumps = insn.info().has(flags::JUMP | flags::BRANCH);
+                (
+                    insn.pops(),
+                    insn.pushes(),
+                    jumps.then(|| insn.jump_target().unwrap_or(len)),
+                )
+            };
             if pops > d {
                 return Err(StackError::Underflow { pc, depth: d, pops });
             }
-            let after = d - pops + insn.pushes();
+            let after = d - pops + pushes;
             max = max.max(after).max(d);
             if max > u16::MAX as u32 {
                 return Err(StackError::TooDeep { pc });
             }
-            if info.has(flags::JUMP | flags::BRANCH) {
-                let target = insn.jump_target().unwrap_or(len);
-                if reach(depth, pc, target, after)? {
-                    work.push(target);
-                }
+            if let Some(target) = target
+                && reach(depth, pc, target, after)?
+            {
+                work.push(target);
             }
-            if info.no_fallthrough() || !reach(depth, pc, insn.next_pc(), after)? {
+            let next = pc + (effect >> 16 & 0xFF);
+            if effect & NO_FALLTHROUGH != 0 || !reach(depth, pc, next, after)? {
                 break;
             }
-            pc = insn.next_pc();
+            pc = next;
         }
     }
     Ok(max as u16)

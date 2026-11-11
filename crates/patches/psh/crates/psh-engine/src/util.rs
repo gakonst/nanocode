@@ -695,7 +695,7 @@ impl UtilCtx<'_> {
 
     /// A safepoint for long loops: yields when the step's budget is spent.
     pub async fn check(&self) {
-        crate::sched::safepoint(&self.vp.core.sched).await;
+        crate::sched::checkpoint(&self.vp.core.sched).await;
     }
 
     /// Whether `name` runs as one of psh's utilities here: what `which` reports.

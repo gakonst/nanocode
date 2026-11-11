@@ -451,8 +451,9 @@ impl Shell {
         self.core.died_of.get()
     }
 
-    /// The safepoints this shell has passed in all its steps: an embedder that meters a
-    /// run charges the difference between two readings (nanocode-shell's fuel).
+    /// The commands and loop iterations this shell has run in all its steps (a utility's
+    /// own safepoints are not counted): an embedder that meters a run charges the
+    /// difference between two readings (nanocode-shell's fuel).
     pub fn spent(&self) -> u64 {
         self.core.sched.spent()
     }

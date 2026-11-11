@@ -98,7 +98,7 @@ pub(crate) struct Sched {
     ready: RefCell<VecDeque<usize>>,
     pub(crate) shared: Arc<Shared>,
     budget: Cell<u32>,
-    /// Every unit of budget taken since the scheduler was made.
+    /// The commands and loop iterations run since the scheduler was made.
     spent: Cell<u64>,
     out_of_budget: Cell<bool>,
     /// Waits of the shell's own vproc that a signal ends (D1903).
@@ -368,20 +368,24 @@ impl Sched {
         end
     }
 
-    /// The safepoints passed so far (`Shell::spent`).
+    /// The commands and loop iterations run so far (`Shell::spent`).
     pub(crate) fn spent(&self) -> u64 {
         self.spent.get()
     }
 
-    /// Takes one unit of budget; false when it is spent (the caller yields).
-    fn take_budget(&self) -> bool {
+    /// Takes one unit of budget; false when it is spent (the caller yields). `counted`:
+    /// a command or a loop iteration, which `spent` counts; a utility's own safepoints
+    /// (`UtilCtx::check`) only yield.
+    fn take_budget(&self, counted: bool) -> bool {
         let b = self.budget.get();
         if b == 0 {
             self.out_of_budget.set(true);
             false
         } else {
             self.budget.set(b - 1);
-            self.spent.set(self.spent.get() + 1);
+            if counted {
+                self.spent.set(self.spent.get() + 1);
+            }
             true
         }
     }
@@ -424,12 +428,22 @@ impl<T> Future for Join<T> {
 /// A safepoint (before every command and loop iteration): yields when the step's
 /// budget is spent or the control word is set, so that `step` can return or act.
 pub(crate) fn safepoint(sched: &Sched) -> impl Future<Output = ()> + '_ {
+    pause(sched, true)
+}
+
+/// A safepoint inside a utility's own loop: it yields like [`safepoint`], and is not
+/// counted as a command (`Shell::spent`).
+pub(crate) fn checkpoint(sched: &Sched) -> impl Future<Output = ()> + '_ {
+    pause(sched, false)
+}
+
+fn pause(sched: &Sched, counted: bool) -> impl Future<Output = ()> + '_ {
     let mut yielded = false;
     std::future::poll_fn(move |cx| {
         if yielded {
             return Poll::Ready(());
         }
-        if sched.shared.control.load(Ordering::SeqCst) != 0 || !sched.take_budget() {
+        if sched.shared.control.load(Ordering::SeqCst) != 0 || !sched.take_budget(counted) {
             yielded = true;
             cx.waker().wake_by_ref();
             return Poll::Pending;

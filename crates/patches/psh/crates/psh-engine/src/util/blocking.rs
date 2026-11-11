@@ -902,7 +902,7 @@ impl UtilCtx<'_> {
                     return status.unwrap_or(2);
                 }
             }
-            crate::sched::safepoint(&self.vp.core.sched).await;
+            crate::sched::checkpoint(&self.vp.core.sched).await;
         }
     }
 }

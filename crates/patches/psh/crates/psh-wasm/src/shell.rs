@@ -159,6 +159,24 @@ fn with_shell<R>(id: u32, f: impl FnOnce(&mut Entry) -> R) -> Option<R> {
 }
 
 export! {
+    /// Puts an idle shell back as `psh_shell_new` made it (its variables, functions,
+    /// options and working directory), so that the JS side runs its next script in it
+    /// instead of making a shell. Returns 0, or 1 for an unknown shell, 2 when a script
+    /// is still running.
+    fn psh_shell_renew(id: u32) -> u32 {
+        with_shell(id, |e| {
+            if e.running {
+                return 2;
+            }
+            e.shell.renew();
+            e.ran = None;
+            0
+        })
+        .unwrap_or(1)
+    }
+}
+
+export! {
     /// The maximum nesting limit this module allows.
     fn psh_max_depth() -> u32 {
         MAX_DEPTH

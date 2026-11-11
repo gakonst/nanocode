@@ -207,6 +207,10 @@ impl Shell {
         });
     }
 
+    pub fn renew(&mut self) {
+        self.engine.renew();
+    }
+
     pub fn set_waker(&self, waker: Waker) {
         self.engine.set_waker(waker);
     }

@@ -247,6 +247,8 @@ pub struct Shell {
     shared: Arc<Shared>,
     /// The main vproc's state between runs.
     vp: Option<Vp>,
+    /// The state the shell was made with ([`Shell::renew`]); it shares the variables.
+    fresh: Vp,
     /// The state before the current run, restored if it is cancelled.
     before: Option<Vp>,
     main: Option<Join<(i32, Vp)>>,
@@ -332,9 +334,11 @@ impl Shell {
         };
         let mut vp = vp;
         options::sync_vars(&mut vp.vars, &vp.opts);
+        vp.vars.settle();
         Shell {
             core,
             shared,
+            fresh: vp.clone(),
             vp: Some(vp),
             before: None,
             main: None,
@@ -342,6 +346,27 @@ impl Shell {
             exit_grace: cfg.exit_grace,
             _not_send: PhantomData,
         }
+    }
+
+    /// Puts the shell back as it was made: the variables, functions, options, working
+    /// directory and descriptors of its `ShellConfig`, with `SECONDS` and `RANDOM`
+    /// starting over. An embedder that runs unrelated scripts one after the other
+    /// reuses one shell instead of making one per script. Panics if a script is running.
+    pub fn renew(&mut self) {
+        assert!(
+            self.main.is_none() && self.draining.is_none(),
+            "a script is still running"
+        );
+        let mut vp = self.fresh.clone();
+        // The job table is shared by every copy of a state: a renewed shell has its own.
+        vp.jobs = Default::default();
+        self.vp = Some(vp);
+        self.before = None;
+        self.core.jobs.set(0);
+        self.core.rng.set(0);
+        self.core
+            .seconds_base
+            .set(self.core.host.now().as_nanos() as i128);
     }
 
     /// The handle to cancel or pause this shell from any thread.

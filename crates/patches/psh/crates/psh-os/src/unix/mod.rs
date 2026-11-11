@@ -50,6 +50,27 @@ pub fn pipe() -> io::Result<(io::PipeReader, io::PipeWriter)> {
     io::pipe()
 }
 
+/// Closes every descriptor above 2. For a process started ahead of its work (`psh
+/// --warm`), before it opens anything: a host that starts programs from several threads
+/// can hand it, by accident, the end of a pipe meant for another program (std on macOS
+/// makes pipes inheritable first and close-on-exec after), and a process that waits
+/// would hold that pipe open for as long as it waits.
+pub fn close_inherited() {
+    let inherited: Vec<libc::c_int> = std::fs::read_dir("/dev/fd")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter(|&fd| fd > 2)
+        .collect();
+    for fd in inherited {
+        // SAFETY: nothing in this process has opened a descriptor yet (the caller's
+        // contract), so none of these is owned by a value that would close it again;
+        // the directory's own descriptor, closed above, gives EBADF.
+        unsafe { libc::close(fd) };
+    }
+}
+
 use spawn::Shared;
 
 /// Settings of a [`UnixHost`].

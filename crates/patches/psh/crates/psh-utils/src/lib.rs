@@ -449,6 +449,20 @@ pub fn policy(sandbox: bool) -> UtilPolicy {
 /// binary and psh-spec read it and take it out of the environment.
 pub const FORCE_VAR: &str = "PSH_UTILS_FORCE";
 
+/// The environment variable that turns utilities off, so their names run the real
+/// program: a comma-separated list of names, or `all` for every utility. The psh binary
+/// reads it and takes it out of the environment.
+pub const OFF_VAR: &str = "PSH_UTILS_OFF";
+
+/// The names `PSH_UTILS_OFF`'s value turns off, when it is a list.
+pub fn off_names(value: &[u8]) -> Vec<Vec<u8>> {
+    value
+        .split(|&b| b == b',')
+        .filter(|n| !n.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
 /// The names `PSH_UTILS_FORCE`'s value forces.
 pub fn force_names(value: &[u8]) -> Vec<Vec<u8>> {
     if value == b"all" {

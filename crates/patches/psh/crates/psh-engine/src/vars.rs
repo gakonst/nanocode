@@ -332,7 +332,9 @@ impl Vars {
         if !self.map.contains_key(name) {
             self.map.insert(name.to_string(), Var::default());
         }
-        self.map.get_mut(name).expect("the variable is in the table")
+        self.map
+            .get_mut(name)
+            .expect("the variable is in the table")
     }
 
     pub(crate) fn remove(&mut self, name: &str) -> Option<Var> {

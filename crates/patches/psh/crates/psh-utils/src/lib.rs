@@ -64,6 +64,7 @@ mod jq;
 
 mod codec;
 mod gzip;
+mod patch;
 mod tar;
 mod xargs;
 mod zip;
@@ -124,6 +125,12 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(zip::unzip),
+    },
+    UtilEntry {
+        names: &["patch"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(patch::run),
     },
     UtilEntry {
         names: &["find"],

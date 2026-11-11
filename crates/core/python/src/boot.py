@@ -245,6 +245,29 @@ class _Finder:
 sys.meta_path.append(_Finder)
 
 
+class _Shim:
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name != 'subprocess':
+            return None
+        return _frozen_importlib.ModuleSpec(name, _Shim, origin='built-in')
+
+    @staticmethod
+    def create_module(spec):
+        return None
+
+    @staticmethod
+    def exec_module(module):
+        exec(_subprocess, module.__dict__)
+
+    @staticmethod
+    def invalidate_caches():
+        pass
+
+
+sys.meta_path.insert(0, _Shim)
+
+
 def _stdio(fd, name):
     raw = FileIO(fd, 'r' if fd == 0 else 'w', False)
     raw.name = name

@@ -571,7 +571,10 @@ def _exit(status):
 
 
 def system(command):
-    raise OSError(_errno.ENOSYS, 'this Python has no processes to run a command in')
+    if not _host.spawns():
+        raise OSError(_errno.ENOSYS, 'this Python has no processes to run a command in')
+    import subprocess
+    return subprocess.call(command, shell=True) << 8
 
 
 def popen(command, mode='r', buffering=-1):

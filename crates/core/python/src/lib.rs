@@ -20,7 +20,11 @@ pub use rustpython_vm::vm::limit::Metered;
 pub use shell::{Budget, Command};
 pub use tree::{Delta, Entry, Tree};
 
-const _: [&str; 2] = [include_str!("posix.py"), include_str!("boot.py")];
+const _: [&str; 3] = [
+    include_str!("posix.py"),
+    include_str!("boot.py"),
+    include_str!("subprocess.py"),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -50,6 +54,21 @@ pub enum Remove {
     Dir,
 }
 
+pub struct Child {
+    pub argv: Vec<Vec<u8>>,
+    pub env: Vec<(Vec<u8>, Vec<u8>)>,
+    pub cwd: Vec<u8>,
+    pub stdin: Vec<u8>,
+    pub merged: bool,
+}
+
+#[derive(Debug)]
+pub struct Exited {
+    pub status: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 pub trait Files {
     fn stat(&self, path: &[u8]) -> io::Result<Stat>;
     fn read(&self, path: &[u8], limit: u64) -> io::Result<Vec<u8>>;
@@ -58,6 +77,14 @@ pub trait Files {
     fn mkdir(&self, path: &[u8], mode: u32) -> io::Result<()>;
     fn remove(&self, path: &[u8], what: Remove) -> io::Result<()>;
     fn rename(&self, from: &[u8], to: &[u8]) -> io::Result<()>;
+
+    fn spawns(&self) -> bool {
+        false
+    }
+
+    fn spawn(&self, _child: Child) -> io::Result<Exited> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -344,6 +371,10 @@ impl Python {
             let code = rustpython_vm::py_compile!(file = "posix.py", module_name = "posix");
             let scope = Scope::with_builtins(None, posix.dict(), vm);
             vm.run_code_obj(vm.ctx.new_code(code), scope)?;
+            let code =
+                rustpython_vm::py_compile!(file = "subprocess.py", module_name = "subprocess");
+            self.boot
+                .set_item("_subprocess", vm.ctx.new_code(code).into(), vm)?;
             let code = rustpython_vm::py_compile!(file = "boot.py", module_name = "python");
             let scope = Scope::with_builtins(None, self.boot.clone(), vm);
             vm.run_code_obj(vm.ctx.new_code(code), scope)?;

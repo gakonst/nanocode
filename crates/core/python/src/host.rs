@@ -279,7 +279,7 @@ fn wait(_: Duration) -> io::Result<()> {
 #[rustpython_vm::pymodule]
 mod _host {
     use super::{Limit, State, UNIX_EPOCH, halt, text, wait, with};
-    use crate::{Kind, Remove, Write};
+    use crate::{Child, Kind, Remove, Write};
     use rustpython_vm::{
         PyObjectRef, PyResult, VirtualMachine,
         builtins::{PyBaseExceptionRef, PyBytesRef},
@@ -442,6 +442,44 @@ mod _host {
             state.changes.moved.push((from.to_vec(), to.to_vec()));
             Ok(())
         })
+    }
+
+    #[pyfunction]
+    fn spawns(vm: &VirtualMachine) -> PyResult<bool> {
+        state(vm, |state| Ok(state.files.spawns()))
+    }
+
+    #[pyfunction]
+    fn spawn(
+        argv: Vec<PyBytesRef>,
+        env: Vec<PyBytesRef>,
+        cwd: PyBytesRef,
+        stdin: ArgBytesLike,
+        merged: bool,
+        vm: &VirtualMachine,
+    ) -> PyResult<(i32, PyBytesRef, PyBytesRef)> {
+        let argv: Vec<Vec<u8>> = argv.iter().map(|word| word.as_bytes().to_vec()).collect();
+        let name = argv.first().cloned().unwrap_or_default();
+        let env = env
+            .chunks_exact(2)
+            .map(|pair| (pair[0].as_bytes().to_vec(), pair[1].as_bytes().to_vec()))
+            .collect();
+        let child = Child {
+            argv,
+            env,
+            cwd: cwd.as_bytes().to_vec(),
+            stdin: stdin.borrow_buf().to_vec(),
+            merged,
+        };
+        let host = state(vm, |state| Ok(state.files.clone()))?;
+        let exited = host
+            .spawn(child)
+            .map_err(|error| failure(vm, &error, Some(&name)))?;
+        Ok((
+            exited.status,
+            vm.ctx.new_bytes(exited.stdout),
+            vm.ctx.new_bytes(exited.stderr),
+        ))
     }
 
     #[pyfunction]

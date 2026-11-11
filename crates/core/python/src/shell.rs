@@ -1,9 +1,17 @@
-use std::{cell::OnceCell, future::Future, io, pin::Pin, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, OnceCell},
+    future::Future,
+    io,
+    pin::Pin,
+    rc::Rc,
+    time::Duration,
+};
 
-use nanocode_shell::{Call, Commands, FileSystem, Reply, join};
+use nanocode_shell::{Call, Commands, FileSystem, Reply, Session, join};
 
 use crate::{
-    Ended, Entry, Files, Kind, Limit, Limits, Python, Ran, Remove, Run, Stat, Tree, Write,
+    Child, Ended, Entry, Exited, Files, Kind, Limit, Limits, Python, Ran, Remove, Run, Stat, Tree,
+    Write,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +31,7 @@ pub struct Command {
 struct Kept {
     budget: Budget,
     python: OnceCell<Python>,
+    running: Cell<bool>,
 }
 
 const NAMES: [&[u8]; 4] = [
@@ -34,9 +43,13 @@ const NAMES: [&[u8]; 4] = [
 
 impl Command {
     pub fn new(budget: Budget, rest: Rc<dyn Commands>) -> Self {
-        let python = OnceCell::new();
+        let kept = Kept {
+            budget,
+            python: OnceCell::new(),
+            running: Cell::new(false),
+        };
         Self {
-            kept: Rc::new(Kept { budget, python }),
+            kept: Rc::new(kept),
             rest,
         }
     }
@@ -57,6 +70,13 @@ impl Commands for Command {
         }
         let kept = self.kept.clone();
         Box::pin(async move {
+            if kept.running.get() {
+                call.shell.lacks(b"python3");
+                let said =
+                    b"python3: Python is running in this shell, which keeps one interpreter\n";
+                let _ = call.stderr.write_all(said).await;
+                return 126;
+            }
             match kept.run(&call).await {
                 Ok(status) => status,
                 Err(error) => {
@@ -110,16 +130,25 @@ impl Kept {
         };
         let files = call.shell.files();
         let ran = match files.stat(&call.cwd, true) {
-            Reply::Now(_) => python.run(run, Rc::new(Direct(files))),
+            Reply::Now(_) => {
+                self.interpret(python, run, Rc::new(Direct(files, call.shell.clone())))
+            }
             Reply::Later(asked) => {
                 asked.await?;
                 let copied = Rc::new(copy(&files, &call.cwd, shell.file).await?);
-                let ran = python.run(run, copied.clone());
+                let ran = self.interpret(python, run, copied.clone());
                 apply(&copied, &files).await?;
                 ran
             }
         };
         self.report(call, ran).await
+    }
+
+    fn interpret(&self, python: &Python, run: Run, files: Rc<dyn Files>) -> Ran {
+        self.running.set(true);
+        let ran = python.run(run, files);
+        self.running.set(false);
+        ran
     }
 
     async fn report(&self, call: &Call, ran: Ran) -> io::Result<i32> {
@@ -194,7 +223,7 @@ const fn what(what: Remove) -> nanocode_shell::Remove {
     }
 }
 
-struct Direct(Rc<dyn FileSystem>);
+struct Direct(Rc<dyn FileSystem>, Session);
 
 impl Files for Direct {
     fn stat(&self, path: &[u8]) -> io::Result<Stat> {
@@ -223,6 +252,25 @@ impl Files for Direct {
 
     fn rename(&self, from: &[u8], to: &[u8]) -> io::Result<()> {
         now(self.0.rename(from, to))
+    }
+
+    fn spawns(&self) -> bool {
+        true
+    }
+
+    fn spawn(&self, child: Child) -> io::Result<Exited> {
+        let exited = self.1.run(nanocode_shell::Child {
+            argv: child.argv,
+            env: child.env,
+            cwd: child.cwd,
+            stdin: child.stdin.into(),
+            merged: child.merged,
+        })?;
+        Ok(Exited {
+            status: exited.status,
+            stdout: exited.stdout,
+            stderr: exited.stderr,
+        })
     }
 }
 

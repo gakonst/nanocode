@@ -77,6 +77,8 @@ pub(crate) struct Replay {
     stdin: Option<Held>,
     /// The body ran on answers that were not all there: the utility runs again.
     pub(crate) again: bool,
+    /// The body changed the file system ([`SyncCtx::no_replay`]): it keeps its one run.
+    changed: bool,
 }
 
 impl Replay {
@@ -343,6 +345,15 @@ impl SyncCtx {
         match &self.io {
             Io::Thread { pipe, .. } => pipe.cancelled.load(Ordering::SeqCst),
             Io::Inline { .. } => false,
+        }
+    }
+
+    /// For a body that changes the file system, before its first change: the utility
+    /// is then never run again for a host that answers later (the inline backend's
+    /// replay), and such a host's late answers stay errors, as the body saw them.
+    pub fn no_replay(&self) {
+        if let Io::Inline { replay, .. } = &self.io {
+            replay.borrow_mut().changed = true;
         }
     }
 
@@ -751,13 +762,17 @@ impl UtilCtx<'_> {
                     }
                 }
                 let status = run_guarded(&mut sync, arg, f);
-                if !self.replay.borrow().waiting.is_empty() {
+                let open = !self.replay.borrow().waiting.is_empty();
+                if open && !self.replay.borrow().changed {
                     // The body ran on answers the host had not given: nothing it
                     // printed is kept, and the utility's runner starts it again once
                     // they are there (`util::run_with`). This run ends here.
                     self.replay.borrow_mut().again = true;
                     return std::future::pending().await;
                 }
+                // A body that changed files is never run twice: the questions it got
+                // an error for stay unanswered.
+                self.replay.borrow_mut().waiting.clear();
                 let _ = sync.flush();
                 let Io::Inline { out, .. } = sync.io else {
                     unreachable!()

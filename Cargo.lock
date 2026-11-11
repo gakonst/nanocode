@@ -5944,7 +5944,11 @@ name = "nc-lite"
 version = "0.7.0"
 dependencies = [
  "crossterm",
- "nanocode",
+ "nanocode-agent",
+ "nanocode-agent-host",
+ "nanocode-backend-codex",
+ "nanocode-durability",
+ "nanocode-store-jsonl",
  "nanocode-tool-runtime",
  "pulldown-cmark",
  "serde_json",

@@ -1,17 +1,22 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use nanocode::agent::events::{AgentEvent, AgentEventKind};
-use nanocode::codex::{auth::OpenAiAuth, transport::ResponsesGateway};
-use nanocode::durability::{SessionStore, SessionSummary};
-use nanocode::{Agent, AgentEvents, JsonlArchiver, JsonlStore, Model, Nanocode, OpenAi, Tools};
-use nanocode_tool_runtime::ToolExposure;
+use nanocode_agent::events::{AgentEvent, AgentEventKind};
+use nanocode_agent::{Agent, AgentEvents, Model};
+use nanocode_backend_codex::client::{OpenAi, auth::OpenAiAuth, transport::ResponsesGateway};
+use nanocode_backend_codex::{Codex, CodexHarness};
+use nanocode_durability::{MemoryStore, SessionStore, SessionSummary};
+use nanocode_store_jsonl::{JsonlArchiver, JsonlStore};
+use nanocode_tool_runtime::{ToolExposure, Tools};
 
 mod markdown;
 mod tui;
 
 const PROMPT: &str = include_str!("../prompt.md");
 const DEFAULT_MODEL: &str = "luna";
+
+type Defaults = nanocode_agent_host::Defaults<CodexHarness, CodexHarness>;
+type Nanocode = nanocode_agent::Runtime<Defaults>;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -153,7 +158,7 @@ impl Lite {
             .instructions(PROMPT);
         let builder = match &store {
             Some(store) => builder.durability(store.clone()),
-            None => builder.durability(nanocode::durability::MemoryStore::new()?),
+            None => builder.durability(MemoryStore::new()?),
         };
         let runtime = builder.build_async().await?;
         Ok(Self {
@@ -178,7 +183,7 @@ impl Lite {
             _ => Ok(self
                 .runtime
                 .spawn()
-                .backend::<nanocode::Codex>()
+                .backend::<Codex>()
                 .model(self.model)
                 .build()
                 .await?),
@@ -200,7 +205,10 @@ impl Lite {
 async fn open_store(home: &std::path::Path) -> Result<(SessionStore, JsonlArchiver)> {
     let store = JsonlStore::open_home_async(home).await?;
     let archiver = store.archiver();
-    Ok((nanocode::session_store(store)?, archiver))
+    Ok((
+        nanocode_agent::session_store::<Defaults, _>(store)?,
+        archiver,
+    ))
 }
 
 async fn workspace_sessions(store: &SessionStore) -> Result<Vec<SessionSummary>> {

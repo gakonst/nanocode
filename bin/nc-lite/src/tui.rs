@@ -7,8 +7,8 @@ use crossterm::event::{
     KeyModifiers,
 };
 use crossterm::{execute, terminal};
-use nanocode::agent::events::AgentEvent;
-use nanocode::{Agent, AgentEvents, TurnControl, TurnResult};
+use nanocode_agent::events::AgentEvent;
+use nanocode_agent::{Agent, AgentEvents, TurnControl, TurnResult};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use unicode_width::UnicodeWidthChar;
@@ -30,7 +30,7 @@ const HELP: &str = "/help       show commands and keys
 Enter submit · Ctrl-C cancel the turn, clear the line or quit · Ctrl-D quit
 Up/Down history · Ctrl-A/E start/end · Ctrl-U/K delete to start/end · Ctrl-W delete word";
 
-type TurnFuture = Pin<Box<dyn Future<Output = nanocode::agent::Result<TurnResult>> + Send>>;
+type TurnFuture = Pin<Box<dyn Future<Output = nanocode_agent::Result<TurnResult>> + Send>>;
 type Keys = mpsc::UnboundedReceiver<std::io::Result<Event>>;
 
 pub fn run(config: Config) -> Result<()> {
@@ -203,7 +203,7 @@ async fn next_event(session: &mut Option<Session>) -> Option<AgentEvent> {
     }
 }
 
-async fn turn_result(turn: &mut Option<Running>) -> nanocode::agent::Result<TurnResult> {
+async fn turn_result(turn: &mut Option<Running>) -> nanocode_agent::Result<TurnResult> {
     match turn {
         Some(turn) => turn.result.as_mut().await,
         None => std::future::pending().await,
@@ -458,7 +458,7 @@ impl Tui {
         Ok(())
     }
 
-    async fn complete(&mut self, result: nanocode::agent::Result<TurnResult>) -> Result<()> {
+    async fn complete(&mut self, result: nanocode_agent::Result<TurnResult>) -> Result<()> {
         self.drain_events()?;
         let Some(turn) = self.turn.take() else {
             return Ok(());

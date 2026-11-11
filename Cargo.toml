@@ -234,6 +234,10 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
+[profile.lite]
+inherits = "dist"
+opt-level = "z"
+
 [profile.profiling]
 inherits = "release"
 debug = "full"

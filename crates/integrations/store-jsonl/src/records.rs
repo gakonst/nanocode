@@ -24,8 +24,8 @@ fn digest(hex: &str) -> Option<[u8; 32]> {
         _ => None,
     };
     let mut digest = [0; 32];
-    for (byte, pair) in digest.iter_mut().zip(hex.chunks_exact(2)) {
-        *byte = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    for (byte, [high, low]) in digest.iter_mut().zip(hex.as_chunks::<2>().0) {
+        *byte = (nibble(*high)? << 4) | nibble(*low)?;
     }
     Some(digest)
 }

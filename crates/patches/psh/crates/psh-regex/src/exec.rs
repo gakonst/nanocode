@@ -21,6 +21,9 @@ pub(crate) fn exec(
     eopts: ExecOptions,
     want_groups: bool,
 ) -> Option<Captures> {
+    if !text.ends_with(&prog.suffix) {
+        return None;
+    }
     let m = M {
         prog,
         text,
@@ -59,6 +62,9 @@ pub(crate) fn find(
     start: usize,
     eopts: ExecOptions,
 ) -> Option<(usize, usize)> {
+    if !text.ends_with(&prog.suffix) {
+        return None;
+    }
     let m = M {
         prog,
         text,

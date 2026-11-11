@@ -53,6 +53,10 @@ pub(crate) struct Prog {
     /// `newline`): the characters a match holds, so that it can only start that many
     /// before the end.
     pub tail: Option<usize>,
+    /// The ASCII bytes every match ends with, for a pattern every path of which closes
+    /// with them and the end of the text (`[0-9]*7$` without `newline`): a text that
+    /// does not end with them has no match.
+    pub suffix: Vec<u8>,
 }
 
 pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
@@ -100,10 +104,16 @@ pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
         .iter()
         .filter(|i| matches!(i, Inst::Lit(_) | Inst::Fold(_) | Inst::Any | Inst::Set(_)));
     let tail = (straight && ends && !anchored).then(|| held.count());
+    let suffix = if ends {
+        closing_literals(&c.insts)
+    } else {
+        Vec::new()
+    };
     Ok(Prog {
         prefix,
         straight,
         tail,
+        suffix,
         insts: c.insts,
         sets: c.sets,
         opts,
@@ -112,6 +122,40 @@ pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
         backrefs: parsed.backrefs,
         anchored,
     })
+}
+
+/// The literals right before the closing assertion of `insts`, when no jump lands
+/// after the first of them: every path to the match then runs through them and the
+/// assertion.
+fn closing_literals(insts: &[Inst]) -> Vec<u8> {
+    let Some(close) = insts
+        .iter()
+        .rposition(|i| !matches!(i, Inst::Match | Inst::Save(_)))
+    else {
+        return Vec::new();
+    };
+    let mut literals = Vec::new();
+    let mut first = close;
+    for (at, inst) in insts[..close].iter().enumerate().rev() {
+        match inst {
+            Inst::Lit(u) if *u < 0x80 => {
+                literals.push(*u as u8);
+                first = at;
+            }
+            Inst::Save(_) => {}
+            _ => break,
+        }
+    }
+    let lands_after = |inst: &Inst| match inst {
+        Inst::Split(a, b) => *a > first || *b > first,
+        Inst::Jmp(t) => *t > first,
+        _ => false,
+    };
+    if insts.iter().any(lands_after) {
+        return Vec::new();
+    }
+    literals.reverse();
+    literals
 }
 
 fn starts_with_bol(n: &Node) -> bool {

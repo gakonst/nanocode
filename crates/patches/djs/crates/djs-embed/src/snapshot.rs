@@ -350,6 +350,9 @@ impl Builder {
                 }
             }
         }
+        // What every call writes (registers, stack, queues) goes last in the image:
+        // instances note their writes below it only (`Vm::track_image`).
+        vm.move_interp_to_end().map_err(oom)?;
         // Everything the setup left is old from now on: collections during calls leave it
         // alone.
         vm.seal().map_err(oom)?;

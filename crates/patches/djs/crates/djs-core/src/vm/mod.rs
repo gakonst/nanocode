@@ -342,6 +342,67 @@ impl Vm {
         Ok(())
     }
 
+    /// [`Vm::reset_to`] for a VM that tracks `image` ([`Vm::track_image`]): only the
+    /// pages written since are copied back (`Heap::restore_image`). `false`: a
+    /// collection ran, and only [`Vm::reset_to`] can.
+    #[cfg(feature = "embed")]
+    pub fn restore_image(&mut self, image: &[u8]) -> bool {
+        if !self.heap.restore_image(image) {
+            return false;
+        }
+        self.heap.force_prefix_barrier(self.opts.prefix_barrier);
+        self.track_image(image.len(), core::iter::empty());
+        true
+    }
+
+    /// Tracks which pages of the heap's first `image_len` bytes are written from now on:
+    /// they are a copy of an image this VM was loaded from, with the ranges `written`
+    /// (offset, length) changed since. For [`Vm::restore_image`] and for an embedder
+    /// that keeps what differs from the image (`Heap::arena().written`). The
+    /// interpreter's own cells are written by every run: from the first of them on, the
+    /// image counts as written (an image made after [`Vm::move_interp_to_end`] has them
+    /// at its end).
+    #[cfg(feature = "embed")]
+    pub fn track_image(&mut self, image_len: usize, written: impl Iterator<Item = (u32, u32)>) {
+        let end = self.interp_cells().into_iter().flatten().min();
+        self.heap
+            .arena_mut()
+            .track(image_len as u32, end.unwrap_or(image_len as u32), written);
+    }
+
+    /// The cells every run writes: the registers, the value stack, the job queue and the
+    /// host call table.
+    #[cfg(feature = "embed")]
+    fn interp_cells(&self) -> [Option<u32>; 4] {
+        use crate::heap::cells::Roots;
+        let roots = |f| self.heap.arena().get::<Ref>(0, f).get();
+        [
+            roots(Roots::INTERP),
+            roots(Roots::STACK),
+            roots(Roots::JOBS),
+            roots(Roots::HOST_CALLS),
+        ]
+    }
+
+    /// Moves the interpreter's own cells to the end of the heap (the old ones are
+    /// garbage): an idle VM's, before the collection that makes its image. Instances of
+    /// that image track their writes ([`Vm::track_image`]) below these cells only, so
+    /// what every run writes is neither noted nor far from the end.
+    #[cfg(feature = "embed")]
+    pub fn move_interp_to_end(&mut self) -> Result<(), HeapError> {
+        use crate::heap::cells::Roots;
+        let fields = [Roots::INTERP, Roots::STACK, Roots::JOBS, Roots::HOST_CALLS];
+        for (cell, field) in self.interp_cells().into_iter().zip(fields) {
+            let Some(old) = cell else { continue };
+            let size = self.heap.cell_size(old);
+            let new = self.heap.alloc_cell(self.heap.cell_kind(old), size)?;
+            let a = self.heap.arena_mut();
+            a.copy_within(old, size, new);
+            a.set(0, field, Ref(new));
+        }
+        Ok(())
+    }
+
     /// A new VM from a base snapshot: the image of an idle VM with its prelude installed,
     /// made at build time (`djs-prelude`, D1321). Creating a VM is then a copy, with no
     /// compile. The image is trusted (its cells are not verified: it was verified when it

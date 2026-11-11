@@ -481,6 +481,9 @@ impl Exec<'_> {
     pub(super) fn run_hot(&mut self) -> Option<super::Status> {
         let mut budget = self.opts.hot_backedges;
         let slow_call_flags = self.slow_call_flags;
+        // Below it the arena tracks written pages (0: nothing): the one write here that
+        // is not to the value stack, a Box's value, notes its page.
+        let tracked = self.heap.arena().tracked_end();
         // The frame data, re-read after a collection (and kept current by calls and
         // returns here).
         let (mut code, mut end, mut bp, mut hp, mut lp): (u32, u32, u32, u32, u32);
@@ -838,6 +841,9 @@ impl Exec<'_> {
                                 | fast::PUT_CAP_CHK
                                 | fast::PUT_BOX
                                 | fast::PUT_BOX_CHK => {
+                                    if at < tracked {
+                                        heap_call!(self.heap.arena_mut().wrote(at, 8));
+                                    }
                                     sp -= 1;
                                     let v = ld(b, slot!(sp));
                                     st(b, at, v);
@@ -846,6 +852,9 @@ impl Exec<'_> {
                                 | fast::SET_CAP_CHK
                                 | fast::SET_BOX
                                 | fast::SET_BOX_CHK => {
+                                    if at < tracked {
+                                        heap_call!(self.heap.arena_mut().wrote(at, 8));
+                                    }
                                     let v = top!(0);
                                     st(b, at, v);
                                 }

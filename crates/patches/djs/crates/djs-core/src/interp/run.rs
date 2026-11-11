@@ -436,7 +436,7 @@ impl<'h> Exec<'h> {
     #[inline(always)]
     fn set(&mut self, i: u32, v: Value) {
         let at = ValueArray::VALUES.at(self.stack, i);
-        self.heap.arena_mut().write(at, v)
+        self.heap.arena_mut().write_untracked(at, v)
     }
 
     #[inline(always)]

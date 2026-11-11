@@ -194,7 +194,8 @@ impl Marker<'_> {
         if gc & gc_bits::MARK != 0 {
             return off;
         }
-        self.arena.set(off, Header::GC, gc | gc_bits::MARK);
+        self.arena
+            .set_untracked(off, Header::GC, gc | gc_bits::MARK);
         self.live.set(off, (h >> 32) as u32);
         let kind = h as u8;
         if kind == CellKind::EphemeronArray as u8 {
@@ -239,7 +240,7 @@ impl Marker<'_> {
                     let n = self.mark(t);
                     if n != t {
                         let bits = (v.to_bits() & !0xFFFF_FFFF) | n as u64;
-                        self.arena.write(s, Value::from_raw(bits));
+                        self.arena.write_untracked(s, Value::from_raw(bits));
                     }
                 }
             }
@@ -247,7 +248,7 @@ impl Marker<'_> {
                 if let Some(t) = self.arena.read::<Ref>(s).get() {
                     let n = self.mark(t);
                     if n != t {
-                        self.arena.write(s, Ref(n));
+                        self.arena.write_untracked(s, Ref(n));
                     }
                 }
             }
@@ -777,14 +778,17 @@ impl Heap {
                     && t >= dense
                 {
                     let n = live.forward(&table, t);
-                    arena.write(s, Value::from_raw((v.to_bits() & !0xFFFF_FFFF) | n as u64));
+                    arena.write_untracked(
+                        s,
+                        Value::from_raw((v.to_bits() & !0xFFFF_FFFF) | n as u64),
+                    );
                 }
             }
             Slot::Ref(s) => {
                 if let Some(t) = arena.read::<Ref>(s).get()
                     && t >= dense
                 {
-                    arena.write(s, Ref(live.forward(&table, t)));
+                    arena.write_untracked(s, Ref(live.forward(&table, t)));
                 }
             }
         };
@@ -851,7 +855,7 @@ impl Heap {
                 let (kb, size) = (h as u8, (h >> 32) as u32);
                 // The mark is not needed past this point (the bitmap has it).
                 let gc = (h >> 8) as u8;
-                arena.set(c, Header::GC, gc & !(gc_bits::MARK | gc_bits::COUNTED));
+                arena.set_untracked(c, Header::GC, gc & !(gc_bits::MARK | gc_bits::COUNTED));
                 if !is_leaf(kb) {
                     let kind =
                         CellKind::from_u8(kb).unwrap_or_else(|| super::fail::bad_cell_kind(kb, c));

@@ -30,6 +30,32 @@ pub struct Arena {
     /// past the roots cell) panics. 0: off. Not part of the image.
     #[cfg(debug_assertions)]
     trap_end: u32,
+    /// The written pages of a tracked prefix ([`Arena::track`]). Not part of the image.
+    #[cfg(feature = "embed")]
+    tracked: Tracked,
+}
+
+/// A page of [`Tracked`]: 1 KiB (a bit of `dirty` each).
+#[cfg(feature = "embed")]
+const DIRTY_SHIFT: u32 = 10;
+
+/// Which pages of the arena's first `image` bytes were written since they were a copy of
+/// an image ([`Arena::track`]): what [`Arena::restore`] copies back, instead of the whole
+/// image, to make the arena that image again. Every write goes through the arena's
+/// write methods, which note the page of one below `end`. From `end` to `image` are
+/// the interpreter's own cells (its registers and queues, and the value stack, which
+/// the hot loop writes through [`Arena::hot_bytes`]): written all the time, they count
+/// as written, and a write there costs what one above the image does.
+#[cfg(feature = "embed")]
+#[derive(Default)]
+struct Tracked {
+    /// The length of the prefix that was the image. 0: not tracking, or no longer: cells
+    /// moved (a collection) or the arena shrank below it
+    image: u32,
+    /// Writes below it are noted (at most `image`)
+    end: u32,
+    /// A bit per page below `end`
+    dirty: Vec<u64>,
 }
 
 #[cfg(test)]
@@ -59,6 +85,8 @@ impl Arena {
             target: 0,
             #[cfg(debug_assertions)]
             trap_end: 0,
+            #[cfg(feature = "embed")]
+            tracked: Tracked::default(),
         }
     }
 
@@ -76,6 +104,8 @@ impl Arena {
             target: 0,
             #[cfg(debug_assertions)]
             trap_end: 0,
+            #[cfg(feature = "embed")]
+            tracked: Tracked::default(),
         })
     }
 
@@ -118,7 +148,99 @@ impl Arena {
             target: 0,
             #[cfg(debug_assertions)]
             trap_end: 0,
+            #[cfg(feature = "embed")]
+            tracked: Tracked::default(),
         }
+    }
+
+    /// Starts tracking writes to the first `image` bytes, which are a copy of an image
+    /// now, or a copy with the `written` ranges (offset, length) changed: see
+    /// [`Tracked`]. From `end` on the prefix counts as written.
+    #[cfg(feature = "embed")]
+    pub fn track(&mut self, image: u32, end: u32, written: impl Iterator<Item = (u32, u32)>) {
+        // (A heap shorter than the image is not a copy of it.)
+        let image = if image > self.len { 0 } else { image };
+        let end = end.min(image);
+        let pages = end.div_ceil(1 << DIRTY_SHIFT) as usize;
+        self.tracked = Tracked {
+            image,
+            end,
+            dirty: alloc::vec![0; pages.div_ceil(64)],
+        };
+        for (off, len) in written {
+            if off < end {
+                self.note(off, len);
+            }
+        }
+    }
+
+    /// Writes below it are noted in a tracked prefix (0: not tracking).
+    #[inline(always)]
+    pub(crate) fn tracked_end(&self) -> u32 {
+        #[cfg(feature = "embed")]
+        {
+            self.tracked.end
+        }
+        #[cfg(not(feature = "embed"))]
+        0
+    }
+
+    /// The tracked prefix is not its image any more (a collection moved cells).
+    #[inline]
+    pub(crate) fn lose_tracked(&mut self) {
+        #[cfg(feature = "embed")]
+        {
+            self.tracked.image = 0;
+            self.tracked.end = 0;
+        }
+    }
+
+    /// The written parts of the tracked prefix as byte ranges, ascending: `None` when
+    /// the arena does not track its prefix as a copy of an image of `image_len` bytes.
+    #[cfg(feature = "embed")]
+    pub fn written(&self, image_len: usize) -> Option<impl Iterator<Item = (usize, usize)> + '_> {
+        let t = &self.tracked;
+        if t.image == 0 || t.image as usize != image_len {
+            return None;
+        }
+        let end = t.end as usize;
+        let pages = t.dirty.iter().enumerate().flat_map(move |(w, &bits)| {
+            (0..64).filter(move |b| bits >> b & 1 != 0).map(move |b| {
+                let start = (w * 64 + b) << DIRTY_SHIFT;
+                (start, (start + (1 << DIRTY_SHIFT)).min(end))
+            })
+        });
+        Some(pages.chain(core::iter::once((end, image_len))))
+    }
+
+    /// Makes the arena `image` again by copying back what was written since
+    /// [`Arena::track`] and dropping everything above it; the capacity stays. `false`
+    /// (nothing done) when the arena does not track its prefix as a copy of `image`.
+    #[cfg(feature = "embed")]
+    pub(crate) fn restore(&mut self, image: &[u8]) -> bool {
+        let t = &mut self.tracked;
+        if t.image == 0 || t.image as usize != image.len() {
+            return false;
+        }
+        let end = t.end as usize;
+        for (w, bits) in t.dirty.iter_mut().enumerate() {
+            let mut rest = core::mem::take(bits);
+            while rest != 0 {
+                let b = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                let start = (w * 64 + b) << DIRTY_SHIFT;
+                let stop = (start + (1 << DIRTY_SHIFT)).min(end);
+                self.bytes[start..stop].copy_from_slice(&image[start..stop]);
+            }
+        }
+        self.bytes[end..image.len()].copy_from_slice(&image[end..]);
+        self.bytes.truncate(image.len());
+        self.len = image.len() as u32;
+        debug_assert!(
+            self.bytes == image,
+            "a write below the image was not tracked"
+        );
+        true
     }
 
     /// Takes the buffer out, leaving the arena empty: for a reload into the same
@@ -336,14 +458,77 @@ impl Arena {
         0
     }
 
-    /// The barrier (debug builds): `len` bytes written at `off`.
+    /// The barrier: `len` bytes written at `off`. Debug builds check the prefix write
+    /// barrier; a tracked prefix notes its written pages.
     #[inline(always)]
-    fn barrier(&self, off: u32, len: u32) {
+    fn barrier(&mut self, off: u32, len: u32) {
         #[cfg(debug_assertions)]
         if off < self.trap_end && off + len > super::cells::Roots::LAYOUT.min_size {
             prefix_write(off);
         }
+        #[cfg(feature = "embed")]
+        if off < self.tracked.end {
+            self.note(off, len);
+        }
         let _ = (off, len);
+    }
+
+    /// Notes the pages of a write of `len` bytes below the tracked prefix's `end`. Out
+    /// of line: the write methods are inlined everywhere, and nearly all writes are
+    /// above it.
+    #[cfg(feature = "embed")]
+    #[cold]
+    #[inline(never)]
+    fn note(&mut self, off: u32, len: u32) {
+        let t = &mut self.tracked;
+        if len == 0 {
+            return;
+        }
+        let last = off.saturating_add(len - 1).min(t.end - 1) >> DIRTY_SHIFT;
+        let mut page = off >> DIRTY_SHIFT;
+        while page <= last {
+            t.dirty[(page >> 6) as usize] |= 1 << (page & 63);
+            page += 1;
+        }
+    }
+
+    /// Notes a write of `len` bytes at `off` made through [`Arena::hot_bytes`].
+    #[inline(always)]
+    pub(crate) fn wrote(&mut self, off: u32, len: u32) {
+        #[cfg(feature = "embed")]
+        if off < self.tracked.end {
+            self.note(off, len);
+        }
+        let _ = (off, len);
+    }
+
+    /// [`Arena::write`] without the tracked prefix's check, for a write that cannot be
+    /// below its `end` ([`Tracked`]; debug builds check): to a cell just allocated, to
+    /// the value stack (the interpreter's general path, every push), or by a collection,
+    /// which ends the tracking first. That check on each of them was a twentieth of the
+    /// instructions of a run that builds and collects objects.
+    #[inline(always)]
+    pub(crate) fn write_untracked<T: FieldType>(&mut self, off: u32, v: T) {
+        #[cfg(debug_assertions)]
+        if off < self.trap_end && off + T::TY.size() > super::cells::Roots::LAYOUT.min_size {
+            prefix_write(off);
+        }
+        #[cfg(feature = "embed")]
+        debug_assert!(
+            off >= self.tracked.end,
+            "a write below the tracked prefix's end was not noted"
+        );
+        debug_assert!(
+            off as usize + T::TY.size() as usize <= self.len as usize,
+            "write past the arena end"
+        );
+        T::write(&mut self.bytes, off as usize, v)
+    }
+
+    /// [`Arena::set`] as [`Arena::write_untracked`].
+    #[inline(always)]
+    pub(crate) fn set_untracked<T: FieldType>(&mut self, base: u32, f: Field<T>, v: T) {
+        self.write_untracked(base + f.offset, v)
     }
 
     #[inline(always)]
@@ -417,6 +602,10 @@ impl Arena {
     /// instead of the append (0224: `JSON.stringify` of 10k objects 1.5x slower).
     pub(crate) fn truncate(&mut self, to: u32) {
         assert!(to <= self.len, "truncate past the end");
+        #[cfg(feature = "embed")]
+        if to < self.tracked.image {
+            self.lose_tracked();
+        }
         self.bytes.truncate(to as usize);
         self.len = to;
     }

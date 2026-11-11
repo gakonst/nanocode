@@ -13,6 +13,11 @@ every incompatible change is listed here with what to do instead.
   `Snapshot::parked` are the same state as bytes a host can store and load in another
   process of the same build; `Snapshot::fingerprint` tells whether two snapshots share
   an image.
+- An instance notes which pages of its image its calls write (`Vm::track_image`; the
+  interpreter's own cells go last in a snapshot's image and count as written):
+  `Instance::reset_written` is `reset` by copying those pages back instead of the image
+  (`false` once a collection ran), `reset` tries it first, and `park` looks for
+  differences in those pages only.
 - A native instance's arena starts with 64 KiB beyond its image and grows to its
   collection threshold at once (wasm32 as upstream).
 

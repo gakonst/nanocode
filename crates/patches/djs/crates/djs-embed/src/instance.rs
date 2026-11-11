@@ -118,10 +118,11 @@ impl Instance {
     pub(crate) fn new(snapshot: Snapshot, limits: Limits) -> Result<Instance, Error> {
         let opts = vm_options(limits.memory, snapshot.frozen_builtins());
         let bytes = snapshot.image_buffer(limits.memory);
-        let vm = guard_vm(|| Vm::from_bytes_trusted(bytes, opts))?.map_err(|e| match e {
+        let mut vm = guard_vm(|| Vm::from_bytes_trusted(bytes, opts))?.map_err(|e| match e {
             djs_core::heap::LoadError::TooLarge => Error::OutOfMemory,
             e => Error::Usage(format!("cannot load the snapshot: {e:?}")),
         })?;
+        vm.track_image(snapshot.image_len(), std::iter::empty());
         Ok(Instance {
             vm,
             snapshot,
@@ -166,9 +167,17 @@ impl Instance {
     /// The allocation stays as large as calls grew it ([`Instance::heap_size`]);
     /// [`Instance::shrink_heap`] returns what a pool does not want to keep.
     pub fn reset(&mut self) -> Result<(), Error> {
+        if self.reset_written()? {
+            return Ok(());
+        }
         self.call = None;
         let image = self.snapshot.clone();
-        match self.guard(|vm| vm.reset_to(image.image()))? {
+        let reset = self.guard(|vm| {
+            vm.reset_to(image.image())?;
+            vm.track_image(image.image_len(), std::iter::empty());
+            Ok::<(), djs_core::heap::LoadError>(())
+        })?;
+        match reset {
             Ok(()) => Ok(()),
             Err(e) => {
                 // The VM has no heap left.
@@ -176,6 +185,21 @@ impl Instance {
                 Err(Error::Usage(format!("cannot load the snapshot: {e:?}")))
             }
         }
+    }
+
+    /// [`Instance::reset`] when it costs what the calls wrote and not a copy of the image:
+    /// the instance tracks which pages of the image its calls write, and copying those
+    /// back is the snapshot's state again. `false`, and the instance as it was, when a
+    /// call's garbage was collected (its heap grew past the first collection): then only
+    /// [`Instance::reset`] can, by copying the image. For a pool that keeps the instances
+    /// short calls leave and drops the others.
+    pub fn reset_written(&mut self) -> Result<bool, Error> {
+        let image = self.snapshot.clone();
+        let restored = self.guard(|vm| vm.restore_image(image.image()))?;
+        if restored {
+            self.call = None;
+        }
+        Ok(restored)
     }
 
     /// The host memory the instance's heap holds, in bytes: its arena's allocation, which

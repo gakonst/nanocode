@@ -19,8 +19,14 @@ use crate::{Error, Instance, Limits, Snapshot};
 /// A run's header in the delta: its offset and its length (`u32`, little-endian).
 const RUN: usize = 8;
 
-/// What the scan compares at once before it looks for the words that differ.
+/// What the scan of a heap that does not track its written pages compares at once
+/// before it looks for the words that differ.
 const BLOCK: usize = 1024;
+
+/// The image in blocks of [`BLOCK`].
+fn blocks(len: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..len.div_ceil(BLOCK)).map(move |i| (i * BLOCK, ((i + 1) * BLOCK).min(len)))
+}
 
 /// The first bytes of [`Parked::to_bytes`].
 const MAGIC: &[u8; 8] = b"djspark1";
@@ -38,9 +44,9 @@ pub struct Parked {
     delta: Vec<u8>,
 }
 
-/// The runs of `heap` that differ from `image` (see [`Parked`]). Runs closer than a
-/// header are one.
-fn delta(image: &[u8], heap: &[u8]) -> Vec<u8> {
+/// The runs of `heap` that differ from `image` (see [`Parked`]), looked for in the
+/// `blocks` of the image (ascending ranges). Runs closer than a header are one.
+fn delta(image: &[u8], heap: &[u8], blocks: impl Iterator<Item = (usize, usize)>) -> Vec<u8> {
     fn flush(out: &mut Vec<u8>, heap: &[u8], run: Option<(usize, usize)>) {
         if let Some((start, end)) = run {
             out.extend_from_slice(&(start as u32).to_le_bytes());
@@ -51,10 +57,9 @@ fn delta(image: &[u8], heap: &[u8]) -> Vec<u8> {
     let shared = image.len().min(heap.len());
     let mut out = Vec::new();
     let mut run: Option<(usize, usize)> = None;
-    let mut at = 0;
-    while at < shared {
-        let end = (at + BLOCK).min(shared);
-        if image[at..end] != heap[at..end] {
+    for (at, end) in blocks {
+        let end = end.min(shared);
+        if at < end && image[at..end] != heap[at..end] {
             let mut w = at;
             while w < end {
                 let e = (w + 8).min(end);
@@ -70,7 +75,6 @@ fn delta(image: &[u8], heap: &[u8]) -> Vec<u8> {
                 w = e;
             }
         }
-        at = end;
     }
     if heap.len() > shared {
         match &mut run {
@@ -83,6 +87,18 @@ fn delta(image: &[u8], heap: &[u8]) -> Vec<u8> {
     }
     flush(&mut out, heap, run);
     out
+}
+
+/// The runs of a delta that [`patched`] applied: their offsets and lengths.
+fn runs(delta: &[u8]) -> impl Iterator<Item = (u32, u32)> + '_ {
+    let mut rest = delta;
+    std::iter::from_fn(move || {
+        let (head, tail) = rest.split_at_checked(RUN)?;
+        let start = u32::from_le_bytes(head[..4].try_into().ok()?);
+        let n = u32::from_le_bytes(head[4..].try_into().ok()?);
+        rest = tail.get(n as usize..)?;
+        Some((start, n))
+    })
 }
 
 /// The heap of `len` bytes that `delta` was taken from, in a buffer with room to grow:
@@ -123,8 +139,14 @@ impl Instance {
         let snapshot = self.snapshot.clone();
         // The image form: the dead stack slots cleared, so they are no difference.
         let (heap, delta) = self.guard(|vm| {
-            let bytes = vm.image();
-            (bytes.len(), delta(snapshot.image(), bytes))
+            let image = snapshot.image();
+            let len = vm.image().len();
+            // The pages the calls wrote, when the heap tracked them: only they differ.
+            let delta = match vm.heap().arena().written(image.len()) {
+                Some(written) => delta(image, vm.bytes(), written),
+                None => delta(image, vm.bytes(), blocks(image.len())),
+            };
+            (len, delta)
         })?;
         Ok(Parked {
             snapshot,
@@ -154,7 +176,7 @@ impl Parked {
         let foreign = || Error::Usage("the parked state is not of this snapshot".into());
         let bytes = patched(snapshot.image(), heap, &delta, limits.memory).ok_or_else(foreign)?;
         let opts = vm_options(limits.memory, snapshot.frozen_builtins());
-        let vm = guard_vm(|| {
+        let mut vm = guard_vm(|| {
             if trusted {
                 Vm::from_bytes_trusted(bytes, opts)
             } else {
@@ -165,6 +187,8 @@ impl Parked {
             LoadError::TooLarge => Error::OutOfMemory,
             e => Error::Usage(format!("cannot load the parked state: {e:?}")),
         })?;
+        // The heap is the image with the delta's runs written.
+        vm.track_image(snapshot.image_len(), runs(&delta));
         Ok(Instance {
             vm,
             snapshot,

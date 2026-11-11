@@ -266,6 +266,27 @@ impl Heap {
         Ok(heap)
     }
 
+    /// Makes the heap `image` again, which it was loaded from and tracks
+    /// ([`Arena::track`]), by copying back the pages written since: what loading the
+    /// image anew gives, without the copy of all of it. `false` (nothing done) when
+    /// the heap is no longer that image with written pages (a collection ran).
+    #[cfg(feature = "embed")]
+    pub fn restore_image(&mut self, image: &[u8]) -> bool {
+        if !self.arena.restore(image) {
+            return false;
+        }
+        let mut arena = core::mem::replace(&mut self.arena, Arena::new(0));
+        arena.set_limit(self.hard_limit);
+        let mut fresh = Heap::over(arena);
+        // What the heap derived for itself and keeps for the VM's lifetime.
+        #[cfg(feature = "unicode-normalization")]
+        {
+            fresh.compositions = core::mem::take(&mut self.compositions);
+        }
+        *self = fresh;
+        true
+    }
+
     /// The arena capacity a heap restored from an image of `image_len` bytes reserves
     /// (D1942, D2541, D3141): the image, rounded up to whole wasm pages. A host can stage
     /// the image in a buffer of this capacity, which becomes the arena without growing
@@ -526,6 +547,8 @@ impl Heap {
     /// Runs `f` (a collection) with the barrier suspended: collections set and clear mark
     /// bits in the prefix's headers. The prefix must be as it was afterwards.
     pub(crate) fn without_barrier<T>(&mut self, f: impl FnOnce(&mut Heap) -> T) -> T {
+        // A collection moves cells: a tracked prefix is no image with written pages.
+        self.arena.lose_tracked();
         let end = self.arena.trap_end();
         self.arena.set_trap_end(0);
         let r = f(self);
@@ -557,8 +580,8 @@ impl Heap {
         if self.arena.len() >= self.gc_threshold {
             self.gc_pending = true;
         }
-        self.arena.set(off, Header::KIND, kind as u8);
-        self.arena.set(off, Header::SIZE, size);
+        self.arena.set_untracked(off, Header::KIND, kind as u8);
+        self.arena.set_untracked(off, Header::SIZE, size);
         Ok(off)
     }
 
@@ -576,8 +599,8 @@ impl Heap {
         if self.arena.len() >= self.gc_threshold {
             self.gc_pending = true;
         }
-        self.arena.set(off, Header::KIND, kind as u8);
-        self.arena.set(off, Header::SIZE, size);
+        self.arena.set_untracked(off, Header::KIND, kind as u8);
+        self.arena.set_untracked(off, Header::SIZE, size);
         Ok(off)
     }
 
@@ -596,8 +619,8 @@ impl Heap {
         if self.arena.len() >= self.gc_threshold {
             self.gc_pending = true;
         }
-        self.arena.set(off, Header::KIND, kind as u8);
-        self.arena.set(off, Header::SIZE, size);
+        self.arena.set_untracked(off, Header::KIND, kind as u8);
+        self.arena.set_untracked(off, Header::SIZE, size);
         Ok(off)
     }
 

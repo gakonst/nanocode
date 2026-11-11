@@ -119,6 +119,39 @@ pub struct Regex {
     prog: compile::Prog,
     groups: usize,
     opts: Options,
+    /// The pattern is this text and nothing else (ASCII, case-sensitive, no group): a
+    /// match is its first occurrence, found by comparing bytes. `sed 's/1/one/g'` spent
+    /// 65% of its time simulating the automaton of such a pattern.
+    literal: Option<Vec<u8>>,
+}
+
+/// The text a pattern stands for when it is only ordinary ASCII characters.
+fn literal(parsed: &parse::Parsed, opts: Options) -> Option<Vec<u8>> {
+    let ascii = |node: &parse::Node| match node {
+        parse::Node::Lit(unit) => u8::try_from(*unit).ok().filter(u8::is_ascii),
+        _ => None,
+    };
+    if opts.icase || parsed.groups > 0 || parsed.backrefs {
+        return None;
+    }
+    match &parsed.node {
+        parse::Node::Cat(nodes) if !nodes.is_empty() => nodes.iter().map(ascii).collect(),
+        node => ascii(node).map(|byte| alloc::vec![byte]),
+    }
+}
+
+/// The first occurrence of `needle` in `text` at `start` or later.
+fn find_literal(text: &[u8], start: usize, needle: &[u8]) -> Option<(usize, usize)> {
+    let (first, rest) = needle.split_first()?;
+    let mut from = start;
+    while from < text.len() {
+        let at = from + text[from..].iter().position(|byte| byte == first)?;
+        if text[at + 1..].starts_with(rest) {
+            return Some((at, at + needle.len()));
+        }
+        from = at + 1;
+    }
+    None
 }
 
 /// The positions of a match: `[0]` is the whole match, `[n]` the `n`th parenthesized
@@ -133,6 +166,7 @@ impl Regex {
             prog,
             groups: parsed.groups,
             opts,
+            literal: literal(&parsed, opts),
         })
     }
 
@@ -147,23 +181,29 @@ impl Regex {
 
     /// The leftmost-longest match in `text` with its subexpressions, or `None`.
     pub fn exec(&self, text: &[u8], eopts: ExecOptions) -> Option<Captures> {
-        exec::exec(&self.prog, self.groups, text, 0, eopts, true)
+        self.exec_at(text, 0, eopts)
     }
 
     /// The bounds of the leftmost-longest match only (cheaper: no subexpressions).
     pub fn find(&self, text: &[u8], eopts: ExecOptions) -> Option<(usize, usize)> {
-        exec::exec(&self.prog, self.groups, text, 0, eopts, false).and_then(|c| c[0])
+        self.find_at(text, 0, eopts)
     }
 
     /// [`Self::exec`] for a match that starts at `start` or later, with the text before
     /// it in view of `^` (start of line), `\b`, `\<` and the like: the next match of a
     /// global substitution. Offsets are into the whole `text`.
     pub fn exec_at(&self, text: &[u8], start: usize, eopts: ExecOptions) -> Option<Captures> {
+        if let Some(needle) = &self.literal {
+            return find_literal(text, start, needle).map(|found| alloc::vec![Some(found)]);
+        }
         exec::exec(&self.prog, self.groups, text, start, eopts, true)
     }
 
     /// [`Self::find`] from `start`, as [`Self::exec_at`].
     pub fn find_at(&self, text: &[u8], start: usize, eopts: ExecOptions) -> Option<(usize, usize)> {
+        if let Some(needle) = &self.literal {
+            return find_literal(text, start, needle);
+        }
         exec::exec(&self.prog, self.groups, text, start, eopts, false).and_then(|c| c[0])
     }
 

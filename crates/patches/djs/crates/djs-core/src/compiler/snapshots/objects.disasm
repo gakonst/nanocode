@@ -1,0 +1,116 @@
+function 0 <anonymous>: params=0 locals=1 stack=4 captures=0
+    0  global_decls #0 const "k" "o"
+    5  undefined
+    6  put_loc0 (<completion>)
+    7  push_const8 #6 ("dyn")
+    9  init_global_lex "k"
+   14  object
+   15  push1
+   16  define_field "a" ic0
+   23  fclosure child0
+   28  define_method "m"
+   33  fclosure child1
+   38  define_getter "g"
+   43  fclosure child2
+   48  define_setter "s"
+   53  get_global "k" ic1  ; 8:4
+   60  to_propkey
+   61  fclosure child3
+   66  set_function_name 0
+   68  define_elem
+   69  get_global "k" ic2  ; 9:4
+   76  push_const8 #7 ("m")
+   78  add  ; 9:6
+   79  fclosure child4
+   84  set_function_name 0
+   86  define_method_elem
+   87  get_global "k" ic3  ; 10:8
+   94  fclosure child5
+   99  set_function_name 1
+  101  define_getter_elem
+  102  null
+  103  set_proto
+  104  push1
+  105  define_field "__proto__x" ic4
+  112  get_global "k" ic5  ; 13:6
+  119  copy_data_props 0
+  121  init_global_lex "o"
+  126  get_global "f" ic6  ; 15:1
+  133  undefined
+  134  array_from 0
+  137  get_global "o" ic7  ; 15:6
+  144  array_spread
+  145  push1
+  146  array_push
+  147  get_global "o" ic8  ; 15:15
+  154  array_spread
+  155  call_spread  ; 15:2
+  156  put_loc0 (<completion>)
+  157  get_global "o" ic9  ; 16:1
+  164  get_method "m" ic10  ; 16:2
+  171  array_from 0
+  174  push1
+  175  array_from 1
+  178  array_spread
+  179  call_spread  ; 16:4
+  180  put_loc0 (<completion>)
+  181  get_global "F" ic11  ; 17:5
+  188  array_from 0
+  191  get_global "o" ic12  ; 17:10
+  198  array_spread
+  199  construct_spread  ; 17:6
+  200  put_loc0 (<completion>)
+  201  get_global "o" ic13  ; 18:8
+  208  dup
+  209  is_nullish
+  210  jump_if_true8 -> 220
+  212  push_atom "a"  ; 18:9
+  217  delete
+  218  jump8 -> 222
+  220  drop
+  221  push_true
+  222  put_loc0 (<completion>)
+  223  get_global "o" ic14  ; 19:8
+  230  dup
+  231  is_nullish
+  232  jump_if_true8 -> 249
+  234  get_field "b" ic15  ; 19:9
+  241  push_atom "c"  ; 19:12
+  246  delete
+  247  jump8 -> 251
+  249  drop
+  250  push_true
+  251  put_loc0 (<completion>)
+  252  get_global "o" ic16  ; 20:8
+  259  dup
+  260  is_nullish
+  261  jump_if_true8 -> 273
+  263  get_global "k" ic17  ; 20:12
+  270  delete  ; 20:11
+  271  jump8 -> 275
+  273  drop
+  274  push_true
+  275  put_loc0 (<completion>)
+  276  get_loc0 (<completion>)
+  277  return
+function 0.0 m: params=1 locals=1 stack=2 captures=0
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 5:17
+    4  get_field "a" ic0  ; 5:21
+   11  get_arg0  ; 5:26
+   12  add  ; 5:24
+   13  return
+function 0.1 get g: params=0 locals=0 stack=1 captures=0
+    0  push1
+    1  return
+function 0.2 set s: params=1 locals=0 stack=0 captures=0
+    0  return_undef
+function 0.3 <anonymous>: params=0 locals=0 stack=1 captures=0
+    0  push2
+    1  return
+function 0.4 <anonymous>: params=0 locals=0 stack=0 captures=0
+    0  return_undef
+function 0.5 <anonymous>: params=0 locals=0 stack=1 captures=0
+    0  push3
+    1  return

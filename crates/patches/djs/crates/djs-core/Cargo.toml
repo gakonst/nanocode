@@ -1,0 +1,65 @@
+[package]
+name = "djs-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# No doctests (scripts/gate.py `targets` fails if one appears): none to compile (0197).
+doctest = false
+
+[dependencies]
+# Math (D3174): libm 0.2.16's functions; its sources are hashed into BUILD_HASH (build.rs).
+djs-libm = { path = "../djs-libm" }
+
+[features]
+default = ["full", "unicode", "dump", "lazy", "compile-cache", "embed"]
+# Everything djs implements. Off, the build is slim (D2411, docs/slim-codemode.md): no typed
+# arrays/ArrayBuffer/DataView, Iterator helpers or `Iterator`, BigInt, WeakRef/
+# FinalizationRegistry, DisposableStack/AsyncDisposableStack/SuppressedError, and no
+# `using`, decorator or BigInt literal syntax; their names say "not available in this
+# build". Additive: turning it on only adds.
+full = ["djs-prelude/full"]
+# `Vm::dump` (0167, docs/functions-as-code.md): a VM's bindings written as JavaScript.
+# Code only: images and the base do not depend on it.
+dump = []
+# Lazy function compilation (0218, D2990): with `VmOptions::lazy_functions`, a function
+# body is compiled at its first call; the load still parses everything. Code only: a
+# build without it treats a lazy template as corrupt bytecode, and `Vm::seal` compiles
+# them all first. Off in the shipped main and slim modules (D2990), on in the dump module.
+lazy = []
+# The compile cache (0219, D3040): `Vm::compile_cached` exports a compile's cells as a
+# blob that another VM imports instead of compiling again. Code only.
+compile-cache = []
+# What Rust hosts (djs-embed) use beyond the wasm modules' needs (D3175, D3180): the
+# outbound wire encoder (`wire::encode`), the wire format's uncounted UTF-8 strings,
+# `ExecOptions::fatal_out_of_memory`, and ES modules (D3171: the module goal, the loader,
+# linking and evaluation, `Vm::load_module`). Off in djs-wasm's modules, whose size counts
+# (D020). An image feature: the base of a build without it leaves out the builtins tagged
+# `// @embed-only` (builtins/gen/prelude-noembed.js). Needs `full`.
+embed = ["djs-prelude/embed"]
+# Running the prelude source in wasm (D3094): `Vm::new` with `VmOptions::prelude` and the
+# `%Install*` intrinsics the prelude calls. Native builds always have it; wasm modules
+# start from the base image and leave it out unless they need it (djs-wasm's
+# `compiled-prelude`). Code only.
+prelude = []
+# The Unicode tables: both features below.
+unicode = ["regexp-unicode-props", "unicode-normalization"]
+# (Each feature also turns on djs-prelude's of the same name, for the e2e tests' base: the
+# base must come from a djs-core with the same features, D2411.)
+# `\p{..}` / `\P{..}` in regular expressions: about 21 KB of Unicode property tables
+# (D1500). Without it they are a SyntaxError (D1112).
+regexp-unicode-props = ["djs-prelude/regexp-unicode-props"]
+# String.prototype.normalize for every string, and localeCompare normalizing to NFC like
+# qjs: about 38 KB (20 KB gzipped) of wasm (D1760). Without it normalize throws for strings that would
+# need them, and localeCompare compares code points.
+unicode-normalization = ["djs-prelude/unicode-normalization"]
+# Unchecked arena field access (D2520): heap/layout/access.rs reads and writes without a
+# bounds check (debug builds still assert it). Off by default; the gate runs both builds.
+unsafe-heap = []
+
+[dev-dependencies]
+# e2e tests start from the base snapshot like the embedders (a dev-dependency cycle,
+# which cargo allows: integration tests link the same djs-core).
+djs-prelude = { path = "../djs-prelude", default-features = false, features = ["raw", "registry"] }

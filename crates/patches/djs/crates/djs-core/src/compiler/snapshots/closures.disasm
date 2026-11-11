@@ -1,0 +1,107 @@
+function 0 <anonymous>: params=2 locals=7 stack=3 captures=0
+  handler [3, 95) -> 95 depth 0
+    0  async_start loc0 (<state>)
+    3  undefined
+    4  new_box_init loc5 (isEven)
+    7  undefined
+    8  new_box_init loc6 (isOdd)
+   11  fclosure child0
+   16  put_loc1 (counter)
+   17  fclosure child2
+   22  put_loc8 loc4 (outer)
+   24  fclosure child3
+   29  put_box loc5 (isEven)
+   32  fclosure child4
+   37  put_box loc6 (isOdd)
+   40  array_from 0
+   43  put_loc2 (fns)
+   44  new_box loc3 (i)
+   47  push0
+   48  put_box loc3 (i)
+   51  rebox loc3 (i)
+   54  jump8 -> 76
+   56  get_loc2 (fns)  ; 8:29
+   57  get_box loc3 (i)  ; 8:33
+   60  fclosure child1  ; 8:32
+   65  put_elem
+   66  rebox loc3 (i)  ; 8:19
+   69  get_box loc3 (i)  ; 8:24
+   72  inc  ; 8:25
+   73  put_box loc3 (i)  ; 8:24
+   76  get_box loc3 (i)  ; 8:17
+   79  push3
+   80  lt  ; 8:19
+   81  jump_if_true8 -> 56  ; 8:32
+   83  get_box loc5 (isEven)  ; 15:1
+   86  undefined
+   87  push_i8 4
+   89  call1  ; 15:7
+   90  drop
+   91  undefined
+   92  async_return loc0 (<state>)
+   95  async_reject loc0 (<state>)
+function 0.0 counter: params=0 locals=1 stack=1 captures=0
+    0  new_box loc0 (n)
+    3  push0
+    4  put_box loc0 (n)
+    7  fclosure child0
+   12  return
+function 0.0.0 <anonymous>: params=0 locals=0 stack=1 captures=1
+    0  get_cap_chk cap0 (n)  ; 5:18
+    3  inc  ; 5:16
+    4  set_cap_chk cap0 (n)  ; 5:18
+    7  return
+function 0.1 <anonymous>: params=0 locals=0 stack=1 captures=1
+    0  get_cap_chk cap0 (i)  ; 8:44
+    3  return
+function 0.2 outer: params=1 locals=2 stack=1 captures=0
+    0  get_arg0
+    1  new_box_init loc0 (a)
+    4  new_box loc1 (b)
+    7  push1
+    8  put_box loc1 (b)
+   11  fclosure child0
+   16  return
+function 0.2.0 middle: params=0 locals=1 stack=1 captures=2
+    0  special_object 3
+    2  new_box_init loc0 (middle)
+    5  fclosure child0
+   10  return
+function 0.2.0.0 <anonymous>: params=1 locals=0 stack=2 captures=3
+    0  get_cap cap0 (a)  ; 12:19
+    3  get_cap_chk cap1 (b)  ; 12:23
+    6  add  ; 12:21
+    7  get_arg0  ; 12:27
+    8  add  ; 12:25
+    9  get_cap cap2 (middle)  ; 12:31
+   12  get_field "length" ic0  ; 12:37
+   19  add  ; 12:29
+   20  return
+function 0.3 isEven: params=1 locals=0 stack=4 captures=1
+    0  get_arg0  ; 16:29
+    1  push0
+    2  eq  ; 16:31
+    3  jump_if_false8 -> 7
+    5  push_true
+    6  return
+    7  get_cap cap0 (isOdd)  ; 16:45
+   10  undefined
+   11  get_arg0  ; 16:51
+   12  push1
+   13  sub  ; 16:53
+   14  call1  ; 16:50
+   15  return
+function 0.4 isOdd: params=1 locals=0 stack=4 captures=1
+    0  get_arg0  ; 17:28
+    1  push0
+    2  eq  ; 17:30
+    3  jump_if_false8 -> 7
+    5  push_false
+    6  return
+    7  get_cap cap0 (isEven)  ; 17:45
+   10  undefined
+   11  get_arg0  ; 17:52
+   12  push1
+   13  sub  ; 17:54
+   14  call1  ; 17:51
+   15  return

@@ -1,0 +1,22 @@
+[package]
+name = "djs-libm"
+edition.workspace = true
+version.workspace = true
+# libm's license (LICENSE.txt): MIT.
+license = "MIT"
+publish.workspace = true
+description = "The math functions djs-core uses, copied from libm 0.2.16 (D3174)."
+
+[lib]
+# No doctests (scripts/gate.py `targets` fails if one appears): none to compile (0197).
+doctest = false
+
+[dev-dependencies]
+# The reference the tests compare every function with, bit for bit.
+libm = "=0.2.16"
+
+[lints.rust]
+# libm's cfgs that its build script sets only for non-default features
+# (`unstable-intrinsics`) and for i586 targets (`x86_no_sse`), which djs does not build for:
+# never set here, so those branches are off as in libm's default build.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(intrinsics_enabled)', 'cfg(x86_no_sse)', 'cfg(feature, values("compiler-builtins", "unstable-public-internals"))'] }

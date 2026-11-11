@@ -1,0 +1,44 @@
+[package]
+name = "djs-prelude"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The base snapshot: djs-core's realm with the prelude installed, made at build time (D1321)."
+
+[lib]
+# No doctests (scripts/gate.py `targets` fails if one appears): none to compile (0197).
+doctest = false
+
+[features]
+default = ["raw", "registry", "full", "unicode", "embed"]
+# djs-core's features (D2411), for the base image this crate builds: its build script's
+# djs-core must have the same as the library's (a build-dependency resolves its features
+# on its own), which lib.rs checks by the build hash.
+full = ["djs-core/full"]
+# djs-core's `embed` (D3175): the base image has the builtins only Rust hosts get.
+embed = ["djs-core/embed"]
+unicode = ["regexp-unicode-props", "unicode-normalization"]
+regexp-unicode-props = ["djs-core/regexp-unicode-props"]
+unicode-normalization = ["djs-core/unicode-normalization"]
+# `BASE`, the image as it is: native builds (copied per VM with no decode).
+raw = []
+# `BASE_PACKED`, the image coded with djs-lzrc (D2252): djs-wasm, where the module's size
+# counts (D020); `unpack_base` decodes it once.
+packed = ["dep:djs-lzrc"]
+# The builtin registry (D2371, tests/builtins/registry.tsv) with this build's base offsets:
+# tools and native hosts. Off in djs-wasm, whose size counts.
+registry = []
+# `BASE_NAMES`, the base's builtins with their paths (`DumpOptions::base_names`): hosts
+# that dump, so that a VM's first dump does not walk the base for them (0215).
+names = []
+
+[dependencies]
+djs-core = { path = "../djs-core", default-features = false }
+djs-lzrc = { path = "../djs-lzrc", optional = true }
+
+# build.rs creates the base image with a host build of djs-core. Cargo reruns it whenever
+# djs-core changes, which includes builtins/gen/prelude.js (include_str! in vm/).
+[build-dependencies]
+djs-core = { path = "../djs-core", default-features = false }
+djs-lzrc = { path = "../djs-lzrc" }

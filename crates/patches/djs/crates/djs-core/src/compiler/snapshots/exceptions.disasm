@@ -1,0 +1,175 @@
+function 0 <anonymous>: params=2 locals=14 stack=3 captures=0
+  handler [13, 32) -> 36 depth 0
+  handler [36, 39) -> 79 depth 0
+  handler [93, 102) -> 144 depth 0
+  handler [93, 151) -> 184 depth 0
+  handler [193, 203) -> 205 depth 0
+  handler [216, 226) -> 231 depth 0
+  handler [231, 235) -> 258 depth 0
+  handler [3, 269) -> 269 depth 0
+    0  async_start loc0 (<state>)
+    3  fclosure child0
+    8  put_loc1 (f)
+    9  push0
+   10  put_loc2 (i)
+   11  jump8 -> 88
+   13  get_loc2 (i)  ; 8:9
+   14  jump_if_false8 -> 24
+   16  push_i32 320
+   21  put_loc3 (<temp>)
+   22  jump8 -> 41
+   24  push_i32 319
+   29  put_loc3 (<temp>)
+   30  jump8 -> 41
+   32  push0
+   33  put_loc3 (<temp>)
+   34  jump8 -> 41
+   36  set_loc8 loc5 (e)  ; 11:11
+   38  throw  ; 11:5
+   39  push0
+   40  put_loc3 (<temp>)
+   41  get_global "log" ic0  ; 13:5
+   48  undefined
+   49  get_loc2 (i)  ; 13:9
+   50  call1  ; 13:8
+   51  drop
+   52  get_loc3 (<temp>)
+   53  jump_if_false8 -> 85
+   55  get_loc3 (<temp>)
+   56  push_i32 320
+   61  strict_eq
+   62  jump_if_true8 -> 85
+   64  get_loc3 (<temp>)
+   65  push_i32 319
+   70  strict_eq
+   71  jump_if_true8 -> 93
+   73  get_loc8 loc4 (<temp>)
+   75  undefined
+   76  put_loc8 loc4 (<temp>)
+   78  throw
+   79  put_loc8 loc4 (<temp>)
+   81  push1
+   82  put_loc3 (<temp>)
+   83  jump8 -> 41
+   85  inc_loc loc2 (i)  ; 6:25
+   88  get_loc2 (i)  ; 6:17
+   89  push3
+   90  lt  ; 6:19
+   91  jump_if_true8 -> 13  ; 13:8
+   93  push_i32 595
+   98  put_loc8 loc8 (<temp>)
+  100  jump8 -> 105
+  102  push0
+  103  put_loc8 loc8 (<temp>)
+  105  get_global "a" ic1  ; 17:40
+  112  undefined
+  113  call0  ; 17:41
+  114  drop
+  115  get_loc8 loc8 (<temp>)
+  117  jump_if_false8 -> 151
+  119  get_loc8 loc8 (<temp>)
+  121  push_i32 595
+  126  strict_eq
+  127  jump_if_false8 -> 138
+  129  push_i32 595
+  134  put_loc8 loc6 (<temp>)
+  136  jump8 -> 154
+  138  get_loc8 loc9 (<temp>)
+  140  undefined
+  141  put_loc8 loc9 (<temp>)
+  143  throw
+  144  put_loc8 loc9 (<temp>)
+  146  push1
+  147  put_loc8 loc8 (<temp>)
+  149  jump8 -> 105
+  151  push0
+  152  put_loc8 loc6 (<temp>)
+  154  get_global "b" ic2  ; 17:59
+  161  undefined
+  162  call0  ; 17:60
+  163  drop
+  164  get_loc8 loc6 (<temp>)
+  166  jump_if_false8 -> 191
+  168  get_loc8 loc6 (<temp>)
+  170  push_i32 595
+  175  strict_eq
+  176  jump_if_true8 -> 193
+  178  get_loc8 loc7 (<temp>)
+  180  undefined
+  181  put_loc8 loc7 (<temp>)
+  183  throw
+  184  put_loc8 loc7 (<temp>)
+  186  push1
+  187  put_loc8 loc6 (<temp>)
+  189  jump8 -> 154
+  191  jump8 -> 93
+  193  get_global "x" ic3  ; 19:7
+  200  undefined
+  201  call0  ; 19:8
+  202  drop
+  203  jump8 -> 216
+  205  drop
+  206  get_global "y" ic4  ; 19:22
+  213  undefined
+  214  call0  ; 19:23
+  215  drop
+  216  get_global "x" ic5  ; 20:7
+  223  undefined
+  224  call0  ; 20:8
+  225  drop
+  226  push0
+  227  put_loc8 loc10 (<temp>)
+  229  jump8 -> 238
+  231  set_loc8 loc12 (err)  ; 20:40
+  233  put_loc8 loc13 (inner)
+  235  push0
+  236  put_loc8 loc10 (<temp>)
+  238  get_global "z" ic6  ; 20:57
+  245  undefined
+  246  call0  ; 20:58
+  247  drop
+  248  get_loc8 loc10 (<temp>)
+  250  jump_if_false8 -> 265
+  252  get_loc8 loc11 (<temp>)
+  254  undefined
+  255  put_loc8 loc11 (<temp>)
+  257  throw
+  258  put_loc8 loc11 (<temp>)
+  260  push1
+  261  put_loc8 loc10 (<temp>)
+  263  jump8 -> 238
+  265  undefined
+  266  async_return loc0 (<state>)
+  269  async_reject loc0 (<state>)
+function 0.0 f: params=0 locals=2 stack=2 captures=0
+  handler [0, 14) -> 40 depth 0
+    0  get_global "g" ic0  ; 4:16
+    7  undefined
+    8  call0  ; 4:17
+    9  put_loc1 (<temp>)
+   10  push2
+   11  put_loc0 (<temp>)
+   12  jump8 -> 16
+   14  push0
+   15  put_loc0 (<temp>)
+   16  get_global "h" ic1  ; 4:33
+   23  undefined
+   24  call0  ; 4:34
+   25  drop
+   26  get_loc0 (<temp>)
+   27  jump_if_false8 -> 45
+   29  get_loc0 (<temp>)
+   30  push2
+   31  strict_eq
+   32  jump_if_false8 -> 36
+   34  get_loc1 (<temp>)
+   35  return
+   36  get_loc1 (<temp>)
+   37  undefined
+   38  put_loc1 (<temp>)
+   39  throw
+   40  put_loc1 (<temp>)
+   41  push1
+   42  put_loc0 (<temp>)
+   43  jump8 -> 16
+   45  return_undef

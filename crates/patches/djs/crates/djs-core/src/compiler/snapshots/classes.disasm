@@ -1,0 +1,142 @@
+function 0 <anonymous>: params=0 locals=6 stack=3 captures=0
+    0  global_decls #0 let "A"
+    5  undefined
+    6  put_loc0 (<completion>)
+    7  get_global "Object" ic0  ; 3:17
+   14  dup
+   15  call_intrinsic %ClassHeritage 1
+   20  new_box loc2 (<fields 0>)
+   23  private_symbol "#p" 0
+   29  new_box_init loc3 (#p)
+   32  private_symbol "#m" 6
+   38  new_box_init loc4 (#m)
+   41  new_box loc5 (<#m>)
+   44  fclosure child0
+   49  define_class 1
+   51  fclosure child1
+   56  set_home_object
+   57  put_box loc5 (<#m>)
+   60  fclosure child2
+   65  define_class_method "g" 1
+   71  swap
+   72  fclosure child3
+   77  define_class_method "has" 0
+   83  swap
+   84  fclosure child4
+   89  set_home_object
+   90  put_box loc2 (<fields 0>)
+   93  drop
+   94  dup
+   95  put_loc1 (A)
+   96  fclosure child5
+  101  set_home_object
+  102  pick 1
+  104  call0  ; 3:1
+  105  drop
+  106  init_global_lex "A"
+  111  get_loc0 (<completion>)
+  112  return
+function 0.0 A: params=1 locals=4 stack=3 captures=1
+    0  special_object 4
+    2  put_loc3 (this)
+    3  special_object 1
+    5  put_loc2 (new.target)
+    6  special_object 3
+    8  put_loc1 (<active>)
+    9  check_ctor  ; 7:14
+   10  get_loc1 (<active>)
+   11  get_super
+   12  get_arg0  ; 8:11
+   13  get_loc2 (new.target)
+   14  super_call 1  ; 8:10
+   17  get_loc3 (this)  ; 8:5
+   18  check_this_uninit
+   19  dup
+   20  put_loc3 (this)
+   21  get_cap cap0 (<fields 0>)
+   24  dup
+   25  is_undefined
+   26  jump_if_true8 -> 31
+   28  pick 1
+   30  call0
+   31  drop
+   32  drop
+   33  get_loc3 (this)  ; 9:4
+   34  check_this
+   35  return
+function 0.1 #m: params=0 locals=1 stack=2 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 11:12
+    4  get_cap cap0 (#p)
+    7  get_private_field  ; 11:16
+    8  return
+function 0.2 get g: params=0 locals=2 stack=4 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  special_object 2
+    5  put_loc1 (<home>)
+    6  get_loc0 (this)  ; 14:12
+    7  get_loc1 (<home>)
+    8  get_super
+    9  get_super_field "toString"  ; 14:17
+   14  get_loc0 (this)
+   15  call0  ; 14:26
+   16  get_loc0 (this)  ; 14:31
+   17  get_cap cap0 (#m)
+   20  pick 1  ; 14:35
+   22  rot3r
+   23  get_private_field
+   24  swap
+   25  call0  ; 14:38
+   26  add  ; 14:29
+   27  return
+function 0.3 has: params=1 locals=0 stack=2 captures=1
+    0  get_cap cap0 (#p)
+    3  get_arg0  ; 20:18
+    4  private_in  ; 20:15
+    5  return
+function 0.4 <anonymous>: params=0 locals=1 stack=3 captures=3
+    0  special_object 4
+    2  put_loc0 (this)
+    3  jump8 -> 23
+    5  get_loc0 (this)  ; 4:5
+    6  push_atom "x"
+   11  push1
+   12  define_class_field
+   13  drop
+   14  get_loc0 (this)  ; 5:6
+   15  get_cap cap0 (#p)
+   18  push2
+   19  define_private_field 0
+   21  drop
+   22  return_undef
+   23  get_loc0 (this)  ; 22:2
+   24  get_cap cap1 (#m)
+   27  get_cap cap2 (<#m>)
+   30  define_private_field 1
+   32  drop
+   33  jump8 -> 5
+function 0.5 <anonymous>: params=0 locals=1 stack=3 captures=0
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 6:12
+    4  push_atom "s"
+    9  push3
+   10  define_class_field
+   11  drop
+   12  get_loc0 (this)  ; 16:10
+   13  fclosure child0
+   18  set_home_object
+   19  swap
+   20  call0
+   21  drop
+   22  return_undef
+   23  jump8 -> 3
+function 0.5.0 <anonymous>: params=0 locals=1 stack=2 captures=0
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 17:5
+    4  push_i8 4  ; 17:9
+    6  put_field "t" ic0
+   13  return_undef

@@ -1,0 +1,24 @@
+[package]
+name = "djs-embed"
+# Its own version (D3170): 0.x semver, a minor bump may break the API, a patch may not.
+version = "0.1.1"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Embed djs in a Rust host: compiled snapshots, typed host functions, async calls, budgets."
+
+[lib]
+# No doctests (scripts/gate.py `targets` fails if one appears): the examples in the docs
+# are `ignore` blocks, and tests/it/example.rs runs the same code.
+doctest = false
+
+[features]
+default = ["unicode"]
+# djs-core's Unicode tables (`\p{..}` in regular expressions, `String.prototype.normalize`):
+# about 60 KB of native code.
+unicode = ["djs-core/unicode", "djs-prelude/unicode"]
+
+[dependencies]
+# `full`: every builtin; `embed`: the additions for Rust hosts (D3180).
+djs-core = { path = "../djs-core", default-features = false, features = ["full", "embed"] }
+djs-prelude = { path = "../djs-prelude", default-features = false, features = ["raw", "full", "embed"] }

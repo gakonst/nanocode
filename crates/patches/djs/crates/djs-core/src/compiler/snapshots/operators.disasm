@@ -1,0 +1,276 @@
+function 0 <anonymous>: params=0 locals=1 stack=5 captures=0
+    0  global_decls #0 let "a" "b" "c" "o"
+    5  undefined
+    6  put_loc0 (<completion>)
+    7  push1
+    8  init_global_lex "a"
+   13  push2
+   14  init_global_lex "b"
+   19  push3
+   20  init_global_lex "c"
+   25  get_global "a" ic0  ; 3:1
+   32  get_global "b" ic1  ; 3:5
+   39  add  ; 3:3
+   40  get_global "c" ic2  ; 3:9
+   47  get_global "a" ic3  ; 3:13
+   54  mul  ; 3:11
+   55  get_global "b" ic4  ; 3:17
+   62  div  ; 3:15
+   63  get_global "c" ic5  ; 3:21
+   70  get_global "a" ic6  ; 3:26
+   77  get_global "b" ic7  ; 3:31
+   84  pow  ; 3:28
+   85  pow  ; 3:23
+   86  mod  ; 3:19
+   87  sub  ; 3:7
+   88  put_loc0 (<completion>)
+   89  get_global "a" ic8  ; 4:1
+   96  get_global "b" ic9  ; 4:6
+  103  shl  ; 4:3
+  104  get_global "c" ic10  ; 4:11
+  111  sar  ; 4:8
+  112  get_global "a" ic11  ; 4:17
+  119  shr  ; 4:13
+  120  get_global "b" ic12  ; 4:21
+  127  band  ; 4:19
+  128  get_global "c" ic13  ; 4:25
+  135  get_global "a" ic14  ; 4:29
+  142  bxor  ; 4:27
+  143  bor  ; 4:23
+  144  put_loc0 (<completion>)
+  145  get_global "a" ic15  ; 5:1
+  152  get_global "b" ic16  ; 5:5
+  159  lt  ; 5:3
+  160  put_loc0 (<completion>)
+  161  get_global "a" ic17  ; 5:8
+  168  get_global "b" ic18  ; 5:12
+  175  gt  ; 5:10
+  176  put_loc0 (<completion>)
+  177  get_global "a" ic19  ; 5:15
+  184  get_global "b" ic20  ; 5:20
+  191  le  ; 5:17
+  192  put_loc0 (<completion>)
+  193  get_global "a" ic21  ; 5:23
+  200  get_global "b" ic22  ; 5:28
+  207  ge  ; 5:25
+  208  put_loc0 (<completion>)
+  209  get_global "a" ic23  ; 5:31
+  216  get_global "b" ic24  ; 5:36
+  223  eq  ; 5:33
+  224  put_loc0 (<completion>)
+  225  get_global "a" ic25  ; 5:39
+  232  get_global "b" ic26  ; 5:44
+  239  ne  ; 5:41
+  240  put_loc0 (<completion>)
+  241  get_global "a" ic27  ; 5:47
+  248  get_global "b" ic28  ; 5:53
+  255  strict_eq  ; 5:49
+  256  put_loc0 (<completion>)
+  257  get_global "a" ic29  ; 5:56
+  264  get_global "b" ic30  ; 5:62
+  271  strict_ne  ; 5:58
+  272  put_loc0 (<completion>)
+  273  get_global "a" ic31  ; 6:1
+  280  get_global "b" ic32  ; 6:6
+  287  in  ; 6:3
+  288  put_loc0 (<completion>)
+  289  get_global "a" ic33  ; 6:9
+  296  get_global "b" ic34  ; 6:22
+  303  instanceof  ; 6:11
+  304  put_loc0 (<completion>)
+  305  get_global "a" ic35  ; 7:1
+  312  dup
+  313  is_nullish
+  314  jump_if_false8 -> 324
+  316  drop
+  317  get_global "b" ic36  ; 7:6
+  324  put_loc0 (<completion>)
+  325  get_global "a" ic37  ; 7:9
+  332  dup
+  333  jump_if_true8 -> 354
+  335  drop
+  336  get_global "b" ic38  ; 7:14
+  343  dup
+  344  jump_if_false8 -> 354
+  346  drop
+  347  get_global "c" ic39  ; 7:19
+  354  put_loc0 (<completion>)
+  355  get_global "a" ic40  ; 7:23
+  362  dup
+  363  is_nullish
+  364  jump_if_false8 -> 374
+  366  drop
+  367  get_global "b" ic41  ; 7:28
+  374  dup
+  375  jump_if_true8 -> 385
+  377  drop
+  378  get_global "c" ic42  ; 7:34
+  385  put_loc0 (<completion>)
+  386  get_global "a" ic43  ; 8:1
+  393  jump_if_false8 -> 404
+  395  get_global "b" ic44  ; 8:5
+  402  jump8 -> 429
+  404  get_global "c" ic45  ; 8:9
+  411  jump_if_false8 -> 422
+  413  get_global "a" ic46  ; 8:13
+  420  jump8 -> 429
+  422  get_global "b" ic47  ; 8:17
+  429  put_loc0 (<completion>)
+  430  get_global "a" ic48  ; 9:2
+  437  neg  ; 9:1
+  438  put_loc0 (<completion>)
+  439  get_global "a" ic49  ; 9:6
+  446  plus  ; 9:5
+  447  put_loc0 (<completion>)
+  448  get_global "a" ic50  ; 9:10
+  455  bnot  ; 9:9
+  456  put_loc0 (<completion>)
+  457  get_global "a" ic51  ; 9:14
+  464  not  ; 9:13
+  465  put_loc0 (<completion>)
+  466  get_global "a" ic52  ; 9:22
+  473  drop
+  474  undefined
+  475  put_loc0 (<completion>)
+  476  get_global_typeof "a" ic53  ; 9:32
+  483  typeof
+  484  put_loc0 (<completion>)
+  485  get_global_typeof "undeclared" ic54  ; 9:42
+  492  typeof
+  493  put_loc0 (<completion>)
+  494  get_global "a" ic55  ; 10:2
+  501  drop
+  502  get_global "b" ic56  ; 10:5
+  509  drop
+  510  get_global "c" ic57  ; 10:8
+  517  put_loc0 (<completion>)
+  518  object
+  519  init_global_lex "o"
+  524  get_global "o" ic58  ; 12:8
+  531  push_atom "x"  ; 12:9
+  536  delete
+  537  put_loc0 (<completion>)
+  538  get_global "o" ic59  ; 12:20
+  545  get_global "a" ic60  ; 12:22
+  552  delete  ; 12:21
+  553  put_loc0 (<completion>)
+  554  push1
+  555  drop
+  556  push_true
+  557  put_loc0 (<completion>)
+  558  get_global "c" ic61  ; 13:9
+  565  dup  ; 13:5
+  566  put_global "b" ic62
+  573  dup  ; 13:1
+  574  put_global "a" ic63
+  581  put_loc0 (<completion>)
+  582  get_global "o" ic64  ; 14:1
+  589  get_global "a" ic65  ; 14:7
+  596  insert2
+  597  put_field "x" ic66  ; 14:2
+  604  put_loc0 (<completion>)
+  605  get_global "o" ic67  ; 14:10
+  612  get_global "b" ic68  ; 14:12
+  619  get_global "c" ic69  ; 14:17
+  626  insert3
+  627  put_elem  ; 14:11
+  628  put_loc0 (<completion>)
+  629  get_global "a" ic70  ; 15:1
+  636  push1
+  637  add  ; 15:3
+  638  dup  ; 15:1
+  639  put_global "a" ic71
+  646  put_loc0 (<completion>)
+  647  get_global "o" ic72  ; 15:9
+  654  dup  ; 15:10
+  655  get_field "x" ic73
+  662  push2
+  663  sub  ; 15:13
+  664  insert2
+  665  put_field "x" ic74  ; 15:10
+  672  put_loc0 (<completion>)
+  673  get_global "o" ic75  ; 15:19
+  680  get_global "a" ic76  ; 15:21
+  687  get_elem2  ; 15:20
+  688  push3
+  689  mul  ; 15:24
+  690  insert3
+  691  put_elem  ; 15:20
+  692  put_loc0 (<completion>)
+  693  get_global "a" ic77  ; 16:1
+  700  dup
+  701  jump_if_true8 -> 719
+  703  drop
+  704  get_global "b" ic78  ; 16:7
+  711  dup  ; 16:1
+  712  put_global "a" ic79
+  719  put_loc0 (<completion>)
+  720  get_global "o" ic80  ; 16:10
+  727  dup  ; 16:11
+  728  get_field "x" ic81
+  735  dup
+  736  jump_if_false8 -> 756
+  738  drop
+  739  get_global "c" ic82  ; 16:18
+  746  insert2
+  747  put_field "x" ic83  ; 16:11
+  754  jump8 -> 757
+  756  nip
+  757  put_loc0 (<completion>)
+  758  get_global "o" ic84  ; 16:21
+  765  get_global "b" ic85  ; 16:23
+  772  get_elem2  ; 16:22
+  773  dup
+  774  is_nullish
+  775  jump_if_false8 -> 789
+  777  drop
+  778  get_global "a" ic86  ; 16:30
+  785  insert3
+  786  put_elem  ; 16:22
+  787  jump8 -> 791
+  789  nip
+  790  nip
+  791  put_loc0 (<completion>)
+  792  get_global "a" ic87  ; 17:3
+  799  inc  ; 17:1
+  800  dup  ; 17:3
+  801  put_global "a" ic88
+  808  put_loc0 (<completion>)
+  809  get_global "o" ic89  ; 17:8
+  816  dup  ; 17:9
+  817  get_field "x" ic90
+  824  dec  ; 17:6
+  825  insert2
+  826  put_field "x" ic91  ; 17:9
+  833  put_loc0 (<completion>)
+  834  get_global "o" ic92  ; 17:15
+  841  get_global "b" ic93  ; 17:17
+  848  get_elem2  ; 17:16
+  849  inc  ; 17:13
+  850  insert3
+  851  put_elem  ; 17:16
+  852  put_loc0 (<completion>)
+  853  get_global "a" ic94  ; 18:1
+  860  to_numeric
+  861  dup
+  862  inc  ; 18:2
+  863  put_global "a" ic95  ; 18:1
+  870  put_loc0 (<completion>)
+  871  get_global "o" ic96  ; 18:6
+  878  dup  ; 18:7
+  879  get_field "x" ic97
+  886  to_numeric
+  887  insert2
+  888  dec  ; 18:9
+  889  put_field "x" ic98  ; 18:7
+  896  put_loc0 (<completion>)
+  897  get_global "o" ic99  ; 18:13
+  904  get_global "b" ic100  ; 18:15
+  911  get_elem2  ; 18:14
+  912  to_numeric
+  913  insert3
+  914  inc  ; 18:17
+  915  put_elem  ; 18:14
+  916  put_loc0 (<completion>)
+  917  get_loc0 (<completion>)
+  918  return

@@ -1,0 +1,150 @@
+function 0 <anonymous>: params=0 locals=1 stack=1 captures=0
+    0  global_decls #0 function "f" "g"
+    5  fclosure child0
+   10  put_global "f" ic0
+   17  fclosure child1
+   22  put_global "g" ic1
+   29  undefined
+   30  put_loc0 (<completion>)
+   31  get_loc0 (<completion>)
+   32  return
+function 0.0 f: params=1 locals=13 stack=2 captures=0
+  handler [60, 80) -> 108 depth 0
+  handler [51, 123) -> 35 depth 0
+  handler [6, 158) -> 181 depth 0
+    0  call_intrinsic %UsingCreate 0
+    5  put_loc0 (<temp>)
+    6  get_arg0  ; 4:13
+    7  get_loc0 (<temp>)  ; 4:9
+    8  swap
+    9  call_intrinsic %UsingAdd 2
+   14  put_loc3 (x)
+   15  get_arg0  ; 5:19
+   16  call_intrinsic %GetIterator 1  ; 5:3
+   21  dup
+   22  get_field "next" ic0
+   29  put_loc8 loc6 (<temp>)
+   31  put_loc8 loc5 (<temp>)
+   33  jump8 -> 123
+   35  get_loc8 loc5 (<temp>)
+   37  call_intrinsic %IteratorCloseThrow 1
+   42  drop
+   43  throw
+   44  get_field "value" ic1
+   51  put_loc8 loc4 (y)  ; 5:14
+   53  call_intrinsic %UsingCreate 0
+   58  put_loc8 loc9 (<temp>)
+   60  get_loc8 loc4 (y)  ; 6:15
+   62  get_loc8 loc9 (<temp>)  ; 6:11
+   64  swap
+   65  call_intrinsic %UsingAdd 2
+   70  set_loc8 loc12 (z)  ; 7:9
+   72  jump_if_false8 -> 80
+   74  push_i8 69
+   76  put_loc8 loc10 (<temp>)
+   78  jump8 -> 83
+   80  push0
+   81  put_loc8 loc10 (<temp>)
+   83  get_loc8 loc9 (<temp>)
+   85  call_intrinsic %UsingDispose 1
+   90  drop
+   91  get_loc8 loc10 (<temp>)
+   93  jump_if_false8 -> 123
+   95  get_loc8 loc10 (<temp>)
+   97  push_i8 69
+   99  strict_eq
+  100  jump_if_true8 -> 144
+  102  get_loc8 loc11 (<temp>)
+  104  undefined
+  105  put_loc8 loc11 (<temp>)
+  107  throw
+  108  get_loc8 loc9 (<temp>)
+  110  swap
+  111  call_intrinsic %UsingDisposeError 2
+  116  put_loc8 loc11 (<temp>)
+  118  push1
+  119  put_loc8 loc10 (<temp>)
+  121  jump8 -> 83
+  123  iter_next_loc loc5 (<temp>) -> 51  ; 5:3
+  130  iter_check_object
+  131  dup
+  132  get_field "done" ic2
+  139  jump_if_false8 -> 44
+  141  drop
+  142  jump8 -> 152
+  144  get_loc8 loc5 (<temp>)
+  146  call_intrinsic %IteratorClose 1
+  151  drop
+  152  get_loc3 (x)  ; 9:10
+  153  put_loc2 (<temp>)
+  154  push2
+  155  put_loc1 (<temp>)
+  156  jump8 -> 160
+  158  push0
+  159  put_loc1 (<temp>)
+  160  get_loc0 (<temp>)
+  161  call_intrinsic %UsingDispose 1
+  166  drop
+  167  get_loc1 (<temp>)
+  168  jump_if_false8 -> 193
+  170  get_loc1 (<temp>)
+  171  push2
+  172  strict_eq
+  173  jump_if_false8 -> 177
+  175  get_loc2 (<temp>)
+  176  return
+  177  get_loc2 (<temp>)
+  178  undefined
+  179  put_loc2 (<temp>)
+  180  throw
+  181  get_loc0 (<temp>)
+  182  swap
+  183  call_intrinsic %UsingDisposeError 2
+  188  put_loc2 (<temp>)
+  189  push1
+  190  put_loc1 (<temp>)
+  191  jump8 -> 160
+  193  return_undef
+function 0.1 g: params=1 locals=5 stack=2 captures=0
+  handler [35, 38) -> 41 depth 0
+  handler [9, 19) -> 58 depth 0
+  handler [3, 74) -> 74 depth 0
+    0  async_start loc0 (<state>)
+    3  call_intrinsic %UsingCreate 0
+    8  put_loc1 (<temp>)
+    9  get_arg0  ; 12:19
+   10  get_loc1 (<temp>)  ; 12:15
+   11  swap
+   12  call_intrinsic %AwaitUsingAdd 2
+   17  put_loc8 loc4 (x)
+   19  push0
+   20  put_loc2 (<temp>)
+   21  get_loc1 (<temp>)
+   22  call_intrinsic %UsingDisposeStep 1
+   27  jump_if_false8 -> 51
+   29  get_loc1 (<temp>)
+   30  call_intrinsic %UsingAwaitValue 1
+   35  await loc0 (<state>)
+   38  drop
+   39  jump8 -> 21
+   41  get_loc1 (<temp>)
+   42  swap
+   43  call_intrinsic %UsingDisposeError 2
+   48  drop
+   49  jump8 -> 21
+   51  get_loc2 (<temp>)
+   52  jump_if_false8 -> 70
+   54  get_loc3 (<temp>)
+   55  undefined
+   56  put_loc3 (<temp>)
+   57  throw
+   58  get_loc1 (<temp>)
+   59  swap
+   60  call_intrinsic %UsingDisposeError 2
+   65  put_loc3 (<temp>)
+   66  push1
+   67  put_loc2 (<temp>)
+   68  jump8 -> 21
+   70  undefined
+   71  async_return loc0 (<state>)
+   74  async_reject loc0 (<state>)

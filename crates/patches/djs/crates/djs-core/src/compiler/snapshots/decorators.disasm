@@ -1,0 +1,259 @@
+function 0 <anonymous>: params=0 locals=20 stack=8 captures=0
+    0  global_decls #0 let "C"
+    5  undefined
+    6  put_loc0 (<completion>)
+    7  get_global "cls" ic0  ; 3:2
+   14  undefined
+   15  array_from 2
+   18  put_loc1 (<class decs>)
+   19  undefined
+   20  undefined
+   21  new_box loc3 (<fields 0>)
+   24  private_symbol "#p" 6
+   30  new_box_init loc8 (#p)
+   33  new_box loc9 (<#p>)
+   36  new_box loc11 (<dec>5)
+   39  new_box loc13 (<dec>7)
+   42  private_symbol "<dec>8" 0
+   48  new_box_init loc14 (<dec>8)
+   51  private_symbol "#b" 2
+   57  new_box_init loc15 (#b)
+   60  private_symbol "<dec>9" 0
+   66  new_box_init loc16 (<dec>9)
+   69  new_box loc17 (<get #b>)
+   72  new_box loc18 (<set #b>)
+   75  new_box loc19 (<dec>10)
+   78  fclosure child0
+   83  define_class 0
+   85  get_global "dec" ic1  ; 5:4
+   92  undefined
+   93  array_from 2
+   96  put_loc8 loc4 (<dec>0)
+   98  fclosure child1
+  103  define_class_method "m" 0
+  109  get_global "o" ic2  ; 6:4
+  116  get_method "dec" ic3  ; 6:5
+  123  array_from 2
+  126  put_loc8 loc5 (<dec>1)
+  128  swap
+  129  get_global "k" ic4  ; 6:18
+  136  call_intrinsic %ToPropertyKey 1
+  141  dup
+  142  put_loc8 loc6 (<dec>2)
+  144  fclosure child2
+  149  set_function_name 0
+  151  define_class_method_elem 0
+  153  swap
+  154  get_global "dec" ic5  ; 7:4
+  161  undefined
+  162  array_from 2
+  165  put_loc8 loc7 (<dec>3)
+  167  fclosure child3
+  172  set_home_object
+  173  put_box loc9 (<#p>)
+  176  get_global "dec" ic6  ; 8:4
+  183  undefined
+  184  array_from 2
+  187  put_loc8 loc10 (<dec>4)
+  189  get_global "dec" ic7  ; 9:4
+  196  undefined
+  197  array_from 2
+  200  put_loc8 loc12 (<dec>6)
+  202  fclosure child4
+  207  define_class_method "a" 1
+  213  fclosure child5
+  218  define_class_method "a" 2
+  224  fclosure child6
+  229  set_home_object
+  230  put_box loc17 (<get #b>)
+  233  fclosure child7
+  238  set_home_object
+  239  put_box loc18 (<set #b>)
+  242  pick 1
+  244  push_false
+  245  call_intrinsic %DecoratorStart 2  ; 4:1
+  250  put_box loc19 (<dec>10)
+  253  pick 1
+  255  get_loc8 loc6 (<dec>2)
+  257  undefined
+  258  get_loc8 loc5 (<dec>1)
+  260  get_box loc19 (<dec>10)
+  263  push_i8 9
+  265  call_intrinsic %ApplyDecorators 6
+  270  drop
+  271  dup
+  272  push_atom "m"
+  277  undefined
+  278  get_loc8 loc4 (<dec>0)
+  280  get_box loc19 (<dec>10)
+  283  push1
+  284  call_intrinsic %ApplyDecorators 6
+  289  drop
+  290  object
+  291  fclosure child8
+  296  define_field "get" ic8
+  303  fclosure child9
+  308  define_field "has" ic9
+  315  push_atom "#p"
+  320  get_box loc9 (<#p>)
+  323  get_loc8 loc7 (<dec>3)
+  325  get_box loc19 (<dec>10)
+  328  push_i8 17
+  330  call_intrinsic %ApplyDecorators 6
+  335  put_box loc9 (<#p>)
+  338  dup
+  339  push_atom "a"
+  344  undefined
+  345  get_loc8 loc12 (<dec>6)
+  347  get_box loc19 (<dec>10)
+  350  push_i8 4
+  352  call_intrinsic %ApplyDecorators 6
+  357  put_box loc13 (<dec>7)
+  360  dup
+  361  push_atom "f"
+  366  undefined
+  367  get_loc8 loc10 (<dec>4)
+  369  get_box loc19 (<dec>10)
+  372  push_i8 5
+  374  call_intrinsic %ApplyDecorators 6
+  379  put_box loc11 (<dec>5)
+  382  fclosure child10
+  387  set_home_object
+  388  put_box loc3 (<fields 0>)
+  391  drop
+  392  dup
+  393  push_atom "C"
+  398  undefined
+  399  get_loc1 (<class decs>)
+  400  get_box loc19 (<dec>10)
+  403  push0
+  404  call_intrinsic %ApplyDecorators 6
+  409  dup
+  410  put_loc2 (C)
+  411  get_box loc19 (<dec>10)
+  414  push1
+  415  pick 2
+  417  call_intrinsic %DecoratorRunExtras 3
+  422  drop
+  423  nip
+  424  get_box loc19 (<dec>10)
+  427  push3
+  428  pick 2
+  430  call_intrinsic %DecoratorRunExtras 3
+  435  drop
+  436  init_global_lex "C"
+  441  get_loc0 (<completion>)
+  442  return
+function 0.0 C: params=0 locals=1 stack=3 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  check_ctor  ; 12:1
+    4  get_loc0 (this)
+    5  get_cap cap0 (<fields 0>)
+    8  dup
+    9  is_undefined
+   10  jump_if_true8 -> 15
+   12  pick 1
+   14  call0
+   15  drop
+   16  drop
+   17  return_undef
+function 0.1 m: params=0 locals=0 stack=0 captures=0
+    0  return_undef
+function 0.2 <anonymous>: params=0 locals=0 stack=0 captures=0
+    0  return_undef
+function 0.3 #p: params=0 locals=0 stack=0 captures=0
+    0  return_undef
+function 0.4 get a: params=0 locals=1 stack=2 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 9:18
+    4  get_cap cap0 (<dec>8)
+    7  get_private_field
+    8  return
+function 0.5 set a: params=1 locals=1 stack=3 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 9:18
+    4  get_cap cap0 (<dec>8)
+    7  get_arg0
+    8  put_private_field
+    9  return_undef
+function 0.6 get #b: params=0 locals=1 stack=2 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 10:15
+    4  get_cap cap0 (<dec>9)
+    7  get_private_field
+    8  return
+function 0.7 set #b: params=1 locals=1 stack=3 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  get_loc0 (this)  ; 10:15
+    4  get_cap cap0 (<dec>9)
+    7  get_arg0
+    8  put_private_field
+    9  return_undef
+function 0.8 <anonymous>: params=1 locals=0 stack=2 captures=1
+    0  get_arg0
+    1  get_cap cap0 (#p)
+    4  get_private_field  ; 4:1
+    5  return
+function 0.9 <anonymous>: params=1 locals=0 stack=2 captures=1
+    0  get_cap cap0 (#p)
+    3  get_arg0
+    4  private_in  ; 4:1
+    5  return
+function 0.10 <anonymous>: params=0 locals=1 stack=5 captures=10
+    0  special_object 4
+    2  put_loc0 (this)
+    3  jump8 -> 71
+    5  get_loc0 (this)  ; 8:10
+    6  push_atom "f"
+   11  push1
+   12  get_cap cap0 (<dec>5)
+   15  get_loc0 (this)
+   16  call_intrinsic %DecoratorRunInits 3
+   21  define_class_field
+   22  drop
+   23  get_cap cap0 (<dec>5)
+   26  push1
+   27  get_loc0 (this)
+   28  call_intrinsic %DecoratorRunExtras 3
+   33  drop
+   34  get_loc0 (this)  ; 9:18
+   35  get_cap cap1 (<dec>8)
+   38  undefined
+   39  get_cap cap2 (<dec>7)
+   42  get_loc0 (this)
+   43  call_intrinsic %DecoratorRunInits 3
+   48  define_private_field 0
+   50  drop
+   51  get_cap cap2 (<dec>7)
+   54  push1
+   55  get_loc0 (this)
+   56  call_intrinsic %DecoratorRunExtras 3
+   61  drop
+   62  get_loc0 (this)  ; 10:15
+   63  get_cap cap3 (<dec>9)
+   66  push2
+   67  define_private_field 0
+   69  drop
+   70  return_undef
+   71  get_loc0 (this)  ; 11:2
+   72  get_cap cap4 (#p)
+   75  get_cap cap5 (<#p>)
+   78  define_private_field 1
+   80  drop
+   81  get_loc0 (this)
+   82  get_cap cap6 (#b)
+   85  get_cap cap7 (<get #b>)
+   88  get_cap cap8 (<set #b>)
+   91  define_private_accessor
+   92  drop
+   93  get_cap cap9 (<dec>10)
+   96  push2
+   97  get_loc0 (this)
+   98  call_intrinsic %DecoratorRunExtras 3
+  103  drop
+  104  jump8 -> 5

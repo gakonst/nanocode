@@ -1,0 +1,95 @@
+function 0 <anonymous>: params=0 locals=3 stack=3 captures=12
+    0  special_object 4
+    2  put_loc2 (this)
+    3  push1
+    4  put_cap cap5 (x)  ; 10:5
+    7  get_cap_chk cap1 (a)  ; 11:9
+   10  get_cap_chk cap2 (c)  ; 11:13
+   13  add  ; 11:11
+   14  get_cap_chk cap3 (e)  ; 11:17
+   17  add  ; 11:15
+   18  get_cap_chk cap0 (d)  ; 11:21
+   21  add  ; 11:19
+   22  put_cap cap6 (l)
+   25  fclosure child0
+   30  put_cap cap7 (k)
+   33  undefined
+   34  undefined
+   35  new_box loc1 (<fields 0>)
+   38  fclosure child3
+   43  define_class 0
+   45  undefined
+   46  put_box loc1 (<fields 0>)
+   49  drop
+   50  dup
+   51  put_loc0 (C)
+   52  put_cap cap11 (C)  ; 15:8
+   55  get_loc2 (this)  ; 16:1
+   56  drop
+   57  return_undef
+function 0.0 k: params=0 locals=0 stack=2 captures=4
+    0  get_cap_chk cap0 (l)  ; 12:24
+    3  get_cap cap1 (x)  ; 12:28
+    6  add  ; 12:26
+    7  get_cap_chk cap2 (ns)  ; 12:32
+   10  get_field "z" ic0  ; 12:34
+   17  add  ; 12:30
+   18  get_cap_chk cap3 (*meta*)
+   21  get_field "url" ic1  ; 12:50
+   28  add  ; 12:37
+   29  return
+function 0.1 f: params=0 locals=0 stack=1 captures=1
+    0  get_cap_chk cap0 (l)  ; 13:23
+    3  return
+function 0.2 default: params=0 locals=0 stack=2 captures=1
+    0  get_cap cap0 (f)  ; 14:37
+    3  undefined
+    4  call0  ; 14:30
+    5  return
+function 0.3 C: params=0 locals=1 stack=3 captures=1
+    0  special_object 4
+    2  put_loc0 (this)
+    3  check_ctor  ; 16:1
+    4  get_loc0 (this)
+    5  get_cap cap0 (<fields 0>)
+    8  dup
+    9  is_undefined
+   10  jump_if_true8 -> 15
+   12  pick 1
+   14  call0
+   15  drop
+   16  drop
+   17  return_undef
+module:
+  env 0 d kind 3 aux 0
+  env 1 a kind 3 aux 0
+  env 2 c kind 3 aux 0
+  env 3 e kind 3 aux 0
+  env 4 ns kind 3 aux 0
+  env 5 x kind 0 aux 0
+  env 6 l kind 1 aux 0
+  env 7 k kind 1 aux 0
+  env 8 *meta* kind 4 aux 0
+  env 9 f kind 2 aux 1
+  env 10 *default* kind 2 aux 2
+  env 11 C kind 1 aux 0
+  request "./dep.js"
+  request "./side.js"
+  request "./star.js"
+  request "./all.js"
+  import env 0 request 0 "default"
+  import env 1 request 0 "a"
+  import env 2 request 0 "b"
+  import env 3 request 0 "s t"
+  import env 4 request 0 "*"
+  export "y z" env 5
+  export "f" env 9
+  export "k" env 7
+  export "default" env 10
+  export "C" env 11
+  export "all" request 3 "*"
+  export "r" request 0 "q"
+  export "dd" request 0 "default"
+  export "reA" request 0 "a"
+  export "reNs" request 0 "*"
+  export * request 2

@@ -1,0 +1,50 @@
+function 0 <anonymous>: params=2 locals=9 stack=4 captures=0
+  handler [7, 90) -> 90 depth 0
+    0  special_object 4
+    2  put_loc8 loc8 (this)
+    4  async_start loc0 (<state>)
+    7  set_loc_uninit loc3 (late)
+   10  push0
+   11  put_loc1 (total)
+   12  get_arg0  ; 4:15
+   13  get_method "list" ic0  ; 4:20
+   20  call0  ; 4:25
+   21  put_loc2 (items)
+   22  get_arg1  ; 5:1
+   23  get_method "log" ic1  ; 5:8
+   30  get_loc2 (items)  ; 5:13
+   31  get_loc1 (total)  ; 5:20
+   32  call2  ; 5:12
+   33  drop
+   34  get_loc_chk loc3 (late)  ; 6:1
+   37  drop
+   38  push1
+   39  put_loc3 (late)
+   40  push2  ; 8:18
+   41  put_loc3 (late)
+   42  get_loc1 (total)  ; 9:9
+   43  put_loc8 loc4 (<temp>)
+   45  set_loc_uninit loc5 (y)
+   48  get_loc8 loc4 (<temp>)
+   50  push0
+   51  strict_eq
+   52  jump_if_false8 -> 66
+   54  push1
+   55  put_loc8 loc5 (y)
+   57  get_loc_chk loc5 (y)  ; 10:22
+   60  inc  ; 10:23
+   61  put_loc_chk loc5 (y)  ; 10:22
+   64  jump8 -> 72
+   66  get_loc8 loc4 (<temp>)
+   68  push1
+   69  strict_eq
+   70  jump_if_false8 -> 76
+   72  get_loc_chk loc5 (y)  ; 11:11
+   75  drop
+   76  push1  ; 13:1
+   77  throw_const_assign "items"
+   82  get_loc8 loc8 (this)  ; 15:12
+   84  put_loc8 loc7 (v2)  ; 15:7
+   86  get_loc1 (total)  ; 16:8
+   87  async_return loc0 (<state>)
+   90  async_reject loc0 (<state>)

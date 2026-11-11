@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[profile.release]
+opt-level = 3
+debug = 1
+
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = 0
+# The shipped module has no name section (175 KB, 0052/D1575); scripts/build-wasm.sh
+# --keep-names (CARGO_PROFILE_WASM_STRIP=false) keeps it for profiling and
+# scripts/wasm-funcs.py.
+strip = true
+
+# The engine is exercised heavily in debug test runs (e2e suspension mode reloads and
+# verifies the heap image at every stop; gc-stress copies all live cells per safepoint).
+# opt-level 1 keeps debug assertions and overflow checks but makes those runs ~14x faster.
+[profile.dev.package.djs-core]
+opt-level = 1
+
+# djs-libm (D3174), which djs-core calls for Math, like the dependencies below (D1785).
+[profile.dev.package.djs-libm]
+opt-level = 1
+
+# Dependencies at opt-level 1 too: at opt-level 0/1 rustc shares generic
+# instantiations with upstream crates, so djs-core called libm's unoptimized, non-inlinable
+# copies of `Range::contains`, range iterators and `unchecked_add`'s precondition checks
+# in its hottest paths: 22% of the instructions of a debug test262 run (D1785).
+[profile.dev.package."*"]
+opt-level = 1

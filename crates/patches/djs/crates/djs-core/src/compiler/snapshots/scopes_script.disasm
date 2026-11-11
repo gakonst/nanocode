@@ -1,0 +1,42 @@
+function 0 <anonymous>: params=0 locals=5 stack=2 captures=0
+    0  global_decls #0 var "v" let "l" const "c"
+    5  special_object 4
+    7  put_loc8 loc4 (this)
+    9  undefined
+   10  put_loc0 (<completion>)
+   11  push1
+   12  put_global "v" ic0  ; 2:5
+   19  push2
+   20  init_global_lex "l"
+   25  push3
+   26  init_global_lex "c"
+   31  set_loc_uninit loc3 (early)
+   34  get_global "v" ic1  ; 6:15
+   41  get_global "l" ic2  ; 6:19
+   48  add  ; 6:17
+   49  get_global "c" ic3  ; 6:23
+   56  add  ; 6:21
+   57  set_loc1 (inner)  ; 7:11
+   58  push1
+   59  add  ; 7:17
+   60  set_loc1 (inner)  ; 7:3
+   61  put_loc0 (<completion>)
+   62  get_loc1 (inner)  ; 8:13
+   63  put_loc2 (k)
+   64  get_loc_chk loc3 (early)  ; 9:3
+   67  put_loc0 (<completion>)
+   68  get_loc2 (k)  ; 10:15
+   69  put_loc3 (early)
+   70  push_i8 4  ; 12:1
+   72  get_global "c" ic4
+   79  drop
+   80  throw_const_assign "c"
+   85  put_loc0 (<completion>)
+   86  get_global "l" ic5  ; 13:5
+   93  dup  ; 13:1
+   94  put_global "v" ic6
+  101  put_loc0 (<completion>)
+  102  get_loc8 loc4 (this)  ; 14:1
+  104  put_loc0 (<completion>)
+  105  get_loc0 (<completion>)
+  106  return

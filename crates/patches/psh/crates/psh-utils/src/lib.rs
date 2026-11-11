@@ -69,6 +69,7 @@ mod lines;
 mod patch;
 mod small;
 mod tar;
+mod tree;
 mod xargs;
 mod zip;
 
@@ -260,6 +261,12 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(small::uuidgen),
+    },
+    UtilEntry {
+        names: &["tree"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(tree::run),
     },
     UtilEntry {
         names: &["find"],

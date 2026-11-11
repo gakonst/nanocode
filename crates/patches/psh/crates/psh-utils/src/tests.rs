@@ -88,7 +88,7 @@ fn specs_match_the_classifier() {
 const OWN_PARSER: &[&str] = &[
     "rg", "git", "tar", "gzip", "zip", "unzip", "patch", "xxd", "od", "hexdump", "strings",
     "base32", "tac", "rev", "fold", "expand", "unexpand", "column", "join", "shuf", "split",
-    "expr", "factor", "envsubst", "truncate", "sponge", "yes", "uuidgen",
+    "expr", "factor", "envsubst", "truncate", "sponge", "yes", "uuidgen", "tree",
 ];
 
 #[test]

@@ -1,5 +1,6 @@
 #![allow(unsafe_code, non_upper_case_globals)]
 
+use crate::state::shown_units;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core_foundation::{
     array::CFArray,
@@ -21,7 +22,9 @@ use core_foundation_sys::{
         CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRef, CFRunLoopRemoveSource,
         CFRunLoopRunInMode, CFRunLoopSourceRef, kCFRunLoopRunFinished,
     },
-    string::CFStringRef,
+    string::{
+        CFStringCreateWithSubstring, CFStringGetCharacterAtIndex, CFStringGetLength, CFStringRef,
+    },
 };
 use std::{
     ffi::c_void,
@@ -264,8 +267,36 @@ impl Element {
 }
 
 pub fn text_of(value: &CFType) -> Option<String> {
+    read(value, |text| text.to_string())
+}
+
+pub fn label_of(value: &CFType) -> Option<String> {
+    read(value, shown)
+}
+
+fn shown(text: &CFString) -> String {
+    let string = text.as_concrete_TypeRef();
+    let len = usize::try_from(unsafe { CFStringGetLength(string) }).unwrap_or(0);
+    let end = shown_units(len, |index| unsafe {
+        CFStringGetCharacterAtIndex(string, index as CFIndex)
+    });
+    if end == len {
+        return text.to_string();
+    }
+    let range = CFRange {
+        location: 0,
+        length: end as CFIndex,
+    };
+    let prefix = unsafe { CFStringCreateWithSubstring(kCFAllocatorDefault, string, range) };
+    if prefix.is_null() {
+        return String::new();
+    }
+    unsafe { CFString::wrap_under_create_rule(prefix) }.to_string()
+}
+
+fn read(value: &CFType, string: impl Fn(&CFString) -> String) -> Option<String> {
     let text = if let Some(text) = value.downcast::<CFString>() {
-        text.to_string()
+        string(&text)
     } else if let Some(number) = value.downcast::<CFNumber>() {
         let number = number.to_f64()?;
         if number.fract() == 0.0 {

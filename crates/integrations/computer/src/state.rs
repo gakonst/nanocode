@@ -136,11 +136,25 @@ fn walk<E>(node: Node<E>, depth: usize, above: Option<&str>, lines: &mut Vec<Lin
 }
 
 fn flat(text: &str) -> String {
-    let flat = text.replace('\n', "\\n");
-    if flat.chars().count() > MAX_VALUE {
-        format!("{}…", flat.chars().take(MAX_VALUE).collect::<String>())
+    let mut flat = text.chars().flat_map(|character| match character {
+        '\n' => ['\\', 'n'].into_iter().take(2),
+        character => [character; 2].into_iter().take(1),
+    });
+    let shown: String = flat.by_ref().take(MAX_VALUE).collect();
+    if flat.next().is_some() {
+        format!("{shown}…")
     } else {
-        flat
+        shown
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn shown_units(len: usize, unit: impl Fn(usize) -> u16) -> usize {
+    let end = len.min(2 * (MAX_VALUE + 1));
+    if end < len && (0xD800..0xDC00).contains(&unit(end - 1)) {
+        end - 1
+    } else {
+        end
     }
 }
 

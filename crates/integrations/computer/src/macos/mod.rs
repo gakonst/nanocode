@@ -397,6 +397,7 @@ fn read_node(
         children,
     ] = element.many(&NODE);
     let text = |value: Option<CFType>| value.as_ref().and_then(ax::text_of);
+    let label = |value: Option<CFType>| value.as_ref().and_then(ax::label_of);
     let flag = |value: Option<CFType>| value.as_ref().and_then(ax::flag_of);
     let role = text(role).unwrap_or_else(|| "AXUnknown".into());
     let actions = element.actions();
@@ -404,8 +405,8 @@ fn read_node(
         || actions
             .iter()
             .any(|a| ACTIVATING.split(' ').any(|known| known == a));
-    let name = text(title).or_else(|| text(description));
-    let value = text(value);
+    let name = label(title).or_else(|| label(description));
+    let value = label(value);
     let secure = text(subrole).as_deref() == Some(SECURE);
     let mut states = Vec::new();
     if flag(enabled) == Some(false) {

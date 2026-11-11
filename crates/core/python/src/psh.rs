@@ -1,4 +1,4 @@
-use std::{io, io::Read, rc::Rc, time::Duration};
+use std::{cell::RefCell, io, io::Read, rc::Rc, time::Duration};
 
 use psh_engine::{
     host::{FileKind, OpenOptions},
@@ -8,7 +8,7 @@ use psh_engine::{
     },
 };
 
-use crate::{Ended, Files, Kind, Limit, Limits, Python, Remove, Run, Stat, Write};
+use crate::{Ended, Files, Kind, Limit, Limits, Python, Ran, Remove, Run, Stat, Write};
 
 pub const UTILITY: UtilEntry = UtilEntry {
     names: &["python3", "python"],
@@ -75,6 +75,60 @@ impl Files for Shell {
     }
 }
 
+fn kept(run: Run, files: SyncFiles) -> io::Result<Ran> {
+    thread_local! {
+        static PYTHON: RefCell<Option<Python>> = const { RefCell::new(None) };
+    }
+    PYTHON.with_borrow_mut(|kept| {
+        let python = match kept {
+            Some(python) => python,
+            None => kept.insert(Python::new()?),
+        };
+        Ok(python.run(run, Rc::new(Shell(files))))
+    })
+}
+
+#[cfg(target_family = "wasm")]
+fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
+    kept(run, files)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
+    use psh_engine::host::NativePathFn;
+    use std::sync::{OnceLock, mpsc};
+
+    struct Job {
+        run: Run,
+        native: NativePathFn,
+        reply: mpsc::Sender<io::Result<Ran>>,
+    }
+
+    static OWNER: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+
+    let Some(native) = files.native() else {
+        return kept(run, files);
+    };
+    let owner = OWNER.get_or_init(|| {
+        let (jobs, queue) = mpsc::channel::<Job>();
+        let owner = move || {
+            for job in queue {
+                let _ = job.reply.send(kept(job.run, SyncFiles::on(job.native)));
+            }
+        };
+        let spawned = std::thread::Builder::new()
+            .name("python3".to_owned())
+            .spawn(owner);
+        spawned.ok().map(|_| jobs)
+    });
+    let ended = || io::Error::other("the thread that keeps the interpreter ended");
+    let jobs = owner.as_ref().ok_or_else(ended)?;
+    let (reply, ran) = mpsc::channel();
+    let job = Job { run, native, reply };
+    jobs.send(job).map_err(|_| ended())?;
+    ran.recv().map_err(|_| ended())?
+}
+
 fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
     let argv: Result<Vec<String>, _> = argv.into_iter().skip(1).map(String::from_utf8).collect();
     let Ok(argv) = argv else {
@@ -88,13 +142,6 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
         ctx.error(&format!("read error: {error}"));
         return 1;
     }
-    let python = match Python::new() {
-        Ok(python) => python,
-        Err(error) => {
-            ctx.error(&format!("cannot start: {error}"));
-            return 1;
-        }
-    };
     let run = Run {
         argv,
         stdin,
@@ -106,7 +153,13 @@ fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {
             sleep: Duration::MAX,
         },
     };
-    let ran = python.run(run, Rc::new(Shell(ctx.files())));
+    let ran = match execute(run, ctx.files()) {
+        Ok(ran) => ran,
+        Err(error) => {
+            ctx.error(&format!("cannot start: {error}"));
+            return 1;
+        }
+    };
     let _ = ctx.write(&ran.stdout);
     ctx.error_raw(&ran.stderr);
     match ran.ended {

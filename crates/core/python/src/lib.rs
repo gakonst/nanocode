@@ -182,8 +182,17 @@ enum Prepared {
 }
 
 pub struct Python {
-    interpreter: Interpreter,
+    interpreter: Option<Interpreter>,
     boot: PyDictRef,
+}
+
+impl Drop for Python {
+    fn drop(&mut self) {
+        if let Some(interpreter) = self.interpreter.take() {
+            interpreter.enter(|_| self.boot.clear());
+            interpreter.finalize(None);
+        }
+    }
 }
 
 impl Python {
@@ -207,7 +216,10 @@ impl Python {
             .add_frozen_modules(rustpython_pylib::FROZEN_STDLIB)
             .build();
         let boot = interpreter.enter(|vm| vm.ctx.new_dict());
-        Ok(Self { interpreter, boot })
+        Ok(Self {
+            interpreter: Some(interpreter),
+            boot,
+        })
     }
 
     pub fn run(&self, run: Run, files: Rc<dyn Files>) -> Ran {
@@ -225,7 +237,11 @@ impl Python {
             Err(message) => return refused(message),
         };
         let entered = host::enter(host::State::new(files, run));
-        let ended = self.interpreter.enter(|vm| self.execute(vm, &invocation));
+        let ended = self
+            .interpreter
+            .as_ref()
+            .expect("the interpreter lives as long as its owner")
+            .enter(|vm| self.execute(vm, &invocation));
         let state = entered.leave();
         Ran {
             ended: state.refused.map_or(ended, Ended::Refused),
@@ -282,6 +298,8 @@ impl Python {
             let modules = vm.sys_module.get_attr("modules", vm)?;
             let posix = vm.new_module("posix", vm.ctx.new_dict(), None);
             modules.set_item("posix", posix.clone().into(), vm)?;
+            #[cfg(target_family = "wasm")]
+            modules.set_item("_datetime", vm.ctx.none(), vm)?;
             let code = rustpython_vm::py_compile!(file = "posix.py", module_name = "posix");
             let scope = Scope::with_builtins(None, posix.dict(), vm);
             vm.run_code_obj(vm.ctx.new_code(code), scope)?;

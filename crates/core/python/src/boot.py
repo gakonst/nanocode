@@ -276,11 +276,14 @@ time.time = _host.now
 time.time_ns = lambda: int(_host.now() * 1000000000)
 time.monotonic = time.perf_counter = time.process_time = _host.monotonic
 time.monotonic_ns = time.perf_counter_ns = time.process_time_ns = lambda: int(_host.monotonic() * 1000000000)
-time.sleep = _host.sleep
+time.sleep = lambda seconds: _host.sleep(float(seconds))
 time.gmtime = _gmtime_now
 time.localtime = _localtime_now
 time.strftime = _strftime_now
 time.ctime = _ctime_now
+if not hasattr(time, 'timezone'):
+    time.timezone = time.altzone = time.daylight = 0
+    time.tzname = ('UTC', 'UTC')
 
 
 def _start(argv, first):
@@ -299,8 +302,12 @@ def _start(argv, first):
     sys.stderr = sys.__stderr__ = _stdio(2, '<stderr>')
 
 
-def _missing(names):
+def _standard(top):
     import _imp
+    return top in sys.stdlib_module_names or _imp.is_builtin(top) or _imp.is_frozen(top)
+
+
+def _missing(names):
     missing = []
     for name in names:
         top = name.partition('.')[0]
@@ -309,12 +316,11 @@ def _missing(names):
         try:
             __import__(name)
         except ImportError as error:
-            missing += (name, 'standard' if _imp.is_builtin(top) or _imp.is_frozen(top) else 'package', str(error))
+            missing += (name, 'standard' if _standard(top) else 'package', str(error))
     return missing
 
 
 def _absent(module):
-    import _imp
     top = module.partition('.')[0]
     try:
         found = _frozen_importlib._find_spec(top, None) is not None
@@ -322,7 +328,7 @@ def _absent(module):
         found = False
     if found:
         return []
-    return [module, 'standard' if _imp.is_builtin(top) or _imp.is_frozen(top) else 'package', 'No module named %r' % (top,)]
+    return [module, 'standard' if _standard(top) else 'package', 'No module named %r' % (top,)]
 
 
 def _finish():

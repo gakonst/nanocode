@@ -23,6 +23,7 @@ const required = (name) => {
 
 export const bins = {
   nc: () => required("NC_BIN"),
+  nclite: () => required("NCLITE_BIN"),
   fx: () => required("FX_BIN"),
   pi: () => required("PI_CLI"),
   claude: () => required("CLAUDE_BIN"),

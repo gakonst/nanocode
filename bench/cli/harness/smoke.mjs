@@ -30,6 +30,7 @@ for (const name of selected(args.only)) {
   const streamed = records.filter((r) => r.mode === "stream");
   console.log(JSON.stringify({ lane: name, verified: lane.verified, version: version.out.trim().split("\n")[0], headless: { exit: headless.code, requests: records.map((r) => r.mode + ":" + r.protocol + ":" + r.transport), saw_last_token: /w199/.test(headless.out), stdout_bytes: headless.out.length, stderr_tail: headless.code === 0 && streamed.length ? undefined : headless.err.slice(-600) } }));
 
+  if (!lane.tui) continue;
   const tui = lane.tui(home, server.base);
   const tid = "smoke-tui-" + name + "-" + process.pid;
   const spec = { ...tui, env, cwd: ws, send: ["Stream it BENCH[run=" + tid + ",mode=stream,tokens=200,rate=200]", "\r"], tokens: 200, quiet_ms: 600, min_ms: 3000, max_ms: 20000, timeout: 40, rows: 40, cols: 120, dump: WORK + "/smoke-tui-" + name + ".bin" };

@@ -3,12 +3,15 @@
 # tools/install/env.sh (the variables the harness reads) and tools/install/VERSIONS.md.
 # sh tools/install.sh            all six lanes
 # LANES=nc,fx sh tools/install.sh
+# LANES=nclite builds nc-lite (the SDK's nc_lite example) with cargo at NCLITE_REV
 set -eu
 cd "$(dirname "$0")/.."
 dir="$PWD/tools/install"
 lanes="$(printf '%s' "${LANES:-nc,fx,pi,opencode,claude,codex}" | tr , ' ')"
 nc_release="${NANOCODE_RELEASE:-https://github.com/nanocodexyz/nanocode/releases/download/nanocode-cli}"
 fx_cdn="${FX_CDN:-https://releases.fx.sh}"
+nclite_repo="${NCLITE_REPO:-https://github.com/nanocodexyz/nanocode}"
+nclite_rev="${NCLITE_REV:-9f373a4b9c13b30f344e2463bab0110a92e028b2}"
 mkdir -p "$dir"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -54,6 +57,18 @@ for lane in $lanes; do
         echo "$version" > "$dir/fx/.version"
       fi
       ;;
+    nclite)
+      mkdir -p "$dir/nclite"
+      if [ ! -x "$dir/nclite/nc-lite" ] || [ "$(cat "$dir/nclite/.rev" 2>/dev/null)" != "$nclite_rev" ]; then
+        src="$dir/.build/nanocode"
+        [ -d "$src/.git" ] || git clone --quiet --filter=blob:none "$nclite_repo" "$src"
+        git -C "$src" fetch --quiet origin "$nclite_rev"
+        git -C "$src" checkout --quiet --detach "$nclite_rev"
+        (cd "$src" && cargo build --locked --release -p nanocode --example nc_lite >&2)
+        cp "$src/target/release/examples/nc_lite" "$dir/nclite/nc-lite"
+        echo "$nclite_rev" > "$dir/nclite/.rev"
+      fi
+      ;;
     pi) npm_lane pi @earendil-works/pi-coding-agent ;;
     opencode) npm_lane opencode opencode-ai ;;
     claude) npm_lane claude @anthropic-ai/claude-code ;;
@@ -67,6 +82,7 @@ info() {
   m="$dir/$1/node_modules"
   case "$1" in
     nc) bin="$dir/nc/nanocode" var=NC_BIN how="curl $nc_release/nanocode-$nc_target.gz (the asset https://nanocode.xyz/install fetches; its optional macOS computer-use driver is left out)" runtime=none ;;
+    nclite) bin="$dir/nclite/nc-lite" var=NCLITE_BIN how="cargo build --release -p nanocode --example nc_lite at $nclite_repo $nclite_rev" runtime=none ;;
     fx) bin="$dir/fx/fx" var=FX_BIN how="curl $fx_cdn/\$(latest.txt)/fx-$fx_target.tar.gz (the archive https://fx.sh/setup.sh fetches; binary only)" runtime=none ;;
     pi) bin="$m/@earendil-works/pi-coding-agent/dist/bundle/cli.js" var=PI_CLI how="npm install --prefix tools/install/pi @earendil-works/pi-coding-agent@latest" runtime="Node $(node --version)" ;;
     opencode) bin="$m/opencode-ai/bin/opencode.exe" var=OPENCODE_BIN how="npm install --prefix tools/install/opencode opencode-ai@latest (the package's bin is the native binary from its platform package)" runtime=none ;;
@@ -78,7 +94,7 @@ versions="$dir/VERSIONS.md"
 rows="$tmp/rows"
 : > "$rows"
 : > "$tmp/env.sh"
-for lane in nc fx pi opencode claude codex; do
+for lane in nc nclite fx pi opencode claude codex; do
   [ -d "$dir/$lane" ] || continue
   info "$lane"
   [ -n "$bin" ] && [ -f "$bin" ] || { echo "install.sh: $lane has no binary at '$bin'" >&2; exit 1; }

@@ -35,6 +35,10 @@ node harness/sweep.mjs --mode=tui --rates=1000,10000 --samples=10
 node harness/report.mjs
 ```
 
+## nc-lite
+
+The `nclite` lane is nanocode cut down to what fx ships, so the two compare like for like: `crates/nanocode/examples/nc_lite.rs` on the SDK, with one harness (Codex), any model through the AI Gateway, plain function tools instead of Code Mode, a JSONL session store, `exec`, `--continue` and `sessions`, and no TUI, MCP, computer use or runners. The full `nc` lane carries all of those. `LANES=nclite sh tools/install.sh` builds it with cargo at `NCLITE_REV`. It has no terminal interface, so the TUI parts and `sweep.mjs --mode=tui` skip it.
+
 Each run uses a fresh `HOME` under `work/` and a workspace in `/tmp/cli-bench-ws`, so no lane reads a real configuration or session.
 
 ## Measures

@@ -12,6 +12,7 @@ import { msBetween, usageOf } from "./analyze.mjs";
 const args = Object.fromEntries(process.argv.slice(2).map((a) => a.replace(/^--/, "").split("=")));
 const parts = (args.parts ?? "startup,coldstart,firstframe,coldframe,idle,keys,oneshot,tools,fleet,store,disk").split(",");
 const names = selected(args.only);
+const tuiNames = names.filter((name) => lanes[name].tui);
 const rounds = Number(args.rounds ?? 30);
 const cols = Number(args.cols ?? 120), rows = Number(args.rows ?? 40);
 fs.mkdirSync(RESULTS, { recursive: true });
@@ -96,7 +97,7 @@ if (parts.includes("coldstart")) {
 async function frames(part, cold) {
   const n = cold ? Number(args.coldrounds ?? 10) : rounds;
   for (let r = 0; r < n; r++) {
-    for (const name of rot(names, r)) {
+    for (const name of rot(tuiNames, r)) {
       const { lane, home, env } = prepared(name, "ff");
       if (cold && !dropCaches()) { emit({ part, harness: name, round: r, error: "cannot drop the page cache" }); continue; }
       const t = await terminal({ ...lane.tui(home, server.base), env, cwd: ws, window: 2, timeout: 30, memory_after_ms: 1000 });
@@ -112,7 +113,7 @@ if (parts.includes("coldframe")) await frames("coldframe", true);
 if (parts.includes("idle")) {
   const windows = [3, Number(args.idlewindow ?? 23)];
   for (let r = 0; r < Number(args.idle ?? 10); r++) {
-    for (const name of rot(names, r)) {
+    for (const name of rot(tuiNames, r)) {
       const sample = {};
       for (const window of windows) {
         const { lane, home, env } = prepared(name, "idle");
@@ -129,7 +130,7 @@ if (parts.includes("idle")) {
 if (parts.includes("keys")) {
   const keys = "qwertyuiopasdfghjklzxcvbnm".split("");
   for (let r = 0; r < Number(args.keyrounds ?? 10); r++) {
-    for (const name of rot(names, r)) {
+    for (const name of rot(tuiNames, r)) {
       const { lane, home, env } = prepared(name, "keys");
       const t = await terminal({ ...lane.tui(home, server.base), env, cwd: ws, keys, key_interval_ms: 60, timeout: 40 });
       const lat = (t.key_latency_ms ?? []).filter((x) => x != null).sort((a, b) => a - b);
@@ -161,7 +162,7 @@ if (parts.includes("tools")) {
         if (!x?.toolHeadless) { emit({ part: "tools", harness: name, steps, round: r, error: "no tool lane" }); continue; }
         const { home, env } = prepared(name, "tools");
         const run = "tl-" + name + "-" + seq++;
-        const res = await measured(...x.toolHeadless(home, server.base, "Run ls, step by step BENCH[run=" + run + ",mode=steps,steps=" + steps + ",kind=shell,h=" + (lanes[name].version()[0] === lanes.nc?.version()[0] || name.startsWith("nc") ? "nc" : name) + "]"), env, { timeoutMs: 300000 });
+        const res = await measured(...x.toolHeadless(home, server.base, "Run ls, step by step BENCH[run=" + run + ",mode=steps,steps=" + steps + ",kind=shell,h=" + (name === "nclite" ? "ncdirect" : lanes[name].version()[0] === lanes.nc?.version()[0] || name.startsWith("nc") ? "nc" : name) + "]"), env, { timeoutMs: 300000 });
         const records = (await server.log(run)).filter((record) => record.mode !== "side");
         const busy = records.reduce((sum, record) => sum + (msBetween(record.arrive_ns, record.done_ns) ?? 0), 0);
         const gaps = records.slice(1).map((record, i) => msBetween(records[i].done_ns, record.arrive_ns)).filter((g) => g != null).sort((a, b) => a - b);

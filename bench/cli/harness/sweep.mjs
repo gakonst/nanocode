@@ -13,7 +13,7 @@ const mode = args.mode ?? "cli";
 const rates = (args.rates ?? "100,1000,10000").split(",").map(Number);
 const samples = Number(args.samples ?? 3);
 const seconds = Number(args.seconds ?? 5);
-const names = selected(args.only);
+const names = selected(args.only).filter((name) => mode !== "tui" || lanes[name].tui);
 const cols = Number(args.cols ?? 120), rows = Number(args.rows ?? 40);
 fs.mkdirSync(RESULTS, { recursive: true });
 fs.mkdirSync(WORK, { recursive: true });

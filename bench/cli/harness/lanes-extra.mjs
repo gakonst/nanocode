@@ -15,6 +15,13 @@ export const extra = {
     toolHeadless: (home, base, text) => lanes.nc.headless(home, base, text),
     store: (home) => home + "/.nanocode",
   },
+  nclite: {
+    saveHeadless: save("nclite"),
+    list: (home) => [bins.nclite(), ["sessions", "--home", home + "/.nc-lite"]],
+    resume: (home, base, text) => withFlags(save("nclite")(home, base, text), ["--continue"]),
+    toolHeadless: (home, base, text) => lanes.nclite.headless(home, base, text),
+    store: (home) => home + "/.nc-lite",
+  },
   fx: {
     saveHeadless: save("fx"),
     list: () => [bins.fx(), ["sessions", "--json"]],

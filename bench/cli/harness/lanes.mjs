@@ -22,6 +22,7 @@ const piEnv = (home) => ({ ...baseEnv(home), PI_CODING_AGENT_DIR: home + "/.pi/a
 const piArgs = ["--provider", "bench", "--model", "bench/model"];
 
 const ncEnv = (home) => ({ ...baseEnv(home), AI_GATEWAY_API_KEY: "fixture-key", OPENROUTER_API_KEY: "fixture-key", NANOCODE_TELEMETRY: "off" });
+const ncliteArgs = (home, base) => ["--home", home + "/.nc-lite", "--base-url", base + "/v1", "-m", "luna"];
 const ncArgs = (home, base) => ["--home", home + "/.nanocode", "--gateway", "vercel", "--gateway-base-url", base + "/v1", "-m", "luna"];
 
 function claudeSetup(home, cwd) {
@@ -75,6 +76,16 @@ export const lanes = {
     headless: (home, base, text, { save = false } = {}) => [bins.nc(), ["exec", ...ncArgs(home, base), ...(save ? [] : ["--ephemeral"]), text]],
     tui: (home, base) => ({ cmd: [bins.nc(), ...ncArgs(home, base), "--ephemeral"], marker: "Ask anything", exit: ["\x03", "\x03"] }),
     store: (home) => home + "/.nanocode",
+  },
+  nclite: {
+    verified: "2026-11-11 (nc_lite example on the SDK, Linux x86_64): exec, saved sessions, --continue, sessions and a 50-step shell turn pass against the fixture, one stream request, no side requests. nanocode cut down to what fx ships: one harness (Codex), plain function tools (ToolExposure::DirectOnly, no Code Mode), any model through the AI Gateway, a JSONL store, no TUI, no MCP, no computer use, no runners, web search and image generation off",
+    flags: "exec --home, --base-url <fixture>/v1, -m luna, --ephemeral; AI_GATEWAY_API_KEY",
+    version: () => [bins.nclite(), ["--version"]],
+    setup: () => undefined,
+    env: (home) => ({ ...baseEnv(home), AI_GATEWAY_API_KEY: "fixture-key" }),
+    headless: (home, base, text, { save = false } = {}) => [bins.nclite(), ["exec", ...ncliteArgs(home, base), ...(save ? [] : ["--ephemeral"]), text]],
+    tui: null,
+    store: (home) => home + "/.nc-lite",
   },
   claude: {
     verified: "2026-11-10 (2.1.322, Linux x86_64): headless and terminal smoke pass, one stream request, no side requests. The config is read from CLAUDE_CONFIG_DIR/.claude.json (onboarding and trust are pre-accepted there); the Auto mode notice is informational and does not block input. The marker is the prompt glyph, since the header is drawn with cursor moves. With the env below netaudit sees no outbound traffic except the official plugin marketplace clone (github.com), a default feature left on",

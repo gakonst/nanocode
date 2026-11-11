@@ -27,6 +27,7 @@
 | `nanocode-process-contracts` | Portable shell and file host interfaces, `Redactor` |
 | `nanocode-platform` | The host interface WASM embedders install |
 | `nanocode-sync` | Lock-free primitives: `Atom`, `Mailbox`, `Actor`, `Sequencer`, `Slot`, `Signal`, ... |
+| `nanocode-machine` | `machine!`: a lifecycle declared once as states, wire names and moves, with its stored-state check and fence text |
 | `nanocode-http`, `nanocode-zstd`, `nanocode-tls` | HTTP layer contracts and retry rules, a streaming zstd decoder, cached TLS configuration |
 | `nanocode-mcp`, `nanocode-mcp-http` | The MCP client: portable session engine; native Streamable HTTP and OAuth |
 | `nanocode-schema` | JSON Schema validation for output contracts |
@@ -69,6 +70,7 @@
 | `nanocode-store-jsonl` | The append-only JSONL store, one file per session: the CLI's default |
 | `nanocode-store-sql` | `Sql` hosts for SQLite (`SqliteSql`), Postgres (`PostgresSql`) and a host's own sqlx pool or transaction (`SqlxSql`, `SqlxTransaction`, `commit_staged`) |
 | `nanocode-observability` | Tracing and OpenTelemetry setup |
+| `nanocode-telemetry` | GenAI span export, held request traces, and events as log lines and counters, for a server host's own subscriber |
 
 ## Durability
 

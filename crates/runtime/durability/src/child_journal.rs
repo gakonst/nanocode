@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     EncodedPayload, OperationStatus, OwnedState, OwnerId, OwnerToken, StateStore, StoreError,
+    session::PendingTurn,
     shared_store::{LatestWrite, SharedStore, latest_write},
 };
 
@@ -408,6 +409,16 @@ impl ChildJournalStore for SharedJournal {
     ) -> BackendFuture<std::io::Result<Option<(String, serde_json::Value)>>> {
         let mut store = self.store.clone();
         Box::pin(async move {
+            match crate::session::pending_turn(&store, &session_id)
+                .await
+                .map_err(std::io::Error::other)?
+            {
+                PendingTurn::Unacquired => {}
+                PendingTurn::Idle => return Ok(None),
+                PendingTurn::Turn { id, input } => {
+                    return Ok(Some((id, input.decode().map_err(std::io::Error::other)?)));
+                }
+            }
             let stored = store
                 .peek(&session_id)
                 .await

@@ -168,6 +168,7 @@ pub struct SharedStore {
     pub(crate) logged_prompts: bool,
     pub(crate) state_format: Option<u8>,
     pools: std::sync::Arc<crate::pool::Pools>,
+    pub(crate) sessions: std::sync::Arc<crate::session::Sessions>,
     readers: Option<std::sync::Arc<dyn crate::StoreHandles>>,
 }
 
@@ -225,6 +226,7 @@ impl SharedStore {
             logged_prompts: false,
             state_format: None,
             pools: std::sync::Arc::default(),
+            sessions: std::sync::Arc::default(),
             readers,
         })
     }

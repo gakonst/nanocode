@@ -309,6 +309,9 @@ enum Command {
     CurrentOwner {
         result: oneshot::Sender<Result<bool>>,
     },
+    PendingTurn {
+        result: oneshot::Sender<Result<PendingTurn>>,
+    },
     State {
         result: oneshot::Sender<Result<DurableState>>,
     },
@@ -496,6 +499,7 @@ impl Command {
             Self::RecoverFailure { result, .. } => drop(result.send(Err(error))),
             Self::State { result } => drop(result.send(Err(error))),
             Self::CurrentOwner { result } => drop(result.send(Err(error))),
+            Self::PendingTurn { result } => drop(result.send(Err(error))),
             Self::LatestCheckpoint { result } => drop(result.send(Err(error))),
             Self::AcquireAgent { result, .. } => drop(result.send(Err(error))),
             Self::Admit { result, .. } => drop(result.send(Err(error))),
@@ -508,6 +512,42 @@ impl Command {
             Self::CommitWrites { result, .. } => drop(result.send(Err(error))),
             Self::Describe { result, .. } => drop(result.send(Err(error))),
         }
+    }
+}
+
+pub(crate) enum PendingTurn {
+    Unacquired,
+    Idle,
+    Turn { id: String, input: EncodedPayload },
+}
+
+#[derive(Clone)]
+pub(crate) struct Live {
+    state_id: Arc<str>,
+    commands: mpsc::WeakSender<CommandRequest>,
+}
+
+pub(crate) type Sessions = nanocode_sync::AtomMap<Arc<str>, Live>;
+
+pub(crate) async fn pending_turn(store: &SharedStore, state_id: &str) -> Result<PendingTurn> {
+    let Some(commands) = store
+        .sessions
+        .get(state_id)
+        .and_then(|live| live.commands.upgrade())
+    else {
+        return Ok(PendingTurn::Unacquired);
+    };
+    let (result, receiver) = oneshot::channel();
+    if commands
+        .send(Command::PendingTurn { result }.into())
+        .await
+        .is_err()
+    {
+        return Ok(PendingTurn::Unacquired);
+    }
+    match receive(receiver).await {
+        Err(Error::DriverStopped) => Ok(PendingTurn::Unacquired),
+        outcome => outcome,
     }
 }
 
@@ -547,6 +587,7 @@ struct Driver {
 
     committed_records: HashSet<String>,
     next_event: Option<u64>,
+    sessions: Arc<Sessions>,
     commands: mpsc::Receiver<CommandRequest>,
     releases: mpsc::UnboundedReceiver<ReleaseSignal>,
 }
@@ -638,13 +679,18 @@ impl Driver {
                 break;
             }
         }
+        self.sessions.remove_if(&*self.state_id, |live| {
+            Arc::ptr_eq(&live.state_id, &self.state_id)
+        });
     }
 
     async fn handle_command(&mut self, command: Command) {
         if matches!(self.ownership, Ownership::Unacquired(_))
             && !matches!(
                 command,
-                Command::AcquireAgent { .. } | Command::CurrentOwner { .. }
+                Command::AcquireAgent { .. }
+                    | Command::CurrentOwner { .. }
+                    | Command::PendingTurn { .. }
             )
             && let Err(error) = self.acquire(None, None, None).await
         {
@@ -774,6 +820,23 @@ impl Driver {
                         .await
                         .map(|current| current.as_ref() == Some(owner))
                         .map_err(Error::from),
+                };
+                drop(result.send(outcome));
+            }
+            Command::PendingTurn { result } => {
+                let pending = self
+                    .state
+                    .pending_operations()
+                    .into_iter()
+                    .next()
+                    .map(|(id, operation)| (id.to_owned(), operation.input.clone()));
+                let outcome = match (&self.ownership, pending) {
+                    (Ownership::Unacquired(_), _) => Ok(PendingTurn::Unacquired),
+                    (Ownership::Owned(_), None) => Ok(PendingTurn::Idle),
+                    (Ownership::Owned(_), Some((id, input))) => input
+                        .load(&mut *self.store, &self.state_id)
+                        .await
+                        .map(|input| PendingTurn::Turn { id, input }),
                 };
                 drop(result.send(outcome));
             }
@@ -2705,13 +2768,23 @@ impl DurableSession {
         }
         let terminal_receipt_limit = terminal_receipt_limit.or(store.terminal_receipt_limit);
         let described = seed.record().cloned();
-        if let Some(record) = &described
-            && record.lineage.origin == nanocode_agent_core::Origin::Subagent
-        {
+        let subagent = described
+            .as_ref()
+            .filter(|record| record.lineage.origin == nanocode_agent_core::Origin::Subagent);
+        if let Some(record) = subagent {
             store.adopt(&state_id, &record.lineage.root_session_id);
         }
         let state_id = Arc::<str>::from(state_id);
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
+        if subagent.is_some() {
+            store.sessions.insert(
+                Arc::clone(&state_id),
+                Live {
+                    state_id: Arc::clone(&state_id),
+                    commands: commands.downgrade(),
+                },
+            );
+        }
         let (releases, release_receiver) = mpsc::unbounded_channel();
         spawn_driver(Driver {
             store: Box::new(store.clone()),
@@ -2734,6 +2807,7 @@ impl DurableSession {
             unsaved_results: HashSet::new(),
             committed_records: HashSet::new(),
             next_event: None,
+            sessions: Arc::clone(&store.sessions),
             commands: receiver,
             releases: release_receiver,
         })?;

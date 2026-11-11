@@ -30,7 +30,7 @@ pub(crate) fn exec(
     if prog.backrefs {
         return m.search_backrefs(groups);
     }
-    let (s, e) = m.bounds()?;
+    let (s, e) = m.span()?;
     let mut caps: Captures = vec![None; groups + 1];
     caps[0] = Some((s, e));
     if want_groups && groups > 0 {
@@ -40,6 +40,43 @@ pub(crate) fn exec(
         }
     }
     Some(caps)
+}
+
+/// The bounds of the leftmost-longest match at `start` or later, without its
+/// subexpressions and, for a pattern without back-references, without their vector.
+pub(crate) fn find(
+    prog: &Prog,
+    groups: usize,
+    text: &[u8],
+    start: usize,
+    eopts: ExecOptions,
+) -> Option<(usize, usize)> {
+    let m = M {
+        prog,
+        text,
+        start,
+        eopts,
+    };
+    if prog.backrefs {
+        return m.search_backrefs(groups).and_then(|c| c[0]);
+    }
+    m.span()
+}
+
+/// Where `needle` first is in `hay`.
+fn locate(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    let Some((&first, rest)) = needle.split_first() else {
+        return Some(0);
+    };
+    let mut from = 0;
+    while let Some(i) = hay[from..].iter().position(|&b| b == first) {
+        let at = from + i;
+        if hay[at + 1..].starts_with(rest) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
 }
 
 fn fill(caps: &mut Captures, slots: &[Option<usize>]) {
@@ -193,6 +230,17 @@ impl M<'_> {
         }
     }
 
+    /// The leftmost-longest match of a pattern without back-references: nothing at
+    /// all when the bytes every match starts with are not in the text.
+    fn span(&self) -> Option<(usize, usize)> {
+        let prefix = &self.prog.prefix;
+        let rest = self.text.get(self.start..)?;
+        if !self.prog.anchored && !prefix.is_empty() {
+            locate(rest, prefix)?;
+        }
+        self.bounds()
+    }
+
     /// The leftmost-longest match, by simulating all threads at once: a thread
     /// remembers where its match started, an earlier start wins a state, and once a
     /// match is found only threads with its start go on (to make it longer).
@@ -203,7 +251,23 @@ impl M<'_> {
         let mut stack = Vec::new();
         let mut best: Option<(usize, usize)> = None;
         let mut pos = self.start;
+        let first = if self.prog.anchored {
+            None
+        } else {
+            self.prog.prefix.first().copied()
+        };
         loop {
+            // No thread is alive and no match is held: the next one starts where the
+            // first byte of every match is.
+            if let Some(first) = first
+                && best.is_none()
+                && clist.dense.is_empty()
+            {
+                match self.text[pos..].iter().position(|&b| b == first) {
+                    Some(i) => pos += i,
+                    None => break,
+                }
+            }
             if best.is_none() && (pos == self.start || !self.prog.anchored) {
                 self.add(&mut clist, 0, pos, pos, &mut best, &mut stack);
             }

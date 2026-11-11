@@ -43,6 +43,9 @@ pub(crate) struct Prog {
     pub backrefs: bool,
     /// Every match starts at the start of the text (a leading `^` without `newline`).
     pub anchored: bool,
+    /// The ASCII bytes every match starts with (the program's leading literals): a
+    /// search skips to where the first one is.
+    pub prefix: Vec<u8>,
 }
 
 pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
@@ -55,7 +58,16 @@ pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
     c.node(&parsed.node)?;
     c.push(Inst::Match)?;
     let anchored = !opts.newline && starts_with_bol(&parsed.node);
+    let prefix: Vec<u8> = c
+        .insts
+        .iter()
+        .map_while(|i| match i {
+            Inst::Lit(u) if *u < 0x80 => Some(*u as u8),
+            _ => None,
+        })
+        .collect();
     Ok(Prog {
+        prefix,
         insts: c.insts,
         sets: c.sets,
         opts,

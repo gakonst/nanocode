@@ -204,7 +204,7 @@ impl Regex {
         if let Some(needle) = &self.literal {
             return find_literal(text, start, needle);
         }
-        exec::exec(&self.prog, self.groups, text, start, eopts, false).and_then(|c| c[0])
+        exec::find(&self.prog, self.groups, text, start, eopts)
     }
 
     pub fn is_match(&self, text: &[u8]) -> bool {

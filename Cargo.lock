@@ -5901,6 +5901,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-shell"
+version = "0.7.0"
+dependencies = [
+ "bytes",
+ "psh-engine",
+ "psh-utils",
+]
+
+[[package]]
 name = "nanocode-store-jsonl"
 version = "0.7.0"
 dependencies = [

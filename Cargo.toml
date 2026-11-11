@@ -26,6 +26,7 @@ members = [
     "crates/core/mcp-http",
     "crates/core/platform",
     "crates/core/schema",
+    "crates/core/shell",
     "crates/core/tool-provider",
     "crates/core/image",
     "crates/core/audio",
@@ -132,6 +133,7 @@ nanocode-platform = { version = "0.7.0", path = "crates/core/platform" }
 nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
 nanocode-schema = { version = "0.7.0", path = "crates/core/schema" }
+nanocode-shell = { version = "0.7.0", path = "crates/core/shell" }
 nanocode-durability = { version = "0.7.0", path = "crates/runtime/durability" }
 nanocode-subagents = { version = "0.7.0", path = "crates/runtime/subagents" }
 nanocode-code-mode = { version = "0.7.0", path = "crates/runtime/code-mode"  }
@@ -167,6 +169,8 @@ rustls = { version = "0.23.45", default-features = false, features = ["std"] }
 tokio-postgres = "0.7"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
+psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
+psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
 schemars = "0.8.22"
 seccompiler = "0.5.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }

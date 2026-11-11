@@ -1,0 +1,24 @@
+[package]
+name = "nanocode-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The psh shell and its in-process utilities over a host-supplied filesystem, for hosts without an operating system"
+autotests = false
+autobenches = false
+
+[dependencies]
+bytes.workspace = true
+psh-engine.workspace = true
+psh-utils.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

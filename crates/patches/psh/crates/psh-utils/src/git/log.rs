@@ -16,7 +16,7 @@ use crate::timefmt::days_from_civil;
 
 /// A date as --since and --until take it: seconds since the epoch. offset is the
 /// local zone's, for dates that name none.
-fn approxidate(text: &str, now: i64, offset: i64) -> Option<i64> {
+pub fn approxidate(text: &str, now: i64, offset: i64) -> Option<i64> {
     let text = text.trim().to_ascii_lowercase();
     if text == "now" {
         return Some(now);
@@ -829,7 +829,9 @@ pub fn show(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
                     if !first {
                         io.out.write_all(b"\n")?;
                     }
-                    io.out.write_all(&tag_header(&data, &shape.date, git.now))?;
+                    let dated = !matches!(shape.format, Format::User(..));
+                    io.out
+                        .write_all(&tag_header(&data, dated.then_some(&shape.date), git.now))?;
                     first = true;
                     oid = super::repo::tag_target(&data)
                         .ok_or_else(|| Error::Fatal("a tag names no object".to_string()))?;

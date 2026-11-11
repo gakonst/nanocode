@@ -1,16 +1,20 @@
-//! git's local read commands (nanocode's addition to psh's utilities): status, log,
-//! diff, show, ls-files, rev-parse, cat-file, branch, blame, grep and the plumbing
-//! around them, over the repository as the shell's file system shows it (loose
-//! objects, packs, the index, references, linked worktrees).
+//! git's local commands (nanocode's addition to psh's utilities): status, log, diff,
+//! show, ls-files, rev-parse, cat-file, branch, blame, grep and the plumbing around
+//! them, and the ones that change a repository without merging: init, add, rm, mv,
+//! commit, checkout, switch, restore, reset, stash, branch, tag and config. All of it
+//! over the repository as the shell's file system shows it (loose objects, packs, the
+//! index, references, linked worktrees).
 //!
-//! Output is git 2.50's, byte for byte, where the differential corpus covers it. What
-//! changes a repository or needs the network is not here: such a command ends with
-//! status 127 and a message that says what this git lacks, so that a host with a
-//! machine can run the real one. A fallback utility (D015): where PATH has git, that
-//! runs.
+//! Output is git 2.50's, byte for byte, where the differential corpus covers it, and a
+//! repository this has written is one git reads. What merges histories or needs the
+//! network is not here: such a command ends with status 127 and a message that says
+//! what this git lacks, so that a host with a machine can run the real one. A fallback
+//! utility (D015): where PATH has git, that runs.
 
 mod blame;
+mod checkout;
 mod cmd;
+mod commit;
 mod diff;
 mod extra;
 mod index;
@@ -19,12 +23,18 @@ mod patch;
 mod pretty;
 mod repo;
 mod rev;
+mod setup;
+mod stage;
+mod stash;
 mod status;
 mod store;
 mod wild;
 mod worktree;
+mod write;
 
+use std::cell::RefCell;
 use std::io::{self, BufWriter, Write};
+use std::sync::mpsc;
 
 use psh_engine::util::{BlockingOptions, SyncCtx, SyncWriter, UtilCtx};
 
@@ -46,6 +56,8 @@ pub enum Error {
     Lacks(String, &'static str),
     /// Nothing more to say; the status.
     Exit(i32),
+    /// What git prints to stderr, as it is, and the status.
+    Says(String, i32),
 }
 
 impl From<io::Error> for Error {
@@ -72,6 +84,8 @@ pub struct Git<'a> {
     pub env: Vec<(Vec<u8>, Vec<u8>)>,
     /// COLUMNS, when it is set.
     pub columns: Option<usize>,
+    /// What the command changes, carried out once its body has ended.
+    pub plan: RefCell<write::Plan>,
 }
 
 impl Git<'_> {
@@ -99,27 +113,21 @@ impl Io<'_> {
     }
 }
 
-/// A command that changes the repository or the worktree.
+/// A command that changes the repository or the worktree in a way this git does not.
 const WRITES: &[&str] = &[
-    "add",
     "am",
     "apply",
     "bisect",
-    "checkout",
     "cherry-pick",
-    "clean",
-    "commit",
     "commit-tree",
     "filter-branch",
     "format-patch",
     "gc",
     "hash-object",
-    "init",
     "lfs",
     "maintenance",
     "merge",
     "mergetool",
-    "mv",
     "notes",
     "pack-refs",
     "prune",
@@ -128,13 +136,9 @@ const WRITES: &[&str] = &[
     "repack",
     "replace",
     "rerere",
-    "reset",
-    "restore",
     "revert",
-    "rm",
     "sparse-checkout",
     "submodule",
-    "switch",
     "update-index",
     "update-ref",
     "write-tree",
@@ -155,8 +159,8 @@ const NETWORK: &[&str] = &[
 
 pub fn writes(what: &str) -> Error {
     Error::Lacks(
-        format!("'{what}' changes the repository"),
-        "git that writes: it reads status, log, diff, show, blame and the like",
+        format!("'{what}' changes the repository in a way it does not"),
+        "git that merges, rewrites history or repacks: it reads, stages, commits and checks out",
     )
 }
 
@@ -167,22 +171,43 @@ pub fn option(command: &str, arg: &str) -> Error {
 pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     let now = ctx.now().as_secs() as i64;
     let offset = i64::from(ctx.utc_offset(now));
-    ctx.run_blocking(
-        BlockingOptions { stdin: false },
-        (argv.to_vec(), now, offset),
-        body,
-    )
-    .await
+    let (planned, plans) = mpsc::channel();
+    let status = ctx
+        .run_blocking(
+            BlockingOptions { stdin: false },
+            (argv.to_vec(), now, offset, planned),
+            body,
+        )
+        .await;
+    // The body ran on answers that were all there, or this is not reached: the plan
+    // of a run that is thrown away is never carried out.
+    let Ok(plan) = plans.try_recv() else {
+        return status;
+    };
+    match write::apply(ctx, plan).await {
+        Ok(()) => status,
+        Err(e) => {
+            let text = format!("fatal: {}\n", psh_engine::host::error_text(&e));
+            ctx.error_raw(text.as_bytes()).await;
+            128
+        }
+    }
 }
 
-fn body(ctx: &mut SyncCtx, (argv, now, offset): (Vec<Vec<u8>>, i64, i64)) -> i32 {
+type Args = (Vec<Vec<u8>>, i64, i64, mpsc::Sender<write::Plan>);
+
+fn body(ctx: &mut SyncCtx, (argv, now, offset, planned): Args) -> i32 {
     let mut out = BufWriter::with_capacity(64 * 1024, ctx.writer(1));
     let mut err = ctx.writer(2);
-    let result = start(ctx, &argv, (now, offset), &mut out, &mut err);
+    let mut plan = write::Plan::default();
+    let result = start(ctx, &argv, (now, offset), &mut out, &mut err, &mut plan);
     let result = match result {
         Ok(status) => out.flush().map(|()| status).map_err(Error::Io),
         Err(e) => Err(e),
     };
+    if result.is_ok() && (!plan.ops.is_empty() || plan.index.is_some()) {
+        let _ = planned.send(plan);
+    }
     match result {
         Ok(status) => status,
         Err(e) => {
@@ -202,6 +227,7 @@ fn body(ctx: &mut SyncCtx, (argv, now, offset): (Vec<Vec<u8>>, i64, i64)) -> i32
                     127,
                 ),
                 Error::Exit(status) => (String::new(), status),
+                Error::Says(text, status) => (text, status),
             };
             if flushed.is_err_and(|e| e.kind() == io::ErrorKind::BrokenPipe) {
                 return 141;
@@ -218,6 +244,7 @@ fn start(
     (now, offset): (i64, i64),
     out: &mut Out,
     err: &mut SyncWriter,
+    plan: &mut write::Plan,
 ) -> Res<i32> {
     let mut args = Vec::with_capacity(argv.len());
     for arg in &argv[1..] {
@@ -235,6 +262,7 @@ fn start(
     let mut overrides = Vec::new();
     let mut git_dir = None;
     let mut work_tree = None;
+    let mut optional_locks = true;
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
@@ -260,9 +288,9 @@ fn start(
             }
             "--git-dir" => git_dir = Some(value(&mut i)?),
             "--work-tree" => work_tree = Some(value(&mut i)?),
+            "--no-optional-locks" => optional_locks = false,
             "--no-pager"
             | "-P"
-            | "--no-optional-locks"
             | "--literal-pathspecs"
             | "--no-replace-objects"
             | "--paginate"
@@ -321,6 +349,13 @@ fn start(
             String::from_utf8_lossy(&cwd)
         )));
     }
+    let mut io = Io {
+        out,
+        err: err.clone(),
+    };
+    if let Some(status) = setup::outside(&fs, &cwd, &env, &command, rest, &mut io, plan)? {
+        return Ok(status);
+    }
     let repo = Repo::discover(&fs, &cwd, &env, &overrides)?;
     let prefix = match &repo.work_tree {
         Some(tree) if cwd.starts_with(tree) && cwd.len() > tree.len() => {
@@ -344,18 +379,33 @@ fn start(
         cwd,
         now,
         offset,
-        env: ctx.env().to_vec(),
+        env: {
+            let mut env = ctx.env().to_vec();
+            if !optional_locks {
+                env.retain(|(name, _)| name != b"GIT_OPTIONAL_LOCKS");
+                env.push((b"GIT_OPTIONAL_LOCKS".to_vec(), b"0".to_vec()));
+            }
+            env
+        },
         columns,
+        plan: RefCell::default(),
     };
-    let mut io = Io {
-        out,
-        err: err.clone(),
-    };
-    cmd::dispatch(&git, &mut io, &command, rest)
+    let status = cmd::dispatch(&git, &mut io, &command, rest)?;
+    *plan = git.plan.take();
+    let objects = git.repo.odb.made();
+    plan.ops.splice(
+        0..0,
+        objects.into_iter().map(|(path, data)| write::Op::Write {
+            path,
+            data,
+            mode: write::Mode::Object,
+        }),
+    );
+    Ok(status)
 }
 
 /// A configuration key as the files' parser names it.
-fn config_key(key: &str) -> String {
+pub fn config_key(key: &str) -> String {
     match (key.find('.'), key.rfind('.')) {
         (Some(first), Some(last)) if first != last => format!(
             "{}{}{}",

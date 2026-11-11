@@ -272,6 +272,31 @@ pub struct Repo<'a> {
     shallow: OnceCell<Vec<Oid>>,
 }
 
+/// The user's own configuration files, in the order git reads them: the one
+/// GIT_CONFIG_GLOBAL names, else the one under XDG_CONFIG_HOME and ~/.gitconfig.
+pub fn global_config(env: &dyn Fn(&[u8]) -> Option<Vec<u8>>) -> Vec<Vec<u8>> {
+    let paths = match env(b"GIT_CONFIG_GLOBAL") {
+        Some(path) => vec![path],
+        None => {
+            let mut paths = Vec::new();
+            let home = env(b"HOME");
+            match (env(b"XDG_CONFIG_HOME"), &home) {
+                (Some(xdg), _) if !xdg.is_empty() => paths.push(join(&xdg, b"git/config")),
+                (_, Some(home)) => paths.push(join(home, b".config/git/config")),
+                _ => {}
+            }
+            if let Some(home) = &home {
+                paths.push(join(home, b".gitconfig"));
+            }
+            paths
+        }
+    };
+    paths
+        .into_iter()
+        .filter(|path| path.first() == Some(&b'/'))
+        .collect()
+}
+
 fn parent(path: &[u8]) -> Option<&[u8]> {
     if path.len() <= 1 {
         return None;
@@ -397,26 +422,8 @@ impl<'a> Repo<'a> {
             None => git_dir.clone(),
         };
         let mut config = Config::default();
-        let global = match env(b"GIT_CONFIG_GLOBAL") {
-            Some(path) => vec![path],
-            None => {
-                let mut paths = Vec::new();
-                let home = env(b"HOME");
-                match (env(b"XDG_CONFIG_HOME"), &home) {
-                    (Some(xdg), _) if !xdg.is_empty() => paths.push(join(&xdg, b"git/config")),
-                    (_, Some(home)) => paths.push(join(home, b".config/git/config")),
-                    _ => {}
-                }
-                if let Some(home) = &home {
-                    paths.push(join(home, b".gitconfig"));
-                }
-                paths
-            }
-        };
-        for path in global {
-            if path.first() == Some(&b'/')
-                && let Some(text) = fs.read_opt(&path)?
-            {
+        for path in global_config(env) {
+            if let Some(text) = fs.read_opt(&path)? {
                 config.parse(&text);
             }
         }

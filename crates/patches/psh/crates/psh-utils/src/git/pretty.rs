@@ -739,7 +739,7 @@ impl Pretty<'_, '_> {
 }
 
 /// A tag object as git show prints it before what it names.
-pub fn tag_header(data: &[u8], mode: &DateMode, now: i64) -> Vec<u8> {
+pub fn tag_header(data: &[u8], mode: Option<&DateMode>, now: i64) -> Vec<u8> {
     let mut out = Vec::new();
     let mut lines = data.split(|&b| b == b'\n');
     let mut name: &[u8] = b"";
@@ -764,9 +764,12 @@ pub fn tag_header(data: &[u8], mode: &DateMode, now: i64) -> Vec<u8> {
         out.extend_from_slice(b" <");
         out.extend_from_slice(who.email);
         out.extend_from_slice(b">\n");
-        out.extend_from_slice(
-            format!("Date:   {}\n", date(mode, who.time, who.zone, now)).as_bytes(),
-        );
+        // The date goes with git's own formats, not with one the user gave.
+        if let Some(mode) = mode {
+            out.extend_from_slice(
+                format!("Date:   {}\n", date(mode, who.time, who.zone, now)).as_bytes(),
+            );
+        }
     }
     out.push(b'\n');
     let rest: Vec<&[u8]> = lines.collect();
@@ -781,6 +784,6 @@ pub fn tag_header(data: &[u8], mode: &DateMode, now: i64) -> Vec<u8> {
         message.pop();
     }
     out.extend_from_slice(&message);
-    out.extend_from_slice(b"\n\n");
+    out.extend_from_slice(if mode.is_some() { b"\n\n" } else { b"\n" });
     out
 }

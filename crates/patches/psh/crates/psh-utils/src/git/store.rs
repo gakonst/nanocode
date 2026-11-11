@@ -16,6 +16,8 @@ use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
 use psh_engine::host::Metadata;
 use psh_engine::util::SyncCtx;
 
+use crate::sum_hash::{Algo, Digest};
+
 /// An object name (SHA-1).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Debug)]
 pub struct Oid(pub [u8; 20]);
@@ -380,6 +382,17 @@ pub struct Odb<'a> {
     bases: RefCell<Bases>,
     base_limit: usize,
     inflater: RefCell<Box<DecompressorOxide>>,
+    /// The objects this command made: read as any other, and written as loose objects
+    /// when its changes are carried out.
+    made: RefCell<HashMap<Oid, (Kind, Data)>>,
+}
+
+/// The name git gives an object of this kind and content.
+pub fn object_oid(kind: Kind, data: &[u8]) -> Oid {
+    let mut digest = Digest::new(Algo::Sha1);
+    digest.update(format!("{} {}\0", kind.name(), data.len()).as_bytes());
+    digest.update(data);
+    Oid::from_bytes(&digest.finish())
 }
 
 impl<'a> Odb<'a> {
@@ -414,7 +427,35 @@ impl<'a> Odb<'a> {
             bases: RefCell::default(),
             base_limit,
             inflater: RefCell::new(Box::default()),
+            made: RefCell::default(),
         })
+    }
+
+    /// Makes an object, unless the repository has it, and gives its name.
+    pub fn write(&self, kind: Kind, data: Vec<u8>) -> io::Result<Oid> {
+        let oid = object_oid(kind, &data);
+        if !self.has(&oid)? {
+            self.made.borrow_mut().insert(oid, (kind, Rc::new(data)));
+        }
+        Ok(oid)
+    }
+
+    /// The objects made, each as the loose object file it becomes: its path and its
+    /// bytes, deflated at the level git's core.looseCompression defaults to.
+    pub fn made(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        const BEST_SPEED: u8 = 1;
+        let mut made: Vec<(Oid, (Kind, Data))> = self.made.borrow_mut().drain().collect();
+        made.sort_by_key(|(oid, _)| *oid);
+        made.into_iter()
+            .map(|(oid, (kind, data))| {
+                let mut raw = format!("{} {}\0", kind.name(), data.len()).into_bytes();
+                raw.extend_from_slice(&data);
+                (
+                    Self::loose_path(&self.dirs[0], &oid),
+                    miniz_oxide::deflate::compress_to_vec_zlib(&raw, BEST_SPEED),
+                )
+            })
+            .collect()
     }
 
     fn packs(&self) -> io::Result<&[Pack]> {
@@ -544,6 +585,9 @@ impl<'a> Odb<'a> {
 
     /// An object, or None when the repository does not have it.
     pub fn read(&self, oid: &Oid) -> io::Result<Option<(Kind, Data)>> {
+        if let Some(made) = self.made.borrow().get(oid) {
+            return Ok(Some(made.clone()));
+        }
         match self.find(oid)? {
             Some((pack, off)) => self.packed(pack, off).map(Some),
             None => self.loose(oid),
@@ -551,7 +595,7 @@ impl<'a> Odb<'a> {
     }
 
     pub fn has(&self, oid: &Oid) -> io::Result<bool> {
-        if self.find(oid)?.is_some() {
+        if self.made.borrow().contains_key(oid) || self.find(oid)?.is_some() {
             return Ok(true);
         }
         for dir in &self.dirs {
@@ -718,6 +762,9 @@ impl<'a> Odb<'a> {
             for o in self.loose_names(dir, oid.0[0])?.iter() {
                 other(o);
             }
+        }
+        for o in self.made.borrow().keys() {
+            other(o);
         }
         let mut hex = oid.hex();
         hex.truncate(len.min(40));

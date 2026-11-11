@@ -530,6 +530,7 @@ pub struct DiffOpts {
     pub name_only: bool,
     pub name_status: bool,
     pub check: bool,
+    pub summary: bool,
     pub context: usize,
     /// The least similarity of a rename (out of 60000), or no rename detection.
     pub renames: Option<u32>,
@@ -587,6 +588,7 @@ impl DiffOpts {
             name_only: false,
             name_status: false,
             check: false,
+            summary: false,
             context,
             renames,
             full_index: false,
@@ -613,6 +615,7 @@ impl DiffOpts {
             || self.name_only
             || self.name_status
             || self.check
+            || self.summary
     }
 
     /// Takes args[*i] when it is a diff option (and its value); false when it is not
@@ -655,6 +658,7 @@ impl DiffOpts {
             "--name-only" => self.name_only = true,
             "--name-status" => self.name_status = true,
             "--check" => self.check = true,
+            "--summary" => self.summary = true,
             "--patch-with-stat" => {
                 self.patch = true;
                 self.stat = true;
@@ -1281,6 +1285,9 @@ impl Printer<'_, '_> {
             }
             separator = !stats.is_empty();
         }
+        if self.opts.summary {
+            separator |= summary(out, &changes)?;
+        }
         if self.opts.patch {
             if separator {
                 out.write_all(b"\n")?;
@@ -1291,6 +1298,64 @@ impl Printer<'_, '_> {
         }
         Ok(found)
     }
+}
+
+/// The lines of --summary: a file made, deleted, renamed or given another mode.
+fn summary(out: &mut dyn Write, changes: &[&Change]) -> Res<bool> {
+    let mut any = false;
+    for change in changes {
+        let name = quote_path(&change.path);
+        let mut line = Vec::new();
+        match (&change.old, &change.new) {
+            (None, Some(new)) => {
+                line.extend_from_slice(format!(" create mode {:06o} ", new.mode).as_bytes());
+                line.extend_from_slice(&name);
+            }
+            (Some(old), None) => {
+                line.extend_from_slice(format!(" delete mode {:06o} ", old.mode).as_bytes());
+                line.extend_from_slice(&name);
+            }
+            (Some(old), Some(new)) => {
+                if let Some(from) = &change.from {
+                    line.extend_from_slice(b" rename ");
+                    line.extend_from_slice(&rename_name(from, &change.path));
+                    line.extend_from_slice(
+                        format!(" ({}%)", change.score * 100 / MAX_SCORE).as_bytes(),
+                    );
+                }
+                if old.mode != new.mode {
+                    if !line.is_empty() {
+                        line.push(b'\n');
+                    }
+                    line.extend_from_slice(
+                        format!(" mode change {:06o} => {:06o}", old.mode, new.mode).as_bytes(),
+                    );
+                    if change.from.is_none() {
+                        line.push(b' ');
+                        line.extend_from_slice(&name);
+                    }
+                }
+            }
+            (None, None) => {}
+        }
+        if !line.is_empty() {
+            any = true;
+            out.write_all(&line)?;
+            out.write_all(b"\n")?;
+        }
+    }
+    Ok(any)
+}
+
+/// What git commit prints of what it committed: the counts, then a line for each
+/// file made, deleted, renamed or given another mode.
+pub fn commit_summary(repo: &Repo<'_>, out: &mut dyn Write, changes: Vec<Change>) -> Res<()> {
+    let changes = detect_renames(repo, changes, MAX_SCORE / 2)?;
+    let mut opts = DiffOpts::new(repo, None)?;
+    opts.shortstat = true;
+    opts.summary = true;
+    Printer { repo, opts: &opts }.print(out, &changes)?;
+    Ok(())
 }
 
 /// A list of changes turned around (git diff -R).

@@ -59,7 +59,7 @@ pub fn shown_plain(path: &[u8], prefix: &[u8]) -> Vec<u8> {
     out.join(&b'/')
 }
 
-fn in_progress(git: &Git<'_>) -> Res<()> {
+pub fn in_progress(git: &Git<'_>) -> Res<()> {
     for name in [
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
@@ -83,7 +83,78 @@ fn in_progress(git: &Git<'_>) -> Res<()> {
     Ok(())
 }
 
+/// How a branch stands to the one it follows (ahead and behind, or None when that one
+/// is gone), as status and checkout say it.
+fn tracking_text(up: &str, state: Option<(usize, usize)>) -> String {
+    let commits = |n: usize| if n == 1 { "commit" } else { "commits" };
+    match state {
+        None => format!(
+            "Your branch is based on '{up}', but the upstream is gone.\n  (use \"git branch --unset-upstream\" to fixup)\n"
+        ),
+        Some((0, 0)) => format!("Your branch is up to date with '{up}'.\n"),
+        Some((ahead, 0)) => format!(
+            "Your branch is ahead of '{up}' by {ahead} {}.\n  (use \"git push\" to publish your local commits)\n",
+            commits(ahead)
+        ),
+        Some((0, behind)) => format!(
+            "Your branch is behind '{up}' by {behind} {}, and can be fast-forwarded.\n  (use \"git pull\" to update your local branch)\n",
+            commits(behind)
+        ),
+        Some((ahead, behind)) => format!(
+            "Your branch and '{up}' have diverged,\nand have {ahead} and {behind} different commits each, respectively.\n  (use \"git pull\" if you want to integrate the remote branch with yours)\n"
+        ),
+    }
+}
+
+/// What checkout says of a branch at ours that follows the reference up.
+pub fn tracking(git: &Git<'_>, up: &str, ours: super::store::Oid) -> Res<String> {
+    let state = match git.repo.resolve_ref(up)? {
+        Some(theirs) => Some(rev::ahead_behind(&git.repo, ours, theirs)?),
+        None => None,
+    };
+    Ok(tracking_text(shorten(up), state))
+}
+
 pub fn status(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
+    report(git, io, args, None)
+}
+
+/// git status as it will read once a command's changes are carried out: index is
+/// the one the command leaves, after says what its files will hold, and restored are
+/// the untracked files it brings back.
+pub fn after(
+    git: &Git<'_>,
+    io: &mut Io<'_>,
+    mut work: Work<'_, '_>,
+    index: &super::index::Index,
+    after: std::collections::HashMap<Vec<u8>, Option<(u32, super::store::Oid)>>,
+    restored: Vec<Vec<u8>>,
+) -> Res<()> {
+    work.index = index.clone();
+    work.index.written = i64::MAX;
+    work.after = after;
+    // A directory nothing tracks is one line, as the walk would show it.
+    let mut shown = Vec::new();
+    for path in restored {
+        let mut line = path.clone();
+        for (at, _) in path.iter().enumerate().filter(|(_, b)| **b == b'/') {
+            if !work.tracked_under(&path[..at]) {
+                line = path[..=at].to_vec();
+                break;
+            }
+        }
+        shown.push(line);
+    }
+    report(git, io, &[], Some((work, shown)))?;
+    Ok(())
+}
+
+fn report(
+    git: &Git<'_>,
+    io: &mut Io<'_>,
+    args: &[String],
+    prepared: Option<(Work<'_, '_>, Vec<Vec<u8>>)>,
+) -> Res<i32> {
     let mut short = git.repo.config.bool("status.short") == Some(true);
     let mut branch = git.repo.config.bool("status.branch") == Some(true);
     let mut porcelain = false;
@@ -139,7 +210,11 @@ pub fn status(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
     in_progress(git)?;
     let spec = Pathspec::new(&git.prefix, &paths)
         .map_err(|p| Error::Fatal(format!("{p}: '{p}' is outside repository")))?;
-    let mut work = Work::new(&git.repo, &root)?;
+    let refresh = prepared.is_none() && git.var("GIT_OPTIONAL_LOCKS").as_deref() != Some("0");
+    let (mut work, restored) = match prepared {
+        Some(prepared) => prepared,
+        None => (Work::new(&git.repo, &root)?, Vec::new()),
+    };
     work.quick = true;
     let head = git.repo.head()?;
     let head_tree = match &head {
@@ -168,9 +243,36 @@ pub fn status(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
             .map(|(_, v)| v.clone())
     };
     // The walk for untracked files first: it passes the tracked ones too.
-    let others = untracked(&work, mode, &spec, &env_home)?;
+    let mut others = untracked(&work, mode, &spec, &env_home)?;
+    if mode != Untracked::No && !restored.is_empty() {
+        others.extend(restored);
+        others.sort();
+        others.dedup();
+    }
     let unstaged = work.unstaged(&spec)?;
     work.answered()?;
+    // What was read to be compared is recorded, as git status does where it may: the
+    // next status finds those files by their size and time.
+    let noted = work.noted.take();
+    if refresh
+        && !noted.is_empty()
+        && git
+            .repo
+            .fs
+            .stat_opt(&join(&git.repo.git_dir, b"index.lock"), false)?
+            .is_none()
+    {
+        let mut index = work.index.clone();
+        for (path, meta) in noted {
+            if let Ok(at) = index.find(&path) {
+                match meta {
+                    Some(meta) => index.entries[at].record(&meta, None),
+                    None => index.entries[at].size = 0,
+                }
+            }
+        }
+        git.set_index(index);
+    }
     let staged_any = !staged.is_empty();
     let letter = |c: &Change| c.status();
     for change in &staged {
@@ -258,45 +360,8 @@ pub fn status(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
         writeln!(io.out, "\nNo commits yet\n")?;
     }
     if let (Some(up), Some(state)) = (&upstream, tracking) {
-        let up = shorten(up);
-        let commits = |n: usize| if n == 1 { "commit" } else { "commits" };
-        match state {
-            None => {
-                writeln!(
-                    io.out,
-                    "Your branch is based on '{up}', but the upstream is gone."
-                )?;
-                writeln!(io.out, "  (use \"git branch --unset-upstream\" to fixup)")?;
-            }
-            Some((0, 0)) => writeln!(io.out, "Your branch is up to date with '{up}'.")?,
-            Some((ahead, 0)) => {
-                writeln!(
-                    io.out,
-                    "Your branch is ahead of '{up}' by {ahead} {}.",
-                    commits(ahead)
-                )?;
-                writeln!(io.out, "  (use \"git push\" to publish your local commits)")?;
-            }
-            Some((0, behind)) => {
-                writeln!(
-                    io.out,
-                    "Your branch is behind '{up}' by {behind} {}, and can be fast-forwarded.",
-                    commits(behind)
-                )?;
-                writeln!(io.out, "  (use \"git pull\" to update your local branch)")?;
-            }
-            Some((ahead, behind)) => {
-                writeln!(io.out, "Your branch and '{up}' have diverged,")?;
-                writeln!(
-                    io.out,
-                    "and have {ahead} and {behind} different commits each, respectively."
-                )?;
-                writeln!(
-                    io.out,
-                    "  (use \"git pull\" if you want to integrate the remote branch with yours)"
-                )?;
-            }
-        }
+        io.out
+            .write_all(tracking_text(shorten(up), state).as_bytes())?;
         writeln!(io.out)?;
     }
     let label = |status: char| match status {

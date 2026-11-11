@@ -49,6 +49,14 @@ pub struct Work<'r, 'a> {
     /// The host has yet to answer something the scan asked: the scan went on, to ask
     /// for the rest in the same run, and the run is thrown away.
     blocked: Cell<bool>,
+    /// What the command will have written by the time its changes are carried out: a
+    /// path's mode and blob, or None where the file goes. A file named here is
+    /// compared as that, not as the file system has it now.
+    pub after: HashMap<Vec<u8>, Option<(u32, Oid)>>,
+    /// The entries whose files had to be read to be compared though the index had
+    /// their size and time: with what the file system says of one that holds what
+    /// the entry does, None for one that changed.
+    pub noted: RefCell<Vec<(Vec<u8>, Option<Metadata>)>>,
 }
 
 impl<'r, 'a> Work<'r, 'a> {
@@ -86,6 +94,8 @@ impl<'r, 'a> Work<'r, 'a> {
             seen: RefCell::default(),
             scanned: Cell::new(false),
             blocked: Cell::new(false),
+            after: HashMap::new(),
+            noted: RefCell::default(),
         })
     }
 
@@ -131,21 +141,121 @@ impl<'r, 'a> Work<'r, 'a> {
         })
     }
 
+    /// What the file system says of a path of the worktree, as the scan for untracked
+    /// files saw it or as it is now.
+    pub fn meta(&self, path: &[u8]) -> Res<Option<Metadata>> {
+        if let Some(meta) = self.seen.borrow().get(path) {
+            return Ok(Some(*meta));
+        }
+        Ok(self.repo.fs.stat_opt(&join(&self.root, path), false)?)
+    }
+
+    /// A file of the worktree byte for byte, when there is one.
+    pub fn file_raw(&self, path: &[u8], index_mode: u32) -> Res<Option<(File, Metadata)>> {
+        let Some(meta) = self.meta(path)? else {
+            return Ok(None);
+        };
+        if !matches!(meta.kind, FileKind::File | FileKind::Symlink) {
+            return Ok(None);
+        }
+        let file = self.read(path, meta.kind, meta.mode, index_mode)?;
+        Ok(Some((file, meta)))
+    }
+
+    /// A file of the worktree as the index would hold it: its mode and content, and
+    /// what the file system said of it before it was read.
+    pub fn file(&self, path: &[u8], index_mode: u32) -> Res<Option<(File, Metadata)>> {
+        let Some((file, meta)) = self.file_raw(path, index_mode)? else {
+            return Ok(None);
+        };
+        if self.converts
+            && meta.kind == FileKind::File
+            && let Some(data) = &file.data
+            && data.windows(2).any(|w| w == b"\r\n")
+            && !super::patch::is_binary(data)
+        {
+            return Err(Error::Lacks(
+                format!(
+                    "'{}' has CRLF line endings in a repository that converts them",
+                    String::from_utf8_lossy(path)
+                ),
+                "git that converts line endings on the way in",
+            ));
+        }
+        Ok(Some((file, meta)))
+    }
+
+    /// Files written to the worktree would need more than their blobs' bytes: line
+    /// endings, keywords or another encoding.
+    pub fn smudges(&self) -> Res<()> {
+        let config = &self.repo.config;
+        let mut converts = config
+            .get("core.autocrlf")
+            .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            || config
+                .get("core.eol")
+                .is_some_and(|v| v.eq_ignore_ascii_case("crlf"));
+        for path in [
+            join(&self.root, b".gitattributes"),
+            join(&self.repo.common_dir, b"info/attributes"),
+        ] {
+            if let Some(text) = self.repo.fs.read_opt(&path)? {
+                let text = String::from_utf8_lossy(&text);
+                converts |= text.split_whitespace().any(|word| {
+                    matches!(word, "eol=crlf" | "ident" | "export-subst")
+                        || word.starts_with("working-tree-encoding")
+                });
+            }
+        }
+        if converts {
+            return Err(Error::Lacks(
+                "this repository converts files on the way out".to_string(),
+                "git that writes CRLF line endings, keywords or other encodings",
+            ));
+        }
+        Ok(())
+    }
+
     /// How a tracked file is, compared with its index entry.
     pub fn state(&self, entry: &IndexEntry) -> Res<State> {
+        Ok(self.state_meta(entry)?.0)
+    }
+
+    /// The same, with what the file system said of the file before it was read.
+    pub fn state_meta(&self, entry: &IndexEntry) -> Res<(State, Option<Metadata>)> {
+        if let Some(after) = self.after.get(&entry.path) {
+            let state = match *after {
+                None => State::Gone,
+                Some((mode, oid))
+                    if oid == entry.oid && mode == entry.mode && !entry.intent_to_add =>
+                {
+                    State::Same
+                }
+                Some((mode, oid)) => State::Changed(File {
+                    mode,
+                    oid,
+                    data: None,
+                }),
+            };
+            return Ok((state, None));
+        }
         let seen = self.seen.borrow().get(&entry.path).copied();
         let meta = match seen {
             Some(meta) => meta,
             // The scan passed every file of a directory that is there.
-            None if self.scanned.get() && !self.blocked.get() => return Ok(State::Gone),
+            None if self.scanned.get() && !self.blocked.get() => return Ok((State::Gone, None)),
             None => {
                 let full = join(&self.root, &entry.path);
                 match self.repo.fs.stat_opt(&full, false)? {
                     Some(meta) => meta,
-                    None => return Ok(State::Gone),
+                    None => return Ok((State::Gone, None)),
                 }
             }
         };
+        Ok((self.compare(entry, &meta)?, Some(meta)))
+    }
+
+    fn compare(&self, entry: &IndexEntry, meta: &Metadata) -> Res<State> {
         if entry.mode == 0o160000 {
             // A submodule: its own repository says what it is at.
             return Ok(if meta.kind == FileKind::Dir {
@@ -168,9 +278,12 @@ impl<'r, 'a> Work<'r, 'a> {
         // written (git's racy check): the content is the entry's.
         let secs = meta.mtime_ns.div_euclid(1_000_000_000);
         let nanos = meta.mtime_ns.rem_euclid(1_000_000_000);
+        // An entry of no size for a blob that has one was marked as changed.
+        let marked = entry.size == 0 && entry.oid != blob_oid(b"");
         let recorded = secs == i64::from(entry.mtime.0)
             && (entry.mtime.1 == 0 || i64::from(entry.mtime.1) == nanos)
             && meta.size == u64::from(entry.size)
+            && !marked
             && secs < self.index.written.div_euclid(1_000_000_000);
         if recorded && mode_same && !entry.intent_to_add {
             return Ok(State::Same);
@@ -209,7 +322,13 @@ impl<'r, 'a> Work<'r, 'a> {
             file.data = Some(Rc::new(plain));
         }
         if file.oid == entry.oid && file.mode == entry.mode && !entry.intent_to_add {
+            self.noted
+                .borrow_mut()
+                .push((entry.path.clone(), Some(*meta)));
             return Ok(State::Same);
+        }
+        if secs == i64::from(entry.mtime.0) && meta.size == u64::from(entry.size) {
+            self.noted.borrow_mut().push((entry.path.clone(), None));
         }
         Ok(State::Changed(file))
     }
@@ -469,7 +588,7 @@ impl<'r, 'a> Work<'r, 'a> {
             .map(|at| self.index.entries[at].mode)
     }
 
-    fn tracked_under(&self, dir: &[u8]) -> bool {
+    pub fn tracked_under(&self, dir: &[u8]) -> bool {
         let mut prefix = dir.to_vec();
         prefix.push(b'/');
         let at = self

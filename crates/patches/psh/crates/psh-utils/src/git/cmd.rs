@@ -7,6 +7,7 @@ use super::repo::{Entry, RefValue, Repo};
 use super::rev;
 use super::store::{Kind, Oid, join};
 use super::wild::wildmatch;
+use super::write::Edit;
 use super::{Error, Git, Io, Res, option, writes};
 
 pub fn dispatch(git: &Git<'_>, io: &mut Io<'_>, command: &str, args: &[String]) -> Res<i32> {
@@ -30,11 +31,20 @@ pub fn dispatch(git: &Git<'_>, io: &mut Io<'_>, command: &str, args: &[String]) 
         "blame" | "annotate" => super::blame::blame(git, io, args),
         "grep" => super::extra::grep(git, io, args),
         "describe" => super::extra::describe(git, io, args),
-        "stash" => super::extra::stash(git, io, args),
+        "stash" => super::stash::stash(git, io, args),
+        "add" | "stage" => super::stage::add(git, io, args),
+        "rm" => super::stage::rm(git, io, args),
+        "mv" => super::stage::mv(git, io, args),
+        "reset" => super::stage::reset(git, io, args),
+        "restore" => super::stage::restore(git, io, args),
+        "commit" => super::commit::commit(git, io, args),
+        "checkout" => super::checkout::checkout(git, io, args),
+        "switch" => super::checkout::switch(git, io, args),
+        "clean" => super::stage::clean(git, io, args),
         "worktree" => super::extra::worktree(git, io, args),
         _ => Err(Error::Lacks(
             format!("'{command}' is not one of its commands"),
-            "git beyond the local read commands",
+            "git beyond its local commands",
         )),
     }
 }
@@ -778,7 +788,7 @@ fn branch(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
             _ if arg.starts_with("--sort") || arg.starts_with("--color") => {
                 return Err(option("branch", arg));
             }
-            _ if arg.starts_with('-') => return Err(writes("branch")),
+            _ if arg.starts_with('-') => return super::commit::branch(git, io, args),
             _ => patterns.push(arg.to_string()),
         }
         i += 1;
@@ -798,7 +808,7 @@ fn branch(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
         || merged.is_some()
         || format.is_some();
     if !patterns.is_empty() && !listing {
-        return Err(writes("branch"));
+        return super::commit::branch(git, io, args);
     }
     let head = git.repo.head()?;
     struct Row {
@@ -1013,13 +1023,13 @@ fn tag(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
             a if a.starts_with("--sort") || a.starts_with("-n") || a.starts_with("--format") => {
                 return Err(option("tag", a));
             }
-            a if a.starts_with('-') => return Err(writes("tag")),
+            a if a.starts_with('-') => return super::commit::tag(git, io, args),
             a => patterns.push(a.to_string()),
         }
         i += 1;
     }
     if !list {
-        return Err(writes("tag"));
+        return super::commit::tag(git, io, args);
     }
     for (name, oid) in git.repo.refs("refs/tags/")? {
         let short = shorten(&name);
@@ -1115,52 +1125,100 @@ fn remote(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
             ),
             "git that reaches other repositories",
         )),
+        ["add", name, url] => {
+            if remote_names(&git.repo).iter().any(|n| n == name) {
+                io.warn(&format!("error: remote {name} already exists.\n"));
+                return Ok(3);
+            }
+            if !super::write::valid_ref(&format!("refs/remotes/{name}")) {
+                return Err(Error::Fatal(format!("'{name}' is not a valid remote name")));
+            }
+            let fetch = format!("+refs/heads/*:refs/remotes/{name}/*");
+            remote_config(
+                git,
+                &[
+                    (format!("remote.{name}.url"), Edit::Set(url)),
+                    (format!("remote.{name}.fetch"), Edit::Add(&fetch)),
+                ],
+            )?;
+            Ok(0)
+        }
+        ["set-url", name, url] => {
+            if !remote_names(&git.repo).iter().any(|n| n == name) {
+                io.warn(&format!("error: No such remote '{name}'\n"));
+                return Ok(2);
+            }
+            remote_config(git, &[(format!("remote.{name}.url"), Edit::Set(url))])?;
+            Ok(0)
+        }
+        ["remove" | "rm", name] => {
+            if !remote_names(&git.repo).iter().any(|n| n == name) {
+                io.warn(&format!("error: No such remote: '{name}'\n"));
+                return Ok(2);
+            }
+            let mut edits = vec![(format!("remote.{name}"), Edit::RemoveSection)];
+            // The branches that followed it follow nothing.
+            for (key, value) in &git.repo.config.entries {
+                if let Some(branch) = key
+                    .strip_prefix("branch.")
+                    .and_then(|k| k.strip_suffix(".remote"))
+                    && value == name
+                {
+                    edits.push((format!("branch.{branch}.remote"), Edit::Unset));
+                    edits.push((format!("branch.{branch}.merge"), Edit::Unset));
+                }
+            }
+            remote_config(git, &edits)?;
+            let prefix = format!("refs/remotes/{name}/");
+            let refs = git.repo.refs(&prefix)?;
+            let names: Vec<&str> = refs.iter().map(|(full, _)| full.as_str()).collect();
+            for full in &names {
+                git.remove_loose(full);
+            }
+            git.remove_loose(&format!("{prefix}HEAD"));
+            git.delete_packed(&names)?;
+            Ok(0)
+        }
         _ => Err(writes("remote")),
     }
 }
 
+/// Edits of the repository's own configuration file, one after the other.
+fn remote_config(git: &Git<'_>, edits: &[(String, Edit<'_>)]) -> Res<()> {
+    let path = join(&git.repo.common_dir, b"config");
+    let text = git.repo.fs.read_opt(&path)?.unwrap_or_default();
+    let mut text = String::from_utf8_lossy(&text).into_owned();
+    for (key, edit) in edits {
+        let edit = match edit {
+            Edit::Set(value) => Edit::Set(value),
+            Edit::Add(value) => Edit::Add(value),
+            Edit::Unset => Edit::Unset,
+            Edit::RemoveSection => Edit::RemoveSection,
+            Edit::RenameSection(to) => Edit::RenameSection(to),
+        };
+        if let Some(next) = super::write::edit_config(&text, key, edit) {
+            text = next;
+        }
+    }
+    git.write(path, text.into_bytes());
+    Ok(())
+}
+
 fn config(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
-    let mut mode = "get";
-    let mut rest = Vec::new();
-    for arg in args {
-        match arg.as_str() {
-            "--get" | "get" if rest.is_empty() => mode = "get",
-            "--get-all" => mode = "all",
-            "--get-regexp" => mode = "regexp",
-            "-l" | "--list" | "list" if rest.is_empty() => mode = "list",
-            "--local" | "--global" | "--system" | "--worktree" | "--null" | "-z"
-            | "--show-origin" | "--show-scope" | "--type" | "--bool" | "--int" | "--default"
-            | "--name-only" | "--includes" => return Err(option("config", arg)),
-            a if a.starts_with('-') => return Err(writes("config")),
-            a => rest.push(a),
-        }
-    }
-    match (mode, rest.as_slice()) {
-        ("list", []) => {
-            for (key, value) in &git.repo.config.entries {
-                writeln!(io.out, "{key}={value}")?;
-            }
-            Ok(0)
-        }
-        ("get", [key]) => match git.repo.config.get(&super::config_key(key)) {
-            Some(value) => {
-                writeln!(io.out, "{value}")?;
-                Ok(0)
-            }
-            None => Ok(1),
-        },
-        ("all", [key]) => {
-            let key = super::config_key(key);
-            let mut found = 1;
-            for (k, value) in &git.repo.config.entries {
-                if *k == key {
-                    writeln!(io.out, "{value}")?;
-                    found = 0;
-                }
-            }
-            Ok(found)
-        }
-        ("regexp", [_]) => Err(option("config", "--get-regexp")),
-        _ => Err(writes("config")),
-    }
+    let env = |name: &[u8]| -> Option<Vec<u8>> {
+        git.env
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    };
+    let path = join(&git.repo.common_dir, b"config");
+    let mut push = |op: super::write::Op| git.op(op);
+    super::setup::config(
+        git.repo.fs,
+        &env,
+        Some((&path, &git.repo.config)),
+        args,
+        io,
+        &mut push,
+    )
 }

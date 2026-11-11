@@ -108,7 +108,9 @@ pub fn run() -> ExitCode {
 
 pub fn run_with(clients: ModelClients) -> ExitCode {
     #[cfg(unix)]
-    if let Some(code) = nanocode_psh::serve_if_requested(psh::run) {
+    if let Some(code) = nanocode_psh::serve_if_requested(|arguments| {
+        psh::run_with(arguments, &[nanocode::python::UTILITY])
+    }) {
         return code;
     }
     let entered = std::time::Instant::now();

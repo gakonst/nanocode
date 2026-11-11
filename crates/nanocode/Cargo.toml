@@ -32,6 +32,7 @@ nanocode-code-mode = { path = "../runtime/code-mode", version = "0.7.0"   }
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 serde_json.workspace = true
 nanocode-home.workspace = true
+nanocode-python.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net", "fs"] }
 nanocode-computer = { workspace = true, optional = true }
 nanocode-store-jsonl.workspace = true

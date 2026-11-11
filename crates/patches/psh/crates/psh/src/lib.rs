@@ -152,6 +152,7 @@ fn settings(env: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (psh_engine::util::UtilPolicy,
         Some(env.remove(i).1)
     };
     let mut utilities = psh_utils::policy(false);
+    utilities.entries = crate::utilities();
     // PSH_UTILS_FORCE (D1192): utilities that run in-process even in F/W mode; the
     // variable is psh's, so it is not passed on.
     if let Some(v) = take(psh_utils::FORCE_VAR) {
@@ -175,6 +176,26 @@ fn settings(env: &mut Vec<(Vec<u8>, Vec<u8>)>) -> (psh_engine::util::UtilPolicy,
 fn usage_error(msg: &str) -> ExitCode {
     eprintln!("psh: {msg}\n{}", cli::usage_hint());
     ExitCode::from(2)
+}
+
+/// The utilities the embedding program adds to psh-utils' registry ([`run_with`],
+/// nanocode's addition), with the registry before them.
+static UTILITIES: std::sync::OnceLock<Vec<psh_engine::util::UtilEntry>> =
+    std::sync::OnceLock::new();
+
+fn utilities() -> &'static [psh_engine::util::UtilEntry] {
+    UTILITIES.get().map_or(psh_utils::REGISTRY, Vec::as_slice)
+}
+
+/// [`run`] with `extra` utilities after psh's own (nanocode's addition): `python3`,
+/// which like any `PathFallback` utility runs only when `PATH` has no such program.
+/// The first call decides the registry for the process.
+pub fn run_with(
+    args: Vec<std::ffi::OsString>,
+    extra: &[psh_engine::util::UtilEntry],
+) -> ExitCode {
+    UTILITIES.get_or_init(|| psh_utils::REGISTRY.iter().chain(extra).copied().collect());
+    run(args)
 }
 
 /// What `psh ARGS…` does (the arguments after the program's name), to its exit status.

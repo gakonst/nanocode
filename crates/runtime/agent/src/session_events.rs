@@ -455,7 +455,7 @@ async fn run(
     };
     let _ = outcome.set(result.clone());
     drains.close();
-    while let Ok(drain) = drains.try_recv() {
+    while let Some(drain) = drains.recv().await {
         waiting.push(drain);
     }
     answer(&mut waiting, &result);

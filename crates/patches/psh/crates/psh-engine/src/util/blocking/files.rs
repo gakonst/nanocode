@@ -41,6 +41,22 @@ fn too_large() -> io::Error {
 }
 
 impl SyncFiles {
+    /// The process's own file system through `native`: what [`SyncCtx::files`] gives on
+    /// a worker thread, for a thread the caller keeps.
+    pub fn on(native: NativePathFn) -> SyncFiles {
+        SyncFiles {
+            backend: Backend::Native(native),
+        }
+    }
+
+    /// The OS path function, when these are the process's own files.
+    pub fn native(&self) -> Option<NativePathFn> {
+        match &self.backend {
+            Backend::Native(native) => Some(*native),
+            Backend::Host(_) => None,
+        }
+    }
+
     /// `stat` (`follow`) or `lstat`.
     pub fn stat(&self, path: &[u8], follow: bool) -> io::Result<Metadata> {
         match &self.backend {

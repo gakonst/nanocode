@@ -19,6 +19,8 @@
   const nativeCatalog = native("__nanocodeCatalog");
   const definitionsJson = native("__nanocodeDefinitions");
   const preludeSource = native("__nanocodePrelude");
+  const preludeAtSetup = native("__nanocodePreludeAtSetup");
+  const nativeQuiet = native("__nanocodeQuiet");
   const nativeBytes = {
     put: native("__nanocodeBytesPut"),
     take: native("__nanocodeBytesTake"),
@@ -584,10 +586,14 @@
       }
     };
     defineGlobals(cellGlobals);
+    if (preludeSource && preludeAtSetup) {
+      defineGlobals(preludeSource(tools, (name, input) => invokeTool(name, input, true)) ?? {});
+      if (!nativeQuiet()) throw new Error("the prelude left work queued");
+    }
     return async function runCell(source) {
       pump();
       try {
-        if (preludeSource) {
+        if (preludeSource && !preludeAtSetup) {
           defineGlobals(preludeSource(tools, (name, input) => invokeTool(name, input, true)) ?? {});
         }
         const script = new AsyncFunction(source);

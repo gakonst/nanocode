@@ -95,6 +95,7 @@ const VALUE: u32 = 9;
 const SETTLED: u32 = 10;
 pub(crate) const NEXT: u32 = 11;
 const CATALOG: u32 = 12;
+const QUIET: u32 = 13;
 
 const HOST_FNS: [(u32, &str); 11] = [
     (TOOL, "__nanocodeTool"),
@@ -116,7 +117,17 @@ pub(crate) enum Unprepared {
     Bootstrap(String),
 }
 
-fn build(tools: &CellTools, prelude: Option<&str>) -> Result<Snapshot, Unprepared> {
+#[derive(Clone, Copy, PartialEq)]
+enum PreludeRuns {
+    AtSetup,
+    InCell,
+}
+
+fn build(
+    tools: &CellTools,
+    prelude: Option<&str>,
+    runs: PreludeRuns,
+) -> Result<Snapshot, Unprepared> {
     let values = CODE_VALUES
         .split_once("export const")
         .ok_or_else(|| {
@@ -129,7 +140,12 @@ fn build(tools: &CellTools, prelude: Option<&str>) -> Result<Snapshot, Unprepare
             "__nanocodeDefinitions",
             Data::from(tools.definitions.as_str()),
         )
-        .host_fn(HostFn::asynchronous(NEXT, "__nanocodeNext"));
+        .global(
+            "__nanocodePreludeAtSetup",
+            Data::Bool(runs == PreludeRuns::AtSetup),
+        )
+        .host_fn(HostFn::asynchronous(NEXT, "__nanocodeNext"))
+        .setup_probe(HostFn::sync(QUIET, "__nanocodeQuiet"));
     for (id, name) in HOST_FNS {
         builder = builder.host_fn(HostFn::sync(id, name));
     }
@@ -202,6 +218,31 @@ impl Prepared {
     }
 }
 
+fn with_prelude(tools: &CellTools, prelude: Option<&Arc<str>>) -> Result<Snapshot, Unprepared> {
+    static IN_CELL: OnceLock<Atom<Vec<Weak<str>>>> = OnceLock::new();
+    let Some(prelude) = prelude else {
+        return build(tools, None, PreludeRuns::InCell);
+    };
+    let in_cell = IN_CELL.get_or_init(Atom::default);
+    let known = in_cell.read(|preludes| {
+        preludes
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|known| Arc::ptr_eq(&known, prelude) || *known == **prelude)
+    });
+    if !known {
+        match build(tools, Some(prelude), PreludeRuns::AtSetup) {
+            Ok(snapshot) => return Ok(snapshot),
+            Err(Unprepared::Prelude(message)) => return Err(Unprepared::Prelude(message)),
+            Err(Unprepared::Bootstrap(_)) => in_cell.update(|preludes| {
+                preludes.retain(|known| known.strong_count() > 0);
+                preludes.push(Arc::downgrade(prelude));
+            }),
+        }
+    }
+    build(tools, Some(prelude), PreludeRuns::InCell)
+}
+
 pub(crate) fn prepared(
     tools: &Arc<CellTools>,
     prelude: Option<&Arc<str>>,
@@ -224,7 +265,7 @@ pub(crate) fn prepared(
     let prepared = Arc::new(Prepared {
         tools: Arc::downgrade(tools),
         prelude: prelude.cloned(),
-        snapshot: build(tools, prelude.map(|prelude| &**prelude))?,
+        snapshot: with_prelude(tools, prelude)?,
         spares: (0..spares).map(|_| Slot::default()).collect(),
     });
     Ok(snapshots.update(|list| {

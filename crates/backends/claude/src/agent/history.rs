@@ -1,4 +1,4 @@
-use crate::{CacheLayout, ClaudeError, ContentBlock, Message, MessageDigests, WireMessage};
+use crate::{ClaudeError, ContentBlock, Message, MessageDigests, WireMessage};
 use nanocode_durability::EncodedPayload;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::value::RawValue;
@@ -19,7 +19,6 @@ struct Entry {
     wire: OnceLock<Box<str>>,
     json: OnceLock<Arc<str>>,
     digests: OnceLock<MessageDigests>,
-    cache: OnceLock<CacheLayout>,
     images: OnceLock<usize>,
     companions: OnceLock<bool>,
     record: OnceLock<EncodedPayload>,
@@ -32,7 +31,6 @@ impl Clone for Entry {
             wire: OnceLock::new(),
             json: OnceLock::new(),
             digests: OnceLock::new(),
-            cache: OnceLock::new(),
             images: OnceLock::new(),
             companions: OnceLock::new(),
             record: OnceLock::new(),
@@ -46,7 +44,6 @@ impl HistoryMessage {
         entry.wire = OnceLock::new();
         entry.json = OnceLock::new();
         entry.digests = OnceLock::new();
-        entry.cache = OnceLock::new();
         entry.images = OnceLock::new();
         entry.companions = OnceLock::new();
         entry.record = OnceLock::new();
@@ -79,7 +76,6 @@ impl HistoryMessage {
             wire: OnceLock::new(),
             json: OnceLock::from(json),
             digests: OnceLock::new(),
-            cache: OnceLock::new(),
             images: OnceLock::new(),
             companions: OnceLock::new(),
             record: OnceLock::from(record),
@@ -114,7 +110,6 @@ impl From<Message> for HistoryMessage {
             wire: OnceLock::new(),
             json: OnceLock::new(),
             digests: OnceLock::new(),
-            cache: OnceLock::new(),
             images: OnceLock::new(),
             companions: OnceLock::new(),
             record: OnceLock::new(),
@@ -193,14 +188,6 @@ impl WireMessage for HistoryMessage {
         let digests = MessageDigests::of(&self.encoded(false, encode)?);
         Ok(*self.0.digests.get_or_init(|| digests))
     }
-
-    fn cache_layout(&self) -> Result<Cow<'_, CacheLayout>, ClaudeError> {
-        if let Some(layout) = self.0.cache.get() {
-            return Ok(Cow::Borrowed(layout));
-        }
-        let layout = CacheLayout::of(&self.0.message)?;
-        Ok(Cow::Borrowed(self.0.cache.get_or_init(|| layout)))
-    }
 }
 
 #[derive(Clone)]
@@ -264,7 +251,7 @@ static ADMITTED_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct AdmittedIds {
     order: imbl::Vector<Arc<str>>,
-    positions: nanocode_sync::Map<Arc<str>, usize>,
+    positions: Option<nanocode_sync::Map<Arc<str>, usize>>,
     epoch: u64,
 }
 
@@ -272,7 +259,7 @@ impl Default for AdmittedIds {
     fn default() -> Self {
         Self {
             order: imbl::Vector::new(),
-            positions: nanocode_sync::Map::new(),
+            positions: None,
             epoch: ADMITTED_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
     }
@@ -283,25 +270,24 @@ impl Clone for AdmittedIds {
         Self {
             order: self.order.clone(),
             positions: self.positions.clone(),
-            ..Self::default()
+            epoch: ADMITTED_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
     }
 }
 
 impl PartialEq for AdmittedIds {
     fn eq(&self, other: &Self) -> bool {
-        self.order.len() == other.order.len()
-            && self.order.iter().all(|id| other.positions.contains_key(id))
+        self.order.len() == other.order.len() && self.order.iter().all(|id| other.contains(id))
     }
 }
 
 impl AdmittedIds {
     pub(super) fn contains(&self, id: &str) -> bool {
-        self.positions.contains_key(id)
+        self.position(id).is_some()
     }
 
     pub(super) fn position(&self, id: &str) -> Option<usize> {
-        self.positions.get(id).copied()
+        self.positions.as_ref()?.get(id).copied()
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -321,8 +307,10 @@ impl AdmittedIds {
     }
 
     pub(super) fn insert(&mut self, id: Arc<str>) {
-        if !self.positions.contains_key(&id) {
-            self.positions.insert(Arc::clone(&id), self.order.len());
+        if !self.contains(&id) {
+            self.positions
+                .get_or_insert_default()
+                .insert(Arc::clone(&id), self.order.len());
             self.order.push_back(id);
         }
     }

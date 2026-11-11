@@ -596,29 +596,17 @@ impl CacheControl {
 
 const CACHE_BREAKPOINTS: usize = 4;
 
-#[doc(hidden)]
-#[derive(Clone, Debug, Default)]
-pub struct CacheLayout {
+#[derive(Default)]
+struct CacheLayout {
     explicit: Vec<CacheTtl>,
 
     last_eligible: Option<Option<CacheTtl>>,
 }
 
 impl CacheLayout {
-    pub fn of(message: &Message) -> Result<Self, ClaudeError> {
-        let mut layout = Self::default();
-        for block in &message.content {
-            let (control, eligible) = block.cache_slot();
-            layout.block(control, eligible)?;
-        }
-        Ok(layout)
-    }
-
-    fn extend(&mut self, blocks: &Self) {
-        self.explicit.extend_from_slice(&blocks.explicit);
-        if blocks.last_eligible.is_some() {
-            self.last_eligible = blocks.last_eligible;
-        }
+    fn marked(&mut self, ttl: Option<CacheTtl>) {
+        self.explicit.extend(ttl);
+        self.last_eligible = Some(ttl);
     }
 
     fn block(&mut self, control: Option<&Value>, eligible: bool) -> Result<(), ClaudeError> {
@@ -629,7 +617,7 @@ impl CacheLayout {
                         "cache_control cannot target thinking or empty text blocks".into(),
                     ));
                 }
-                serde_json::from_value::<CacheControl>(value.clone())
+                CacheControl::deserialize(value)
                     .map(|control| control.effective_ttl())
                     .map_err(|_| ClaudeError::Protocol("invalid cache_control type or TTL".into()))
             })
@@ -696,10 +684,6 @@ pub trait WireMessage {
     ) -> Result<MessageDigests, ClaudeError> {
         Ok(MessageDigests::of(&self.encoded(false, encode)?))
     }
-
-    fn cache_layout(&self) -> Result<std::borrow::Cow<'_, CacheLayout>, ClaudeError> {
-        CacheLayout::of(self.message()).map(std::borrow::Cow::Owned)
-    }
 }
 
 #[doc(hidden)]
@@ -756,10 +740,6 @@ impl<T: WireMessage + ?Sized> WireMessage for &T {
     ) -> Result<MessageDigests, ClaudeError> {
         (**self).digests(encode)
     }
-
-    fn cache_layout(&self) -> Result<std::borrow::Cow<'_, CacheLayout>, ClaudeError> {
-        (**self).cache_layout()
-    }
 }
 
 impl WireMessage for std::borrow::Cow<'_, Message> {
@@ -776,19 +756,14 @@ fn validate_cache_layout<M: WireMessage>(
 ) -> Result<usize, ClaudeError> {
     let mut layout = CacheLayout::default();
     for tool in tools {
-        let client = match tool {
-            ClaudeToolSpec::Client(tool) => tool
-                .cache_control
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?,
-            ClaudeToolSpec::Server(_) => None,
-        };
-        let control = match tool {
-            ClaudeToolSpec::Server(tool) => tool.options.get("cache_control"),
-            ClaudeToolSpec::Client(_) => client.as_ref(),
-        };
-        layout.block(control, true)?;
+        match tool {
+            ClaudeToolSpec::Client(tool) => {
+                layout.marked(tool.cache_control.as_ref().map(CacheControl::effective_ttl))
+            }
+            ClaudeToolSpec::Server(tool) => {
+                layout.block(tool.options.get("cache_control"), true)?;
+            }
+        }
     }
     match system {
         Some(Value::String(text)) => layout.block(None, !text.is_empty())?,
@@ -800,7 +775,10 @@ fn validate_cache_layout<M: WireMessage>(
         _ => {}
     }
     for message in messages {
-        layout.extend(&*message.cache_layout()?);
+        for block in &message.message().content {
+            let (control, eligible) = block.cache_slot();
+            layout.block(control, eligible)?;
+        }
     }
     layout.validate(automatic)
 }

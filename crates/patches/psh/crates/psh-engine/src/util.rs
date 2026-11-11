@@ -391,6 +391,12 @@ impl UtilFile {
 }
 
 impl UtilCtx<'_> {
+    /// What the host says of itself and of the user (`uname`, `id`; nanocode's
+    /// addition).
+    pub fn host_info(&self) -> crate::host::HostInfo {
+        self.vp.host().info()
+    }
+
     /// The name the utility was called by (`argv[0]`), for messages.
     pub fn name(&self) -> &str {
         &self.name

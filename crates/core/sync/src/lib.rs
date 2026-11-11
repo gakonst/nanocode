@@ -15,6 +15,7 @@ mod shared;
 mod splice;
 #[cfg(target_family = "wasm")]
 mod swap;
+mod waits;
 mod wakes;
 mod weighed;
 
@@ -41,6 +42,7 @@ pub use splice::{Duplex, pipe, splice};
 use swap::Enclosed;
 #[cfg(target_family = "wasm")]
 pub use swap::{Guard, Swap, SwapOption};
+pub use waits::{SlowWait, slow_waits};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
 pub use weighed::Weighed;
 
@@ -590,6 +592,7 @@ impl Sequencer {
 pub struct Owned<T> {
     sequencer: Sequencer,
     value: Slot<T>,
+    holder: Arc<waits::Holder>,
 }
 
 impl<T: Default> Default for Owned<T> {
@@ -627,6 +630,7 @@ impl<T> Drop for Held<'_, T> {
         if let Some(value) = self.value.take() {
             self.owner.value.put(value);
         }
+        self.owner.holder.release();
     }
 }
 
@@ -659,6 +663,7 @@ impl<T> Drop for Leased<T> {
         if let Some(value) = self.value.take() {
             self.owner.value.put(value);
         }
+        self.owner.holder.release();
     }
 }
 
@@ -667,10 +672,12 @@ impl<T> Owned<T> {
         Self {
             sequencer: Sequencer::new(),
             value: Slot::new(Some(value)),
+            holder: waits::Holder::registered(),
         }
     }
 
-    fn held(&self, turn: Turn) -> Held<'_, T> {
+    fn held(&self, turn: Turn, at: &'static std::panic::Location<'static>) -> Held<'_, T> {
+        self.holder.take(at);
         Held {
             owner: self,
             value: self.value.take(),
@@ -678,16 +685,33 @@ impl<T> Owned<T> {
         }
     }
 
-    pub async fn acquire(&self) -> Held<'_, T> {
-        let turn = self.sequencer.enter().await;
-        self.held(turn)
+    #[track_caller]
+    pub fn acquire(&self) -> impl Future<Output = Held<'_, T>> + '_ {
+        let at = std::panic::Location::caller();
+        async move {
+            let turn = match self.sequencer.try_enter() {
+                Some(turn) => turn,
+                None => {
+                    let _waiting = waits::Wait::start(at, &self.holder);
+                    self.sequencer.enter().await
+                }
+            };
+            self.held(turn, at)
+        }
     }
 
+    #[track_caller]
     pub fn try_acquire(&self) -> Option<Held<'_, T>> {
-        self.sequencer.try_enter().map(|turn| self.held(turn))
+        let at = std::panic::Location::caller();
+        self.sequencer.try_enter().map(|turn| self.held(turn, at))
     }
 
-    fn leased(self: Arc<Self>, turn: Turn) -> Leased<T> {
+    fn leased(
+        self: Arc<Self>,
+        turn: Turn,
+        at: &'static std::panic::Location<'static>,
+    ) -> Leased<T> {
+        self.holder.take(at);
         let value = self.value.take();
         Leased {
             owner: self,
@@ -696,14 +720,26 @@ impl<T> Owned<T> {
         }
     }
 
-    pub async fn acquire_owned(self: Arc<Self>) -> Leased<T> {
-        let turn = self.sequencer.enter().await;
-        self.leased(turn)
+    #[track_caller]
+    pub fn acquire_owned(self: Arc<Self>) -> impl Future<Output = Leased<T>> {
+        let at = std::panic::Location::caller();
+        async move {
+            let turn = match self.sequencer.try_enter() {
+                Some(turn) => turn,
+                None => {
+                    let _waiting = waits::Wait::start(at, &self.holder);
+                    self.sequencer.enter().await
+                }
+            };
+            self.leased(turn, at)
+        }
     }
 
+    #[track_caller]
     pub fn try_acquire_owned(self: Arc<Self>) -> Option<Leased<T>> {
+        let at = std::panic::Location::caller();
         let turn = self.sequencer.try_enter()?;
-        Some(self.leased(turn))
+        Some(self.leased(turn, at))
     }
 }
 

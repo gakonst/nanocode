@@ -147,6 +147,9 @@ pub(crate) struct Code {
     /// Added to line numbers: a backquote body parsed on its own counts from the
     /// line of its command.
     pub line_base: u32,
+    /// The arithmetic words of this chunk that are literal text, parsed
+    /// (`arith::literal`), by the word's span.
+    pub arith: RefCell<HashMap<(u32, u32), Rc<crate::arith::Literal>>>,
 }
 
 impl Code {

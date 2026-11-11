@@ -272,6 +272,7 @@ async fn ps4(vp: &mut Vp) -> Vec<u8> {
                     lines: std::rc::Rc::new(psh_syntax::LineIndex::from_bytes(&src)),
                     ast: std::sync::Arc::new(ast),
                     line_base: 0,
+                    arith: Default::default(),
                 });
                 let line = vp.line;
                 vp.opts.set(SetOpt::Xtrace, false);

@@ -676,11 +676,17 @@ async fn expand_part(
             emit(f, &out, quoted);
         }
         Part::Arith(w) => {
-            let (text, st) = expand_single(vp, code, w, Ctx::Word).await?;
-            if st.is_some() {
-                f.subst_status = st;
-            }
-            match crate::arith::eval(vp, &text) {
+            let value = match crate::arith::literal(code, w) {
+                Some(lit) => crate::arith::eval_literal(vp, &lit),
+                None => {
+                    let (text, st) = expand_single(vp, code, w, Ctx::Word).await?;
+                    if st.is_some() {
+                        f.subst_status = st;
+                    }
+                    crate::arith::eval(vp, &text)
+                }
+            };
+            match value {
                 Ok(v) => emit(f, v.to_string().as_bytes(), quoted),
                 Err(msg) => {
                     // An error in an arithmetic expansion abandons the command line.
@@ -810,6 +816,7 @@ pub(crate) async fn expand_sub_text(vp: &mut Vp, sub: &[u8]) -> Result<Vec<u8>, 
         lines: Rc::new(psh_syntax::LineIndex::from_bytes(ast.source_bytes())),
         ast: std::sync::Arc::new(ast),
         line_base: vp.line.saturating_sub(1),
+        arith: Default::default(),
     });
     Ok(expand_single(vp, &code, &w, Ctx::Word).await?.0)
 }

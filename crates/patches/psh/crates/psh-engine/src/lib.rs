@@ -803,6 +803,7 @@ async fn run_chunk(
                 ast: Arc::new(ast),
                 lines: lines.clone(),
                 line_base: 0,
+                arith: Default::default(),
             });
             match exec::run_list(vp, &code, root).await {
                 Ok(s) => {

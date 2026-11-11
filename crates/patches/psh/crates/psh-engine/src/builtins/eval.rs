@@ -48,6 +48,7 @@ pub(crate) async fn run_text(vp: &mut Vp, text: &[u8], line_base: u32, origin: O
                     ast: Arc::new(ast),
                     lines: lines.clone(),
                     line_base,
+                    arith: Default::default(),
                 });
                 status = exec::run_list(vp, &code, root).await?;
                 vp.status = status;

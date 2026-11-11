@@ -25,6 +25,17 @@ pub enum ArithIndex<'a> {
     Key(&'a [u8]),
 }
 
+/// A variable's value as the evaluator reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArithValue {
+    /// Unset: counts as 0.
+    Unset,
+    /// A plain decimal number ([`plain_decimal`]).
+    Num(i64),
+    /// Any other text: evaluated as arithmetic in turn.
+    Text(Vec<u8>),
+}
+
 /// What the evaluator needs from the shell.
 pub trait ArithEnv {
     /// The shell's error type (unbound variable, readonly variable, …).
@@ -41,6 +52,22 @@ pub trait ArithEnv {
         name: &[u8],
         index: Option<ArithIndex<'_>>,
     ) -> Result<Option<Vec<u8>>, Self::Error>;
+
+    /// What [`ArithEnv::get`] returns, read: an environment that can look at the value
+    /// in place overrides this and copies only text that is not a plain number.
+    fn load(
+        &mut self,
+        name: &[u8],
+        index: Option<ArithIndex<'_>>,
+    ) -> Result<ArithValue, Self::Error> {
+        Ok(match self.get(name, index)? {
+            None => ArithValue::Unset,
+            Some(v) => match plain_decimal(&v) {
+                Some(n) => ArithValue::Num(n),
+                None => ArithValue::Text(v),
+            },
+        })
+    }
 
     /// Assigns a value (the result of `=`, `+=`, `++`, …).
     fn set(
@@ -151,15 +178,14 @@ impl<E: ArithEnv> Evaluator<'_, E> {
         }
         let value = self
             .env
-            .get(&text[lv.name.range()], index)
+            .load(&text[lv.name.range()], index)
             .map_err(EvalError::Env)?;
-        let Some(value) = value else {
-            return Ok(0);
+        let value = match value {
+            ArithValue::Unset => return Ok(0),
+            // The common case: a plain decimal number needs no parse.
+            ArithValue::Num(n) => return Ok(n),
+            ArithValue::Text(value) => value,
         };
-        // The common case: a plain decimal number needs no parse.
-        if let Some(n) = plain_decimal(&value) {
-            return Ok(n);
-        }
         self.depth += 1;
         let r = self.text(&value);
         self.depth -= 1;
@@ -312,7 +338,7 @@ fn binary<E>(op: BinOp, a: i64, b: i64, rhs: &ArithExpr, text: &[u8]) -> Result<
 
 /// `[-]digits` without a leading zero (which would be octal) and short enough not to
 /// wrap: parse it directly.
-fn plain_decimal(v: &[u8]) -> Option<i64> {
+pub fn plain_decimal(v: &[u8]) -> Option<i64> {
     let (neg, digits) = match v.first() {
         Some(b'-') => (true, &v[1..]),
         _ => (false, v),

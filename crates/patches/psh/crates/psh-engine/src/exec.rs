@@ -819,17 +819,31 @@ async fn arith_command(
     prefix: &str,
     clause: bool,
 ) -> Result<Option<i64>, Unwind> {
-    let (text, _) = Box::pin(expand::expand_single(vp, code, w, Ctx::Word)).await?;
+    let lit = crate::arith::literal(code, w);
+    let expanded;
+    let text: &[u8] = match &lit {
+        Some(lit) => &lit.text,
+        None => {
+            expanded = Box::pin(expand::expand_single(vp, code, w, Ctx::Word))
+                .await?
+                .0;
+            &expanded
+        }
+    };
     if vp.opts.get(SetOpt::Xtrace) {
         // `(( x ))`: the text as written between the parentheses; a clause of
         // `for ((…))` trimmed.
-        let t: &[u8] = if clause { text.trim_ascii() } else { &text };
+        let t: &[u8] = if clause { text.trim_ascii() } else { text };
         let mut line = b"(( ".to_vec();
         line.extend_from_slice(t);
         line.extend_from_slice(b" ))");
         builtins::set::xtrace(vp, &line).await;
     }
-    match crate::arith::eval(vp, &text) {
+    let value = match &lit {
+        Some(lit) => crate::arith::eval_literal(vp, lit),
+        None => crate::arith::eval(vp, text),
+    };
+    match value {
         Ok(v) => Ok(Some(v)),
         Err(msg) => {
             vp.error(&format!("{prefix}{msg}")).await;
@@ -2217,6 +2231,7 @@ pub(crate) async fn command_subst_text(
                 lines: Rc::new(psh_syntax::LineIndex::from_bytes(script)),
                 ast: Arc::new(ast),
                 line_base: code.line(offset) - 1,
+                arith: Default::default(),
             });
             subst(vp, inner, root).await
         }

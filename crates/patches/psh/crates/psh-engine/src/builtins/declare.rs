@@ -429,6 +429,7 @@ async fn reparse_compound(
         lines: std::rc::Rc::new(psh_syntax::LineIndex::from_bytes(ast.source_bytes())),
         ast: std::sync::Arc::new(ast),
         line_base: vp.line.saturating_sub(1),
+        arith: Default::default(),
     });
     let (items, _) = crate::expand::expand_array_lit(vp, &code, &lit)
         .await

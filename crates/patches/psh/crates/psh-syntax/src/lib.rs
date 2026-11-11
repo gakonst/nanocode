@@ -38,7 +38,8 @@ pub use arith::{
     parse_arith,
 };
 pub use arith_eval::{
-    ARITH_RECURSION_LIMIT, ArithEnv, ArithIndex, EvalError, eval_arith, eval_arith_expr,
+    ARITH_RECURSION_LIMIT, ArithEnv, ArithIndex, ArithValue, EvalError, eval_arith,
+    eval_arith_expr, plain_decimal,
 };
 pub use ast::*;
 pub use bash_print::print_function_bash;

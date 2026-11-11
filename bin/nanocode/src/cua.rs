@@ -3,7 +3,7 @@ use std::{
     process::Command,
 };
 
-use nanocode::cua::{ComputerConfig, browser, browser_socket};
+use nanocode_computer_repl::{ComputerConfig, browser, browser_socket};
 
 use crate::{
     cli::{CuaArgs, CuaCommand},
@@ -44,7 +44,7 @@ fn driver() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn embedded_driver() -> Result<PathBuf> {
-    Ok(nanocode::cua::embedded_driver().ok_or_else(|| {
+    Ok(nanocode_computer_repl::embedded_driver().ok_or_else(|| {
         format!(
             "the built-in cua-driver, nanocode-cua-driver, is missing beside {}; reinstall nanocode",
             std::env::current_exe()

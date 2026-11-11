@@ -5753,7 +5753,7 @@ dependencies = [
  "async-trait",
  "nanocode-agent",
  "nanocode-agent-core",
- "nanocode-computer",
+ "nanocode-computer-repl",
  "nanocode-durability",
  "nanocode-home",
  "nanocode-process",
@@ -5979,6 +5979,8 @@ dependencies = [
  "mimalloc",
  "mpp",
  "nanocode",
+ "nanocode-agent-host",
+ "nanocode-computer-repl",
  "nanocode-home",
  "nanocode-observability",
  "nanocode-psh",
@@ -6046,7 +6048,6 @@ dependencies = [
  "atspi-common",
  "atspi-proxies",
  "base64 0.22.1",
- "base64-simd",
  "core-foundation",
  "core-foundation-sys",
  "cua-driver-core",
@@ -6055,16 +6056,30 @@ dependencies = [
  "futures-util",
  "image",
  "libc",
+ "nanocode-computer-repl",
  "nanocode-mcp",
  "nanocode-mcp-tools",
+ "nanocode-sync",
+ "nanocode-tool-contracts",
+ "serde_json",
+ "tokio",
+ "x11rb",
+ "zbus",
+]
+
+[[package]]
+name = "nanocode-computer-repl"
+version = "0.7.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "base64-simd",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-types",
  "serde",
  "serde_json",
  "tokio",
- "x11rb",
- "zbus",
 ]
 
 [[package]]

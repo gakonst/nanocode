@@ -43,6 +43,7 @@ members = [
     "crates/integrations/psh",
     "crates/integrations/mcp-tools",
     "crates/integrations/computer",
+    "crates/integrations/computer-repl",
     "crates/integrations/chatgpt-extension",
     "crates/integrations/sandbox",
     "crates/integrations/observability",
@@ -94,6 +95,7 @@ nanocode-audio = { version = "0.7.0", path = "crates/core/audio" }
 nanocode-tls = { version = "0.7.0", path = "crates/core/tls" }
 nanocode-types = { version = "0.7.0", path = "crates/core/types" }
 nanocode-computer = { version = "0.7.0", path = "crates/integrations/computer" }
+nanocode-computer-repl = { version = "0.7.0", path = "crates/integrations/computer-repl" }
 nanocode-tools = { version = "0.7.0", path = "crates/core/tools" }
 nanocode-tool-contracts = { version = "0.7.0", path = "crates/core/tool-contracts" }
 nanocode-store-jsonl = { version = "0.7.0", path = "crates/integrations/store-jsonl" }

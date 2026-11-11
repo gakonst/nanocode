@@ -674,8 +674,10 @@ async fn hand(args: HandArgs) -> Result<()> {
     };
     let mut tools = nanocode::hand::tools(directory.clone())?.into_builder();
     if args.cua {
-        let computer =
-            nanocode::ComputerTools::connect(nanocode::ComputerConfig::detect()?).await?;
+        let computer = nanocode_computer_repl::ComputerTools::connect(
+            nanocode_computer_repl::ComputerConfig::detect()?,
+        )
+        .await?;
         tools = tools.tool(computer.js()).tool(computer.reset());
     }
     let tools = tools.build()?;

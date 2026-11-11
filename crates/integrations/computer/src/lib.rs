@@ -12,7 +12,6 @@ mod linux;
 mod macos;
 mod mcp;
 mod policy;
-mod repl;
 mod state;
 mod tool;
 #[cfg(target_os = "windows")]
@@ -22,8 +21,8 @@ pub use backend::{App, Backend, Button, Capabilities, Direction, Pointer, Press,
 pub use engine::{Desktop, Engine, Step, find};
 pub use keys::{Chord, Key, Modifiers};
 pub use mcp::Mcp;
+pub use nanocode_computer_repl::*;
 pub use policy::{AppIdentity, Leases, Policy, SENSITIVE, app_key, sensitive};
-pub use repl::*;
 pub use state::{Node, Selection, render, text_range};
 pub use tool::{ACTIONS, Computer, Limits, Native, Provider, definition, step_line};
 

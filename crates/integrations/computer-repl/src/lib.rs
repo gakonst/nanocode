@@ -1,3 +1,5 @@
+#![cfg(not(target_family = "wasm"))]
+
 #[cfg(unix)]
 pub mod browser;
 
@@ -27,9 +29,9 @@ use tokio::{
 
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const INTERRUPTED: &str = "CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
-const PINNED_CATALOG: &str = include_str!("repl/catalog.json");
-const CUA_DRIVER_PROVIDER: &str = include_str!("repl/cua_driver.mjs");
-const CUA_DRIVER_CATALOG: &str = include_str!("repl/cua_driver_catalog.json");
+const PINNED_CATALOG: &str = include_str!("catalog.json");
+const CUA_DRIVER_PROVIDER: &str = include_str!("cua_driver.mjs");
+const CUA_DRIVER_CATALOG: &str = include_str!("cua_driver_catalog.json");
 const CUA_DRIVER_SEARCH: &[&str] = &[
     ".local/bin/cua-driver",
     "/usr/local/bin/cua-driver",

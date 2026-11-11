@@ -30,6 +30,7 @@ pub(super) struct Sessions {
     colocations: Option<fs::File>,
     shared: Option<Shared>,
     touched: HashSet<String>,
+    unknown: HashMap<String, Option<Summary>>,
 }
 
 struct Opened {
@@ -136,6 +137,7 @@ impl Sessions {
             colocations: None,
             shared: None,
             touched: HashSet::new(),
+            unknown: HashMap::new(),
         })
     }
 
@@ -518,10 +520,21 @@ impl Sessions {
     }
 
     pub(super) fn peek(&mut self, id: &str) -> Result<StoredState, StoreError> {
-        match self.existing(id)? {
-            Some(journal) => journal.peek(id),
-            None => Ok(StoredState::default()),
+        let unknown = self.unknown.contains_key(id);
+        let Some(journal) = self.existing(id)? else {
+            return Ok(StoredState::default());
+        };
+        let state = journal.peek(id)?;
+        if unknown {
+            let seen = Summary {
+                file: journal.index.source.clone(),
+                length: journal.index.offset,
+                revision: state.revision,
+                summary: None,
+            };
+            self.unknown.insert(id.to_owned(), Some(seen));
         }
+        Ok(state)
     }
 
     pub(super) fn owner(&mut self, id: &str) -> Result<Option<OwnerToken>, StoreError> {
@@ -575,6 +588,7 @@ impl Sessions {
     pub(super) fn list_summaries(&mut self, limit: usize) -> Result<Vec<ListedState>, StoreError> {
         let listed = self.listed()?;
         self.summaries.refresh();
+        self.unknown.clear();
         listed
             .into_iter()
             .take(limit)
@@ -584,6 +598,9 @@ impl Sessions {
                     Some(revision) => self.summaries.colocated(&state_id, &file, revision),
                     None => self.summaries.listed(&state_id, &file, metadata.len()),
                 };
+                if known.is_none() {
+                    self.unknown.insert(state_id.clone(), None);
+                }
                 Ok(ListedState {
                     revision: known.as_ref().map_or(0, |known| known.revision),
                     summary: match known {
@@ -606,6 +623,19 @@ impl Sessions {
     ) -> Result<(), StoreError> {
         let mut remembered = Vec::with_capacity(known.len());
         for summary in known {
+            if let Some(Some(seen)) = self.unknown.remove(&summary.state_id)
+                && seen.revision == summary.revision
+                && seen.revision > 0
+            {
+                remembered.push((
+                    summary.state_id,
+                    Summary {
+                        summary: summary.summary,
+                        ..seen
+                    },
+                ));
+                continue;
+            }
             let Some(journal) = self.existing(&summary.state_id)? else {
                 continue;
             };

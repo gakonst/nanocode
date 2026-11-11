@@ -16,6 +16,21 @@ struct Env<'a> {
     vp: &'a mut Vp,
 }
 
+impl Env<'_> {
+    /// `set -u`: reading a variable that is not set is an error that ends the shell
+    /// (`Vp::arith_unbound` tells the caller which kind of error it holds).
+    fn unbound(&mut self, name: &[u8]) -> Result<(), String> {
+        if !self.vp.opts.get(crate::options::SetOpt::Nounset) {
+            return Ok(());
+        }
+        self.vp.arith_unbound = true;
+        Err(format!(
+            "{}: unbound variable",
+            String::from_utf8_lossy(name)
+        ))
+    }
+}
+
 impl ArithEnv for Env<'_> {
     type Error = String;
 
@@ -38,7 +53,10 @@ impl ArithEnv for Env<'_> {
                         return Err(crate::expand::pid_error(self.vp, b"BASHPID"));
                     }
                     self.vp.refresh_dynamic(&n);
-                    Ok(self.vp.vars.value(&n).map(<[u8]>::to_vec))
+                    match self.vp.vars.value(&n).map(<[u8]>::to_vec) {
+                        Some(value) => Ok(Some(value)),
+                        None => self.unbound(n.as_bytes()).map(|()| None),
+                    }
                 }
             },
             Some(ArithIndex::Key(k)) => self.vp.get_elem(&name, k),
@@ -60,13 +78,14 @@ impl ArithEnv for Env<'_> {
             && !var.nameref
             && var.dynamic.is_none()
         {
-            return Ok(match var.get() {
-                None => ArithValue::Unset,
-                Some(v) => match plain_decimal(v) {
-                    Some(n) => ArithValue::Num(n),
-                    None => ArithValue::Text(v.to_vec()),
-                },
+            let value = var.get().map(|v| match plain_decimal(v) {
+                Some(n) => ArithValue::Num(n),
+                None => ArithValue::Text(v.to_vec()),
             });
+            return match value {
+                Some(value) => Ok(value),
+                None => self.unbound(name).map(|()| ArithValue::Unset),
+            };
         }
         Ok(match self.get(name, index)? {
             None => ArithValue::Unset,
@@ -117,6 +136,7 @@ impl ArithEnv for Env<'_> {
 
 /// Evaluates `text`; the error is bash's message without the `line N:` prefix.
 pub(crate) fn eval(vp: &mut Vp, text: &[u8]) -> Result<i64, String> {
+    vp.arith_unbound = false;
     match eval_arith(text, &mut Env { vp }) {
         Ok(v) => Ok(v),
         Err(EvalError::Env(msg)) => Err(msg),
@@ -158,6 +178,7 @@ pub(crate) fn literal(code: &Code, word: &Word) -> Option<Rc<Literal>> {
 
 /// Evaluates a [`Literal`], as [`eval`] evaluates its text.
 pub(crate) fn eval_literal(vp: &mut Vp, lit: &Literal) -> Result<i64, String> {
+    vp.arith_unbound = false;
     let Some(expr) = &lit.expr else {
         return Ok(0);
     };

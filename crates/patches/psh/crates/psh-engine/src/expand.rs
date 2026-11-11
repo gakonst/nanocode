@@ -704,9 +704,13 @@ async fn expand_part(
             match value {
                 Ok(v) => emit(f, v.to_string().as_bytes(), quoted),
                 Err(msg) => {
-                    // An error in an arithmetic expansion abandons the command line.
+                    // An error in an arithmetic expansion abandons the command line; an
+                    // unset variable under `set -u` ends the shell.
                     vp.error(&msg).await;
-                    return Err(Unwind::Abort(1));
+                    return Err(match vp.arith_unbound {
+                        true => Unwind::Exit(expansion_exit_status(vp)),
+                        false => Unwind::Abort(1),
+                    });
                 }
             }
         }

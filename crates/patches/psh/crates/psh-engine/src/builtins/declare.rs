@@ -364,10 +364,17 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
             continue;
         }
         if o.funcs {
-            // `export -f` / `readonly -f`: functions are not exported to children here.
+            // `export -f` marks the function for the shells and programs started from
+            // here (`export -nf` takes the mark away); `readonly -f` only checks the name.
             if !vp.funcs.contains_key(&name) {
                 vp.error(&format!("{bname}: {name}: not a function")).await;
                 status = 1;
+            } else if which == Which::Export {
+                let exported = std::rc::Rc::make_mut(&mut vp.exported_funcs);
+                exported.retain(|n| *n != name);
+                if o.export != Some(false) {
+                    exported.push(name);
+                }
             }
             continue;
         }

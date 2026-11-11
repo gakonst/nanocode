@@ -1,5 +1,5 @@
 use psh_classify::CommandInfo;
-use psh_syntax::{CommandKind, Options, RedirTarget};
+use psh_syntax::{CommandKind, Options};
 use std::fmt;
 
 #[cfg(unix)]
@@ -71,18 +71,10 @@ fn unsupported(script: &str) -> Option<Reason> {
             Err(_) => return Some(Reason::Syntax(error.message)),
         },
     };
-    let lacking = ast.cmd_ids().map(|id| ast.cmd(id)).find_map(|command| {
-        let unended = command.redirects.iter().any(|redirect| {
-            matches!(redirect.target, RedirTarget::HereDoc(id) if !ast.heredoc(id).terminated)
-        });
-        match command.kind {
-            CommandKind::Select(_) => Some(Reason::Command("select")),
-            CommandKind::Coproc(_) => Some(Reason::Command("coproc")),
-            _ if unended => Some(Reason::Command(
-                "warning for a here-document that ends with the script",
-            )),
-            _ => None,
-        }
+    let lacking = ast.cmd_ids().find_map(|id| match ast.cmd(id).kind {
+        CommandKind::Select(_) => Some(Reason::Command("select")),
+        CommandKind::Coproc(_) => Some(Reason::Command("coproc")),
+        _ => None,
     });
     if lacking.is_some() {
         return lacking;

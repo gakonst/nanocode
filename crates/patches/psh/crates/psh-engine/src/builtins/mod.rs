@@ -388,7 +388,42 @@ async fn cd(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     if dir.is_empty() {
         return Ok(0);
     }
-    let mut target = normalize(&vp.abs_path(&dir));
+    let logical = vp.abs_path(&dir);
+    // `cd missing/..` fails: each `..` leaves a directory that must be one. The working
+    // directory and the ones above it are not asked: `cd ..` out of a directory that was
+    // removed works, as it does in bash through the directory it still holds.
+    let mut through = 0;
+    while let Some(at) = logical[through..]
+        .windows(3)
+        .position(|w| w == b"/..")
+        .map(|at| through + at)
+    {
+        through = at + 3;
+        if logical.get(through).is_some_and(|&b| b != b'/') {
+            continue;
+        }
+        let left = normalize(&logical[..at]);
+        if vp
+            .cwd
+            .strip_prefix(&left[..])
+            .is_some_and(|rest| rest.is_empty() || rest[0] == b'/' || left.ends_with(b"/"))
+        {
+            continue;
+        }
+        match vp.host().stat(&left, true).await {
+            Ok(m) if m.kind == FileKind::Dir => {}
+            Ok(_) => {
+                vp.error(&format!("cd: {}: Not a directory", s(&dir))).await;
+                return Ok(1);
+            }
+            Err(e) => {
+                vp.error(&format!("cd: {}: {}", s(&dir), error_text(&e)))
+                    .await;
+                return Ok(1);
+            }
+        }
+    }
+    let mut target = normalize(&logical);
     match vp.host().stat(&target, true).await {
         Ok(m) if m.kind == FileKind::Dir => {}
         Ok(_) => {
@@ -604,9 +639,14 @@ async fn loop_control(vp: &mut Vp, args: &[Vec<u8>], name: &str) -> R {
         Some(a) => match parse_int(a) {
             Some(n) if n >= 1 => n,
             Some(_) => {
+                // bash leaves every enclosing loop, with status 1.
                 vp.error(&format!("{name}: {}: loop count out of range", s(a)))
                     .await;
-                return Ok(1);
+                if vp.loops == 0 {
+                    return Ok(1);
+                }
+                vp.status = 1;
+                return Err(Unwind::Break(vp.loops));
             }
             None => {
                 // A usage error of a special builtin ends the shell.

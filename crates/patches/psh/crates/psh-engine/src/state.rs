@@ -295,6 +295,12 @@ pub(crate) struct Vp {
     pub last_args: Vec<Vec<u8>>,
     /// `$BASH_SUBSHELL`
     pub subshell_level: u32,
+    /// The last arithmetic evaluation failed on an unset variable under `set -u`: the
+    /// error ends the shell, as an unbound variable in a word does.
+    pub arith_unbound: bool,
+    /// The names of the functions `export -f` marked: a `bash` psh runs itself starts
+    /// with them, and a program gets them as bash passes them (`BASH_FUNC_name%%`).
+    pub exported_funcs: Rc<Vec<String>>,
     /// `$BASHPID`: the shell's pid; `None` in a subshell or a nested `bash`, which are
     /// no processes: reading it there is an error (D1413).
     pub bashpid: Option<u32>,
@@ -923,6 +929,19 @@ impl Vp {
         }
         for (n, v) in extra {
             env.push((n.as_bytes().to_vec(), v.clone()));
+        }
+        // Exported functions, as bash passes them: `BASH_FUNC_name%%=() { body }`.
+        for name in self.exported_funcs.iter() {
+            if let Some(f) = self.funcs.get(name) {
+                let text = psh_syntax::print_function_bash(&f.code.ast, f.def);
+                if let Some((_, body)) = text.split_once("() ") {
+                    let body = body.trim_start_matches('\n');
+                    env.push((
+                        format!("BASH_FUNC_{name}%%").into_bytes(),
+                        format!("() {body}").into_bytes(),
+                    ));
+                }
+            }
         }
         env.sort();
         env

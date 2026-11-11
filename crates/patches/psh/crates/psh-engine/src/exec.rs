@@ -189,11 +189,15 @@ async fn report_signal_death(vp: &mut Vp, code: &Rc<Code>, cmd: &Command, status
 
 /// The DEBUG trap before a command, with `BASH_COMMAND` set to its text (D1283).
 async fn debug_trap(vp: &mut Vp, code: &Rc<Code>, cmd: &Command) -> Result<(), Unwind> {
-    if vp.in_trap.is_some() || vp.traps.action(TrapKey::Debug).is_none_or(|a| a.is_empty()) {
+    if vp.in_trap.is_some() {
         return Ok(());
     }
+    // Any trap may read it (`trap 'echo "failed: $BASH_COMMAND"' EXIT`), not only DEBUG.
     let text = command_text(code, cmd);
     vp.vars.entry("BASH_COMMAND").set(text);
+    if vp.traps.action(TrapKey::Debug).is_none_or(|a| a.is_empty()) {
+        return Ok(());
+    }
     vp.line = code.line(cmd.span.start);
     trap::run_trap(vp, TrapKey::Debug).await
 }
@@ -865,6 +869,10 @@ async fn arith_command(
     };
     match value {
         Ok(v) => Ok(Some(v)),
+        Err(msg) if vp.arith_unbound => {
+            vp.error(&msg).await;
+            Err(Unwind::Exit(expand::expansion_exit_status(vp)))
+        }
         Err(msg) => {
             vp.error(&format!("{prefix}{msg}")).await;
             Ok(None)
@@ -1645,7 +1653,14 @@ pub(crate) fn start_afresh(sub: &mut Vp) {
     sub.vars = vars;
     sub.foreign_env = Rc::new(foreign);
     sub.subshell_level = 0;
-    sub.funcs = Default::default();
+    // The functions `export -f` marked are the new shell's, and stay marked.
+    let kept: std::collections::HashMap<String, Rc<Func>> = sub
+        .funcs
+        .iter()
+        .filter(|(name, _)| sub.exported_funcs.contains(name))
+        .map(|(name, f)| (name.clone(), f.clone()))
+        .collect();
+    sub.funcs = Rc::new(kept);
     sub.aliases = Default::default();
     sub.expand_aliases = false;
     sub.traps = Default::default();
@@ -1816,7 +1831,7 @@ async fn redirect_fd(vp: &mut Vp, code: &Rc<Code>, r: &Redirect, fd: u32) -> Res
                 return Ok(true);
             };
             let doc = code.ast.heredoc(*id);
-            let body = if doc.quoted {
+            let mut body = if doc.quoted {
                 literal_body(code, &doc.body)
             } else {
                 if let Some(e) = &doc.error {
@@ -1825,6 +1840,22 @@ async fn redirect_fd(vp: &mut Vp, code: &Rc<Code>, r: &Redirect, fd: u32) -> Res
                 }
                 Box::pin(expand::expand_heredoc(vp, code, &doc.body)).await?
             };
+            if !doc.terminated {
+                // The input ended before the delimiter: bash warns, naming the line the
+                // input ended on, and the last line gets its newline.
+                let started = vp.line;
+                let wanted = psh_syntax::literal_text(&code.ast, &doc.delimiter)
+                    .unwrap_or_else(|| code.ast.text(doc.delimiter.span).to_string());
+                vp.line = code.line(doc.body.span.end.max(doc.body.span.start + 1) - 1);
+                vp.error(&format!(
+                    "warning: here-document at line {started} delimited by end-of-file (wanted `{wanted}')"
+                ))
+                .await;
+                vp.line = started;
+                if !body.is_empty() && !body.ends_with(b"\n") {
+                    body.push(b'\n');
+                }
+            }
             vp.fds
                 .set(fd, Rc::new(FdObj::PipeRead(pipe::preloaded(&body))));
             return Ok(true);

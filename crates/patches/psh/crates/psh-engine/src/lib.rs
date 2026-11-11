@@ -302,6 +302,8 @@ impl Shell {
             stage_subshell: false,
             last_args: Vec::new(),
             subshell_level: 0,
+            arith_unbound: false,
+            exported_funcs: Rc::new(Vec::new()),
             bashpid: Some(cfg.host.pid()),
             shell_pid: Some(cfg.host.pid()),
             script_args: Vec::new(),

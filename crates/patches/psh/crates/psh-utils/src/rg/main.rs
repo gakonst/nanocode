@@ -280,6 +280,8 @@ fn search_parallel(
             assigned: 0,
             pending: BTreeMap::new(),
             quit: false,
+            given: 0,
+            held: 0,
         };
         let mut local = worker.clone();
         let mut on_done = |merge: &mut Merge,
@@ -429,6 +431,9 @@ struct Merge {
     assigned: usize,
     pending: BTreeMap<usize, Done>,
     quit: bool,
+    /// Bytes of output the reader has been given, and bytes written since.
+    given: usize,
+    held: usize,
 }
 
 impl Merge {
@@ -449,6 +454,15 @@ impl Merge {
         }
         out.write_all(buf)?;
         self.printed = true;
+        // The reader gets the first file's output at once and then each time as much
+        // again as it has been given: one that is gone (`| head`) is seen before the
+        // search is over, and one that reads it all is woken a few times, not per file.
+        self.held += buf.len();
+        if self.held >= self.given {
+            out.flush()?;
+            self.given += self.held;
+            self.held = 0;
+        }
         Ok(())
     }
 }

@@ -41,6 +41,7 @@ pub use nanocode_durability_core::{
     migrate_format_then,
 };
 pub use paged::{PagedWriter, PayloadReader, Prepared, Sequence, SequenceLog, load_sequence};
+pub use pool::pool_state;
 pub use record_cache::{CachedStore, RecordCache};
 pub use session::{
     Admission, AutomaticAdmission, BeginStep, DurableOwner, DurableSession, InitialAcquisition,

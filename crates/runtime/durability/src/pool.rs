@@ -60,6 +60,10 @@ struct Lineage<'a> {
     origin: std::borrow::Cow<'a, str>,
 }
 
+pub fn pool_state(root: &str) -> String {
+    format!("{root}{POOL}")
+}
+
 fn session_of(state_id: &str) -> &str {
     state_id
         .split_once(':')
@@ -117,7 +121,7 @@ impl Pools {
         Some(self.pools.update(|pools| {
             Arc::clone(pools.entry(Arc::clone(&root)).or_insert_with(|| {
                 Arc::new(Pool {
-                    state: format!("{root}{POOL}"),
+                    state: pool_state(&root),
                     held: Atom::default(),
                     listed: Atom::default(),
                     writer: Owned::new(Writer::Unread),

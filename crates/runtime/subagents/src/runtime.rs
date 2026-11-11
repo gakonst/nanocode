@@ -1305,7 +1305,7 @@ async fn journal_writer(
                         writers.remove(&root_session_id);
                     }
                 });
-                while let Ok(request) = requests.try_recv() {
+                while let Some(request) = requests.recv().await {
                     live.send_journal(&root_session_id, Some(request));
                 }
                 return;
@@ -9351,7 +9351,7 @@ async fn continue_root(
         }
         if completions.is_empty() {
             completions.close();
-            while let Ok((id, revision)) = completions.try_recv() {
+            while let Some((id, revision)) = completions.recv().await {
                 registry.schedule_parent_continuation(&root_session_id, id, revision);
             }
             return;

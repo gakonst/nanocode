@@ -257,7 +257,8 @@ pub(super) struct Sessions {
     parked: HashSet<AgentId>,
     active_direct: HashSet<AgentId>,
     spawning: HashSet<AgentId>,
-    by_context: HashMap<Arc<str>, Vec<AgentId>>,
+    unsettled: HashSet<AgentId>,
+    by_context: HashMap<Arc<str>, HashSet<AgentId>>,
     by_spawn: HashMap<durable::Spawned, AgentId>,
 }
 
@@ -298,10 +299,10 @@ impl Sessions {
         if session.descriptor.parent.is_none()
             && let Some(context) = &session.host_context
         {
-            let children = self.by_context.entry(Arc::clone(context)).or_default();
-            if !self.sessions.contains_key(&id) || !children.contains(&id) {
-                children.push(id);
-            }
+            self.by_context
+                .entry(Arc::clone(context))
+                .or_default()
+                .insert(id);
         }
         if let Some(spawned) = &session.spawned {
             self.by_spawn.insert(spawned.clone(), id);
@@ -344,6 +345,11 @@ impl Sessions {
                 self.spawning.insert(id);
             } else {
                 self.spawning.remove(&id);
+            }
+            if session.unsettled() {
+                self.unsettled.insert(id);
+            } else {
+                self.unsettled.remove(&id);
             }
             let resident = session.harness().is_some();
             if resident {
@@ -393,6 +399,11 @@ impl Sessions {
     fn holds_root_watch(&mut self) -> bool {
         self.refresh();
         !self.parked.is_empty() || !self.active_direct.is_empty()
+    }
+
+    fn quiescent(&mut self) -> bool {
+        self.refresh();
+        self.unsettled.is_empty()
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &AgentId> {
@@ -1248,13 +1259,13 @@ impl AgentScope {
     }
 
     fn journal_snapshot(
-        &self,
+        &mut self,
         root_session_id: &str,
         checkpoints: &AgentMap<durable::JournalCheckpoint>,
         cache: &durable::JournalCache,
     ) -> std::io::Result<durable::JournalSnapshot> {
         let (next_message_id, messages, logged, pending) = self.messages.snapshot(cache);
-        let fold = cache.folds(messages.kept.is_some());
+        let fold = cache.folds(messages.kept.is_some(), self.sessions.quiescent());
         let groups = match cache.tracked(fold, || {
             let mut ids = self.sessions.keys().copied().collect::<Vec<_>>();
             ids.sort_unstable();
@@ -1324,7 +1335,7 @@ impl AgentScope {
     }
 
     fn journal_payload(
-        &self,
+        &mut self,
         root_session_id: &str,
         checkpoints: &AgentMap<durable::JournalCheckpoint>,
         version: u32,
@@ -3933,7 +3944,9 @@ impl Registry {
         }
         let folds_all = !journal.agents.is_empty()
             || !journal.agent_records.is_empty()
-            || journal.agent_pages.is_some();
+            || journal.agent_pages.is_some()
+            || (journal.version <= durable::FIELDS_JOURNAL_VERSION
+                && self.journal_version.load(Ordering::Relaxed) > durable::FIELDS_JOURNAL_VERSION);
         let mut written = durable::JournalCache::default().written_as(journal.version);
         let deltas = durable::load_deltas(
             store.as_ref(),
@@ -8498,6 +8511,13 @@ impl ChildSession {
 
     pub(super) const fn active(&self) -> bool {
         self.turn.is_some()
+    }
+
+    const fn unsettled(&self) -> bool {
+        self.active()
+            || self.status.is_active()
+            || self.completion.revision().is_some()
+            || (matches!(self.status, AgentStatus::Interrupted) && self.resume_attempts > 0)
     }
 
     pub(super) fn turn_revision(&self) -> Option<u64> {

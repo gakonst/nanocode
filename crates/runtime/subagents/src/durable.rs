@@ -196,7 +196,9 @@ impl SubagentStore for MemorySubagentStore {
     }
 }
 
-pub(super) const JOURNAL_VERSION: u32 = 8;
+pub(super) const JOURNAL_VERSION: u32 = 9;
+
+pub(super) const FIELDS_JOURNAL_VERSION: u32 = 8;
 
 const DELTA_JOURNAL_VERSION: u32 = 7;
 
@@ -213,6 +215,10 @@ const LEAF_AGENT_BITS: u32 = 4;
 pub(super) fn leaf_agents(leaf: u64) -> impl Iterator<Item = AgentId> {
     let first = leaf << LEAF_AGENT_BITS;
     (first..=first | ((1 << LEAF_AGENT_BITS) - 1)).map(AgentId::new)
+}
+
+pub(super) fn leaf_ids(leaf: u64) -> impl Iterator<Item = AgentId> {
+    leaf_agents(leaf).filter(|id| id.get() != 0)
 }
 
 pub(super) const MIN_JOURNAL_VERSION: u32 = 1;
@@ -564,6 +570,8 @@ pub(super) struct AgentPages {
 #[serde(deny_unknown_fields)]
 struct AgentPage {
     entries: Vec<(u64, Arc<str>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    stubs: Vec<(u64, Arc<str>)>,
 }
 
 impl AgentPages {
@@ -609,6 +617,7 @@ impl AgentPages {
                 if page
                     .entries
                     .iter()
+                    .chain(&page.stubs)
                     .any(|(entry, _)| entry >> PAGE_AGENT_BITS != index)
                 {
                     return Err(std::io::Error::other(format!(
@@ -619,6 +628,7 @@ impl AgentPages {
                     index,
                     TreePage {
                         entries: page.entries.iter().cloned().collect(),
+                        stubs: page.stubs.into_iter().collect(),
                         key: Some(key),
                     },
                 );
@@ -633,6 +643,7 @@ impl AgentPages {
 #[derive(Clone, Default)]
 struct TreePage {
     entries: imbl::OrdMap<u64, Arc<str>>,
+    stubs: imbl::OrdMap<u64, Arc<str>>,
     key: Option<Arc<str>>,
 }
 
@@ -648,6 +659,29 @@ impl AgentTree {
             .get(&(index >> PAGE_AGENT_BITS))?
             .entries
             .get(&index)
+    }
+
+    fn stub(&self, leaf: u64) -> Option<&Arc<str>> {
+        self.levels
+            .first()?
+            .get(&(leaf >> PAGE_AGENT_BITS))?
+            .stubs
+            .get(&leaf)
+    }
+
+    fn set_stub(&mut self, leaf: u64, stub: Option<Arc<str>>) {
+        if self.stub(leaf) == stub.as_ref() {
+            return;
+        }
+        if self.levels.is_empty() {
+            self.levels.push(imbl::OrdMap::new());
+        }
+        let page = self.levels[0].entry(leaf >> PAGE_AGENT_BITS).or_default();
+        match stub {
+            Some(stub) => page.stubs.insert(leaf, stub),
+            None => page.stubs.remove(&leaf),
+        };
+        page.key = None;
     }
 
     fn truncate(&mut self, mut keep: u64) {
@@ -693,13 +727,17 @@ impl AgentTree {
             let dirty = pages
                 .iter()
                 .filter(|(_, page)| page.key.is_none())
-                .map(|(index, page)| (*index, page.entries.clone()))
+                .map(|(index, page)| (*index, page.entries.clone(), page.stubs.clone()))
                 .collect::<Vec<_>>();
-            for (index, entries) in dirty {
+            for (index, entries, stubs) in dirty {
                 let (key, json) = encoded(&AgentPage {
                     entries: entries
                         .iter()
                         .map(|(id, key)| (*id, Arc::clone(key)))
+                        .collect(),
+                    stubs: stubs
+                        .iter()
+                        .map(|(leaf, key)| (*leaf, Arc::clone(key)))
                         .collect(),
                 })?;
                 records.push((Arc::clone(&key), json));
@@ -937,6 +975,24 @@ struct AgentProfile {
 #[serde(deny_unknown_fields)]
 struct AgentLeaf {
     agents: Vec<(u64, Box<RawValue>)>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LeafStub {
+    bytes: usize,
+    agents: Vec<AgentStub>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AgentStub {
+    pub(super) id: AgentId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) parent: Option<AgentId>,
+    pub(super) session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) spawned: Option<Spawned>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1318,8 +1374,16 @@ impl JournalCache {
         self.version > DELTA_JOURNAL_VERSION
     }
 
-    pub(super) const fn folds(&self, rewritten: bool) -> bool {
-        self.full || rewritten || !self.deltas() || self.delta_bytes >= self.folded_bytes
+    pub(super) const fn stubs(&self) -> bool {
+        self.version > FIELDS_JOURNAL_VERSION
+    }
+
+    pub(super) const fn folds(&self, rewritten: bool, quiescent: bool) -> bool {
+        self.full
+            || rewritten
+            || !self.deltas()
+            || self.delta_bytes >= self.folded_bytes
+            || (quiescent && self.stubs() && !self.deltas.is_empty())
     }
 
     pub(super) const fn logged(&self) -> Option<super::message::MessageLog> {
@@ -1399,14 +1463,26 @@ impl JournalSnapshot {
         update.dirty.clear();
         let mut changed = Vec::new();
         let mut fields = Vec::new();
+        let stubbed = self.fold && update.stubs();
         for (leaf, agents) in self.agents {
             let mut entries = Vec::with_capacity(agents.len());
+            let mut stubs = Vec::with_capacity(if stubbed { agents.len() } else { 0 });
+            let mut settled = stubbed && agents.len() == leaf_ids(leaf).count();
             for (id, entry) in agents {
                 let stored = update
                     .agents
                     .get(&id)
                     .map(|cached| Arc::clone(&cached.profile));
+                if settled {
+                    stubs.push(AgentStub {
+                        id,
+                        parent: entry.agent.descriptor.parent,
+                        session: entry.agent.descriptor.session_id.clone(),
+                        spawned: entry.agent.spawned.clone(),
+                    });
+                }
                 let record = agent_record(entry.agent, stored, entry.unchanged, &mut records)?;
+                settled = settled && record.settled();
                 let (key, json) = encoded(&record)?;
                 let written = update.agents.insert(
                     id,
@@ -1445,6 +1521,19 @@ impl JournalSnapshot {
                 continue;
             }
             let (key, json) = agent_leaf(&entries);
+            let stub = if settled {
+                let (stub, record) = encoded(&LeafStub {
+                    bytes: json.len(),
+                    agents: stubs,
+                })?;
+                if update.tree.stub(leaf) != Some(&stub) {
+                    records.push((Arc::clone(&stub), record));
+                }
+                Some(stub)
+            } else {
+                None
+            };
+            update.tree.set_stub(leaf, stub);
             if update.tree.get(0, leaf) != Some(&key) {
                 let replaced = update.leaf_bytes.insert(leaf, json.len()).unwrap_or(0);
                 update.folded_bytes = update.folded_bytes + json.len() - replaced;
@@ -2286,6 +2375,17 @@ pub(super) fn persist_agent(
 impl AgentRecord {
     const fn changing(&self) -> bool {
         self.turn_in_flight || self.pending_completion.is_some()
+    }
+
+    const fn settled(&self) -> bool {
+        matches!(
+            self.status,
+            AgentStatus::Completed { .. } | AgentStatus::Failed { .. } | AgentStatus::Closed
+        ) && !self.changing()
+            && self.accepted_output.is_none()
+            && self.unstarted.is_none()
+            && self.in_flight_calls.is_empty()
+            && self.in_flight_omitted == 0
     }
 }
 

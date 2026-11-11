@@ -950,8 +950,23 @@ pub fn drive(shell: &mut crate::Shell) -> i32 {
     drive_until(shell, None).unwrap_or(128 + crate::host::SIGTERM)
 }
 
+/// Like [`drive`], calling `before_park` each time the shell is blocked and the thread
+/// is about to park: what only a parked shell needs (a thread that wakes it for a
+/// signal) can start then, and a script that never waits never pays for it.
+pub fn drive_parking(shell: &mut crate::Shell, mut before_park: impl FnMut()) -> i32 {
+    drive_loop(shell, None, &mut before_park).unwrap_or(128 + crate::host::SIGTERM)
+}
+
 /// Like [`drive`], but cancels the shell at `deadline`: `None` means it timed out.
 pub fn drive_until(shell: &mut crate::Shell, deadline: Option<std::time::Instant>) -> Option<i32> {
+    drive_loop(shell, deadline, &mut || {})
+}
+
+fn drive_loop(
+    shell: &mut crate::Shell,
+    deadline: Option<std::time::Instant>,
+    before_park: &mut dyn FnMut(),
+) -> Option<i32> {
     struct Unpark(std::thread::Thread);
     impl std::task::Wake for Unpark {
         fn wake(self: Arc<Self>) {
@@ -973,12 +988,15 @@ pub fn drive_until(shell: &mut crate::Shell, deadline: Option<std::time::Instant
             crate::Step::Idle => return Some(0),
             crate::Step::Yield => {}
             // A wake before the park makes the park return at once (the token).
-            crate::Step::Blocked => match deadline {
-                Some(d) => std::thread::park_timeout(
-                    d.saturating_duration_since(std::time::Instant::now()),
-                ),
-                None => std::thread::park(),
-            },
+            crate::Step::Blocked => {
+                before_park();
+                match deadline {
+                    Some(d) => std::thread::park_timeout(
+                        d.saturating_duration_since(std::time::Instant::now()),
+                    ),
+                    None => std::thread::park(),
+                }
+            }
         }
     }
 }

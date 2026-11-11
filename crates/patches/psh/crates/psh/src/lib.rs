@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use psh_engine::invocation::{Invocation, parse_args};
-use psh_engine::std_host::{drive, engine_thread};
+use psh_engine::std_host::engine_thread;
 use psh_engine::{Host, HostFile, Script, Shell, ShellConfig};
 
 /// The shell's descriptors 0, 1 and 2.
@@ -383,7 +383,10 @@ fn run_script(
     let mut shell = Shell::new(cfg);
     Signals::attach(control, shell.control());
     shell.start(script);
-    let status = drive(&mut shell);
+    #[cfg(unix)]
+    let status = psh_engine::std_host::drive_parking(&mut shell, psh_os::unix::signals::watch);
+    #[cfg(not(unix))]
+    let status = psh_engine::std_host::drive(&mut shell);
     (status, shell.killed_by())
 }
 

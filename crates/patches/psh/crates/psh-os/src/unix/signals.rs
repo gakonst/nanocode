@@ -24,6 +24,11 @@ static FORWARD: std::sync::atomic::AtomicPtr<std::sync::atomic::AtomicU64> =
 /// The write end of the self-pipe; -1 until `catch` ran.
 static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 
+/// The watcher thread's work, from `catch` until [`watch`] starts the thread.
+static WATCHER: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
+/// Whether [`watch`] has nothing left to start.
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 extern "C" fn on_signal(sig: libc::c_int) {
     let saved = io::Error::last_os_error().raw_os_error().unwrap_or(0);
     if (0..64).contains(&sig) {
@@ -148,6 +153,20 @@ pub fn reset_ignored(sigs: &[Signal]) {
 /// numbers; not PIPE, KILL, STOP or the faults).
 pub const HARNESS_RESET: [Signal; 11] = [1, 2, 3, 10, 12, 14, 15, 24, 25, 26, 27];
 
+/// Starts the watcher thread of [`catch`], once: for the driver to call before it
+/// parks. The handler has set the signal's bit for the engine already, so only a
+/// parked shell needs the thread (to be woken); a signal caught before it starts is in
+/// the pipe and reaches the callback when it does. A script that never waits (`echo`,
+/// a loop, a pipeline of builtins) ends without the thread having existed.
+pub fn watch() {
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Some(run) = WATCHER.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let _ = crate::spawn_helper("psh-signals", 64 << 10, run);
+    }
+}
+
 /// Whether the process ignores `sig` now.
 pub fn is_ignored(sig: Signal) -> bool {
     let Some(sig) = super::signum::to_os(sig) else {
@@ -161,7 +180,7 @@ pub fn is_ignored(sig: Signal) -> bool {
 }
 
 /// Catches `sigs` (except those ignored now) and calls `callback` for each delivery,
-/// on a watcher thread. Once per process.
+/// on a watcher thread that [`watch`] starts. Once per process.
 pub fn catch(sigs: &[Signal], callback: impl Fn(Signal) + Send + 'static) -> io::Result<()> {
     let (mut r, w) = super::pipe()?;
     super::ready::set_nonblocking(w.as_raw_fd())?;
@@ -174,7 +193,7 @@ pub fn catch(sigs: &[Signal], callback: impl Fn(Signal) + Send + 'static) -> io:
         unsafe { libc::close(wfd) };
         return Err(io::Error::other("signals are caught already"));
     }
-    crate::spawn_helper("psh-signals", 64 << 10, move || {
+    *WATCHER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move || {
         let mut buf = [0u8; 64];
         loop {
             match r.read(&mut buf) {
@@ -190,7 +209,8 @@ pub fn catch(sigs: &[Signal], callback: impl Fn(Signal) + Send + 'static) -> io:
                 }
             }
         }
-    })?;
+    }));
+    WATCHING.store(false, Ordering::SeqCst);
     for &sig in sigs {
         if is_ignored(sig) {
             continue;

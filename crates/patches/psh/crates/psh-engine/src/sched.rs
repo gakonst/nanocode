@@ -98,6 +98,8 @@ pub(crate) struct Sched {
     ready: RefCell<VecDeque<usize>>,
     pub(crate) shared: Arc<Shared>,
     budget: Cell<u32>,
+    /// Every unit of budget taken since the scheduler was made.
+    spent: Cell<u64>,
     out_of_budget: Cell<bool>,
     /// Waits of the shell's own vproc that a signal ends (D1903).
     signal_waiters: RefCell<Vec<Waker>>,
@@ -123,6 +125,7 @@ impl Sched {
             ready: RefCell::new(VecDeque::new()),
             shared,
             budget: Cell::new(0),
+            spent: Cell::new(0),
             out_of_budget: Cell::new(false),
             signal_waiters: RefCell::new(Vec::new()),
         }
@@ -365,6 +368,11 @@ impl Sched {
         end
     }
 
+    /// The safepoints passed so far (`Shell::spent`).
+    pub(crate) fn spent(&self) -> u64 {
+        self.spent.get()
+    }
+
     /// Takes one unit of budget; false when it is spent (the caller yields).
     fn take_budget(&self) -> bool {
         let b = self.budget.get();
@@ -373,6 +381,7 @@ impl Sched {
             false
         } else {
             self.budget.set(b - 1);
+            self.spent.set(self.spent.get() + 1);
             true
         }
     }

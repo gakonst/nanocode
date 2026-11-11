@@ -1402,6 +1402,7 @@ pub(crate) async fn run_external_with(
         match found {
             Some(p) => vp.abs_path(&p),
             None => {
+                vp.host().not_found(&name);
                 vp.error(&format!("{shown}: command not found")).await;
                 return Ok(127);
             }

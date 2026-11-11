@@ -451,6 +451,12 @@ impl Shell {
         self.core.died_of.get()
     }
 
+    /// The safepoints this shell has passed in all its steps: an embedder that meters a
+    /// run charges the difference between two readings (nanocode-shell's fuel).
+    pub fn spent(&self) -> u64 {
+        self.core.sched.spent()
+    }
+
     /// The number of live tasks (vprocs and helpers), for leak tests.
     pub fn task_count(&self) -> usize {
         self.core.sched.task_count()

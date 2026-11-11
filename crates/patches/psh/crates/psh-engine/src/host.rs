@@ -565,6 +565,12 @@ pub trait Host {
         let _ = user;
         None
     }
+    /// A command name that is no function, builtin, utility or program, told before
+    /// "command not found" is printed: a host without programs learns what a script
+    /// needed (nanocode-shell stops the run on it when asked to).
+    fn not_found(&self, name: &[u8]) {
+        let _ = name;
+    }
 }
 
 fn unsupported<T: 'static>() -> HostFuture<io::Result<T>> {

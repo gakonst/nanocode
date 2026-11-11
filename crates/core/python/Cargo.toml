@@ -1,0 +1,28 @@
+[package]
+name = "nanocode-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "python3 for the embedded shell: RustPython and its standard library in-process over a host-supplied filesystem"
+autotests = false
+autobenches = false
+
+[dependencies]
+nanocode-platform.workspace = true
+psh-engine.workspace = true
+ruff_python_ast.workspace = true
+ruff_python_parser.workspace = true
+rustpython-pylib.workspace = true
+rustpython-stdlib.workspace = true
+rustpython-vm.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

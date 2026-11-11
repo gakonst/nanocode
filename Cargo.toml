@@ -25,6 +25,7 @@ members = [
     "crates/core/mcp",
     "crates/core/mcp-http",
     "crates/core/platform",
+    "crates/core/python",
     "crates/core/schema",
     "crates/core/shell",
     "crates/core/tool-provider",
@@ -130,6 +131,7 @@ nanocode-http = { version = "0.7.0", path = "crates/core/http" }
 nanocode-mcp = { version = "0.7.0", path = "crates/core/mcp" }
 nanocode-mcp-http = { version = "0.7.0", path = "crates/core/mcp-http" }
 nanocode-platform = { version = "0.7.0", path = "crates/core/platform" }
+nanocode-python = { version = "0.7.0", path = "crates/core/python" }
 nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
 nanocode-schema = { version = "0.7.0", path = "crates/core/schema" }
@@ -195,6 +197,11 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "jso
 url = "2.5.7"
 uuid = { version = "1", features = ["serde", "v5"] }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
+ruff_python_ast = { package = "rustpython-ruff_python_ast", version = "=0.16.5" }
+ruff_python_parser = { package = "rustpython-ruff_python_parser", version = "=0.16.5" }
+rustpython-pylib = { version = "=0.6.0", features = ["freeze-stdlib"] }
+rustpython-stdlib = { version = "=0.6.0", default-features = false, features = ["compiler"] }
+rustpython-vm = { version = "=0.6.0", default-features = false, features = ["compiler", "gc", "freeze-stdlib"] }
 
 [patch.crates-io]
 arc-swap = { path = "crates/patches/arc-swap" }

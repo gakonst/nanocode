@@ -4,3 +4,6 @@ rustc-workspace-wrapper = "scripts/rustc-parallel-frontend"
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = "12.3"
+
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']

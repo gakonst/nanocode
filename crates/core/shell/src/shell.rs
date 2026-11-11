@@ -7,15 +7,25 @@ use crate::{
     machine::{Identity, Machine},
 };
 use bytes::Bytes;
-use psh_engine::{HostFile, ShellConfig};
+use psh_engine::{HostFile, ShellConfig, util::UtilEntry};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::BTreeSet,
     future::Future,
     pin::Pin,
     rc::Rc,
+    sync::OnceLock,
     task::{Context, Poll, Waker},
 };
+
+fn utilities() -> &'static [UtilEntry] {
+    static ALL: OnceLock<Vec<UtilEntry>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all = psh_utils::REGISTRY.to_vec();
+        all.extend_from_slice(psh_utils::HOST_FACTS);
+        all
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -160,7 +170,7 @@ impl Shell {
     fn build(config: Config, answers: Option<Answers>) -> Self {
         let mut without = config.without;
         if let Some(answers) = &answers {
-            let unanswered = psh_utils::REGISTRY
+            let unanswered = utilities()
                 .iter()
                 .flat_map(|utility| utility.names)
                 .filter(|name| !answers.runs(name))
@@ -194,6 +204,7 @@ impl Shell {
         engine.stderr = Some(stderr.clone() as Rc<dyn HostFile>);
         engine.max_depth = config.limits.depth;
         engine.utilities = psh_utils::policy(true);
+        engine.utilities.entries = utilities();
         engine.utilities.off_names = without;
         let engine = psh_engine::Shell::new(engine);
         let _ = vfs.control.set(engine.control());

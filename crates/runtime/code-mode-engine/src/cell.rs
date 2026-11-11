@@ -5,9 +5,9 @@ use std::{
     time::Duration,
 };
 
-use djs_embed::{Data, HostCall, HostFn, Snapshot, Source, Throw};
+use djs_embed::{Data, HostCall, HostFn, Instance, Limits, Snapshot, Source, Throw};
 use nanocode_platform::Instant;
-use nanocode_sync::Atom;
+use nanocode_sync::{Atom, Slot};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, value::RawValue};
 
@@ -161,16 +161,44 @@ fn build(tools: &CellTools, prelude: Option<&str>) -> Result<Snapshot, Unprepare
         })
 }
 
-struct Prepared {
+pub(crate) struct Prepared {
     tools: Weak<CellTools>,
     prelude: Option<Arc<str>>,
     snapshot: Snapshot,
+    spares: Box<[Slot<Instance>]>,
 }
 
-pub(crate) fn snapshot(
+impl Prepared {
+    pub(crate) fn instance(&self) -> Result<Instance, djs_embed::Error> {
+        match self.spares.iter().find_map(Slot::take) {
+            Some(instance) => Ok(instance),
+            None => self.snapshot.instantiate(Limits {
+                memory: usize::MAX,
+                fuel: u64::MAX,
+                ..Limits::default()
+            }),
+        }
+    }
+
+    pub(crate) fn recycle(&self, mut instance: Instance) {
+        if !matches!(instance.reset_written(), Ok(true)) {
+            return;
+        }
+        for slot in &self.spares {
+            if slot.is_empty() {
+                match slot.put(instance) {
+                    Some(displaced) => instance = displaced,
+                    None => return,
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn prepared(
     tools: &Arc<CellTools>,
     prelude: Option<&Arc<str>>,
-) -> Result<Snapshot, Unprepared> {
+) -> Result<Arc<Prepared>, Unprepared> {
     type Snapshots = Vec<Arc<Prepared>>;
     static SNAPSHOTS: OnceLock<Atom<Snapshots>> = OnceLock::new();
     let snapshots = SNAPSHOTS.get_or_init(Atom::default);
@@ -180,21 +208,23 @@ pub(crate) fn snapshot(
                 std::ptr::eq(prepared.tools.as_ptr(), Arc::as_ptr(tools))
                     && prepared.prelude.as_deref() == prelude.map(|prelude| &**prelude)
             })
-            .map(|prepared| prepared.snapshot.clone())
+            .cloned()
     };
-    if let Some(snapshot) = snapshots.read(find) {
-        return Ok(snapshot);
+    if let Some(prepared) = snapshots.read(find) {
+        return Ok(prepared);
     }
+    let spares = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let prepared = Arc::new(Prepared {
         tools: Arc::downgrade(tools),
         prelude: prelude.cloned(),
         snapshot: build(tools, prelude.map(|prelude| &**prelude))?,
+        spares: (0..spares).map(|_| Slot::default()).collect(),
     });
     Ok(snapshots.update(|list| {
         find(list).unwrap_or_else(|| {
             list.retain(|prepared| prepared.tools.strong_count() > 0);
             list.push(Arc::clone(&prepared));
-            prepared.snapshot.clone()
+            Arc::clone(&prepared)
         })
     }))
 }

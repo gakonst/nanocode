@@ -7,14 +7,14 @@ use std::{
     time::Duration,
 };
 
-use djs_embed::{CallId, Instance, Limits, Parked, Step, Value};
+use djs_embed::{CallId, Instance, Parked, Step, Value};
 use nanocode_platform::Instant;
 use serde_json::value::RawValue;
 
 use crate::{
     cell::{
-        BOOTSTRAP_MODULE, CellTools, ExecutionState, NEXT, RUN_CELL, Replaying, Reply,
-        RuntimeEvent, Unprepared, snapshot,
+        BOOTSTRAP_MODULE, CellTools, ExecutionState, NEXT, Prepared, RUN_CELL, Replaying, Reply,
+        RuntimeEvent, Unprepared, prepared,
     },
     journal::{CellJournaling, JournalEntry},
 };
@@ -89,6 +89,7 @@ enum Ran {
 
 struct Machine {
     body: Body,
+    prepared: Arc<Prepared>,
     pump: Option<CallId>,
     phase: Phase,
     results: VecDeque<(u64, String, bool)>,
@@ -341,10 +342,10 @@ impl EmbeddedHost {
         journaling: Option<CellJournaling>,
     ) -> Result<(), String> {
         self.machine = None;
-        let snapshot = snapshot(&tools, prelude.as_ref());
+        let prepared = prepared(&tools, prelude.as_ref());
         self.state.begin(execution_id, stored, tools, journaling);
-        let snapshot = match snapshot {
-            Ok(snapshot) => snapshot,
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
             Err(Unprepared::Prelude(message)) => {
                 self.state.send(RuntimeEvent::Error {
                     cell_id: execution_id,
@@ -356,13 +357,7 @@ impl EmbeddedHost {
             Err(Unprepared::Bootstrap(message)) => return Err(message),
         };
         let seed = random_seed()?;
-        let mut instance = snapshot
-            .instantiate(Limits {
-                memory: usize::MAX,
-                fuel: u64::MAX,
-                ..Limits::default()
-            })
-            .map_err(failure)?;
+        let mut instance = prepared.instance().map_err(failure)?;
         instance.seed_random(seed).map_err(failure)?;
         #[cfg(not(target_family = "wasm"))]
         instance
@@ -373,6 +368,7 @@ impl EmbeddedHost {
             .map_err(failure)?;
         self.machine = Some(Machine {
             body: Body::Awake(instance),
+            prepared,
             pump: None,
             phase: Phase::Running,
             results: VecDeque::new(),
@@ -410,7 +406,7 @@ impl EmbeddedHost {
             let rested = match quiet {
                 Ok(Idle::Busy) => Ok(()),
                 Ok(Idle::Finished) => {
-                    self.stop();
+                    self.finish();
                     Ok(())
                 }
                 Ok(Idle::Wake) => self.wake(),
@@ -494,6 +490,18 @@ impl EmbeddedHost {
 
     fn stop(&mut self) {
         self.machine = None;
+        self.state.clear();
+    }
+
+    fn finish(&mut self) {
+        if let Some(Machine {
+            body: Body::Awake(instance),
+            prepared,
+            ..
+        }) = self.machine.take()
+        {
+            prepared.recycle(instance);
+        }
         self.state.clear();
     }
 

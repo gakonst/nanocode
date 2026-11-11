@@ -76,9 +76,9 @@ impl Registry {
             })
             .unwrap_or_default();
         let checkpoint_captures = self
+            .scope_locks(root_session_id)
             .pending_checkpoints
-            .read(|pending| pending.get(root_session_id).copied())
-            .unwrap_or_default();
+            .load(std::sync::atomic::Ordering::Acquire);
         let mut activity = SubagentActivity {
             revision,
             durable,

@@ -32,7 +32,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -212,6 +212,8 @@ pub(super) struct ChildSession {
     pub(super) hibernations: u64,
 
     residency_lock: Sequencer,
+
+    marks: Arc<AgentMarks>,
 
     changes: Option<watch::Sender<u64>>,
 
@@ -588,13 +590,6 @@ pub struct Registry {
 
     checkpoint_changes: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
 
-    pending_checkpoints: Atom<HashMap<String, usize>>,
-
-    progress_captures: Atom<AgentMap<bool>>,
-
-    captured_once: Atom<nanocode_sync::Set<(String, AgentId)>>,
-
-    completed_tools: Atom<nanocode_sync::Set<(String, AgentId)>>,
     pending_resume: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
 
     manual_resume: std::sync::atomic::AtomicBool,
@@ -608,10 +603,6 @@ pub struct Registry {
     idle_waits: Atom<HashMap<String, (Vec<AgentId>, u32)>>,
 
     this: std::sync::OnceLock<Weak<Self>>,
-
-    status_queues: Atom<AgentMap<Arc<StatusQueue>>>,
-
-    evicting: Atom<HashMap<String, bool>>,
 
     completion_retries: Atom<AgentMap<(u32, bool)>>,
     completion_dispatch: Atom<AgentMap<Sequencer>>,
@@ -886,7 +877,9 @@ struct ResultReceipt {
 
 type Readers = Arc<Atom<Vec<Arc<ResultReceipt>>>>;
 
-type InterruptRequest = (String, Vec<AgentId>, Vec<(AgentId, Option<u64>)>);
+type Held = Vec<(AgentId, Option<u64>, Arc<AgentMarks>)>;
+
+type InterruptRequest = (String, Vec<AgentId>, Held);
 
 #[derive(Default)]
 struct Told {
@@ -993,16 +986,77 @@ struct CommittedCalls {
     omitted: u32,
 }
 
-const RETIRED_QUEUE: usize = usize::MAX;
-
-struct StatusQueue {
-    jobs: mpsc::UnboundedSender<Box<OrderedJob>>,
-    receiver: nanocode_sync::Slot<mpsc::UnboundedReceiver<Box<OrderedJob>>>,
-    queued: AtomicUsize,
+#[derive(Default)]
+pub(super) struct AgentMarks {
+    statuses: StatusLane,
+    captured: AtomicBool,
+    completed_tool: AtomicBool,
+    capturing: Rerun,
 }
 
+impl AgentMarks {
+    fn unobserved(&self) -> bool {
+        self.statuses.idle() && self.capturing.idle()
+    }
+}
+
+#[derive(Default)]
+struct StatusLane {
+    jobs: nanocode_sync::Inbox<OrderedJob>,
+    running: AtomicBool,
+}
+
+impl StatusLane {
+    fn idle(&self) -> bool {
+        !self.running.load(Ordering::Acquire) && self.jobs.is_empty()
+    }
+}
+
+#[derive(Default)]
+struct Rerun(AtomicU8);
+
+impl Rerun {
+    const IDLE: u8 = 0;
+    const RUNNING: u8 = 1;
+    const AGAIN: u8 = 2;
+
+    fn start(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                Some(if state == Self::IDLE {
+                    Self::RUNNING
+                } else {
+                    Self::AGAIN
+                })
+            })
+            == Ok(Self::IDLE)
+    }
+
+    fn finish(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                Some(if state == Self::AGAIN {
+                    Self::RUNNING
+                } else {
+                    Self::IDLE
+                })
+            })
+            != Ok(Self::AGAIN)
+    }
+
+    fn idle(&self) -> bool {
+        self.0.load(Ordering::Acquire) == Self::IDLE
+    }
+}
+
+#[derive(Clone)]
 enum OrderedJob {
-    Update(AgentUpdate),
+    Status(AgentStatus),
+
+    Completion {
+        status: AgentStatus,
+        revision: u64,
+    },
 
     Settle {
         status: AgentStatus,
@@ -1045,6 +1099,8 @@ enum JournalRequest {
 pub(super) struct ScopeLocks {
     pub(super) closing: Sequencer,
     warming: Sequencer,
+    pub(super) pending_checkpoints: AtomicUsize,
+    evicting: Rerun,
 }
 
 pub(super) struct Warm {
@@ -1352,7 +1408,6 @@ impl AgentScope {
         &self,
         root_session_id: &str,
         id: AgentId,
-        registry: &Registry,
         cache: &durable::JournalCache,
         checkpoints: &AgentMap<durable::JournalCheckpoint>,
     ) -> bool {
@@ -1377,7 +1432,7 @@ impl AgentScope {
                 session.journal_generation,
                 checkpoint.map(|checkpoint| &checkpoint.key),
             )
-            && registry.unobserved(&key)
+            && session.marks.unobserved()
     }
 
     fn cool(
@@ -1401,7 +1456,7 @@ impl AgentScope {
                 continue;
             };
             if !durable::leaf_ids(leaf)
-                .all(|id| self.coolable(root_session_id, id, registry, cache, &checkpoints))
+                .all(|id| self.coolable(root_session_id, id, cache, &checkpoints))
             {
                 continue;
             }
@@ -1552,7 +1607,7 @@ pub(super) struct CloseRequest {
     pub(super) root_session_id: String,
     pub(super) ids: Vec<AgentId>,
     pub(super) harnesses: Vec<HarnessHandle>,
-    pub(super) status_updates: Vec<(AgentId, AgentStatus)>,
+    pub(super) status_updates: Vec<(AgentId, AgentStatus, Arc<AgentMarks>)>,
 }
 
 pub(super) struct ClosedSessions {
@@ -1712,6 +1767,7 @@ pub(super) struct Hibernated {
 struct ResidentEviction {
     id: AgentId,
     harness: HarnessHandle,
+    marks: Arc<AgentMarks>,
     _lock: Turn,
 }
 
@@ -2399,19 +2455,18 @@ impl RegistryState {
         &self,
         root_session_id: &str,
         ids: &[AgentId],
-    ) -> Vec<(AgentId, AgentStatus)> {
+    ) -> Vec<(AgentId, AgentStatus, Arc<AgentMarks>)> {
         let Some(scope) = self.scopes.get(root_session_id) else {
             return Vec::new();
         };
         ids.iter()
-            .copied()
-            .filter(|id| {
-                scope
+            .filter_map(|id| {
+                let session = scope
                     .sessions
                     .get(id)
-                    .is_some_and(|session| matches!(session.status, AgentStatus::Closing))
+                    .filter(|session| matches!(session.status, AgentStatus::Closing))?;
+                Some((*id, AgentStatus::Closing, Arc::clone(&session.marks)))
             })
-            .map(|id| (id, AgentStatus::Closing))
             .collect()
     }
 
@@ -2447,11 +2502,7 @@ impl RegistryState {
         (root_session_id, ids, held)
     }
 
-    fn hold_unstarted(
-        &mut self,
-        root_session_id: &str,
-        ids: &[AgentId],
-    ) -> Vec<(AgentId, Option<u64>)> {
+    fn hold_unstarted(&mut self, root_session_id: &str, ids: &[AgentId]) -> Held {
         let Some(scope) = self.scopes.get_mut(root_session_id) else {
             return Vec::new();
         };
@@ -2473,12 +2524,16 @@ impl RegistryState {
                 if let Some(revision) = completion {
                     session.settle_completion(revision);
                 }
-                Some((*id, completion))
+                Some((*id, completion, Arc::clone(&session.marks)))
             })
             .collect()
     }
 
-    fn release_unstarted(&mut self, session_id: &str, id: AgentId) -> Option<String> {
+    fn release_unstarted(
+        &mut self,
+        session_id: &str,
+        id: AgentId,
+    ) -> Option<(String, Arc<AgentMarks>)> {
         let root = self.root_session_id(session_id).to_owned();
         let session = self.scopes.get_mut(&root)?.sessions.get_mut(&id)?;
         if session.active()
@@ -2489,7 +2544,8 @@ impl RegistryState {
             return None;
         }
         session.status = AgentStatus::Pending;
-        Some(root)
+        let marks = Arc::clone(&session.marks);
+        Some((root, marks))
     }
 
     fn harnesses(
@@ -2637,6 +2693,7 @@ impl RegistryState {
                 Residency::Resident(harness) => evictions.push(ResidentEviction {
                     id,
                     harness,
+                    marks: Arc::clone(&session.marks),
                     _lock: lock,
                 }),
                 Residency::Detached | Residency::Evicted => {
@@ -2737,10 +2794,6 @@ impl Registry {
             steer_watchers: Atom::default(),
             checkpoints: Atom::default(),
             checkpoint_changes: Atom::default(),
-            pending_checkpoints: Atom::default(),
-            progress_captures: Atom::default(),
-            captured_once: Atom::default(),
-            completed_tools: Atom::default(),
             pending_resume: Atom::default(),
             manual_resume: std::sync::atomic::AtomicBool::new(false),
             journal_version: std::sync::atomic::AtomicU32::new(durable::JOURNAL_VERSION),
@@ -2748,8 +2801,6 @@ impl Registry {
             wait_reported: Atom::default(),
             idle_waits: Atom::default(),
             this: std::sync::OnceLock::new(),
-            status_queues: Atom::default(),
-            evicting: Atom::default(),
             completion_retries: Atom::default(),
             completion_dispatch: Atom::default(),
             completion_batches: Atom::default(),
@@ -3592,18 +3643,13 @@ impl Registry {
             .is_some_and(|store| store.records_sessions())
     }
 
-    fn journal_holds_conversation(&self, root_session_id: &str, id: AgentId) -> bool {
-        !self.records_sessions(root_session_id)
-            && self
-                .captured_once
-                .read(|captured| captured.contains(&(root_session_id.to_owned(), id)))
+    fn journal_holds_conversation(&self, root_session_id: &str, marks: &AgentMarks) -> bool {
+        marks.captured.load(Ordering::Acquire) && !self.records_sessions(root_session_id)
     }
 
-    fn recorded_conversation(&self, root_session_id: &str, id: AgentId, conversation: bool) {
+    fn recorded_conversation(&self, root_session_id: &str, marks: &AgentMarks, conversation: bool) {
         if conversation && !self.records_sessions(root_session_id) {
-            self.captured_once.update(|captured| {
-                captured.insert((root_session_id.to_owned(), id));
-            });
+            marks.captured.store(true, Ordering::Release);
         }
     }
 
@@ -3611,9 +3657,10 @@ impl Registry {
         &self,
         root_session_id: &str,
         id: AgentId,
+        marks: &AgentMarks,
         snapshot: SessionCheckpoint,
     ) -> bool {
-        if self.journal_holds_conversation(root_session_id, id) {
+        if self.journal_holds_conversation(root_session_id, marks) {
             return true;
         }
         let conversation = snapshot.has_conversation();
@@ -3621,7 +3668,7 @@ impl Registry {
             durable::JournalCheckpoint::encode(snapshot, self.records_sessions(root_session_id));
         let recorded = self.insert_encoded(root_session_id, id, encoded);
         if recorded {
-            self.recorded_conversation(root_session_id, id, conversation);
+            self.recorded_conversation(root_session_id, marks, conversation);
         }
         recorded
     }
@@ -3630,9 +3677,10 @@ impl Registry {
         &self,
         root_session_id: &str,
         id: AgentId,
+        marks: &AgentMarks,
         snapshot: SessionCheckpoint,
     ) -> bool {
-        if self.journal_holds_conversation(root_session_id, id) {
+        if self.journal_holds_conversation(root_session_id, marks) {
             return true;
         }
         let conversation = snapshot.has_conversation();
@@ -3640,7 +3688,7 @@ impl Registry {
         let encoded = durable::JournalCheckpoint::encode(snapshot, retain);
         let recorded = self.insert_encoded(root_session_id, id, encoded);
         if recorded {
-            self.recorded_conversation(root_session_id, id, conversation);
+            self.recorded_conversation(root_session_id, marks, conversation);
         }
         recorded
     }
@@ -3774,38 +3822,40 @@ impl Registry {
         if self.store_for(root_session_id).is_none() {
             return false;
         }
-        self.pending_checkpoints.update(|pending| {
-            *pending.entry(root_session_id.to_owned()).or_default() += 1;
-        });
+        self.scope_locks(root_session_id)
+            .pending_checkpoints
+            .fetch_add(1, Ordering::AcqRel);
         true
     }
 
     fn finish_pending_checkpoint(&self, root_session_id: &str) {
-        self.pending_checkpoints.update(|pending| {
-            if let Some(count) = pending.get_mut(root_session_id) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    pending.remove(root_session_id);
-                }
-            }
-        });
+        let _ = self
+            .scope_locks(root_session_id)
+            .pending_checkpoints
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                pending.checked_sub(1)
+            });
         self.changed();
     }
 
-    pub(super) fn capture_progress(self: &Arc<Self>, root_session_id: &str, id: AgentId) {
+    fn capture_progress(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        id: AgentId,
+        marks: &Arc<AgentMarks>,
+    ) {
         if self.store_for(root_session_id).is_none() {
             return;
         }
         let key = (root_session_id.to_owned(), id);
-        if self.journal_holds_conversation(root_session_id, id) {
+        if self.journal_holds_conversation(root_session_id, marks) {
             return;
         }
+        let marks = Arc::clone(marks);
         if !self.records_sessions(root_session_id) {
             let registry = Arc::clone(self);
             drop(platform::spawn(async move {
-                let progressed = registry
-                    .completed_tools
-                    .update(|completed| completed.remove(&key));
+                let progressed = marks.completed_tool.swap(false, Ordering::AcqRel);
                 let (harness, commits) = registry.capture_target(&key.0, key.1).await;
                 if harness.is_none() {
                     return;
@@ -3824,7 +3874,7 @@ impl Registry {
                         }
                     })
                     .await;
-                registry.recorded_conversation(&key.0, key.1, true);
+                registry.recorded_conversation(&key.0, &marks, true);
                 registry
                     .settle_capture(&key.0, key.1, commits, progressed)
                     .await;
@@ -3832,57 +3882,29 @@ impl Registry {
             }));
             return;
         }
-        let started = self.progress_captures.update(|captures| {
-            if let Some(again) = captures.get_mut(&key) {
-                *again = true;
-                return false;
-            }
-            captures.insert(key.clone(), false);
-            true
-        });
-        if !started {
+        if !marks.capturing.start() {
             return;
         }
         let registry = Arc::clone(self);
         drop(platform::spawn(async move {
             loop {
-                let progressed = registry
-                    .completed_tools
-                    .read(|completed| completed.contains(&key))
-                    && registry
-                        .completed_tools
-                        .update(|completed| completed.remove(&key));
+                let progressed = marks.completed_tool.swap(false, Ordering::AcqRel);
                 let (harness, commits) = registry.capture_target(&key.0, key.1).await;
                 if let Some(harness) = harness
                     && let Ok(snapshot) = harness.snapshot().await
                     && registry.running_harness(&key.0, key.1).await.is_some()
                 {
                     let recorded = registry
-                        .record_checkpoint_off_thread(&key.0, key.1, snapshot)
+                        .record_checkpoint_off_thread(&key.0, key.1, &marks, snapshot)
                         .await;
                     registry
                         .settle_capture(&key.0, key.1, commits.filter(|_| recorded), progressed)
                         .await;
                     registry.changed();
                 } else if progressed {
-                    registry.completed_tools.update(|completed| {
-                        completed.insert(key.clone());
-                    });
+                    marks.completed_tool.store(true, Ordering::Release);
                 }
-                let finished =
-                    registry
-                        .progress_captures
-                        .update(|captures| match captures.get_mut(&key) {
-                            Some(again) if *again => {
-                                *again = false;
-                                false
-                            }
-                            _ => {
-                                captures.remove(&key);
-                                true
-                            }
-                        });
-                if finished {
+                if marks.capturing.finish() {
                     break;
                 }
             }
@@ -4160,13 +4182,6 @@ impl ChildSession {
 }
 
 impl Registry {
-    fn unobserved(&self, key: &(String, AgentId)) -> bool {
-        !self.status_queues.read(|queues| queues.contains_key(key))
-            && !self
-                .progress_captures
-                .read(|captures| captures.contains_key(key))
-    }
-
     fn forget(&self, root_session_id: &str, cooled: &[(AgentId, Vec<String>)]) {
         if cooled.is_empty() {
             return;
@@ -4183,16 +4198,6 @@ impl Registry {
                 for waiter in waiters {
                     reported.remove(&(waiter.clone(), *id));
                 }
-            }
-        });
-        self.captured_once.update(|captured| {
-            for (id, _) in cooled {
-                captured.remove(&key(id));
-            }
-        });
-        self.completed_tools.update(|completed| {
-            for (id, _) in cooled {
-                completed.remove(&key(id));
             }
         });
     }
@@ -4270,7 +4275,6 @@ impl Registry {
         let agents = durable::load_cold(store, root_session_id, cold).await?;
         let mut sessions = Vec::with_capacity(agents.len());
         let mut checkpoints = Vec::new();
-        let mut conversations = Vec::new();
         let mut waited = Vec::new();
         for (agent, cached) in agents {
             let id = agent.descriptor.id;
@@ -4278,8 +4282,8 @@ impl Registry {
                 checkpoints.push((id, durable::JournalCheckpoint::stored(key.clone(), None)));
             }
             let (session, _, _) = durable::restored_session(agent, None)?;
-            if session.conversation {
-                conversations.push(id);
+            if session.conversation && !store.records_sessions() {
+                session.marks.captured.store(true, Ordering::Release);
             }
             waited.extend(
                 session
@@ -4309,13 +4313,6 @@ impl Registry {
                     .collect::<Vec<_>>()
             })
             .await;
-        if !conversations.is_empty() && !store.records_sessions() {
-            self.captured_once.update(|captured| {
-                for id in &conversations {
-                    captured.insert((root_session_id.to_owned(), *id));
-                }
-            });
-        }
         if !checkpoints.is_empty() {
             self.checkpoints.update(|stored| {
                 for (id, checkpoint) in &checkpoints {
@@ -4512,7 +4509,6 @@ impl Registry {
                 let mut report = RestoreReport::default();
                 let mut waited = Vec::new();
                 let mut checkpoints = Vec::new();
-                let mut conversations = Vec::new();
                 if state
                     .scopes
                     .get(root_session_id)
@@ -4534,8 +4530,12 @@ impl Registry {
                     }
                     let checkpoint = agent.snapshot(&lineage)?;
                     let (session, resume, lost) = durable::restored_session(agent, checkpoint)?;
-                    if session.conversation {
-                        conversations.push(id);
+                    if session.conversation
+                        && registry
+                            .as_ref()
+                            .is_some_and(|registry| !registry.records_sessions(root_session_id))
+                    {
+                        session.marks.captured.store(true, Ordering::Release);
                     }
                     if session.completion.revision().is_some()
                         && session.status.wakes_parent()
@@ -4592,13 +4592,6 @@ impl Registry {
                     scope.cold.insert(*leaf, stored.clone());
                 }
                 if let Some(registry) = &registry {
-                    if !conversations.is_empty() && !registry.records_sessions(root_session_id) {
-                        registry.captured_once.update(|captured| {
-                            for id in &conversations {
-                                captured.insert((root_session_id.to_owned(), *id));
-                            }
-                        });
-                    }
                     registry.checkpoints.update(|stored| {
                         for (id, checkpoint) in &checkpoints {
                             stored.insert((root_session_id.to_owned(), *id), checkpoint.clone());
@@ -4805,14 +4798,19 @@ impl Registry {
             if let Some(revision) = completion {
                 session.settle_completion(revision);
             }
-            Some((session.status.clone(), completion))
+            Some((
+                session.status.clone(),
+                completion,
+                Arc::clone(&session.marks),
+            ))
         });
-        let Some((status, completion)) = settled.await else {
+        let Some((status, completion, lane)) = settled.await else {
             return;
         };
         self.enqueue_status(
             root_session_id,
             id,
+            lane,
             OrderedJob::Settle {
                 status,
                 completion,
@@ -5304,119 +5302,75 @@ impl Registry {
             .await
     }
 
-    fn send_status(&self, root_session_id: &str, update: AgentUpdate) {
-        let id = match &update {
-            AgentUpdate::Status { id, .. } | AgentUpdate::Completion { id, .. } => *id,
-            _ => return self.send(root_session_id, update),
-        };
-        self.enqueue_status(root_session_id, id, OrderedJob::Update(update));
-    }
-
-    fn enqueue_status(&self, root_session_id: &str, id: AgentId, job: OrderedJob) {
+    fn enqueue_status(
+        &self,
+        root_session_id: &str,
+        id: AgentId,
+        marks: Arc<AgentMarks>,
+        job: OrderedJob,
+    ) {
         let Some(registry) = self.this.get().cloned() else {
-            match job {
-                OrderedJob::Update(update) => self.send(root_session_id, update),
-                OrderedJob::Settle {
-                    status, completion, ..
-                } => self.send(root_session_id, settled_update(id, status, completion)),
-            }
+            self.send(
+                root_session_id,
+                match job {
+                    OrderedJob::Status(status) => AgentUpdate::Status { id, status },
+                    OrderedJob::Completion { status, revision } => AgentUpdate::Completion {
+                        id,
+                        status,
+                        revision,
+                    },
+                    OrderedJob::Settle {
+                        status, completion, ..
+                    } => settled_update(id, status, completion),
+                },
+            );
             return;
         };
-        let key = (root_session_id.to_owned(), id);
-        let (queue, first) = loop {
-            let queue = self
-                .status_queues
-                .read(|queues| queues.get(&key).cloned())
-                .unwrap_or_else(|| {
-                    let (jobs, receiver) = mpsc::unbounded_channel();
-                    let created = Arc::new(StatusQueue {
-                        jobs,
-                        receiver: nanocode_sync::Slot::new(Some(receiver)),
-                        queued: AtomicUsize::new(0),
-                    });
-                    self.status_queues.update(|queues| {
-                        Arc::clone(
-                            queues
-                                .entry(key.clone())
-                                .or_insert_with(|| Arc::clone(&created)),
-                        )
-                    })
-                });
-            let mut current = queue.queued.load(Ordering::Acquire);
-            let admitted = loop {
-                if current == RETIRED_QUEUE {
-                    break false;
-                }
-                match queue.queued.compare_exchange_weak(
-                    current,
-                    current + 1,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break true,
-                    Err(observed) => current = observed,
-                }
-            };
-            if admitted {
-                break (queue, current == 0);
-            }
-            self.retire_status_queue(&key, &queue);
-        };
-        if queue.jobs.send(Box::new(job)).is_err() || !first {
+        marks.statuses.jobs.push(job);
+        if marks.statuses.running.swap(true, Ordering::AcqRel) {
             return;
         }
+        let root = root_session_id.to_owned();
         drop(platform::spawn(async move {
-            let Some(mut receiver) = queue.receiver.take() else {
-                return;
-            };
+            let lane = &marks.statuses;
             loop {
-                let Some(job) = receiver.recv().await else {
-                    return;
-                };
-                let Some(registry) = registry.upgrade() else {
-                    return;
-                };
-                registry.run_ordered(&key.0, key.1, *job).await;
-                let mut current = queue.queued.load(Ordering::Acquire);
-                loop {
-                    let next = if current == 1 {
-                        RETIRED_QUEUE
-                    } else {
-                        current - 1
+                for job in lane.jobs.drain() {
+                    let Some(registry) = registry.upgrade() else {
+                        return;
                     };
-                    match queue.queued.compare_exchange_weak(
-                        current,
-                        next,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
-                        Ok(_) => break,
-                        Err(observed) => current = observed,
-                    }
+                    registry.run_ordered(&root, id, &marks, job).await;
                 }
-                if current == 1 {
-                    registry.retire_status_queue(&key, &queue);
+                lane.running.store(false, Ordering::Release);
+                if lane.jobs.is_empty() || lane.running.swap(true, Ordering::AcqRel) {
                     return;
                 }
             }
         }));
     }
 
-    fn retire_status_queue(&self, key: &(String, AgentId), queue: &Arc<StatusQueue>) {
-        self.status_queues.update(|queues| {
-            if queues
-                .get(key)
-                .is_some_and(|current| Arc::ptr_eq(current, queue))
-            {
-                queues.remove(key);
-            }
-        });
-    }
-
-    async fn run_ordered(self: &Arc<Self>, root_session_id: &str, id: AgentId, job: OrderedJob) {
+    async fn run_ordered(
+        self: &Arc<Self>,
+        root_session_id: &str,
+        id: AgentId,
+        marks: &AgentMarks,
+        job: OrderedJob,
+    ) {
         match job {
-            OrderedJob::Update(update) => {
-                self.send_unless_closed(root_session_id, id, update).await
+            OrderedJob::Status(status) => {
+                self.send_unless_closed(root_session_id, id, AgentUpdate::Status { id, status })
+                    .await
+            }
+            OrderedJob::Completion { status, revision } => {
+                self.send_unless_closed(
+                    root_session_id,
+                    id,
+                    AgentUpdate::Completion {
+                        id,
+                        status,
+                        revision,
+                    },
+                )
+                .await
             }
             OrderedJob::Settle {
                 status,
@@ -5424,10 +5378,10 @@ impl Registry {
                 harness,
             } => {
                 if let Some(harness) = harness {
-                    if !self.journal_holds_conversation(root_session_id, id)
+                    if !self.journal_holds_conversation(root_session_id, marks)
                         && let Ok(snapshot) = harness.snapshot().await
                     {
-                        self.record_checkpoint(root_session_id, id, snapshot);
+                        self.record_checkpoint(root_session_id, id, marks, snapshot);
                     }
                     self.finish_pending_checkpoint(root_session_id);
                 }
@@ -5545,17 +5499,15 @@ impl Registry {
                         .filter(|session| {
                             session.completion.awaits(revision) && session.status.wakes_parent()
                         })
-                        .map(|session| session.status.clone())
+                        .map(|session| (session.status.clone(), Arc::clone(&session.marks)))
                 })
                 .await;
-            if let Some(status) = status {
-                registry.send_status(
+            if let Some((status, lane)) = status {
+                registry.enqueue_status(
                     &key.0,
-                    AgentUpdate::Completion {
-                        id: key.1,
-                        status,
-                        revision,
-                    },
+                    key.1,
+                    lane,
+                    OrderedJob::Completion { status, revision },
                 );
             }
         }));
@@ -5580,22 +5532,25 @@ impl Registry {
                         descriptor.task = session.binding_task.clone();
                         descriptor
                     });
-                    Some((descriptor, session.status.clone(), revision))
+                    Some((
+                        descriptor,
+                        session.status.clone(),
+                        revision,
+                        Arc::clone(&session.marks),
+                    ))
                 })
                 .await;
-            let Some((descriptor, status, revision)) = announced else {
+            let Some((descriptor, status, revision, lane)) = announced else {
                 continue;
             };
             if let Some(descriptor) = descriptor {
                 self.send(root_session_id, AgentUpdate::Added(descriptor));
             }
-            self.send_status(
+            self.enqueue_status(
                 root_session_id,
-                AgentUpdate::Completion {
-                    id,
-                    status,
-                    revision,
-                },
+                id,
+                lane,
+                OrderedJob::Completion { status, revision },
             );
         }
         self.changed();
@@ -5647,7 +5602,9 @@ impl Registry {
         event_task: Task<()>,
         contract: OutputContract,
         spawned: Option<durable::Spawned>,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Arc<AgentMarks>> {
+        let marks = Arc::<AgentMarks>::default();
+        let created = Arc::clone(&marks);
         let OutputContract {
             validator,
             schema,
@@ -5685,7 +5642,7 @@ impl Registry {
                     None,
                 );
                 if let Some(snapshot) = checkpoint {
-                    registry.record_checkpoint(&root_session_id, descriptor.id, snapshot);
+                    registry.record_checkpoint(&root_session_id, descriptor.id, &marks, snapshot);
                 }
                 state.insert(
                     root_session_id,
@@ -5720,6 +5677,7 @@ impl Registry {
                         hibernated: None,
                         hibernations: 0,
                         residency_lock: Sequencer::new(),
+                        marks,
                         changes: None,
                         announce: false,
                         journal_generation: 0,
@@ -5764,7 +5722,7 @@ impl Registry {
                 ))),
             };
         }
-        Ok(())
+        Ok(created)
     }
 
     pub(super) fn queues_spawns(&self) -> bool {
@@ -5981,18 +5939,18 @@ impl Registry {
                     None,
                 );
                 if let Some(snapshot) = checkpoint {
-                    registry.record_checkpoint(&root, id, snapshot);
+                    registry.record_checkpoint(&root, id, &session.marks, snapshot);
                 }
                 session.residency = Residency::Resident(harness);
                 session.harness_task = Some(harness_task);
                 session.event_task = Some(event_task);
                 session.stored_runtime = StoredRuntime::None;
-                Ok(())
+                Ok(Arc::clone(&session.marks))
             })
             .await;
         match attached {
-            Ok(()) => {
-                let _ = start.send(0);
+            Ok(marks) => {
+                let _ = start.send((0, marks));
                 self.changed();
                 Ok(())
             }
@@ -6028,14 +5986,20 @@ impl Registry {
             if let Some(revision) = completion {
                 session.settle_completion(revision);
             }
-            Some((session.status.clone(), completion, harness))
+            Some((
+                session.status.clone(),
+                completion,
+                harness,
+                Arc::clone(&session.marks),
+            ))
         });
-        let Some((status, completion, harness)) = settled.await else {
+        let Some((status, completion, harness, lane)) = settled.await else {
             return;
         };
         self.enqueue_status(
             root_session_id,
             id,
+            lane,
             OrderedJob::Settle {
                 status,
                 completion,
@@ -6135,28 +6099,29 @@ impl Registry {
                         updated.task = session.binding_task.clone();
                         descriptor = Some(updated);
                     }
-                    Some(StartedTurn {
-                        revision,
-                        keeps_result: session.follow_up_output.is_some(),
-                    })
+                    Some((
+                        StartedTurn {
+                            revision,
+                            keeps_result: session.follow_up_output.is_some(),
+                        },
+                        Arc::clone(&session.marks),
+                    ))
                 };
                 (started, descriptor)
             })
             .await;
-        if started.is_some() {
-            if let Some(descriptor) = descriptor {
-                self.send(root_session_id, AgentUpdate::Added(descriptor));
-            }
-            self.send_status(
-                root_session_id,
-                AgentUpdate::Status {
-                    id,
-                    status: AgentStatus::Running,
-                },
-            );
-            self.changed();
+        let (started, lane) = started?;
+        if let Some(descriptor) = descriptor {
+            self.send(root_session_id, AgentUpdate::Added(descriptor));
         }
-        started
+        self.enqueue_status(
+            root_session_id,
+            id,
+            lane,
+            OrderedJob::Status(AgentStatus::Running),
+        );
+        self.changed();
+        Some(started)
     }
 
     pub(super) async fn harness_turn_start_failed(
@@ -6177,13 +6142,13 @@ impl Registry {
                 if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
                     session.status = AgentStatus::Failed { error };
                 }
-                Some(session.status.clone())
+                Some((session.status.clone(), Arc::clone(&session.marks)))
             })
             .await;
-        let Some(status) = status else {
+        let Some((status, lane)) = status else {
             return;
         };
-        self.send_status(root_session_id, AgentUpdate::Status { id, status });
+        self.enqueue_status(root_session_id, id, lane, OrderedJob::Status(status));
         self.changed();
     }
 
@@ -6213,7 +6178,13 @@ impl Registry {
                     && submitted_output.is_none()
                     && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed)
                 {
-                    return Some((session.status.clone(), None, None, false));
+                    return Some((
+                        session.status.clone(),
+                        None,
+                        None,
+                        false,
+                        Arc::clone(&session.marks),
+                    ));
                 }
 
                 session.resume_attempts = 0;
@@ -6258,15 +6229,22 @@ impl Registry {
                 if let Some(revision) = completion {
                     session.settle_completion(revision);
                 }
-                Some((session.status.clone(), completion, harness, true))
+                Some((
+                    session.status.clone(),
+                    completion,
+                    harness,
+                    true,
+                    Arc::clone(&session.marks),
+                ))
             })
             .await;
-        let Some((status, completion, harness, settled)) = finished else {
+        let Some((status, completion, harness, settled, lane)) = finished else {
             return;
         };
         self.enqueue_status(
             root_session_id,
             id,
+            lane,
             OrderedJob::Settle {
                 status,
                 completion,
@@ -6279,34 +6257,14 @@ impl Registry {
         }
         let registry = Arc::clone(self);
         let root_session_id = root_session_id.to_owned();
-        let started = registry.evicting.update(|evicting| {
-            if let Some(again) = evicting.get_mut(&root_session_id) {
-                *again = true;
-                return false;
-            }
-            evicting.insert(root_session_id.clone(), false);
-            true
-        });
-        if !started {
+        let locks = registry.scope_locks(&root_session_id);
+        if !locks.evicting.start() {
             return;
         }
         drop(platform::spawn(async move {
             loop {
                 registry.enforce_resident_limit(&root_session_id).await;
-                let finished =
-                    registry
-                        .evicting
-                        .update(|evicting| match evicting.get_mut(&root_session_id) {
-                            Some(again) if *again => {
-                                *again = false;
-                                false
-                            }
-                            _ => {
-                                evicting.remove(&root_session_id);
-                                true
-                            }
-                        });
-                if finished {
+                if locks.evicting.finish() {
                     break;
                 }
             }
@@ -6347,9 +6305,14 @@ impl Registry {
     }
 
     async fn evict(&self, root_session_id: &str, eviction: ResidentEviction) -> bool {
-        let ResidentEviction { id, harness, _lock } = eviction;
+        let ResidentEviction {
+            id,
+            harness,
+            marks,
+            _lock,
+        } = eviction;
         let snapshot = if self.store_for(root_session_id).is_some()
-            && self.journal_holds_conversation(root_session_id, id)
+            && self.journal_holds_conversation(root_session_id, &marks)
         {
             Ok(None)
         } else {
@@ -6361,7 +6324,12 @@ impl Registry {
                     None => None,
                     Some(snapshot)
                         if self.store_for(root_session_id).is_some()
-                            && self.record_checkpoint(root_session_id, id, snapshot.clone()) =>
+                            && self.record_checkpoint(
+                                root_session_id,
+                                id,
+                                &marks,
+                                snapshot.clone(),
+                            ) =>
                     {
                         None
                     }
@@ -6982,12 +6950,17 @@ impl Registry {
         outcome: NoticeOutcome,
         parent: &WeakAgent,
     ) {
-        self.completion_routes.update(|routes| {
-            let key = (root_session_id.to_owned(), id);
-            if routes.get(&key) == Some(&revision) {
-                routes.remove(&key);
-            }
-        });
+        let key = (root_session_id.to_owned(), id);
+        if self
+            .completion_routes
+            .read(|routes| routes.get(&key) == Some(&revision))
+        {
+            self.completion_routes.update(|routes| {
+                if routes.get(&key) == Some(&revision) {
+                    routes.remove(&key);
+                }
+            });
+        }
         match outcome {
             NoticeOutcome::Read => {
                 self.acknowledge_completion(root_session_id, id, revision)
@@ -7607,18 +7580,12 @@ impl Registry {
     ) -> std::io::Result<Turn> {
         let _warm = self.warm(&self.root_of(session_id), vec![to]).await?;
         let session = session_id.to_owned();
-        if let Some(root) = self
+        if let Some((root, lane)) = self
             .state
             .call(move |state| state.release_unstarted(&session, to))
             .await
         {
-            self.send_status(
-                &root,
-                AgentUpdate::Status {
-                    id: to,
-                    status: AgentStatus::Pending,
-                },
-            );
+            self.enqueue_status(&root, to, lane, OrderedJob::Status(AgentStatus::Pending));
             let turn = self.capacity.acquire(Waiter::Spawn).await;
             Box::pin(super::tools::start_unstarted(self, &root, to, turn)).await;
         }
@@ -7839,14 +7806,15 @@ impl Registry {
                         session.hibernated.take(),
                         session.hibernations,
                         session.turn.as_ref().is_some_and(|turn| turn.interrupted),
+                        Arc::clone(&session.marks),
                     )
                 })
                 .await;
-            let (announce, hibernated, hibernations, interrupted) = announce;
+            let (announce, hibernated, hibernations, interrupted, marks) = announce;
             if let Some(descriptor) = announce {
                 self.send(&root, AgentUpdate::Added(descriptor));
             }
-            let _ = start.send(hibernations);
+            let _ = start.send((hibernations, marks));
             if let Some(mut hibernated) = hibernated {
                 let capacity = hibernated
                     .capacity
@@ -8551,8 +8519,8 @@ impl Registry {
                 .call(move |state| state.request_close(&session, id))
                 .await?
         };
-        for (id, status) in status_updates {
-            self.send_status(&root_session_id, AgentUpdate::Status { id, status });
+        for (id, status, lane) in status_updates {
+            self.enqueue_status(&root_session_id, id, lane, OrderedJob::Status(status));
         }
         self.changed();
         let summaries = self
@@ -8619,8 +8587,10 @@ impl Registry {
                         return Err(std::io::Error::other("subagent runtime is closed"));
                     };
                     let captures_pending = registry
+                        .scope_locks(&root)
                         .pending_checkpoints
-                        .read(|pending| pending.contains_key(&root));
+                        .load(Ordering::Acquire)
+                        > 0;
                     if captures_pending {
                         return Ok(Err(root));
                     }
@@ -8653,9 +8623,9 @@ impl Registry {
                     }
                     Err(_) => {
                         tracing::warn!(%root, "subagent checkpoint capture timed out during shutdown");
-                        self.pending_checkpoints.update(|pending| {
-                            pending.remove(&root);
-                        });
+                        self.scope_locks(&root)
+                            .pending_checkpoints
+                            .store(0, Ordering::Release);
                         continue;
                     }
                 }
@@ -8675,8 +8645,8 @@ impl Registry {
             None => Ok(()),
         };
 
-        for (id, status) in status_updates {
-            self.send_status(&root_session_id, AgentUpdate::Status { id, status });
+        for (id, status, lane) in status_updates {
+            self.enqueue_status(&root_session_id, id, lane, OrderedJob::Status(status));
         }
         self.changed();
         let root = root_session_id.clone();
@@ -8861,11 +8831,12 @@ impl Registry {
         );
     }
 
-    fn settle_held(&self, root_session_id: &str, held: Vec<(AgentId, Option<u64>)>) {
-        for (id, completion) in held {
+    fn settle_held(&self, root_session_id: &str, held: Held) {
+        for (id, completion, lane) in held {
             self.enqueue_status(
                 root_session_id,
                 id,
+                lane,
                 OrderedJob::Settle {
                     status: AgentStatus::Interrupted,
                     completion,
@@ -9120,6 +9091,7 @@ impl ChildSession {
             hibernated: None,
             hibernations: 0,
             residency_lock: Sequencer::new(),
+            marks: Arc::default(),
             changes: None,
             announce: true,
             journal_generation: 0,
@@ -9390,12 +9362,12 @@ pub(super) fn forward_events(
     id: AgentId,
     parent: Option<AgentId>,
     mut events: AgentEvents,
-    start: oneshot::Receiver<u64>,
+    start: oneshot::Receiver<(u64, Arc<AgentMarks>)>,
     registry: Weak<Registry>,
     updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
 ) -> Task<()> {
     platform::spawn(async move {
-        let Ok(hibernations) = start.await else {
+        let Ok((hibernations, marks)) = start.await else {
             return;
         };
         while let Some(first) = events.recv().await {
@@ -9431,12 +9403,10 @@ pub(super) fn forward_events(
                     registry.track_events(&root_session_id, id, tracked).await;
                 }
                 if completed_tool {
-                    registry.completed_tools.update(|completed| {
-                        completed.insert((root_session_id.clone(), id));
-                    });
+                    marks.completed_tool.store(true, Ordering::Release);
                 }
                 if progress {
-                    registry.capture_progress(&root_session_id, id);
+                    registry.capture_progress(&root_session_id, id, &marks);
                 }
             }
         }

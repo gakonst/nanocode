@@ -591,7 +591,7 @@ pub async fn start_agents_observed(
             Arc::downgrade(registry),
             registry.updates.clone(),
         );
-        if let Err(error) = registry
+        let marks = match registry
             .insert(
                 reservation.root_session_id.clone(),
                 descriptor.clone(),
@@ -603,8 +603,9 @@ pub async fn start_agents_observed(
             )
             .await
         {
-            return Err(startup.fail(error).await.into());
-        }
+            Ok(marks) => marks,
+            Err(error) => return Err(startup.fail(error).await.into()),
+        };
         startup.track(&reservation.root_session_id, id);
         reports.push(AgentStartReport {
             agent_id: id,
@@ -619,6 +620,7 @@ pub async fn start_agents_observed(
             reservation.root_session_id.clone(),
             descriptor,
             start_events,
+            marks,
         ));
         launches.push((
             reservation.root_session_id,
@@ -628,9 +630,9 @@ pub async fn start_agents_observed(
         ));
     }
 
-    for (root_session_id, descriptor, start_events) in additions {
+    for (root_session_id, descriptor, start_events, marks) in additions {
         registry.send(&root_session_id, AgentUpdate::Added(descriptor));
-        let _ = start_events.send(0);
+        let _ = start_events.send((0, marks));
     }
 
     let launches = launches
@@ -840,7 +842,7 @@ async fn start_child(
         Arc::downgrade(registry),
         registry.updates.clone(),
     );
-    registry
+    let marks = registry
         .insert(
             reservation.root_session_id.clone(),
             descriptor.clone(),
@@ -856,7 +858,7 @@ async fn start_child(
         .await?;
     startup.track(&reservation.root_session_id, id);
     registry.send(&reservation.root_session_id, AgentUpdate::Added(descriptor));
-    let _ = start_events.send(0);
+    let _ = start_events.send((0, marks));
 
     if let Err(error) = registry
         .launch_initial_turn(

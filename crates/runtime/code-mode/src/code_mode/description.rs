@@ -240,6 +240,14 @@ pub fn augment_definition_for_code_mode(mut definition: ToolDefinition) -> ToolD
 }
 
 fn exec_tool_declaration(spec: &ToolDefinition) -> Option<String> {
+    let member = tool_declaration(spec)?;
+    Some(format!(
+        "exec tool declaration:\n```ts\ndeclare const tools: {{ {member} }};\n```"
+    ))
+}
+
+#[must_use]
+pub fn tool_declaration(spec: &ToolDefinition) -> Option<String> {
     let (input_name, input_type) = match spec {
         ToolDefinition::Function { .. } => (
             "args",
@@ -266,7 +274,7 @@ fn exec_tool_declaration(spec: &ToolDefinition) -> Option<String> {
     };
     let global_name = normalize_identifier(spec.name());
     Some(format!(
-        "exec tool declaration:\n```ts\ndeclare const tools: {{ {global_name}({input_name}: {input_type}): Promise<{output_type}>; }};\n```"
+        "{global_name}({input_name}: {input_type}): Promise<{output_type}>;"
     ))
 }
 

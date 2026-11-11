@@ -125,6 +125,30 @@ impl<T> Swap<T> {
     }
 }
 
+pub struct Enclosed<T>(Swap<T>);
+
+impl<T> Enclosed<T> {
+    pub fn from_pointee(value: T) -> Self {
+        Self(Swap::from_pointee(value))
+    }
+
+    pub fn load_full(&self) -> Arc<T> {
+        self.0.load_full()
+    }
+
+    pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
+        read(&self.0.load())
+    }
+
+    pub fn swap(&self, value: Arc<T>) -> Arc<T> {
+        self.0.swap(value)
+    }
+
+    pub fn compare_and_swap(&self, current: &Arc<T>, new: Arc<T>) -> Arc<T> {
+        Guard::into_inner(self.0.compare_and_swap(current, new))
+    }
+}
+
 impl<T> SwapOption<T> {
     pub const fn const_empty() -> Self {
         Self(AtomicCell::new(None))

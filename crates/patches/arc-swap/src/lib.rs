@@ -162,7 +162,7 @@ mod imports {
 use core::borrow::Borrow;
 use core::fmt::{Debug, Display, Formatter, Result as FmtResult};
 use core::marker::PhantomData;
-use core::mem;
+use core::mem::{self, ManuallyDrop};
 use core::ops::Deref;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -711,6 +711,57 @@ impl<T, S: Strategy<Arc<T>>> ArcSwapAny<Arc<T>, S> {
         S: Default,
     {
         Self::from(Arc::new(val))
+    }
+}
+
+/// An [`ArcSwap`] that never lets a [`Guard`] out.
+///
+/// A [`Guard`] is not tied to the lifetime of the [`ArcSwapAny`] it was loaded from, so dropping
+/// an [`ArcSwapAny`] has to walk the debts of every thread in case one of them is still owed
+/// against the reference count it holds. Here the value comes out either as a full `Arc` or as a
+/// reference lent to a closure, and both borrow the storage for the whole time a debt may exist.
+/// A storage that is being dropped is borrowed by nobody, so no debt can be owed against it and
+/// the drop gives up its reference count without the walk.
+///
+/// This is not part of the upstream crate.
+pub struct Enclosed<T>(ManuallyDrop<ArcSwap<T>>);
+
+impl<T> Enclosed<T> {
+    /// A constructor directly from the pointed-to value.
+    pub fn from_pointee(val: T) -> Self {
+        Self(ManuallyDrop::new(ArcSwap::from_pointee(val)))
+    }
+
+    /// Loads the value, see [`ArcSwapAny::load_full`].
+    pub fn load_full(&self) -> Arc<T> {
+        self.0.load_full()
+    }
+
+    /// Lends the value to the closure, see [`ArcSwapAny::load`].
+    #[inline]
+    pub fn with<R, F: FnOnce(&T) -> R>(&self, f: F) -> R {
+        f(&ArcSwap::load(&self.0))
+    }
+
+    /// Exchanges the value inside this instance, see [`ArcSwapAny::swap`].
+    pub fn swap(&self, new: Arc<T>) -> Arc<T> {
+        self.0.swap(new)
+    }
+
+    /// Swaps the stored Arc if it equals to `current` and returns the previous value, see
+    /// [`ArcSwapAny::compare_and_swap`].
+    pub fn compare_and_swap(&self, current: &Arc<T>, new: Arc<T>) -> Arc<T> {
+        Guard::into_inner(self.0.compare_and_swap(current, new))
+    }
+}
+
+impl<T> Drop for Enclosed<T> {
+    fn drop(&mut self) {
+        let ptr = *self.0.ptr.get_mut();
+        // Every guard loaded from here was dropped inside the method that loaded it, while that
+        // method borrowed `self`. Nobody borrows `self` now, so there is no debt to pay: we are
+        // only getting rid of the one stored ref count.
+        unsafe { <Arc<T> as RefCnt>::dec(ptr) };
     }
 }
 

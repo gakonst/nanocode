@@ -19,6 +19,8 @@ mod wakes;
 mod weighed;
 
 #[cfg(not(target_family = "wasm"))]
+use arc_swap::Enclosed;
+#[cfg(not(target_family = "wasm"))]
 pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
 pub use armed::Armed;
 #[cfg(not(target_family = "wasm"))]
@@ -35,6 +37,8 @@ pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 pub use shared::{Map, Set};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{Duplex, pipe, splice};
+#[cfg(target_family = "wasm")]
+use swap::Enclosed;
 #[cfg(target_family = "wasm")]
 pub use swap::{Guard, Swap, SwapOption};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
@@ -78,7 +82,7 @@ impl Signal {
     }
 }
 
-pub struct Atom<T>(Swap<T>);
+pub struct Atom<T>(Enclosed<T>);
 
 impl<T: Default> Default for Atom<T> {
     fn default() -> Self {
@@ -88,13 +92,16 @@ impl<T: Default> Default for Atom<T> {
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Atom<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_tuple("Atom").field(&self.0.load()).finish()
+        formatter
+            .debug_tuple("Atom")
+            .field(&self.0.load_full())
+            .finish()
     }
 }
 
 impl<T> Atom<T> {
     pub fn new(value: T) -> Self {
-        Self(Swap::from_pointee(value))
+        Self(Enclosed::from_pointee(value))
     }
 
     #[must_use]
@@ -103,7 +110,7 @@ impl<T> Atom<T> {
     }
 
     pub fn read<R>(&self, read: impl FnOnce(&T) -> R) -> R {
-        read(&self.0.load())
+        self.0.with(read)
     }
 
     pub fn set(&self, value: T) -> Arc<T> {
@@ -121,7 +128,7 @@ impl<T: Clone> Atom<T> {
             if Arc::ptr_eq(&previous, &current) {
                 return output;
             }
-            current = Guard::into_inner(previous);
+            current = previous;
         }
     }
 
@@ -138,7 +145,7 @@ impl<T: Clone> Atom<T> {
             if Arc::ptr_eq(&previous, &current) {
                 return Ok(output);
             }
-            current = Guard::into_inner(previous);
+            current = previous;
         }
     }
 }

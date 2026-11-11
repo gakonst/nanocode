@@ -1,14 +1,19 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fs::{self, File},
-    io::{BufReader, Write},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 use nanocode_durability_core::{StateSummary, StoreError};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use super::{Location, archive, backend, identity, index::digest_anchor};
+use super::{
+    Documents, JOURNAL_READ_BUFFER_BYTES, Kind, Location, archive, backend, identity,
+    index::digest_anchor,
+};
 
 const FILE: &str = ".summaries.json.zst";
 const LEGACY: &str = ".summaries.json";
@@ -48,6 +53,77 @@ impl Anchor {
             digest_anchor(&mut File::open(path).ok()?, Some(location)).ok()
         };
         digest() == Some(self.digest)
+    }
+}
+
+#[derive(Deserialize)]
+struct Replaced<'a> {
+    #[serde(rename = "type")]
+    kind: Kind,
+    #[serde(borrow)]
+    state_id: Option<Cow<'a, str>>,
+    revision: Option<u64>,
+}
+
+fn replaced(lines: &[u8], state_id: &str) -> Option<(u64, usize)> {
+    let mut end = lines.strip_suffix(b"\n")?.len();
+    let mut last = None;
+    loop {
+        let start = lines[..end]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        let last = *last.get_or_insert(start);
+        if let Ok((entry, _)) = Documents::of::<Replaced>(&lines[start..end])
+            && matches!(entry.kind, Kind::Replace | Kind::Import)
+            && entry.state_id.as_deref() == Some(state_id)
+        {
+            return Some((entry.revision?, last));
+        }
+        end = start.checked_sub(1)?;
+    }
+}
+
+fn ending(path: &Path, length: u64, state_id: &str) -> Option<(u64, Anchor)> {
+    if archive::unarchived(path.file_name()?.to_str()?).is_some() {
+        let stored = fs::read(path).ok()?;
+        let (revision, _) = replaced(&archive::decompress(&stored).ok()?, state_id)?;
+        let anchor = Anchor {
+            position: 0,
+            digest: Sha256::digest(&stored).into(),
+        };
+        return Some((revision, anchor));
+    }
+    let mut file = File::open(path).ok()?;
+    let mut wanted = JOURNAL_READ_BUFFER_BYTES as u64;
+    loop {
+        let start = length.saturating_sub(wanted);
+        let mut bytes = vec![0; usize::try_from(length - start).ok()?];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut bytes).ok()?;
+        if !bytes.ends_with(b"\n") {
+            return None;
+        }
+        let whole = match start {
+            0 => Some(0),
+            _ => bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|at| at + 1),
+        };
+        if let Some(whole) = whole
+            && let Some((revision, last)) = replaced(&bytes[whole..], state_id)
+        {
+            let anchor = Anchor {
+                position: start + (whole + last) as u64,
+                digest: Sha256::digest(&bytes[whole + last..]).into(),
+            };
+            return Some((revision, anchor));
+        }
+        if start == 0 {
+            return None;
+        }
+        wanted = wanted.saturating_mul(2);
     }
 }
 
@@ -117,7 +193,13 @@ impl Summaries {
         let same = match (revision, known.anchor) {
             (Some(revision), _) => known.revision == revision,
             (None, Some(anchor)) => anchor.holds(path, length),
-            (None, None) => false,
+            (None, None) => match ending(path, length, state_id) {
+                Some((revision, anchor)) if revision == known.revision => {
+                    known.anchor = Some(anchor);
+                    true
+                }
+                _ => false,
+            },
         };
         if !same {
             return None;

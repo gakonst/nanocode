@@ -4199,6 +4199,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gix-imara-diff"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7518b930f6aeb75e871d32ce873c2ae46e35cef19b5a0b039d4337f651d897cd"
+dependencies = [
+ "bstr",
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8241,6 +8251,7 @@ dependencies = [
  "bstr",
  "deser-core",
  "deser-json",
+ "gix-imara-diff",
  "globset",
  "grep-matcher",
  "grep-printer",
@@ -8250,6 +8261,7 @@ dependencies = [
  "jaq-core",
  "libm",
  "memchr",
+ "miniz_oxide",
  "psh-classify",
  "psh-engine",
  "psh-regex",

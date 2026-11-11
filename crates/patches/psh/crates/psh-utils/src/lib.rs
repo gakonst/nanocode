@@ -59,6 +59,7 @@ mod tr;
 mod uniq;
 
 mod find;
+mod git;
 mod jq;
 mod xargs;
 
@@ -88,6 +89,12 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::Always,
         destructive: false,
         run: util_fn!(jq::run),
+    },
+    UtilEntry {
+        names: &["git"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(git::run),
     },
     UtilEntry {
         names: &["find"],

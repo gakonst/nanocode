@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 
 use super::disasm::{DisasmContext, disasm};
-use super::handlers::{Handler, HandlerTable, encode_handlers};
+use super::handlers::{Handler, HandlerTable, write_handlers};
 use super::stack::{StackError, StackScratch, check_stack_in};
 use crate::heap::cells::{Bytes, CellKind, FuncInfo, FuncTemplate, Script, U32Array, ValueArray};
 use crate::heap::{Atom, Heap, HeapError, Ref};
@@ -139,15 +139,12 @@ pub fn alloc_template_in(
     let stack = check_stack_in(p.code, p.handlers, scratch).map_err(TemplateError::Stack)?;
     let cache_sites = &scratch.caches;
     let captures = u16::try_from(p.captures.len()).map_err(|_| TemplateError::TooManyCaptures)?;
-    let mut data = Vec::with_capacity(p.code.len() + 4 * p.captures.len());
-    data.extend_from_slice(p.code);
-    let ic_count = number_caches(&mut data, cache_sites);
-    for c in p.captures {
-        data.extend_from_slice(&c.to_le_bytes());
-    }
-    data.extend_from_slice(&encode_handlers(p.handlers));
+    // The code, the capture descriptors and the handler records, written into the cell
+    // (not gathered in a buffer first: a copy and two allocations per function).
+    let handlers_at = p.code.len() + 4 * p.captures.len();
     let code_len = u32::try_from(p.code.len()).map_err(|_| HeapError::OutOfMemory)?;
-    let data_len = u32::try_from(data.len()).map_err(|_| HeapError::OutOfMemory)?;
+    let data_len =
+        u32::try_from(handlers_at + 16 * p.handlers.len()).map_err(|_| HeapError::OutOfMemory)?;
     let consts = nonempty(p.consts, |v| alloc_value_array(heap, v))?;
     let info = alloc_info(heap, p)?;
     let size = FuncTemplate::DATA
@@ -164,12 +161,19 @@ pub fn alloc_template_in(
     a.set(off, FuncTemplate::LOCALS, p.locals);
     a.set(off, FuncTemplate::STACK, stack);
     a.set(off, FuncTemplate::CAPTURES, captures);
-    a.set(off, FuncTemplate::IC_COUNT, ic_count);
     a.set(off, FuncTemplate::CODE_LEN, code_len);
     a.set(off, FuncTemplate::CONSTS, consts);
     a.set(off, FuncTemplate::INFO, info);
-    a.slice_mut(FuncTemplate::DATA.at(off, 0), data_len)
-        .copy_from_slice(&data);
+    let data = a.slice_mut(FuncTemplate::DATA.at(off, 0), data_len);
+    let (code, rest) = data.split_at_mut(p.code.len());
+    code.copy_from_slice(p.code);
+    let ic_count = number_caches(code, cache_sites);
+    let (words, records) = rest.split_at_mut(4 * p.captures.len());
+    for (c, w) in p.captures.iter().zip(words.chunks_exact_mut(4)) {
+        w.copy_from_slice(&c.to_le_bytes());
+    }
+    write_handlers(p.handlers, records);
+    a.set(off, FuncTemplate::IC_COUNT, ic_count);
     Ok(Ref(off))
 }
 

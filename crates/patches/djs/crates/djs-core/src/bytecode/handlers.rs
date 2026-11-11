@@ -29,13 +29,21 @@ impl Handler {
 
 /// Encodes handler records.
 pub fn encode_handlers(handlers: &[Handler]) -> Vec<u8> {
-    let mut out = crate::buf::vec_with_capacity(handlers.len() * RECORD);
-    for h in handlers {
-        for w in [h.start, h.end, h.target, h.depth] {
-            out.extend_from_slice(&w.to_le_bytes());
+    let mut out = alloc::vec![0; handlers.len() * RECORD];
+    write_handlers(handlers, &mut out);
+    out
+}
+
+/// Encodes handler records into `out`, which is that many records long.
+pub(super) fn write_handlers(handlers: &[Handler], out: &mut [u8]) {
+    for (h, r) in handlers.iter().zip(out.chunks_exact_mut(RECORD)) {
+        for (w, b) in [h.start, h.end, h.target, h.depth]
+            .iter()
+            .zip(r.chunks_exact_mut(4))
+        {
+            b.copy_from_slice(&w.to_le_bytes());
         }
     }
-    out
 }
 
 /// A read-only view of an encoded handler table.

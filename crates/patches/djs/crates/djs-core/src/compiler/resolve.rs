@@ -660,7 +660,8 @@ fn emit_lazy(
     unit: &Unit,
     scratch: &mut Scratch,
 ) -> PResult<Ref> {
-    let captures = capture_words(f, parent_storage)?;
+    let mut captures = Vec::new();
+    capture_words(f, parent_storage, &mut captures)?;
     let captures: Vec<u32> = captures.iter().zip(attrs).map(|(&w, &a)| w | a).collect();
     let mut cursor = crate::lexer::LineCursor::default();
     let (line, col) = unit.line_col(line_table, src, f.src_start, &mut cursor);
@@ -1117,7 +1118,9 @@ fn emit_function(
     // shortening of each emitted `await`/`yield`.
     #[cfg(feature = "dump")]
     let mut suspends: Vec<(u32, u32)> = Vec::new();
-    let mut needs_uninit = vec![false; f.vars.len()];
+    let mut needs_uninit = core::mem::take(&mut scratch.needs_uninit);
+    needs_uninit.clear();
+    needs_uninit.resize(f.vars.len(), false);
     for r in resolved {
         if let (Target::Var(v), true) = (r.target, r.check) {
             needs_uninit[v as usize] = true;
@@ -1136,7 +1139,8 @@ fn emit_function(
     let estimate = all.len() * 3;
     let mut label_count = phase1.label_count;
     super::peephole::simplify(&mut all, &mut label_count, &mut scratch.peephole);
-    let mut out = CodeBuf::with_labels(label_count);
+    let mut out = core::mem::take(&mut scratch.out);
+    out.reset(label_count);
     out.reserve(estimate + 16);
 
     // ---- Prologue (docs/compiler.md 5.5, 5.7).
@@ -1514,13 +1518,14 @@ fn emit_function(
             _ => out.emit_insn(&insn),
         }
     }
-    let code = out
-        .finish()
+    let mut code = core::mem::take(&mut scratch.code);
+    out.finish_in(&mut code, &mut scratch.finish)
         .map_err(|e| internal(&crate::detail::detail("bytecode", &e)))?;
     for e in &mut lines {
         e.0 = code.map_pos(e.0);
     }
-    let mut handlers = crate::buf::vec_with_capacity(f.handlers.len());
+    let mut handlers = core::mem::take(&mut scratch.handlers);
+    handlers.clear();
     for h in &f.handlers {
         let pos = |l| {
             code.label_pos(l)
@@ -1542,22 +1547,24 @@ fn emit_function(
     }
 
     // ---- Captures, children, line table, template.
-    let capture_words = capture_words(f, parent_storage)?;
-    let children: Vec<Ref> = f.children.iter().map(|&c| templates[c as usize]).collect();
-    let (line_bytes, all_names) = match line_table {
-        Some(line_table) => {
-            let mut lt = LineTableBuilder::new();
-            let mut cursor = crate::lexer::LineCursor::default();
-            for &(pc, pos) in &lines {
-                let (line, col) = unit.line_col(line_table, src, pos, &mut cursor);
-                lt.add(pc, line, col);
-            }
-            let mut all_names = names.clone();
-            all_names.extend_from_slice(&f.capture_names);
-            (lt.finish(), all_names)
+    let mut capture_words = core::mem::take(&mut scratch.captures);
+    self::capture_words(f, parent_storage, &mut capture_words)?;
+    let mut children = core::mem::take(&mut scratch.children);
+    children.clear();
+    children.extend(f.children.iter().map(|&c| templates[c as usize]));
+    let mut lt = LineTableBuilder::with_buffer(core::mem::take(&mut scratch.line_bytes));
+    let mut all_names = core::mem::take(&mut scratch.names);
+    all_names.clear();
+    if let Some(line_table) = line_table {
+        let mut cursor = crate::lexer::LineCursor::default();
+        for &(pc, pos) in &lines {
+            let (line, col) = unit.line_col(line_table, src, pos, &mut cursor);
+            lt.add(pc, line, col);
         }
-        None => (Vec::new(), Vec::new()),
-    };
+        all_names.extend_from_slice(names);
+        all_names.extend_from_slice(&f.capture_names);
+    }
+    let line_bytes = lt.finish();
     let flags = template_flags(f, privileged);
     let params = f.param_count - u16::from(f.rest.is_some());
     let parts = TemplateParts {
@@ -1581,15 +1588,32 @@ fn emit_function(
         TemplateError::Heap(e) => e.into(),
         e => internal(&crate::detail::detail("template", &e)),
     });
-    scratch.lines = lines;
-    scratch.insns = all;
+    *scratch = Scratch {
+        lines,
+        stack: core::mem::take(&mut scratch.stack),
+        insns: all,
+        peephole: core::mem::take(&mut scratch.peephole),
+        needs_uninit,
+        out,
+        code,
+        finish: core::mem::take(&mut scratch.finish),
+        handlers,
+        captures: capture_words,
+        children,
+        names: all_names,
+        line_bytes,
+    };
     t
 }
 
-/// The capture descriptors of `f` (`capture_desc`).
+/// The capture descriptors of `f` (`capture_desc`), into `capture_words`.
 #[inline(always)]
-fn capture_words(f: &FuncState, parent_storage: Option<&Vec<Storage>>) -> PResult<Vec<u32>> {
-    let mut capture_words = crate::buf::vec_with_capacity(f.captures.len());
+fn capture_words(
+    f: &FuncState,
+    parent_storage: Option<&Vec<Storage>>,
+    capture_words: &mut Vec<u32>,
+) -> PResult<()> {
+    capture_words.clear();
     for &c in &f.captures {
         capture_words.push(match c {
             Capture::Outer(i) => capture_desc::outer(i),
@@ -1604,7 +1628,7 @@ fn capture_words(f: &FuncState, parent_storage: Option<&Vec<Storage>>) -> PResul
             },
         });
     }
-    Ok(capture_words)
+    Ok(())
 }
 
 /// The `func_flags` of `f`'s template.
@@ -1651,6 +1675,15 @@ struct Scratch {
     stack: crate::bytecode::StackScratch,
     insns: Vec<crate::bytecode::Insn>,
     peephole: super::peephole::Scratch,
+    needs_uninit: Vec<bool>,
+    out: CodeBuf,
+    code: crate::bytecode::Code,
+    finish: crate::bytecode::FinishScratch,
+    handlers: Vec<crate::bytecode::Handler>,
+    captures: Vec<u32>,
+    children: Vec<Ref>,
+    names: Vec<Atom>,
+    line_bytes: Vec<u8>,
 }
 
 /// A const enum member read through the binding of declaration `d`: the

@@ -36,6 +36,13 @@ impl LineTableBuilder {
         }
     }
 
+    /// A builder that writes into `out`, emptied: a buffer used for another table
+    /// before.
+    pub fn with_buffer(mut out: Vec<u8>) -> Self {
+        out.clear();
+        LineTableBuilder { out, ..Self::new() }
+    }
+
     /// Records that code from `pc` on comes from `line:col`. Entries must come in
     /// non-decreasing pc order; an entry at the same pc as the previous one replaces it
     /// only in effect (both are kept, the later wins on lookup). Repeats of the current

@@ -61,7 +61,7 @@ pub enum CodeError {
 }
 
 /// Finished final code.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Code {
     pub code: Vec<u8>,
     /// Position of every label (`u32::MAX` if never placed and never used).
@@ -361,10 +361,42 @@ impl<M: LabelMode> CodeBuf<M> {
     }
 }
 
+/// The buffers of [`CodeBuf::finish_in`], reused across the functions of a unit.
+#[derive(Default)]
+pub struct FinishScratch {
+    jumps: Vec<(u32, u32)>,
+    target_at: Vec<u32>,
+    short: Vec<bool>,
+}
+
 impl CodeBuf<Final> {
+    /// Empties the buffer for the code of another function, with labels `0..count`
+    /// created; its allocations stay.
+    pub fn reset(&mut self, count: u32) {
+        self.code.clear();
+        self.labels.clear();
+        self.labels.resize(count as usize, UNPLACED);
+        self.fixups.clear();
+        self.last = None;
+        self.error = None;
+    }
+
     /// Resolves the jump targets, shortens the jumps whose offset fits a byte
     /// (D2443), and returns the code.
-    pub fn finish(self) -> Result<Code, CodeError> {
+    pub fn finish(mut self) -> Result<Code, CodeError> {
+        let mut code = Code::default();
+        self.finish_in(&mut code, &mut FinishScratch::default())?;
+        Ok(code)
+    }
+
+    /// [`CodeBuf::finish`] into `done`, whose allocations and those of `scratch` are
+    /// used again (a unit's functions were nine allocations each here). The buffer is
+    /// left for [`CodeBuf::reset`].
+    pub fn finish_in(
+        &mut self,
+        done: &mut Code,
+        scratch: &mut FinishScratch,
+    ) -> Result<(), CodeError> {
         if let Some(e) = self.error {
             return Err(e);
         }
@@ -373,15 +405,25 @@ impl CodeBuf<Final> {
         }
         let CodeBuf {
             code,
-            mut labels,
+            labels,
             fixups,
             ..
         } = self;
+        let FinishScratch {
+            jumps,
+            target_at,
+            short,
+        } = scratch;
+        let Code {
+            code: out,
+            labels: done_labels,
+            shortened,
+        } = done;
         // Each fixup: the instruction's start and the target's position, as emitted
         // (a jump's target is its last immediate, `iter_next_loc`'s after its local).
-        let mut jumps = crate::buf::vec_with_capacity(fixups.len());
-        let mut target_at = crate::buf::vec_with_capacity(fixups.len());
-        for &(start, at) in &fixups {
+        jumps.clear();
+        target_at.clear();
+        for &(start, at) in fixups.iter() {
             let at = at as usize;
             let id = u32::from_le_bytes(code[at..at + 4].try_into().unwrap_or([0; 4]));
             let target = labels[id as usize];
@@ -394,23 +436,26 @@ impl CodeBuf<Final> {
         // Start with every shortenable jump short and widen the ones whose offset
         // does not fit, until none changes: widening only moves targets further away,
         // so this ends.
-        let mut short: Vec<bool> = jumps
-            .iter()
-            .map(|&(start, _)| {
-                Op::from_u8(code[start as usize])
-                    .and_then(Op::short_jump)
-                    .is_some()
-            })
-            .collect();
-        let mut shortened: Vec<u32> = Vec::new();
+        short.clear();
+        short.extend(jumps.iter().map(|&(start, _)| {
+            Op::from_u8(code[start as usize])
+                .and_then(Op::short_jump)
+                .is_some()
+        }));
         loop {
             shortened.clear();
-            shortened.extend(jumps.iter().zip(&short).filter(|j| *j.1).map(|j| j.0.0));
+            shortened.extend(
+                jumps
+                    .iter()
+                    .zip(short.iter())
+                    .filter(|j| *j.1)
+                    .map(|j| j.0.0),
+            );
             let mut changed = false;
             for (&(start, target), s) in jumps.iter().zip(short.iter_mut()) {
                 if *s {
-                    let end = map_pos(&shortened, start) + 2;
-                    let rel = map_pos(&shortened, target) as i64 - end as i64;
+                    let end = map_pos(shortened, start) + 2;
+                    let rel = map_pos(shortened, target) as i64 - end as i64;
                     if i8::try_from(rel).is_err() {
                         *s = false;
                         changed = true;
@@ -422,13 +467,13 @@ impl CodeBuf<Final> {
             }
         }
         // The code with the final offsets.
-        let mut out =
-            crate::buf::vec_with_capacity(code.len() - JUMP_SAVING as usize * shortened.len());
+        out.clear();
+        out.reserve(code.len() - JUMP_SAVING as usize * shortened.len());
         let mut from = 0usize;
-        for ((&(start, target), &s), &at) in jumps.iter().zip(&short).zip(&target_at) {
+        for ((&(start, target), &s), &at) in jumps.iter().zip(short.iter()).zip(target_at.iter()) {
             let (start_us, at_us) = (start as usize, at as usize);
             out.extend_from_slice(&code[from..start_us]);
-            let new_target = map_pos(&shortened, target) as i64;
+            let new_target = map_pos(shortened, target) as i64;
             let op = Op::from_u8(code[start_us]).unwrap_or(Op::Nop);
             match op.short_jump() {
                 Some(short_op) if s => {
@@ -448,13 +493,10 @@ impl CodeBuf<Final> {
         }
         out.extend_from_slice(&code[from..]);
         for l in labels.iter_mut().filter(|l| **l != UNPLACED) {
-            *l = map_pos(&shortened, *l);
+            *l = map_pos(shortened, *l);
         }
-        Ok(Code {
-            code: out,
-            labels,
-            shortened,
-        })
+        core::mem::swap(labels, done_labels);
+        Ok(())
     }
 }
 

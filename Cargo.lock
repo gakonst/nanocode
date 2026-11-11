@@ -6411,6 +6411,7 @@ version = "0.7.0"
 dependencies = [
  "arc-swap",
  "crossbeam-utils",
+ "foldhash 0.2.0",
  "futures-util",
  "imbl",
  "nanocode-platform",

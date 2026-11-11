@@ -12,6 +12,7 @@ autobenches = false
 
 [dependencies]
 crossbeam-utils.workspace = true
+foldhash.workspace = true
 futures-util.workspace = true
 imbl.workspace = true
 tokio = { workspace = true, features = ["sync"] }

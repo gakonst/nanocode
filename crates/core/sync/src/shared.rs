@@ -1,8 +1,10 @@
 use std::{
     borrow::Borrow,
-    hash::{BuildHasher, Hash, RandomState},
+    hash::{BuildHasher, Hash},
     sync::Arc,
 };
+
+use foldhash::quality::RandomState;
 
 const BITS: u32 = 5;
 const MASK: u64 = (1 << BITS) - 1;
@@ -226,7 +228,7 @@ impl<K, V> Default for Map<K, V> {
         Self {
             root: Arc::new(Node::empty()),
             len: 0,
-            hasher: RandomState::new(),
+            hasher: RandomState::default(),
         }
     }
 }

@@ -311,6 +311,13 @@ impl EncodedPayload {
         })
     }
 
+    pub fn keyed(key: Arc<str>, json: Arc<str>) -> Self {
+        Self::of(Body::Content {
+            json,
+            keyed: Arc::new(OnceLock::from(Keyed { key, layout: None })),
+        })
+    }
+
     pub fn by_key(key: &str) -> Self {
         Self::of(Body::Reference(key.into()))
     }

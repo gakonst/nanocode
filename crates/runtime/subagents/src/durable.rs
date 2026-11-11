@@ -42,7 +42,7 @@ pub trait SubagentStore: Send + Sync {
         &'a self,
         root_session_id: &'a str,
         payload: String,
-        records: Vec<Arc<str>>,
+        records: Vec<(Arc<str>, Arc<str>)>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>>;
 
     fn save_deferred<'a>(
@@ -142,17 +142,12 @@ impl SubagentStore for MemorySubagentStore {
         &'a self,
         root_session_id: &'a str,
         payload: String,
-        records: Vec<Arc<str>>,
+        records: Vec<(Arc<str>, Arc<str>)>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
         Box::pin(async move {
             let keyed = records
                 .into_iter()
-                .map(|record| {
-                    (
-                        (root_session_id.to_owned(), checkpoint_key(&record)),
-                        record,
-                    )
-                })
+                .map(|(key, record)| ((root_session_id.to_owned(), key.to_string()), record))
                 .collect::<Vec<_>>();
             self.records.update(|stored| {
                 stored.extend(keyed.iter().cloned());
@@ -2448,7 +2443,7 @@ impl SubagentStore for JournalStore {
         &'a self,
         _root_session_id: &'a str,
         payload: String,
-        records: Vec<Arc<str>>,
+        records: Vec<(Arc<str>, Arc<str>)>,
     ) -> SubagentStoreFuture<'a, std::io::Result<()>> {
         self.0.save(payload, records)
     }

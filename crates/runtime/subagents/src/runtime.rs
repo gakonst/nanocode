@@ -3430,9 +3430,8 @@ impl Registry {
                     Ok(())
                 } else {
                     let payload = encoded.payload.clone();
-                    let contents = records.iter().map(|(_, json)| Arc::clone(json)).collect();
                     let result = store
-                        .save(root_session_id, payload.clone(), contents)
+                        .save(root_session_id, payload.clone(), records.clone())
                         .instrument(tracing::info_span!(
                             "subagent.journal.save",
                             session.root_id = root_session_id,
@@ -3564,13 +3563,11 @@ impl Registry {
             }
             return None;
         };
-        let contents = encoded
-            .records
-            .iter()
-            .map(|(_, json)| Arc::clone(json))
-            .collect();
         let payload = encoded.payload.clone();
-        if fill.send((payload.clone(), contents)).is_err() {
+        if fill
+            .send((payload.clone(), encoded.records.clone()))
+            .is_err()
+        {
             return None;
         }
         let saving = encoded.acknowledged.clone();
@@ -4678,9 +4675,8 @@ impl Registry {
             records,
             acknowledged,
         } = write;
-        let contents = records.iter().map(|(_, json)| Arc::clone(json)).collect();
         store
-            .save(root_session_id, payload, contents)
+            .save(root_session_id, payload, records)
             .instrument(tracing::info_span!(
                 "subagent.journal.save",
                 session.root_id = root_session_id

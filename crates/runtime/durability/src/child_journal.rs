@@ -132,7 +132,7 @@ impl Fenced {
         store: &mut SharedStore,
         state_id: &str,
         payload: String,
-        records: Vec<Arc<str>>,
+        records: Vec<(Arc<str>, Arc<str>)>,
     ) -> std::io::Result<()> {
         if self.failure.is_some() {
             self.drain().await;
@@ -146,15 +146,18 @@ impl Fenced {
         let retry = std::mem::take(&mut self.retry)
             .into_iter()
             .filter(|key| !self.committed.contains(key))
-            .filter_map(|key| self.pending.read(|pending| pending.get(&key).cloned()))
+            .filter_map(|key| {
+                let json = self.pending.read(|pending| pending.get(&key).cloned())?;
+                Some((Arc::<str>::from(key), json))
+            })
             .collect::<Vec<_>>();
         let mut staged = Vec::new();
         let mut pending = Vec::with_capacity(records.len() + retry.len());
-        for json in records.into_iter().chain(retry) {
+        for (key, json) in records.into_iter().chain(retry) {
             let committed = &self.committed;
-            let mut encoded = EncodedPayload::from_json(Arc::clone(&json));
-            pending.push((encoded.key().to_owned(), json));
-            encoded.stage_unless(&mut staged, &|key| committed.contains(key));
+            pending.push((key.to_string(), Arc::clone(&json)));
+            EncodedPayload::keyed(key, json)
+                .stage_unless(&mut staged, &|key| committed.contains(key));
         }
         staged.sort_unstable_by(|a, b| a.key.cmp(&b.key));
         staged.dedup_by(|a, b| a.key == b.key);
@@ -224,7 +227,10 @@ impl Fenced {
         let retry = std::mem::take(&mut self.retry)
             .into_iter()
             .filter(|key| !self.committed.contains(key))
-            .filter_map(|key| self.pending.read(|pending| pending.get(&key).cloned()))
+            .filter_map(|key| {
+                let json = self.pending.read(|pending| pending.get(&key).cloned())?;
+                Some((Arc::<str>::from(key), json))
+            })
             .collect::<Vec<_>>();
         let (deliver, fill) = oneshot::channel::<(JournalFill, JournalCommit)>();
         let (committed, commit) = oneshot::channel::<std::io::Result<()>>();
@@ -239,10 +245,9 @@ impl Fenced {
             let (payload, records) = receive.await.map_err(|_| stopped())?;
             let mut staged = Vec::new();
             let mut known = Vec::with_capacity(records.len() + retry.len());
-            for json in records.into_iter().chain(retry) {
-                let mut encoded = EncodedPayload::from_json(Arc::clone(&json));
-                known.push((encoded.key().to_owned(), json));
-                encoded.stage(&mut staged);
+            for (key, json) in records.into_iter().chain(retry) {
+                known.push((key.to_string(), Arc::clone(&json)));
+                EncodedPayload::keyed(key, json).stage(&mut staged);
             }
             staged.sort_unstable_by(|a, b| a.key.cmp(&b.key));
             staged.dedup_by(|a, b| a.key == b.key);
@@ -337,7 +342,7 @@ enum Write {
     Load(oneshot::Sender<std::io::Result<Option<String>>>),
     Save {
         payload: String,
-        records: Vec<Arc<str>>,
+        records: Vec<(Arc<str>, Arc<str>)>,
         result: oneshot::Sender<std::io::Result<()>>,
     },
     Defer(oneshot::Sender<std::io::Result<DeferredJournal>>),
@@ -474,7 +479,11 @@ impl ChildJournalStore for SharedJournal {
         Box::pin(async move { journal.write(Write::Load).await })
     }
 
-    fn save(&self, payload: String, records: Vec<Arc<str>>) -> BackendFuture<std::io::Result<()>> {
+    fn save(
+        &self,
+        payload: String,
+        records: Vec<(Arc<str>, Arc<str>)>,
+    ) -> BackendFuture<std::io::Result<()>> {
         let journal = self.clone();
         Box::pin(async move {
             journal

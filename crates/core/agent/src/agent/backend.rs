@@ -109,7 +109,7 @@ pub trait ParkedCall: Send + Sync + 'static {
     fn into_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
-pub type JournalFill = tokio::sync::oneshot::Sender<(String, Vec<Arc<str>>)>;
+pub type JournalFill = tokio::sync::oneshot::Sender<(String, Vec<(Arc<str>, Arc<str>)>)>;
 
 pub type JournalCommit = tokio::sync::oneshot::Receiver<std::io::Result<()>>;
 
@@ -168,7 +168,11 @@ pub trait ChildJournalStore: Send + Sync + 'static {
 
     fn load(&self) -> BackendFuture<std::io::Result<Option<String>>>;
 
-    fn save(&self, payload: String, records: Vec<Arc<str>>) -> BackendFuture<std::io::Result<()>>;
+    fn save(
+        &self,
+        payload: String,
+        records: Vec<(Arc<str>, Arc<str>)>,
+    ) -> BackendFuture<std::io::Result<()>>;
 
     fn save_deferred(&self) -> BackendFuture<std::io::Result<Option<DeferredJournal>>> {
         Box::pin(async { Ok(None) })

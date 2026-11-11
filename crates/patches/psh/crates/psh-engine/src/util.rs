@@ -847,7 +847,9 @@ impl UtilCtx<'_> {
     /// (D1300): a subshell's task state, its own variables. The nesting limit's status
     /// when it is reached.
     async fn afresh(&self) -> Result<Vp, i32> {
-        let mut sub = crate::exec::enter(self.vp).await.map_err(|u| u.status(2))?;
+        let mut sub = crate::exec::enter_shared(self.vp)
+            .await
+            .map_err(|u| u.status(2))?;
         for (k, v) in &self.env {
             if let Ok(name) = std::str::from_utf8(k)
                 && crate::state::is_name(k)

@@ -785,13 +785,17 @@ impl Vp {
         value: Vec<u8>,
         append: bool,
     ) -> Result<(), String> {
-        // A name that is no reference is its own target, and `target` would copy it.
-        let own = match self.vars.get(name) {
-            Some(v) => !v.nameref,
-            None => !name.contains('['),
+        // A name that is no reference is its own target, and `target` would copy it;
+        // without an attribute that changes what is assigned, the value goes in as it is.
+        let (own, plain) = match self.vars.get(name) {
+            Some(v) => (
+                !v.nameref,
+                !v.readonly && !v.integer && v.case == Case::None,
+            ),
+            None => (!name.contains('['), true),
         };
         if own {
-            return self.assign_target(name, value, append);
+            return self.assign_target(name, value, append, plain && !append);
         }
         let (name, sub) = match self.target(name) {
             Ok(t) => t,
@@ -801,12 +805,22 @@ impl Vp {
         if let Some(sub) = sub {
             return self.assign_elem(&name, &sub, value, append);
         }
-        self.assign_target(&name, value, append)
+        self.assign_target(&name, value, append, false)
     }
 
     /// `assign_with` once namerefs are followed: `name` is the variable itself.
-    fn assign_target(&mut self, name: &str, value: Vec<u8>, append: bool) -> Result<(), String> {
-        let value = self.prepare_value(name, value, append)?;
+    /// `as_is`: the caller saw that `prepare_value` would return the value unchanged.
+    fn assign_target(
+        &mut self,
+        name: &str,
+        value: Vec<u8>,
+        append: bool,
+        as_is: bool,
+    ) -> Result<(), String> {
+        let value = match as_is {
+            true => value,
+            false => self.prepare_value(name, value, append)?,
+        };
         let allexport = self.opts.get(crate::options::SetOpt::Allexport);
         let var = self.vars.entry(name);
         var.set(value);

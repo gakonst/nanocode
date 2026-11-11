@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::rc::Rc;
 
 /// The hash of the engine's own tables (variable names, spans): FxHash, a rotate, an
 /// xor and a multiply per word. The keys come from the script the shell is running,
@@ -307,46 +308,124 @@ impl Assoc {
     }
 }
 
-/// The variable table of a vproc.
+/// The variable table of a vproc, in two layers, so that a subshell (every pipeline
+/// stage, `( … )` and `$( … )`) does not start with a copy of every variable: copying
+/// and dropping the table were 47% of a loop of command substitutions.
+///
+/// `base` is shared with the vprocs this one came from and the ones made from it, and is
+/// never changed while shared. `own` holds what this vproc changed since, found through
+/// `index`: a variable it set, or `None` for one it unset. [`Vars::settle`] moves that
+/// into `base`; a clone of a settled table shares everything.
 #[derive(Clone, Default)]
 pub(crate) struct Vars {
-    map: NameMap<String, Var>,
+    base: Rc<NameMap<String, Var>>,
+    index: NameMap<String, usize>,
+    own: Vec<Option<Var>>,
 }
 
 impl Vars {
+    /// Where `name` is in `own`, if this vproc changed it.
+    fn slot(&self, name: &str) -> Option<usize> {
+        if self.index.is_empty() {
+            return None;
+        }
+        self.index.get(name).copied()
+    }
+
+    /// Puts `var` into `own` under a name that is not there yet.
+    fn adopt(&mut self, name: &str, var: Option<Var>) -> usize {
+        self.own.push(var);
+        self.index.insert(name.to_string(), self.own.len() - 1);
+        self.own.len() - 1
+    }
+
     pub(crate) fn get(&self, name: &str) -> Option<&Var> {
-        self.map.get(name)
+        match self.slot(name) {
+            Some(i) => self.own[i].as_ref(),
+            None => self.base.get(name),
+        }
     }
 
     pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut Var> {
-        self.map.get_mut(name)
+        let i = match self.slot(name) {
+            Some(i) => i,
+            // A variable of the shared layer is copied into this vproc's before it
+            // changes.
+            None => {
+                let var = self.base.get(name)?.clone();
+                self.adopt(name, Some(var))
+            }
+        };
+        self.own[i].as_mut()
     }
 
     /// The scalar value of `name` (no nameref resolution; see `Vp::var`).
     pub(crate) fn value(&self, name: &str) -> Option<&[u8]> {
-        self.map.get(name).and_then(Var::get)
+        self.get(name).and_then(Var::get)
     }
 
     pub(crate) fn entry(&mut self, name: &str) -> &mut Var {
-        // The name is copied only for a variable that is new.
-        if !self.map.contains_key(name) {
-            self.map.insert(name.to_string(), Var::default());
-        }
-        self.map
-            .get_mut(name)
-            .expect("the variable is in the table")
+        let i = match self.slot(name) {
+            Some(i) => i,
+            None => {
+                let var = self.base.get(name).cloned();
+                self.adopt(name, var)
+            }
+        };
+        self.own[i].get_or_insert_with(Var::default)
     }
 
     pub(crate) fn remove(&mut self, name: &str) -> Option<Var> {
-        self.map.remove(name)
+        match self.slot(name) {
+            Some(i) => self.own[i].take(),
+            None => {
+                let var = self.base.get(name)?.clone();
+                self.adopt(name, None);
+                Some(var)
+            }
+        }
     }
 
     pub(crate) fn insert(&mut self, name: &str, var: Var) {
-        self.map.insert(name.to_string(), var);
+        match self.slot(name) {
+            Some(i) => self.own[i] = Some(var),
+            None => {
+                self.adopt(name, Some(var));
+            }
+        }
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &Var)> {
-        self.map.iter()
+        let own = self
+            .index
+            .iter()
+            .filter_map(|(name, &i)| Some((name, self.own[i].as_ref()?)));
+        let shared = self
+            .base
+            .iter()
+            .filter(|(name, _)| !self.index.contains_key(name.as_str()));
+        own.chain(shared)
+    }
+
+    /// Moves what this vproc changed into the shared layer, before a subshell is made
+    /// of it: the subshell then starts with a reference instead of a copy. The shared
+    /// layer is changed in place unless a subshell made earlier still holds it.
+    pub(crate) fn settle(&mut self) {
+        if self.index.is_empty() {
+            return;
+        }
+        let base = Rc::make_mut(&mut self.base);
+        for (name, i) in self.index.drain() {
+            match self.own[i].take() {
+                Some(var) => {
+                    base.insert(name, var);
+                }
+                None => {
+                    base.remove(&name);
+                }
+            }
+        }
+        self.own.clear();
     }
 }
 

@@ -343,6 +343,8 @@ impl Shell {
         self.shared.signals.store(0, Ordering::SeqCst);
         self.core.died_of.set(None);
         let mut vp = self.vp.take().expect("shell state");
+        // The copy kept for a cancelled run shares the variables.
+        vp.vars.settle();
         self.before = Some(vp.clone());
         // `$_` starts as `$0` unless the environment had one.
         if vp.vars.get("_").is_none() {

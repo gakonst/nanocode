@@ -313,7 +313,15 @@ async fn run_pipeline_stages(vp: &mut Vp, code: &Rc<Code>, p: &Pipeline) -> R {
 }
 
 /// Clones the state for a subshell, or fails past the nesting limit (D1050).
-pub(crate) async fn enter(vp: &Vp) -> Result<Vp, Unwind> {
+pub(crate) async fn enter(vp: &mut Vp) -> Result<Vp, Unwind> {
+    // The subshell shares the variables as they are now instead of copying them.
+    vp.vars.settle();
+    enter_shared(vp).await
+}
+
+/// [`enter`] for a caller that cannot change the vproc: the subshell copies what the
+/// vproc changed since it last made one.
+pub(crate) async fn enter_shared(vp: &Vp) -> Result<Vp, Unwind> {
     if vp.depth >= vp.core.max_depth {
         vp.error(&format!(
             "maximum nesting level exceeded ({})",

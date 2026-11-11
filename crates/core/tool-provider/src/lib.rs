@@ -35,17 +35,21 @@ impl ToolExposure {
 #[cfg(not(target_family = "wasm"))]
 #[async_trait]
 pub trait DynamicToolProvider: Send + Sync {
-    fn start(&self);
+    fn start(&self) {}
 
     fn bind_session(&self, _session: &crate::SessionEnvironment) {}
 
-    fn direct_tools(&self) -> Vec<Arc<dyn Tool>>;
+    fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
+        Vec::new()
+    }
 
     fn direct_tools_for_exposure(&self, _exposure: ToolExposure) -> Vec<Arc<dyn Tool>> {
         self.direct_tools()
     }
 
-    fn available_definitions(&self) -> Vec<ToolDefinition>;
+    fn available_definitions(&self) -> Vec<ToolDefinition> {
+        Vec::new()
+    }
 
     fn model_catalog_visible(&self) -> bool {
         true
@@ -71,10 +75,12 @@ pub trait DynamicToolProvider: Send + Sync {
 
     async fn execute(
         &self,
-        name: &str,
-        input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<ToolOutput>;
+        _name: &str,
+        _input: Value,
+        _context: ToolContext<'_>,
+    ) -> Option<ToolOutput> {
+        None
+    }
 
     fn resumes(&self, _name: &str) -> bool {
         false

@@ -439,6 +439,12 @@ impl Sessions {
         self.sessions.keys()
     }
 
+    pub(super) fn iter(&self) -> impl Iterator<Item = (AgentId, &ChildSession)> {
+        self.sessions
+            .iter()
+            .map(|(id, session)| (*id, session.as_ref()))
+    }
+
     pub(super) fn values(&self) -> impl Iterator<Item = &ChildSession> {
         self.sessions.values().map(Box::as_ref)
     }

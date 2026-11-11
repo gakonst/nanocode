@@ -122,6 +122,10 @@ impl MessageThreads {
         self.pending_recipients.contains_key(&agent_id)
     }
 
+    pub(super) fn pending_recipients(&self) -> impl Iterator<Item = AgentId> + '_ {
+        self.pending_recipients.keys().copied()
+    }
+
     fn add_pending(&mut self, id: MessageId, to: AgentId) {
         if self.pending.insert(id, to).is_none() {
             *self.pending_recipients.entry(to).or_default() += 1;

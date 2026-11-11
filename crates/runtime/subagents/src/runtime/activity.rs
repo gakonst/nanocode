@@ -98,10 +98,7 @@ impl Registry {
                 let Some(scope) = state.scopes.get(root_session_id) else {
                     return activity;
                 };
-                let mut ids = scope.sessions.keys().copied().collect::<Vec<_>>();
-                ids.sort_unstable();
-                for id in ids {
-                    let session = &scope.sessions[&id];
+                for (id, session) in scope.sessions.iter() {
                     if session.active()
                         || matches!(
                             session.status,
@@ -116,13 +113,23 @@ impl Registry {
                     {
                         activity.pending_completions.push((id, revision));
                     }
-                    let deliverable = (session.harness().is_some()
-                        || session.stored_runtime.recoverable())
-                        && !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed);
-                    if deliverable && scope.messages.has_pending_for(id) {
-                        activity.pending_messages.push(id);
-                    }
                 }
+                activity.pending_messages = scope
+                    .messages
+                    .pending_recipients()
+                    .filter(|id| {
+                        scope.sessions.get(id).is_some_and(|session| {
+                            (session.harness().is_some() || session.stored_runtime.recoverable())
+                                && !matches!(
+                                    session.status,
+                                    AgentStatus::Closing | AgentStatus::Closed
+                                )
+                        })
+                    })
+                    .collect();
+                activity.active.sort_unstable();
+                activity.pending_completions.sort_unstable();
+                activity.pending_messages.sort_unstable();
                 activity
             })
             .await

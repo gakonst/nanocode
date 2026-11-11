@@ -1423,9 +1423,48 @@ impl Heap {
     /// Converts to a Rust string, replacing lone surrogates with U+FFFD. For tests,
     /// debugging and host output.
     pub fn str_to_string(&self, s: Str) -> String {
-        char::decode_utf16(self.str_units(s))
-            .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect()
+        let mut out = String::with_capacity(self.str_len(s) as usize);
+        // A high surrogate waits for its low one, which may start the next piece.
+        let mut high: Option<u16> = None;
+        for chunk in self.str_chunks(s) {
+            match chunk {
+                StrView::Latin1(b) => {
+                    if high.take().is_some() {
+                        out.push(char::REPLACEMENT_CHARACTER);
+                    }
+                    // ASCII (most source text and JSON) is UTF-8 as it is.
+                    match core::str::from_utf8(b) {
+                        Ok(text) if b.is_ascii() => out.push_str(text),
+                        _ => out.extend(b.iter().map(|&c| c as char)),
+                    }
+                }
+                StrView::Utf16(_) => {
+                    for u in chunk.units() {
+                        if let Some(h) = high.take() {
+                            if (0xDC00..=0xDFFF).contains(&u) {
+                                let c = 0x1_0000
+                                    + ((u32::from(h) - 0xD800) << 10)
+                                    + (u32::from(u) - 0xDC00);
+                                out.push(char::from_u32(c).unwrap_or(char::REPLACEMENT_CHARACTER));
+                                continue;
+                            }
+                            out.push(char::REPLACEMENT_CHARACTER);
+                        }
+                        if (0xD800..=0xDBFF).contains(&u) {
+                            high = Some(u);
+                        } else {
+                            out.push(
+                                char::from_u32(u32::from(u)).unwrap_or(char::REPLACEMENT_CHARACTER),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if high.is_some() {
+            out.push(char::REPLACEMENT_CHARACTER);
+        }
+        out
     }
 
     /// The code units as a vector (tests and debugging).

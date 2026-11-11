@@ -67,27 +67,27 @@ pub enum Step {
 }
 
 /// The current call.
-struct Call {
+pub(crate) struct Call {
     /// When the call's deadline passes (read the clock only for calls that have one)
-    deadline: Option<Instant>,
-    fuel_used: u64,
+    pub(crate) deadline: Option<Instant>,
+    pub(crate) fuel_used: u64,
     /// The entry's return value once it returned: the promise it settles with, or the
     /// result itself
-    entry: Option<Handle>,
+    pub(crate) entry: Option<Handle>,
     /// The settled value
-    result: Option<Handle>,
+    pub(crate) result: Option<Handle>,
     /// Over (settled or failed): nothing more runs
-    over: bool,
+    pub(crate) over: bool,
 }
 
 /// A VM in a snapshot's state: runs one call at a time. `Send` (move it to another thread
 /// between calls or steps), not `Sync`.
 pub struct Instance {
     pub(crate) vm: Vm,
-    snapshot: Snapshot,
-    limits: Limits,
-    call: Option<Call>,
-    poisoned: bool,
+    pub(crate) snapshot: Snapshot,
+    pub(crate) limits: Limits,
+    pub(crate) call: Option<Call>,
+    pub(crate) poisoned: bool,
 }
 
 /// Runs engine code, turning a panic into [`Error::Panicked`] (the caller poisons what
@@ -267,7 +267,7 @@ impl Instance {
     /// object it was found on. Then [`Instance::step`] until [`Step::Done`] or an error,
     /// or use [`Instance::call`].
     pub fn start(&mut self, path: &str, args: &[Value<'_>]) -> Result<(), Error> {
-        self.start_with(path, args, |vm| lookup(vm, path))
+        self.start_with(|| path.to_owned(), args, |vm| lookup(vm, path))
     }
 
     /// Starts calling the function that module `module` (a setup [`crate::Source::module`]
@@ -280,8 +280,8 @@ impl Instance {
         name: &str,
         args: &[Value<'_>],
     ) -> Result<(), Error> {
-        let what = format!("{module} export {name}");
-        self.start_with(&what, args, |vm| match vm.module_export(module, name) {
+        let what = || format!("{module} export {name}");
+        self.start_with(what, args, |vm| match vm.module_export(module, name) {
             Ok(Some(f)) => Ok((Raw::UNDEFINED, f)),
             Ok(None) if vm.has_module(module) => Err(Error::Usage(format!(
                 "module {module} has no export {name}"
@@ -293,7 +293,7 @@ impl Instance {
 
     fn start_with(
         &mut self,
-        path: &str,
+        what: impl Fn() -> String,
         args: &[Value<'_>],
         find: impl FnOnce(&mut Vm) -> Result<(Raw, Raw), Error>,
     ) -> Result<(), Error> {
@@ -306,7 +306,7 @@ impl Instance {
             let (this, f) = find(vm)?;
             let f = match f.as_object() {
                 Some(o) if vm.heap().is_callable(o) => f,
-                _ => return Err(Error::Usage(format!("{path} is not a function"))),
+                _ => return Err(Error::Usage(format!("{} is not a function", what()))),
             };
             let mut raw = Vec::with_capacity(args.len());
             for a in args {

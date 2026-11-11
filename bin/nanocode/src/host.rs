@@ -373,6 +373,7 @@ impl ModelClients {
 pub struct HostConfig {
     pub workspace: PathBuf,
     pub store: Option<SessionStore>,
+    pub archiver: Option<nanocode_store_jsonl::JsonlArchiver>,
     pub subagents: bool,
     pub runners: Vec<Runner>,
     pub runner_servers: Vec<RunnerServerConfig>,
@@ -785,9 +786,20 @@ pub fn home_dir(explicit: Option<&Path>) -> Result<PathBuf> {
     Ok(home.nanocode_home().to_path_buf())
 }
 
-pub async fn open_store(home: &Path) -> Result<SessionStore> {
+pub async fn open_store(
+    home: &Path,
+) -> Result<(SessionStore, nanocode_store_jsonl::JsonlArchiver)> {
     let store = nanocode_store_jsonl::JsonlStore::open_home_in_background(home)?;
-    Ok(nanocode::session_store(store)?)
+    let archiver = store.archiver();
+    Ok((nanocode::session_store(store)?, archiver))
+}
+
+pub async fn archive(config: &HostConfig) -> Result<()> {
+    if let (Some(store), Some(archiver)) = (&config.store, &config.archiver) {
+        store.list().await?;
+        archiver.archive().await?;
+    }
+    Ok(())
 }
 
 const HAND_RELAY: &str = "wss://nanocode.xyz/api/hands";

@@ -1,19 +1,21 @@
 use std::{
     collections::HashMap,
     fs::{self, File},
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
 };
 
 use nanocode_durability_core::{StateSummary, StoreError};
 use serde::{Deserialize, Serialize};
 
-use super::{backend, identity};
+use super::{archive, backend, identity};
 
-const FILE: &str = ".summaries.json";
+const FILE: &str = ".summaries.json.zst";
+const LEGACY: &str = ".summaries.json";
 
 pub(super) struct Summaries {
     path: PathBuf,
+    legacy: PathBuf,
     loaded: Option<String>,
     entries: HashMap<String, Summary>,
 }
@@ -30,22 +32,32 @@ impl Summaries {
     pub(super) fn new(directory: &Path) -> Self {
         Self {
             path: directory.join(FILE),
+            legacy: directory.join(LEGACY),
             loaded: None,
             entries: HashMap::new(),
         }
     }
 
     pub(super) fn refresh(&mut self) {
-        let current = fs::metadata(&self.path)
+        let compressed = self.path.is_file();
+        let source = if compressed { &self.path } else { &self.legacy };
+        let current = fs::metadata(source)
             .ok()
             .and_then(|metadata| identity(&metadata).ok());
         if current.is_none() || current == self.loaded {
             return;
         }
-        match File::open(&self.path)
-            .map_err(backend)
-            .and_then(|file| serde_json::from_reader(BufReader::new(file)).map_err(backend))
-        {
+        let read = if compressed {
+            fs::read(source)
+                .and_then(|bytes| archive::decompress(&bytes))
+                .map_err(backend)
+                .and_then(|bytes| serde_json::from_slice(&bytes).map_err(backend))
+        } else {
+            File::open(source)
+                .map_err(backend)
+                .and_then(|file| serde_json::from_reader(BufReader::new(file)).map_err(backend))
+        };
+        match read {
             Ok(entries) => self.entries = entries,
             Err(error) => tracing::warn!(%error, "ignoring unreadable JSONL session summaries"),
         }
@@ -66,6 +78,17 @@ impl Summaries {
             .cloned()
     }
 
+    pub(super) fn moved(&mut self, from: &str, to: &str, length: u64) -> Result<(), StoreError> {
+        self.refresh();
+        let mut moved = false;
+        for entry in self.entries.values_mut().filter(|entry| entry.file == from) {
+            entry.file = to.to_owned();
+            entry.length = length;
+            moved = true;
+        }
+        if moved { self.persist() } else { Ok(()) }
+    }
+
     pub(super) fn remember(
         &mut self,
         remembered: Vec<(String, Summary)>,
@@ -75,6 +98,10 @@ impl Summaries {
         }
         self.refresh();
         self.entries.extend(remembered);
+        self.persist()
+    }
+
+    fn persist(&mut self) -> Result<(), StoreError> {
         let directory = self
             .path
             .parent()
@@ -83,14 +110,19 @@ impl Summaries {
             .prefix(FILE)
             .tempfile_in(directory)
             .map_err(backend)?;
-        let mut output = BufWriter::new(temporary.as_file_mut());
-        serde_json::to_writer(&mut output, &self.entries).map_err(backend)?;
-        output.flush().map_err(backend)?;
-        drop(output);
+        let encoded = serde_json::to_vec(&self.entries).map_err(backend)?;
+        temporary
+            .write_all(&archive::compress(&encoded).map_err(backend)?)
+            .map_err(backend)?;
         let file = temporary
             .persist(&self.path)
             .map_err(|error| backend(error.error))?;
         self.loaded = Some(identity(&file.metadata().map_err(backend)?)?);
+        match fs::remove_file(&self.legacy) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(backend(error)),
+        }
         Ok(())
     }
 }

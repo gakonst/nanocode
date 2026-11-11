@@ -1,5 +1,6 @@
 #![cfg(not(target_family = "wasm"))]
 
+mod archive;
 mod compact;
 mod index;
 mod migrate;
@@ -2520,6 +2521,25 @@ pub struct JsonlStore {
     colocated: Arc<Colocated>,
 }
 
+#[derive(Clone)]
+pub struct JsonlArchiver {
+    jobs: mpsc::UnboundedSender<Job>,
+    failed: Arc<OnceLock<StoreError>>,
+    colocated: Arc<Colocated>,
+}
+
+impl JsonlArchiver {
+    pub async fn archive(&self) -> Result<usize, StoreError> {
+        let mut store = JsonlStore {
+            jobs: self.jobs.clone(),
+            closed: None,
+            failed: Arc::clone(&self.failed),
+            colocated: Arc::clone(&self.colocated),
+        };
+        store.write(Sessions::archive).await
+    }
+}
+
 struct Colocated(std::sync::mpsc::Sender<(String, String)>);
 
 impl Colocation for Colocated {
@@ -2556,6 +2576,15 @@ impl JsonlStore {
 
     pub async fn compact(&mut self) -> Result<CompactionStats, StoreError> {
         self.write(Sessions::compact).await
+    }
+
+    #[must_use]
+    pub fn archiver(&self) -> JsonlArchiver {
+        JsonlArchiver {
+            jobs: self.jobs.clone(),
+            failed: Arc::clone(&self.failed),
+            colocated: Arc::clone(&self.colocated),
+        }
     }
 
     pub async fn close(self) -> Result<(), StoreError> {

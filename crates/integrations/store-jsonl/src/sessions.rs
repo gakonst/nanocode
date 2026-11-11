@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, Metadata},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -12,7 +12,7 @@ use nanocode_durability_core::{
 };
 
 use super::{
-    CompactionStats, Journal, Replacement, backend, identity, process_alive,
+    CompactionStats, Journal, Replacement, archive, backend, identity, process_alive,
     shared::Shared,
     summaries::{Summaries, Summary},
 };
@@ -28,6 +28,7 @@ pub(super) struct Sessions {
     summaries: Summaries,
     homes: HashMap<String, String>,
     shared: Option<Shared>,
+    touched: HashSet<String>,
 }
 
 struct Opened {
@@ -59,6 +60,7 @@ pub(super) fn file_name(key: &str) -> String {
 }
 
 fn key_of(name: &str) -> Option<String> {
+    let name = archive::unarchived(name).unwrap_or(name);
     let mut rest = name.strip_suffix(EXTENSION)?.as_bytes();
     let mut bytes = Vec::with_capacity(rest.len());
     while let Some((&byte, tail)) = rest.split_first() {
@@ -131,6 +133,7 @@ impl Sessions {
             clock: 0,
             homes,
             shared: None,
+            touched: HashSet::new(),
         })
     }
 
@@ -142,7 +145,7 @@ impl Sessions {
     pub(super) fn colocate(&mut self, state_id: &str, beside: &str) {
         let key = session_key(state_id);
         let home = self.home(beside);
-        if key == home || self.homes.contains_key(key) || self.path(key).is_file() {
+        if key == home || self.homes.contains_key(key) || archive::exists(&self.path(key)) {
             return;
         }
         let line = serde_json::to_string(&(key, &home)).map(|line| line + "\n");
@@ -192,6 +195,10 @@ impl Sessions {
         let clock = self.clock;
         if !self.journals.contains_key(key) {
             let path = self.path(key);
+            if !path.is_file() && archive::archived(&path).is_file() {
+                archive::restore(&path).map_err(backend)?;
+                self.touched.insert(key.to_owned());
+            }
             if !create && !path.is_file() {
                 return Ok(None);
             }
@@ -257,6 +264,7 @@ impl Sessions {
     }
 
     pub(super) fn opened(&mut self, state_id: &str) -> Result<&mut Journal, StoreError> {
+        self.touched.insert(self.home(state_id));
         self.journal(state_id, true)?
             .ok_or_else(|| backend("JSONL session file was not created"))
     }
@@ -273,7 +281,7 @@ impl Sessions {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(backend(error)),
             };
-            if metadata.is_file() {
+            if metadata.is_file() && !files.iter().any(|(listed, _)| *listed == key) {
                 files.push((key, metadata));
             }
         }
@@ -384,6 +392,7 @@ impl Sessions {
         records: Vec<StoreRecord>,
     ) -> Result<u64, StoreError> {
         let records = self.stored(records)?;
+        self.touched.insert(self.home(id));
         match self.existing(id)? {
             Some(journal) => journal.replace(id, owner, expected, payload, records),
             None => Err(StoreError::Fenced),
@@ -424,6 +433,7 @@ impl Sessions {
                 continue;
             };
             let count = replacements.len();
+            self.touched.insert(self.home(&first));
             let outcome = match self.existing(&first) {
                 Ok(Some(journal)) => {
                     journal.replace_many(replacements.into_iter().map(Ok).collect())
@@ -613,6 +623,40 @@ impl Sessions {
         remembered: Vec<(String, Summary)>,
     ) -> Result<(), StoreError> {
         self.summaries.remember(remembered)
+    }
+
+    pub(super) fn archive(&mut self) -> Result<usize, StoreError> {
+        let mut archived = 0;
+        let mut touched = std::mem::take(&mut self.touched)
+            .into_iter()
+            .collect::<Vec<_>>();
+        touched.sort_unstable();
+        for key in touched {
+            let Some(mut opened) = self.journals.remove(&key) else {
+                continue;
+            };
+            if opened.journal.sidecar {
+                self.journals.insert(key, opened);
+                continue;
+            }
+            let path = self.path(&key);
+            let from = identity(&fs::metadata(&path).map_err(backend)?)?;
+            opened.journal.compact()?;
+            opened.journal.harden()?;
+            drop(opened);
+            let compacted = identity(&fs::metadata(&path).map_err(backend)?)?;
+            if compacted != from {
+                self.summaries.moved(&from, &compacted, 0)?;
+            }
+            let from = compacted;
+            if archive::archive(&path).map_err(backend)? {
+                let stored = fs::metadata(archive::archived(&path)).map_err(backend)?;
+                self.summaries
+                    .moved(&from, &identity(&stored)?, stored.len())?;
+                archived += 1;
+            }
+        }
+        Ok(archived)
     }
 
     pub(super) fn compact(&mut self) -> Result<CompactionStats, StoreError> {

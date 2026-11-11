@@ -464,6 +464,9 @@ pub async fn run(launch: Launch, mut terminal: TerminalSession) -> Result<()> {
     {
         eprintln!("nanocode: shutdown did not complete cleanly: {error}");
     }
+    if let Err(error) = crate::host::archive(&app.host.config).await {
+        eprintln!("nanocode: could not archive the session: {error}");
+    }
     while let Some(result) = app.submissions.join_next().await {
         if let Err(error) = result {
             eprintln!("nanocode: prompt task failed during shutdown: {error}");

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use nanocode::agent::events::{AgentEvent, AgentEventKind};
 use nanocode::codex::{auth::OpenAiAuth, transport::ResponsesGateway};
 use nanocode::durability::{SessionStore, SessionSummary};
-use nanocode::{Agent, AgentEvents, JsonlStore, Model, Nanocode, OpenAi, Tools};
+use nanocode::{Agent, AgentEvents, JsonlArchiver, JsonlStore, Model, Nanocode, OpenAi, Tools};
 use nanocode_tool_runtime::ToolExposure;
 
 mod markdown;
@@ -117,6 +117,7 @@ fn tokio_runtime() -> Result<tokio::runtime::Runtime> {
 struct Lite {
     runtime: Nanocode,
     store: Option<SessionStore>,
+    archiver: Option<JsonlArchiver>,
     model: Model,
 }
 
@@ -138,10 +139,11 @@ impl Lite {
             .web_search(false)
             .image_generation(false)
             .build()?;
-        let store = if config.ephemeral {
-            None
+        let (store, archiver) = if config.ephemeral {
+            (None, None)
         } else {
-            Some(open_store(&config.home).await?)
+            let (store, archiver) = open_store(&config.home).await?;
+            (Some(store), Some(archiver))
         };
         let builder = Nanocode::builder()
             .openai(openai)
@@ -157,6 +159,7 @@ impl Lite {
         Ok(Self {
             runtime,
             store,
+            archiver,
             model,
         })
     }
@@ -183,14 +186,21 @@ impl Lite {
     }
 
     async fn shutdown(self) -> Result<()> {
-        Ok(self.runtime.shutdown().await?)
+        self.runtime.shutdown().await?;
+        if let Some(store) = &self.store {
+            store.list().await?;
+        }
+        if let Some(archiver) = self.archiver {
+            archiver.archive().await?;
+        }
+        Ok(())
     }
 }
 
-async fn open_store(home: &std::path::Path) -> Result<SessionStore> {
-    Ok(nanocode::session_store(
-        JsonlStore::open_home_async(home).await?,
-    )?)
+async fn open_store(home: &std::path::Path) -> Result<(SessionStore, JsonlArchiver)> {
+    let store = JsonlStore::open_home_async(home).await?;
+    let archiver = store.archiver();
+    Ok((nanocode::session_store(store)?, archiver))
 }
 
 async fn workspace_sessions(store: &SessionStore) -> Result<Vec<SessionSummary>> {
@@ -204,9 +214,10 @@ async fn workspace_sessions(store: &SessionStore) -> Result<Vec<SessionSummary>>
 }
 
 async fn sessions(config: &Config) -> Result<()> {
-    let store = open_store(&config.home).await?;
+    let (store, archiver) = open_store(&config.home).await?;
+    let listed = workspace_sessions(&store).await?;
     let mut out = std::io::stdout().lock();
-    for session in workspace_sessions(&store).await? {
+    for session in listed {
         writeln!(
             out,
             "{}  {}",
@@ -214,6 +225,8 @@ async fn sessions(config: &Config) -> Result<()> {
             session.preview.unwrap_or_default()
         )?;
     }
+    drop(out);
+    archiver.archive().await?;
     Ok(())
 }
 

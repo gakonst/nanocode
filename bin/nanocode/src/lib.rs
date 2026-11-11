@@ -309,15 +309,17 @@ async fn prepare(
     model
         .capabilities(nanocode::ModelTransport::Native)
         .check_service_tier(tier)?;
-    let store = if args.ephemeral {
-        None
+    let (store, archiver) = if args.ephemeral {
+        (None, None)
     } else {
-        Some(host::open_store(&home).await?)
+        let (store, archiver) = host::open_store(&home).await?;
+        (Some(store), Some(archiver))
     };
     let runner_configs = host::runner_configs(&args.remote)?;
     let config = HostConfig {
         workspace,
         store,
+        archiver,
         subagents: !args.no_subagents,
         runners: runner_configs.runners,
         runner_servers: runner_configs.servers,
@@ -547,9 +549,11 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
     drop(writeln!(stderr, "session {}", agent.session_id()));
     let flushed = agent.flush().await;
     let shutdown = host.runtime.shutdown().await;
+    let archived = host::archive(&host.config).await;
     outcome?;
     flushed?;
     shutdown?;
+    archived?;
     Ok(())
 }
 
@@ -572,7 +576,7 @@ async fn stream_turn(mut turn: nanocode::agent::Turn, answers: impl Write) -> Re
 
 async fn list_sessions(args: SessionsArgs) -> Result<()> {
     let home = host::home_dir(args.home.as_deref())?;
-    let store = host::open_store(&home).await?;
+    let (store, _) = host::open_store(&home).await?;
     if let Some(id) = &args.session {
         for item in store.load(id).await?.transcript {
             match item {

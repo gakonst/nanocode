@@ -396,6 +396,11 @@ pub(crate) fn vm_options(memory: usize, frozen_builtins: bool) -> VmOptions {
     }
 }
 
+/// What a native instance's arena has beyond its image before a call allocates: one arena
+/// page (64 KiB). A call that allocates less never moves the arena; more than this
+/// measured no better for short calls and cost the allocator more per instance.
+const IMAGE_ROOM: usize = 64 << 10;
+
 /// A compiled setup: the image of a VM after the host's host functions, globals and setup
 /// sources, from which [`Instance`]s start. Cheap to clone (shared), `Send` and `Sync`.
 /// Images live in this process only: there is no way to save one, and none is needed,
@@ -467,10 +472,17 @@ impl Snapshot {
         self.0.frozen_builtins
     }
 
-    /// A buffer of the image with room for the heap to start growing in.
+    /// A buffer of the image with room for the heap to start growing in. A native
+    /// allocator moves a block that grows (a copy of the whole arena), so there the
+    /// buffer has [`IMAGE_ROOM`] more than the image.
     pub(crate) fn image_buffer(&self, memory: usize) -> Vec<u8> {
         let image = self.image();
-        let mut v = Vec::with_capacity(Heap::image_capacity(image.len(), memory));
+        let room = if cfg!(target_arch = "wasm32") {
+            0
+        } else {
+            IMAGE_ROOM
+        };
+        let mut v = Vec::with_capacity(Heap::image_capacity(image.len() + room, memory));
         v.extend_from_slice(image);
         v
     }

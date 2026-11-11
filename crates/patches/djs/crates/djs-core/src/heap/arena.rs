@@ -269,14 +269,22 @@ impl Arena {
                 // An eighth more, in whole wasm pages, but not past the target (D1870,
                 // D3140): wasm grows the arena in place at memory's end, so doubling only
                 // reserved pages the run might never touch, and memory never shrinks.
+                #[cfg(target_arch = "wasm32")]
                 let w = (cap + (cap / 8).max(PAGE))
                     .next_multiple_of(PAGE)
                     .max(end)
                     .max(4096);
+                // A native allocator moves a block that grows, a copy of the whole arena,
+                // and pages it reserved are not memory until they are written: double.
+                #[cfg(not(target_arch = "wasm32"))]
+                let w = (2 * cap).next_multiple_of(PAGE).max(end).max(4096);
                 if self.target == 0 {
                     w
-                } else {
+                } else if cfg!(target_arch = "wasm32") {
                     w.min(self.target as usize)
+                } else {
+                    // To the target at once: the arena stops there until a collection.
+                    self.target as usize
                 }
             } else {
                 // Past the target a collection is pending: grow by a quarter, not double,

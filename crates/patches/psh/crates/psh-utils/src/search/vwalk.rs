@@ -175,16 +175,19 @@ impl Chain<'_> {
         })
     }
 
-    fn add_child_path(&self, parent: &Ignore, dir: &[u8]) -> (Node, Option<Error>) {
+    /// psh: `vcs` is false for a directory above the nearest repository (see
+    /// `add_parents`): its repository and git rules are not asked for.
+    fn add_child_path(&self, parent: &Ignore, dir: &[u8], vcs: bool) -> (Node, Option<Error>) {
         let s = &self.shared;
         let stat = |name: &[u8]| self.host.stat(&self.host.abs(&join(dir, name)), true);
-        let check_vcs_dir = s.require_git && (s.git_ignore || s.git_exclude);
-        let git_type = if check_vcs_dir || s.git_exclude {
+        let check_vcs_dir = vcs && s.require_git && (s.git_ignore || s.git_exclude);
+        let git_type = if check_vcs_dir || (vcs && s.git_exclude) {
             stat(b".git").ok().map(|m| m.kind)
         } else {
             None
         };
-        let has_jj = check_vcs_dir && stat(b".jj").is_ok();
+        // psh: `.jj` decides nothing where `.git` is.
+        let has_jj = check_vcs_dir && git_type.is_none() && stat(b".jj").is_ok();
         let has_git = check_vcs_dir && (git_type.is_some() || has_jj);
         let mut errs = Errs::default();
         let dir_path = to_path(dir);
@@ -203,14 +206,15 @@ impl Chain<'_> {
             errs.maybe_push(e);
             m
         };
-        let git_ignore = if !s.git_ignore {
+        let git_ignore = if !s.git_ignore || !vcs {
             Gitignore::empty()
         } else {
             let (m, e) = self.create_gitignore(dir, dir, &[".gitignore"]);
             errs.maybe_push(e);
             m
         };
-        let git_exclude = if !s.git_exclude {
+        // psh: without `.git` there is no `info/exclude` to read.
+        let git_exclude = if !s.git_exclude || git_type.is_none() {
             Gitignore::empty()
         } else {
             match self.resolve_git_commondir(dir, git_type) {
@@ -240,7 +244,7 @@ impl Chain<'_> {
     }
 
     fn add_child(&self, parent: &Ignore, dir: &[u8]) -> (Ignore, Option<Error>) {
-        let (node, err) = self.add_child_path(parent, dir);
+        let (node, err) = self.add_child_path(parent, dir, true);
         (
             Ignore {
                 node: Rc::new(node),
@@ -285,10 +289,25 @@ impl Chain<'_> {
             parents.push(parent);
             p = parent;
         }
+        // psh: the git rules of a directory above the nearest repository never apply
+        // (`matched_ignore` stops at the first directory with one), so from `base` up
+        // only the directories as far as that one are asked for theirs.
+        let is_repo = |dir: &[u8]| {
+            let stat = |name: &[u8]| self.host.stat(&self.host.abs(&join(dir, name)), true);
+            stat(b".git").is_ok() || stat(b".jj").is_ok()
+        };
+        let asked = if !(s.require_git && s.git_ignore) {
+            parents.len()
+        } else if is_repo(&base) {
+            0
+        } else {
+            let nearest = parents.iter().position(|parent| is_repo(parent));
+            nearest.map_or(parents.len(), |at| at + 1)
+        };
         let mut errs = Errs::default();
         let mut ig = root.clone();
-        for parent in parents.into_iter().rev() {
-            let (mut node, err) = self.add_child_path(&ig, parent);
+        for (at, parent) in parents.into_iter().enumerate().rev() {
+            let (mut node, err) = self.add_child_path(&ig, parent, at < asked);
             errs.maybe_push(err);
             node.is_absolute_parent = true;
             node.has_git &= s.git_ignore;

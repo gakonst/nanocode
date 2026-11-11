@@ -46,6 +46,9 @@ pub(crate) struct Prog {
     /// The ASCII bytes every match starts with (the program's leading literals): a
     /// search skips to where the first one is.
     pub prefix: Vec<u8>,
+    /// No alternation, repetition or back-reference: a match has one path through the
+    /// program, which is walked from each start without sets of threads.
+    pub straight: bool,
 }
 
 pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
@@ -66,8 +69,21 @@ pub(crate) fn compile(parsed: &Parsed, opts: Options) -> Result<Prog, Error> {
             _ => None,
         })
         .collect();
+    let straight = c.insts.iter().all(|i| {
+        matches!(
+            i,
+            Inst::Lit(_)
+                | Inst::Fold(_)
+                | Inst::Any
+                | Inst::Set(_)
+                | Inst::Assert(_)
+                | Inst::Save(_)
+                | Inst::Match
+        )
+    });
     Ok(Prog {
         prefix,
+        straight,
         insts: c.insts,
         sets: c.sets,
         opts,

@@ -30,6 +30,14 @@ pub(crate) fn exec(
     if prog.backrefs {
         return m.search_backrefs(groups);
     }
+    if prog.straight && want_groups && groups > 0 {
+        let mut slots = vec![None; prog.slots];
+        let (s, e) = m.line(&mut slots)?;
+        let mut caps: Captures = vec![None; groups + 1];
+        caps[0] = Some((s, e));
+        fill(&mut caps, &slots);
+        return Some(caps);
+    }
     let (s, e) = m.span()?;
     let mut caps: Captures = vec![None; groups + 1];
     caps[0] = Some((s, e));
@@ -238,7 +246,64 @@ impl M<'_> {
         if !self.prog.anchored && !prefix.is_empty() {
             locate(rest, prefix)?;
         }
+        if self.prog.straight {
+            return self.line(&mut []);
+        }
         self.bounds()
+    }
+
+    /// The match of a pattern with one path: the first start the path matches from.
+    /// The subexpressions it passes are recorded in `slots` (none when it is empty).
+    fn line(&self, slots: &mut [Option<usize>]) -> Option<(usize, usize)> {
+        let first = if self.prog.anchored {
+            None
+        } else {
+            self.prog.prefix.first().copied()
+        };
+        let mut start = self.start;
+        loop {
+            if let Some(first) = first {
+                start += self.text.get(start..)?.iter().position(|&b| b == first)?;
+            }
+            if let Some(end) = self.path(start, slots) {
+                return Some((start, end));
+            }
+            if self.prog.anchored || start >= self.text.len() {
+                return None;
+            }
+            start += decode(self.text, start, self.utf8()).1;
+        }
+    }
+
+    /// Where the one path of the program ends when it matches from `start`.
+    fn path(&self, start: usize, slots: &mut [Option<usize>]) -> Option<usize> {
+        let mut pos = start;
+        for inst in &self.prog.insts {
+            match inst {
+                Inst::Match => return Some(pos),
+                Inst::Assert(a) => {
+                    if !self.assert(*a, pos) {
+                        return None;
+                    }
+                }
+                Inst::Save(k) => {
+                    if let Some(slot) = slots.get_mut(*k) {
+                        *slot = Some(pos);
+                    }
+                }
+                _ => {
+                    if pos >= self.text.len() {
+                        return None;
+                    }
+                    let (u, len) = decode(self.text, pos, self.utf8());
+                    if !self.consumes(inst, u) {
+                        return None;
+                    }
+                    pos += len;
+                }
+            }
+        }
+        None
     }
 
     /// The leftmost-longest match, by simulating all threads at once: a thread

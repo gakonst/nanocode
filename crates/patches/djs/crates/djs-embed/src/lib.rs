@@ -257,6 +257,7 @@ mod data;
 mod error;
 mod instance;
 mod module;
+mod park;
 mod snapshot;
 mod value;
 
@@ -267,6 +268,7 @@ pub use data::Data;
 pub use error::{Error, ErrorKind, Exception, Throw};
 pub use instance::{CallId, HostCall, Instance, Limits, Step};
 pub use module::{Loader, ModuleMap, ModuleSource, SyntheticModule};
+pub use park::Parked;
 pub use snapshot::{Builder, HostFn, Snapshot, Source, SourceKind};
 pub use value::{Value, ValueRef};
 

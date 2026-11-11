@@ -4,6 +4,18 @@ The crate follows semver for 0.x: a patch release (0.1.x) only adds, a minor rel
 may break the API. Hosts that pin a git revision read this file before moving the pin;
 every incompatible change is listed here with what to do instead.
 
+## nanocode's additions (not upstream)
+
+- `Instance::resolve_unhandled`, `Instance::seed_random`, `Instance::set_time_zone_offset`.
+- `Instance::park` and `Parked`: an instance between two steps held as what differs from
+  its snapshot's image (kilobytes for a call that waits, instead of its heap), and
+  `Parked::resume`, which makes the instance again. `Parked::to_bytes` and
+  `Snapshot::parked` are the same state as bytes a host can store and load in another
+  process of the same build; `Snapshot::fingerprint` tells whether two snapshots share
+  an image.
+- A native instance's arena starts with 64 KiB beyond its image and grows to its
+  collection threshold at once (wasm32 as upstream).
+
 ## 0.1.1
 
 - `Instance::heap_size`, `Instance::heap_used` and `Instance::shrink_heap`: what the heap

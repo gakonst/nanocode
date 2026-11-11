@@ -213,6 +213,7 @@ impl Builder {
         let image = guard_vm(|| self.setup(&mut vm))??;
         Ok(Snapshot(Arc::new(Inner {
             image,
+            fingerprint: Default::default(),
             frozen_builtins: self.frozen_builtins,
             host_fns: self.host_fns,
             modules: self.modules,
@@ -399,7 +400,7 @@ pub(crate) fn vm_options(memory: usize, frozen_builtins: bool) -> VmOptions {
 /// What a native instance's arena has beyond its image before a call allocates: one arena
 /// page (64 KiB). A call that allocates less never moves the arena; more than this
 /// measured no better for short calls and cost the allocator more per instance.
-const IMAGE_ROOM: usize = 64 << 10;
+pub(crate) const IMAGE_ROOM: usize = 64 << 10;
 
 /// A compiled setup: the image of a VM after the host's host functions, globals and setup
 /// sources, from which [`Instance`]s start. Cheap to clone (shared), `Send` and `Sync`.
@@ -410,6 +411,7 @@ pub struct Snapshot(Arc<Inner>);
 
 struct Inner {
     image: Vec<u8>,
+    fingerprint: crate::park::Fingerprint,
     frozen_builtins: bool,
     host_fns: Vec<HostFn>,
     modules: Vec<SyntheticModule>,
@@ -470,6 +472,10 @@ impl Snapshot {
 
     pub(crate) fn frozen_builtins(&self) -> bool {
         self.0.frozen_builtins
+    }
+
+    pub(crate) fn fingerprint_cell(&self) -> &crate::park::Fingerprint {
+        &self.0.fingerprint
     }
 
     /// A buffer of the image with room for the heap to start growing in. A native

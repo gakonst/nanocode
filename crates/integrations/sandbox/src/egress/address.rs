@@ -54,6 +54,15 @@ pub fn host_matches(pattern: &str, host: &str) -> bool {
     )
 }
 
+pub(super) const TAILNET_SUFFIX: &str = ".ts.net";
+
+#[must_use]
+pub fn tailnet_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let bare = host.strip_prefix("*.").unwrap_or(&host);
+    bare.ends_with(TAILNET_SUFFIX) || TAILNET_SUFFIX.strip_prefix('.') == Some(bare)
+}
+
 #[must_use]
 pub fn valid_pattern(host: &str) -> bool {
     let bare = host.strip_prefix("*.").unwrap_or(host);

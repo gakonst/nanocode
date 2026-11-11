@@ -1,5 +1,5 @@
 use crate::egress::{
-    address::{Cidr, host_matches, is_public, reachable},
+    address::{Cidr, TAILNET_SUFFIX, host_matches, is_public, reachable},
     addresses::Addresses,
     audit::{Audit, Kind, Reporting},
     authority::Authority,
@@ -319,7 +319,7 @@ impl<A: Authority> Proxy<A> {
             } => {
                 let name = host.trim_end_matches('.').to_ascii_lowercase();
                 if let Some(server) = tailnet
-                    && name.ends_with(".ts.net")
+                    && name.ends_with(TAILNET_SUFFIX)
                 {
                     return match timeout(connect, socks(*server, &name, port)).await {
                         Ok(Ok(stream)) => Ok(stream),

@@ -9,7 +9,9 @@ mod sandbox;
 mod tls;
 mod wire;
 
-pub use address::{Cidr, NotCidr, SPECIAL, host_matches, is_public, reachable, valid_pattern};
+pub use address::{
+    Cidr, NotCidr, SPECIAL, host_matches, is_public, reachable, tailnet_host, valid_pattern,
+};
 pub use addresses::{Addresses, Holder};
 pub use audit::Reporting;
 pub use authority::{Authority, Failure, Fixed, chain};

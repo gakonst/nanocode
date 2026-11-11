@@ -2,7 +2,7 @@ use crate::{
     bubblewrap::Bubblewrap,
     budget::{Admitted, Budget, Busy, Stopped},
     confine,
-    egress::{Allowlist, Egress, Limits, Secret, Tls},
+    egress::{Allowlist, Egress, Limits, Secret, Tls, tailnet_host},
 };
 use futures_util::future::BoxFuture;
 use nanocode_sync::Signal;
@@ -52,7 +52,6 @@ pub struct Caps {
 pub struct Reach {
     pub tls: Arc<Tls>,
     pub tailnet: Option<SocketAddr>,
-    pub refusal: fn(&str) -> String,
     pub limits: Limits,
 }
 
@@ -84,6 +83,8 @@ pub struct Call<'a> {
     pub within: Duration,
     pub admitted: Option<&'a Admitted<'a>>,
     pub hosts: &'a [String],
+    pub tailnet: bool,
+    pub refusal: fn(&str) -> String,
     pub secrets: Vec<Secret>,
     pub host: Option<Arc<dyn Host>>,
 }
@@ -189,12 +190,17 @@ impl Runner {
         };
         let host = channel.as_ref().map(|_| confine::CHANNEL_DESCRIPTOR);
         let allowlist = Allowlist {
-            hosts: call.hosts.to_vec(),
+            hosts: call
+                .hosts
+                .iter()
+                .filter(|host| call.tailnet || !tailnet_host(host))
+                .cloned()
+                .collect(),
             private_hosts: Vec::new(),
             secrets: call.secrets,
             tls: Arc::clone(&self.reach.tls),
-            tailnet: self.reach.tailnet,
-            refusal: self.reach.refusal,
+            tailnet: self.reach.tailnet.filter(|_| call.tailnet),
+            refusal: call.refusal,
             limits: self.reach.limits,
         };
         let egress = match self.confinement {

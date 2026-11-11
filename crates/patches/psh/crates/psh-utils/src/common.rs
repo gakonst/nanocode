@@ -109,15 +109,25 @@ impl Input {
         if name == b"-" {
             return Ok(Input::Stdin);
         }
-        if let Ok(m) = ctx.stat(name, true).await
-            && m.kind == FileKind::Dir
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::IsADirectory,
-                "Is a directory",
-            ));
+        // The open file says what it is, where the host can tell: a second lookup of the
+        // path (`stat`) only where it cannot, or where a directory does not open.
+        let is_dir = async || {
+            ctx.stat(name, true)
+                .await
+                .is_ok_and(|m| m.kind == FileKind::Dir)
+        };
+        let directory = || io::Error::new(io::ErrorKind::IsADirectory, "Is a directory");
+        let file = match ctx.open(name, OpenOptions::read()).await {
+            Ok(file) => file,
+            Err(_) if is_dir().await => return Err(directory()),
+            Err(e) => return Err(e),
+        };
+        match file.kind() {
+            Some(FileKind::Dir) => Err(directory()),
+            Some(_) => Ok(Input::File(file)),
+            None if is_dir().await => Err(directory()),
+            None => Ok(Input::File(file)),
         }
-        Ok(Input::File(ctx.open(name, OpenOptions::read()).await?))
     }
 
     pub async fn read(&self, ctx: &mut UtilCtx<'_>, buf: &mut [u8]) -> io::Result<usize> {

@@ -420,27 +420,28 @@ fn class_matches(name: &str, c: Unit) -> bool {
 
 /// Escapes the pattern chars of literal text, so that it matches only itself.
 pub(crate) fn escape(text: &[u8], out: &mut Vec<u8>) {
-    for &b in text {
-        // Also the chars of extglob groups, and `-` `^` for bracket expressions.
-        if matches!(
-            b,
-            b'*' | b'?'
-                | b'['
-                | b']'
-                | b'\\'
-                | b'('
-                | b')'
-                | b'|'
-                | b'!'
-                | b'@'
-                | b'+'
-                | b'-'
-                | b'^'
-        ) {
-            out.push(b'\\');
+    // Also the chars of extglob groups, and `-` `^` for bracket expressions.
+    const SPECIAL: [bool; 256] = {
+        let mut special = [false; 256];
+        let chars = b"*?[]\\()|!@+-^";
+        let mut i = 0;
+        while i < chars.len() {
+            special[chars[i] as usize] = true;
+            i += 1;
         }
-        out.push(b);
+        special
+    };
+    // The text between two pattern chars is copied in one piece.
+    out.reserve(text.len());
+    let mut copied = 0;
+    for (i, &b) in text.iter().enumerate() {
+        if SPECIAL[b as usize] {
+            out.extend_from_slice(&text[copied..i]);
+            out.push(b'\\');
+            copied = i;
+        }
     }
+    out.extend_from_slice(&text[copied..]);
 }
 
 /// `has_glob_chars`, also counting extglob groups (`@(…)`) when extglob is on.

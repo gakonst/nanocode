@@ -69,7 +69,7 @@ pub(crate) fn pipe() -> (PipeReader, PipeWriter) {
 /// consumer runs (pitfall 2 of `research/execution-core.md`).
 pub(crate) fn preloaded(data: &[u8]) -> PipeReader {
     PipeReader(Rc::new(RefCell::new(Inner {
-        buf: data.iter().copied().collect(),
+        buf: data.to_vec().into(),
         readers: 1,
         writers: 0,
         read_wakers: Vec::new(),
@@ -125,9 +125,12 @@ impl PipeReader {
         }
         if !p.buf.is_empty() {
             let n = out.len().min(p.buf.len());
-            for (i, b) in p.buf.drain(..n).enumerate() {
-                out[i] = b;
-            }
+            // The two runs of the ring, copied as slices rather than byte by byte.
+            let (front, back) = p.buf.as_slices();
+            let first = n.min(front.len());
+            out[..first].copy_from_slice(&front[..first]);
+            out[first..n].copy_from_slice(&back[..n - first]);
+            p.buf.drain(..n);
             wake_all(&mut p.write_wakers);
             return Poll::Ready(Ok(n));
         }

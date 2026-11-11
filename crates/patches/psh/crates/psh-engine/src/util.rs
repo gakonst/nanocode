@@ -343,6 +343,15 @@ pub struct UtilFile {
 }
 
 impl UtilFile {
+    /// What the file is, where its host can tell (`HostFile::kind`); one of the shell's
+    /// pipes is a FIFO.
+    pub fn kind(&self) -> Option<crate::host::FileKind> {
+        match &*self.file {
+            FdObj::File(file) => file.kind(),
+            FdObj::PipeRead(_) | FdObj::PipeWrite(_) => Some(crate::host::FileKind::Fifo),
+        }
+    }
+
     pub async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.file.read(buf).await
     }

@@ -58,6 +58,10 @@ pub(crate) struct Fields {
     rep: bool,
     /// An assignment value: operands (`x=${u-~:~}`) get its tilde rules.
     assign: bool,
+    /// Only the text is wanted (`expand_single`: one string, no globbing): the fields'
+    /// patterns are not built. Escaping a long value into one was most of the time of
+    /// `s="$s$i,"` in a loop.
+    text_only: bool,
 }
 
 fn is_ifs_ws(b: u8) -> bool {
@@ -94,6 +98,7 @@ impl Fields {
             subst_status: None,
             rep: false,
             assign: false,
+            text_only: false,
         }
     }
 
@@ -116,7 +121,8 @@ impl Fields {
     pub(crate) fn quoted(&mut self, s: &[u8]) {
         self.begin();
         self.cur.text.extend_from_slice(s);
-        if self.rep {
+        if self.text_only {
+        } else if self.rep {
             for &b in s {
                 if b == b'\\' || b == b'&' {
                     self.cur.pat.push(b'\\');
@@ -133,9 +139,11 @@ impl Fields {
     pub(crate) fn literal(&mut self, s: &[u8]) {
         self.begin();
         self.cur.text.extend_from_slice(s);
-        self.cur.pat.extend_from_slice(s);
-        if pattern::has_glob_chars(s) {
-            self.cur.glob = true;
+        if !self.text_only {
+            self.cur.pat.extend_from_slice(s);
+            if pattern::has_glob_chars(s) {
+                self.cur.glob = true;
+            }
         }
         self.cur.started = true;
     }
@@ -144,8 +152,10 @@ impl Fields {
     pub(crate) fn pattern(&mut self, text: &[u8], pat: &[u8]) {
         self.begin();
         self.cur.text.extend_from_slice(text);
-        self.cur.pat.extend_from_slice(pat);
-        self.cur.glob = true;
+        if !self.text_only {
+            self.cur.pat.extend_from_slice(pat);
+            self.cur.glob = true;
+        }
         self.cur.started = true;
     }
 
@@ -226,7 +236,11 @@ impl Fields {
     }
 
     /// All fields joined with spaces (for contexts that want one string).
-    pub(crate) fn joined(&self) -> Vec<u8> {
+    pub(crate) fn joined(&mut self) -> Vec<u8> {
+        // One field, the usual case: its text as it is, not a copy.
+        if let [only] = self.out.as_mut_slice() {
+            return std::mem::take(&mut only.text);
+        }
         let mut out = Vec::new();
         for (i, f) in self.out.iter().enumerate() {
             if i > 0 {
@@ -383,6 +397,7 @@ pub(crate) async fn expand_single(
 ) -> Result<(Vec<u8>, Option<i32>), Unwind> {
     let mut f = Fields::new(vp, false);
     f.assign = ctx == Ctx::Assign;
+    f.text_only = true;
     let pieces: Vec<Piece> = word.parts.iter().map(Piece::Part).collect();
     expand_pieces(vp, code, &pieces, false, &mut f, ctx).await?;
     f.finish_word();

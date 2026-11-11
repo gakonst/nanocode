@@ -349,7 +349,11 @@ impl<M: LabelMode> CodeBuf<M> {
             bytes[p..p + 4].copy_from_slice(&v.to_le_bytes());
             p += kind.width() as usize;
         }
-        self.code.extend_from_slice(&bytes[..p]);
+        // The whole buffer and then the length: an append of a length known here is
+        // two stores, one of `p` bytes is a call to `memmove`.
+        let len = self.code.len();
+        self.code.extend_from_slice(&bytes);
+        self.code.truncate(len + p);
     }
 
     fn fail(&mut self, e: CodeError) {

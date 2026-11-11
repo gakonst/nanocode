@@ -28,6 +28,8 @@ use std::io::{self, BufWriter, Write};
 
 use psh_engine::util::{BlockingOptions, SyncCtx, SyncWriter, UtilCtx};
 
+pub(crate) use wild::wildmatch;
+
 use repo::Repo;
 use store::Fs;
 

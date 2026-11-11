@@ -61,7 +61,12 @@ mod uniq;
 mod find;
 mod git;
 mod jq;
+
+mod codec;
+mod gzip;
+mod tar;
 mod xargs;
+mod zip;
 
 mod base64;
 mod cmp;
@@ -95,6 +100,30 @@ pub static REGISTRY: &[UtilEntry] = &[
         mode: Mode::PathFallback,
         destructive: false,
         run: util_fn!(git::run),
+    },
+    UtilEntry {
+        names: &["tar"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(tar::run),
+    },
+    UtilEntry {
+        names: &["gzip", "gunzip", "zcat"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(gzip::run),
+    },
+    UtilEntry {
+        names: &["zip"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(zip::zip),
+    },
+    UtilEntry {
+        names: &["unzip"],
+        mode: Mode::PathFallback,
+        destructive: false,
+        run: util_fn!(zip::unzip),
     },
     UtilEntry {
         names: &["find"],

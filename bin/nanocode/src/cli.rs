@@ -307,7 +307,7 @@ pub struct GatewayArgs {
         long,
         env = "NANOCODE_TEMPO_SESSION",
         value_name = "NAME",
-        help = "Pay each Tempo service (the Tempo gateway's models and tools, Mercator and the services shell commands reach) from this named session instead of the lowest of 64 slots no other process holds"
+        help = "Pay each Tempo service (the Tempo gateway's models and tools, Mercator and the services shell commands reach) from this named session instead of the one session every nanocode process of this wallet shares"
     )]
     pub tempo_session: Option<String>,
 

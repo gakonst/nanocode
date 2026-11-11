@@ -156,7 +156,7 @@ nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mod
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 image = { version = "=0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "webp"] }
 iana-time-zone = "0.1.64"
-mpp = { git = "https://github.com/tempoxyz/mpp-rs", rev = "65fe50a94fd3f60c2355179828acb11bf1478864", default-features = false, features = ["client", "tempo", "sqlite", "forward-proxy", "reqwest-rustls-tls-no-provider"] }
+mpp = { git = "https://github.com/tempoxyz/mpp-rs", rev = "7a8394ccd9273e401185055dc4dfc04c633c885a", default-features = false, features = ["client", "tempo", "sqlite", "forward-proxy", "reqwest-rustls-tls-no-provider"] }
 tempo-alloy = { version = "1.11.0", default-features = false }
 nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
 portable-pty = "0.9.0"

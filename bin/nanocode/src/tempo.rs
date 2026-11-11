@@ -15,7 +15,7 @@ use mpp::{
         ManagementFuture, ManagementTransport, PaymentContext, PaymentEventFuture, PaymentProvider,
         PendingPayment, TempoAccountsProvider, TempoClientError, TempoSessionProvider,
         tempo::session::store::{
-            SqliteChannelStore, SqliteChannelStoreOptions, default_channel_database_path,
+            SqliteChannelStore, SqliteChannelStoreOptions,
         },
     },
     mcp::client::McpPayment,
@@ -60,7 +60,6 @@ const OUSD: &str = "0x20c0000000000000000000006a37DA5C996874BE";
 const USDT0: &str = "0x20c00000000000000000000014f22ca97301eb73";
 const MACH: u128 = 1_000_000;
 const PREPAID_REQUESTS: u32 = 2;
-const SESSION_SLOTS: usize = 64;
 const CLOSE_ATTEMPTS: u32 = 12;
 const CLOSE_RETRY: Duration = Duration::from_secs(5);
 const WATERFALL: Duration = Duration::from_secs(30);
@@ -239,7 +238,6 @@ struct Payments {
     failure: Arc<Atom<Option<String>>>,
     session: Option<String>,
     wallets: Arc<Atom<HashMap<String, Wallet>>>,
-    slots: Arc<Atom<HashMap<String, String>>>,
     closing: Arc<Atom<Vec<(TempoSessionProvider, String)>>>,
     short: Arc<Atom<bool>>,
     _observers: Arc<[ClientEventSubscription; 3]>,
@@ -359,7 +357,6 @@ impl Payments {
             failure: Arc::default(),
             session,
             wallets: Arc::default(),
-            slots: Arc::default(),
             closing: Arc::default(),
             short,
             _observers: Arc::new(observers),
@@ -396,20 +393,9 @@ impl Payments {
     }
 
     fn store(&self, origin: String, service: &str) -> Result<SqliteChannelStore> {
-        let namespace = match self.slots.read(|slots| slots.get(&origin).cloned()) {
-            Some(namespace) => namespace,
-            None => {
-                let namespace = match session_slot(&origin, self.session.as_deref())?.as_str() {
-                    "0" => origin.clone(),
-                    slot => format!("{origin}#{slot}"),
-                };
-                self.slots.update(|slots| {
-                    slots
-                        .entry(origin.clone())
-                        .or_insert_with(|| namespace.clone())
-                        .clone()
-                })
-            }
+        let namespace = match self.session.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => format!("{origin}#{name}"),
+            _ => origin,
         };
         Ok(SqliteChannelStore::open(SqliteChannelStoreOptions {
             namespace,
@@ -1679,31 +1665,6 @@ fn gas_token(token: &str) -> Result<Address> {
         );
     }
     Ok(address)
-}
-
-fn session_slot(origin: &str, named: Option<&str>) -> Result<String> {
-    if let Some(name) = named.map(str::trim).filter(|name| !name.is_empty()) {
-        return Ok(name.to_owned());
-    }
-    let dir = default_channel_database_path()?.with_file_name("mpp-sessions");
-    std::fs::create_dir_all(&dir)?;
-    let key: String = origin
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    for slot in 0..SESSION_SLOTS {
-        let lock = dir.join(format!("{key}-{slot}.lock"));
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(lock)?;
-        if file.try_lock().is_ok() {
-            std::mem::forget(file);
-            return Ok(slot.to_string());
-        }
-    }
-    Err(format!("{SESSION_SLOTS} agents already pay this endpoint from this wallet").into())
 }
 
 fn tool_deposit(args: &GatewayArgs) -> u128 {

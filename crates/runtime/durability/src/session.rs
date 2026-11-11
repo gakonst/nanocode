@@ -606,7 +606,7 @@ enum ReleaseSignal {
 }
 
 impl Driver {
-    async fn run(mut self) {
+    async fn run(&mut self) {
         loop {
             for _ in 0..RELEASE_BURST_LIMIT {
                 let Ok(release) = self.releases.try_recv() else {
@@ -633,7 +633,7 @@ impl Driver {
                 };
                 self.handle_release(release);
             }
-            self.handle_command(command).instrument(span).await;
+            Box::pin(self.handle_command(command).instrument(span)).await;
             if self.poisoned {
                 break;
             }
@@ -4049,14 +4049,14 @@ fn spawn_claim_ack(
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn spawn_driver(driver: Driver) -> Result<()> {
+fn spawn_driver(mut driver: Driver) -> Result<()> {
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
-    drop(runtime.spawn(driver.run()));
+    drop(runtime.spawn(async move { driver.run().await }));
     Ok(())
 }
 
 #[cfg(target_family = "wasm")]
-fn spawn_driver(driver: Driver) -> Result<()> {
-    nanocode_platform::spawn_local(driver.run());
+fn spawn_driver(mut driver: Driver) -> Result<()> {
+    nanocode_platform::spawn_local(async move { driver.run().await });
     Ok(())
 }

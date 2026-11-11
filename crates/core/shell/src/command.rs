@@ -1,5 +1,5 @@
 use crate::{
-    file::Capture,
+    file::{Capture, Source},
     fs::{FileSystem, Remove, Reply, Stat, Write, normalize},
     host::Vfs,
     shell::Limits,
@@ -120,6 +120,12 @@ impl Stream {
     pub fn captured(&self) -> bool {
         let file: &dyn Any = self.0.as_ref();
         file.is::<Capture>()
+    }
+
+    pub fn unanswered(&self) -> bool {
+        let file: &dyn Any = self.0.as_ref();
+        file.downcast_ref::<Source>()
+            .is_some_and(Source::unanswered)
     }
 
     pub async fn read(&self, buf: &mut [u8]) -> io::Result<usize> {

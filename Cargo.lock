@@ -6375,7 +6375,9 @@ name = "nanocode-shell"
 version = "0.7.0"
 dependencies = [
  "bytes",
+ "psh-classify",
  "psh-engine",
+ "psh-syntax",
  "psh-utils",
 ]
 

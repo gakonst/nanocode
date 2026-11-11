@@ -28,7 +28,8 @@ pub const K_RANDOM: u32 = 4;
 pub const K_HAS: u32 = 5;
 /// Starts a host command: arg = its process id, payload = the call (the arguments and
 /// the environment as counted lists, the working directory, and a u32 whose bits 0 and
-/// 1 say that stdout and stderr are the shell's captured output).
+/// 1 say that stdout and stderr are the shell's captured output, and bit 2 that stdin
+/// is the input of a machine the shell stands in for, which it has no answer for).
 /// The command then asks for its I/O with `psh_proc_read` and `psh_proc_write` and
 /// ends with `psh_proc_exit`.
 pub const K_SPAWN: u32 = 6;

@@ -46,7 +46,7 @@ static ALLOCATOR: cap::Capped = cap::Capped;
 
 /// Bumped when an export, the payload layouts or the `host_call` kinds change; the JS
 /// glue checks it.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 thread_local! {
     static INPUT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };

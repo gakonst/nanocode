@@ -26,13 +26,15 @@ pub(crate) fn bad_descriptor() -> io::Error {
 }
 
 pub(crate) struct Source {
+    vfs: Rc<Vfs>,
     data: RefCell<Option<Bytes>>,
     at: Cell<usize>,
 }
 
 impl Source {
-    pub(crate) const fn new() -> Self {
+    pub(crate) const fn new(vfs: Rc<Vfs>) -> Self {
         Self {
+            vfs,
             data: RefCell::new(None),
             at: Cell::new(0),
         }
@@ -42,13 +44,21 @@ impl Source {
         *self.data.borrow_mut() = data;
         self.at.set(0);
     }
+
+    pub(crate) fn unanswered(&self) -> bool {
+        self.vfs.answers.is_some() && self.data.borrow().is_none()
+    }
 }
 
 impl HostFile for Source {
     fn poll_read(&self, _cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
         let data = self.data.borrow();
         let Some(data) = data.as_ref() else {
-            return Poll::Ready(Ok(0));
+            return Poll::Ready(if self.vfs.answers.is_some() {
+                Err(self.vfs.unanswer(b"standard input"))
+            } else {
+                Ok(0)
+            });
         };
         let at = self.at.get();
         let count = buf.len().min(data.len() - at);

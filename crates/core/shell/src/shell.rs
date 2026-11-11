@@ -1,4 +1,5 @@
 use crate::{
+    answers::{self, Answers},
     command::Commands,
     file::{Capture, Source},
     fs::FileSystem,
@@ -32,11 +33,12 @@ pub enum Limit {
     Operations,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ended {
     Exited(i32),
     Cancelled,
     Refused(Limit),
+    Unanswered(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -148,6 +150,23 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(config: Config) -> Self {
+        Self::build(config, None)
+    }
+
+    pub fn with_answers(config: Config, answers: Answers) -> Self {
+        Self::build(config, Some(answers))
+    }
+
+    fn build(config: Config, answers: Option<Answers>) -> Self {
+        let mut without = config.without;
+        if let Some(answers) = &answers {
+            let unanswered = psh_utils::REGISTRY
+                .iter()
+                .flat_map(|utility| utility.names)
+                .filter(|name| !answers.runs(name))
+                .map(|name| name.as_bytes().to_vec());
+            without.extend(unanswered);
+        }
         let vfs = Rc::new(Vfs {
             fs: config.fs,
             commands: config.commands,
@@ -159,10 +178,12 @@ impl Shell {
             changes: RefCell::new(Changes::default()),
             missing: RefCell::new(Vec::new()),
             refused: Cell::new(None),
+            answers,
+            unanswered: RefCell::new(None),
             control: OnceCell::new(),
             spawned: Cell::new(0),
         });
-        let stdin = Rc::new(Source::new());
+        let stdin = Rc::new(Source::new(vfs.clone()));
         let stdout = Rc::new(Capture::new(config.limits.output));
         let stderr = Rc::new(Capture::new(config.limits.output));
         let mut engine = ShellConfig::new(Rc::new(Host(vfs.clone())));
@@ -173,7 +194,7 @@ impl Shell {
         engine.stderr = Some(stderr.clone() as Rc<dyn HostFile>);
         engine.max_depth = config.limits.depth;
         engine.utilities = psh_utils::policy(true);
-        engine.utilities.off_names = config.without;
+        engine.utilities.off_names = without;
         let engine = psh_engine::Shell::new(engine);
         let _ = vfs.control.set(engine.control());
         Self {
@@ -193,12 +214,25 @@ impl Shell {
         self.cancelled = false;
         self.vfs.operations.set(0);
         self.vfs.refused.set(None);
+        self.vfs.unanswered.take();
         self.vfs.missing.borrow_mut().clear();
         self.vfs.changes.take();
         self.stdout.take();
         self.stderr.take();
+        let admitted = self
+            .vfs
+            .answers
+            .as_ref()
+            .map_or(Ok(()), |answers| answers::admit(&script.source, answers));
+        let source = match admitted {
+            Ok(()) => script.source,
+            Err(what) => {
+                self.vfs.unanswered.replace(Some(what));
+                Vec::new()
+            }
+        };
         self.engine.start(psh_engine::Script {
-            source: script.source,
+            source,
             arg0: script.name,
             args: script.args,
             dash_c: true,
@@ -249,10 +283,11 @@ impl Shell {
     fn ran(&mut self, status: i32) -> Ran {
         let (stdout, cut_out) = self.stdout.take();
         let (stderr, cut_err) = self.stderr.take();
-        let ended = match self.vfs.refused.take() {
-            Some(limit) => Ended::Refused(limit),
-            None if self.cancelled => Ended::Cancelled,
-            None => Ended::Exited(status),
+        let ended = match (self.vfs.unanswered.take(), self.vfs.refused.take()) {
+            (Some(what), _) => Ended::Unanswered(what),
+            (None, Some(limit)) => Ended::Refused(limit),
+            (None, None) if self.cancelled => Ended::Cancelled,
+            (None, None) => Ended::Exited(status),
         };
         Ran {
             ended,

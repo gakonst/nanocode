@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::task::{Wake, Waker};
 
 use bytes::Bytes;
-use nanocode_shell::{Config, Ended, HostInfo, Identity, Limit, Limits, Ran, Script, Shell, Step};
+use nanocode_shell::{
+    Answers, Config, Ended, HostInfo, Identity, Limit, Limits, Ran, Script, Shell, Step,
+};
 
 use crate::host::{JsCommands, JsFs, JsMachine, Reader, Writer};
 use crate::{export, set_output, sys, take_input};
@@ -28,6 +30,7 @@ const ENDED_CANCELLED: u32 = 1;
 const ENDED_FUEL: u32 = 2;
 const ENDED_MISSING: u32 = 3;
 const ENDED_OPERATIONS: u32 = 4;
+const ENDED_UNANSWERED: u32 = 5;
 
 thread_local! {
     static SHELLS: RefCell<Vec<Option<Entry>>> = const { RefCell::new(Vec::new()) };
@@ -87,7 +90,21 @@ fn new_shell(cfg: &[u8]) -> Option<Shell> {
     for _ in 0..r.u32()? {
         without.push(r.bytes()?.to_vec());
     }
-    Some(Shell::new(Config {
+    let names = |r: &mut Reader| {
+        let mut names = std::collections::BTreeSet::new();
+        for _ in 0..r.u32()? {
+            names.insert(text(r.bytes()?));
+        }
+        Some(names)
+    };
+    let answers = match r.u32()? {
+        0 => None,
+        _ => Some(Answers {
+            commands: names(&mut r)?,
+            variables: names(&mut r)?,
+        }),
+    };
+    let config = Config {
         fs: Rc::new(JsFs),
         commands: Rc::new(JsCommands),
         machine: Rc::new(JsMachine),
@@ -112,7 +129,11 @@ fn new_shell(cfg: &[u8]) -> Option<Shell> {
         cwd,
         without,
         strict,
-    }))
+    };
+    Some(match answers {
+        Some(answers) => Shell::with_answers(config, answers),
+        None => Shell::new(config),
+    })
 }
 
 export! {
@@ -120,8 +141,10 @@ export! {
     /// name and value), the limits (fuel, output bytes, file bytes and file operations as
     /// f64, the nesting limit as u32 with 0 for the module's maximum), whether a missing
     /// command ends the run, the uid and pid, the user, group, home, host name, OSTYPE,
-    /// MACHTYPE and HOSTTYPE, and the utilities left to the host's commands (a count,
-    /// then each name). Returns the shell's id, or 0 for a malformed config.
+    /// MACHTYPE and HOSTTYPE, the utilities left to the host's commands (a count, then
+    /// each name), and whether the shell stands in for a machine (a u32: 0 for not, else
+    /// 1 and then the programs and the variables whose answers on that machine it has, a
+    /// count and the names each). Returns the shell's id, or 0 for a malformed config.
     fn psh_shell_new(len: usize) -> u32 {
         let cfg = take_input(len);
         let Some(shell) = new_shell(&cfg) else {
@@ -252,20 +275,27 @@ export! {
 
 export! {
     /// Puts the last finished run into the output buffer: how it ended (0 exited, 1
-    /// cancelled, 2 out of fuel, 3 a missing command, 4 too many file operations), the
+    /// cancelled, 2 out of fuel, 3 a missing command, 4 too many file operations, 5
+    /// something whose answer on the machine the shell stands in for is not known), the
     /// exit status, whether output was cut at its limit (u32 each), the fuel and the file
-    /// operations it used (f64 each), stdout, stderr, and the names of the commands that
-    /// were not found (a count, then each). Returns 1, or 0 when there is none.
+    /// operations it used (f64 each), stdout, stderr, the names of the commands that
+    /// were not found (a count, then each), and what had no answer (empty unless 5).
+    /// Returns 1, or 0 when there is none.
     fn psh_shell_result(id: u32) -> u32 {
         let Some(Some(ran)) = with_shell(id, |e| e.ran.take()) else {
             return 0;
         };
+        let mut unanswered = String::new();
         let (ended, status) = match ran.ended {
             Ended::Exited(status) => (ENDED_EXITED, status),
             Ended::Cancelled => (ENDED_CANCELLED, 143),
             Ended::Refused(Limit::Fuel) => (ENDED_FUEL, 126),
             Ended::Refused(Limit::Missing) => (ENDED_MISSING, 127),
             Ended::Refused(Limit::Operations) => (ENDED_OPERATIONS, 126),
+            Ended::Unanswered(what) => {
+                unanswered = what;
+                (ENDED_UNANSWERED, 127)
+            }
         };
         let mut w = Writer(Vec::with_capacity(64 + ran.stdout.len() + ran.stderr.len()));
         w.u32(ended).u32(status as u32).u32(u32::from(ran.truncated));
@@ -276,6 +306,7 @@ export! {
         for name in &ran.missing {
             w.bytes(name);
         }
+        w.bytes(unanswered.as_bytes());
         set_output(w.0);
         1
     }

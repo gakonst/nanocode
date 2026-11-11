@@ -1,4 +1,5 @@
 use crate::{
+    answers::Answers,
     command::{Call, Commands, Session, Stream},
     file::{self, Device, bad_descriptor},
     fs::{FileSystem, Kind, Remove, Reply, Stat, Write, join, normalize},
@@ -38,6 +39,8 @@ pub(crate) struct Vfs {
     pub(crate) changes: RefCell<Changes>,
     pub(crate) missing: RefCell<Vec<Vec<u8>>>,
     pub(crate) refused: Cell<Option<Limit>>,
+    pub(crate) answers: Option<Answers>,
+    pub(crate) unanswered: RefCell<Option<String>>,
     pub(crate) control: OnceCell<ControlHandle>,
     pub(crate) spawned: Cell<u32>,
 }
@@ -50,6 +53,16 @@ impl Vfs {
         if let Some(control) = self.control.get() {
             control.cancel();
         }
+    }
+
+    pub(crate) fn unanswer(&self, what: &[u8]) -> io::Error {
+        self.unanswered
+            .borrow_mut()
+            .get_or_insert_with(|| String::from_utf8_lossy(what).into_owned());
+        if let Some(control) = self.control.get() {
+            control.cancel();
+        }
+        io::Error::other("this machine's answer is not known")
     }
 
     fn charge(&self) -> io::Result<()> {
@@ -380,6 +393,15 @@ impl psh_engine::Host for Host {
     }
 
     fn spawn(&self, spec: SpawnSpec) -> io::Result<Spawned> {
+        let name = spec.program.strip_prefix(PROGRAMS).unwrap_or(&spec.program);
+        let answered = self
+            .0
+            .answers
+            .as_ref()
+            .is_none_or(|answers| str::from_utf8(name).is_ok_and(|name| answers.runs(name)));
+        if !answered {
+            return Err(self.0.unanswer(name));
+        }
         let known = spec
             .program
             .strip_prefix(PROGRAMS)

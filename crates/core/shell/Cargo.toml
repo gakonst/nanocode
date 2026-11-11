@@ -12,7 +12,9 @@ autobenches = false
 
 [dependencies]
 bytes.workspace = true
+psh-classify.workspace = true
 psh-engine.workspace = true
+psh-syntax.workspace = true
 psh-utils.workspace = true
 
 [lints]

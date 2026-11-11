@@ -1,3 +1,4 @@
+mod answers;
 mod command;
 mod file;
 mod fs;
@@ -6,6 +7,7 @@ mod machine;
 mod mem;
 mod shell;
 
+pub use answers::Answers;
 pub use command::{Call, Commands, NoCommands, Session, Stream};
 pub use fs::{FileSystem, Kind, Remove, Reply, Stat, Write, join, normalize, parent};
 pub use machine::{Identity, Machine};

@@ -350,8 +350,13 @@ impl Commands for JsCommands {
             w.bytes(k).bytes(v);
         }
         w.bytes(&call.cwd);
-        // Bit 0: stdout is the shell's captured output, bit 1: stderr is.
-        w.u32(u32::from(call.stdout.captured()) | u32::from(call.stderr.captured()) << 1);
+        // Bit 0: stdout is the shell's captured output, bit 1: stderr is, bit 2: stdin is
+        // the input of a machine the shell stands in for, which it has no answer for.
+        w.u32(
+            u32::from(call.stdout.captured())
+                | u32::from(call.stderr.captured()) << 1
+                | u32::from(call.stdin.unanswered()) << 2,
+        );
         Box::pin(async move {
             let running = Running(pid);
             // A last write that found its pipe closed (`psh_proc_write` without an answer).

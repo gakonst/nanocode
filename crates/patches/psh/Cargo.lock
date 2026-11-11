@@ -654,6 +654,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "psh-wasm-core"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "deser-core",
+ "deser-json",
+ "nanocode-shell",
+ "psh-classify",
+ "psh-syntax",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

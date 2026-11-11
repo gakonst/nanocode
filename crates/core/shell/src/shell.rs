@@ -8,7 +8,10 @@ use crate::{
     machine::{Identity, Machine},
 };
 use bytes::Bytes;
-use psh_engine::{HostFile, ShellConfig, util::UtilEntry};
+use psh_engine::{
+    HostFile, ShellConfig,
+    util::{UtilEntry, UtilPolicy},
+};
 use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::BTreeSet,
@@ -19,14 +22,21 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+fn with_host(bundled: &[UtilEntry]) -> Vec<UtilEntry> {
+    let mut all = bundled.to_vec();
+    all.extend_from_slice(psh_utils::HOST_FACTS);
+    all.extend_from_slice(&crate::net::UTILITIES);
+    all
+}
+
 fn utilities() -> &'static [UtilEntry] {
     static ALL: OnceLock<Vec<UtilEntry>> = OnceLock::new();
-    ALL.get_or_init(|| {
-        let mut all = psh_utils::REGISTRY.to_vec();
-        all.extend_from_slice(psh_utils::HOST_FACTS);
-        all.extend_from_slice(&crate::net::UTILITIES);
-        all
-    })
+    ALL.get_or_init(|| with_host(psh_utils::REGISTRY))
+}
+
+fn utilities_without_git() -> &'static [UtilEntry] {
+    static ALL: OnceLock<Vec<UtilEntry>> = OnceLock::new();
+    ALL.get_or_init(|| with_host(psh_utils::WITHOUT_GIT))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,17 +173,21 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(config: Config) -> Self {
-        Self::build(config, None)
+        Self::build(config, None, utilities())
     }
 
     pub fn with_answers(config: Config, answers: Answers) -> Self {
-        Self::build(config, Some(answers))
+        Self::build(config, Some(answers), utilities())
     }
 
-    fn build(config: Config, answers: Option<Answers>) -> Self {
+    pub fn without_git(config: Config, answers: Option<Answers>) -> Self {
+        Self::build(config, answers, utilities_without_git())
+    }
+
+    fn build(config: Config, answers: Option<Answers>, utilities: &'static [UtilEntry]) -> Self {
         let mut without = config.without;
         if let Some(answers) = &answers {
-            let unanswered = utilities()
+            let unanswered = utilities
                 .iter()
                 .flat_map(|utility| utility.names)
                 .filter(|name| !answers.runs(name))
@@ -206,10 +220,13 @@ impl Shell {
         engine.stdout = Some(stdout.clone() as Rc<dyn HostFile>);
         engine.stderr = Some(stderr.clone() as Rc<dyn HostFile>);
         engine.max_depth = config.limits.depth;
-        engine.utilities = psh_utils::policy(true);
-        engine.utilities.entries = utilities();
-        engine.utilities.off_names = without;
-        engine.utilities.unconfigured = vfs.answers.is_some();
+        engine.utilities = UtilPolicy {
+            entries: utilities,
+            sandbox: true,
+            off_names: without,
+            unconfigured: vfs.answers.is_some(),
+            ..UtilPolicy::default()
+        };
         let engine = psh_engine::Shell::new(engine);
         let _ = vfs.control.set(engine.control());
         Self {

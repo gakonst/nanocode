@@ -87,8 +87,11 @@ use psh_engine::util::{Mode, UtilEntry, UtilPolicy};
 
 use common::util_fn;
 
-/// Every utility, with its names, mode (D015) and group.
-pub static REGISTRY: &[UtilEntry] = &[
+/// The utilities, with their names, mode (D015) and group: all of them, or all but
+/// the one given a place of its own.
+macro_rules! registry {
+    ($($git:expr)?) => {
+        &[
     UtilEntry {
         names: &["awk", "gawk", "mawk", "nawk"],
         mode: Mode::Always,
@@ -101,12 +104,7 @@ pub static REGISTRY: &[UtilEntry] = &[
         destructive: false,
         run: util_fn!(jq::run),
     },
-    UtilEntry {
-        names: &["git"],
-        mode: Mode::PathFallback,
-        destructive: false,
-        run: util_fn!(git::run),
-    },
+    $($git,)?
     UtilEntry {
         names: &["tar"],
         mode: Mode::PathFallback,
@@ -570,7 +568,23 @@ pub static REGISTRY: &[UtilEntry] = &[
         destructive: false,
         run: util_fn!(mktemp::run),
     },
-];
+        ]
+    };
+}
+
+const GIT: UtilEntry = UtilEntry {
+    names: &["git"],
+    mode: Mode::PathFallback,
+    destructive: false,
+    run: util_fn!(git::run),
+};
+
+/// Every utility.
+pub static REGISTRY: &[UtilEntry] = registry!(GIT);
+
+/// Every utility but git (nanocode's addition): what a WebAssembly module links that
+/// leaves git to a module of its own, loaded when a repository is there.
+pub static WITHOUT_GIT: &[UtilEntry] = registry!();
 
 /// What a host with no machine under it answers from what it says of itself
 /// (nanocode's addition): not in [`REGISTRY`], so the psh program keeps the machine's.

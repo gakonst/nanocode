@@ -1,0 +1,36 @@
+[package]
+name = "psh-wasm-core"
+description = "psh-wasm without git (nanocode's addition): the same sources built as a module that leaves git to psh-wasm, for a host that loads that one where a repository is"
+build = "../psh-wasm/build.rs"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "../psh-wasm/src/lib.rs"
+# cdylib: the .wasm module; rlib: so native builds check the exports.
+crate-type = ["cdylib", "rlib"]
+doctest = false
+test = false
+
+[dependencies]
+psh-syntax.workspace = true
+psh-classify.workspace = true
+# nanocode's embedding of the engine and the utilities over a host file system: the
+# shell module is its JS host.
+nanocode-shell = { path = "../../../../core/shell" }
+bytes = "1.12.1"
+# JSON of parse and classify results, as `psh --parse`/`--classify` print it (D029).
+deser-json = { version = "0.10.1", default-features = false, features = ["std"] }
+deser-core = { version = "0.10.2", default-features = false, features = ["std"] }
+
+# The export layer is the one place outside psh-os with `unsafe`: the JS imports and the
+# `no_mangle` exports (D1110). Every use is allowed where it is and says why it is sound.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

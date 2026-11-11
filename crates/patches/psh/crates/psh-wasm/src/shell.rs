@@ -130,10 +130,22 @@ fn new_shell(cfg: &[u8]) -> Option<Shell> {
         without,
         strict,
     };
-    Some(match answers {
+    Some(make(config, answers))
+}
+
+/// The shell with every utility, or in the module without git (build.rs) with every
+/// one but that.
+#[cfg(not(psh_without_git))]
+fn make(config: Config, answers: Option<Answers>) -> Shell {
+    match answers {
         Some(answers) => Shell::with_answers(config, answers),
         None => Shell::new(config),
-    })
+    }
+}
+
+#[cfg(psh_without_git)]
+fn make(config: Config, answers: Option<Answers>) -> Shell {
+    Shell::without_git(config, answers)
 }
 
 export! {

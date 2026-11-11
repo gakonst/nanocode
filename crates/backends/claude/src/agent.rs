@@ -21,6 +21,7 @@ use nanocode_agent_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 mod durable;
+mod event;
 mod history;
 mod images;
 mod keep;
@@ -41,7 +42,6 @@ use nanocode_platform::Instant;
 #[cfg(target_family = "wasm")]
 use nanocode_platform::sleep;
 use nanocode_sync::{Atom, Owned, Sequencer, Slot};
-use nanocode_types::preview;
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -1857,14 +1857,6 @@ impl ClaudeBuilder {
     }
 }
 
-fn encoded_len(value: Option<&Value>) -> usize {
-    value.map_or(0, preview::encoded_len)
-}
-
-fn event_image_reference(value: Option<&Value>) -> Value {
-    value.map_or(Value::Null, preview::image_reference)
-}
-
 fn nested_call_summary(call: &Value) -> Option<Value> {
     const INPUT_BYTES: usize = 512;
     let call_id = call.get("call_id")?.as_str()?;
@@ -1921,135 +1913,6 @@ fn bounded_json_len(value: &Value, limit: usize) -> usize {
 
 const fn is_zero(value: &u64) -> bool {
     *value == 0
-}
-
-fn nested_event_arguments(input: Option<&Value>) -> (Value, Option<usize>) {
-    let Some(input) = input else {
-        return (Value::Null, None);
-    };
-    match preview::shortened(input) {
-        Some((arguments, size)) => (arguments, Some(size)),
-        None => (input.clone(), None),
-    }
-}
-
-fn nested_event_result(call: &Value) -> serde_json::Map<String, Value> {
-    let output = call.get("output");
-    let structured = call.get("structured_result");
-    let metadata = call.get("metadata");
-    let mut fields = serde_json::Map::new();
-    let host_truncated = call.get("event_truncated").and_then(Value::as_bool) == Some(true);
-    let output_len = encoded_len(output);
-    let duplicate = structured.is_some_and(|value| {
-        output.and_then(Value::as_str).is_some_and(|text| {
-            text.len() == encoded_len(Some(value))
-                && serde_json::from_str::<Value>(text).ok().as_ref() == Some(value)
-        })
-    });
-    let size = output_len
-        + if duplicate {
-            0
-        } else {
-            encoded_len(structured)
-        }
-        + encoded_len(metadata);
-    if host_truncated || size <= preview::RESULT_BYTES {
-        fields.insert("result".into(), json!({ "text": output }));
-        fields.insert(
-            "structured_result".into(),
-            structured.cloned().unwrap_or(Value::Null),
-        );
-        fields.insert("metadata".into(), metadata.cloned().unwrap_or(Value::Null));
-        if host_truncated {
-            fields.insert("truncated".into(), Value::Bool(true));
-            fields.insert(
-                "original_bytes".into(),
-                call.get("event_original_bytes")
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            );
-        }
-        return fields;
-    }
-    let preview = match output {
-        Some(Value::String(text)) => preview::utf8_prefix(text, preview::PREVIEW_BYTES).to_owned(),
-        Some(value) if !value.is_null() => {
-            let text = value.to_string();
-            preview::utf8_prefix(&text, preview::PREVIEW_BYTES).to_owned()
-        }
-        _ => {
-            let text = structured.map(Value::to_string).unwrap_or_default();
-            preview::utf8_prefix(&text, preview::PREVIEW_BYTES).to_owned()
-        }
-    };
-    fields.insert("result".into(), json!({ "text": preview }));
-    fields.insert(
-        "structured_result".into(),
-        event_image_reference(structured),
-    );
-    fields.insert(
-        "metadata".into(),
-        if encoded_len(metadata) <= preview::METADATA_BYTES {
-            metadata.cloned().unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        },
-    );
-    fields.insert("truncated".into(), Value::Bool(true));
-    fields.insert("original_bytes".into(), json!(size));
-    fields
-}
-
-fn top_level_event_fields(
-    content: &ToolResultContent,
-    original_bytes: Option<usize>,
-    structured_result: Option<&Value>,
-    metadata: Option<&Value>,
-) -> serde_json::Map<String, Value> {
-    let mut fields = serde_json::Map::new();
-    if let Some(original) = original_bytes {
-        fields.insert("truncated".into(), Value::Bool(true));
-        fields.insert("original_bytes".into(), json!(original));
-    }
-    let result = match content {
-        ToolResultContent::Text(text) => json!({ "text": text }),
-        ToolResultContent::Blocks(blocks) => json!({ "content_blocks": blocks }),
-    };
-    fields.insert("result".into(), result);
-    let structured_len = encoded_len(structured_result);
-    if structured_len > preview::RESULT_BYTES {
-        fields.insert(
-            "structured_result".into(),
-            event_image_reference(structured_result),
-        );
-        fields.insert("structured_result_truncated".into(), Value::Bool(true));
-        fields.insert("structured_result_bytes".into(), json!(structured_len));
-    } else {
-        fields.insert(
-            "structured_result".into(),
-            structured_result.cloned().unwrap_or(Value::Null),
-        );
-    }
-    let metadata = match metadata {
-        Some(Value::Object(object)) if object.contains_key("_nanocode_code") => {
-            let mut object = object.clone();
-            if let Some(code) = object.get_mut("_nanocode_code")
-                && let Some(calls) = code.get("calls").and_then(Value::as_array)
-            {
-                *code = json!({
-                    "origin_call_id": code.get("origin_call_id"),
-                    "nested_call_count": calls.len(),
-                    "running": code.get("running"),
-                });
-            }
-            Value::Object(object)
-        }
-        Some(value) if encoded_len(Some(value)) > preview::RESULT_BYTES => Value::Null,
-        Some(value) => value.clone(),
-        None => Value::Null,
-    };
-    fields.insert("metadata".into(), metadata);
-    fields
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -3604,18 +3467,18 @@ impl LiveNestedCalls<'_> {
                 {
                     return;
                 }
-                let parent = self.parent(&call_id);
-                let (arguments, original_bytes) = nested_event_arguments(Some(&input));
-                let mut payload = json!({
-                    "call_id": call_id, "tool": name, "arguments": arguments,
-                    "model_call_index": self.model_call_index, "parent_call_id": parent,
-                });
-                if let Some(bytes) = original_bytes {
-                    payload["truncated"] = Value::Bool(true);
-                    payload["original_bytes"] = json!(bytes);
-                }
-                self.state
-                    .emit(self.events, AgentEventKind::ToolCall, payload);
+                let parent = Value::String(self.parent(&call_id));
+                self.state.emit(
+                    self.events,
+                    AgentEventKind::ToolCall,
+                    event::ToolCall::nested(
+                        &call_id,
+                        &name,
+                        Some(&input),
+                        self.model_call_index,
+                        &parent,
+                    ),
+                );
                 self.open.push((call_id, name, Instant::now()));
             }
             ClaudeNestedToolUpdate::Completed(call) => {
@@ -3797,17 +3660,17 @@ async fn start_turn(
         .events
         .turn_id()
         .unwrap_or(request.events.request_id());
-    state.emit(
+    State::publish(
         &request.events,
         AgentEventKind::InputAccepted,
-        json!({
-            "session_id": state.session_id,
-            "turn_id": turn_id,
-            "item_id": format!("{turn_id}:prompt"),
-            "kind": "prompt",
-            "request_id": request.request_id,
-            "input": request.prompt.instruction,
-        }),
+        &event::InputAccepted {
+            session_id: &state.session_id,
+            turn_id,
+            item_id: format!("{turn_id}:prompt"),
+            kind: "prompt",
+            request_id: request.request_id.as_deref(),
+            input: &request.prompt.instruction,
+        },
     );
     let turn_index = state.accepted_turns.fetch_add(1, Ordering::SeqCst) + 1;
     let (reasoning_mode, effort) = state.run_labels();
@@ -4854,50 +4717,29 @@ impl State {
             .live_nested_starts
             .update(|starts| starts.remove(call_id));
         if !started {
-            let (arguments, original_bytes) = nested_event_arguments(call.get("input"));
-            let mut payload = json!({
-                "call_id": call_id, "tool": tool, "arguments": arguments,
-                "model_call_index": model_call_index, "parent_call_id": parent,
-            });
-            if let Some(bytes) = original_bytes {
-                payload["truncated"] = Value::Bool(true);
-                payload["original_bytes"] = json!(bytes);
-            }
-            self.emit(events, AgentEventKind::ToolCall, payload);
-        }
-        let mut payload = nested_event_result(call);
-        payload.extend([
-            ("call_id".to_owned(), json!(call_id)),
-            ("tool".to_owned(), json!(tool)),
-            (
-                "status".to_owned(),
-                json!(
-                    if call.get("success").and_then(Value::as_bool) == Some(true) {
-                        "completed"
-                    } else {
-                        "failed"
-                    }
-                ),
-            ),
-            ("duration_ns".to_owned(), json!(call.get("duration_ns"))),
-            (
-                "started_after_ns".to_owned(),
-                json!(call.get("started_after_ns")),
-            ),
-            ("parent_call_id".to_owned(), parent.clone()),
-        ]);
-        self.emit(events, AgentEventKind::ToolResult, Value::Object(payload));
-    }
-    fn emit(&self, events: &AgentEventPublisher, kind: AgentEventKind, mut payload: Value) {
-        if let Some(payload) = payload.as_object_mut() {
-            payload.insert(
-                "turn_id".into(),
-                json!(events.turn_id().unwrap_or(events.request_id())),
+            self.emit(
+                events,
+                AgentEventKind::ToolCall,
+                event::ToolCall::nested(call_id, tool, call.get("input"), model_call_index, parent),
             );
         }
-        Self::publish(events, kind, &payload);
+        self.emit(
+            events,
+            AgentEventKind::ToolResult,
+            event::NestedToolResult::new(call_id, tool, call, parent),
+        );
     }
-    fn publish(events: &AgentEventPublisher, kind: AgentEventKind, payload: &Value) {
+    fn emit<T: Serialize>(&self, events: &AgentEventPublisher, kind: AgentEventKind, payload: T) {
+        Self::publish(
+            events,
+            kind,
+            &event::InTurn {
+                payload,
+                turn_id: events.turn_id().unwrap_or(events.request_id()),
+            },
+        );
+    }
+    fn publish<T: Serialize>(events: &AgentEventPublisher, kind: AgentEventKind, payload: &T) {
         let Ok(payload) = serde_json::value::to_raw_value(payload) else {
             return;
         };
@@ -4990,7 +4832,21 @@ impl State {
     }
     fn emit_run_started(&self, request: &BackendPrompt) -> (&'static str, String) {
         let (reasoning_mode, effort) = self.run_labels();
-        self.emit(&request.events,AgentEventKind::RunStarted,json!({"mode":"claude","model":self.model(),"reasoning_mode":reasoning_mode,"effort":effort,"transport":"messages_sse","orchestration":"claude","websocket_url":"","workspace":self.workspace(),"instruction_bytes":request.prompt.text_bytes()}));
+        self.emit(
+            &request.events,
+            AgentEventKind::RunStarted,
+            event::RunStarted {
+                mode: "claude",
+                model: &self.model,
+                reasoning_mode,
+                effort: &effort,
+                transport: "messages_sse",
+                orchestration: "claude",
+                websocket_url: "",
+                workspace: &self.workspace(),
+                instruction_bytes: request.prompt.text_bytes(),
+            },
+        );
         (reasoning_mode, effort)
     }
     fn run_labels(&self) -> (&'static str, String) {
@@ -5037,7 +4893,23 @@ impl State {
         };
         let usage = result.as_ref().ok().and_then(TurnResult::usage);
         let cost = usage.and_then(TurnUsage::estimated_cost);
-        self.emit(events,kind,json!({"status":status,"model":self.model(),"reasoning_mode":reasoning_mode,"effort":effort,"transport":"messages_sse","orchestration":"claude","duration_ms":ns/1_000_000,"duration_ns":ns,"estimated_cost":cost,"cost_usd":cost.map(|cost| cost.amount().as_f64()),"cost_status":usage.map_or(CostStatus::Other, TurnUsage::cost_status)}));
+        self.emit(
+            events,
+            kind,
+            event::RunFinished {
+                status,
+                model: &self.model,
+                reasoning_mode,
+                effort,
+                transport: "messages_sse",
+                orchestration: "claude",
+                duration_ms: ns / 1_000_000,
+                duration_ns: ns,
+                estimated_cost: cost,
+                cost_usd: cost.map(|cost| cost.amount().as_f64()),
+                cost_status: usage.map_or(CostStatus::Other, TurnUsage::cost_status),
+            },
+        );
     }
     fn thinking(&self) -> Thinking {
         effort_thinking(self.effort())
@@ -5171,16 +5043,17 @@ impl State {
             || self.automatic_cache.then(|| self.cache_ttl()),
             |template| template.cache_control.as_ref().map(|control| control.ttl),
         );
-        let mut payload = json!({
-            "call_index": call_index,
-            "model": model,
-            "reasoning_mode": reasoning_mode,
-            "effort": effort,
-        });
-        if let Some(ttl) = cache {
-            payload["cache_ttl"] = json!(ttl.unwrap_or(crate::CacheTtl::FiveMinutes));
-        }
-        self.emit(events, AgentEventKind::ModelCallStarted, payload);
+        self.emit(
+            events,
+            AgentEventKind::ModelCallStarted,
+            event::ModelCallStarted {
+                call_index,
+                model: &model,
+                reasoning_mode,
+                effort: &effort,
+                cache_ttl: cache.map(|ttl| ttl.unwrap_or(crate::CacheTtl::FiveMinutes)),
+            },
+        );
         let span = telemetry::model_call_span(
             &self.session_id,
             call_index,
@@ -5248,36 +5121,41 @@ impl State {
                 .input_tokens
                 .saturating_add(response.usage.cache_read_input_tokens)
                 .saturating_add(response.usage.cache_creation_input_tokens);
-            let mut payload = json!({
-                "call_index": index.saturating_add(1),
-                "model": response.model,
-                "response_id": response.id,
-                "attempt": attempt,
-                "connection_generation": 0,
-                "status": response.stop_reason.unwrap_or(StopReason::Unknown),
-                "duration_ns": duration_ns,
-                "time_to_first_event_ns": first_event,
-                "time_to_first_output_ns": first_output,
-                "time_to_dispatch_ns": dispatch,
-                "tool_calls": response.content.iter().filter(|block| matches!(block, ContentBlock::ToolUse { .. })).count(),
-                "usage": {
-                    "input_tokens": input_tokens,
-                    "input_tokens_details": {
-                        "cached_tokens": response.usage.cache_read_input_tokens,
-                        "cache_write_tokens": response.usage.cache_creation_input_tokens,
+            self.emit(
+                events,
+                AgentEventKind::ModelCallCompleted,
+                event::ModelCallCompleted {
+                    call_index: index.saturating_add(1),
+                    model: &response.model,
+                    response_id: &response.id,
+                    attempt,
+                    connection_generation: 0,
+                    status: response.stop_reason.unwrap_or(StopReason::Unknown),
+                    duration_ns,
+                    time_to_first_event_ns: first_event,
+                    time_to_first_output_ns: first_output,
+                    time_to_dispatch_ns: dispatch,
+                    tool_calls: response
+                        .content
+                        .iter()
+                        .filter(|block| matches!(block, ContentBlock::ToolUse { .. }))
+                        .count(),
+                    usage: event::ModelCallUsage {
+                        input_tokens,
+                        input_tokens_details: event::InputTokensDetails {
+                            cached_tokens: response.usage.cache_read_input_tokens,
+                            cache_write_tokens: response.usage.cache_creation_input_tokens,
+                        },
+                        output_tokens: response.usage.output_tokens,
+                        total_tokens: input_tokens.saturating_add(response.usage.output_tokens),
                     },
-                    "output_tokens": response.usage.output_tokens,
-                    "total_tokens": input_tokens.saturating_add(response.usage.output_tokens),
+                    timing,
+                    message_thread: thread.map(|mode| event::MessageThread {
+                        mode: mode.as_str(),
+                        create_reason: mode.create_reason().map(CreateReason::as_str),
+                    }),
                 },
-                "timing": timing,
-            });
-            if let Some(mode) = thread {
-                payload["message_thread"] = json!({
-                    "mode": mode.as_str(),
-                    "create_reason": mode.create_reason().map(CreateReason::as_str),
-                });
-            }
-            self.emit(events, AgentEventKind::ModelCallCompleted, payload);
+            );
         };
         let client = self.client.restore_wire_profile(context.wire_profile);
         let mut recovery = (!context.disable_tools
@@ -6627,17 +6505,17 @@ impl State {
         let item = id
             .clone()
             .unwrap_or_else(|| nanocode_platform::uuid_v7().to_string());
-        self.emit(
+        Self::publish(
             &turn.events,
             AgentEventKind::InputAccepted,
-            json!({
-                "session_id": self.session_id,
-                "turn_id": turn_id,
-                "item_id": format!("{turn_id}:steer:{item}"),
-                "kind": "steer",
-                "request_id": id,
-                "input": frozen.instruction,
-            }),
+            &event::InputAccepted {
+                session_id: &self.session_id,
+                turn_id: &turn_id,
+                item_id: format!("{turn_id}:steer:{item}"),
+                kind: "steer",
+                request_id: id.as_deref(),
+                input: &frozen.instruction,
+            },
         );
         turn.pending.push_back(PendingSteer {
             prompt: frozen,
@@ -6793,7 +6671,15 @@ impl State {
         self.emit(
             events,
             AgentEventKind::ToolCall,
-            json!({"call_id":id,"tool":name,"arguments":input,"model_call_index":index}),
+            event::ToolCall {
+                call_id: id,
+                tool: name,
+                arguments: std::borrow::Cow::Borrowed(input),
+                model_call_index: index,
+                parent_call_id: None,
+                truncated: None,
+                original_bytes: None,
+            },
         );
         let began = Instant::now();
         let mut started = StartedToolCall {
@@ -6972,32 +6858,28 @@ impl State {
         )
         .await?;
         let (content, original_bytes) = bound_tool_result(content);
-        let mut payload = top_level_event_fields(
-            &content,
-            original_bytes,
-            structured_result.as_ref(),
-            metadata.as_ref(),
+        self.emit(
+            events,
+            AgentEventKind::ToolResult,
+            event::ToolResult::new(
+                event::Call {
+                    call_id: id,
+                    tool: name,
+                    status: if stopped {
+                        "cancelled"
+                    } else if is_error {
+                        "failed"
+                    } else {
+                        "completed"
+                    },
+                    duration_ns: began.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
+                },
+                &content,
+                original_bytes,
+                structured_result.as_ref(),
+                metadata.as_ref(),
+            ),
         );
-        payload.extend([
-            ("call_id".to_owned(), json!(id)),
-            ("tool".to_owned(), json!(name)),
-            (
-                "status".to_owned(),
-                json!(if stopped {
-                    "cancelled"
-                } else if is_error {
-                    "failed"
-                } else {
-                    "completed"
-                }),
-            ),
-            (
-                "duration_ns".to_owned(),
-                json!(began.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64),
-            ),
-            ("started_after_ns".to_owned(), Value::Null),
-        ]);
-        self.emit(events, AgentEventKind::ToolResult, Value::Object(payload));
         Ok(ContentBlock::tool_result_content(id, content, is_error))
     }
     async fn lifecycle(
@@ -7715,7 +7597,17 @@ impl State {
                 }
             };
             if !text.is_empty() {
-                self.emit(&request.events,AgentEventKind::AssistantMessage,json!({"model_call_index":index.saturating_add(1),"item_id":response.id,"phase":null,"text":text,"citations":citations}));
+                self.emit(
+                    &request.events,
+                    AgentEventKind::AssistantMessage,
+                    event::AssistantMessage {
+                        model_call_index: index.saturating_add(1),
+                        item_id: &response.id,
+                        phase: None,
+                        text: &text,
+                        citations: &citations,
+                    },
+                );
             }
 
             let committed = std::mem::take(&mut conversation.messages);

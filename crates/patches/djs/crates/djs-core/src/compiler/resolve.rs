@@ -1124,14 +1124,18 @@ fn emit_function(
         }
     }
 
-    let all: Vec<crate::bytecode::Insn> = core::mem::take(&mut phase1.insns)
-        .into_iter()
-        .enumerate()
-        .map(|(i, p)| p.insn(i as u32))
-        .collect();
+    let mut all = core::mem::take(&mut scratch.insns);
+    all.clear();
+    all.extend(
+        phase1
+            .insns
+            .iter()
+            .enumerate()
+            .map(|(i, p)| p.insn(i as u32)),
+    );
     let estimate = all.len() * 3;
     let mut label_count = phase1.label_count;
-    let all = super::peephole::simplify(all, &mut label_count);
+    super::peephole::simplify(&mut all, &mut label_count, &mut scratch.peephole);
     let mut out = CodeBuf::with_labels(label_count);
     out.reserve(estimate + 16);
 
@@ -1578,6 +1582,7 @@ fn emit_function(
         e => internal(&crate::detail::detail("template", &e)),
     });
     scratch.lines = lines;
+    scratch.insns = all;
     t
 }
 
@@ -1644,6 +1649,8 @@ fn template_flags(f: &FuncState, privileged: bool) -> u32 {
 struct Scratch {
     lines: Vec<(u32, u32)>,
     stack: crate::bytecode::StackScratch,
+    insns: Vec<crate::bytecode::Insn>,
+    peephole: super::peephole::Scratch,
 }
 
 /// A const enum member read through the binding of declaration `d`: the

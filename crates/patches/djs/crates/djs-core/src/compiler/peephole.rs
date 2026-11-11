@@ -11,14 +11,27 @@
 //! Each kept instruction keeps its phase-1 `pc`, so the line table entries of removed
 //! instructions apply to the next kept one, as they would have.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::bytecode::{Insn, Label, Op};
 
+/// The buffers of [`simplify`], reused across the functions of a unit (per function
+/// they were four allocations and a copy of its code for every pass).
+#[derive(Default)]
+pub(super) struct Scratch {
+    at: Vec<usize>,
+    label_after: Vec<bool>,
+    out: Vec<Insn>,
+    repl: Vec<Insn>,
+}
+
 /// Applies the rules until none matches. `label_count` grows by the labels the rules
 /// create.
-pub(super) fn simplify(mut code: Vec<Insn>, label_count: &mut u32) -> Vec<Insn> {
+pub(super) fn simplify(code: &mut Vec<Insn>, label_count: &mut u32, scratch: &mut Scratch) {
+    // Without a jump there is nothing to thread (the rules make none).
+    let branches = code
+        .iter()
+        .any(|i| matches!(i.op, Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue));
     // Threading again is only worth it after a rule changed a jump (0092: each pass
     // costs a few % of compile time). Cycles of jumps could retarget each other
     // forever: a few rounds are enough for everything else.
@@ -26,65 +39,65 @@ pub(super) fn simplify(mut code: Vec<Insn>, label_count: &mut u32) -> Vec<Insn> 
         // Threading until nothing changes: new labels and removed `dup`s open more
         // `&&`/`||` shortcuts (`a && b && c`).
         let mut threaded = false;
-        for _ in 0..8 {
-            let (changed, labels) = thread_jumps(&mut code, label_count);
-            threaded |= changed;
-            if !changed && !labels {
-                break;
+        if branches {
+            for _ in 0..8 {
+                let (changed, labels) = thread_jumps(code, label_count, scratch);
+                threaded |= changed;
+                if !changed && !labels {
+                    break;
+                }
             }
         }
         if round > 0 && !threaded {
             break;
         }
-        let (out, jumps) = rewrite_all(code);
-        code = out;
-        if !jumps {
+        if !rewrite_all(code, &mut scratch.repl) {
             break;
         }
     }
-    code
 }
 
 /// One pass of the local rules to their fixpoint: after a match, the replacement and
 /// the instructions before it are looked at again (every rule shortens the code, so
 /// this ends). Returns whether a rule consumed a jump.
-fn rewrite_all(mut code: Vec<Insn>) -> (Vec<Insn>, bool) {
+fn rewrite_all(code: &mut Vec<Insn>, repl: &mut Vec<Insn>) -> bool {
     // Rules match at most this many instructions, so a replacement can complete a match
     // starting this many before it.
     const WINDOW: usize = 5;
-    let mut out = crate::buf::vec_with_capacity(code.len());
-    let mut repl = crate::buf::vec_with_capacity(WINDOW);
     let mut jumps = false;
-    // `code[..i]` is free (moved to `out`); a replacement is shorter than what it
-    // replaces, so it and the instructions taken back from `out` fit in front of `i`.
+    // In place: `code[..w]` is the output so far and `code[i..]` what is left to look
+    // at. A replacement is shorter than what it replaces, so it and the instructions
+    // taken back from the output fit in front of `i`.
+    let mut w = 0;
     let mut i = 0;
     while i < code.len() {
         repl.clear();
-        match rewrite(&code[i..], &mut repl) {
+        match rewrite(&code[i..], repl) {
             Some(n) => {
                 jumps |= code[i..i + n]
                     .iter()
                     .any(|x| matches!(x.op, Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue));
                 let mut j = i + n - repl.len();
-                code[j..i + n].copy_from_slice(&repl);
+                code[j..i + n].copy_from_slice(repl);
                 for _ in 0..WINDOW - 1 {
-                    match out.pop() {
-                        Some(x) => {
-                            j -= 1;
-                            code[j] = x;
-                        }
-                        None => break,
+                    if w == 0 {
+                        break;
                     }
+                    w -= 1;
+                    j -= 1;
+                    code[j] = code[w];
                 }
                 i = j;
             }
             None => {
-                out.push(code[i]);
+                code[w] = code[i];
+                w += 1;
                 i += 1;
             }
         }
     }
-    (out, jumps)
+    code.truncate(w);
+    jumps
 }
 
 /// Jump threading: a jump to a `jump` goes to its target instead (`if (x) break;` in a
@@ -93,10 +106,21 @@ fn rewrite_all(mut code: Vec<Insn>) -> (Vec<Insn>, bool) {
 /// dup; jump_if_true L; drop; b; L: jump_if_false Else`: when `a` is true, the second
 /// test falls through, so the first one jumps past it).
 /// Returns whether anything changed and whether labels were added.
-fn thread_jumps(code: &mut Vec<Insn>, label_count: &mut u32) -> (bool, bool) {
+fn thread_jumps(
+    code: &mut Vec<Insn>,
+    label_count: &mut u32,
+    scratch: &mut Scratch,
+) -> (bool, bool) {
     const NONE: usize = usize::MAX;
+    let Scratch {
+        at,
+        label_after,
+        out,
+        ..
+    } = scratch;
     // For each label id: the index of the first instruction after it that is no label.
-    let mut at = vec![NONE; *label_count as usize];
+    at.clear();
+    at.resize(*label_count as usize, NONE);
     let mut pending = 0;
     for (k, insn) in code.iter().enumerate() {
         if insn.op == Op::Label {
@@ -125,7 +149,9 @@ fn thread_jumps(code: &mut Vec<Insn>, label_count: &mut u32) -> (bool, bool) {
     };
     let cond = |op: Op| matches!(op, Op::JumpIfFalse | Op::JumpIfTrue);
     let mut changed = false;
-    let mut label_after = vec![false; code.len()];
+    let mut labels = false;
+    label_after.clear();
+    label_after.resize(code.len(), false);
     for k in (0..code.len()).rev() {
         let insn = code[k];
         if !matches!(insn.op, Op::Jump | Op::JumpIfFalse | Op::JumpIfTrue) {
@@ -160,6 +186,7 @@ fn thread_jumps(code: &mut Vec<Insn>, label_count: &mut u32) -> (bool, bool) {
                 Some(Label(l.imm(0)))
             } else {
                 label_after[t] = true;
+                labels = true;
                 None
             };
             if let Some(l) = next {
@@ -173,10 +200,10 @@ fn thread_jumps(code: &mut Vec<Insn>, label_count: &mut u32) -> (bool, bool) {
             changed = true;
         }
     }
-    let labels = label_after.contains(&true);
     if changed || labels {
         // Without the removed `dup`s, with the new labels.
-        let mut out = crate::buf::vec_with_capacity(code.len() + 4);
+        out.clear();
+        out.reserve(code.len() + 4);
         for (k, insn) in code.iter().enumerate() {
             if insn.op != Op::Nop {
                 out.push(*insn);
@@ -188,7 +215,7 @@ fn thread_jumps(code: &mut Vec<Insn>, label_count: &mut u32) -> (bool, bool) {
                 changed = true;
             }
         }
-        *code = out;
+        core::mem::swap(code, out);
     }
     (changed, labels)
 }

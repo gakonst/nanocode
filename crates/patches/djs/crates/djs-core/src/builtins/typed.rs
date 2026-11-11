@@ -240,31 +240,33 @@ pub(crate) fn uint8_bytes(heap: &Heap, o: Obj) -> Option<&[u8]> {
 
 pub(crate) fn to_base64(bytes: &[u8], url: bool, omit_padding: bool) -> String {
     let table = if url { B64URL } else { B64 };
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
-        let chars = [
+    let mut out: Vec<u8> = crate::buf::vec_with_capacity(bytes.len().div_ceil(3) * 4);
+    // Whole groups of three bytes, four digits at a time (a `push` per digit was most of
+    // btoa of a long string).
+    let (groups, rest) = bytes.as_chunks::<3>();
+    for g in groups {
+        let n = (g[0] as u32) << 16 | (g[1] as u32) << 8 | g[2] as u32;
+        out.extend_from_slice(&[
             table[(n >> 18) as usize & 63],
             table[(n >> 12) as usize & 63],
             table[(n >> 6) as usize & 63],
             table[n as usize & 63],
+        ]);
+    }
+    if !rest.is_empty() {
+        let n = (rest[0] as u32) << 16 | (*rest.get(1).unwrap_or(&0) as u32) << 8;
+        let chars = [
+            table[(n >> 18) as usize & 63],
+            table[(n >> 12) as usize & 63],
+            table[(n >> 6) as usize & 63],
         ];
-        let keep = chunk.len() + 1;
-        for &c in &chars[..keep] {
-            out.push_out(c as char);
-        }
+        let keep = rest.len() + 1;
+        out.extend_from_slice(&chars[..keep]);
         if !omit_padding {
-            for _ in keep..4 {
-                out.push_out('=');
-            }
+            out.extend(core::iter::repeat_n(b'=', 4 - keep));
         }
     }
-    out
+    String::from_utf8(out).expect("base64 digits are ASCII")
 }
 
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
@@ -348,10 +350,11 @@ pub(crate) fn from_base64(s: &[u16], url: bool, last: u8, max: usize) -> Decoded
     let mut i = 0;
     // Whole groups of four plain digits first, while they fit (the common case): the
     // same bytes as the steps below, without their per-unit checks. Only in the dump
-    // module, which loads dumps' buffers (+250 B gzip in the slim module, 0215).
-    #[cfg(feature = "dump")]
+    // module, which loads dumps' buffers (+250 B gzip in the slim module, 0215), and for
+    // Rust hosts, whose scripts decode with atob.
+    #[cfg(any(feature = "dump", feature = "embed"))]
     d.bytes.reserve(len.min(max) / 4 * 3);
-    #[cfg(feature = "dump")]
+    #[cfg(any(feature = "dump", feature = "embed"))]
     while i + 4 <= len && max - d.bytes.len() >= 3 {
         let v = |k: usize| {
             let c = s[i + k];
@@ -372,7 +375,7 @@ pub(crate) fn from_base64(s: &[u16], url: bool, last: u8, max: usize) -> Decoded
         i += 4;
         d.read = i;
     }
-    #[cfg(feature = "dump")]
+    #[cfg(any(feature = "dump", feature = "embed"))]
     if d.bytes.len() == max {
         return d;
     }

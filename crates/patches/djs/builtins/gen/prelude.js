@@ -173,12 +173,12 @@ function ArrayConstructor(...values) {
   return a;
 }
 
-// builtins/array.ts:211 Array.isArray
+// builtins/array.ts:212 Array.isArray
 function ArrayIsArray(arg) {
   return %IsArray(arg);
 }
 
-// builtins/array.ts:222 Array.prototype.push
+// builtins/array.ts:223 Array.prototype.push
 function ArrayPrototypePush(...items) {
   const o = %ToObject(this);
   let len = LengthOfArrayLike(o);
@@ -200,7 +200,7 @@ function ArrayPrototypePush(...items) {
   return len;
 }
 
-// builtins/array.ts:249
+// builtins/array.ts:250
 function RelativeIndex(v, len, dflt) {
   if (v === undefined) {
     return dflt;
@@ -213,7 +213,7 @@ function RelativeIndex(v, len, dflt) {
   return rel < len ? rel : len;
 }
 
-// builtins/array.ts:262
+// builtins/array.ts:263
 function RequireCallable(f) {
   if (!%IsCallable(f)) {
     throw %NewTypeError("not a function");
@@ -221,14 +221,14 @@ function RequireCallable(f) {
   return %AsFn(f);
 }
 
-// builtins/array.ts:270
+// builtins/array.ts:271
 function CheckLength(len) {
   if (len > 9007199254740991) {
     throw %NewTypeError("Array loo long");
   }
 }
 
-// builtins/array.ts:277
+// builtins/array.ts:278
 function ArrayCreateChecked(len) {
   if (len > 4294967295) {
     throw %NewRangeError("invalid array length");
@@ -236,7 +236,7 @@ function ArrayCreateChecked(len) {
   return %ArrayCreate(len);
 }
 
-// builtins/array.ts:290 Array.of
+// builtins/array.ts:291 Array.of
 function ArrayOf(...items) {
   const len = LengthOfArrayLike(items);
   const a = %IsConstructor(this) ? %Construct(this, len) : %ArrayCreate(len);
@@ -247,7 +247,7 @@ function ArrayOf(...items) {
   return a;
 }
 
-// builtins/array.ts:304 Array.from
+// builtins/array.ts:305 Array.from
 function ArrayFrom(items, mapfn, thisArg) {
   const mapping = mapfn !== undefined;
   if (mapping && !%IsCallable(mapfn)) {
@@ -279,12 +279,12 @@ function ArrayFrom(items, mapfn, thisArg) {
   return a;
 }
 
-// builtins/array.ts:349 get Array[Symbol.species] %ArraySpecies
+// builtins/array.ts:350 get Array[Symbol.species] %ArraySpecies
 function ArraySpecies() {
   return this;
 }
 
-// builtins/array.ts:359 Array.prototype.at
+// builtins/array.ts:360 Array.prototype.at
 function ArrayPrototypeAt(index) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -296,7 +296,7 @@ function ArrayPrototypeAt(index) {
   return %Get(o, k);
 }
 
-// builtins/array.ts:374 Array.prototype.lastIndexOf
+// builtins/array.ts:375 Array.prototype.lastIndexOf
 function ArrayPrototypeLastIndexOf(searchElement, ...rest) {
   let $1;
   const o = %ToObject(this);
@@ -331,7 +331,7 @@ function ArrayPrototypeLastIndexOf(searchElement, ...rest) {
   return -1;
 }
 
-// builtins/array.ts:412 %FindViaPredicate
+// builtins/array.ts:413 %FindViaPredicate
 function FindViaPredicate(o, len, fromEnd, predicate, thisArg, wantIndex) {
   if (!%IsCallable(predicate)) {
     throw %NewTypeError("not a function");
@@ -357,31 +357,31 @@ function FindViaPredicate(o, len, fromEnd, predicate, thisArg, wantIndex) {
   return undefined;
 }
 
-// builtins/array.ts:442 Array.prototype.find
+// builtins/array.ts:443 Array.prototype.find
 function ArrayPrototypeFind(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), false, predicate, thisArg, false);
 }
 
-// builtins/array.ts:451 Array.prototype.findIndex
+// builtins/array.ts:452 Array.prototype.findIndex
 function ArrayPrototypeFindIndex(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), false, predicate, thisArg, true);
 }
 
-// builtins/array.ts:460 Array.prototype.findLast
+// builtins/array.ts:461 Array.prototype.findLast
 function ArrayPrototypeFindLast(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), true, predicate, thisArg, false);
 }
 
-// builtins/array.ts:469 Array.prototype.findLastIndex
+// builtins/array.ts:470 Array.prototype.findLastIndex
 function ArrayPrototypeFindLastIndex(predicate, thisArg) {
   const o = %ToObject(this);
   return FindViaPredicate(o, LengthOfArrayLike(o), true, predicate, thisArg, true);
 }
 
-// builtins/array.ts:478 %EveryOrSome
+// builtins/array.ts:479 %EveryOrSome
 function EveryOrSome(o, callbackfn, thisArg, wantAll) {
   const len = LengthOfArrayLike(o);
   if (!%IsCallable(callbackfn)) {
@@ -402,17 +402,17 @@ function EveryOrSome(o, callbackfn, thisArg, wantAll) {
   return wantAll;
 }
 
-// builtins/array.ts:503 Array.prototype.every
+// builtins/array.ts:504 Array.prototype.every
 function ArrayPrototypeEvery(callbackfn, thisArg) {
   return EveryOrSome(%ToObject(this), callbackfn, thisArg, true);
 }
 
-// builtins/array.ts:511 Array.prototype.some
+// builtins/array.ts:512 Array.prototype.some
 function ArrayPrototypeSome(callbackfn, thisArg) {
   return EveryOrSome(%ToObject(this), callbackfn, thisArg, false);
 }
 
-// builtins/array.ts:519 Array.prototype.filter
+// builtins/array.ts:520 Array.prototype.filter
 function ArrayPrototypeFilter(callbackfn, thisArg) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -434,7 +434,7 @@ function ArrayPrototypeFilter(callbackfn, thisArg) {
   return a;
 }
 
-// builtins/array.ts:547 Array.prototype.reduce
+// builtins/array.ts:548 Array.prototype.reduce
 function ArrayPrototypeReduce(callbackfn, initialValue) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -469,7 +469,7 @@ function ArrayPrototypeReduce(callbackfn, initialValue) {
   return accumulator;
 }
 
-// builtins/array.ts:588 Array.prototype.reduceRight
+// builtins/array.ts:589 Array.prototype.reduceRight
 function ArrayPrototypeReduceRight(callbackfn, initialValue) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -496,7 +496,7 @@ function ArrayPrototypeReduceRight(callbackfn, initialValue) {
   return accumulator;
 }
 
-// builtins/array.ts:617
+// builtins/array.ts:618
 function IsConcatSpreadable(o) {
   if (!%IsObject(o)) {
     return false;
@@ -508,7 +508,7 @@ function IsConcatSpreadable(o) {
   return %IsArray(o);
 }
 
-// builtins/array.ts:634 Array.prototype.concat
+// builtins/array.ts:635 Array.prototype.concat
 function ArrayPrototypeConcat(...items) {
   let $1, $2, $3;
   const o = %ToObject(this);
@@ -537,7 +537,7 @@ function ArrayPrototypeConcat(...items) {
   return a;
 }
 
-// builtins/array.ts:666 Array.prototype.slice
+// builtins/array.ts:667 Array.prototype.slice
 function ArrayPrototypeSlice(start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -560,7 +560,7 @@ function ArrayPrototypeSlice(start, end) {
   return a;
 }
 
-// builtins/array.ts:694 Array.prototype.splice
+// builtins/array.ts:696 Array.prototype.splice
 function ArrayPrototypeSplice(...args) {
   let $1, $2;
   const o = %ToObject(this);
@@ -595,7 +595,7 @@ function ArrayPrototypeSplice(...args) {
   return a;
 }
 
-// builtins/array.ts:732
+// builtins/array.ts:734
 function MoveElements(o, len, start, deleteCount, itemCount) {
   if (deleteCount !== itemCount && %ArraySpliceDense(o, start, deleteCount, itemCount)) {
     return;
@@ -626,7 +626,7 @@ function MoveElements(o, len, start, deleteCount, itemCount) {
   }
 }
 
-// builtins/array.ts:767 Array.prototype.copyWithin
+// builtins/array.ts:769 Array.prototype.copyWithin
 function ArrayPrototypeCopyWithin(target, start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -653,7 +653,7 @@ function ArrayPrototypeCopyWithin(target, start, end) {
   return o;
 }
 
-// builtins/array.ts:797 Array.prototype.fill
+// builtins/array.ts:799 Array.prototype.fill
 function ArrayPrototypeFill(value, start, end) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -665,7 +665,7 @@ function ArrayPrototypeFill(value, start, end) {
   return o;
 }
 
-// builtins/array.ts:813 Array.prototype.reverse
+// builtins/array.ts:815 Array.prototype.reverse
 function ArrayPrototypeReverse() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -696,7 +696,7 @@ function ArrayPrototypeReverse() {
   return o;
 }
 
-// builtins/array.ts:848 Array.prototype.pop
+// builtins/array.ts:850 Array.prototype.pop
 function ArrayPrototypePop() {
   const o = %ToObject(this);
   if (%ArrayCanPopDense(o)) {
@@ -714,7 +714,7 @@ function ArrayPrototypePop() {
   return element;
 }
 
-// builtins/array.ts:869 Array.prototype.shift
+// builtins/array.ts:872 Array.prototype.shift
 function ArrayPrototypeShift() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -728,7 +728,7 @@ function ArrayPrototypeShift() {
   return first;
 }
 
-// builtins/array.ts:887 Array.prototype.unshift
+// builtins/array.ts:891 Array.prototype.unshift
 function ArrayPrototypeUnshift(...items) {
   let $1;
   const o = %ToObject(this);
@@ -745,7 +745,7 @@ function ArrayPrototypeUnshift(...items) {
   return len + argCount;
 }
 
-// builtins/array.ts:903
+// builtins/array.ts:907
 function FlattenIntoArray(target, source, sourceLen, start, depth, mapper, thisArg) {
   let $1;
   let targetIndex = start;
@@ -768,7 +768,7 @@ function FlattenIntoArray(target, source, sourceLen, start, depth, mapper, thisA
   return targetIndex;
 }
 
-// builtins/array.ts:928 Array.prototype.flat
+// builtins/array.ts:932 Array.prototype.flat
 function ArrayPrototypeFlat(depth) {
   const o = %ToObject(this);
   const sourceLen = LengthOfArrayLike(o);
@@ -784,7 +784,7 @@ function ArrayPrototypeFlat(depth) {
   return a;
 }
 
-// builtins/array.ts:947 Array.prototype.flatMap
+// builtins/array.ts:951 Array.prototype.flatMap
 function ArrayPrototypeFlatMap(mapperFunction, thisArg) {
   const o = %ToObject(this);
   const sourceLen = LengthOfArrayLike(o);
@@ -794,7 +794,7 @@ function ArrayPrototypeFlatMap(mapperFunction, thisArg) {
   return a;
 }
 
-// builtins/array.ts:966 %SortList
+// builtins/array.ts:970 %SortList
 function SortList(list, comparefn) {
   if (comparefn === undefined && %SortPrimitives(list)) {
     return;
@@ -814,7 +814,7 @@ function SortList(list, comparefn) {
   }
 }
 
-// builtins/array.ts:990 %CollectPresent
+// builtins/array.ts:994 %CollectPresent
 function CollectPresent(o, len, skipHoles) {
   const items = %ArrayCreate(0);
   if (%ArraySliceDense(o, 0, len, items)) {
@@ -830,7 +830,7 @@ function CollectPresent(o, len, skipHoles) {
   return items;
 }
 
-// builtins/array.ts:1011 Array.prototype.sort
+// builtins/array.ts:1015 Array.prototype.sort
 function ArrayPrototypeSort(comparefn) {
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
     throw %NewTypeError("not a function");
@@ -849,7 +849,7 @@ function ArrayPrototypeSort(comparefn) {
   return o;
 }
 
-// builtins/array.ts:1034 Array.prototype.toSorted
+// builtins/array.ts:1038 Array.prototype.toSorted
 function ArrayPrototypeToSorted(comparefn) {
   let $1;
   if (comparefn !== undefined && !%IsCallable(comparefn)) {
@@ -863,7 +863,7 @@ function ArrayPrototypeToSorted(comparefn) {
   return items;
 }
 
-// builtins/array.ts:1052 Array.prototype.toReversed
+// builtins/array.ts:1056 Array.prototype.toReversed
 function ArrayPrototypeToReversed() {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -874,7 +874,7 @@ function ArrayPrototypeToReversed() {
   return a;
 }
 
-// builtins/array.ts:1067 Array.prototype.toSpliced
+// builtins/array.ts:1071 Array.prototype.toSpliced
 function ArrayPrototypeToSpliced(...args) {
   let $1;
   const o = %ToObject(this);
@@ -910,7 +910,7 @@ function ArrayPrototypeToSpliced(...args) {
   return a;
 }
 
-// builtins/array.ts:1105 Array.prototype.with
+// builtins/array.ts:1109 Array.prototype.with
 function ArrayPrototypeWith(index, value) {
   const o = %ToObject(this);
   const len = LengthOfArrayLike(o);
@@ -926,7 +926,7 @@ function ArrayPrototypeWith(index, value) {
   return a;
 }
 
-// builtins/array.ts:1127 Array.prototype.toString %TypedArray%.prototype.toString
+// builtins/array.ts:1131 Array.prototype.toString %TypedArray%.prototype.toString
 function ArrayPrototypeToString() {
   const array = %ToObject(this);
   const func = %Get(array, "join");
@@ -936,7 +936,7 @@ function ArrayPrototypeToString() {
   return ObjectToString(array);
 }
 
-// builtins/array.ts:1140 Array.prototype.toLocaleString
+// builtins/array.ts:1144 Array.prototype.toLocaleString
 function ArrayPrototypeToLocaleString() {
   const array = %ToObject(this);
   const len = LengthOfArrayLike(array);
@@ -953,7 +953,7 @@ function ArrayPrototypeToLocaleString() {
   return r;
 }
 
-// builtins/array.ts:1161 value Array.prototype[Symbol.unscopables]
+// builtins/array.ts:1165 value Array.prototype[Symbol.unscopables]
 function ArrayPrototypeUnscopables() {
   const u = %ObjectCreate(null);
   %CreateDataPropertyOrThrow(u, "at", true);
@@ -975,7 +975,7 @@ function ArrayPrototypeUnscopables() {
   return u;
 }
 
-// builtins/array.ts:1189 %ArraySetLength
+// builtins/array.ts:1193 %ArraySetLength
 function ArraySetLength(a, v, strict) {
   const newLen = ((%IsObject(v)) ? %ToNumberPrimitive(ToPrimitive(v, "number")) : %ToNumberPrimitive(v));
   const numberLen = ((%IsObject(v)) ? %ToNumberPrimitive(ToPrimitive(v, "number")) : %ToNumberPrimitive(v));
@@ -6017,92 +6017,92 @@ function MathSQRT2() {
   return 1.4142135623730951;
 }
 
-// builtins/math.ts:89 Math.abs
+// builtins/math.ts:90 Math.abs
 function MathAbs(x) {
   return %F64Abs(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:97 Math.acos
+// builtins/math.ts:98 Math.acos
 function MathAcos(x) {
   return %F64Acos(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:105 Math.acosh
+// builtins/math.ts:106 Math.acosh
 function MathAcosh(x) {
   return %F64Acosh(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:113 Math.asin
+// builtins/math.ts:114 Math.asin
 function MathAsin(x) {
   return %F64Asin(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:121 Math.asinh
+// builtins/math.ts:122 Math.asinh
 function MathAsinh(x) {
   return %F64Asinh(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:129 Math.atan
+// builtins/math.ts:130 Math.atan
 function MathAtan(x) {
   return %F64Atan(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:137 Math.atanh
+// builtins/math.ts:138 Math.atanh
 function MathAtanh(x) {
   return %F64Atanh(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:145 Math.cbrt
+// builtins/math.ts:147 Math.cbrt
 function MathCbrt(x) {
   return %F64Cbrt(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:153 Math.ceil
+// builtins/math.ts:156 Math.ceil
 function MathCeil(x) {
   return %F64Ceil(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:161 Math.clz32
+// builtins/math.ts:164 Math.clz32
 function MathClz32(x) {
   return %F64Clz32(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:169 Math.cos
+// builtins/math.ts:173 Math.cos
 function MathCos(x) {
   return %F64Cos(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:177 Math.cosh
+// builtins/math.ts:181 Math.cosh
 function MathCosh(x) {
   return %F64Cosh(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:185 Math.exp
+// builtins/math.ts:190 Math.exp
 function MathExp(x) {
   return %F64Exp(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:193 Math.expm1
+// builtins/math.ts:198 Math.expm1
 function MathExpm1(x) {
   return %F64Expm1(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:201 Math.floor
+// builtins/math.ts:207 Math.floor
 function MathFloor(x) {
   return %F64Floor(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:209 Math.fround
+// builtins/math.ts:215 Math.fround
 function MathFround(x) {
   return %F64Fround(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:217 Math.f16round
+// builtins/math.ts:223 Math.f16round
 function MathF16round(x) {
   return %F64F16round(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:226 Math.sumPrecise
+// builtins/math.ts:232 Math.sumPrecise
 function MathSumPrecise(items) {
   let $1;
   if (items === undefined || items === null) {
@@ -6128,85 +6128,85 @@ function MathSumPrecise(items) {
   return %F64SumPrecise(list);
 }
 
-// builtins/math.ts:254 Math.log
+// builtins/math.ts:261 Math.log
 function MathLog(x) {
   return %F64Log(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:262 Math.log1p
+// builtins/math.ts:269 Math.log1p
 function MathLog1p(x) {
   return %F64Log1p(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:270 Math.log10
+// builtins/math.ts:278 Math.log10
 function MathLog10(x) {
   return %F64Log10(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:278 Math.log2
+// builtins/math.ts:287 Math.log2
 function MathLog2(x) {
   return %F64Log2(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:286 Math.round
+// builtins/math.ts:296 Math.round
 function MathRound(x) {
   return %F64Round(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:294 Math.sign
+// builtins/math.ts:305 Math.sign
 function MathSign(x) {
   return %F64Sign(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:302 Math.sin
+// builtins/math.ts:314 Math.sin
 function MathSin(x) {
   return %F64Sin(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:310 Math.sinh
+// builtins/math.ts:322 Math.sinh
 function MathSinh(x) {
   return %F64Sinh(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:318 Math.sqrt
+// builtins/math.ts:331 Math.sqrt
 function MathSqrt(x) {
   return %F64Sqrt(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:326 Math.tan
+// builtins/math.ts:339 Math.tan
 function MathTan(x) {
   return %F64Tan(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:334 Math.tanh
+// builtins/math.ts:347 Math.tanh
 function MathTanh(x) {
   return %F64Tanh(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:342 Math.trunc
+// builtins/math.ts:356 Math.trunc
 function MathTrunc(x) {
   return %F64Trunc(((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:350 Math.atan2
+// builtins/math.ts:365 Math.atan2
 function MathAtan2(y, x) {
   const ny = ((%IsObject(y)) ? %ToNumberPrimitive(ToPrimitive(y, "number")) : %ToNumberPrimitive(y));
   return %F64Atan2(ny, ((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x)));
 }
 
-// builtins/math.ts:359 Math.imul
+// builtins/math.ts:374 Math.imul
 function MathImul(x, y) {
   const a = ((%IsObject(x)) ? %ToNumberPrimitive(ToPrimitive(x, "number")) : %ToNumberPrimitive(x));
   return %F64Imul(a, ((%IsObject(y)) ? %ToNumberPrimitive(ToPrimitive(y, "number")) : %ToNumberPrimitive(y)));
 }
 
-// builtins/math.ts:368 Math.pow
+// builtins/math.ts:384 Math.pow
 function MathPow(base, exponent) {
   const b = ((%IsObject(base)) ? %ToNumberPrimitive(ToPrimitive(base, "number")) : %ToNumberPrimitive(base));
   return %NumberPow(b, ((%IsObject(exponent)) ? %ToNumberPrimitive(ToPrimitive(exponent, "number")) : %ToNumberPrimitive(exponent)));
 }
 
-// builtins/math.ts:374
+// builtins/math.ts:390
 function CoerceNumbers(args) {
   const n = LengthOfArrayLike(args);
   if (%AllNumbers(args)) {
@@ -6221,7 +6221,7 @@ function CoerceNumbers(args) {
   return n;
 }
 
-// builtins/math.ts:394 Math.max
+// builtins/math.ts:410 Math.max
 function MathMax(...args) {
   const n = CoerceNumbers(args);
   let highest = -1 / 0;
@@ -6237,7 +6237,7 @@ function MathMax(...args) {
   return highest;
 }
 
-// builtins/math.ts:416 Math.min
+// builtins/math.ts:432 Math.min
 function MathMin(...args) {
   const n = CoerceNumbers(args);
   let lowest = 1 / 0;
@@ -6253,7 +6253,7 @@ function MathMin(...args) {
   return lowest;
 }
 
-// builtins/math.ts:437 Math.hypot
+// builtins/math.ts:453 Math.hypot
 function MathHypot(...args) {
   const n = CoerceNumbers(args);
   let r = 0;
@@ -6263,7 +6263,7 @@ function MathHypot(...args) {
   return r;
 }
 
-// builtins/math.ts:450 Math.random
+// builtins/math.ts:466 Math.random
 function MathRandomBuiltin() {
   return %MathRandom();
 }
@@ -6623,7 +6623,7 @@ function ThisNumberValue(value) {
   return %AsNumber(n);
 }
 
-// builtins/number.ts:39 Number.prototype.toString
+// builtins/number.ts:40 Number.prototype.toString
 function NumberPrototypeToString(radix) {
   let $1;
   const x = (($1 = %PrimitiveValue(this), (!%IsNumber($1)) ? %Throw(%NewTypeError("not a number")) : %AsNumber($1)));
@@ -6634,26 +6634,26 @@ function NumberPrototypeToString(radix) {
   return %NumberToString(x, r);
 }
 
-// builtins/number.ts:52 Number.prototype.toLocaleString
+// builtins/number.ts:53 Number.prototype.toLocaleString
 function NumberPrototypeToLocaleString() {
   let $1;
   return %NumberToString((($1 = %PrimitiveValue(this), (!%IsNumber($1)) ? %Throw(%NewTypeError("not a number")) : %AsNumber($1))), 10);
 }
 
-// builtins/number.ts:60 Number.prototype.valueOf
+// builtins/number.ts:61 Number.prototype.valueOf
 function NumberPrototypeValueOf() {
   let $1;
   return (($1 = %PrimitiveValue(this), (!%IsNumber($1)) ? %Throw(%NewTypeError("not a number")) : %AsNumber($1)));
 }
 
-// builtins/number.ts:69 Number.prototype.toFixed
+// builtins/number.ts:70 Number.prototype.toFixed
 function NumberPrototypeToFixed(fractionDigits) {
   let $1;
   const x = (($1 = %PrimitiveValue(this), (!%IsNumber($1)) ? %Throw(%NewTypeError("not a number")) : %AsNumber($1)));
   return %NumberToFixed(x, (%ToIntegerOrInfinityNumber(((%IsObject(fractionDigits)) ? %ToNumberPrimitive(ToPrimitive(fractionDigits, "number")) : %ToNumberPrimitive(fractionDigits)))));
 }
 
-// builtins/number.ts:78 Number.prototype.toExponential
+// builtins/number.ts:79 Number.prototype.toExponential
 function NumberPrototypeToExponential(fractionDigits) {
   let $1;
   const x = (($1 = %PrimitiveValue(this), (!%IsNumber($1)) ? %Throw(%NewTypeError("not a number")) : %AsNumber($1)));
@@ -6664,7 +6664,7 @@ function NumberPrototypeToExponential(fractionDigits) {
   return %NumberToExponential(x, f);
 }
 
-// builtins/number.ts:91 Number.prototype.toPrecision
+// builtins/number.ts:92 Number.prototype.toPrecision
 function NumberPrototypeToPrecision(precision) {
   let $1;
   const x = (($1 = %PrimitiveValue(this), (!%IsNumber($1)) ? %Throw(%NewTypeError("not a number")) : %AsNumber($1)));
@@ -6674,18 +6674,18 @@ function NumberPrototypeToPrecision(precision) {
   return %NumberToPrecision(x, (%ToIntegerOrInfinityNumber(((%IsObject(precision)) ? %ToNumberPrimitive(ToPrimitive(precision, "number")) : %ToNumberPrimitive(precision)))));
 }
 
-// builtins/number.ts:100
+// builtins/number.ts:101
 function IsFiniteNumber(n) {
   return n === n && n !== 1 / 0 && n !== -1 / 0;
 }
 
-// builtins/number.ts:108 Number.isFinite
+// builtins/number.ts:110 Number.isFinite
 function NumberIsFinite(number) {
   let $1;
   return %IsNumber(number) && ($1 = %AsNumber(number), $1 === $1 && $1 !== 1 / 0 && $1 !== -1 / 0);
 }
 
-// builtins/number.ts:117 Number.isInteger
+// builtins/number.ts:119 Number.isInteger
 function NumberIsInteger(number) {
   if (!%IsNumber(number)) {
     return false;
@@ -6694,7 +6694,7 @@ function NumberIsInteger(number) {
   return (n === n && n !== 1 / 0 && n !== -1 / 0) && %ToIntegerOrInfinityNumber(n) === n;
 }
 
-// builtins/number.ts:129 Number.isNaN
+// builtins/number.ts:132 Number.isNaN
 function NumberIsNaN(number) {
   if (!%IsNumber(number)) {
     return false;
@@ -6703,7 +6703,7 @@ function NumberIsNaN(number) {
   return n !== n;
 }
 
-// builtins/number.ts:141 Number.isSafeInteger
+// builtins/number.ts:144 Number.isSafeInteger
 function NumberIsSafeInteger(number) {
   if (!NumberIsInteger(number)) {
     return false;
@@ -6712,64 +6712,64 @@ function NumberIsSafeInteger(number) {
   return n <= 9007199254740991 && n >= -9007199254740991;
 }
 
-// builtins/number.ts:153 value Number.EPSILON
+// builtins/number.ts:156 value Number.EPSILON
 function NumberEpsilon() {
   return 2.220446049250313e-16;
 }
 
-// builtins/number.ts:161 value Number.MAX_SAFE_INTEGER
+// builtins/number.ts:164 value Number.MAX_SAFE_INTEGER
 function NumberMaxSafeInteger() {
   return 9007199254740991;
 }
 
-// builtins/number.ts:169 value Number.MAX_VALUE
+// builtins/number.ts:172 value Number.MAX_VALUE
 function NumberMaxValue() {
   return 1.7976931348623157e308;
 }
 
-// builtins/number.ts:177 value Number.MIN_SAFE_INTEGER
+// builtins/number.ts:180 value Number.MIN_SAFE_INTEGER
 function NumberMinSafeInteger() {
   return -9007199254740991;
 }
 
-// builtins/number.ts:185 value Number.MIN_VALUE
+// builtins/number.ts:188 value Number.MIN_VALUE
 function NumberMinValue() {
   return 5e-324;
 }
 
-// builtins/number.ts:193 value Number.NaN
+// builtins/number.ts:196 value Number.NaN
 function NumberNaN() {
   return 0 / 0;
 }
 
-// builtins/number.ts:201 value Number.NEGATIVE_INFINITY
+// builtins/number.ts:204 value Number.NEGATIVE_INFINITY
 function NumberNegativeInfinity() {
   return -1 / 0;
 }
 
-// builtins/number.ts:209 value Number.POSITIVE_INFINITY
+// builtins/number.ts:212 value Number.POSITIVE_INFINITY
 function NumberPositiveInfinity() {
   return 1 / 0;
 }
 
-// builtins/number.ts:218 parseFloat Number.parseFloat
+// builtins/number.ts:222 parseFloat Number.parseFloat
 function GlobalParseFloat(string) {
   return %StringParseFloat(ToString(string));
 }
 
-// builtins/number.ts:227 parseInt Number.parseInt
+// builtins/number.ts:232 parseInt Number.parseInt
 function GlobalParseInt(string, radix) {
   const s = ToString(string);
   return %StringParseInt(s, %NumberToInt32(((%IsObject(radix)) ? %ToNumberPrimitive(ToPrimitive(radix, "number")) : %ToNumberPrimitive(radix))));
 }
 
-// builtins/number.ts:236 isNaN
+// builtins/number.ts:242 isNaN
 function GlobalIsNaN(number) {
   const n = ((%IsObject(number)) ? %ToNumberPrimitive(ToPrimitive(number, "number")) : %ToNumberPrimitive(number));
   return n !== n;
 }
 
-// builtins/number.ts:245 isFinite
+// builtins/number.ts:252 isFinite
 function GlobalIsFinite(number) {
   let $1;
   return ($1 = ((%IsObject(number)) ? %ToNumberPrimitive(ToPrimitive(number, "number")) : %ToNumberPrimitive(number)), $1 === $1 && $1 !== 1 / 0 && $1 !== -1 / 0);
@@ -12038,7 +12038,7 @@ function DOMExceptionToStringTag() {
   return "DOMException";
 }
 
-// builtins/web.ts:107 btoa
+// builtins/web.ts:108 btoa
 function GlobalBtoa(...args) {
   if (LengthOfArrayLike(args) === 0) {
     throw %NewTypeError("1 argument required");
@@ -12050,7 +12050,7 @@ function GlobalBtoa(...args) {
   return %AsStr(r);
 }
 
-// builtins/web.ts:123 atob
+// builtins/web.ts:125 atob
 function GlobalAtob(...args) {
   if (LengthOfArrayLike(args) === 0) {
     throw %NewTypeError("1 argument required");
@@ -12976,11 +12976,15 @@ function GlobalAtob(...args) {
 %MarkFast(ArrayPrototypeJoin);
 %MarkFast(ArrayPrototypeIncludes);
 %MarkFast(ArrayConstructor);
+%MarkFast(ArrayIsArray);
 %MarkFast(ArrayPrototypePush);
 %MarkFast(ArrayPrototypeConcat);
 %MarkFast(ArrayPrototypeSlice);
+%MarkFast(ArrayPrototypeSplice);
 %MarkFast(ArrayPrototypeReverse);
 %MarkFast(ArrayPrototypePop);
+%MarkFast(ArrayPrototypeShift);
+%MarkFast(ArrayPrototypeUnshift);
 %MarkFast(ToString);
 %MarkFast(LengthOfArrayLike);
 %MarkFast(ToPropertyKey);
@@ -12989,11 +12993,34 @@ function GlobalAtob(...args) {
 %MarkFast(MapPrototypeGet);
 %MarkFast(MapPrototypeHas);
 %MarkFast(MapPrototypeSet);
+%MarkFast(MathAbs);
+%MarkFast(MathCbrt);
+%MarkFast(MathCeil);
+%MarkFast(MathCos);
+%MarkFast(MathExp);
+%MarkFast(MathFloor);
+%MarkFast(MathLog);
+%MarkFast(MathLog10);
+%MarkFast(MathLog2);
+%MarkFast(MathRound);
+%MarkFast(MathSign);
+%MarkFast(MathSin);
+%MarkFast(MathSqrt);
+%MarkFast(MathTrunc);
+%MarkFast(MathAtan2);
+%MarkFast(MathPow);
 %MarkFast(MathMax);
 %MarkFast(MathMin);
 %MarkFast(NumberConstructor);
+%MarkFast(NumberPrototypeToString);
 %MarkFast(NumberPrototypeToFixed);
+%MarkFast(NumberIsFinite);
 %MarkFast(NumberIsInteger);
+%MarkFast(NumberIsNaN);
+%MarkFast(GlobalParseFloat);
+%MarkFast(GlobalParseInt);
+%MarkFast(GlobalIsNaN);
+%MarkFast(GlobalIsFinite);
 %MarkFast(PromiseResolveFunction);
 %MarkFast(ResolveWithData);
 %MarkFast(RejectWithData);
@@ -13037,4 +13064,6 @@ function GlobalAtob(...args) {
 %MarkFast(StringPrototypeTrimStart);
 %MarkFast(StringPrototypeTrimEnd);
 %MarkFast(StringFromCharCode);
+%MarkFast(GlobalBtoa);
+%MarkFast(GlobalAtob);
 })();

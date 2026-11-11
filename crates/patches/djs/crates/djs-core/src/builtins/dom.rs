@@ -3,6 +3,9 @@
 
 use alloc::vec::Vec;
 
+use crate::heap::{Heap, HeapError, StrView};
+use crate::value::Str;
+
 /// The legacy codes: index + 1 is the code. The error name is empty for the codes
 /// without one; the second name is the constant (`INDEX_SIZE_ERR`).
 pub(crate) const NAMES: [(&str, &str); 25] = [
@@ -41,8 +44,33 @@ pub(crate) fn code_of(name: &[u16]) -> i32 {
         .map_or(0, |i| i as i32 + 1)
 }
 
+/// btoa of the string `s`: `None` if a code unit is above 0xFF. A one-byte string's
+/// units are the bytes, read in place.
+pub(crate) fn btoa(heap: &mut Heap, s: Str) -> Result<Option<Str>, HeapError> {
+    let out = match heap.str_view_flat(s)? {
+        StrView::Latin1(b) => super::typed::to_base64(b, false, false),
+        view => match btoa_units(view.units()) {
+            Some(out) => out,
+            None => return Ok(None),
+        },
+    };
+    Ok(Some(heap.alloc_latin1(out.as_bytes())?))
+}
+
+/// atob of the string `s`: `None` for an invalid one.
+pub(crate) fn atob(heap: &mut Heap, s: Str) -> Result<Option<Str>, HeapError> {
+    let units: Vec<u16> = match heap.str_view_flat(s)? {
+        StrView::Latin1(b) => b.iter().map(|&c| u16::from(c)).collect(),
+        view => view.units().collect(),
+    };
+    match atob_units(&units) {
+        Some(bytes) => Ok(Some(heap.alloc_latin1(&bytes)?)),
+        None => Ok(None),
+    }
+}
+
 /// btoa: the base64 of the code units as bytes, `None` if one is above 0xFF.
-pub(crate) fn btoa(units: impl Iterator<Item = u16>) -> Option<alloc::string::String> {
+pub(crate) fn btoa_units(units: impl Iterator<Item = u16>) -> Option<alloc::string::String> {
     let bytes = units
         .map(|u| u8::try_from(u).ok())
         .collect::<Option<Vec<u8>>>()?;
@@ -51,7 +79,7 @@ pub(crate) fn btoa(units: impl Iterator<Item = u16>) -> Option<alloc::string::St
 
 /// atob: forgiving-base64 decode (FromBase64's loose mode: ASCII whitespace skipped,
 /// padding optional, non-zero trailing bits ignored), `None` for an invalid string.
-pub(crate) fn atob(units: &[u16]) -> Option<Vec<u8>> {
+pub(crate) fn atob_units(units: &[u16]) -> Option<Vec<u8>> {
     if units.iter().any(|&u| u > 0x7f) {
         return None;
     }
@@ -77,12 +105,18 @@ mod tests {
 
     #[test]
     fn base64() {
-        assert_eq!(btoa(u("foo").into_iter()).as_deref(), Some("Zm9v"));
-        assert_eq!(btoa([0xff, 0xfe, 0].into_iter()).as_deref(), Some("//4A"));
-        assert_eq!(btoa([0x100].into_iter()), None);
-        assert_eq!(atob(&u(" Zm 9v\n\t\x0c\r")).as_deref(), Some(&b"foo"[..]));
-        assert_eq!(atob(&u("Zh==")).as_deref(), Some(&b"f"[..]));
-        assert_eq!(atob(&u("Zg")).as_deref(), Some(&b"f"[..]));
+        assert_eq!(btoa_units(u("foo").into_iter()).as_deref(), Some("Zm9v"));
+        assert_eq!(
+            btoa_units([0xff, 0xfe, 0].into_iter()).as_deref(),
+            Some("//4A")
+        );
+        assert_eq!(btoa_units([0x100].into_iter()), None);
+        assert_eq!(
+            atob_units(&u(" Zm 9v\n\t\x0c\r")).as_deref(),
+            Some(&b"foo"[..])
+        );
+        assert_eq!(atob_units(&u("Zh==")).as_deref(), Some(&b"f"[..]));
+        assert_eq!(atob_units(&u("Zg")).as_deref(), Some(&b"f"[..]));
         for bad in [
             "Z",
             "Zg=",
@@ -93,7 +127,7 @@ mod tests {
             "Zm9\u{100}",
             "Zm9v\u{e9}",
         ] {
-            assert_eq!(atob(&u(bad)), None, "{bad}");
+            assert_eq!(atob_units(&u(bad)), None, "{bad}");
         }
     }
 }

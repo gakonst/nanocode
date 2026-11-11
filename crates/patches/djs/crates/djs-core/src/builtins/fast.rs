@@ -198,6 +198,51 @@ pub(crate) static FAST: &[FastFn] = &[
     m("RegExpStringIteratorNext", regexp_string_iterator_next),
     m("StringPrototypeMatch", string_match),
     m("StringPrototypeSearch", string_search),
+    // ---- Math and the number functions of a primitive (as bytecode a call cost a
+    // frame for one libm call: 3.5x QuickJS) ----
+    f("MathAbs", |h, _, a| math(h, a, djs_libm::fabs)),
+    f("MathCeil", |h, _, a| math(h, a, djs_libm::ceil)),
+    f("MathFloor", |h, _, a| math(h, a, djs_libm::floor)),
+    f("MathRound", |h, _, a| math(h, a, number::round)),
+    f("MathTrunc", |h, _, a| math(h, a, djs_libm::trunc)),
+    f("MathSign", |h, _, a| math(h, a, number::sign)),
+    f("MathSqrt", |h, _, a| math(h, a, djs_libm::sqrt)),
+    f("MathCbrt", |h, _, a| math(h, a, djs_libm::cbrt)),
+    f("MathExp", |h, _, a| math(h, a, djs_libm::exp)),
+    f("MathLog", |h, _, a| math(h, a, djs_libm::log)),
+    f("MathLog2", |h, _, a| math(h, a, djs_libm::log2)),
+    f("MathLog10", |h, _, a| math(h, a, djs_libm::log10)),
+    f("MathSin", |h, _, a| math(h, a, djs_libm::sin)),
+    f("MathCos", |h, _, a| math(h, a, djs_libm::cos)),
+    f("MathPow", |h, _, a| math2(h, a, conv::pow)),
+    f("MathAtan2", |h, _, a| math2(h, a, djs_libm::atan2)),
+    f("GlobalIsNaN", |h, _, a| {
+        Ok(num(h, arg(a, 0))?.map(|n| Value::bool(n.is_nan())))
+    }),
+    f("GlobalIsFinite", |h, _, a| {
+        Ok(num(h, arg(a, 0))?.map(|n| Value::bool(n.is_finite())))
+    }),
+    f("NumberIsNaN", |_, _, a| {
+        Ok(Some(Value::bool(
+            arg(a, 0).as_number().is_some_and(f64::is_nan),
+        )))
+    }),
+    f("NumberIsFinite", |_, _, a| {
+        Ok(Some(Value::bool(
+            arg(a, 0).as_number().is_some_and(f64::is_finite),
+        )))
+    }),
+    f("GlobalParseInt", parse_int),
+    f("GlobalParseFloat", parse_float),
+    f("NumberPrototypeToString", number_to_string),
+    // ---- Array (the rest of what scripts call per element or per line) ----
+    f("ArrayIsArray", array_is_array),
+    f("ArrayPrototypeShift", array_shift),
+    f("ArrayPrototypeUnshift", array_unshift),
+    f("ArrayPrototypeSplice", array_splice),
+    // ---- btoa and atob of a string ----
+    f("GlobalBtoa", btoa),
+    f("GlobalAtob", atob),
 ];
 
 // ---- argument helpers ----------------------------------------------------------------
@@ -251,6 +296,9 @@ fn integer(n: f64) -> f64 {
 
 /// `ToIntegerOrInfinity(v)` for a primitive `v`.
 fn int_arg(heap: &mut Heap, v: Value) -> Result<Option<f64>, Fault> {
+    if let Some(i) = v.as_int() {
+        return Ok(Some(f64::from(i)));
+    }
     Ok(num(heap, v)?.map(integer))
 }
 
@@ -448,6 +496,28 @@ fn pad(heap: &mut Heap, this: Value, args: &[Value], at_start: bool) -> Fast {
         return Ok(None);
     }
     let fill = fill as u32;
+    // A short one-byte result is written once, from the stack.
+    let mut short = [b' '; 128];
+    let total = fill as usize + n as usize;
+    if total <= short.len() && !heap.str_is_two_byte(s) {
+        let s = heap.contiguous(s)?;
+        let (pad_at, s_at) = if at_start {
+            (0, fill as usize)
+        } else {
+            (n as usize, 0)
+        };
+        if let Some(f) = filler {
+            let f = heap.contiguous(f)?;
+            let view = heap.str_view(f).expect("contiguous");
+            for (i, d) in short[pad_at..pad_at + fill as usize].iter_mut().enumerate() {
+                *d = view.get(i % fl as usize) as u8;
+            }
+        }
+        if let Some(StrView::Latin1(b)) = heap.str_view(s) {
+            short[s_at..s_at + b.len()].copy_from_slice(b);
+            return some_str(heap.alloc_latin1(&short[..total])?);
+        }
+    }
     // The one-byte filler cycled into one buffer: one allocation for the run.
     let unit: Vec<u8> = match filler {
         Some(f) => heap.str_view_flat(f)?.units().map(|u| u as u8).collect(),
@@ -1116,6 +1186,52 @@ fn number_is_integer(_: &mut Heap, _: Value, args: &[Value]) -> Fast {
 
 // ---- Math ----------------------------------------------------------------------------
 
+/// Math.f ( x ) of a primitive whose ToNumber is pure.
+fn math(heap: &mut Heap, args: &[Value], f: fn(f64) -> f64) -> Fast {
+    Ok(num(heap, arg(args, 0))?.map(|x| conv::number(f(x))))
+}
+
+/// Math.f ( x, y ) of two such primitives (both converted before `f` runs).
+fn math2(heap: &mut Heap, args: &[Value], f: fn(f64, f64) -> f64) -> Fast {
+    let (Some(x), Some(y)) = (num(heap, arg(args, 0))?, num(heap, arg(args, 1))?) else {
+        return Ok(None);
+    };
+    Ok(Some(conv::number(f(x, y))))
+}
+
+/// parseInt ( string, radix ) of primitives.
+fn parse_int(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
+    let (Some(s), Some(radix)) = (str(heap, arg(args, 0))?, num(heap, arg(args, 1))?) else {
+        return Ok(None);
+    };
+    let radix = conv::to_int32(radix);
+    Ok(Some(conv::number(number::parse(heap, s, Some(radix))?)))
+}
+
+/// parseFloat ( string ) of a primitive.
+fn parse_float(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
+    let Some(s) = str(heap, arg(args, 0))? else {
+        return Ok(None);
+    };
+    Ok(Some(conv::number(number::parse(heap, s, None)?)))
+}
+
+/// Number.prototype.toString ( [ radix ] ) of a Number; a RangeError (the radix)
+/// declines.
+fn number_to_string(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some(x) = this.as_number() else {
+        return Ok(None);
+    };
+    let radix = match arg(args, 0) {
+        v if v.is_undefined() => 10.0,
+        v => match int_arg(heap, v)? {
+            Some(r) => r,
+            None => return Ok(None),
+        },
+    };
+    some_str(number::format(heap, 0, x, conv::number(radix))?)
+}
+
 /// Math.max (`max`) or Math.min of primitives whose ToNumber is pure. Every argument is
 /// converted before the result is known (a NaN does not end the loop), so an object or
 /// a symbol after a NaN still declines to the builtin, which runs or throws.
@@ -1356,11 +1472,19 @@ fn array_reverse(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
     if heap.frozen(o) {
         return Ok(None);
     }
-    let Some(values) = dense::dense_range(heap, o, 0, len) else {
+    if heap.dense_len(o) != len
+        || !heap
+            .dense_array_values(o)
+            .is_some_and(|mut vs| vs.all(|v| !v.is_hole()))
+    {
         return Ok(None);
-    };
-    for (i, v) in values.into_iter().rev().enumerate() {
-        heap.set_element_fast(o, i as u32, v)?;
+    }
+    for i in 0..len / 2 {
+        let j = len - 1 - i;
+        if let (Some(a), Some(b)) = (heap.get_element_fast(o, i), heap.get_element_fast(o, j)) {
+            heap.set_element_fast(o, i, b)?;
+            heap.set_element_fast(o, j, a)?;
+        }
     }
     Ok(Some(this))
 }
@@ -1412,22 +1536,134 @@ fn array_concat(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
     new_array(heap, &values)
 }
 
+/// Array.isArray ( arg ); a revoked proxy is the builtin's TypeError.
+fn array_is_array(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
+    Ok(match arg(args, 0).as_object() {
+        None => Some(Value::FALSE),
+        Some(o) => heap.is_array(o).map(Value::bool),
+    })
+}
+
+/// Array.prototype.shift ( ) of a non-empty Array that `array_splice_dense` takes: the
+/// first element, the rest moved down in one step.
+fn array_shift(heap: &mut Heap, this: Value, _: &[Value]) -> Fast {
+    let Some((o, len)) = this_array(heap, this) else {
+        return Ok(None);
+    };
+    let first = match heap.get_element_fast(o, 0) {
+        Some(v) if len > 0 => v,
+        _ => return Ok(None),
+    };
+    Ok(heap.array_splice_dense(o, 0, 1, 0)?.then_some(first))
+}
+
+/// Array.prototype.unshift ( ...items ) with items, on such an Array: room made in one
+/// step, then plain stores.
+fn array_unshift(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((o, len)) = this_array(heap, this) else {
+        return Ok(None);
+    };
+    let n = args.len() as u32;
+    if n == 0 || !heap.array_splice_dense(o, 0, 0, n)? {
+        return Ok(None);
+    }
+    for (i, &v) in args.iter().enumerate() {
+        heap.set_element_fast(o, i as u32, v)?;
+    }
+    Ok(Some(conv::number(f64::from(len) + f64::from(n))))
+}
+
+/// Array.prototype.splice ( start, deleteCount, ...items ) of an Array with a plain
+/// species whose deleted elements are dense: they are copied out first, then the tail
+/// moves in one step (`array_splice_dense`) and the items are plain stores. With as
+/// many items as deleted elements nothing moves: the stores replace dense elements,
+/// and the final Set of an unchanged `length` needs it writable.
+fn array_splice(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((o, len)) = this_array(heap, this) else {
+        return Ok(None);
+    };
+    if !plain_species(heap, o) || heap.frozen(o) {
+        return Ok(None);
+    }
+    let len_f = f64::from(len);
+    let Some(start) = relative(heap, arg(args, 0), len_f, 0.0)? else {
+        return Ok(None);
+    };
+    let delete = match args {
+        [] => 0.0,
+        [_] => len_f - start,
+        [_, count, ..] => match int_arg(heap, *count)? {
+            Some(d) => d.max(0.0).min(len_f - start),
+            None => return Ok(None),
+        },
+    };
+    let items = args.get(2..).unwrap_or_default();
+    let (start, delete, insert) = (start as u32, delete as u32, items.len() as u32);
+    let Some(removed) = dense::dense_range(heap, o, start, start + delete) else {
+        return Ok(None);
+    };
+    let proto = realm::intrinsic_obj(heap, Intrinsic::ArrayProto);
+    let a = heap.new_array_from_values(Some(proto), &removed)?;
+    let moved = if delete != insert {
+        heap.array_splice_dense(o, start, delete, insert)?
+    } else {
+        matches!(heap.get_own_property(o, atoms::LENGTH),
+            Some(Property::Data { flags, .. }) if flags.writable())
+    };
+    if !moved {
+        return Ok(None);
+    }
+    for (k, &v) in items.iter().enumerate() {
+        heap.set_element_fast(o, start + k as u32, v)?;
+    }
+    Ok(Some(Value::object(a)))
+}
+
+// ---- btoa and atob ----------------------------------------------------------------
+
+/// btoa ( data ) of a primitive; a code unit above 0xFF is the builtin's DOMException.
+fn btoa(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
+    let [data] = args else {
+        return Ok(None);
+    };
+    let Some(s) = str(heap, *data)? else {
+        return Ok(None);
+    };
+    Ok(crate::builtins::dom::btoa(heap, s)?.map(Value::string))
+}
+
+/// atob ( data ) of a primitive; an invalid string is the builtin's DOMException.
+fn atob(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
+    let [data] = args else {
+        return Ok(None);
+    };
+    let Some(s) = str(heap, *data)? else {
+        return Ok(None);
+    };
+    Ok(crate::builtins::dom::atob(heap, s)?.map(Value::string))
+}
+
 // ---- String.fromCharCode (0091) -----------------------------------------------------
 
 /// String.fromCharCode ( ...codeUnits ) of primitives (ToUint16 of ToNumber).
 fn from_char_code(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
-    let mut units: Vec<u16> = crate::buf::vec_with_capacity(args.len());
-    for &v in args {
+    // At most MAX_ARGS units: on the stack.
+    let mut units = [0u16; MAX_ARGS];
+    for (u, &v) in units.iter_mut().zip(args) {
         let Some(n) = num(heap, v)? else {
             return Ok(None);
         };
-        units.push_out(conv::to_int32(n) as u16);
+        *u = conv::to_int32(n) as u16;
     }
+    let units = &units[..args.len()];
     let s = if units.iter().all(|&u| u < 256) {
-        let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
-        heap.alloc_latin1(&bytes)?
+        let mut bytes = [0u8; MAX_ARGS];
+        for (b, &u) in bytes.iter_mut().zip(units) {
+            *b = u as u8;
+        }
+        heap.alloc_latin1(&bytes[..units.len()])?
     } else {
-        heap.alloc_utf16(&units)?
+        heap.alloc_utf16(units)?
     };
     some_str(s)
 }

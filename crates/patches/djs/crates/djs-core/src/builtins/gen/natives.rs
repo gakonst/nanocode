@@ -46,7 +46,7 @@ pub(crate) static NATIVES: &[NativeFn] = &[
     NativeFn { name: "SerializeJSONArray", params: 6, locals: 6, run: native_SerializeJSONArray, handler: handler_SerializeJSONArray },
 ];
 
-// builtins/array.ts:222 (Array.prototype.push)
+// builtins/array.ts:223 (Array.prototype.push)
 #[allow(unused_assignments)]
 fn native_ArrayPrototypePush(ex: &mut Exec<'_>) -> Step {
     let mut st = ex.n_state();
@@ -125,7 +125,7 @@ fn handler_ArrayPrototypePush(state: u32) -> Option<(u32, u32)> {
     None
 }
 
-// builtins/array.ts:966
+// builtins/array.ts:970
 fn native_SortList(ex: &mut Exec<'_>) -> Step {
     let mut st = ex.n_state();
     loop {
@@ -227,7 +227,7 @@ fn handler_SortList(state: u32) -> Option<(u32, u32)> {
     None
 }
 
-// builtins/array.ts:1011 (Array.prototype.sort)
+// builtins/array.ts:1015 (Array.prototype.sort)
 #[allow(unused_assignments)]
 fn native_ArrayPrototypeSort(ex: &mut Exec<'_>) -> Step {
     let mut st = ex.n_state();

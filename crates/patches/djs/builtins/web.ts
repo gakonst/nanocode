@@ -103,6 +103,7 @@ function DOMExceptionToStringTag(): Str {
  * btoa ( data ) (HTML): base64 of a string of bytes (code units up to 0xFF).
  * @builtin btoa
  * @length 1
+ * @fast
  */
 function GlobalBtoa(...args: Value[]): Str {
   if (LengthOfArrayLike(args) === 0) {
@@ -119,6 +120,7 @@ function GlobalBtoa(...args: Value[]): Str {
  * atob ( data ) (HTML): forgiving-base64 decoding into a string of bytes.
  * @builtin atob
  * @length 1
+ * @fast
  */
 function GlobalAtob(...args: Value[]): Str {
   if (LengthOfArrayLike(args) === 0) {

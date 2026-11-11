@@ -409,6 +409,18 @@ pub(crate) fn repeat(heap: &mut Heap, s: Str, n: u32) -> Result<Str, Fault> {
     if len * n as u64 > crate::heap::string::MAX_LEN as u64 {
         return Err(crate::heap::HeapError::StringTooLong.into());
     }
+    // A short one-byte result (a rule, an indent) from the stack.
+    let mut short = [0u8; 128];
+    let total = (len * n as u64) as usize;
+    if len > 0
+        && total <= short.len()
+        && let Some(StrView::Latin1(b)) = heap.str_view(s)
+    {
+        for chunk in short[..total].chunks_exact_mut(b.len()) {
+            chunk.copy_from_slice(b);
+        }
+        return Ok(heap.alloc_latin1(&short[..total])?);
+    }
     // Short results are written once (no ropes, no intermediate strings).
     if len * n as u64 <= 4096 && n <= 4096 {
         let l = len as u32;

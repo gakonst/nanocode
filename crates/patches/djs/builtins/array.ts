@@ -207,6 +207,7 @@ function ArrayConstructor(...values: Value[]): Obj {
 /**
  * Array.isArray ( arg ), 23.1.2.2.
  * @builtin Array.isArray
+ * @fast
  */
 function ArrayIsArray(arg: Value): boolean {
   return IsArray(arg);
@@ -690,6 +691,7 @@ function ArrayPrototypeSlice(this: Value, start: Value, end: Value): Obj {
  * are a rest array: `splice()` and `splice(undefined)` differ.
  * @builtin Array.prototype.splice
  * @length 2
+ * @fast
  */
 function ArrayPrototypeSplice(this: Value, ...args: Value[]): Obj {
   const o: Obj = ToObject(this);
@@ -865,6 +867,7 @@ function ArrayPrototypePop(this: Value): Value {
 /**
  * Array.prototype.shift ( ), 23.1.3.27.
  * @builtin Array.prototype.shift
+ * @fast
  */
 function ArrayPrototypeShift(this: Value): Value {
   const o: Obj = ToObject(this);
@@ -883,6 +886,7 @@ function ArrayPrototypeShift(this: Value): Value {
  * Array.prototype.unshift ( ...items ), 23.1.3.34.
  * @builtin Array.prototype.unshift
  * @length 1
+ * @fast
  */
 function ArrayPrototypeUnshift(this: Value, ...items: Value[]): f64 {
   const o: Obj = ToObject(this);

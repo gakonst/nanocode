@@ -2014,18 +2014,12 @@ impl Exec<'_> {
                 let Some(s) = a0.as_string() else {
                     return bad_argument(id);
                 };
-                if id == BTOA {
-                    match crate::builtins::dom::btoa(self.heap.str_units(s)) {
-                        Some(out) => Value::string(self.heap.alloc_str(&out)?),
-                        None => Value::UNDEFINED,
-                    }
+                let r = if id == BTOA {
+                    crate::builtins::dom::btoa(self.heap, s)?
                 } else {
-                    let units: alloc::vec::Vec<u16> = self.heap.str_units(s).collect();
-                    match crate::builtins::dom::atob(&units) {
-                        Some(bytes) => Value::string(self.heap.alloc_latin1(&bytes)?),
-                        None => Value::UNDEFINED,
-                    }
-                }
+                    crate::builtins::dom::atob(self.heap, s)?
+                };
+                r.map_or(Value::UNDEFINED, Value::string)
             }
             F64_SUM_PRECISE => {
                 let Some(list) = a0.as_object() else {

@@ -15,7 +15,7 @@ mod jobs;
 mod jobs_tests;
 mod mapfile;
 mod printf;
-mod read;
+pub(crate) mod read;
 pub(crate) mod set;
 mod shopt;
 pub(crate) mod strftime;

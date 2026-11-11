@@ -412,7 +412,7 @@ fn run_command_with<'a>(
         }
         let result = match &cmd.kind {
             CommandKind::Simple(s) => run_simple(vp, code, cmd, s).await,
-            CommandKind::Select(_) | CommandKind::Coproc(_) => {
+            CommandKind::Coproc(_) => {
                 vp.line = code.line(cmd.span.start);
                 expand::unsupported(vp, compound_name(&cmd.kind)).await
             }
@@ -602,6 +602,7 @@ fn run_compound<'a>(vp: &'a mut Vp, code: &'a Rc<Code>, cmd: &'a Command) -> Loc
             r
         }),
         CommandKind::For(f) => Box::pin(run_for(vp, code, cmd, f)),
+        CommandKind::Select(f) => Box::pin(run_select(vp, code, cmd, f)),
         CommandKind::ArithFor(f) => Box::pin(async move {
             vp.line = code.line(cmd.span.start);
             vp.loops += 1;
@@ -794,6 +795,140 @@ async fn run_for_items(
         }
     }
     Ok(status)
+}
+
+/// `select name [in words]; do body; done`, as bash runs it: the words as a numbered
+/// menu and the prompt (`PS3`) on stderr, a line read into `REPLY`, the word of that
+/// number (or nothing) in `name`, the body, and again until `break` or the end of
+/// the input (status 1).
+async fn run_select(vp: &mut Vp, code: &Rc<Code>, cmd: &Command, f: &psh_syntax::ForCommand) -> R {
+    vp.line = code.line(cmd.span.start);
+    let Some(name) = psh_syntax::literal_text(&code.ast, &f.var).filter(|n| is_name(n.as_bytes()))
+    else {
+        vp.error(&format!(
+            "`{}': not a valid identifier",
+            code.ast.text(f.var.span)
+        ))
+        .await;
+        return Ok(1);
+    };
+    let items: Vec<Vec<u8>> = match &f.words {
+        Some(words) => Box::pin(expand::expand_words(vp, code, words))
+            .await?
+            .out
+            .into_iter()
+            .map(|f| f.text)
+            .collect(),
+        None => vp.args.clone(),
+    };
+    if items.is_empty() {
+        return Ok(0);
+    }
+    vp.loops += 1;
+    let r = run_select_items(vp, code, &name, &items, f.body).await;
+    vp.loops -= 1;
+    r
+}
+
+async fn run_select_items(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    name: &str,
+    items: &[Vec<u8>],
+    body: ListId,
+) -> R {
+    let mut menu = true;
+    loop {
+        safepoint(&vp.core.sched).await;
+        let choice = loop {
+            if menu {
+                vp.error_raw(&select_menu(vp, items)).await;
+            }
+            let prompt = vp.vars.value("PS3").unwrap_or(b"#? ").to_vec();
+            vp.error_raw(&prompt).await;
+            if builtins::read::reply(vp).await? != 0 {
+                // The input ended: bash ends the line of the prompt, on stdout.
+                builtins::out(vp, "select", b"\n").await?;
+                return Ok(1);
+            }
+            let reply = vp.vars.value("REPLY").unwrap_or_default();
+            // An empty answer shows the menu again.
+            if reply.is_empty() {
+                menu = true;
+                continue;
+            }
+            let number = std::str::from_utf8(reply)
+                .ok()
+                .and_then(|r| r.trim().parse::<usize>().ok());
+            break match number {
+                Some(n) if (1..=items.len()).contains(&n) => items[n - 1].clone(),
+                _ => Vec::new(),
+            };
+        };
+        if let Err(msg) = vp.assign(name, choice) {
+            vp.error(&msg).await;
+            return Ok(1);
+        }
+        if let Err(u) = run_list(vp, code, body).await
+            && let Some(r) = loop_unwind(u, vp.status)
+        {
+            return r;
+        }
+        // As ksh: the menu is shown again only after an empty REPLY.
+        menu = vp.vars.value("REPLY").is_none_or(<[u8]>::is_empty);
+    }
+}
+
+/// `select`'s menu as bash lays it out (print_select_list): numbered words in as many
+/// columns as fit in `COLUMNS` (80 without it), filled column by column; one column
+/// when one row would hold them all.
+fn select_menu(vp: &Vp, items: &[Vec<u8>]) -> Vec<u8> {
+    let digits = |n: usize| n.to_string().len();
+    let width = |item: &[u8]| match vp.utf8() {
+        true => String::from_utf8_lossy(item).chars().count(),
+        false => item.len(),
+    };
+    let columns = vp
+        .vars
+        .value("COLUMNS")
+        .and_then(|c| std::str::from_utf8(c).ok()?.trim().parse::<usize>().ok())
+        .filter(|c| *c > 0)
+        .unwrap_or(80);
+    let len = items.len();
+    // The number, `) `, the word and two blanks.
+    let widest = items.iter().map(|i| width(i)).max().unwrap_or(0) + digits(len) + 4;
+    let cols = (columns / widest).max(1);
+    let rows = len.div_ceil(cols);
+    let cols = len.div_ceil(rows);
+    let rows = if rows == 1 { cols } else { rows };
+    let mut out = Vec::new();
+    for row in 0..rows {
+        let (mut at, mut pos) = (row, 0);
+        loop {
+            let number = if pos == 0 { digits(rows) } else { digits(len) };
+            out.extend_from_slice(format!("{:>number$}) ", at + 1).as_bytes());
+            out.extend_from_slice(&items[at]);
+            let mut from = pos + number + 2 + width(&items[at]);
+            at += rows;
+            if at >= len {
+                break;
+            }
+            // bash's indent: tabs to the next stop of eight while one fits.
+            let to = pos + widest;
+            while from < to {
+                if to / 8 > from / 8 {
+                    out.push(b'\t');
+                    from += 8 - from % 8;
+                } else {
+                    out.push(b' ');
+                    from += 1;
+                }
+            }
+            pos += widest;
+        }
+        out.push(b'\n');
+    }
+    out
 }
 
 async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCommand) -> R {

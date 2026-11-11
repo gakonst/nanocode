@@ -72,7 +72,6 @@ fn unsupported(script: &str) -> Option<Reason> {
         },
     };
     let lacking = ast.cmd_ids().find_map(|id| match ast.cmd(id).kind {
-        CommandKind::Select(_) => Some(Reason::Command("select")),
         CommandKind::Coproc(_) => Some(Reason::Command("coproc")),
         _ => None,
     });

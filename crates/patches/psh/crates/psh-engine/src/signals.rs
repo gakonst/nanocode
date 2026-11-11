@@ -133,6 +133,11 @@ pub(crate) enum Gives {
     Fatal,
     /// Also a trapped signal: `wait` returns `128+n` and the trap runs.
     Trapped,
+    /// Also a trapped INT: for one of psh's utilities in the foreground. A terminal
+    /// sends INT to the whole foreground group, so the program in the utility's place
+    /// would have got it and ended (`sleep 60` under a trap on INT ends at Ctrl-C with
+    /// 130, and then the trap runs).
+    Interrupt,
 }
 
 /// The pending signal that ends a wait of `vp` now, if any. Only the shell's own vproc
@@ -158,7 +163,9 @@ pub(crate) fn breaking_in(
     (1..64).filter(|s| pending & (1u64 << s) != 0).find(|&sig| {
         match traps.action(TrapKey::Signal(sig)) {
             Some(a) if a.is_empty() => false,
-            Some(_) => gives == Gives::Trapped,
+            Some(_) => {
+                gives == Gives::Trapped || (gives == Gives::Interrupt && sig == crate::host::SIGINT)
+            }
             None => terminates(sig),
         }
     })

@@ -273,7 +273,7 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
                     set(&mut o.trace, on);
                     true
                 }
-                b'g' | b'f' | b'F' if which == Which::Local => false,
+                b'f' | b'F' if which == Which::Local => false,
                 b'g' => {
                     o.global = true;
                     true
@@ -609,6 +609,13 @@ async fn declare_one(
             vp.assign_array(&target, items.clone(), *append)?;
         }
     }
+    // `set -a`: a declaration that gives a value exports it, as an assignment does.
+    if !matches!(a, DeclArg::Word(_))
+        && o.export != Some(false)
+        && vp.opts.get(crate::options::SetOpt::Allexport)
+    {
+        vp.vars.entry(&target).exported = true;
+    }
     if Opts::on(o.readonly) {
         vp.vars.entry(&target).readonly = true;
     }
@@ -732,9 +739,10 @@ pub(crate) fn set_quote(v: &[u8]) -> Vec<u8> {
     if v.iter().any(|b| b.is_ascii_control()) {
         return ansi_c_quote(v);
     }
-    let safe = !v.is_empty()
-        && v.iter()
-            .all(|&b| b.is_ascii_alphanumeric() || b"_./:,=+@%^-".contains(&b) || b >= 0x80);
+    // An empty value is listed as nothing after the `=`.
+    let safe = v
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b"_./:,=+@%^-".contains(&b) || b >= 0x80);
     if safe {
         return v.to_vec();
     }

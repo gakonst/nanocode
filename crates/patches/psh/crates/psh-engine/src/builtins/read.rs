@@ -36,6 +36,11 @@ struct Opts {
     array: Option<Vec<u8>>,
 }
 
+/// A line into `REPLY`, as `read` without arguments reads it: `select`'s answer.
+pub(crate) async fn reply(vp: &mut Vp) -> R {
+    read(vp, &[b"read".to_vec()]).await
+}
+
 pub(super) async fn read(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let mut o = Opts {
         raw: false,

@@ -184,7 +184,8 @@ async fn run_with(
             let mut fut = std::pin::pin!((entry.run)(&mut ctx, &argv));
             std::future::poll_fn(|cx| {
                 if let Some((core, sigs, traps)) = &watch
-                    && let Some(sig) = crate::signals::breaking_in(core, sigs, traps, Gives::Fatal)
+                    && let Some(sig) =
+                        crate::signals::breaking_in(core, sigs, traps, Gives::Interrupt)
                 {
                     return Poll::Ready(Err(sig));
                 }
@@ -220,7 +221,8 @@ async fn run_with(
             let _ = ctx.flush().await;
             Ok(status)
         }
-        // The shell is ending: its buffered output is dropped with it.
+        // The shell is ending, or the signal ended the utility as it would have ended
+        // a program: what it had buffered is dropped with it.
         Err(sig) => Ok(128 + sig),
     }
 }

@@ -49,7 +49,7 @@ pub struct TimedAgentEvent {
 
 pub struct AgentEvents {
     request_id: Arc<str>,
-    receiver: mpsc::UnboundedReceiver<TimedAgentEvent>,
+    receiver: mpsc::UnboundedReceiver<Box<TimedAgentEvent>>,
     unread: Option<Arc<AtomicU64>>,
 }
 
@@ -63,13 +63,13 @@ impl AgentEvents {
         self.recv_timed().await.map(|event| event.event)
     }
 
-    fn received(&self, event: Option<TimedAgentEvent>) -> Option<TimedAgentEvent> {
+    fn received(&self, event: Option<Box<TimedAgentEvent>>) -> Option<TimedAgentEvent> {
         if event.is_some()
             && let Some(unread) = &self.unread
         {
             unread.fetch_sub(1, Ordering::Relaxed);
         }
-        event
+        event.map(|event| *event)
     }
 
     #[doc(hidden)]
@@ -140,7 +140,7 @@ const UNREAD_WARNING: u64 = 1024;
 
 #[derive(Clone)]
 struct Subscriber {
-    sender: mpsc::UnboundedSender<TimedAgentEvent>,
+    sender: mpsc::UnboundedSender<Box<TimedAgentEvent>>,
     unread: Arc<AtomicU64>,
 }
 
@@ -194,7 +194,7 @@ impl Subscribers {
         let mut closed = false;
         for subscriber in self.0.load().iter() {
             let unread = subscriber.unread.fetch_add(1, Ordering::Relaxed) + 1;
-            if subscriber.sender.send(event.clone()).is_err() {
+            if subscriber.sender.send(Box::new(event.clone())).is_err() {
                 subscriber.unread.fetch_sub(1, Ordering::Relaxed);
                 closed = true;
                 continue;
@@ -224,7 +224,7 @@ struct EventChannel {
     request_id: Arc<str>,
     next_seq: Arc<AtomicU64>,
     session: Arc<Subscribers>,
-    turn: Option<mpsc::UnboundedSender<TimedAgentEvent>>,
+    turn: Option<mpsc::UnboundedSender<Box<TimedAgentEvent>>>,
     turn_admission: Option<Arc<AtomicU64>>,
     sequencer: Arc<Sequencer>,
 }
@@ -583,7 +583,7 @@ impl EventChannel {
     fn publish(&self, event: TimedAgentEvent) {
         self.session.send(&event);
         if let Some(turn) = &self.turn {
-            drop(turn.send(event));
+            drop(turn.send(Box::new(event)));
         }
     }
 
@@ -976,7 +976,7 @@ pub struct WeakAgentEventPublisher {
     request_id: Arc<str>,
     next_seq: Arc<AtomicU64>,
     session: std::sync::Weak<Subscribers>,
-    turn: Option<mpsc::WeakUnboundedSender<TimedAgentEvent>>,
+    turn: Option<mpsc::WeakUnboundedSender<Box<TimedAgentEvent>>>,
     turn_admission: Option<Arc<AtomicU64>>,
     sequencer: Arc<Sequencer>,
     turn_id: Option<Arc<str>>,

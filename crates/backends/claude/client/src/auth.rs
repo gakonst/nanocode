@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_platform::SystemTime;
-use nanocode_sync::{SingleFlight, SwapOption};
+use nanocode_sync::{Atom, SingleFlight, SwapOption};
 
 use crate::{ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable};
 
@@ -154,6 +154,134 @@ impl ClaudeAuthProvider for RefreshingClaudeAuth {
                 .await
                 .map_err(ClaudeAuthUnavailable::new)?;
             Ok(true)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClaudeFall {
+    pub key: bool,
+    pub switched: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Signing {
+    First,
+    Key(Option<SystemTime>),
+}
+
+type Fell = Arc<dyn Fn(&ClaudeAuthUnavailable, ClaudeFall) + Send + Sync>;
+
+pub struct ClaudeAuthOrKey {
+    first: Arc<dyn ClaudeAuthProvider>,
+    key: Option<HeaderMap>,
+    back_after: Option<Duration>,
+    signing: Atom<Signing>,
+    fell: Option<Fell>,
+}
+
+impl ClaudeAuthOrKey {
+    pub fn new(
+        first: Arc<dyn ClaudeAuthProvider>,
+        key: Option<&str>,
+    ) -> Result<Self, ClaudeAuthUnavailable> {
+        let key = key
+            .map(|key| {
+                let mut value = HeaderValue::from_str(key).map_err(|_| {
+                    ClaudeAuthUnavailable::new(
+                        "the Claude API key is not a valid HTTP header value",
+                    )
+                })?;
+                value.set_sensitive(true);
+                let mut headers = HeaderMap::new();
+                headers.insert("x-api-key", value);
+                Ok(headers)
+            })
+            .transpose()?;
+        Ok(Self {
+            first,
+            key,
+            back_after: None,
+            signing: Atom::new(Signing::First),
+            fell: None,
+        })
+    }
+
+    #[must_use]
+    pub const fn back_after(mut self, after: Duration) -> Self {
+        self.back_after = Some(after);
+        self
+    }
+
+    #[must_use]
+    pub fn on_fall(
+        mut self,
+        fell: impl Fn(&ClaudeAuthUnavailable, ClaudeFall) + Send + Sync + 'static,
+    ) -> Self {
+        self.fell = Some(Arc::new(fell));
+        self
+    }
+
+    fn on_key(signing: Signing) -> bool {
+        match signing {
+            Signing::First => false,
+            Signing::Key(None) => true,
+            Signing::Key(Some(until)) => nanocode_platform::system_time() < until,
+        }
+    }
+
+    fn fall(&self, error: &ClaudeAuthUnavailable) -> Option<HeaderMap> {
+        let key = self.key.clone();
+        let switched = key.is_some() && {
+            let until = self
+                .back_after
+                .map(|after| nanocode_platform::system_time() + after);
+            self.signing.update(|signing| {
+                let switched = !Self::on_key(*signing);
+                *signing = Signing::Key(until);
+                switched
+            })
+        };
+        if let Some(fell) = &self.fell {
+            fell(
+                error,
+                ClaudeFall {
+                    key: key.is_some(),
+                    switched,
+                },
+            );
+        }
+        key
+    }
+}
+
+impl ClaudeAuthProvider for ClaudeAuthOrKey {
+    fn headers(&self) -> ClaudeAuthFuture<'_, Result<HeaderMap, ClaudeAuthUnavailable>> {
+        Box::pin(async move {
+            if Self::on_key(*self.signing.get())
+                && let Some(key) = &self.key
+            {
+                return Ok(key.clone());
+            }
+            match self.first.headers().await {
+                Ok(headers) => Ok(headers),
+                Err(error) => self.fall(&error).ok_or(error),
+            }
+        })
+    }
+
+    fn recover_unauthorized<'a>(
+        &'a self,
+        rejected: &'a HeaderMap,
+    ) -> ClaudeAuthFuture<'a, Result<bool, ClaudeAuthUnavailable>> {
+        Box::pin(async move {
+            if rejected.contains_key("x-api-key") {
+                return Ok(false);
+            }
+            match self.first.recover_unauthorized(rejected).await {
+                Ok(recovered) => Ok(recovered),
+                Err(error) => self.fall(&error).map(|_| true).ok_or(error),
+            }
         })
     }
 }

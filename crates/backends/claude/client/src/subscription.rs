@@ -90,6 +90,25 @@ pub struct ClaudeSubscriptionHttpResponse {
     pub body: String,
 }
 
+#[cfg(not(target_family = "wasm"))]
+impl ClaudeSubscriptionHttpRequest {
+    pub async fn send(
+        &self,
+        client: &reqwest::Client,
+    ) -> std::result::Result<ClaudeSubscriptionHttpResponse, nanocode_http::BoundedError> {
+        let method = reqwest::Method::from_bytes(self.method.as_bytes())
+            .map_err(nanocode_http::BoundedError::Method)?;
+        let request = client
+            .request(method, &self.url)
+            .headers(self.headers.clone())
+            .header("content-type", self.content_type())
+            .body(self.body.clone())
+            .timeout(std::time::Duration::from_millis(self.timeout_millis));
+        let (status, body) = nanocode_http::bounded_text(request, MAX_BYTES).await?;
+        Ok(ClaudeSubscriptionHttpResponse { status, body })
+    }
+}
+
 macro_rules! redacted_debug {
     ($($kind:ty),+ $(,)?) => {$(impl fmt::Debug for $kind {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -832,6 +851,70 @@ impl ClaudeSubscription {
             }
         }
         Err(ClaudeSubscriptionError::Conflict)
+    }
+}
+
+pub struct ClaudeSettling {
+    subscription: ClaudeSubscription,
+    wait: std::time::Duration,
+    poll: std::time::Duration,
+    waited: std::sync::atomic::AtomicBool,
+}
+
+impl ClaudeSubscription {
+    #[must_use]
+    pub const fn settling(
+        self,
+        wait: std::time::Duration,
+        poll: std::time::Duration,
+    ) -> ClaudeSettling {
+        ClaudeSettling {
+            subscription: self,
+            wait,
+            poll,
+            waited: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl ClaudeAuthProvider for ClaudeSettling {
+    fn headers(
+        &self,
+    ) -> ClaudeAuthFuture<'_, std::result::Result<HeaderMap, ClaudeAuthUnavailable>> {
+        Box::pin(async move {
+            let error = match self.subscription.headers().await {
+                Ok(headers) => return Ok(headers),
+                Err(error) => error,
+            };
+            if self.waited.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(error);
+            }
+            let deadline = nanocode_platform::system_time() + self.wait;
+            while nanocode_platform::system_time() < deadline {
+                nanocode_platform::sleep(self.poll).await;
+                match self.subscription.status().await {
+                    Ok(ClaudeSubscriptionStatus::Authenticated { .. }) => {
+                        if let Ok(headers) = self.subscription.headers().await {
+                            return Ok(headers);
+                        }
+                    }
+                    Ok(
+                        ClaudeSubscriptionStatus::ExchangeUncertain
+                        | ClaudeSubscriptionStatus::Validating,
+                    )
+                    | Err(_) => {}
+                    Ok(_) => break,
+                }
+            }
+            Err(error)
+        })
+    }
+
+    fn recover_unauthorized<'a>(
+        &'a self,
+        rejected: &'a HeaderMap,
+    ) -> ClaudeAuthFuture<'a, std::result::Result<bool, ClaudeAuthUnavailable>> {
+        self.subscription.recover_unauthorized(rejected)
     }
 }
 

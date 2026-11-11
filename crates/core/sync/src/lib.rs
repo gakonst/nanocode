@@ -29,7 +29,7 @@ pub use lanes::{Bounds, Lanes, together};
 pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
 pub use map::AtomMap;
 #[cfg(not(target_family = "wasm"))]
-pub use map::Throttle;
+pub use map::{Kept, Throttle};
 #[cfg(not(target_family = "wasm"))]
 pub use reentry::{Claim, Reentry};
 #[cfg(not(target_family = "wasm"))]

@@ -133,19 +133,23 @@ impl ClaudeClient {
     }
 
     fn federated(http: reqwest::Client, base_url: &str, identity: ClaudeWorkloadIdentity) -> Self {
-        let base_url = base_url.trim_end_matches('/');
-        let token = FederatedToken {
-            http: http.clone(),
-            token_url: format!("{base_url}/oauth/token"),
-            identity,
-        };
+        let auth = identity.auth(http.clone(), base_url);
         Self::with_auth_provider(
             http,
-            format!("{base_url}/messages"),
-            Arc::new(RefreshingClaudeAuth::new(
-                Arc::new(token),
-                MANDATORY_REFRESH,
-            )),
+            format!("{}/messages", base_url.trim_end_matches('/')),
+            Arc::new(auth),
         )
+    }
+}
+
+impl ClaudeWorkloadIdentity {
+    #[must_use]
+    pub fn auth(self, http: reqwest::Client, base_url: &str) -> RefreshingClaudeAuth {
+        let token = FederatedToken {
+            http,
+            token_url: format!("{}/oauth/token", base_url.trim_end_matches('/')),
+            identity: self,
+        };
+        RefreshingClaudeAuth::new(Arc::new(token), MANDATORY_REFRESH)
     }
 }

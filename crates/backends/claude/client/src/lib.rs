@@ -27,7 +27,9 @@ use transport::{HttpClient, HttpError, HttpResponse, layer::retry};
 pub mod subscription;
 pub mod thread;
 mod wire_cache;
-pub use auth::{ClaudeAccessToken, ClaudeTokenSource, RefreshingClaudeAuth};
+pub use auth::{
+    ClaudeAccessToken, ClaudeAuthOrKey, ClaudeFall, ClaudeTokenSource, RefreshingClaudeAuth,
+};
 #[cfg(not(target_family = "wasm"))]
 pub use federation::{ClaudeIdentityTokenSource, ClaudeWorkloadIdentity};
 #[cfg(not(target_family = "wasm"))]

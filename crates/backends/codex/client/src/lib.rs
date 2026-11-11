@@ -17,6 +17,8 @@ pub mod pricing;
 
 pub mod responses;
 
+mod route;
+
 #[cfg(not(target_family = "wasm"))]
 pub mod tls;
 
@@ -48,6 +50,7 @@ pub use openai::CyberAccessProgram;
 pub use pricing::{CostStatus, EstimatedUsdCost};
 pub use responses::ResponseEvent;
 pub use responses::ResponseItem;
+pub use route::ModelRoute;
 
 pub use responses::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, MessagePhase, MessageRole,

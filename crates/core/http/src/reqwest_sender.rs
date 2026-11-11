@@ -60,6 +60,46 @@ pub fn reqwest_error(error: reqwest::Error) -> Error {
         .unsent(error.is_connect() || error.is_builder())
 }
 
+#[derive(Debug)]
+pub enum BoundedError {
+    Method(http::method::InvalidMethod),
+    Http(reqwest::Error),
+    Over(usize),
+    Text(std::string::FromUtf8Error),
+}
+
+impl std::fmt::Display for BoundedError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Method(error) => error.fmt(formatter),
+            Self::Http(error) => error.fmt(formatter),
+            Self::Over(limit) => write!(formatter, "response over {limit} bytes"),
+            Self::Text(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for BoundedError {}
+
+pub async fn bounded_text(
+    request: reqwest::RequestBuilder,
+    limit: usize,
+) -> Result<(u16, String), BoundedError> {
+    let mut response = request.send().await.map_err(BoundedError::Http)?;
+    let status = response.status().as_u16();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(BoundedError::Http)? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > limit {
+            return Err(BoundedError::Over(limit));
+        }
+    }
+    Ok((
+        status,
+        String::from_utf8(bytes).map_err(BoundedError::Text)?,
+    ))
+}
+
 pub async fn execute(
     client: &reqwest::Client,
     layer: Option<&dyn Layer>,

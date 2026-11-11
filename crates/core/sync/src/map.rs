@@ -62,7 +62,7 @@ impl<K: Hash + Eq + Clone, V: Clone> AtomMap<K, V> {
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use aged::Aged;
 #[cfg(not(target_family = "wasm"))]
-pub use aged::Throttle;
+pub use aged::{Kept, Throttle};
 
 #[cfg(not(target_family = "wasm"))]
 mod aged {
@@ -128,6 +128,38 @@ mod aged {
             let (owned, (at, value)) = self.entries.remove_with_key(key)?;
             self.ages.remove(&(at, owned));
             Some(value)
+        }
+    }
+
+    pub struct Kept<K, V> {
+        held: Atom<Aged<K, V>>,
+        fresh: Duration,
+        kept: usize,
+    }
+
+    impl<K: Hash + Eq + Ord + Clone, V: Clone> Kept<K, V> {
+        #[must_use]
+        pub fn new(fresh: Duration, kept: usize) -> Self {
+            Self {
+                held: Atom::new(Aged::default()),
+                fresh,
+                kept,
+            }
+        }
+
+        pub fn get_or_try<E>(&self, key: &K, make: impl FnOnce() -> Result<V, E>) -> Result<V, E> {
+            let now = Instant::now();
+            if let Some(found) = self
+                .held
+                .read(|held| held.fresh(key, now, self.fresh).cloned())
+            {
+                return Ok(found);
+            }
+            let made = make()?;
+            self.held.update(|held| {
+                held.put(key.clone(), now, made.clone(), self.fresh, self.kept);
+            });
+            Ok(made)
         }
     }
 

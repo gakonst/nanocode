@@ -100,6 +100,25 @@ pub struct SubscriptionHttpResponse {
     pub body: String,
 }
 
+#[cfg(not(target_family = "wasm"))]
+impl SubscriptionHttpRequest {
+    pub async fn send(
+        &self,
+        client: &reqwest::Client,
+        timeout: std::time::Duration,
+    ) -> Result<SubscriptionHttpResponse, nanocode_http::BoundedError> {
+        let method = reqwest::Method::from_bytes(self.method.as_bytes())
+            .map_err(nanocode_http::BoundedError::Method)?;
+        let request = client
+            .request(method, &self.url)
+            .header("content-type", self.content_type)
+            .body(self.body.clone())
+            .timeout(timeout);
+        let (status, body) = nanocode_http::bounded_text(request, self.max_response_bytes).await?;
+        Ok(SubscriptionHttpResponse { status, body })
+    }
+}
+
 pub trait ChatGptSubscriptionHost: Send + Sync + 'static {
     fn load<'a>(
         &'a self,

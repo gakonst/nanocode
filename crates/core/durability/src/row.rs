@@ -12,12 +12,12 @@ use nanocode_platform::{MaybeSend, MaybeSync};
 use nanocode_sync::{AtomMap, Mailbox, Sequencer};
 
 use crate::{
-    Collected, Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Sql, SqlRow,
-    SqlStatement, SqlStore, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
-    Unreachable,
+    Collected, Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, Sql,
+    SqlRow, SqlStatement, SqlStore, StateCommit, StateStore, StoreError, StoreFuture, StoreRecord,
+    StoredState, Unreachable,
     sql::{
         SqlAccess, counter, invalid, keys_json, limit_param, migrate_format, names, run_checked,
-        single, text, unreachable_in,
+        single, text, unreachable_in, written,
     },
 };
 
@@ -753,6 +753,18 @@ impl<H: Sql + ?Sized> RowStore<H> {
         run_checked(&*self.host, access, operation, &statements).await
     }
 
+    async fn settled(
+        &mut self,
+        settle: Settle,
+        operation: &'static str,
+        statements: Vec<SqlStatement<'_>>,
+    ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+        if !self.ready.load(Ordering::Acquire) {
+            self.migrate().await?;
+        }
+        written(&*self.host, settle, operation, &statements).await
+    }
+
     async fn query(
         &mut self,
         operation: &'static str,
@@ -1266,7 +1278,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
             .transpose()
     }
 
-    async fn replace_state(&mut self, write: Write<'_>) -> Result<u64, StoreError> {
+    async fn replace_state(&mut self, write: Write<'_>, settle: Settle) -> Result<u64, StoreError> {
         if write.revision <= write.expected {
             return Err(StoreError::NotCommitted(format!(
                 "a replacement of revision {} must advance it, not set {}",
@@ -1281,7 +1293,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
             .ok_or_else(|| invalid("a row store write was not planned"))?;
         let mut statements = Vec::with_capacity(2);
         self.statements(&write, &planned, &mut statements)?;
-        let results = self.transaction("replace", statements).await?;
+        let results = self.settled(settle, "replace", statements).await?;
         match Self::landed(results.last())? {
             Some((revision, pages)) => {
                 self.apply(vec![Self::applied(&write, &planned, revision, pages)])
@@ -1318,6 +1330,14 @@ impl<H: Sql + ?Sized> RowStore<H> {
                 })
             })
             .collect();
+        let settle = if commits
+            .iter()
+            .all(|commit| commit.settle == Settle::Ordered)
+        {
+            Settle::Ordered
+        } else {
+            Settle::Durable
+        };
         let asked: Vec<Option<&Write<'_>>> =
             writes.iter().map(|write| write.as_ref().ok()).collect();
         let planned = match self.plan(&asked).await {
@@ -1347,7 +1367,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
         let results = if statements.is_empty() {
             Ok(Vec::new())
         } else {
-            self.transaction("commit_many", statements).await
+            self.settled(settle, "commit_many", statements).await
         };
         let mut outcomes = Vec::with_capacity(writes.len());
         let mut applied = Vec::new();
@@ -1733,17 +1753,55 @@ impl<H: Sql + ?Sized> StateStore for RowStore<H> {
         records: &'a [StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
-            self.replace_state(Write {
-                state_id,
-                owner,
-                expected: expected_revision,
-                revision: expected_revision.checked_add(1).ok_or_else(|| {
-                    StoreError::NotCommitted("row store revision overflow".to_owned())
-                })?,
-                payload,
-                records,
-            })
+            self.replace_state(
+                Write {
+                    state_id,
+                    owner,
+                    expected: expected_revision,
+                    revision: expected_revision.checked_add(1).ok_or_else(|| {
+                        StoreError::NotCommitted("row store revision overflow".to_owned())
+                    })?,
+                    payload,
+                    records,
+                },
+                Settle::Durable,
+            )
             .await
+        })
+    }
+
+    fn commit<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        expected_revision: u64,
+        commit: StateCommit<'a>,
+    ) -> StoreFuture<'a, Result<Committed, StoreError>> {
+        Box::pin(async move {
+            if !commit.events.is_empty() {
+                return Err(StoreError::NotCommitted(
+                    "this store does not record state events".to_owned(),
+                ));
+            }
+            let revision = self
+                .replace_state(
+                    Write {
+                        state_id,
+                        owner,
+                        expected: expected_revision,
+                        revision: expected_revision.checked_add(1).ok_or_else(|| {
+                            StoreError::NotCommitted("row store revision overflow".to_owned())
+                        })?,
+                        payload: commit.payload,
+                        records: commit.records,
+                    },
+                    commit.settle,
+                )
+                .await?;
+            Ok(Committed {
+                revision,
+                first_event: None,
+            })
         })
     }
 
@@ -1757,14 +1815,17 @@ impl<H: Sql + ?Sized> StateStore for RowStore<H> {
         records: &'a [StoreRecord],
     ) -> StoreFuture<'a, Result<Option<u64>, StoreError>> {
         Box::pin(async move {
-            self.replace_state(Write {
-                state_id,
-                owner,
-                expected: expected_revision,
-                revision,
-                payload,
-                records,
-            })
+            self.replace_state(
+                Write {
+                    state_id,
+                    owner,
+                    expected: expected_revision,
+                    revision,
+                    payload,
+                    records,
+                },
+                Settle::Durable,
+            )
             .await
             .map(Some)
         })

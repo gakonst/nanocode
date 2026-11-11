@@ -5,7 +5,7 @@ use std::{
 
 use futures_util::TryStreamExt as _;
 use nanocode_durability_core::{
-    Collected, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites,
+    Collected, Settle, Sql, SqlAccess, SqlDialect, SqlRow, SqlStatement, SqlStore, StagedWrites,
     StoreError, StoreFuture, Unreachable,
 };
 use nanocode_sync::Owned;
@@ -36,17 +36,33 @@ impl<C: PgConnections, R: PgConnections> SqlxSql<C, R> {
     }
 }
 
+const UNSYNCED: &str = "SET LOCAL synchronous_commit = off";
+const BEGIN_UNSYNCED: &str = "BEGIN; SET LOCAL synchronous_commit = off";
+
 async fn transact<C: PgConnections>(
     connections: &C,
+    settle: Settle,
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
     let mut connection = connections.acquire().await?;
     if let Some(prelude) = C::SIMPLE {
-        return simple(&mut connection, prelude, statements).await;
+        return match settle {
+            Settle::Durable => simple(&mut connection, prelude, statements).await,
+            Settle::Ordered => {
+                simple(
+                    &mut connection,
+                    &format!("{prelude};{UNSYNCED}"),
+                    statements,
+                )
+                .await
+            }
+        };
     }
-    let mut transaction = sqlx::Connection::begin(&mut *connection)
-        .await
-        .map_err(backend)?;
+    let mut transaction = match settle {
+        Settle::Durable => sqlx::Connection::begin(&mut *connection).await,
+        Settle::Ordered => sqlx::Connection::begin_with(&mut *connection, BEGIN_UNSYNCED).await,
+    }
+    .map_err(backend)?;
     let results = run(&mut transaction, statements).await?;
     transaction.commit().await.map_err(backend)?;
     Ok(results)
@@ -54,11 +70,12 @@ async fn transact<C: PgConnections>(
 
 async fn observed<C: PgConnections>(
     connections: &C,
+    settle: Settle,
     operation: &'static str,
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
     let started = Instant::now();
-    let results = transact(connections, statements).await;
+    let results = transact(connections, settle, statements).await;
     connections.ran(operation, started.elapsed(), results.is_ok());
     results
 }
@@ -81,7 +98,12 @@ impl<C: PgConnections + 'static, R: PgConnections + 'static> Sql for SqlxSql<C, 
         operation: &'static str,
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
-        Box::pin(observed(&self.writes, operation, statements))
+        Box::pin(observed(
+            &self.writes,
+            Settle::Durable,
+            operation,
+            statements,
+        ))
     }
 
     fn run<'a>(
@@ -91,9 +113,28 @@ impl<C: PgConnections + 'static, R: PgConnections + 'static> Sql for SqlxSql<C, 
         statements: &'a [SqlStatement<'a>],
     ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
         match access {
-            SqlAccess::Read => Box::pin(observed(&self.reads, operation, statements)),
-            _ => Box::pin(observed(&self.writes, operation, statements)),
+            SqlAccess::Read => Box::pin(observed(
+                &self.reads,
+                Settle::Durable,
+                operation,
+                statements,
+            )),
+            _ => Box::pin(observed(
+                &self.writes,
+                Settle::Durable,
+                operation,
+                statements,
+            )),
         }
+    }
+
+    fn write<'a>(
+        &'a self,
+        settle: Settle,
+        operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
+        Box::pin(observed(&self.writes, settle, operation, statements))
     }
 
     fn dialect(&self) -> SqlDialect {

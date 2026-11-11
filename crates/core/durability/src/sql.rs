@@ -5,8 +5,8 @@ use nanocode_platform::{MaybeSend, MaybeSync};
 use serde::ser::SerializeSeq;
 
 use crate::{
-    Committed, EncodedPayload, OwnedCommit, OwnedState, OwnerId, OwnerToken, StateStore,
-    StoreError, StoreFuture, StoreRecord, StoredState,
+    Committed, EncodedPayload, OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, StateCommit,
+    StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +66,16 @@ pub trait Sql: MaybeSend + MaybeSync {
         self.transaction(operation, statements)
     }
 
+    fn write<'a>(
+        &'a self,
+        settle: Settle,
+        operation: &'static str,
+        statements: &'a [SqlStatement<'a>],
+    ) -> StoreFuture<'a, Result<Vec<Vec<SqlRow>>, StoreError>> {
+        let _ = settle;
+        self.run(SqlAccess::Write, operation, statements)
+    }
+
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
     }
@@ -118,7 +128,22 @@ pub(crate) async fn run_checked<H: Sql + ?Sized>(
     operation: &'static str,
     statements: &[SqlStatement<'_>],
 ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
-    let results = host.run(access, operation, statements).await?;
+    answered(host.run(access, operation, statements).await?, statements)
+}
+
+pub(crate) async fn written<H: Sql + ?Sized>(
+    host: &H,
+    settle: Settle,
+    operation: &'static str,
+    statements: &[SqlStatement<'_>],
+) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+    answered(host.write(settle, operation, statements).await?, statements)
+}
+
+fn answered(
+    results: Vec<Vec<SqlRow>>,
+    statements: &[SqlStatement<'_>],
+) -> Result<Vec<Vec<SqlRow>>, StoreError> {
     if results.len() != statements.len() {
         return Err(StoreError::Backend(format!(
             "SQL host answered {} of {} statements",
@@ -772,6 +797,18 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         run_checked(&*self.host, access, operation, &statements).await
     }
 
+    async fn settled(
+        &mut self,
+        settle: Settle,
+        operation: &'static str,
+        statements: Vec<SqlStatement<'_>>,
+    ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
+        if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
+            self.migrate().await?;
+        }
+        written(&*self.host, settle, operation, &statements).await
+    }
+
     async fn query(
         &mut self,
         operation: &'static str,
@@ -973,11 +1010,15 @@ impl<H: Sql + ?Sized> SqlStore<H> {
             .collect()
     }
 
-    async fn replace_state(&mut self, replacement: Replacement<'_>) -> Result<u64, StoreError> {
+    async fn replace_state(
+        &mut self,
+        replacement: Replacement<'_>,
+        settle: Settle,
+    ) -> Result<u64, StoreError> {
         let counters = replacement.counters()?;
         let mut statements = Vec::with_capacity(replacement.records.len() + 2);
         replacement.statements(&counters, &mut statements);
-        let results = self.transaction("replace", statements).await?;
+        let results = self.settled(settle, "replace", statements).await?;
         match Replacement::replaced(&results)? {
             Some(revision) => Ok(revision),
             None => Err(self.refusal(&replacement).await),
@@ -1120,7 +1161,16 @@ impl<H: Sql + ?Sized> SqlStore<H> {
                     .or_insert((record.value.as_str(), replacement.state_id));
             }
         }
-        self.commit_grouped(dialect, &prepared, &unique).await
+        let settle = if commits
+            .iter()
+            .all(|commit| commit.settle == Settle::Ordered)
+        {
+            Settle::Ordered
+        } else {
+            Settle::Durable
+        };
+        self.commit_grouped(dialect, &prepared, &unique, settle)
+            .await
     }
 
     async fn commit_grouped(
@@ -1128,6 +1178,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         dialect: SqlDialect,
         prepared: &[Result<(Replacement<'_>, Counters), StoreError>],
         unique: &std::collections::BTreeMap<&str, (&str, &str)>,
+        settle: Settle,
     ) -> Vec<Result<Committed, StoreError>> {
         let mut committing = prepared.iter().flatten().collect::<Vec<_>>();
         committing.sort_unstable_by_key(|(replacement, _)| replacement.state_id);
@@ -1187,7 +1238,7 @@ impl<H: Sql + ?Sized> SqlStore<H> {
         let results = if statements.is_empty() {
             Ok(Vec::new())
         } else {
-            self.transaction("commit_many", statements).await
+            self.settled(settle, "commit_many", statements).await
         };
         let replaced = match &results {
             Ok(results) => {
@@ -1333,18 +1384,58 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         let dialect = self.host.dialect();
         Box::pin(async move {
-            self.replace_state(Replacement {
-                dialect,
-                state_id,
-                owner,
-                expected_revision,
-                revision: expected_revision.checked_add(1).ok_or_else(|| {
-                    StoreError::NotCommitted("SQL durability revision overflow".to_owned())
-                })?,
-                payload,
-                records,
-            })
+            self.replace_state(
+                Replacement {
+                    dialect,
+                    state_id,
+                    owner,
+                    expected_revision,
+                    revision: expected_revision.checked_add(1).ok_or_else(|| {
+                        StoreError::NotCommitted("SQL durability revision overflow".to_owned())
+                    })?,
+                    payload,
+                    records,
+                },
+                Settle::Durable,
+            )
             .await
+        })
+    }
+
+    fn commit<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        owner: &'a OwnerToken,
+        expected_revision: u64,
+        commit: StateCommit<'a>,
+    ) -> StoreFuture<'a, Result<Committed, StoreError>> {
+        let dialect = self.host.dialect();
+        Box::pin(async move {
+            if !commit.events.is_empty() {
+                return Err(StoreError::NotCommitted(
+                    "this store does not record state events".to_owned(),
+                ));
+            }
+            let revision = self
+                .replace_state(
+                    Replacement {
+                        dialect,
+                        state_id,
+                        owner,
+                        expected_revision,
+                        revision: expected_revision.checked_add(1).ok_or_else(|| {
+                            StoreError::NotCommitted("SQL durability revision overflow".to_owned())
+                        })?,
+                        payload: commit.payload,
+                        records: commit.records,
+                    },
+                    commit.settle,
+                )
+                .await?;
+            Ok(Committed {
+                revision,
+                first_event: None,
+            })
         })
     }
 
@@ -1367,15 +1458,18 @@ impl<H: Sql + ?Sized> StateStore for SqlStore<H> {
     ) -> StoreFuture<'a, Result<Option<u64>, StoreError>> {
         let dialect = self.host.dialect();
         Box::pin(async move {
-            self.replace_state(Replacement {
-                dialect,
-                state_id,
-                owner,
-                expected_revision,
-                revision,
-                payload,
-                records,
-            })
+            self.replace_state(
+                Replacement {
+                    dialect,
+                    state_id,
+                    owner,
+                    expected_revision,
+                    revision,
+                    payload,
+                    records,
+                },
+                Settle::Durable,
+            )
             .await
             .map(Some)
         })

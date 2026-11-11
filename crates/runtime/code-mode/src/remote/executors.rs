@@ -37,34 +37,77 @@ pub enum Placement {
 pub struct CodeModeExecutors {
     state: Arc<Atom<State>>,
     changed: Arc<tokio::sync::Notify>,
+    session: Option<Arc<Entered>>,
+}
+
+struct Entered {
+    session_id: Box<str>,
+    root: Option<Box<str>>,
+    backend: Option<Box<str>>,
+}
+
+impl Entered {
+    fn entered(&self, state: &State) -> bool {
+        state.idle()
+            || state
+                .sessions
+                .get(&*self.session_id)
+                .is_some_and(|session| {
+                    session.root == self.root
+                        && (self.backend.is_none() || session.backend == self.backend)
+                })
+    }
+
+    fn enter(&self, state: &mut State) {
+        let session = state.sessions.entry(self.session_id.clone()).or_default();
+        session.root.clone_from(&self.root);
+        if self.backend.is_some() {
+            session.backend.clone_from(&self.backend);
+        }
+    }
 }
 
 #[derive(Clone, Default)]
 struct State {
     executors: BTreeMap<Arc<str>, Arc<dyn CodeModeHost>>,
     selections: nanocode_sync::Map<Box<str>, ExecutorSelection>,
-    roots: nanocode_sync::Map<Box<str>, Box<str>>,
-    backends: nanocode_sync::Map<Box<str>, Box<str>>,
     default: Option<Arc<str>>,
     fallback: Option<Arc<str>>,
     awaiting: bool,
-    sessions: nanocode_sync::Map<Box<str>, SessionPlaces>,
+    sessions: nanocode_sync::Map<Box<str>, Session>,
 }
 
 #[derive(Clone, Default)]
-struct SessionPlaces {
+struct Session {
+    root: Option<Box<str>>,
+    backend: Option<Box<str>>,
     touched: Vec<Arc<str>>,
     cells: Vec<(Box<str>, Option<Arc<str>>)>,
 }
 
 impl State {
+    fn idle(&self) -> bool {
+        self.executors.is_empty()
+            && self.selections.is_empty()
+            && self.default.is_none()
+            && self.fallback.is_none()
+            && !self.awaiting
+    }
+
+    fn root(&self, session_id: &str) -> Option<&str> {
+        self.sessions.get(session_id)?.root.as_deref()
+    }
+
+    fn backend(&self, session_id: &str) -> Option<Box<str>> {
+        self.sessions.get(session_id)?.backend.clone()
+    }
+
     fn resolve(&self, session_id: &str) -> ExecutorSelection {
         self.selections
             .get(session_id)
             .or_else(|| {
-                self.roots
-                    .get(session_id)
-                    .and_then(|root| self.selections.get(root.as_ref()))
+                self.root(session_id)
+                    .and_then(|root| self.selections.get(root))
             })
             .cloned()
             .or_else(|| {
@@ -85,9 +128,8 @@ impl State {
         self.awaiting
             && !self.selections.contains_key(session_id)
             && !self
-                .roots
-                .get(session_id)
-                .is_some_and(|root| self.selections.contains_key(root.as_ref()))
+                .root(session_id)
+                .is_some_and(|root| self.selections.contains_key(root))
             && self
                 .default
                 .as_ref()
@@ -137,7 +179,10 @@ pub const PLACEMENT_INSTRUCTIONS: &str = "Code Mode scripts run on one machine: 
 
 const HANDS_DESCRIPTION: &str = "List the hands attached to this session: whole machines, each with its own files, processes and tools. `hands` names them, `here` names the hand this script runs on, or is null on the brain's own machine, and `about` describes each: its platform, shell and OS version, working directory, tools, and capabilities such as a phone's photos or a browser's location, each with a `permission` of granted, prompt or denied. Inside exec, any tool call runs on another hand when its arguments include `hand: \"<name>\"`, for example `await Promise.all(names.map(hand => tools.exec_command({ cmd: \"uptime\", hand })))`; a freeform tool takes `{ input, hand }`. Calls without `hand` run where the script runs. Naming a hand that is not attached fails without running anything, and a hand lost mid-call leaves that call's outcome unknown. A capability whose permission is prompt needs the hand's user to allow it: `tools.hands({ request: { hand, capability, reason } })` asks them, with `reason` shown to them, and answers the new permission; a capability's tools may also ask on their first call. A hand whose `about` says `tools_only`, such as a browser tab or a phone, runs no scripts: call its tools with `hand` from a script that runs elsewhere.";
 
-struct ExecutorCalls(Weak<Atom<State>>);
+struct ExecutorCalls {
+    state: Weak<Atom<State>>,
+    session: Option<Arc<Entered>>,
+}
 
 impl HandCalls for ExecutorCalls {
     fn here(&self, _hand: &str) -> bool {
@@ -152,11 +197,12 @@ impl HandCalls for ExecutorCalls {
         context: ToolContext<'a>,
     ) -> HostFuture<'a, ToolOutput> {
         Box::pin(async move {
-            match self.0.upgrade() {
+            match self.state.upgrade() {
                 Some(state) => {
                     CodeModeExecutors {
                         state,
                         changed: Arc::default(),
+                        session: self.session.clone(),
                     }
                     .call_on(hand, name, input, context)
                     .await
@@ -172,7 +218,7 @@ impl HandCalls for ExecutorCalls {
         context: ToolContext<'a>,
     ) -> HostFuture<'a, Option<ToolOutput>> {
         Box::pin(async move {
-            let state = self.0.upgrade()?;
+            let state = self.state.upgrade()?;
             let host = state.read(|state| state.executors.get(hand).cloned())?;
             host.recover_call(context).await.ok().flatten()
         })
@@ -350,10 +396,7 @@ impl CodeModeExecutors {
             let notified = self.changed.notified();
             let mut notified = std::pin::pin!(notified);
             notified.as_mut().enable();
-            if !self
-                .state
-                .read(|state| state.awaits_replacement(session_id))
-            {
+            if !self.read(session_id, |state| state.awaits_replacement(session_id)) {
                 return self.placement(session_id);
             }
             notified.await;
@@ -402,7 +445,47 @@ impl CodeModeExecutors {
 
     #[must_use]
     pub fn calls(&self) -> Arc<dyn HandCalls> {
-        Arc::new(ExecutorCalls(Arc::downgrade(&self.state)))
+        Arc::new(ExecutorCalls {
+            state: Arc::downgrade(&self.state),
+            session: self.session.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn for_session(
+        &self,
+        session_id: &str,
+        root_session_id: &str,
+        backend: Option<&str>,
+    ) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
+            changed: Arc::clone(&self.changed),
+            session: Some(Arc::new(Entered {
+                session_id: session_id.into(),
+                root: (session_id != root_session_id).then(|| root_session_id.into()),
+                backend: backend.map(Into::into),
+            })),
+        }
+    }
+
+    fn read<R>(&self, session_id: &str, read: impl Fn(&State) -> R) -> R {
+        let Some(session) = self
+            .session
+            .as_deref()
+            .filter(|session| *session.session_id == *session_id)
+        else {
+            return self.state.read(read);
+        };
+        loop {
+            if let Some(output) = self
+                .state
+                .read(|state| session.entered(state).then(|| read(state)))
+            {
+                return output;
+            }
+            self.state.update(|state| session.enter(state));
+        }
     }
 
     #[must_use]
@@ -440,10 +523,7 @@ impl CodeModeExecutors {
                 ));
             }
         };
-        if let Some(backend) = self
-            .state
-            .read(|state| state.backends.get(session_id).cloned())
-        {
+        if let Some(backend) = self.read(session_id, |state| state.backend(session_id)) {
             host.bind_session(session_id, &backend);
         }
         match host.call(name, input, context).await {
@@ -501,16 +581,13 @@ impl CodeModeExecutors {
 
     #[must_use]
     pub fn selection(&self, session_id: &str) -> ExecutorSelection {
-        self.state.read(|state| state.resolve(session_id))
+        self.read(session_id, |state| state.resolve(session_id))
     }
 
     #[must_use]
     pub fn placement(&self, session_id: &str) -> Placement {
-        let (placement, backend) = self.state.read(|state| {
-            (
-                state.placement(session_id),
-                state.backends.get(session_id).cloned(),
-            )
+        let (placement, backend) = self.read(session_id, |state| {
+            (state.placement(session_id), state.backend(session_id))
         });
         if let Placement::Hand(HandRoute {
             host: Some(host), ..
@@ -555,18 +632,20 @@ impl CodeModeExecutors {
     pub fn link(&self, session_id: &str, root_session_id: &str) {
         if session_id != root_session_id {
             self.state.update(|state| {
-                state
-                    .roots
-                    .insert(session_id.into(), root_session_id.into());
+                state.sessions.entry(session_id.into()).or_default().root =
+                    Some(root_session_id.into());
             });
         }
     }
 
     pub fn forget(&self, session_id: &str) {
+        if !self.state.read(|state| {
+            state.sessions.contains_key(session_id) || state.selections.contains_key(session_id)
+        }) {
+            return;
+        }
         self.state.update(|state| {
             state.selections.remove(session_id);
-            state.roots.remove(session_id);
-            state.backends.remove(session_id);
             state.sessions.remove(session_id);
         });
     }
@@ -577,6 +656,22 @@ impl CodeModeExecutors {
         executor: Option<&Arc<str>>,
         execution: &CodeModeExecution,
     ) {
+        let recorded = self.state.read(|state| {
+            let session = state.sessions.get(session_id);
+            executor
+                .is_none_or(|name| session.is_some_and(|session| session.touched.contains(name)))
+                && execution.cell.as_ref().is_none_or(|cell| {
+                    !cell.running
+                        && !session.is_some_and(|session| {
+                            session.cells.iter().any(|(origin, place)| {
+                                **origin == *cell.origin_call_id && place.as_ref() == executor
+                            })
+                        })
+                })
+        });
+        if recorded {
+            return;
+        }
         self.state.update(|state| {
             let places = state.sessions.entry(session_id.into()).or_default();
             if let Some(name) = executor
@@ -599,26 +694,27 @@ impl CodeModeExecutors {
 
     #[must_use]
     pub fn wait_route(&self, session_id: &str) -> Vec<Option<Arc<str>>> {
-        let state = self.state.get();
-        let mut places = Vec::new();
-        if let Some(session) = state.sessions.get(session_id) {
-            for (_, place) in session.cells.iter().rev() {
-                if !places.contains(place) {
-                    places.push(place.clone());
+        self.read(session_id, |state| {
+            let mut places = Vec::new();
+            if let Some(session) = state.sessions.get(session_id) {
+                for (_, place) in session.cells.iter().rev() {
+                    if !places.contains(place) {
+                        places.push(place.clone());
+                    }
                 }
             }
-        }
-        let current = match state.placement(session_id) {
-            Placement::Local => None,
-            Placement::Hand(hand) => Some(hand.name),
-        };
-        if !places.contains(&current) {
-            places.push(current);
-        }
-        if state.fallback.is_some() && !places.contains(&state.fallback) {
-            places.push(state.fallback.clone());
-        }
-        places
+            let current = match state.resolve(session_id) {
+                ExecutorSelection::Local => None,
+                ExecutorSelection::Executor(name) => Some(name),
+            };
+            if !places.contains(&current) {
+                places.push(current);
+            }
+            if state.fallback.is_some() && !places.contains(&state.fallback) {
+                places.push(state.fallback.clone());
+            }
+            places
+        })
     }
 
     #[must_use]
@@ -646,18 +742,19 @@ impl CodeModeExecutors {
 
     #[must_use]
     pub fn touched(&self, session_id: &str) -> Vec<Arc<dyn CodeModeHost>> {
-        let state = self.state.get();
-        state
-            .sessions
-            .get(session_id)
-            .map(|session| {
-                session
-                    .touched
-                    .iter()
-                    .filter_map(|name| state.executors.get(name).cloned())
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.state.read(|state| {
+            state
+                .sessions
+                .get(session_id)
+                .map(|session| {
+                    session
+                        .touched
+                        .iter()
+                        .filter_map(|name| state.executors.get(name).cloned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
     }
 
     fn stoppable(&self, session_id: &str) -> Vec<Arc<dyn CodeModeHost>> {
@@ -673,6 +770,14 @@ impl CodeModeExecutors {
     }
 
     pub fn settle_cells(&self, session_id: &str) {
+        if !self.state.read(|state| {
+            state
+                .sessions
+                .get(session_id)
+                .is_some_and(|session| !session.cells.is_empty())
+        }) {
+            return;
+        }
         self.state.update(|state| {
             if let Some(session) = state.sessions.get_mut(session_id) {
                 session.cells.clear();
@@ -868,7 +973,7 @@ impl CodeModeHost for CodeModeExecutors {
 
     fn bind_session(&self, session_id: &str, backend: &str) {
         self.state.update(|state| {
-            state.backends.insert(session_id.into(), backend.into());
+            state.sessions.entry(session_id.into()).or_default().backend = Some(backend.into());
         });
     }
     fn link_session(&self, session_id: &str, root_session_id: &str) {

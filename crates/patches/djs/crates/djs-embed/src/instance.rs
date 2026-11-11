@@ -39,6 +39,29 @@ impl Default for Limits {
     }
 }
 
+/// A request to stop an instance's call from another thread: for a host that ends a call
+/// (its user cancelled it) while a step is inside a long native operation, such as a
+/// split or a join of hundreds of megabytes, where the slice's fuel is not checked for
+/// seconds. [`Instance::set_interrupt`] gives it to an instance; once raised, the step
+/// in progress ends with [`Error::Interrupted`] as soon as it allocates.
+#[derive(Clone, Debug, Default)]
+pub struct Interrupt(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Interrupt {
+    pub fn new() -> Interrupt {
+        Interrupt::default()
+    }
+
+    /// Asks the instances that have it to stop.
+    pub fn raise(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_raised(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// A pending host call's id: unique among the instance's open calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CallId(u32);
@@ -148,6 +171,14 @@ impl Instance {
         self.vm.set_options(opts);
     }
 
+    /// Gives the instance `interrupt`, which stops its calls when another thread raises
+    /// it ([`Interrupt`]); `None` takes it away, as [`Instance::reset`] and
+    /// [`Instance::reset_written`] do.
+    pub fn set_interrupt(&mut self, interrupt: Option<&Interrupt>) -> Result<(), Error> {
+        let flag = interrupt.map(|i| i.0.clone());
+        self.guard(|vm| vm.set_interrupt(flag))
+    }
+
     /// Whether a panic poisoned the instance: every use fails with [`Error::Poisoned`].
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
@@ -195,7 +226,13 @@ impl Instance {
     /// short calls leave and drops the others.
     pub fn reset_written(&mut self) -> Result<bool, Error> {
         let image = self.snapshot.clone();
-        let restored = self.guard(|vm| vm.restore_image(image.image()))?;
+        let restored = self.guard(|vm| {
+            let restored = vm.restore_image(image.image());
+            if restored {
+                vm.set_interrupt(None);
+            }
+            restored
+        })?;
         if restored {
             self.call = None;
         }
@@ -417,6 +454,9 @@ impl Instance {
             }),
             Status::OutOfFuel => Ok(Step::Yield),
             Status::HostCall { call_id, .. } => Ok(Step::HostCall(CallId(call_id))),
+            Status::HostOutOfMemory if self.vm.heap().arena().interrupted() => {
+                self.fail(Error::Interrupted)
+            }
             Status::HostOutOfMemory => self.fail(Error::OutOfMemory),
             Status::Threw(e) => {
                 let e = self.guard(|vm| exception(vm, e))?;

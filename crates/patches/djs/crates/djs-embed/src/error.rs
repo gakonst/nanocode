@@ -23,6 +23,8 @@ pub enum Error {
     /// The heap reached its cap ([`crate::Limits::memory`]), or the host refused memory
     /// below it. Scripts cannot catch it.
     OutOfMemory,
+    /// The host stopped the call ([`crate::Interrupt`])
+    Interrupted,
     /// The entry's promise can never settle: nothing is left to run and no host call is
     /// pending
     NeverSettles,
@@ -58,6 +60,7 @@ impl fmt::Display for Error {
             Error::OutOfFuel { budget } => write!(f, "out of fuel (budget {budget})"),
             Error::Deadline => f.write_str("deadline exceeded"),
             Error::OutOfMemory => f.write_str("out of memory"),
+            Error::Interrupted => f.write_str("interrupted by the host"),
             Error::NeverSettles => f.write_str("the call's promise never settles"),
             Error::Data(m) => write!(f, "not plain data: {m}"),
             Error::Usage(m) => write!(f, "API misuse: {m}"),

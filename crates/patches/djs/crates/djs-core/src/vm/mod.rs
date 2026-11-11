@@ -342,6 +342,16 @@ impl Vm {
         Ok(())
     }
 
+    /// Sets the flag another thread raises to stop a run inside a long native operation
+    /// (`Arena::set_interrupt`); `None` takes it away. [`Vm::reset_to`] takes it away too.
+    #[cfg(feature = "embed")]
+    pub fn set_interrupt(
+        &mut self,
+        flag: Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>,
+    ) {
+        self.heap.arena_mut().set_interrupt(flag);
+    }
+
     /// Takes the heap's bytes out: for an embedder that makes another VM of the buffer
     /// (and of what it adds to it). This VM has no heap left and must be dropped.
     #[cfg(feature = "embed")]

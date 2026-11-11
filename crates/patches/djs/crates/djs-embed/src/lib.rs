@@ -266,7 +266,7 @@ mod tests;
 
 pub use data::Data;
 pub use error::{Error, ErrorKind, Exception, Throw};
-pub use instance::{CallId, HostCall, Instance, Limits, Step};
+pub use instance::{CallId, HostCall, Instance, Interrupt, Limits, Step};
 pub use module::{Loader, ModuleMap, ModuleSource, SyntheticModule};
 pub use park::Parked;
 pub use snapshot::{Builder, HostFn, Snapshot, Source, SourceKind};

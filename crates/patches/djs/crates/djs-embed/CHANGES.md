@@ -20,6 +20,10 @@ every incompatible change is listed here with what to do instead.
   `Instance::reset_written` is `reset` by copying those pages back instead of the image
   (`false` once a collection ran), `reset` tries it first, and `park` looks for
   differences in those pages only.
+- `Interrupt` and `Instance::set_interrupt`: another thread stops a call whose step is
+  inside a long native operation (a split or a join of hundreds of megabytes, where the
+  slice's fuel is not checked for seconds); the step ends with `Error::Interrupted` at
+  its next allocation.
 - A native instance's arena starts with 64 KiB beyond its image and grows to its
   collection threshold at once (wasm32 as upstream).
 

@@ -33,6 +33,9 @@ pub struct Arena {
     /// The written pages of a tracked prefix ([`Arena::track`]). Not part of the image.
     #[cfg(feature = "embed")]
     tracked: Tracked,
+    /// The embedder's stop request ([`Arena::set_interrupt`]). Not part of the image.
+    #[cfg(feature = "embed")]
+    interrupt: Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>,
 }
 
 /// A page of [`Tracked`]: 1 KiB (a bit of `dirty` each).
@@ -87,6 +90,8 @@ impl Arena {
             trap_end: 0,
             #[cfg(feature = "embed")]
             tracked: Tracked::default(),
+            #[cfg(feature = "embed")]
+            interrupt: None,
         }
     }
 
@@ -106,6 +111,8 @@ impl Arena {
             trap_end: 0,
             #[cfg(feature = "embed")]
             tracked: Tracked::default(),
+            #[cfg(feature = "embed")]
+            interrupt: None,
         })
     }
 
@@ -150,7 +157,36 @@ impl Arena {
             trap_end: 0,
             #[cfg(feature = "embed")]
             tracked: Tracked::default(),
+            #[cfg(feature = "embed")]
+            interrupt: None,
         }
+    }
+
+    /// Sets the flag another thread raises to stop a run that is inside a long native
+    /// operation, where no fuel check comes for seconds (a split or a join of hundreds of
+    /// megabytes): once it is raised, the arena refuses to grow, as if the host had no
+    /// memory left (D1690), and the run ends with `Status::HostOutOfMemory` at once.
+    /// Checked where the zeroed frontier moves (every 16 KiB allocated) and for each
+    /// string appended past it.
+    #[cfg(feature = "embed")]
+    pub fn set_interrupt(
+        &mut self,
+        flag: Option<alloc::sync::Arc<core::sync::atomic::AtomicBool>>,
+    ) {
+        self.interrupt = flag;
+    }
+
+    /// Whether the embedder asked the run to stop ([`Arena::set_interrupt`]).
+    #[inline]
+    pub fn interrupted(&self) -> bool {
+        #[cfg(feature = "embed")]
+        {
+            self.interrupt
+                .as_ref()
+                .is_some_and(|flag| flag.load(core::sync::atomic::Ordering::Relaxed))
+        }
+        #[cfg(not(feature = "embed"))]
+        false
     }
 
     /// Starts tracking writes to the first `image` bytes, which are a copy of an image
@@ -384,6 +420,9 @@ impl Arena {
     /// Makes the Vec's capacity at least `end`: geometric growth (by an eighth, in pages),
     /// never past the cap.
     fn reserve(&mut self, end: u32) -> Result<(), HeapError> {
+        if self.interrupted() {
+            return Err(HeapError::HostOutOfMemory);
+        }
         let end = end as usize;
         if end > self.bytes.capacity() {
             let cap = self.bytes.capacity();

@@ -49,7 +49,8 @@ fn delta(image: &[u8], heap: &[u8], blocks: impl Iterator<Item = (usize, usize)>
         }
     }
     let shared = image.len().min(heap.len());
-    let mut out = Vec::new();
+    // What the heap has beyond the image is all kept; the runs below it are short.
+    let mut out = Vec::with_capacity(heap.len() - shared + BLOCK);
     let mut run: Option<(usize, usize)> = None;
     for (start, end) in blocks {
         let end = end.min(shared);

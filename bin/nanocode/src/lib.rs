@@ -107,9 +107,26 @@ pub fn run() -> ExitCode {
 }
 
 pub fn run_with(clients: ModelClients) -> ExitCode {
+    #[cfg(unix)]
+    if let Some(code) = nanocode_psh::serve_if_requested(psh::run) {
+        return code;
+    }
     let entered = std::time::Instant::now();
     let cli = Cli::parse();
     let parsed = entered.elapsed();
+    #[cfg(unix)]
+    if cli.shell == cli::ShellArg::Psh {
+        let chosen = nanocode_psh::shell().map(nanocode_home::shell::choose);
+        if !matches!(chosen, Ok(Ok(()))) {
+            eprintln!("nanocode: failed to make psh the shell: {chosen:?}");
+            return ExitCode::FAILURE;
+        }
+    }
+    #[cfg(not(unix))]
+    if cli.shell == cli::ShellArg::Psh {
+        eprintln!("nanocode: psh as the shell is built for Unix hosts only");
+        return ExitCode::FAILURE;
+    }
     let clients = match custom_endpoint::apply(clients) {
         Ok(clients) => clients,
         Err(error) => {

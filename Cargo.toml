@@ -139,6 +139,7 @@ nanocode-tool-runtime = { version = "0.7.0", path = "crates/integrations/tool-ru
 nanocode-tool-provider = { version = "0.7.0", path = "crates/core/tool-provider" }
 nanocode-process = { version = "0.7.0", path = "crates/integrations/process" }
 nanocode-psh = { version = "0.7.0", path = "crates/integrations/psh" }
+psh = { path = "crates/patches/psh/crates/psh" }
 psh-classify = { path = "crates/patches/psh/crates/psh-classify" }
 psh-syntax = { path = "crates/patches/psh/crates/psh-syntax" }
 nanocode-mcp-tools = { version = "0.7.0", path = "crates/integrations/mcp-tools" }
@@ -193,6 +194,7 @@ nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 
 [patch.crates-io]
 arc-swap = { path = "crates/patches/arc-swap" }
+grep-printer = { path = "crates/patches/psh/third_party/grep-printer" }
 iana-time-zone = { path = "crates/patches/iana-time-zone" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }

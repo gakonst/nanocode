@@ -49,7 +49,9 @@ tracing-opentelemetry.workspace = true
 uuid = { workspace = true, features = ["v7"] }
 
 [target.'cfg(unix)'.dependencies]
+nanocode-psh.workspace = true
 nix = { workspace = true, features = ["time"] }
+psh.workspace = true
 
 [lints]
 workspace = true

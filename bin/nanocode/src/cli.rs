@@ -18,6 +18,26 @@ pub struct Cli {
 
     #[command(flatten)]
     pub observability: nanocode_observability::ObservabilityOutputArgs,
+
+    #[arg(
+        long,
+        global = true,
+        env = "NANOCODE_SHELL",
+        value_enum,
+        default_value_t = ShellArg::System,
+        help = "Shell that runs the agent's commands"
+    )]
+    pub shell: ShellArg,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ShellArg {
+    #[value(help = "The machine's own: bash for Bash, your login shell for exec_command")]
+    System,
+    #[value(
+        help = "psh, the bash-compatible shell built into nanocode, with its own find, grep, sed, awk, jq and the like (PSH_UTILS_OFF=all keeps the machine's)"
+    )]
+    Psh,
 }
 
 #[derive(Debug, Subcommand)]

@@ -644,13 +644,9 @@ mod store {
                     ListedSummary::Unknown => unknown.push(state.state_id),
                 }
             }
-            let found = futures_util::future::try_join_all(
-                unknown.iter().map(|id| self.revised_summary(id)),
-            )
-            .await?;
             let mut known = Vec::new();
-            for (state_id, found) in unknown.into_iter().zip(found) {
-                let Some((revision, summary)) = found else {
+            for state_id in unknown {
+                let Some((revision, summary)) = self.revised_summary(&state_id).await? else {
                     continue;
                 };
                 known.push(KnownSummary {

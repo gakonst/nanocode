@@ -19,7 +19,6 @@ use opentelemetry_sdk::{
     metrics::{PeriodicReader, SdkMeterProvider},
     trace::{BatchSpanProcessor, SdkTracerProvider},
 };
-use opentelemetry_semantic_conventions::{SCHEMA_URL, attribute::SERVICE_VERSION};
 use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
 use tracing_opentelemetry::MetricsLayer;
 use tracing_subscriber::{
@@ -37,6 +36,8 @@ pub const DEFAULT_FILTER: &str = "warn,nanocode=info,nanocode_backend_codex=info
 pub const METRICS_TARGET: &str = "nc_metrics";
 pub const TUI_TARGET: &str = "nanocode_tui";
 
+const SCHEMA_URL: &str = "https://opentelemetry.io/schemas/1.42.0";
+const SERVICE_VERSION: &str = "service.version";
 const DEPLOYMENT_ENVIRONMENT_NAME: &str = "deployment.environment.name";
 const PROCESS_PID: &str = "process.pid";
 const PROCESS_EXECUTABLE_PATH: &str = "process.executable.path";

@@ -21,7 +21,6 @@ clap = { workspace = true  }
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry-proto.workspace = true
-opentelemetry-semantic-conventions.workspace = true
 opentelemetry_sdk.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 nanocode-tls.workspace = true

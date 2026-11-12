@@ -13,7 +13,6 @@ autobenches = false
 [dependencies]
 blake3.workspace = true
 futures-util.workspace = true
-imbl.workspace = true
 tracing.workspace = true
 nanocode-agent-config.workspace = true
 nanocode-agent-core.workspace = true

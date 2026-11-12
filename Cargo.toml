@@ -163,7 +163,6 @@ portable-pty = "0.9.0"
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "trace"] }
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics", "trace", "with-serde"] }
-opentelemetry-semantic-conventions = "0.32"
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 proc-macro-crate = "3"
 proc-macro2 = "1.0.106"

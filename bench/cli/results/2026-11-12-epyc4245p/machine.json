@@ -1,0 +1,116 @@
+{
+ "name": "epyc4245p",
+ "cpu": "AMD EPYC 4245P 6-Core Processor",
+ "cores": 12,
+ "memory_gb": 46,
+ "os": "Ubuntu 24.04.5 LTS",
+ "kernel": "6.8.0-147-generic",
+ "arch": "x64",
+ "governor": "powersave",
+ "node": "v24.22.3",
+ "load_at_start": [
+  1.82,
+  2.17,
+  1.31
+ ],
+ "virtualization": null,
+ "at": "2026-11-12T03:11:41.006Z",
+ "commit": "6751fbf482956c59c204da4eefa34db9a49fef0a",
+ "boxes": {
+  "suite (startup to tools)": {
+   "name": "epyc4245p",
+   "cpu": "AMD EPYC 4245P 6-Core Processor",
+   "cores": 12,
+   "memory_gb": 46,
+   "os": "Ubuntu 24.04.5 LTS",
+   "kernel": "6.8.0-147-generic",
+   "arch": "x64",
+   "governor": "powersave",
+   "node": "v24.22.3",
+   "load_at_start": [
+    1.82,
+    2.17,
+    1.31
+   ],
+   "virtualization": null,
+   "at": "2026-11-12T03:11:41.006Z",
+   "commit": "6751fbf482956c59c204da4eefa34db9a49fef0a"
+  },
+  "suite (netaudit, cold rows, fleet, disk)": {
+   "name": "epyc4245p",
+   "cpu": "AMD EPYC 4245P 6-Core Processor",
+   "cores": 12,
+   "memory_gb": 46,
+   "os": "Ubuntu 24.04.5 LTS",
+   "kernel": "6.8.0-147-generic",
+   "arch": "x64",
+   "governor": "powersave",
+   "node": "v24.22.3",
+   "load_at_start": [
+    8.75,
+    13.4,
+    6.49
+   ],
+   "virtualization": null,
+   "at": "2026-11-12T04:13:49.915Z",
+   "commit": "6751fbf482956c59c204da4eefa34db9a49fef0a"
+  },
+  "cli and tui50k sweeps": {
+   "name": "epyc4245p",
+   "cpu": "AMD EPYC 4244P 6-Core Processor",
+   "cores": 12,
+   "memory_gb": 62,
+   "os": "Ubuntu 24.04.5 LTS",
+   "kernel": "6.8.0-147-generic",
+   "arch": "x64",
+   "governor": "powersave",
+   "node": "v24.22.3",
+   "load_at_start": [
+    1.91,
+    2.25,
+    1.35
+   ],
+   "virtualization": null,
+   "at": "2026-11-12T03:58:02.871Z",
+   "commit": "6751fbf482956c59c204da4eefa34db9a49fef0a"
+  },
+  "tui and tuisize sweeps": {
+   "name": "epyc4245p",
+   "cpu": "AMD EPYC 4245P 6-Core Processor",
+   "cores": 12,
+   "memory_gb": 46,
+   "os": "Ubuntu 24.04.5 LTS",
+   "kernel": "6.8.0-147-generic",
+   "arch": "x64",
+   "governor": "powersave",
+   "node": "v24.22.3",
+   "load_at_start": [
+    1.95,
+    2.2,
+    1.28
+   ],
+   "virtualization": null,
+   "at": "2026-11-12T03:57:34.391Z",
+   "commit": "6751fbf482956c59c204da4eefa34db9a49fef0a"
+  },
+  "store": {
+   "name": "epyc4245p",
+   "cpu": "AMD EPYC 4245P 6-Core Processor",
+   "cores": 12,
+   "memory_gb": 46,
+   "os": "Ubuntu 24.04.5 LTS",
+   "kernel": "6.8.0-147-generic",
+   "arch": "x64",
+   "governor": "powersave",
+   "node": "v24.22.3",
+   "load_at_start": [
+    0.72,
+    0.96,
+    0.99
+   ],
+   "virtualization": null,
+   "at": "2026-11-12T05:16:09.736Z",
+   "commit": "6751fbf482956c59c204da4eefa34db9a49fef0a"
+  }
+ }
+}

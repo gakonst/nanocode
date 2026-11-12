@@ -185,9 +185,10 @@ impl<E: BashExecutor> ClaudeBash<E> {
             .get("timeout")
             .map_or(Some(default), Value::as_u64)
             .ok_or("invalid timeout")?;
-        if !(1..=maximum).contains(&timeout_ms) {
-            return Err(format!("timeout must be 1 to {maximum} milliseconds"));
+        if timeout_ms == 0 {
+            return Err("timeout must be at least 1 millisecond".into());
         }
+        let timeout_ms = timeout_ms.min(maximum);
         let stream_bytes = if call_id.is_some_and(|id| id.contains("/code-")) {
             NESTED_STREAM_BYTES
         } else {

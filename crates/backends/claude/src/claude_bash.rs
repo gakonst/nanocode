@@ -661,7 +661,10 @@ impl BashExecutor for LocalBash {
                     job.finished.wait().await;
                     self.jobs.forget(&id);
                     discard(&job);
-                    return Err("Bash command timed out".into());
+                    return Err(format!(
+                        "Bash command timed out after {}s",
+                        timeout.as_secs_f64().round().max(1.0)
+                    ));
                 }
                 Err(_) => {
                     let _ = arm.send(Duration::from_millis(DEFAULT_BACKGROUND_TIMEOUT_MS));

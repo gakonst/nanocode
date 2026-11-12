@@ -153,14 +153,28 @@ pub(crate) fn to_number(heap: &mut Heap, v: Value) -> Result<f64, Fault> {
     }
 }
 
+const INT32_DIGITS: usize = 11;
+
 /// ToString for a Number.
 pub(crate) fn number_to_string(heap: &mut Heap, v: Value) -> Result<Str, Fault> {
-    if let Some(i) = v.as_int()
-        && (0..=9).contains(&i)
-    {
-        // Single digits are frequent (array indexes, counters); still allocate, but skip
-        // the float formatter.
-        return Ok(heap.alloc_latin1(&[b'0' + i as u8])?);
+    if let Some(i) = v.as_int() {
+        // Int32s (array indexes, counters) skip the float formatter and its String.
+        let mut buf = [0u8; INT32_DIGITS];
+        let mut at = buf.len();
+        let mut m = i.unsigned_abs();
+        loop {
+            at -= 1;
+            buf[at] = b'0' + (m % 10) as u8;
+            m /= 10;
+            if m == 0 {
+                break;
+            }
+        }
+        if i < 0 {
+            at -= 1;
+            buf[at] = b'-';
+        }
+        return Ok(heap.alloc_latin1(&buf[at..])?);
     }
     let n = v.as_number().unwrap();
     Ok(heap.alloc_latin1(num::to_string(n).as_bytes())?)

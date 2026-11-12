@@ -1,7 +1,7 @@
 use std::{error::Error, io};
 
-use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
 use futures_util::{Stream, StreamExt, stream};
+use nanocode_compression::brotli::{Decoder, Status};
 
 const HTTP_READ_CHUNK_SIZE: usize = 4096;
 
@@ -11,27 +11,21 @@ where
     B: AsRef<[u8]>,
     E: Error + Send + Sync + 'static,
 {
-    let decoder = Box::new(BrotliState::new(
-        StandardAlloc::default(),
-        StandardAlloc::default(),
-        StandardAlloc::default(),
-    ));
     let state = (
         Box::pin(source),
-        decoder,
+        Box::new(Decoder::new()),
         None::<(B, usize)>,
-        BrotliResult::NeedsMoreInput,
+        Status::NeedsInput,
         false,
-        0,
     );
     stream::try_unfold(
         state,
-        |(mut source, mut decoder, mut pending, mut status, mut eof, mut total)| async move {
+        |(mut source, mut decoder, mut pending, mut status, mut eof)| async move {
             loop {
-                if matches!(status, BrotliResult::ResultSuccess) {
+                if status == Status::Done {
                     return Ok(None);
                 }
-                if pending.is_none() && matches!(status, BrotliResult::NeedsMoreInput) && !eof {
+                if pending.is_none() && status == Status::NeedsInput && !eof {
                     match source.next().await {
                         Some(Ok(bytes)) => pending = Some((bytes, 0)),
                         Some(Err(error)) => return Err(io::Error::other(error)),
@@ -41,41 +35,22 @@ where
                 let input = pending
                     .as_ref()
                     .map_or(&[][..], |(bytes, offset)| &bytes.as_ref()[*offset..]);
-                let mut available_input = input.len();
-                let mut input_offset = 0;
                 let mut output = vec![0; HTTP_READ_CHUNK_SIZE];
-                let mut available_output = output.len();
-                let mut output_offset = 0;
-                status = BrotliDecompressStream(
-                    &mut available_input,
-                    &mut input_offset,
-                    input,
-                    &mut available_output,
-                    &mut output_offset,
-                    &mut output,
-                    &mut total,
-                    &mut decoder,
-                );
-                if matches!(status, BrotliResult::ResultFailure) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid Brotli response body",
-                    ));
-                }
+                let progress = decoder.decompress(input, &mut output).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid Brotli response body")
+                })?;
+                status = progress.status;
                 if let Some((bytes, offset)) = pending.as_mut() {
-                    *offset += input_offset;
+                    *offset += progress.consumed;
                     if *offset == bytes.as_ref().len() {
                         pending = None;
                     }
                 }
-                if output_offset != 0 {
-                    output.truncate(output_offset);
-                    return Ok(Some((
-                        output,
-                        (source, decoder, pending, status, eof, total),
-                    )));
+                if progress.written != 0 {
+                    output.truncate(progress.written);
+                    return Ok(Some((output, (source, decoder, pending, status, eof))));
                 }
-                if eof && matches!(status, BrotliResult::NeedsMoreInput) {
+                if eof && status == Status::NeedsInput {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "truncated Brotli response body",

@@ -520,6 +520,24 @@ fn pad(heap: &mut Heap, this: Value, args: &[Value], at_start: bool) -> Fast {
         } else {
             (n as usize, 0)
         };
+        let unit = match filler {
+            None => Some(b' '),
+            Some(f) if fl == 1 => {
+                let f = heap.contiguous(f)?;
+                Some(heap.str_view(f).expect("contiguous").get(0) as u8)
+            }
+            Some(_) => None,
+        };
+        if let Some(unit) = unit
+            && heap.cell_kind(s.0) == crate::heap::CellKind::Str8
+        {
+            let r = heap.alloc_str_uninit(total as u32, false)?;
+            let data = Heap::str_data_offset(r);
+            let a = heap.arena_mut();
+            a.slice_mut(data + pad_at as u32, fill).fill(unit);
+            a.copy_within(Heap::str_data_offset(s), n as u32, data + s_at as u32);
+            return some_str(r);
+        }
         if let Some(f) = filler {
             let f = heap.contiguous(f)?;
             let view = heap.str_view(f).expect("contiguous");

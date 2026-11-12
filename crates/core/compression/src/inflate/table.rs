@@ -1,3 +1,5 @@
+use core::num::NonZeroU8;
+
 pub(super) const CODE_BITS_MAX: usize = 15;
 pub(super) const OP_LITERAL: u8 = 0;
 pub(super) const OP_BASE: u8 = 16;
@@ -50,6 +52,11 @@ const DISTANCE_OPS: [u8; 32] = [
     27, 27, 28, 28, 29, 29, 64, 64,
 ];
 
+pub(super) const LITERAL_TABLE_BITS: usize = 12;
+pub(super) const LITERAL_ENTRIES: usize = 1 << LITERAL_TABLE_BITS;
+pub(super) const LITERALS_PER_ENTRY: usize = 2;
+const LITERAL_SYMBOLS: usize = 256;
+pub(super) static FIXED_LITERALS: [Option<Literals>; LITERAL_ENTRIES] = fixed_literals();
 pub(super) static FIXED_LENGTHS: [Code; 1 << FIXED_LENGTH_ROOT_BITS] = fixed_lengths();
 pub(super) static FIXED_DISTANCES: [Code; 1 << FIXED_DISTANCE_ROOT_BITS] = fixed_distances();
 
@@ -67,9 +74,151 @@ impl Code {
         value: 0,
     };
 
+    #[inline(always)]
     pub(super) const fn is_subtable(self) -> bool {
         self.op != OP_LITERAL && self.op & OP_KIND_MASK == 0
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct Literals {
+    pub(super) bytes: [u8; LITERALS_PER_ENTRY],
+    count: NonZeroU8,
+    bits: u8,
+}
+
+impl Literals {
+    #[inline(always)]
+    pub(super) const fn count(self) -> usize {
+        self.count.get() as usize
+    }
+
+    #[inline(always)]
+    pub(super) const fn bits(self) -> u32 {
+        self.bits as u32
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LiteralCode {
+    index: usize,
+    byte: u8,
+}
+
+pub(super) const fn build_literals(
+    lengths: &[u16],
+    sorted: &[u16],
+    root_bits: usize,
+    literals: &mut [Option<Literals>; LITERAL_ENTRIES],
+) {
+    assert!(root_bits < LITERAL_TABLE_BITS);
+    let mut coded = 0;
+    let mut symbol = 0;
+    while symbol < lengths.len() {
+        let bits = lengths[symbol] as usize;
+        if bits != 0 && bits <= root_bits {
+            coded += 1;
+        }
+        symbol += 1;
+    }
+    let mut codes = [LiteralCode { index: 0, byte: 0 }; LITERAL_SYMBOLS];
+    let mut starts = [0_usize; LITERAL_TABLE_BITS + 1];
+    let mut found = 0;
+    let mut length = 0;
+    let mut reversed: u32 = 0;
+    let mut position = 0;
+    while position < coded {
+        let symbol = sorted[position] as usize;
+        let bits = lengths[symbol] as usize;
+        assert!(bits >= length);
+        assert!(bits <= root_bits);
+        while length < bits {
+            length += 1;
+            starts[length] = found;
+        }
+        if symbol < LITERAL_SYMBOLS {
+            codes[found] = LiteralCode {
+                index: reversed.reverse_bits() as usize,
+                byte: symbol as u8,
+            };
+            found += 1;
+        }
+        reversed = reversed.wrapping_add(HUFFMAN_TOP_BIT >> (bits - 1));
+        position += 1;
+    }
+    while length <= root_bits {
+        length += 1;
+        starts[length] = found;
+    }
+    literals[0] = None;
+    literals[1] = None;
+    let mut bits = 1;
+    while bits <= LITERAL_TABLE_BITS {
+        let size = 1 << bits;
+        let mut index = size / 2;
+        while bits > 1 && index < size {
+            literals[index] = literals[index - size / 2];
+            index += 1;
+        }
+        if bits <= root_bits {
+            let mut code = starts[bits];
+            while code < starts[bits + 1] {
+                literals[codes[code].index] = literal_entry(codes[code], codes[code], 1, bits);
+                code += 1;
+            }
+        }
+        let mut first_bits = 1;
+        while first_bits < bits {
+            let second_bits = bits - first_bits;
+            if first_bits <= root_bits && second_bits <= root_bits {
+                let mut first = starts[first_bits];
+                while first < starts[first_bits + 1] {
+                    let mut second = starts[second_bits];
+                    while second < starts[second_bits + 1] {
+                        let index = codes[first].index | codes[second].index << first_bits;
+                        literals[index] =
+                            literal_entry(codes[first], codes[second], LITERALS_PER_ENTRY, bits);
+                        second += 1;
+                    }
+                    first += 1;
+                }
+            }
+            first_bits += 1;
+        }
+        bits += 1;
+    }
+}
+
+const fn literal_entry(
+    first: LiteralCode,
+    second: LiteralCode,
+    count: usize,
+    bits: usize,
+) -> Option<Literals> {
+    assert!(bits <= LITERAL_TABLE_BITS);
+    let Some(count) = NonZeroU8::new(count as u8) else {
+        panic!("a literal entry holds at least one literal");
+    };
+    Some(Literals {
+        bytes: [first.byte, second.byte],
+        count,
+        bits: bits as u8,
+    })
+}
+
+const fn fixed_literals() -> [Option<Literals>; LITERAL_ENTRIES] {
+    let lengths = fixed_length_lengths();
+    let mut count = [0_u16; CODE_BITS_MAX + 1];
+    let mut symbol = 0;
+    while symbol < FIXED_LENGTH_SYMBOLS {
+        count[lengths[symbol] as usize] += 1;
+        symbol += 1;
+    }
+    let mut work = [0_u16; WORK_ENTRIES];
+    sort(&lengths, &count, &mut work);
+    let mut literals = [None; LITERAL_ENTRIES];
+    build_literals(&lengths, &work, FIXED_LENGTH_ROOT_BITS, &mut literals);
+    literals
 }
 
 #[derive(Clone, Copy)]
@@ -294,7 +443,7 @@ const fn subtable_bits(
     current
 }
 
-const fn fixed_lengths() -> [Code; 1 << FIXED_LENGTH_ROOT_BITS] {
+const fn fixed_length_lengths() -> [u16; FIXED_LENGTH_SYMBOLS] {
     let mut lengths = [0_u16; FIXED_LENGTH_SYMBOLS];
     let mut symbol = 0;
     while symbol < FIXED_LENGTH_SYMBOLS {
@@ -309,6 +458,11 @@ const fn fixed_lengths() -> [Code; 1 << FIXED_LENGTH_ROOT_BITS] {
         };
         symbol += 1;
     }
+    lengths
+}
+
+const fn fixed_lengths() -> [Code; 1 << FIXED_LENGTH_ROOT_BITS] {
+    let lengths = fixed_length_lengths();
     let mut table = [Code::EMPTY; 1 << FIXED_LENGTH_ROOT_BITS];
     let mut work = [0_u16; WORK_ENTRIES];
     let root = build(

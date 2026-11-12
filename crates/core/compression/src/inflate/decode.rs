@@ -43,6 +43,7 @@ impl Inflate {
             let codes = Codes::new(
                 self.length_codes(),
                 self.length_bits,
+                self.literals(),
                 self.distance_codes(),
                 self.distance_bits,
             );
@@ -142,7 +143,9 @@ impl Inflate {
                     return Err(self.fail("invalid distance too far back"));
                 }
                 let count = back.min(length).min(left);
-                self.window.copy_to(output, back, count);
+                let (end_part, start_part) = self.window.source(back, count);
+                output.extend(end_part);
+                output.extend(start_part);
                 count
             } else {
                 let count = length.min(left);

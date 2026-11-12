@@ -17,7 +17,8 @@ use bits::Input;
 use output::Output;
 use table::{
     CODE_LENGTH_TABLE_ENTRIES, CODE_LENGTHS_CAPACITY, Code, DISTANCE_TABLE_ENTRIES,
-    FIXED_DISTANCES, FIXED_LENGTHS, LENGTH_TABLE_ENTRIES, WORK_ENTRIES,
+    FIXED_DISTANCES, FIXED_LENGTHS, FIXED_LITERALS, LENGTH_TABLE_ENTRIES, LITERAL_ENTRIES,
+    Literals, WORK_ENTRIES,
 };
 use window::Window;
 
@@ -177,6 +178,7 @@ struct Tables {
     code_lengths: [Code; CODE_LENGTH_TABLE_ENTRIES],
     lengths: [Code; LENGTH_TABLE_ENTRIES],
     distances: [Code; DISTANCE_TABLE_ENTRIES],
+    literals: [Option<Literals>; LITERAL_ENTRIES],
     lens: [u16; CODE_LENGTHS_CAPACITY],
     work: [u16; WORK_ENTRIES],
 }
@@ -247,6 +249,7 @@ impl Inflate {
                 code_lengths: [Code::EMPTY; CODE_LENGTH_TABLE_ENTRIES],
                 lengths: [Code::EMPTY; LENGTH_TABLE_ENTRIES],
                 distances: [Code::EMPTY; DISTANCE_TABLE_ENTRIES],
+                literals: [None; LITERAL_ENTRIES],
                 lens: [0; CODE_LENGTHS_CAPACITY],
                 work: [0; WORK_ENTRIES],
             }),
@@ -377,6 +380,16 @@ impl Inflate {
             LengthSource::Fixed => &FIXED_LENGTHS,
             LengthSource::CodeLengths => &self.tables.code_lengths,
             LengthSource::Dynamic => &self.tables.lengths,
+        }
+    }
+
+    fn literals(&self) -> &[Option<Literals>; LITERAL_ENTRIES] {
+        match self.length_source {
+            LengthSource::Fixed => &FIXED_LITERALS,
+            LengthSource::CodeLengths => {
+                panic!("literal entries exist only for literal/length codes")
+            }
+            LengthSource::Dynamic => &self.tables.literals,
         }
     }
 

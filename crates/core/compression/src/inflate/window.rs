@@ -1,8 +1,6 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
-use super::output::Output;
-
 const WINDOW_BYTES: usize = 1 << 15;
 
 #[derive(Clone)]
@@ -51,7 +49,8 @@ impl Window {
         assert!(self.have <= WINDOW_BYTES);
     }
 
-    pub(super) fn copy_to(&self, output: &mut Output<'_>, back: usize, count: usize) {
+    #[inline(always)]
+    pub(super) fn source(&self, back: usize, count: usize) -> (&[u8], &[u8]) {
         assert!(back <= self.have);
         assert!(count <= back);
         let start = if back <= self.next {
@@ -60,7 +59,9 @@ impl Window {
             WINDOW_BYTES - (back - self.next)
         };
         let first = count.min(WINDOW_BYTES - start);
-        output.extend(&self.bytes[start..start + first]);
-        output.extend(&self.bytes[..count - first]);
+        (
+            &self.bytes[start..start + first],
+            &self.bytes[..count - first],
+        )
     }
 }

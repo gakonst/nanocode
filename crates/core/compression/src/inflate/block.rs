@@ -2,7 +2,7 @@ use super::bits::Input;
 use super::output::Output;
 use super::table::{
     CODE_LENGTH_CODES, CODE_LENGTH_ROOT_BITS, CodeKind, DISTANCE_ROOT_BITS, END_OF_BLOCK,
-    FIXED_DISTANCE_ROOT_BITS, FIXED_LENGTH_ROOT_BITS, LENGTH_ROOT_BITS, build,
+    FIXED_DISTANCE_ROOT_BITS, FIXED_LENGTH_ROOT_BITS, LENGTH_ROOT_BITS, build, build_literals,
 };
 use super::{DistanceSource, Inflate, LengthSource, Mode, Step, Stop, TableSizes};
 
@@ -227,6 +227,12 @@ impl Inflate {
         ) else {
             return Err(self.fail("invalid literal/lengths set"));
         };
+        build_literals(
+            &tables.lens[..sizes.lengths],
+            &tables.work,
+            root,
+            &mut tables.literals,
+        );
         self.length_source = LengthSource::Dynamic;
         self.length_bits = root_bits(root);
         let tables = &mut *self.tables;

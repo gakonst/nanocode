@@ -624,7 +624,7 @@ fn print_stats<W: Write>(
         // We specifically match the format laid out by the JSON printer in
         // the grep-printer crate. We simply "extend" it with the 'summary'
         // message type.
-        // psh: built by crate::rg::json, written by deser-json (D029).
+        // psh: built and written by crate::rg::json (D029).
         crate::rg::json::summary(stats, elapsed).write_line(&mut wtr)
     } else {
         write!(

@@ -7,12 +7,11 @@
 // Licensed under the MIT License (see NOTICE).
 
 //! `rg --json` (D029, D1136): grep-printer's JSON printer, whose serialization needs
-//! serde, with the messages built as a small JSON tree written by deser-json. The
+//! serde, with the messages built as a small JSON tree written here. The
 //! output is grep-printer's byte for byte: the same fields in the same order, compact,
 //! `\n` after each message, `{"text":..}` or base64 `{"bytes":..}` data.
 
 use std::{
-    borrow::Cow,
     fmt,
     io::{self, Write},
     path::Path,
@@ -20,10 +19,6 @@ use std::{
     time::Duration,
 };
 
-use deser_core::ser::{
-    Emit, SeqEmitter, Serialize, SerializeHandle, StructEmitter,
-};
-use deser_core::{Atom, Error, State};
 use grep_matcher::{Match, Matcher};
 use grep_printer::Stats;
 use grep_searcher::{
@@ -58,59 +53,98 @@ impl Json {
     /// The compact form and a newline (serde_json's `to_writer` and the `\n`
     /// grep-printer adds).
     pub(crate) fn write_line<W: Write>(&self, mut w: W) -> io::Result<()> {
-        let s = deser_json::to_string(self).map_err(io::Error::other)?;
-        w.write_all(s.as_bytes())?;
+        w.write_all(self.compact().as_bytes())?;
         w.write_all(b"\n")
     }
 }
 
-impl Serialize for Json {
-    fn serialize<'a>(
-        value: &'a Self,
-        state: &mut State,
-    ) -> Result<Emit<'a>, Error> {
-        Ok(match value {
-            Json::Null => Emit::Atom(Atom::Null),
-            Json::Num(n) => Emit::Atom(Atom::U64(*n)),
-            Json::Str(s) => return String::serialize(s, state),
-            Json::Arr(items) => Emit::seq(Items { items, index: 0 }, state),
-            Json::Obj(fields) => {
-                Emit::structure(Fields { fields, index: 0 }, state)
+enum Open<'a> {
+    Items { rest: std::slice::Iter<'a, Json>, first: bool },
+    Fields { rest: std::slice::Iter<'a, (&'static str, Json)>, first: bool },
+}
+
+impl Json {
+    fn compact(&self) -> String {
+        let mut out = String::new();
+        let mut stack: Vec<Open<'_>> = Vec::new();
+        let mut next = Some(self);
+        loop {
+            match next.take() {
+                Some(Json::Null) => out.push_str("null"),
+                Some(Json::Num(n)) => out.push_str(&n.to_string()),
+                Some(Json::Str(s)) => write_string(s, &mut out),
+                Some(Json::Arr(items)) => {
+                    out.push('[');
+                    stack
+                        .push(Open::Items { rest: items.iter(), first: true });
+                }
+                Some(Json::Obj(fields)) => {
+                    out.push('{');
+                    stack.push(Open::Fields {
+                        rest: fields.iter(),
+                        first: true,
+                    });
+                }
+                None => {}
             }
-        })
+            let Some(top) = stack.last_mut() else {
+                break;
+            };
+            match top {
+                Open::Items { rest, first } => match rest.next() {
+                    Some(item) => {
+                        if !std::mem::replace(first, false) {
+                            out.push(',');
+                        }
+                        next = Some(item);
+                    }
+                    None => {
+                        out.push(']');
+                        stack.pop();
+                    }
+                },
+                Open::Fields { rest, first } => match rest.next() {
+                    Some((key, value)) => {
+                        if !std::mem::replace(first, false) {
+                            out.push(',');
+                        }
+                        write_string(key, &mut out);
+                        out.push(':');
+                        next = Some(value);
+                    }
+                    None => {
+                        out.push('}');
+                        stack.pop();
+                    }
+                },
+            }
+        }
+        out
     }
 }
 
-struct Items<'a> {
-    items: &'a [Json],
-    index: usize,
-}
-
-impl SeqEmitter for Items<'_> {
-    fn next(
-        &mut self,
-        _state: &mut State,
-    ) -> Result<Option<SerializeHandle<'_>>, Error> {
-        let item = self.items.get(self.index);
-        self.index += 1;
-        Ok(item.map(SerializeHandle::to))
+fn write_string(s: &str, out: &mut String) {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if c < ' ' => {
+                let byte = c as u8;
+                out.push_str("\\u00");
+                out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+                out.push(char::from(HEX_DIGITS[usize::from(byte & 0xf)]));
+            }
+            c => out.push(c),
+        }
     }
-}
-
-struct Fields<'a> {
-    fields: &'a [(&'static str, Json)],
-    index: usize,
-}
-
-impl StructEmitter for Fields<'_> {
-    fn next(
-        &mut self,
-        _state: &mut State,
-    ) -> Result<Option<(Cow<'_, str>, SerializeHandle<'_>)>, Error> {
-        let field = self.fields.get(self.index);
-        self.index += 1;
-        Ok(field.map(|(k, v)| (Cow::Borrowed(*k), SerializeHandle::to(v))))
-    }
+    out.push('"');
 }
 
 fn opt_num(n: Option<u64>) -> Json {

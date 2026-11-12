@@ -1,9 +1,4 @@
-//! A small JSON tree serialized through deser-json (D029).
-
-use std::borrow::Cow;
-
-use deser_core::ser::{Emit, SeqEmitter, Serialize, SerializeHandle, StructEmitter};
-use deser_core::{Atom, Error, State};
+//! A small JSON tree and its compact and indented text (D029).
 
 /// A JSON value. Objects keep their keys in insertion order.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,20 +22,6 @@ impl Json {
             fields.push((key, value.into()));
         }
         self
-    }
-
-    pub fn to_pretty(&self) -> String {
-        let config = deser_json::SerializerConfigBuilder::new()
-            .pretty(deser_json::Indent::Spaces(2))
-            .inline(deser_json::InlinePolicy::LeafIfFits(100))
-            .build();
-        config
-            .to_string(self)
-            .expect("a JSON tree always serializes")
-    }
-
-    pub fn to_compact(&self) -> String {
-        deser_json::to_string(self).expect("a JSON tree always serializes")
     }
 }
 
@@ -86,46 +67,199 @@ impl<T: Into<Json>> From<Option<T>> for Json {
     }
 }
 
-impl Serialize for Json {
-    fn serialize<'a>(value: &'a Self, state: &mut State) -> Result<Emit<'a>, Error> {
-        Ok(match value {
-            Json::Null => Emit::Atom(Atom::Null),
-            Json::Bool(b) => Emit::Atom(Atom::Bool(*b)),
-            Json::Num(n) => Emit::Atom(Atom::U64(*n)),
-            Json::Str(s) => return String::serialize(s, state),
-            Json::Arr(items) => Emit::seq(Items { items, index: 0 }, state),
-            Json::Obj(fields) => Emit::structure(Fields { fields, index: 0 }, state),
-        })
+const PRETTY_INDENT_SPACES: usize = 2;
+const PRETTY_LINE_WIDTH_CHARS: usize = 100;
+
+enum Open<'a> {
+    Items {
+        rest: std::slice::Iter<'a, Json>,
+        first: bool,
+    },
+    Fields {
+        rest: std::slice::Iter<'a, (&'static str, Json)>,
+        first: bool,
+    },
+}
+
+enum Layout {
+    Compact,
+    Pretty,
+}
+
+impl Json {
+    fn is_container(&self) -> bool {
+        matches!(self, Json::Arr(_) | Json::Obj(_))
+    }
+
+    fn is_leaf_container(&self) -> bool {
+        match self {
+            Json::Arr(items) => !items.iter().any(Json::is_container),
+            Json::Obj(fields) => !fields.iter().any(|(_, value)| value.is_container()),
+            Json::Null | Json::Bool(_) | Json::Num(_) | Json::Str(_) => false,
+        }
+    }
+
+    fn write_scalar(&self, out: &mut String) {
+        match self {
+            Json::Null => out.push_str("null"),
+            Json::Bool(true) => out.push_str("true"),
+            Json::Bool(false) => out.push_str("false"),
+            Json::Num(n) => out.push_str(&n.to_string()),
+            Json::Str(s) => write_string(s, out),
+            Json::Arr(_) | Json::Obj(_) => unreachable!("containers are written by write"),
+        }
+    }
+
+    fn single_line(&self) -> String {
+        let mut out = String::new();
+        match self {
+            Json::Arr(items) => {
+                out.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    item.write_scalar(&mut out);
+                }
+                out.push(']');
+            }
+            Json::Obj(fields) => {
+                out.push('{');
+                for (index, (key, value)) in fields.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    write_string(key, &mut out);
+                    out.push_str(": ");
+                    value.write_scalar(&mut out);
+                }
+                out.push('}');
+            }
+            Json::Null | Json::Bool(_) | Json::Num(_) | Json::Str(_) => self.write_scalar(&mut out),
+        }
+        out
+    }
+
+    fn write(&self, layout: Layout) -> String {
+        let mut out = String::new();
+        let mut stack: Vec<Open<'_>> = Vec::new();
+        let mut next = Some((self, 0));
+        loop {
+            if let Some((value, column)) = next.take() {
+                let inline = matches!(layout, Layout::Pretty) && value.is_leaf_container() && {
+                    let line = value.single_line();
+                    let fits = column + line.chars().count() <= PRETTY_LINE_WIDTH_CHARS;
+                    if fits {
+                        out.push_str(&line);
+                    }
+                    fits
+                };
+                if !inline {
+                    match value {
+                        Json::Arr(items) => {
+                            out.push('[');
+                            stack.push(Open::Items {
+                                rest: items.iter(),
+                                first: true,
+                            });
+                        }
+                        Json::Obj(fields) => {
+                            out.push('{');
+                            stack.push(Open::Fields {
+                                rest: fields.iter(),
+                                first: true,
+                            });
+                        }
+                        Json::Null | Json::Bool(_) | Json::Num(_) | Json::Str(_) => {
+                            value.write_scalar(&mut out)
+                        }
+                    }
+                }
+            }
+            let depth = stack.len();
+            let Some(top) = stack.last_mut() else {
+                break;
+            };
+            let (entry, first) = match top {
+                Open::Items { rest, first } => (rest.next().map(|item| (None, item)), first),
+                Open::Fields { rest, first } => {
+                    (rest.next().map(|(key, value)| (Some(*key), value)), first)
+                }
+            };
+            let was_first = std::mem::replace(first, false);
+            let Some((key, value)) = entry else {
+                let close = match top {
+                    Open::Items { .. } => ']',
+                    Open::Fields { .. } => '}',
+                };
+                stack.pop();
+                if matches!(layout, Layout::Pretty) && !was_first {
+                    out.push('\n');
+                    push_indent(&mut out, depth - 1);
+                }
+                out.push(close);
+                continue;
+            };
+            if !was_first {
+                out.push(',');
+            }
+            let mut column = 0;
+            if matches!(layout, Layout::Pretty) {
+                out.push('\n');
+                push_indent(&mut out, depth);
+                column = PRETTY_INDENT_SPACES * depth;
+            }
+            if let Some(key) = key {
+                let start = out.len();
+                write_string(key, &mut out);
+                out.push_str(match layout {
+                    Layout::Compact => ":",
+                    Layout::Pretty => ": ",
+                });
+                column += out[start..].chars().count();
+            }
+            next = Some((value, column));
+        }
+        out
+    }
+
+    pub fn to_pretty(&self) -> String {
+        self.write(Layout::Pretty)
+    }
+
+    pub fn to_compact(&self) -> String {
+        self.write(Layout::Compact)
     }
 }
 
-struct Items<'a> {
-    items: &'a [Json],
-    index: usize,
-}
-
-impl SeqEmitter for Items<'_> {
-    fn next(&mut self, _state: &mut State) -> Result<Option<SerializeHandle<'_>>, Error> {
-        let item = self.items.get(self.index);
-        self.index += 1;
-        Ok(item.map(SerializeHandle::to))
+fn push_indent(out: &mut String, depth: usize) {
+    for _ in 0..PRETTY_INDENT_SPACES * depth {
+        out.push(' ');
     }
 }
 
-struct Fields<'a> {
-    fields: &'a [(&'static str, Json)],
-    index: usize,
-}
-
-impl StructEmitter for Fields<'_> {
-    fn next(
-        &mut self,
-        _state: &mut State,
-    ) -> Result<Option<(Cow<'_, str>, SerializeHandle<'_>)>, Error> {
-        let field = self.fields.get(self.index);
-        self.index += 1;
-        Ok(field.map(|(k, v)| (Cow::Borrowed(*k), SerializeHandle::to(v))))
+fn write_string(s: &str, out: &mut String) {
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            c if c < ' ' => {
+                let byte = c as u8;
+                out.push_str("\\u00");
+                out.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+                out.push(char::from(HEX_DIGITS[usize::from(byte & 0xf)]));
+            }
+            c => out.push(c),
+        }
     }
+    out.push('"');
 }
 
 #[cfg(test)]

@@ -22,9 +22,6 @@ psh-classify.workspace = true
 # shell module is its JS host.
 nanocode-shell = { path = "../../../../core/shell" }
 bytes = "1.12.1"
-# JSON of parse and classify results, as `psh --parse`/`--classify` print it (D029).
-deser-json = { version = "0.10.1", default-features = false, features = ["std"] }
-deser-core = { version = "0.10.2", default-features = false, features = ["std"] }
 
 # The export layer is the one place outside psh-os with `unsafe`: the JS imports and the
 # `no_mangle` exports (D1110). Every use is allowed where it is and says why it is sound.

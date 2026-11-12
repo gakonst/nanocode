@@ -23,7 +23,6 @@ pub(super) fn schema(name: &str) -> Value {
             "message": {"type": "string"}, "task_id": {"type": "string"},
             "task_type": {"const": "local_bash"}, "command": {"type": "string"}
         }, "required": ["message", "task_id", "task_type", "command"], "additionalProperties": false}),
-        "TaskOutput" => task_output(json!({"const": "error"}), json!({"const": "completed"})),
         _ => unreachable!("no Claude output schema for {name}"),
     }
 }

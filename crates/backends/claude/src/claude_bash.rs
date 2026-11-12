@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -74,7 +74,6 @@ struct Job {
     result: watch::Receiver<Option<Outcome>>,
     finished: Arc<Signal>,
     abort: tokio::task::AbortHandle,
-    waiting: AtomicUsize,
     phase: AtomicPhase,
     expired: Arc<AtomicBool>,
     capped: Arc<Signal>,
@@ -150,18 +149,6 @@ impl Job {
             Err(_) => ("failed", "failed".to_owned()),
         };
         self.notification(Some(status), &summary, "", "")
-    }
-}
-struct Waiting<'a>(&'a Job);
-impl<'a> Waiting<'a> {
-    fn new(job: &'a Job) -> Self {
-        job.waiting.fetch_add(1, Ordering::SeqCst);
-        Self(job)
-    }
-}
-impl Drop for Waiting<'_> {
-    fn drop(&mut self) {
-        self.0.waiting.fetch_sub(1, Ordering::SeqCst);
     }
 }
 struct Finished(Arc<Signal>);
@@ -448,7 +435,6 @@ impl Jobs {
                 () = stall(&job, &binding) => finished.await,
             };
             if job.result.borrow().is_none()
-                || job.waiting.load(Ordering::SeqCst) > 0
                 || job.phase.advance(Phase::Delivered) == Phase::Delivered
             {
                 return;
@@ -609,7 +595,6 @@ impl BashExecutor for LocalBash {
                 abort: task.abort_handle(),
                 finished,
                 result: receiver,
-                waiting: AtomicUsize::new(0),
                 phase: AtomicPhase::new(),
                 expired,
                 capped,
@@ -705,13 +690,9 @@ pub(super) fn install(
         jobs: executor.jobs.clone(),
         session,
     });
-    for name in ["TaskOutput", "TaskStop"] {
-        tools = tools.tool(TaskTool {
-            name,
-            jobs: executor.jobs.clone(),
-        });
-    }
-    tools
+    tools.tool(TaskStopTool {
+        jobs: executor.jobs,
+    })
 }
 struct BashTool {
     bash: ClaudeBash<LocalBash>,
@@ -761,30 +742,21 @@ impl Tool for BashTool {
         )
     }
 }
-struct TaskTool {
-    name: &'static str,
+struct TaskStopTool {
     jobs: Arc<Jobs>,
 }
 #[async_trait]
-impl Tool for TaskTool {
+impl Tool for TaskStopTool {
     fn definition(&self) -> ToolDefinition {
-        if self.name == "TaskStop" {
-            let definition = crate::upstream::tool_value(self.name);
-            return ToolDefinition::function(
-                self.name,
-                definition["description"]
-                    .as_str()
-                    .expect("upstream tool description"),
-                definition["input_schema"].clone(),
-            )
-            .with_output_schema(super::claude_output::schema(self.name));
-        }
+        let definition = crate::upstream::tool_value("TaskStop");
         ToolDefinition::function(
-            self.name,
-            "SDK extension: retrieve a session-owned Bash task's result, optionally waiting for completion.",
-            json!({"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":300000,"default":30000}},"required":["task_id"],"additionalProperties":false}),
+            "TaskStop",
+            definition["description"]
+                .as_str()
+                .expect("upstream tool description"),
+            definition["input_schema"].clone(),
         )
-        .with_output_schema(super::claude_output::schema(self.name))
+        .with_output_schema(super::claude_output::schema("TaskStop"))
     }
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
         let input = input.decode_json::<Value>()?;
@@ -794,32 +766,19 @@ impl Tool for TaskTool {
         })
     }
 }
-impl TaskTool {
+impl TaskStopTool {
     async fn invoke(&self, input: Value) -> Result<Value, String> {
         let fields = input.as_object().ok_or("task input must be an object")?;
-        for key in fields.keys() {
-            if key != "task_id"
-                && !(self.name == "TaskStop" && key == "shell_id")
-                && !(self.name == "TaskOutput" && matches!(key.as_str(), "block" | "timeout"))
-            {
-                return Err(format!("unsupported task option: {key}"));
-            }
-        }
-        if self.name == "TaskStop"
-            && fields.contains_key("task_id")
-            && fields.contains_key("shell_id")
+        if let Some(key) = fields
+            .keys()
+            .find(|key| !matches!(key.as_str(), "task_id" | "shell_id"))
         {
-            return Err("provide task_id or its deprecated shell_id alias, not both".into());
+            return Err(format!("unsupported task option: {key}"));
         }
         let id = fields
             .get("task_id")
-            .or_else(|| {
-                if self.name == "TaskStop" {
-                    fields.get("shell_id")
-                } else {
-                    None
-                }
-            })
+            .filter(|id| !id.is_null())
+            .or_else(|| fields.get("shell_id"))
             .and_then(Value::as_str)
             .ok_or("task_id or its deprecated shell_id alias must be a string")?;
         let job = self
@@ -827,51 +786,17 @@ impl TaskTool {
             .entries
             .read(|entries| entries.jobs.get(id).cloned())
             .ok_or("unknown task_id in this session")?;
-        if self.name == "TaskStop" {
-            let status = job.status();
-            if status != "running" {
-                return Err(format!("Task {id} is not running (status: {status})"));
-            }
-            job.abort.abort();
-            job.finished.wait().await;
-            return Ok(json!({
-                "message": format!("Successfully stopped task: {id} ({})", job.command),
-                "task_id": id,
-                "task_type": "local_bash",
-                "command": job.command,
-            }));
+        let status = job.status();
+        if status != "running" {
+            return Err(format!("Task {id} is not running (status: {status})"));
         }
-        let block = input
-            .get("block")
-            .map_or(Some(true), Value::as_bool)
-            .ok_or("block must be boolean")?;
-        let timeout = input
-            .get("timeout")
-            .map_or(Some(30000), Value::as_u64)
-            .filter(|v| *v <= 300000)
-            .ok_or("timeout must be 0..300000 milliseconds")?;
-        let waiting = block.then(|| Waiting::new(&job));
-        let result = if block {
-            tokio::time::timeout(Duration::from_millis(timeout), completion(&job))
-                .await
-                .ok()
-        } else {
-            job.result.borrow().clone().or_else(|| {
-                job.abort
-                    .is_finished()
-                    .then(|| Err("Bash task stopped".into()))
-            })
-        };
-        if result.is_some() {
-            job.phase.advance(Phase::Delivered);
-        }
-        drop(waiting);
-        Ok(match result {
-            None => json!({"task_id":id,"status":"running"}),
-            Some(Err(error)) => json!({"task_id":id,"status":"error","error":error}),
-            Some(Ok(result)) => {
-                json!({"task_id":id,"status":"completed","stdout":result.stdout,"stderr":result.stderr,"exit_code":result.exit_code,"truncated":result.truncated})
-            }
-        })
+        job.abort.abort();
+        job.finished.wait().await;
+        Ok(json!({
+            "message": format!("Successfully stopped task: {id} ({})", job.command),
+            "task_id": id,
+            "task_type": "local_bash",
+            "command": job.command,
+        }))
     }
 }

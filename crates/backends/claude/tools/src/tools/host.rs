@@ -260,10 +260,28 @@ const fn default_timeout() -> u64 {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "TaskStopInput")]
 pub struct TaskStopRequest {
-    #[serde(alias = "shell_id")]
     pub task_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct TaskStopInput {
+    task_id: Option<String>,
+    shell_id: Option<String>,
+}
+
+impl TryFrom<TaskStopInput> for TaskStopRequest {
+    type Error = &'static str;
+
+    fn try_from(input: TaskStopInput) -> Result<Self, Self::Error> {
+        input
+            .task_id
+            .or(input.shell_id)
+            .map(|task_id| Self { task_id })
+            .ok_or("missing field `task_id`")
+    }
 }
 
 pub fn mcp_tool_output(result: Value) -> Result<ToolOutput, String> {

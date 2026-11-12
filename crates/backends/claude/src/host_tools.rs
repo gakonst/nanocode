@@ -337,11 +337,9 @@ impl HostTaskTool {
                 return Err(format!("unsupported task option: {key}"));
             }
         }
-        if stop && fields.contains_key("task_id") && fields.contains_key("shell_id") {
-            return Err("provide task_id or its deprecated shell_id alias, not both".into());
-        }
         let id = fields
             .get("task_id")
+            .filter(|id| !(stop && id.is_null()))
             .or_else(|| stop.then(|| fields.get("shell_id")).flatten())
             .and_then(Value::as_str)
             .ok_or("task_id or its deprecated shell_id alias must be a string")?;
@@ -408,7 +406,7 @@ impl Tool for HostTaskTool {
         ToolDefinition::function(
             name,
             "SDK extension: retrieve a background Bash task's result, optionally waiting for completion.",
-            json!({"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":300000,"default":30000}},"required":["task_id"],"additionalProperties":false}),
+            json!({"type":"object","properties":{"task_id":{"type":"string"},"block":{"type":"boolean","default":true},"timeout":{"type":"integer","minimum":0,"maximum":300000,"default":30000,"description":"Milliseconds to wait when block is true: 0 to 300000, default 30000"}},"required":["task_id"],"additionalProperties":false}),
         )
         .with_output_schema(crate::claude_output::host_schema(name))
     }

@@ -242,8 +242,10 @@ impl Exec<'_> {
             .heap
             .get_own_property(ctors, atoms::ERROR)
             .and_then(|p| p.value())?;
-        let key = self.heap.atom_str("prepareStackTrace").ok()?;
-        let f = match self.heap.get_own_property(ctor.as_object()?, key) {
+        let f = match self
+            .heap
+            .get_own_property(ctor.as_object()?, atoms::PREPARE_STACK_TRACE)
+        {
             Some(Property::Data { value, .. }) => value,
             _ => return None,
         };

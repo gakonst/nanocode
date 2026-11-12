@@ -730,11 +730,7 @@ pub fn stack_trace_limit(heap: &mut Heap) -> u32 {
     else {
         return crate::interp::run::STACK_TRACE_LIMIT;
     };
-    // Interned while the property exists; failing to intern means it cannot.
-    let Ok(key) = heap.atom_str("stackTraceLimit") else {
-        return 0;
-    };
-    let v = match heap.get_own_property(ctor, key) {
+    let v = match heap.get_own_property(ctor, atoms::STACK_TRACE_LIMIT) {
         Some(Property::Data { value, .. }) => value,
         _ => return 0,
     };

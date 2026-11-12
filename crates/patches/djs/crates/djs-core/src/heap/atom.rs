@@ -234,6 +234,8 @@ well_known! {
         HAS_INDICES = "hasIndices",
         REG_EXP = "RegExp",
         RAW_JSON = "rawJSON",
+        PREPARE_STACK_TRACE = "prepareStackTrace",
+        STACK_TRACE_LIMIT = "stackTraceLimit",
     }
     symbols {
         SYM_ITERATOR = "Symbol.iterator",

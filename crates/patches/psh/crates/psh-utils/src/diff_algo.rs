@@ -20,24 +20,49 @@ pub struct Change {
 pub fn diff(a: &[u32], b: &[u32]) -> Vec<Change> {
     let mut ca = vec![false; a.len()];
     let mut cb = vec![false; b.len()];
-    let n = a.len().max(b.len()) * 2 + 2;
+    let ids = a.iter().chain(b).max().map_or(0, |&m| m as usize + 1);
+    let mut in_a = vec![false; ids];
+    let mut in_b = vec![false; ids];
+    a.iter().for_each(|&x| in_a[x as usize] = true);
+    b.iter().for_each(|&x| in_b[x as usize] = true);
+    let (ka, ia) = matched(a, &in_b, &mut ca);
+    let (kb, ib) = matched(b, &in_a, &mut cb);
+    let mut cka = vec![false; ka.len()];
+    let mut ckb = vec![false; kb.len()];
+    let n = ka.len().max(kb.len()) * 2 + 2;
     let mut vf = vec![0isize; n + 2];
     let mut vb = vec![0isize; n + 2];
     compare(
-        a,
-        b,
+        &ka,
+        &kb,
         0,
-        a.len(),
+        ka.len(),
         0,
-        b.len(),
-        &mut ca,
-        &mut cb,
+        kb.len(),
+        &mut cka,
+        &mut ckb,
         &mut vf,
         &mut vb,
     );
+    ia.iter().zip(&cka).for_each(|(&i, &c)| ca[i] = c);
+    ib.iter().zip(&ckb).for_each(|(&i, &c)| cb[i] = c);
     compact(a, &mut ca, &cb);
     compact(b, &mut cb, &ca);
     changes(&ca, &cb)
+}
+
+fn matched(lines: &[u32], other: &[bool], changed: &mut [bool]) -> (Vec<u32>, Vec<usize>) {
+    let mut kept = Vec::with_capacity(lines.len());
+    let mut at = Vec::with_capacity(lines.len());
+    for (i, &x) in lines.iter().enumerate() {
+        if other[x as usize] {
+            kept.push(x);
+            at.push(i);
+        } else {
+            changed[i] = true;
+        }
+    }
+    (kept, at)
 }
 
 #[allow(clippy::too_many_arguments)]

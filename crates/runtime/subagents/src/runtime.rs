@@ -1028,7 +1028,7 @@ impl Rerun {
 
     fn start(&self) -> bool {
         self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 Some(if state == Self::IDLE {
                     Self::RUNNING
                 } else {
@@ -1040,7 +1040,7 @@ impl Rerun {
 
     fn finish(&self) -> bool {
         self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 Some(if state == Self::AGAIN {
                     Self::RUNNING
                 } else {
@@ -3835,7 +3835,7 @@ impl Registry {
         let _ = self
             .scope_locks(root_session_id)
             .pending_checkpoints
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
                 pending.checked_sub(1)
             });
         self.changed();

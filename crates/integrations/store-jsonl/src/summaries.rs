@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     collections::HashMap,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
@@ -15,15 +15,23 @@ use super::{
     index::digest_anchor,
 };
 
-const FILE: &str = ".summaries.json.zst";
-const LEGACY: &str = ".summaries.json";
+const FILE: &str = ".summaries";
+const LEGACY: [&str; 2] = [".summaries.json.zst", ".summaries.json"];
+const LENGTH_BYTES: usize = 4;
 
 pub(super) struct Summaries {
     path: PathBuf,
-    legacy: PathBuf,
-    loaded: Option<String>,
+    legacy: [PathBuf; 2],
+    loaded: Loaded,
     entries: HashMap<String, Summary>,
     copied: Vec<(String, Summary)>,
+}
+
+#[derive(PartialEq)]
+enum Loaded {
+    Nothing,
+    Legacy(String),
+    Journal { identity: String, end: u64 },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -131,20 +139,98 @@ impl Summaries {
     pub(super) fn new(directory: &Path) -> Self {
         Self {
             path: directory.join(FILE),
-            legacy: directory.join(LEGACY),
-            loaded: None,
+            legacy: LEGACY.map(|name| directory.join(name)),
+            loaded: Loaded::Nothing,
             entries: HashMap::new(),
             copied: Vec::new(),
         }
     }
 
     pub(super) fn refresh(&mut self) {
-        let compressed = self.path.is_file();
-        let source = if compressed { &self.path } else { &self.legacy };
-        let current = fs::metadata(source)
+        match fs::metadata(&self.path) {
+            Ok(metadata) => self.refresh_journal(&metadata),
+            Err(_) => self.refresh_legacy(),
+        }
+    }
+
+    fn refresh_journal(&mut self, metadata: &fs::Metadata) {
+        let Ok(identity) = identity(metadata) else {
+            return;
+        };
+        let start = match &self.loaded {
+            Loaded::Journal {
+                identity: loaded,
+                end,
+            } if *loaded == identity && *end <= metadata.len() => Some(*end),
+            _ => None,
+        };
+        if start == Some(metadata.len()) {
+            return;
+        }
+        let read = File::open(&self.path).and_then(|mut file| {
+            file.seek(SeekFrom::Start(start.unwrap_or(0)))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        });
+        let bytes = match read {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, "ignoring unreadable JSONL session summaries");
+                return;
+            }
+        };
+        let (changes, consumed) = match start {
+            Some(end) => (&bytes[..], end),
+            None => match base(&bytes) {
+                Ok((entries, rest)) => {
+                    self.entries = entries;
+                    (rest, (bytes.len() - rest.len()) as u64)
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "ignoring unreadable JSONL session summaries");
+                    self.entries.clear();
+                    self.loaded = Loaded::Nothing;
+                    return;
+                }
+            },
+        };
+        let mut applied = 0;
+        for line in changes.split_inclusive(|byte| *byte == b'\n') {
+            if !line.ends_with(b"\n") {
+                break;
+            }
+            match serde_json::from_slice::<Change>(line) {
+                Ok(change) => change.apply(&mut self.entries),
+                Err(error) => {
+                    tracing::warn!(%error, "ignoring unreadable JSONL session summaries");
+                    break;
+                }
+            }
+            applied += line.len();
+        }
+        self.loaded = Loaded::Journal {
+            identity,
+            end: consumed + applied as u64,
+        };
+    }
+
+    fn refresh_legacy(&mut self) {
+        let Some((source, compressed)) = self
+            .legacy
+            .iter()
+            .zip([true, false])
+            .find(|(path, _)| path.is_file())
+        else {
+            return;
+        };
+        let Some(current) = fs::metadata(source)
             .ok()
-            .and_then(|metadata| identity(&metadata).ok());
-        if current.is_none() || current == self.loaded {
+            .and_then(|metadata| identity(&metadata).ok())
+        else {
+            return;
+        };
+        if self.loaded == Loaded::Legacy(current.clone()) {
             return;
         }
         let read = if compressed {
@@ -161,7 +247,7 @@ impl Summaries {
             Ok(entries) => self.entries = entries,
             Err(error) => tracing::warn!(%error, "ignoring unreadable JSONL session summaries"),
         }
-        self.loaded = current;
+        self.loaded = Loaded::Legacy(current);
     }
 
     pub(super) fn listed(&self, state_id: &str, file: &str, length: u64) -> Option<Summary> {
@@ -235,15 +321,12 @@ impl Summaries {
         length: u64,
         anchor: Option<Anchor>,
     ) -> Result<(), StoreError> {
-        self.refresh();
-        let mut moved = false;
-        for entry in self.entries.values_mut().filter(|entry| entry.file == from) {
-            entry.file = to.to_owned();
-            entry.length = length;
-            entry.anchor = anchor;
-            moved = true;
-        }
-        if moved { self.persist() } else { Ok(()) }
+        self.record(Change::Moved {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            length,
+            anchor,
+        })
     }
 
     pub(super) fn remember(
@@ -253,12 +336,61 @@ impl Summaries {
         if remembered.is_empty() {
             return Ok(());
         }
-        self.refresh();
-        self.entries.extend(remembered);
-        self.persist()
+        self.record(Change::Remember(remembered.into_iter().collect()))
     }
 
-    fn persist(&mut self) -> Result<(), StoreError> {
+    fn record(&mut self, change: Change) -> Result<(), StoreError> {
+        let mut line = serde_json::to_vec(&change).map_err(backend)?;
+        line.push(b'\n');
+        if self.append(&line)? {
+            if matches!(self.loaded, Loaded::Journal { .. }) {
+                change.apply(&mut self.entries);
+            }
+            return Ok(());
+        }
+        self.refresh();
+        change.apply(&mut self.entries);
+        self.rewrite()
+    }
+
+    fn append(&mut self, line: &[u8]) -> Result<bool, StoreError> {
+        let mut file = match OpenOptions::new().read(true).append(true).open(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(backend(error)),
+        };
+        let length = file.metadata().map_err(backend)?.len();
+        let mut prefix = [0; LENGTH_BYTES];
+        if file.read_exact(&mut prefix).is_err() {
+            return Ok(false);
+        }
+        let base = LENGTH_BYTES as u64 + u64::from(u32::from_le_bytes(prefix));
+        if length < base || (length - base) + line.len() as u64 > base {
+            return Ok(false);
+        }
+        if length > base {
+            let mut last = [0];
+            file.seek(SeekFrom::Start(length - 1)).map_err(backend)?;
+            file.read_exact(&mut last).map_err(backend)?;
+            if last != *b"\n" {
+                return Ok(false);
+            }
+        }
+        file.write_all(line).map_err(backend)?;
+        let identity = identity(&file.metadata().map_err(backend)?)?;
+        if let Loaded::Journal {
+            identity: loaded,
+            end,
+        } = &mut self.loaded
+            && *loaded == identity
+            && *end == length
+        {
+            *end += line.len() as u64;
+        }
+        Ok(true)
+    }
+
+    fn rewrite(&mut self) -> Result<(), StoreError> {
         let directory = self
             .path
             .parent()
@@ -267,19 +399,76 @@ impl Summaries {
             .prefix(FILE)
             .tempfile_in(directory)
             .map_err(backend)?;
-        let encoded = serde_json::to_vec(&self.entries).map_err(backend)?;
+        let frame = archive::compress(&serde_json::to_vec(&self.entries).map_err(backend)?)
+            .map_err(backend)?;
+        let length = u32::try_from(frame.len())
+            .map_err(|_| backend("JSONL session summaries are too large"))?;
         temporary
-            .write_all(&archive::compress(&encoded).map_err(backend)?)
+            .write_all(&length.to_le_bytes())
+            .and_then(|()| temporary.write_all(&frame))
             .map_err(backend)?;
         let file = temporary
             .persist(&self.path)
             .map_err(|error| backend(error.error))?;
-        self.loaded = Some(identity(&file.metadata().map_err(backend)?)?);
-        match fs::remove_file(&self.legacy) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(backend(error)),
+        self.loaded = Loaded::Journal {
+            identity: identity(&file.metadata().map_err(backend)?)?,
+            end: (LENGTH_BYTES + frame.len()) as u64,
+        };
+        for legacy in &self.legacy {
+            match fs::remove_file(legacy) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(backend(error)),
+            }
         }
         Ok(())
     }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Change {
+    Remember(HashMap<String, Summary>),
+    Moved {
+        from: String,
+        to: String,
+        length: u64,
+        anchor: Option<Anchor>,
+    },
+}
+
+impl Change {
+    fn apply(&self, entries: &mut HashMap<String, Summary>) {
+        match self {
+            Self::Remember(remembered) => entries.extend(
+                remembered
+                    .iter()
+                    .map(|(state_id, summary)| (state_id.clone(), summary.clone())),
+            ),
+            Self::Moved {
+                from,
+                to,
+                length,
+                anchor,
+            } => {
+                for entry in entries.values_mut().filter(|entry| entry.file == *from) {
+                    entry.file.clone_from(to);
+                    entry.length = *length;
+                    entry.anchor = *anchor;
+                }
+            }
+        }
+    }
+}
+
+fn base(bytes: &[u8]) -> Result<(HashMap<String, Summary>, &[u8]), StoreError> {
+    let unreadable = || backend("JSONL session summaries are truncated");
+    let (length, rest) = bytes
+        .split_first_chunk::<LENGTH_BYTES>()
+        .ok_or_else(unreadable)?;
+    let length = usize::try_from(u32::from_le_bytes(*length)).map_err(|_| unreadable())?;
+    let frame = rest.get(..length).ok_or_else(unreadable)?;
+    let entries =
+        serde_json::from_slice(&archive::decompress(frame).map_err(backend)?).map_err(backend)?;
+    Ok((entries, &rest[length..]))
 }

@@ -25,6 +25,7 @@ nanocode-durability.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
 pulldown-cmark = { version = "0.13.0", default-features = false }
+serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-width = "0.2"

@@ -796,7 +796,7 @@ pub async fn open_store(
 
 pub async fn archive(config: &HostConfig) -> Result<()> {
     if let (Some(store), Some(archiver)) = (&config.store, &config.archiver) {
-        store.list().await?;
+        store.summarize(&archiver.written().await?).await?;
         archiver.archive().await?;
     }
     Ok(())

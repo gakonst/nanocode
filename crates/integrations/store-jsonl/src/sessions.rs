@@ -787,6 +787,30 @@ impl Sessions {
         self.summaries.remember(remembered)
     }
 
+    pub(super) fn written(&self) -> Vec<String> {
+        let touched = |key: &String| {
+            self.touched.contains(key)
+                && self
+                    .journals
+                    .get(key)
+                    .is_some_and(|opened| !opened.journal.sidecar)
+        };
+        let mut written = self
+            .touched
+            .iter()
+            .filter(|key| touched(key))
+            .cloned()
+            .chain(
+                self.homes
+                    .iter()
+                    .filter(|(_, home)| touched(home))
+                    .map(|(member, _)| member.clone()),
+            )
+            .collect::<Vec<_>>();
+        written.sort_unstable();
+        written
+    }
+
     pub(super) fn archive(&mut self) -> Result<usize, StoreError> {
         let mut archived = 0;
         let mut touched = std::mem::take(&mut self.touched)

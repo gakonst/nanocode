@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -8,6 +9,7 @@ use nanocode_backend_codex::{Codex, CodexHarness};
 use nanocode_durability::{MemoryStore, SessionStore, SessionSummary};
 use nanocode_store_jsonl::{JsonlArchiver, JsonlStore};
 use nanocode_tool_runtime::{ToolExposure, Tools};
+use serde::Deserialize;
 
 mod markdown;
 mod tui;
@@ -210,10 +212,8 @@ impl Lite {
 
     async fn shutdown(self) -> Result<()> {
         self.runtime.shutdown().await?;
-        if let Some(store) = &self.store {
-            store.list().await?;
-        }
-        if let Some(archiver) = self.archiver {
+        if let (Some(store), Some(archiver)) = (&self.store, self.archiver) {
+            store.summarize(&archiver.written().await?).await?;
             archiver.archive().await?;
         }
         Ok(())
@@ -298,26 +298,30 @@ async fn exec(config: Config, prompt: Option<String>) -> Result<()> {
     Ok(())
 }
 
-enum Shown {
-    Text(String),
-    Tool(String),
+enum Shown<'a> {
+    Text(Cow<'a, str>),
+    Tool(Cow<'a, str>),
 }
 
-fn shown(event: &AgentEvent) -> Option<Shown> {
-    let field = |name: &str| {
-        let mut payload: serde_json::Value =
-            serde_json::from_str(event.payload.get()).unwrap_or_default();
-        match payload[name].take() {
-            serde_json::Value::String(value) => Some(value),
-            _ => None,
-        }
-    };
+#[derive(Default, Deserialize)]
+struct Payload<'a> {
+    #[serde(borrow)]
+    text: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    tool: Option<Cow<'a, str>>,
+}
+
+fn shown(event: &AgentEvent) -> Option<Shown<'_>> {
+    if !matches!(
+        event.kind,
+        AgentEventKind::AssistantDelta | AgentEventKind::ToolCall
+    ) {
+        return None;
+    }
+    let payload = serde_json::from_str::<Payload<'_>>(event.payload.get()).unwrap_or_default();
     match event.kind {
-        AgentEventKind::AssistantDelta => Some(Shown::Text(field("text").unwrap_or_default())),
-        AgentEventKind::ToolCall => {
-            Some(Shown::Tool(field("tool").unwrap_or_else(|| "tool".into())))
-        }
-        _ => None,
+        AgentEventKind::AssistantDelta => Some(Shown::Text(payload.text.unwrap_or_default())),
+        _ => Some(Shown::Tool(payload.tool.unwrap_or(Cow::Borrowed("tool")))),
     }
 }
 

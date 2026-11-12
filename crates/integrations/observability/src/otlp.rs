@@ -23,10 +23,8 @@ fn plain(bytes: &[u8]) -> usize {
     const STEP: usize = size_of::<u64>();
     const ONES: u64 = u64::MAX / 0xff;
     let mut index = 0;
-    for chunk in bytes.chunks_exact(STEP) {
-        let Ok(word) = chunk.try_into().map(u64::from_le_bytes) else {
-            break;
-        };
+    for chunk in bytes.as_chunks::<STEP>().0 {
+        let word = u64::from_le_bytes(*chunk);
         let control = word.wrapping_sub(ONES * 0x20) & !word;
         let quote = word ^ (ONES * u64::from(b'"'));
         let quote = quote.wrapping_sub(ONES) & !quote;

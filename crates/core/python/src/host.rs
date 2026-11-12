@@ -465,8 +465,10 @@ mod _host {
         let argv: Vec<Vec<u8>> = argv.iter().map(|word| word.as_bytes().to_vec()).collect();
         let name = argv.first().cloned().unwrap_or_default();
         let env = env
-            .chunks_exact(2)
-            .map(|pair| (pair[0].as_bytes().to_vec(), pair[1].as_bytes().to_vec()))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[name, value]| (name.as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect();
         let child = Child {
             argv,

@@ -436,7 +436,9 @@ impl Python {
             .and_then(|list| list.try_to_value::<Vec<String>>(vm));
         match found {
             Ok(found) => found
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|found| Missing {
                     module: found[0].clone(),
                     why: if found[1] == "standard" {

@@ -2683,6 +2683,16 @@ impl JsonlArchiver {
         };
         store.write(Sessions::archive).await
     }
+
+    pub async fn written(&self) -> Result<Vec<String>, StoreError> {
+        let mut store = JsonlStore {
+            jobs: self.jobs.clone(),
+            closed: None,
+            failed: Arc::clone(&self.failed),
+            colocated: Arc::clone(&self.colocated),
+        };
+        store.read(|sessions| Ok(sessions.written())).await
+    }
 }
 
 struct Colocated(std::sync::mpsc::Sender<(String, String)>);

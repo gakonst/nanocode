@@ -663,6 +663,24 @@ mod store {
             Ok(sessions)
         }
 
+        pub async fn summarize(&self, session_ids: &[String]) -> Result<()> {
+            let mut known = Vec::new();
+            for state_id in session_ids.iter().filter(|id| !is_auxiliary_state(id)) {
+                let Some((revision, summary)) = self.revised_summary(state_id).await? else {
+                    continue;
+                };
+                known.push(KnownSummary {
+                    state_id: state_id.clone(),
+                    revision,
+                    summary: summary.as_ref().map(listed_summary).transpose()?,
+                });
+            }
+            if !known.is_empty() {
+                self.store.clone().remember_summaries(known).await?;
+            }
+            Ok(())
+        }
+
         async fn revised_summary(&self, id: &str) -> Result<Option<(u64, Option<SessionSummary>)>> {
             let Some(state) = self.peek(id).await? else {
                 return Ok(None);

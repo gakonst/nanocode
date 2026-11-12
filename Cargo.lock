@@ -3745,6 +3745,7 @@ dependencies = [
  "nanocode-tool-runtime",
  "psh",
  "pulldown-cmark",
+ "serde",
  "serde_json",
  "tokio",
  "unicode-width",

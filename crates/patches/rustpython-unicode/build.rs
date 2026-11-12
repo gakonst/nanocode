@@ -422,7 +422,7 @@ fn generate_algo_names(names: Vec<(u32, Box<str>)>) {
             continue;
         };
         // Skip existing as there are only a few unimplemented algorithmic names.
-        if unicode_names2::name(char::from_u32(start).unwrap()).is_none() {
+        if !raw_start.starts_with("<CJK Ideograph") && !raw_start.starts_with("<Hangul Syllable") {
             match (raw_start.split_once(','), raw_end.split_once(',')) {
                 (Some((TANGUT, _)), Some((TANGUT, _)))
                 | (Some((TANGUT_SUP, _)), Some((TANGUT_SUP, _))) => {
@@ -888,6 +888,7 @@ fn drive_parsers() {
         binary_props_3_2,
         combining_class_3_2,
         generate_name_lookups,
+        generate_names,
     ];
 
     let mut handles = Vec::with_capacity(parsers.len() + 2);
@@ -1075,4 +1076,162 @@ fn main() {
     println!("cargo:rerun-if-changed=unicode/latest");
 
     drive_parsers();
+}
+
+const NAMED_SINCE_UNICODE_17: &[(u32, u32)] = &[
+    (0x088F, 0x088F), (0x0C5C, 0x0C5C), (0x0CDC, 0x0CDC), (0x1ACF, 0x1ADD), (0x1AE0, 0x1AEB),
+    (0x20C1, 0x20C1), (0x2B96, 0x2B96), (0xA7CE, 0xA7CF), (0xA7D2, 0xA7D2), (0xA7D4, 0xA7D4),
+    (0xA7F1, 0xA7F1), (0xFBC3, 0xFBD2), (0xFD90, 0xFD91), (0xFDC8, 0xFDCE), (0x10940, 0x10959),
+    (0x10EC5, 0x10EC7), (0x10ED0, 0x10ED8), (0x10EFA, 0x10EFB), (0x11B60, 0x11B67),
+    (0x11DB0, 0x11DDB), (0x11DE0, 0x11DE9), (0x16EA0, 0x16EB8), (0x16EBB, 0x16ED3),
+    (0x16FF2, 0x16FF6), (0x18D80, 0x18DF2), (0x1CCFA, 0x1CCFC), (0x1CEBA, 0x1CED0),
+    (0x1CEE0, 0x1CEF0), (0x1E6C0, 0x1E6DE), (0x1E6E0, 0x1E6F5), (0x1E6FE, 0x1E6FF),
+    (0x1F6D8, 0x1F6D8), (0x1F777, 0x1F77A), (0x1F8D0, 0x1F8D8), (0x1FA54, 0x1FA57),
+    (0x1FA8A, 0x1FA8A), (0x1FA8E, 0x1FA8E), (0x1FAC8, 0x1FAC8), (0x1FACD, 0x1FACD),
+    (0x1FAEA, 0x1FAEA), (0x1FAEF, 0x1FAEF), (0x1FBFA, 0x1FBFA), (0x2B73A, 0x2B73F),
+    (0x2CEA2, 0x2CEAD), (0x323B0, 0x33479),
+];
+
+const ALIASES_SINCE_UNICODE_17: &[&str] = &[
+    "BAMUM LETTER PHASE-B PUNGGAAM",
+    "BAMUM LETTER PHASE-B NGGOM",
+    "BAMUM LETTER PHASE-C SHETFON",
+    "BAMUM LETTER PHASE-E NGGOP",
+];
+
+const NAME_HANGUL_JUNGSEONG_O_E: u32 = 0x1180;
+
+fn named_since_unicode_17(code: u32) -> bool {
+    NAMED_SINCE_UNICODE_17
+        .iter()
+        .any(|&(start, end)| start <= code && code <= end)
+}
+
+fn loose_name_key(name: &str, code: u32) -> String {
+    let bytes = name.as_bytes();
+    let mut key = String::with_capacity(bytes.len());
+    for (index, byte) in bytes.iter().map(u8::to_ascii_uppercase).enumerate() {
+        if byte.is_ascii_whitespace() || byte == b'_' {
+            continue;
+        }
+        let medial = index > 0
+            && bytes.get(index - 1).is_some_and(u8::is_ascii_alphanumeric)
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_alphanumeric);
+        if code != NAME_HANGUL_JUNGSEONG_O_E && byte == b'-' && medial {
+            continue;
+        }
+        assert!(byte.is_ascii_alphanumeric() || byte == b'-', "{name}");
+        key.push(char::from(byte));
+    }
+    key
+}
+
+fn generate_names() {
+    let mut names: Vec<(u32, String)> = Vec::new();
+    let mut cjk_ranges: Vec<(u32, u32)> = Vec::new();
+    let mut lines = UnicodeLineReader::from_file_name("UnicodeData.txt", true).reader;
+    while let Some(Ok(line)) = lines.next() {
+        let mut fields = line.split(';');
+        let code = u32::from_str_radix(fields.next().unwrap(), 16).unwrap();
+        let name = fields.next().unwrap();
+        if (0xD800..=0xDFFF).contains(&code) {
+            continue;
+        }
+        if let Some(range) = name.strip_prefix("<CJK Ideograph") {
+            assert!(range.ends_with("First>"), "{line}");
+            let last = lines.next().unwrap().unwrap();
+            let last_code = u32::from_str_radix(last.split(';').next().unwrap(), 16).unwrap();
+            cjk_ranges.push((code, last_code));
+        } else if !name.starts_with('<') {
+            names.push((code, name.to_owned()));
+        }
+    }
+    names.sort_unstable_by_key(|(code, _)| *code);
+
+    let mut cjk_ranges_16: Vec<(u32, u32)> = Vec::new();
+    for &(start, end) in &cjk_ranges {
+        let mut run: Option<(u32, u32)> = None;
+        for code in start..=end {
+            if named_since_unicode_17(code) {
+                if let Some(range) = run.take() {
+                    cjk_ranges_16.push(range);
+                }
+            } else {
+                run = Some(run.map_or((code, code), |(first, _)| (first, code)));
+            }
+        }
+        if let Some(range) = run {
+            cjk_ranges_16.push(range);
+        }
+    }
+
+    let mut words: Vec<String> = Vec::new();
+    let mut word_index: BTreeMap<String, u16> = BTreeMap::new();
+    let mut tokens: Vec<u16> = Vec::new();
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    for (code, name) in &names {
+        entries.push((*code, u32::try_from(tokens.len()).unwrap()));
+        let mut pieces = Vec::new();
+        for (space_index, chunk) in name.split(' ').enumerate() {
+            for (hyphen_index, word) in chunk.split('-').enumerate() {
+                pieces.push((word, space_index > 0 && hyphen_index == 0, hyphen_index > 0));
+            }
+        }
+        for (position, &(word, _, _)) in pieces.iter().enumerate() {
+            let next = word_index.len();
+            let index = *word_index.entry(word.to_owned()).or_insert_with(|| {
+                words.push(word.to_owned());
+                u16::try_from(next).unwrap()
+            });
+            assert!(index < 0x8000);
+            let hyphen_follows = pieces.get(position + 1).is_some_and(|&(_, _, hyphen)| hyphen);
+            tokens.push((index << 1) | u16::from(hyphen_follows));
+        }
+    }
+
+    let order = |key: &dyn Fn(usize) -> String| {
+        let mut order: Vec<usize> = (0..names.len()).collect();
+        order.sort_by_cached_key(|&index| key(index));
+        for pair in order.windows(2) {
+            assert_ne!(key(pair[0]), key(pair[1]), "{} {}", names[pair[0]].1, names[pair[1]].1);
+        }
+        order
+    };
+    let by_name = order(&|index| names[index].1.clone());
+    let by_key = order(&|index| loose_name_key(&names[index].1, names[index].0));
+
+    let mut aliases: Vec<(String, u32)> = Vec::new();
+    for line in UnicodeLineReader::from_file_name("NameAliases.txt", true) {
+        let alias = line
+            .field(
+                NonZeroUsize::new(1).unwrap(),
+                Some(&format!("field 1 (alias) missing from NameAliases.txt: {}", line.line)),
+            )
+            .to_owned();
+        aliases.push((alias, line.start));
+    }
+    aliases.sort();
+
+    let mut writer = open_writer("names.rs");
+    let mut text = String::new();
+    let mut ends = Vec::new();
+    for word in &words {
+        text.push_str(word);
+        ends.push(text.len());
+    }
+    let longest = names.iter().map(|(_, name)| name.len()).max().unwrap();
+    writeln!(writer, "pub(crate) const NAME_BYTES_MAX: usize = {longest};").unwrap();
+    writeln!(writer, "pub(crate) static NAME_WORDS: &str = {text:?};").unwrap();
+    writeln!(writer, "pub(crate) static NAME_WORD_ENDS: &[u32] = &{ends:?};").unwrap();
+    writeln!(writer, "pub(crate) static NAME_TOKENS: &[u16] = &{tokens:?};").unwrap();
+    writeln!(writer, "pub(crate) static NAME_CODES: &[u32] = &{:?};", entries.iter().map(|e| e.0).collect::<Vec<_>>()).unwrap();
+    writeln!(writer, "pub(crate) static NAME_TOKEN_STARTS: &[u32] = &{:?};", entries.iter().map(|e| e.1).collect::<Vec<_>>()).unwrap();
+    writeln!(writer, "pub(crate) static NAMES_BY_NAME: &[u16] = &{:?};", by_name.iter().map(|&i| u16::try_from(i).unwrap()).collect::<Vec<_>>()).unwrap();
+    writeln!(writer, "pub(crate) static NAMES_BY_LOOSE_KEY: &[u16] = &{:?};", by_key.iter().map(|&i| u16::try_from(i).unwrap()).collect::<Vec<_>>()).unwrap();
+    writeln!(writer, "pub(crate) static NAMED_SINCE_UNICODE_17: &[(u32, u32)] = &{NAMED_SINCE_UNICODE_17:?};").unwrap();
+    writeln!(writer, "pub(crate) static CJK_IDEOGRAPH_RANGES: &[(u32, u32)] = &{cjk_ranges:?};").unwrap();
+    writeln!(writer, "pub(crate) static CJK_IDEOGRAPH_RANGES_16: &[(u32, u32)] = &{cjk_ranges_16:?};").unwrap();
+    writeln!(writer, "pub(crate) static NAME_ALIAS_TEXTS: &[&str] = &{:?};", aliases.iter().map(|a| a.0.as_str()).collect::<Vec<_>>()).unwrap();
+    writeln!(writer, "pub(crate) static NAME_ALIAS_CODES: &[u32] = &{:?};", aliases.iter().map(|a| a.1).collect::<Vec<_>>()).unwrap();
+    writeln!(writer, "pub(crate) static NAME_ALIAS_SINCE_UNICODE_17: &[bool] = &{:?};", aliases.iter().map(|a| ALIASES_SINCE_UNICODE_17.contains(&a.0.as_str())).collect::<Vec<_>>()).unwrap();
 }

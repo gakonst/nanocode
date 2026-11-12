@@ -223,7 +223,7 @@ impl<'src> StringParser<'src> {
         let name_and_ending = self.skip_bytes(close_idx + 1);
         let name = &name_and_ending[..name_and_ending.len() - 1];
 
-        unicode_names2::character(name).ok_or_else(|| {
+        rustpython_unicode::names::character_unicode_16(name).ok_or_else(|| {
             LexicalError::new(
                 LexicalErrorType::UnicodeError,
                 // The cursor is right after the `}` character, so we subtract 1 to get the correct

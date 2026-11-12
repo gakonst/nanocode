@@ -69,14 +69,14 @@ package = "rustpython-ruff_text_size"
 [dependencies.stacker]
 version = "0.1.24"
 
+[dependencies.rustpython-unicode]
+version = "0.6.0"
+
 [dependencies.unicode-ident]
 version = "1.0.12"
 
 [dependencies.unicode-normalization]
 version = "0.1.23"
-
-[dependencies.unicode_names2]
-version = "1.2.2"
 
 [dev-dependencies.anyhow]
 version = "1.0.80"

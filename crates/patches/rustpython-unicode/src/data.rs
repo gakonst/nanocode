@@ -9,7 +9,7 @@ use core::{cmp::Ordering, fmt::Write, hint::cold_path};
 
 use alloc::{
     format,
-    string::{String, ToString},
+    string::String,
 };
 
 use icu_normalizer::properties::{CanonicalDecomposition, Decomposed};
@@ -236,8 +236,7 @@ pub fn lookup_character(search_name: &str) -> Option<char> {
 /// The Unicode name of `ch` (`unicodedata.name`), if any.
 #[must_use]
 pub fn character_name(ch: char) -> Option<String> {
-    unicode_names2::name(ch)
-        .map(|name| name.to_string())
+    crate::names::name(ch)
         .or_else(|| lookup_table(ALGO_NAMES, ch).map(|v| v.to_name(ch)))
 }
 
@@ -273,7 +272,7 @@ impl Ucd {
     /// (`unicodedata.ucd_3_2_0.lookup`).
     #[must_use]
     pub fn lookup(self, search_name: &str) -> Option<LookupResult> {
-        if let Some(ch) = unicode_names2::character(search_name)
+        if let Some(ch) = crate::names::character(search_name)
             .or_else(|| AlgorithmicName::check_name(search_name))
         {
             return self.membership(ch).then_some(LookupResult::Character(ch));

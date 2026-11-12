@@ -13,6 +13,7 @@ pub mod case;
 pub mod classify;
 pub mod data;
 pub mod identifier;
+pub mod names;
 pub mod normalize;
 
 pub use data::{LookupResult, Ucd, character_name, lookup_character, lookup_name, unicode_version};

@@ -50,21 +50,11 @@ version = "2"
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
 
-[dependencies.unicode_names2]
-version = "3"
-features = ["no_std"]
-default-features = false
-
 [dependencies.writeable]
 version = "0.6"
 
 [build-dependencies.icu_properties]
 version = "2"
-
-[build-dependencies.unicode_names2]
-version = "3"
-features = ["no_std"]
-default-features = false
 
 [build-dependencies.zlib-rs]
 version = "=0.6.8"

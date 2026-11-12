@@ -3936,6 +3936,9 @@ async fn abandon_deferred(
 fn unsupported(message: &str) -> NanocodeError {
     NanocodeError::InvalidRequest(message.into())
 }
+fn request_too_large(error: &NanocodeError) -> bool {
+    matches!(error, NanocodeError::Response(_)) && error.to_string().contains("request_too_large")
+}
 fn unsigned_thinking(error: &NanocodeError) -> bool {
     matches!(error, NanocodeError::Response(_))
         && error
@@ -5771,6 +5774,7 @@ impl State {
                 let error =
                     NanocodeError::Response(nanocode_agent_core::BackendError(Box::new(error)));
                 if (unsigned_thinking(&error)
+                    || request_too_large(&error)
                     || (refused_summary(&error)
                         && (request.compaction.is_some()
                             || error.to_string().contains("compaction")))
@@ -6218,6 +6222,7 @@ impl State {
                 (response, kept, String::new(), summary)
             }
             None => {
+                history::media_placeholders(&mut messages);
                 messages.push(Message::text(Role::User, COMPACTION_INSTRUCTIONS).into());
                 let forced = format!("{step}-text");
                 let mut response = None;
@@ -7268,12 +7273,14 @@ impl State {
             let mut stripped_thinking = false;
             let mut plain_summary = false;
             let mut fresh_tools = false;
+            let mut compacted = false;
             let response = loop {
                 let effect = cursor.effect(self, &step);
                 let scope = [
                     (stripped_thinking, "unsigned-thinking"),
                     (plain_summary, "plain-summary"),
                     (fresh_tools, "fresh-tools"),
+                    (compacted, "request-too-large"),
                 ]
                 .iter()
                 .filter(|(retried, _)| *retried)
@@ -7387,6 +7394,43 @@ impl State {
                             })
                             .collect();
                         fresh_tools = true;
+                    }
+                    Err(failure)
+                        if !cursor.context_recovery_attempted
+                            && failure.recovery.is_none()
+                            && request_too_large(&failure.error) =>
+                    {
+                        tracing::warn!(
+                            target: "nanocode_claude",
+                            session_id = %self.session_id,
+                            model_call_index = index.saturating_add(1),
+                            error = %failure.error,
+                            "Claude refused the request as larger than the Messages API accepts; compacting the conversation without its images and documents and retrying once"
+                        );
+                        cursor.context_recovery_attempted = true;
+                        conversation.messages = pending.clone();
+                        conversation.pending_continuation = false;
+                        let compaction_started = Instant::now();
+                        self.flush_journal(journal).await?;
+                        add_usage(
+                            &mut usage,
+                            &Box::pin(self.compact_locked(
+                                conversation,
+                                cancel,
+                                CompactionMode::ContextRecovery,
+                                &cursor,
+                                &format!("size-recovery-{index}"),
+                            ))
+                            .await?,
+                        );
+                        self.emit_compacted(&request.events, index, compaction_started);
+                        pending = conversation.packed_messages();
+                        previous_message_id = conversation.previous_message_id.clone();
+                        self.retain_pending(&mut cursor, &pending);
+                        cursor.usage = usage.clone();
+                        self.defer_cursor(&mut cursor, conversation, journal)
+                            .await?;
+                        compacted = true;
                     }
                     response => break response,
                 }

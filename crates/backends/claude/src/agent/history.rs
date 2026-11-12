@@ -355,6 +355,46 @@ impl<'de> Deserialize<'de> for AdmittedIds {
     }
 }
 
+pub(super) fn media_placeholders(messages: &mut [HistoryMessage]) {
+    let placeholder = |kind: &str| match kind {
+        "image" => Some("[image]"),
+        "document" => Some("[document]"),
+        _ => None,
+    };
+    let media = |block: &ContentBlock| match block {
+        ContentBlock::Image { .. } | ContentBlock::Document { .. } => true,
+        ContentBlock::ToolResult {
+            content: crate::ToolResultContent::Blocks(blocks),
+            ..
+        } => blocks
+            .iter()
+            .any(|block| block["type"].as_str().and_then(placeholder).is_some()),
+        _ => false,
+    };
+    for message in messages {
+        if !message.content.iter().any(media) {
+            continue;
+        }
+        for block in &mut message.make_mut().content {
+            match block {
+                ContentBlock::Image { .. } => *block = ContentBlock::text("[image]"),
+                ContentBlock::Document { .. } => *block = ContentBlock::text("[document]"),
+                ContentBlock::ToolResult {
+                    content: crate::ToolResultContent::Blocks(blocks),
+                    ..
+                } => {
+                    for block in blocks {
+                        if let Some(text) = block["type"].as_str().and_then(placeholder) {
+                            *block = serde_json::json!({"type": "text", "text": text});
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub(super) fn strip_thinking(messages: &mut Vec<HistoryMessage>) {
     messages.retain_mut(|message| {
         if message.content.iter().any(|block| {

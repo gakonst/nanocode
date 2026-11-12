@@ -12,7 +12,6 @@ repository.workspace = true
 description = "Terminal UI components for Nanocode hosts, derived from clabby/tact"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-pulldown-cmark = { version = "0.13.0", default-features = false }
 serde.workspace = true
 arc-swap.workspace = true
 memchr.workspace = true

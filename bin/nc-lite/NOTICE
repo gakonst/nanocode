@@ -1,1 +1,3 @@
 prompt.md is adapted from the system prompt of fx (https://github.com/vercel-labs/fx), Copyright Vercel, Inc., licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). Changes: the name, and the lines about skills, context-update blocks and fx's own docs, which nc-lite does not have, are removed.
+
+Its Markdown rendering uses nanocode-tui's CommonMark parser, ported from pulldown-cmark 0.13.4 (MIT, Copyright 2015 Google Inc.), with tables generated from WHATWG and Unicode data; crates/tui/NOTICE.md carries their licenses.

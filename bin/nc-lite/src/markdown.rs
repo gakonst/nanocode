@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
+use nanocode_tui::commonmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 
 pub const BOLD: &str = "\x1b[1m";
 pub const DIM: &str = "\x1b[2m";

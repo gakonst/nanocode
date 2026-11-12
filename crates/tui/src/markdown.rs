@@ -1,9 +1,9 @@
+use crate::commonmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use crate::ui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
 use crate::{format::sanitize_terminal_text, theme::Theme};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::{borrow::Cow, ops::Range, sync::Arc};
 use syntect::{easy::HighlightLines, highlighting::HighlightState, parsing::ParseState};
 use unicode_segmentation::UnicodeSegmentation;
@@ -544,19 +544,6 @@ impl<'a> Renderer<'a> {
                     .fg(self.theme.code_text())
                     .bg(self.theme.code_background()),
             ),
-            Event::InlineMath(math) => self.span(
-                &format!("${}$", sanitize(&math)),
-                Style::default().fg(self.theme.thinking_high()),
-            ),
-            Event::DisplayMath(math) => {
-                self.flush();
-                self.span(
-                    &format!("  $${}$$", sanitize(&math)),
-                    Style::default().fg(self.theme.thinking_high()),
-                );
-                self.flush();
-                self.blank();
-            }
             Event::Html(html) | Event::InlineHtml(html) => {
                 self.span(&html, Style::default().fg(self.theme.muted()));
             }
@@ -631,8 +618,7 @@ impl<'a> Renderer<'a> {
                     .fg(self.theme.muted())
                     .add_modifier(Modifier::CROSSED_OUT),
             ),
-            Tag::Superscript => self.text("^"),
-            Tag::Subscript => self.text("~"),
+
             Tag::Link { dest_url, .. } => {
                 self.links.push(LinkState {
                     destination: Arc::from(sanitize(&dest_url)),
@@ -657,27 +643,12 @@ impl<'a> Renderer<'a> {
                     Style::default().fg(self.theme.thinking_medium()),
                 ));
             }
-            Tag::DefinitionListTitle => {
-                self.flush();
-                self.push_style(Style::default().add_modifier(Modifier::BOLD));
-            }
-            Tag::DefinitionListDefinition => {
-                self.flush();
-                self.push_unlinked(Span::styled(
-                    "  : ",
-                    Style::default().fg(self.theme.muted()),
-                ));
-            }
-            Tag::HtmlBlock | Tag::MetadataBlock(_) => {
+            Tag::HtmlBlock => {
                 self.flush();
                 self.push_style(Style::default().fg(self.theme.muted()));
             }
-            Tag::CodeBlock(_)
-            | Tag::Table(_)
-            | Tag::TableHead
-            | Tag::TableRow
-            | Tag::TableCell
-            | Tag::DefinitionList => {}
+            Tag::CodeBlock(_) | Tag::Table(_) | Tag::TableHead | Tag::TableRow | Tag::TableCell => {
+            }
         }
     }
 
@@ -706,8 +677,7 @@ impl<'a> Renderer<'a> {
             }
             TagEnd::Item => self.flush(),
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => self.pop_style(),
-            TagEnd::Superscript => self.text("^"),
-            TagEnd::Subscript => self.text("~"),
+
             TagEnd::Link => {
                 self.pop_style();
                 if let Some(link) = self.links.pop()
@@ -729,17 +699,12 @@ impl<'a> Renderer<'a> {
                     self.render_image_link(image);
                 }
             }
-            TagEnd::FootnoteDefinition
-            | TagEnd::DefinitionListTitle
-            | TagEnd::DefinitionListDefinition
-            | TagEnd::HtmlBlock
-            | TagEnd::MetadataBlock(_) => {
+            TagEnd::FootnoteDefinition | TagEnd::HtmlBlock => {
                 self.pop_style();
                 self.flush();
                 self.blank();
             }
             TagEnd::CodeBlock
-            | TagEnd::DefinitionList
             | TagEnd::Table
             | TagEnd::TableHead
             | TagEnd::TableRow

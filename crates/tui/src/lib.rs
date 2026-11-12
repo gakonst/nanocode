@@ -1,6 +1,7 @@
 #![cfg(not(target_family = "wasm"))]
 
 pub mod beautify;
+pub mod commonmark;
 pub mod composer;
 pub mod diff;
 pub mod effort;

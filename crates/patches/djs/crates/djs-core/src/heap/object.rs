@@ -666,25 +666,43 @@ impl Heap {
         let s = *last;
         if s != 0 && self.shape_is(s, keys, PropFlags::ALL.bits() as u32) {
             let o = self.new_object(proto)?;
-            let count = self.shape_count(s);
-            let v = self.alloc_values(count)?;
-            let a = self.arena_mut();
-            for (i, &value) in (0..count).zip(values) {
-                a.write(PropValues::VALUES.at(v, i), value);
-            }
-            a.set(v, PropValues::LEN, count);
-            a.set(v, PropValues::SHAPE, Ref(s));
-            a.set(o.0, Object::PROPS, Ref(v));
+            self.adopt_shape(o, s, values)?;
             return Ok(o);
         }
         let o = self.new_object_from_entries(proto, keys, values)?;
+        *last = if keys.is_empty() {
+            0
+        } else {
+            self.plain_props_shape(o)
+        };
+        Ok(o)
+    }
+
+    pub(crate) fn adopt_shape(
+        &mut self,
+        o: Obj,
+        s: u32,
+        values: &[Value],
+    ) -> Result<(), HeapError> {
+        let count = self.shape_count(s);
+        let v = self.alloc_values(count)?;
+        let a = self.arena_mut();
+        for (i, &value) in (0..count).zip(values) {
+            a.write(PropValues::VALUES.at(v, i), value);
+        }
+        a.set(v, PropValues::LEN, count);
+        a.set(v, PropValues::SHAPE, Ref(s));
+        a.set(o.0, Object::PROPS, Ref(v));
+        Ok(())
+    }
+
+    pub(crate) fn plain_props_shape(&self, o: Obj) -> u32 {
         let v = self.props(o);
-        *last = if keys.is_empty() || self.is_dictionary(o) || v == 0 {
+        if self.is_dictionary(o) || v == 0 {
             0
         } else {
             self.arena().get(v, PropValues::SHAPE).0
-        };
-        Ok(o)
+        }
     }
 
     /// A new array with `values` as its dense elements (`length` = `values.len()`).

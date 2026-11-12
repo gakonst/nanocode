@@ -208,6 +208,7 @@ impl Heap {
         self.mega_ic.fill(0);
         self.iterator_ic = Default::default();
         self.return_ic = Default::default();
+        self.regexp_shape = 0;
         self.atom_memo.fill([0; 2]);
         for o in collections {
             self.collection_rehash(Obj(o));

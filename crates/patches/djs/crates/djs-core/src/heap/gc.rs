@@ -357,6 +357,7 @@ impl Heap {
         self.mega_ic.fill(0);
         self.iterator_ic = Default::default();
         self.return_ic = Default::default();
+        self.regexp_shape = 0;
         self.atom_memo.fill([0; 2]);
         self.refresh_frozen();
         let t = next_threshold_cheap(after, self.base_end(), self.arena.limit(), cheap);

@@ -5,7 +5,7 @@ use super::{
     special_value,
 };
 use crate::{Error, Result, m, mul_add};
-use num_complex::Complex64;
+use nanocode_numeric::Complex64;
 
 // Local constants
 const M_LN10: f64 = core::f64::consts::LN_10;

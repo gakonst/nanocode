@@ -8,7 +8,7 @@ use crate::stdlib::_warnings;
 use crate::types::{AsBuffer, Constructor, Initializer, SetAttr};
 use crate::{AsObject, Py, PyObject, PyObjectRef, PyPayload, PyResult, VirtualMachine};
 use alloc::borrow::Cow;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 /// Calculate Union type size from _fields_ (max field size)
 pub(super) fn calculate_union_size(cls: &Py<PyType>, vm: &VirtualMachine) -> PyResult<usize> {

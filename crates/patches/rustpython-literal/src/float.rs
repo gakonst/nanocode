@@ -2,7 +2,6 @@ use crate::format::Case;
 use alloc::borrow::ToOwned;
 use alloc::format;
 use alloc::string::{String, ToString};
-use num_traits::Zero;
 
 #[must_use]
 pub fn parse_str(literal: &str) -> Option<f64> {
@@ -620,7 +619,7 @@ pub fn to_hex(value: f64) -> String {
     let bits = value.to_bits();
     let sign_fmt = if bits >> 63 != 0 { "-" } else { "" };
     match value {
-        value if value.is_zero() => format!("{sign_fmt}0x0.0p+0"),
+        value if value == 0.0 => format!("{sign_fmt}0x0.0p+0"),
         value if value.is_infinite() => format!("{sign_fmt}inf"),
         value if value.is_nan() => "nan".to_owned(),
         _ => {

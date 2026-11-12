@@ -9,7 +9,7 @@ use crate::{
     types::{AsNumber, Constructor, Representable},
 };
 use core::fmt::{Debug, Formatter};
-use num_traits::Zero;
+use nanocode_numeric::Zero;
 
 impl ToPyObject for bool {
     fn to_pyobject(self, vm: &VirtualMachine) -> PyObjectRef {

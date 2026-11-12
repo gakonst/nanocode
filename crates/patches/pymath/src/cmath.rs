@@ -11,7 +11,7 @@ pub use exponential::{exp, log, log10, sqrt};
 pub use misc::{abs, isclose, isfinite, isinf, isnan, phase, polar, rect};
 pub use trigonometric::{acos, acosh, asin, asinh, atan, atanh, cos, cosh, sin, sinh, tan, tanh};
 
-use num_complex::Complex64;
+use nanocode_numeric::Complex64;
 
 // Public constants (matching Python's cmath module)
 
@@ -59,8 +59,8 @@ const U: f64 = -9.5426319407711027e33; // unlikely value, used as placeholder
 
 /// Helper to create Complex64 in const context (for special value tables)
 #[inline]
-const fn c(re: f64, im: f64) -> num_complex::Complex64 {
-    num_complex::Complex64::new(re, im)
+const fn c(re: f64, im: f64) -> nanocode_numeric::Complex64 {
+    nanocode_numeric::Complex64::new(re, im)
 }
 
 /// Special value types for classifying doubles.

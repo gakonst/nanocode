@@ -3,9 +3,9 @@ use core::ops::Deref;
 use core::{cmp, str::FromStr};
 use crate::wtf8::iteration::{Itertools, PeekingNext};
 use nanocode_numeric::{BigInt, Sign};
-use num_complex::Complex64;
-use num_traits::FromPrimitive;
-use num_traits::{Signed, cast::ToPrimitive};
+use nanocode_numeric::Complex64;
+use nanocode_numeric::FromPrimitive;
+use nanocode_numeric::{Signed, ToPrimitive};
 use rustpython_literal::float;
 use rustpython_literal::format::Case;
 

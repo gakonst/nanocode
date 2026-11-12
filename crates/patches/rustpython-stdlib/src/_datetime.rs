@@ -24,7 +24,7 @@ mod _datetime {
     };
     use crossbeam_utils::atomic::AtomicCell;
     use nanocode_numeric::{BigInt, ToBigInt};
-    use num_traits::{Signed, ToPrimitive, Zero};
+    use nanocode_numeric::{Signed, ToPrimitive, Zero};
 
     #[pyattr]
     const MINYEAR: i32 = 1;

@@ -52,7 +52,7 @@ mod _socket {
     };
     use crossbeam_utils::atomic::AtomicCell;
     use host_socket::raw::Socket;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use std::{
         ffi,
         io::{self, Read, Write},

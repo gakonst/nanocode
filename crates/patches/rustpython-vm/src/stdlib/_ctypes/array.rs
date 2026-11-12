@@ -14,7 +14,7 @@ use crate::{
     types::{AsBuffer, AsMapping, AsNumber, AsSequence, Constructor, Initializer},
 };
 use alloc::borrow::Cow;
-use num_traits::{Signed, ToPrimitive};
+use nanocode_numeric::{Signed, ToPrimitive};
 
 use rustpython_host_env::ctypes::{
     ArrayElementWriteValue, DecodedValue, WCHAR_SIZE, WCharArrayWriteError, char_array_field_value,

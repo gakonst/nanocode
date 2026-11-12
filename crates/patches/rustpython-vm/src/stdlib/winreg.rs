@@ -17,7 +17,7 @@ mod winreg {
     use core::ptr;
     use crossbeam_utils::atomic::AtomicCell;
     use nanocode_numeric::Sign;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use rustpython_common::wtf8::Wtf8Buf;
     use rustpython_host_env::windows::ToWideString;
     use rustpython_host_env::winreg as host_winreg;

@@ -91,7 +91,7 @@ pub(crate) fn ast_constant_value_to_constant_data(value: ast::ConstantValue) -> 
         },
         ast::ConstantValue::Float(value) => ConstantData::Float { value },
         ast::ConstantValue::Complex { real, imag } => ConstantData::Complex {
-            value: num_complex::Complex::new(real, imag),
+            value: nanocode_numeric::Complex::new(real, imag),
         },
         ast::ConstantValue::Ellipsis => ConstantData::Ellipsis,
     }

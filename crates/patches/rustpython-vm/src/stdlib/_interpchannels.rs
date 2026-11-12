@@ -21,7 +21,7 @@ pub(crate) mod _interpchannels {
     use alloc::collections::BTreeMap;
     use alloc::{collections::VecDeque, sync::Arc};
     use core::time::Duration;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use parking_lot::{Condvar, Mutex};
     use std::{sync::OnceLock, time::Instant};
 

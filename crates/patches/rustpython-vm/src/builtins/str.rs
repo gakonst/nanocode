@@ -37,7 +37,7 @@ use core::ffi::CStr;
 use core::{char, mem, ops::Range};
 use rustpython_common::wtf8::iteration::Itertools;
 use memchr::memchr;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 use rustpython_common::{
     ascii,
     atomic::{self, PyAtomic, Radium},

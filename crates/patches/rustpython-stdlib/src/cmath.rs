@@ -6,7 +6,7 @@ mod cmath {
         PyResult, VirtualMachine,
         function::{ArgIntoComplex, ArgIntoFloat, OptionalArg},
     };
-    use num_complex::Complex64;
+    use nanocode_numeric::Complex64;
 
     use crate::math::pymath_exception;
 

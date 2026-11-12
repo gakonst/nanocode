@@ -5,7 +5,7 @@ use super::{
     special_value, sqrt,
 };
 use crate::{Error, Result, m, mul_add};
-use num_complex::Complex64;
+use nanocode_numeric::Complex64;
 
 // Local constants
 const CM_SQRT_LARGE_DOUBLE: f64 = 6.703903964971298e+153; // sqrt(CM_LARGE_DOUBLE)

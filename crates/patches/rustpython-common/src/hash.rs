@@ -1,6 +1,6 @@
 use core::hash::{BuildHasher, Hash, Hasher};
 use nanocode_numeric::BigInt;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 use crate::siphash::SipHasher24;
 

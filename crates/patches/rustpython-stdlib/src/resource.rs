@@ -10,7 +10,7 @@ mod resource {
         convert::{ToPyException, ToPyObject},
         types::PyStructSequence,
     };
-    use num_traits::Signed;
+    use nanocode_numeric::Signed;
     use rustpython_host_env::resource as host_resource;
     use std::io;
 

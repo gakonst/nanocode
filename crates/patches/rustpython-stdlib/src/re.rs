@@ -15,7 +15,7 @@ mod re {
         function::{OptionalArg, PosArgs},
         match_class,
     };
-    use num_traits::Signed;
+    use nanocode_numeric::Signed;
     use regex::bytes::{Captures, Regex, RegexBuilder};
     use std::fmt;
     use std::ops::Range;

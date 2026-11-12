@@ -1,5 +1,5 @@
 use nanocode_numeric::Sign;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 use crate::{
     Py, VirtualMachine,

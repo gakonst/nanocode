@@ -44,7 +44,7 @@ use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed};
 use rustpython_common::wtf8::iteration::Itertools;
 use nanocode_numeric::BigInt;
-use num_traits::{ToPrimitive, Zero};
+use nanocode_numeric::{ToPrimitive, Zero};
 use rustpython_common::atomic::{PyAtomic, Radium};
 use rustpython_common::{
     lock::{OnceCell, PyMutex},
@@ -9639,7 +9639,7 @@ impl ExecutingFrame<'_> {
         vm: &VirtualMachine,
         compute: fn(i64, i64) -> Option<i64>,
     ) -> Option<PyObjectRef> {
-        use num_traits::ToPrimitive;
+        use nanocode_numeric::ToPrimitive;
         let (av, bv) = (a.to_i64()?, b.to_i64()?);
         compute(av, bv).map(|r| vm.ctx.new_int(r).into())
     }

@@ -9,7 +9,7 @@ use core::{
 };
 use crate::wtf8::iteration::Itertools;
 use nanocode_numeric::{BigInt, Sign};
-use num_traits::Signed;
+use nanocode_numeric::Signed;
 use rustpython_literal::{float, format::Case};
 
 use crate::wtf8::{CodePoint, Wtf8, Wtf8Buf};

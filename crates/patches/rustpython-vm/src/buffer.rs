@@ -13,8 +13,8 @@ use core::{fmt, iter::Peekable, mem};
 use crate::half::Half;
 use rustpython_common::wtf8::iteration::Itertools;
 use nanocode_numeric::BigInt;
-use num_complex::Complex64;
-use num_traits::{PrimInt, ToPrimitive};
+use nanocode_numeric::Complex64;
+use nanocode_numeric::{PrimInt, ToPrimitive};
 use std::{collections::HashMap, os::raw};
 
 type PackFunc = fn(&VirtualMachine, FormatType, PyObjectRef, &mut [u8]) -> Result<(), PackError>;

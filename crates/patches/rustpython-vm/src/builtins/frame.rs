@@ -11,7 +11,7 @@ use crate::{
     types::{Destructor, Representable},
 };
 use core::sync::atomic::Ordering::Relaxed;
-use num_traits::Zero;
+use nanocode_numeric::Zero;
 #[allow(unused_imports)]
 use rustpython_common::atomic::Radium;
 use rustpython_compiler_core::bytecode::{self, Constant, Instruction, StackEffect};

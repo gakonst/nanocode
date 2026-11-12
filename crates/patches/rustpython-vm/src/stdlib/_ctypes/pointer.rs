@@ -10,7 +10,7 @@ use crate::{
     function::{FuncArgs, OptionalArg},
 };
 use alloc::borrow::Cow;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 use rustpython_host_env::ctypes::{
     AddressValue, AddressWriteValue, IntegerValue, pointer_item_address, read_pointer_char_slice,
     read_pointer_wchar_slice,

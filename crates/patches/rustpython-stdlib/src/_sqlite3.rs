@@ -44,7 +44,7 @@ mod _sqlite3 {
         sqlite3_value_text, sqlite3_value_type,
     };
     use nanocode_numeric::Sign;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use rustpython_common::{
         atomic::{Ordering, PyAtomic, Radium},
         hash::PyHash,

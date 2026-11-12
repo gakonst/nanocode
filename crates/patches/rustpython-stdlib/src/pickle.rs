@@ -20,7 +20,7 @@ mod _pickle {
     };
     use core::sync::atomic::{AtomicI32, Ordering};
     use nanocode_numeric::BigInt;
-    use num_traits::{ToPrimitive, Zero};
+    use nanocode_numeric::{ToPrimitive, Zero};
     use std::collections::HashMap;
 
     // The highest protocol number `_pickle` knows how to read.

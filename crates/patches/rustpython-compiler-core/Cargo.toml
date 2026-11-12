@@ -43,12 +43,6 @@ path = "../../core/compression"
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"
 
-[dependencies.num-complex]
-version = "0.4.6"
-
-[dependencies.num-traits]
-version = "0.2"
-
 [dependencies.ruff_source_file]
 version = "0.16.5"
 package = "rustpython-ruff_source_file"

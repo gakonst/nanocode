@@ -24,8 +24,8 @@ use core::cell::Cell;
 use core::ops::{Neg, Not};
 use core::ptr::NonNull;
 use nanocode_numeric::{BigInt, Sign};
-use num_integer::{ExtendedGcd, Integer};
-use num_traits::{One, Pow, PrimInt, Signed, ToPrimitive, Zero};
+use nanocode_numeric::{ExtendedGcd, Integer};
+use nanocode_numeric::{One, Pow, PrimInt, Signed, ToPrimitive, Zero};
 
 #[pyclass(module = false, name = "int")]
 #[derive(Debug)]

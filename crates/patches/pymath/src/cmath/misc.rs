@@ -2,7 +2,7 @@
 
 use super::{INF, N, U, c, special_type};
 use crate::{Error, Result, m};
-use num_complex::Complex64;
+use nanocode_numeric::Complex64;
 
 #[rustfmt::skip]
 static RECT_SPECIAL_VALUES: [[Complex64; 7]; 7] = [

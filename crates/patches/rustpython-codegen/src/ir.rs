@@ -2,8 +2,8 @@ use core::ops::{Deref, DerefMut, Index, IndexMut};
 
 use crate::{IndexMap, IndexSet, error::InternalError};
 use nanocode_numeric::BigInt;
-use num_complex::Complex;
-use num_traits::{ToPrimitive, Zero};
+use nanocode_numeric::Complex;
+use nanocode_numeric::{ToPrimitive, Zero};
 use rustpython_wtf8::Wtf8Buf;
 
 use rustpython_compiler_core::{
@@ -4767,7 +4767,7 @@ fn const_folding_safe_power(left: &ConstantData, right: &ConstantData) -> Option
                 return None;
             }
             Some(ConstantData::Integer {
-                value: num_traits::pow::pow(l.clone(), exp_usize),
+                value: nanocode_numeric::Pow::pow(l.clone(), exp_usize),
             })
         }
         (ConstantData::Float { value: l }, ConstantData::Float { value: r }) => {

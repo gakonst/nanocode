@@ -3767,7 +3767,7 @@ impl VirtualMachine {
                 .unwrap_or_else(|_| exc.as_object().to_owned());
             let msg = match_class!(match code {
                 ref i @ PyInt => {
-                    use num_traits::cast::ToPrimitive;
+                    use nanocode_numeric::ToPrimitive;
                     // Try u32 first, then i32 (for negative values), else -1 for overflow
                     let code = i
                         .as_bigint()

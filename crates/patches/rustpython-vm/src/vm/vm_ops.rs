@@ -7,7 +7,7 @@ use crate::{
     protocol::{PyNumberBinaryOp, PyNumberSlots, PyNumberTernaryOp, PyNumberUnaryFunc, PySequence},
     types::PyComparisonOp,
 };
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 /// [CPython `method_is_overloaded`](https://github.com/python/cpython/blob/v3.14.3/Objects/typeobject.c#L9849-L9879)
 fn method_is_overloaded(

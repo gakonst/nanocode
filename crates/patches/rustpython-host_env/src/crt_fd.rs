@@ -37,8 +37,8 @@ pub type Raw = cfg_select! {
 };
 
 #[inline]
-fn cvt<I: num_traits::PrimInt>(ret: I) -> io::Result<I> {
-    if ret < I::zero() {
+fn cvt<I: Copy + PartialOrd + Default>(ret: I) -> io::Result<I> {
+    if ret < I::default() {
         // CRT functions set errno, not GetLastError(), so use errno_io_error
         Err(crate::os::errno_io_error())
     } else {

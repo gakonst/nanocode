@@ -82,7 +82,7 @@ macro_rules! py_namespace {
 ///
 /// ```rust
 /// use nanocode_numeric::ToBigInt;
-/// use num_traits::Zero;
+/// use nanocode_numeric::Zero;
 ///
 /// use rustpython_vm::{PyPayload, match_class};
 /// use rustpython_vm::builtins::{PyFloat, PyInt};
@@ -105,7 +105,7 @@ macro_rules! py_namespace {
 ///
 /// ```rust
 /// use nanocode_numeric::ToBigInt;
-/// use num_traits::Zero;
+/// use nanocode_numeric::Zero;
 ///
 /// use rustpython_vm::{PyPayload, match_class};
 /// use rustpython_vm::builtins::{PyFloat, PyInt};

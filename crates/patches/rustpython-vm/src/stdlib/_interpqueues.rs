@@ -18,7 +18,7 @@ pub(crate) mod _interpqueues {
     };
     use alloc::{collections::BTreeMap, collections::VecDeque, sync::Arc};
     use core::cell::Cell;
-    use num_traits::{Signed, ToPrimitive};
+    use nanocode_numeric::{Signed, ToPrimitive};
     use parking_lot::Mutex;
     use std::sync::OnceLock;
 

@@ -19,7 +19,7 @@ use crate::{
 };
 use core::{any::Any, any::TypeId, borrow::Borrow, cmp::Ordering, ops::Deref};
 use crossbeam_utils::atomic::AtomicCell;
-use num_traits::{Signed, ToPrimitive};
+use nanocode_numeric::{Signed, ToPrimitive};
 use rustpython_common::wtf8::Wtf8Buf;
 
 /// Predicate used by [`PyTypeSlots::del_needed`].

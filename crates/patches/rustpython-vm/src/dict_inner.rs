@@ -23,7 +23,7 @@ use core::sync::atomic::{
     AtomicU32,
     Ordering::{AcqRel, Acquire, Relaxed, Release},
 };
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 // HashIndex is intended to be same size with hash::PyHash
 // but it doesn't mean the values are compatible with actual PyHash value

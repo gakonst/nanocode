@@ -14,7 +14,7 @@ use crate::{
     types::{Comparable, Constructor, Hashable, PyComparisonOp, Representable},
 };
 use nanocode_numeric::{BigInt, ToBigInt};
-use num_traits::{One, Signed, Zero};
+use nanocode_numeric::{One, Signed, Zero};
 
 #[pyclass(module = false, name = "slice", unhashable = true, traverse = "manual")]
 #[derive(Debug)]

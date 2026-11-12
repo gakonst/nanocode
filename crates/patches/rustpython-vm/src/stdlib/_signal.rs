@@ -51,7 +51,7 @@ pub(crate) mod _signal {
 
             impl<'a> TryFromBorrowedObject<'a> for WakeupFd {
                 fn try_from_borrowed_object(vm: &VirtualMachine, obj: &'a crate::PyObject) -> PyResult<Self> {
-                    use num_traits::One;
+                    use nanocode_numeric::One;
 
                     let fd: &crate::Py<crate::builtins::PyInt> = obj.try_to_value(vm)?;
                     match fd.try_to_primitive::<usize>(vm) {

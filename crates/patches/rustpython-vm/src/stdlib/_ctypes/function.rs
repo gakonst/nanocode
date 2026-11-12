@@ -20,7 +20,7 @@ use alloc::borrow::Cow;
 use core::ffi::c_void;
 use core::fmt::Debug;
 use core::ptr::NonNull;
-use num_traits::{Signed, ToPrimitive};
+use nanocode_numeric::{Signed, ToPrimitive};
 use rustpython_common::lock::PyRwLock;
 #[cfg(windows)]
 use rustpython_host_env::ctypes::ComMethodError;

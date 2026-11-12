@@ -24,7 +24,7 @@ pub(crate) type FromObject = fn(&VirtualMachine, &PyObject) -> PyResult<Vec<u8>>
 use bstr::ByteSlice;
 use rustpython_common::wtf8::iteration::Itertools;
 use nanocode_numeric::BigInt;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 const STRING_WITHOUT_ENCODING: &str = "string argument without an encoding";
 const ENCODING_WITHOUT_STRING: &str = "encoding without a string argument";

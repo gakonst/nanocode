@@ -21,8 +21,8 @@ use crate::{
 use alloc::borrow::Cow;
 use core::{mem, slice};
 use nanocode_numeric::BigInt;
-use num_complex::Complex;
-use num_traits::{Num, ToPrimitive, Zero};
+use nanocode_numeric::Complex;
+use nanocode_numeric::{Num, ToPrimitive, Zero};
 use ruff_python_ast::{self as ast, name::Name};
 use ruff_text_size::{Ranged, TextRange, TextSize, TextSlice};
 use rustpython_compiler_core::{
@@ -3532,7 +3532,7 @@ impl<'warnings> Compiler<'warnings> {
                 for name in names {
                     let name = &name;
                     self.emit_load_const(ConstantData::Integer {
-                        value: num_traits::Zero::zero(),
+                        value: nanocode_numeric::Zero::zero(),
                     });
                     self.emit_load_const(ConstantData::None);
                     let namei = self.name(&name.name);

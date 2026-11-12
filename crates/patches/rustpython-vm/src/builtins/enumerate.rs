@@ -11,7 +11,7 @@ use crate::{
     types::{Constructor, IterNext, Iterable, SelfIter},
 };
 use nanocode_numeric::BigInt;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 /// Fast-path counter for `enumerate`.
 ///

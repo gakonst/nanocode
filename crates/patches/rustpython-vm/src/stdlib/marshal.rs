@@ -19,7 +19,7 @@ mod decl {
     };
     use core::cell::RefCell;
     use nanocode_numeric::BigInt;
-    use num_traits::Zero;
+    use nanocode_numeric::Zero;
     use rustpython_compiler_core::marshal::{self, DumpableValue};
 
     #[pyattr(name = "version")]
@@ -554,7 +554,7 @@ mod decl {
         fn make_float(&self, value: f64) -> Self::Value {
             self.vm.ctx.new_float(value).into()
         }
-        fn make_complex(&self, value: num_complex::Complex64) -> Self::Value {
+        fn make_complex(&self, value: nanocode_numeric::Complex64) -> Self::Value {
             self.vm.ctx.new_complex(value).into()
         }
         fn make_str(&self, value: &Wtf8) -> Self::Value {

@@ -14,7 +14,7 @@ mod math {
         identifier,
     };
     use nanocode_numeric::BigInt;
-    use num_traits::{Signed, ToPrimitive};
+    use nanocode_numeric::{Signed, ToPrimitive};
 
     use super::{float_repr, pymath_exception};
 

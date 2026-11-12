@@ -32,7 +32,7 @@ mod builtins {
         vm::compile_mode::{CompileStart, CompilerFlags, compile_future_features_from_flags},
     };
     use rustpython_common::wtf8::iteration::Itertools;
-    use num_traits::{Signed, ToPrimitive};
+    use nanocode_numeric::{Signed, ToPrimitive};
     use rustpython_common::wtf8::CodePoint;
 
     #[cfg(not(feature = "rustpython-compiler"))]

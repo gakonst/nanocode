@@ -31,9 +31,6 @@ resolver = "2"
 name = "rustpython_literal"
 path = "src/lib.rs"
 
-[dependencies.num-traits]
-version = "0.2"
-
 [dependencies.rustpython-unicode]
 version = "0.6.0"
 

@@ -20,11 +20,11 @@ mod decl {
     use core::sync::atomic::{AtomicBool, Ordering};
     use crossbeam_utils::atomic::AtomicCell;
     use nanocode_numeric::BigInt;
-    use num_traits::One;
+    use nanocode_numeric::One;
     use rustpython_common::wtf8::Wtf8Buf;
 
     use alloc::fmt;
-    use num_traits::{Signed, ToPrimitive};
+    use nanocode_numeric::{Signed, ToPrimitive};
 
     #[pyattr]
     #[pyclass(name = "chain", traverse)]

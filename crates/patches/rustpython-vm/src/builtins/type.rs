@@ -41,7 +41,7 @@ use core::{
 };
 use indexmap::{IndexMap, map::Entry};
 use rustpython_common::wtf8::iteration::Itertools;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 use rustpython_common::wtf8::Wtf8;
 use std::collections::HashSet;
 

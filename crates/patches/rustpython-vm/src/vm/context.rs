@@ -27,8 +27,8 @@ use crate::{
 };
 use core::ffi::{CStr, c_void};
 use nanocode_numeric::BigInt;
-use num_complex::Complex64;
-use num_traits::ToPrimitive;
+use nanocode_numeric::Complex64;
+use nanocode_numeric::ToPrimitive;
 use rustpython_common::lock::PyRwLock;
 
 #[derive(Debug)]

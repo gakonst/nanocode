@@ -13,8 +13,8 @@ use crate::{
 use core::cell::Cell;
 use core::num::Wrapping;
 use core::ptr::NonNull;
-use num_complex::Complex64;
-use num_traits::Zero;
+use nanocode_numeric::Complex64;
+use nanocode_numeric::Zero;
 use rustpython_common::hash;
 
 #[pyclass(module = false, name = "complex")]

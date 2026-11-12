@@ -16,8 +16,8 @@ use core::{
 };
 use rustpython_wtf8::iteration::Itertools;
 use nanocode_numeric::BigInt;
-use num_complex::Complex64;
-use num_traits::Zero;
+use nanocode_numeric::Complex64;
+use nanocode_numeric::Zero;
 use rustpython_wtf8::{Wtf8, Wtf8Buf};
 
 pub use crate::bytecode::{

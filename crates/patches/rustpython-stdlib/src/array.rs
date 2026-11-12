@@ -46,7 +46,7 @@ pub mod array {
     use alloc::fmt;
     use core::cmp::Ordering;
     use rustpython_common::wtf8::iteration::Itertools;
-    use num_traits::{Signed, ToPrimitive};
+    use nanocode_numeric::{Signed, ToPrimitive};
     use rustpython_common::wtf8::{CodePoint, Wtf8, Wtf8Buf};
     use std::os::raw;
     macro_rules! def_array_enum {
@@ -617,14 +617,14 @@ pub mod array {
                 .code_points()
                 .exactly_one()
                 .ok()?;
-            num_traits::cast(ch.to_u32()).map(Self).map(Some)
+            wchar_t::try_from(ch.to_u32()).ok().map(Self).map(Some)
         }
 
         fn validate_slice(items: &[Self], vm: &VirtualMachine) -> PyResult<()> {
             let codepoints = || {
                 items
                     .iter()
-                    .map(|item| num_traits::AsPrimitive::<u32>::as_(item.0))
+                    .map(|item| item.0 as u32)
             };
             if codepoints().max().unwrap_or(0) > 0x10ffff {
                 let invalid = codepoints().find(|&value| value > 0x10ffff).unwrap();

@@ -5,7 +5,7 @@ use crate::{
 };
 use core::ops::Range;
 use nanocode_numeric::BigInt;
-use num_traits::{Signed, ToPrimitive};
+use nanocode_numeric::{Signed, ToPrimitive};
 
 pub trait SliceableSequenceMutOp
 where

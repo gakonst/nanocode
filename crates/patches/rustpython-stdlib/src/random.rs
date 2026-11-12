@@ -13,7 +13,7 @@ mod _random {
     use rustpython_common::wtf8::iteration::Itertools;
     use nanocode_numeric::{BigInt, BigUint, Sign};
     use crate::mersenne_twister::{self as mt19937, MT19937};
-    use num_traits::{Signed, Zero};
+    use nanocode_numeric::{Signed, Zero};
     use rustpython_vm::types::DefaultConstructor;
 
     #[pyattr]

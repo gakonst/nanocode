@@ -7,7 +7,7 @@
 use super::integer::perm_comb_small;
 #[cfg(feature = "bigint")]
 pub(crate) use nanocode_numeric::{BigInt, BigUint};
-use num_traits::{One, Signed, ToPrimitive};
+use nanocode_numeric::{One, Signed, ToPrimitive};
 
 // Perm/Comb for BigInt n
 

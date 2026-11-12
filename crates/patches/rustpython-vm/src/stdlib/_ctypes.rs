@@ -100,7 +100,7 @@ pub(crate) mod _ctypes {
     use crate::function::{ArgStrictInt, Either, OptionalArg};
     use crate::types::Representable;
     use crate::{AsObject, Py, PyObjectRef, PyPayload, PyResult, VirtualMachine};
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
 
     // CArgObject - returned by byref() and paramfunc
     // tagPyCArgObject

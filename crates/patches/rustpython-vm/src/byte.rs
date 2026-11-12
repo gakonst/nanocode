@@ -1,6 +1,6 @@
 //! byte operation APIs
 
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 use crate::{
     AsObject, PyObject, PyObjectRef, PyResult, VirtualMachine,

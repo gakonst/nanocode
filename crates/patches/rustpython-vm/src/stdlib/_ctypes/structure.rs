@@ -8,7 +8,7 @@ use crate::types::{AsBuffer, AsNumber, Constructor, Initializer, SetAttr};
 use crate::{AsObject, Py, PyObject, PyObjectRef, PyPayload, PyResult, VirtualMachine};
 use alloc::borrow::Cow;
 use core::fmt::Debug;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 /// Calculate Structure type size from _fields_ (sum of field sizes)
 pub(super) fn calculate_struct_size(cls: &Py<PyType>, vm: &VirtualMachine) -> PyResult<usize> {

@@ -7,7 +7,7 @@ use crate::{
     convert::ToPyObject,
     function::FuncArgs,
 };
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 use rustpython_jit::{AbiValue, Args, CompiledCode, JitArgumentError, JitType};
 
 #[derive(Debug, thiserror::Error)]

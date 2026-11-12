@@ -1,5 +1,5 @@
 use nanocode_numeric::{BigInt, BigUint, Sign};
-use num_traits::{One, ToPrimitive, Zero};
+use nanocode_numeric::{One, ToPrimitive, Zero};
 
 #[must_use]
 pub fn true_div(numerator: &BigInt, denominator: &BigInt) -> f64 {

@@ -20,7 +20,7 @@ use crate::{
     protocol::PyBuffer,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 use rustpython_common::wtf8::Wtf8Buf;
 
 static MEMORYVIEW_REGISTERED: AtomicBool = AtomicBool::new(false);

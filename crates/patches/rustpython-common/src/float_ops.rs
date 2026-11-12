@@ -1,6 +1,6 @@
 use core::f64::consts::LOG10_2;
 use nanocode_numeric::{BigInt, ToBigInt};
-use num_traits::{Signed, ToPrimitive};
+use nanocode_numeric::{Signed, ToPrimitive};
 
 #[must_use]
 pub const fn decompose_float(value: f64) -> (f64, i32) {

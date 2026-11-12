@@ -23,7 +23,7 @@ mod mmap {
     };
     use core::ops::{Deref, DerefMut};
     use crossbeam_utils::atomic::AtomicCell;
-    use num_traits::Signed;
+    use nanocode_numeric::Signed;
     use std::io::Write;
     #[cfg(windows)]
     use {core::hint::cold_path, memchr::memchr, rustpython_vm::exceptions, std::io};

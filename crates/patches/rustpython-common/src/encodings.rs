@@ -1,6 +1,6 @@
 use core::ops::{self, Range};
 
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 use crate::str::StrKind;
 use crate::wtf8::{CodePoint, Wtf8, Wtf8Buf};

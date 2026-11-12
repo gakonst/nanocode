@@ -2,7 +2,7 @@ use crate::{OneIndexed, SourceLocation, bytecode::*};
 use alloc::{boxed::Box, vec::Vec};
 use core::convert::Infallible;
 use nanocode_numeric::{BigInt, Sign};
-use num_complex::Complex64;
+use nanocode_numeric::Complex64;
 use rustpython_wtf8::Wtf8;
 
 pub const FORMAT_VERSION: u32 = 5;

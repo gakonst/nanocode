@@ -20,7 +20,7 @@ mod _sre {
     use core::str;
     use crossbeam_utils::atomic::AtomicCell;
     use rustpython_common::wtf8::iteration::Itertools;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use rustpython_sre_engine::{
         Request, SearchIter, SreFlag, State, StrDrive, StringCursor,
         string::{lower_ascii, lower_unicode},

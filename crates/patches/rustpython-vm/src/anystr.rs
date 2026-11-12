@@ -1,6 +1,6 @@
 use core::ops::Range;
 
-use num_traits::{cast::ToPrimitive, sign::Signed};
+use nanocode_numeric::{Signed, ToPrimitive};
 use rustpython_unicode::case;
 
 use crate::{

@@ -1945,7 +1945,7 @@ fn parse_buffer_flags(
     arg: &PyObject,
     vm: &VirtualMachine,
 ) -> PyResult<crate::protocol::BufferFlags> {
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     let idx = arg.try_index(vm)?;
     let flags = idx
         .as_bigint()

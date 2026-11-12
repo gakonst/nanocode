@@ -222,7 +222,7 @@ fn constant_literal_to_constant_data(value: &ConstantLiteral) -> ConstantData {
         },
         ConstantLiteral::Float(value) => ConstantData::Float { value: *value },
         ConstantLiteral::Complex { real, imag } => ConstantData::Complex {
-            value: num_complex::Complex::new(*real, *imag),
+            value: nanocode_numeric::Complex::new(*real, *imag),
         },
         ConstantLiteral::Ellipsis => ConstantData::Ellipsis,
     }
@@ -298,7 +298,7 @@ pub(super) fn ast_constant_value_to_constant_data(value: ast::ConstantValue) -> 
         },
         ast::ConstantValue::Float(value) => ConstantData::Float { value },
         ast::ConstantValue::Complex { real, imag } => ConstantData::Complex {
-            value: num_complex::Complex::new(real, imag),
+            value: nanocode_numeric::Complex::new(real, imag),
         },
         ast::ConstantValue::Ellipsis => ConstantData::Ellipsis,
     }
@@ -528,7 +528,7 @@ impl Node for ConstantLiteral {
             Self::Float(value) => vm.ctx.new_float(value).into(),
             Self::Complex { real, imag } => vm
                 .ctx
-                .new_complex(num_complex::Complex::new(real, imag))
+                .new_complex(nanocode_numeric::Complex::new(real, imag))
                 .into(),
             Self::Ellipsis => vm.ctx.ellipsis.clone().into(),
         }

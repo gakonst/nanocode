@@ -22,7 +22,7 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 use nanocode_numeric::BigInt;
-use num_traits::Zero;
+use nanocode_numeric::Zero;
 use rustpython_compiler_core::{OneIndexed, bytecode::CodeUnits, bytecode::PyCodeLocationInfoKind};
 
 /// State for iterating through code address ranges

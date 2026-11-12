@@ -224,7 +224,7 @@ mod decl {
             sync::atomic::{AtomicBool, Ordering},
             time::Duration,
         };
-        use num_traits::{Signed, ToPrimitive};
+        use nanocode_numeric::{Signed, ToPrimitive};
         use std::time::Instant;
 
         #[derive(Default)]
@@ -714,7 +714,7 @@ mod decl {
         use core::sync::atomic::{
             AtomicI16, AtomicI32, AtomicI64, AtomicU16, AtomicU32, AtomicU64, Ordering,
         };
-        use num_traits::ToPrimitive;
+        use nanocode_numeric::ToPrimitive;
         use std::time::Instant;
 
         #[pyclass(module = "select", name = "kevent")]

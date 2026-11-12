@@ -139,15 +139,6 @@ default-features = false
 path = "../../core/compression"
 optional = true
 
-[dependencies.num-complex]
-version = "0.4.6"
-
-[dependencies.num-integer]
-version = "0.1.46"
-
-[dependencies.num-traits]
-version = "0.2"
-
 [dependencies.parking_lot]
 version = "0.12.3"
 

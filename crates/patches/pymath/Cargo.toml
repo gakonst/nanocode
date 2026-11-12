@@ -26,11 +26,8 @@ license = "PSF-2.0"
 repository = "https://github.com/RustPython/pymath"
 
 [features]
-_bigint = [
-    "dep:num-traits",
-    "dep:num-integer",
-]
-complex = ["dep:num-complex"]
+_bigint = []
+complex = ["dep:nanocode-numeric"]
 default = ["complex"]
 bigint = [
     "_bigint",
@@ -47,18 +44,6 @@ version = "0.2"
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"
-optional = true
-
-[dependencies.num-complex]
-version = "0.4"
-optional = true
-
-[dependencies.num-integer]
-version = "0.1"
-optional = true
-
-[dependencies.num-traits]
-version = "0.2"
 optional = true
 
 [dev-dependencies.proptest]

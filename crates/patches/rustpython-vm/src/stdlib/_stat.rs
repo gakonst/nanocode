@@ -8,7 +8,7 @@ mod _stat {
     use rustpython_host_env::nt as host_nt;
 
     use nanocode_numeric::Sign;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
 
     use crate::{PyObjectRef, PyResult, VirtualMachine, convert::TryFromObject};
 

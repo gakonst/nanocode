@@ -1,5 +1,5 @@
-use num_traits::cast::ToPrimitive;
-use num_traits::sign::Signed;
+use nanocode_numeric::ToPrimitive;
+use nanocode_numeric::Signed;
 use serde::de::{DeserializeSeed, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq};
 

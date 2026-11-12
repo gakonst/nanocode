@@ -20,8 +20,8 @@ use core::cmp::max;
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
 use nanocode_numeric::{BigInt, Sign};
-use num_integer::Integer;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use nanocode_numeric::Integer;
+use nanocode_numeric::{One, Signed, ToPrimitive, Zero};
 
 // Search flag passed to iter_search
 enum SearchType {

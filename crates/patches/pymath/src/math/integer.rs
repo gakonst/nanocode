@@ -4,8 +4,8 @@
 //! This module requires either `num-bigint` or `malachite-bigint` feature.
 
 use super::bigint::{BigInt, BigUint};
-use num_integer::Integer;
-use num_traits::{One, Signed, ToPrimitive, Zero};
+use nanocode_numeric::Integer;
+use nanocode_numeric::{One, Signed, ToPrimitive, Zero};
 
 /// Return the greatest common divisor of the integer arguments.
 ///

@@ -2541,10 +2541,6 @@ dependencies = [
 [[package]]
 name = "nanocode-numeric"
 version = "0.7.0"
-dependencies = [
- "num-integer",
- "num-traits",
-]
 
 [[package]]
 name = "nanocode-observability"
@@ -2985,15 +2981,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-complex"
-version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3338,9 +3325,6 @@ dependencies = [
  "libc",
  "libm",
  "nanocode-numeric",
- "num-complex",
- "num-integer",
- "num-traits",
 ]
 
 [[package]]
@@ -3729,8 +3713,6 @@ dependencies = [
  "log",
  "memchr",
  "nanocode-numeric",
- "num-complex",
- "num-traits",
  "rustpython-common",
  "rustpython-compiler-core",
  "rustpython-literal",
@@ -3754,8 +3736,6 @@ dependencies = [
  "memchr",
  "nanocode-compression",
  "nanocode-numeric",
- "num-complex",
- "num-traits",
  "parking_lot",
  "rustpython-literal",
  "rustpython-unicode",
@@ -3783,8 +3763,6 @@ dependencies = [
  "bitflagset",
  "nanocode-compression",
  "nanocode-numeric",
- "num-complex",
- "num-traits",
  "rustpython-ruff_source_file",
  "rustpython-wtf8",
 ]
@@ -3830,7 +3808,6 @@ dependencies = [
  "memchr",
  "memmap2",
  "nix",
- "num-traits",
  "parking_lot",
  "rustix",
  "rustpython-wtf8",
@@ -3843,7 +3820,6 @@ dependencies = [
 name = "rustpython-literal"
 version = "0.6.0"
 dependencies = [
- "num-traits",
  "rustpython-unicode",
  "rustpython-wtf8",
 ]
@@ -3927,8 +3903,6 @@ dependencies = [
  "libc",
  "memchr",
  "nanocode-numeric",
- "num-complex",
- "num-traits",
  "parking_lot",
  "pymath",
  "rustpython-common",
@@ -3970,9 +3944,6 @@ dependencies = [
  "log",
  "memchr",
  "nanocode-numeric",
- "num-complex",
- "num-integer",
- "num-traits",
  "parking_lot",
  "psm",
  "rustpython-codegen",

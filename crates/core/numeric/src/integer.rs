@@ -157,7 +157,7 @@ impl BigInt {
 
     pub fn parse_bytes(bytes: &[u8], radix: u32) -> Option<Self> {
         let text = core::str::from_utf8(bytes).ok()?;
-        <Self as num_traits::Num>::from_str_radix(text, radix).ok()
+        <Self as crate::Num>::from_str_radix(text, radix).ok()
     }
 
     pub fn to_bytes_be(&self) -> (Sign, Vec<u8>) {
@@ -305,15 +305,48 @@ impl BigInt {
     }
 
     pub fn sqrt(&self) -> Self {
-        num_integer::Roots::sqrt(self)
+        self.nth_root(2)
     }
 
     pub fn cbrt(&self) -> Self {
-        num_integer::Roots::cbrt(self)
+        self.nth_root(3)
     }
 
     pub fn nth_root(&self, degree: u32) -> Self {
-        num_integer::Roots::nth_root(self, degree)
+        assert!(
+            !(self.is_negative_value() && degree.is_multiple_of(2)),
+            "root of degree {degree} is imaginary"
+        );
+        Self::from_biguint(self.sign, self.magnitude.nth_root(degree))
+    }
+
+    pub fn extended_gcd(&self, other: &Self) -> crate::ExtendedGcd<Self> {
+        let mut x_pair = (Self::ZERO, Self::ONE);
+        let mut y_pair = (Self::ONE, Self::ZERO);
+        let mut remainders = (other.clone(), self.clone());
+        while !remainders.0.is_zero_value() {
+            let quotient = &remainders.1 / &remainders.0;
+            let step = |pair: (Self, Self)| {
+                let (first, second) = (pair.1, pair.0);
+                (first - &quotient * &second, second)
+            };
+            remainders = step(remainders);
+            x_pair = step(x_pair);
+            y_pair = step(y_pair);
+        }
+        if remainders.1 >= Self::ZERO {
+            crate::ExtendedGcd {
+                gcd: remainders.1,
+                x: x_pair.1,
+                y: y_pair.1,
+            }
+        } else {
+            crate::ExtendedGcd {
+                gcd: -remainders.1,
+                x: -x_pair.1,
+                y: -y_pair.1,
+            }
+        }
     }
 
     pub fn trailing_zeros(&self) -> Option<u64> {
@@ -722,7 +755,7 @@ impl TryFrom<BigInt> for BigUint {
 
 macro_rules! integer_pow {
     ($($primitive:ty),*) => {$(
-        impl num_traits::Pow<$primitive> for BigInt {
+        impl crate::Pow<$primitive> for BigInt {
             type Output = BigInt;
 
             fn pow(self, exponent: $primitive) -> BigInt {
@@ -730,7 +763,7 @@ macro_rules! integer_pow {
             }
         }
 
-        impl num_traits::Pow<$primitive> for &BigInt {
+        impl crate::Pow<$primitive> for &BigInt {
             type Output = BigInt;
 
             fn pow(self, exponent: $primitive) -> BigInt {
@@ -738,7 +771,7 @@ macro_rules! integer_pow {
             }
         }
 
-        impl num_traits::Pow<&$primitive> for BigInt {
+        impl crate::Pow<&$primitive> for BigInt {
             type Output = BigInt;
 
             fn pow(self, exponent: &$primitive) -> BigInt {
@@ -746,7 +779,7 @@ macro_rules! integer_pow {
             }
         }
 
-        impl num_traits::Pow<&$primitive> for &BigInt {
+        impl crate::Pow<&$primitive> for &BigInt {
             type Output = BigInt;
 
             fn pow(self, exponent: &$primitive) -> BigInt {
@@ -758,7 +791,7 @@ macro_rules! integer_pow {
 
 integer_pow!(u8, u16, u32, u64, usize, u128);
 
-impl num_traits::Pow<BigUint> for BigInt {
+impl crate::Pow<BigUint> for BigInt {
     type Output = Self;
 
     fn pow(self, exponent: BigUint) -> Self {
@@ -766,7 +799,7 @@ impl num_traits::Pow<BigUint> for BigInt {
     }
 }
 
-impl num_traits::Pow<&BigUint> for BigInt {
+impl crate::Pow<&BigUint> for BigInt {
     type Output = Self;
 
     fn pow(self, exponent: &BigUint) -> Self {
@@ -774,7 +807,7 @@ impl num_traits::Pow<&BigUint> for BigInt {
     }
 }
 
-impl num_traits::Pow<BigUint> for &BigInt {
+impl crate::Pow<BigUint> for &BigInt {
     type Output = BigInt;
 
     fn pow(self, exponent: BigUint) -> BigInt {
@@ -782,7 +815,7 @@ impl num_traits::Pow<BigUint> for &BigInt {
     }
 }
 
-impl num_traits::Pow<&BigUint> for &BigInt {
+impl crate::Pow<&BigUint> for &BigInt {
     type Output = BigInt;
 
     fn pow(self, exponent: &BigUint) -> BigInt {
@@ -840,7 +873,7 @@ impl fmt::Debug for BigInt {
     }
 }
 
-impl num_traits::Zero for BigInt {
+impl crate::Zero for BigInt {
     fn zero() -> Self {
         Self::ZERO
     }
@@ -850,21 +883,17 @@ impl num_traits::Zero for BigInt {
     }
 }
 
-impl num_traits::One for BigInt {
+impl crate::One for BigInt {
     fn one() -> Self {
         Self::ONE
     }
+
+    fn is_one(&self) -> bool {
+        self.sign == Sign::Plus && self.magnitude.is_one()
+    }
 }
 
-impl num_traits::ConstZero for BigInt {
-    const ZERO: Self = Self::ZERO;
-}
-
-impl num_traits::ConstOne for BigInt {
-    const ONE: Self = Self::ONE;
-}
-
-impl num_traits::Signed for BigInt {
+impl crate::Signed for BigInt {
     fn abs(&self) -> Self {
         Self::from_parts(false, self.magnitude.clone())
     }
@@ -894,7 +923,7 @@ impl num_traits::Signed for BigInt {
     }
 }
 
-impl num_traits::Num for BigInt {
+impl crate::Num for BigInt {
     type FromStrRadixErr = ParseBigIntError;
 
     fn from_str_radix(text: &str, radix: u32) -> Result<Self, ParseBigIntError> {
@@ -907,7 +936,7 @@ impl num_traits::Num for BigInt {
         } else {
             Sign::Plus
         };
-        let magnitude = <BigUint as num_traits::Num>::from_str_radix(text, radix)?;
+        let magnitude = <BigUint as crate::Num>::from_str_radix(text, radix)?;
         Ok(Self::from_biguint(sign, magnitude))
     }
 }
@@ -916,35 +945,11 @@ impl FromStr for BigInt {
     type Err = ParseBigIntError;
 
     fn from_str(text: &str) -> Result<Self, ParseBigIntError> {
-        <Self as num_traits::Num>::from_str_radix(text, 10)
+        <Self as crate::Num>::from_str_radix(text, 10)
     }
 }
 
-impl num_traits::CheckedAdd for BigInt {
-    fn checked_add(&self, other: &Self) -> Option<Self> {
-        Some(self + other)
-    }
-}
-
-impl num_traits::CheckedSub for BigInt {
-    fn checked_sub(&self, other: &Self) -> Option<Self> {
-        Some(self - other)
-    }
-}
-
-impl num_traits::CheckedMul for BigInt {
-    fn checked_mul(&self, other: &Self) -> Option<Self> {
-        Some(self * other)
-    }
-}
-
-impl num_traits::CheckedDiv for BigInt {
-    fn checked_div(&self, other: &Self) -> Option<Self> {
-        (!other.is_zero_value()).then(|| self / other)
-    }
-}
-
-impl num_traits::ToPrimitive for BigInt {
+impl crate::ToPrimitive for BigInt {
     fn to_i64(&self) -> Option<i64> {
         i64::try_from(self).ok()
     }
@@ -1002,7 +1007,7 @@ impl num_traits::ToPrimitive for BigInt {
     }
 }
 
-impl num_traits::FromPrimitive for BigInt {
+impl crate::FromPrimitive for BigInt {
     fn from_i64(value: i64) -> Option<Self> {
         Some(Self::from(value))
     }
@@ -1060,7 +1065,7 @@ impl num_traits::FromPrimitive for BigInt {
     }
 }
 
-impl num_integer::Integer for BigInt {
+impl crate::Integer for BigInt {
     fn div_floor(&self, other: &Self) -> Self {
         self.div_mod_floor_values(other).0
     }
@@ -1074,19 +1079,19 @@ impl num_integer::Integer for BigInt {
     }
 
     fn lcm(&self, other: &Self) -> Self {
-        Self::from_parts(false, num_integer::Integer::lcm(&self.magnitude, &other.magnitude))
+        Self::from_parts(false, crate::Integer::lcm(&self.magnitude, &other.magnitude))
     }
 
     fn is_multiple_of(&self, other: &Self) -> bool {
-        num_integer::Integer::is_multiple_of(&self.magnitude, &other.magnitude)
+        crate::Integer::is_multiple_of(&self.magnitude, &other.magnitude)
     }
 
     fn is_even(&self) -> bool {
-        num_integer::Integer::is_even(&self.magnitude)
+        crate::Integer::is_even(&self.magnitude)
     }
 
     fn is_odd(&self) -> bool {
-        num_integer::Integer::is_odd(&self.magnitude)
+        crate::Integer::is_odd(&self.magnitude)
     }
 
     fn div_rem(&self, other: &Self) -> (Self, Self) {
@@ -1106,40 +1111,6 @@ impl num_integer::Integer for BigInt {
         }
     }
 
-}
-
-impl num_traits::Euclid for BigInt {
-    fn div_euclid(&self, other: &Self) -> Self {
-        let (quotient, remainder) = self.div_rem_truncate(other);
-        if remainder.is_negative_value() {
-            if other.is_negative_value() {
-                quotient + 1u32
-            } else {
-                quotient - 1u32
-            }
-        } else {
-            quotient
-        }
-    }
-
-    fn rem_euclid(&self, other: &Self) -> Self {
-        let remainder = self % other;
-        if remainder.is_negative_value() {
-            remainder + Self::from_parts(false, other.magnitude.clone())
-        } else {
-            remainder
-        }
-    }
-}
-
-impl num_integer::Roots for BigInt {
-    fn nth_root(&self, degree: u32) -> Self {
-        assert!(
-            !(self.is_negative_value() && degree.is_multiple_of(2)),
-            "root of degree {degree} is imaginary"
-        );
-        Self::from_biguint(self.sign, self.magnitude.nth_root(degree))
-    }
 }
 
 pub trait ToBigInt {
@@ -1172,13 +1143,13 @@ to_bigint_primitive!(i8, i16, i32, i64, isize, i128, u8, u16, u32, u64, usize, u
 
 impl ToBigInt for f32 {
     fn to_bigint(&self) -> Option<BigInt> {
-        <BigInt as num_traits::FromPrimitive>::from_f32(*self)
+        <BigInt as crate::FromPrimitive>::from_f32(*self)
     }
 }
 
 impl ToBigInt for f64 {
     fn to_bigint(&self) -> Option<BigInt> {
-        <BigInt as num_traits::FromPrimitive>::from_f64(*self)
+        <BigInt as crate::FromPrimitive>::from_f64(*self)
     }
 }
 

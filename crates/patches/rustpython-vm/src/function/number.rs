@@ -5,8 +5,8 @@ use crate::{
 };
 use core::ops::Deref;
 use nanocode_numeric::BigInt;
-use num_complex::Complex64;
-use num_traits::PrimInt;
+use nanocode_numeric::Complex64;
+use nanocode_numeric::PrimInt;
 
 /// A Python complex-like object.
 ///

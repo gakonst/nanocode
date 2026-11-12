@@ -84,20 +84,19 @@ pub(crate) fn add(left: &[Limb], right: &[Limb]) -> Vec<Limb> {
         (right, left)
     };
     let mut sum = Vec::with_capacity(long.len() + 1);
-    let mut carry = false;
+    let mut carry: Limb = 0;
     sum.extend(long.iter().zip(short).map(|(&a, &b)| {
-        let (value, carry_value) = a.overflowing_add(b);
-        let (value, carry_in) = value.overflowing_add(Limb::from(carry));
-        carry = carry_value | carry_in;
-        value
+        let wide = DoubleLimb::from(a) + DoubleLimb::from(b) + DoubleLimb::from(carry);
+        carry = (wide >> LIMB_BITS) as Limb;
+        wide as Limb
     }));
     sum.extend(long[short.len()..].iter().map(|&a| {
-        let (value, overflow) = a.overflowing_add(Limb::from(carry));
-        carry = overflow;
-        value
+        let wide = DoubleLimb::from(a) + DoubleLimb::from(carry);
+        carry = (wide >> LIMB_BITS) as Limb;
+        wide as Limb
     }));
-    if carry {
-        sum.push(1);
+    if carry != 0 {
+        sum.push(carry);
     }
     sum
 }
@@ -105,19 +104,20 @@ pub(crate) fn add(left: &[Limb], right: &[Limb]) -> Vec<Limb> {
 pub(crate) fn sub(minuend: &[Limb], subtrahend: &[Limb]) -> Vec<Limb> {
     assert!(minuend.len() >= subtrahend.len());
     let mut difference = Vec::with_capacity(minuend.len());
-    let mut borrow = false;
+    let mut borrow: Limb = 0;
     difference.extend(minuend.iter().zip(subtrahend).map(|(&a, &b)| {
-        let (value, borrow_value) = a.overflowing_sub(b);
-        let (value, borrow_in) = value.overflowing_sub(Limb::from(borrow));
-        borrow = borrow_value | borrow_in;
-        value
+        let wide = DoubleLimb::from(a)
+            .wrapping_sub(DoubleLimb::from(b))
+            .wrapping_sub(DoubleLimb::from(borrow));
+        borrow = (wide >> (DoubleLimb::BITS - 1)) as Limb;
+        wide as Limb
     }));
     difference.extend(minuend[subtrahend.len()..].iter().map(|&a| {
-        let (value, underflow) = a.overflowing_sub(Limb::from(borrow));
-        borrow = underflow;
-        value
+        let wide = DoubleLimb::from(a).wrapping_sub(DoubleLimb::from(borrow));
+        borrow = (wide >> (DoubleLimb::BITS - 1)) as Limb;
+        wide as Limb
     }));
-    assert!(!borrow);
+    assert_eq!(borrow, 0);
     normalize(&mut difference);
     difference
 }

@@ -1,18 +1,23 @@
-#![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
+mod complex;
 mod float;
 mod gcd;
 mod integer;
 mod limbs;
 mod natural;
 mod radix;
+mod traits;
 
+pub use complex::{Complex, Complex64};
 pub use float::{f64_to_ratio, rational_to_f64};
 pub use integer::{BigInt, Sign, ToBigInt};
 pub use natural::{BigUint, ToBigUint, U32Digits, U64Digits};
+pub use traits::{
+    ExtendedGcd, FromPrimitive, Integer, Num, One, Pow, PrimInt, Signed, ToPrimitive, Zero,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseBigIntError {

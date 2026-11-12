@@ -178,7 +178,7 @@ impl BigUint {
 
     pub fn parse_bytes(bytes: &[u8], radix: u32) -> Option<Self> {
         let text = core::str::from_utf8(bytes).ok()?;
-        <Self as num_traits::Num>::from_str_radix(text, radix).ok()
+        <Self as crate::Num>::from_str_radix(text, radix).ok()
     }
 
     pub fn to_str_radix(&self, radix: u32) -> String {
@@ -868,7 +868,7 @@ macro_rules! unsigned_primitive {
         forward_primitive_assign!(BigUint, $primitive, DivAssign, div_assign, div_values);
         forward_primitive_assign!(BigUint, $primitive, RemAssign, rem_assign, rem_values);
 
-        impl num_traits::Pow<$primitive> for BigUint {
+        impl crate::Pow<$primitive> for BigUint {
             type Output = BigUint;
 
             fn pow(self, exponent: $primitive) -> BigUint {
@@ -876,7 +876,7 @@ macro_rules! unsigned_primitive {
             }
         }
 
-        impl num_traits::Pow<$primitive> for &BigUint {
+        impl crate::Pow<$primitive> for &BigUint {
             type Output = BigUint;
 
             fn pow(self, exponent: $primitive) -> BigUint {
@@ -884,7 +884,7 @@ macro_rules! unsigned_primitive {
             }
         }
 
-        impl num_traits::Pow<&$primitive> for BigUint {
+        impl crate::Pow<&$primitive> for BigUint {
             type Output = BigUint;
 
             fn pow(self, exponent: &$primitive) -> BigUint {
@@ -892,7 +892,7 @@ macro_rules! unsigned_primitive {
             }
         }
 
-        impl num_traits::Pow<&$primitive> for &BigUint {
+        impl crate::Pow<&$primitive> for &BigUint {
             type Output = BigUint;
 
             fn pow(self, exponent: &$primitive) -> BigUint {
@@ -985,7 +985,7 @@ fn saturating_exponent(exponent: &BigUint) -> u64 {
     }
 }
 
-impl num_traits::Pow<Self> for BigUint {
+impl crate::Pow<Self> for BigUint {
     type Output = Self;
 
     fn pow(self, exponent: Self) -> Self {
@@ -993,7 +993,7 @@ impl num_traits::Pow<Self> for BigUint {
     }
 }
 
-impl num_traits::Pow<&Self> for BigUint {
+impl crate::Pow<&Self> for BigUint {
     type Output = Self;
 
     fn pow(self, exponent: &Self) -> Self {
@@ -1001,7 +1001,7 @@ impl num_traits::Pow<&Self> for BigUint {
     }
 }
 
-impl num_traits::Pow<BigUint> for &BigUint {
+impl crate::Pow<BigUint> for &BigUint {
     type Output = BigUint;
 
     fn pow(self, exponent: BigUint) -> BigUint {
@@ -1009,7 +1009,7 @@ impl num_traits::Pow<BigUint> for &BigUint {
     }
 }
 
-impl num_traits::Pow<&BigUint> for &BigUint {
+impl crate::Pow<&BigUint> for &BigUint {
     type Output = BigUint;
 
     fn pow(self, exponent: &BigUint) -> BigUint {
@@ -1076,7 +1076,7 @@ radix_format!(Octal, 8, "0o", false);
 radix_format!(LowerHex, 16, "0x", false);
 radix_format!(UpperHex, 16, "0x", true);
 
-impl num_traits::Zero for BigUint {
+impl crate::Zero for BigUint {
     fn zero() -> Self {
         Self::ZERO
     }
@@ -1086,7 +1086,7 @@ impl num_traits::Zero for BigUint {
     }
 }
 
-impl num_traits::One for BigUint {
+impl crate::One for BigUint {
     fn one() -> Self {
         Self::ONE
     }
@@ -1096,17 +1096,7 @@ impl num_traits::One for BigUint {
     }
 }
 
-impl num_traits::ConstZero for BigUint {
-    const ZERO: Self = Self::ZERO;
-}
-
-impl num_traits::ConstOne for BigUint {
-    const ONE: Self = Self::ONE;
-}
-
-impl num_traits::Unsigned for BigUint {}
-
-impl num_traits::Num for BigUint {
+impl crate::Num for BigUint {
     type FromStrRadixErr = ParseBigIntError;
 
     fn from_str_radix(text: &str, radix: u32) -> Result<Self, ParseBigIntError> {
@@ -1118,35 +1108,11 @@ impl FromStr for BigUint {
     type Err = ParseBigIntError;
 
     fn from_str(text: &str) -> Result<Self, ParseBigIntError> {
-        <Self as num_traits::Num>::from_str_radix(text, 10)
+        <Self as crate::Num>::from_str_radix(text, 10)
     }
 }
 
-impl num_traits::CheckedAdd for BigUint {
-    fn checked_add(&self, other: &Self) -> Option<Self> {
-        Some(self + other)
-    }
-}
-
-impl num_traits::CheckedSub for BigUint {
-    fn checked_sub(&self, other: &Self) -> Option<Self> {
-        self.sub_checked(other)
-    }
-}
-
-impl num_traits::CheckedMul for BigUint {
-    fn checked_mul(&self, other: &Self) -> Option<Self> {
-        Some(self * other)
-    }
-}
-
-impl num_traits::CheckedDiv for BigUint {
-    fn checked_div(&self, other: &Self) -> Option<Self> {
-        (!other.is_zero()).then(|| self / other)
-    }
-}
-
-impl num_traits::ToPrimitive for BigUint {
+impl crate::ToPrimitive for BigUint {
     fn to_i64(&self) -> Option<i64> {
         i64::try_from(self).ok()
     }
@@ -1204,7 +1170,7 @@ impl num_traits::ToPrimitive for BigUint {
     }
 }
 
-impl num_traits::FromPrimitive for BigUint {
+impl crate::FromPrimitive for BigUint {
     fn from_i64(value: i64) -> Option<Self> {
         Self::try_from(value).ok()
     }
@@ -1263,7 +1229,7 @@ impl num_traits::FromPrimitive for BigUint {
     }
 }
 
-impl num_integer::Integer for BigUint {
+impl crate::Integer for BigUint {
     fn div_floor(&self, other: &Self) -> Self {
         self / other
     }
@@ -1295,7 +1261,7 @@ impl num_integer::Integer for BigUint {
     }
 
     fn is_odd(&self) -> bool {
-        !num_integer::Integer::is_even(self)
+        !crate::Integer::is_even(self)
     }
 
     fn div_rem(&self, other: &Self) -> (Self, Self) {
@@ -1316,12 +1282,6 @@ impl num_integer::Integer for BigUint {
     }
 }
 
-impl num_integer::Roots for BigUint {
-    fn nth_root(&self, degree: u32) -> Self {
-        Self::nth_root(self, degree)
-    }
-}
-
 pub trait ToBigUint {
     fn to_biguint(&self) -> Option<BigUint>;
 }
@@ -1336,7 +1296,7 @@ macro_rules! to_biguint_primitive {
     ($($primitive:ty),*) => {$(
         impl ToBigUint for $primitive {
             fn to_biguint(&self) -> Option<BigUint> {
-                <BigUint as num_traits::FromPrimitive>::from_i128(*self as i128)
+                <BigUint as crate::FromPrimitive>::from_i128(*self as i128)
             }
         }
     )*};
@@ -1352,13 +1312,13 @@ impl ToBigUint for u128 {
 
 impl ToBigUint for f32 {
     fn to_biguint(&self) -> Option<BigUint> {
-        <BigUint as num_traits::FromPrimitive>::from_f32(*self)
+        <BigUint as crate::FromPrimitive>::from_f32(*self)
     }
 }
 
 impl ToBigUint for f64 {
     fn to_biguint(&self) -> Option<BigUint> {
-        <BigUint as num_traits::FromPrimitive>::from_f64(*self)
+        <BigUint as crate::FromPrimitive>::from_f64(*self)
     }
 }
 

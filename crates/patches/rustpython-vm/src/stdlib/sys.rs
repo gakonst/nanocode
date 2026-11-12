@@ -53,7 +53,7 @@ pub mod sys {
     };
     use core::ffi::CStr;
     use core::sync::atomic::Ordering;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use std::{
         env,
         io::{IsTerminal, Read, Write},

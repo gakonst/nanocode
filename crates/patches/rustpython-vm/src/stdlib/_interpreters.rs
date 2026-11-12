@@ -24,7 +24,7 @@ pub(crate) mod _interpreters {
         },
     };
     use core::sync::atomic::Ordering;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
 
     #[pyattr]
     pub(crate) const WHENCE_UNKNOWN: i32 = InterpreterWhence::Unknown as i32;

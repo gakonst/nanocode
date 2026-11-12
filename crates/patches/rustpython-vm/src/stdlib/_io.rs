@@ -153,7 +153,7 @@ mod _io {
     };
     use crossbeam_utils::atomic::AtomicCell;
     use nanocode_numeric::BigInt;
-    use num_traits::ToPrimitive;
+    use nanocode_numeric::ToPrimitive;
     use std::io::{self, Cursor, SeekFrom, prelude::*};
 
     fn validate_whence(whence: i32) -> bool {

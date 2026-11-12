@@ -16,7 +16,7 @@ use crate::{
 };
 use alloc::borrow::Cow;
 use core::fmt::Debug;
-use num_traits::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 use rustpython_host_env::ctypes::{
     SimpleStorageValue, simple_storage_value_to_bytes_endian, simple_type_align,
     simple_type_pep3118_code, simple_type_size, write_simple_storage_buffer, zeroed_bytes,

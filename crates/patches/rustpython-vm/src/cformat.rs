@@ -4,7 +4,7 @@
 //! as per the [Python Docs](https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting).
 
 use rustpython_common::wtf8::iteration::Itertools;
-use num_traits::cast::ToPrimitive;
+use nanocode_numeric::ToPrimitive;
 
 use crate::{
     AsObject, PyObject, PyObjectRef, PyResult, TryFromBorrowedObject, TryFromObject,

@@ -485,6 +485,33 @@ impl Exec<'_> {
     }
 
     #[inline(never)]
+    fn decline_keyed_get(&mut self) -> bool {
+        let (o, k) = (self.get(self.sp - 2), self.get(self.sp - 1));
+        let (Some(obj), Some(s)) = (o.as_object(), k.as_string()) else {
+            return false;
+        };
+        if self.heap.object_class(obj) != ObjectClass::Ordinary {
+            return false;
+        }
+        let key = match self.heap.memo_atom(s) {
+            Some(key) => key,
+            None => match self.heap.intern(s) {
+                Ok(key) if !key.is_int() => key,
+                _ => return false,
+            },
+        };
+        let Some(v) = super::ic::mega_get(self.heap, o, key) else {
+            return false;
+        };
+        self.sp -= 1;
+        self.set(self.sp - 1, v);
+        let info = &OPS[Op::GetElem as usize];
+        self.fuel -= info.cost.fuel() as i64;
+        self.pc += info.size as u32;
+        true
+    }
+
+    #[inline(never)]
     fn decline_field(&mut self, op: u8) -> bool {
         let o = self.get(self.sp - 1);
         let Some(v) = super::ic::mega_get(self.heap, o, self.imm_atom()) else {
@@ -770,6 +797,9 @@ impl Exec<'_> {
         }
         if op == fast::PUT_ELEM {
             return self.decline_keyed_put();
+        }
+        if op == fast::GET_ELEM {
+            return self.decline_keyed_get();
         }
         if op == fast::MOD {
             let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));

@@ -3122,7 +3122,9 @@ async fn journaled_call(
     };
     journal.persist(vec![call]).await;
     let mut completed = execution.await;
-    completed.encoded = serde_json::to_string(&completed.call.structured_result).ok();
+    if completed.encoded.is_none() {
+        completed.encoded = serde_json::to_string(&completed.call.structured_result).ok();
+    }
     completed
 }
 
@@ -3185,6 +3187,7 @@ async fn execute_nested_call(
         }
     };
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let encoded = execution.structured_json().map(str::to_owned);
     let value = execution.take_structured_result();
     let process_trace = execution.process_trace().copied().map(Into::into);
     let receipts = execution.take_receipts();
@@ -3196,7 +3199,7 @@ async fn execute_nested_call(
         input,
         process_trace,
         receipts,
-        encoded: None,
+        encoded,
         call: NestedToolCall {
             call_id,
             name,

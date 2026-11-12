@@ -103,6 +103,7 @@ pub struct ToolOutput {
     structured_result: Option<Value>,
     process_trace: Option<ToolProcessTrace>,
     receipts: Vec<Arc<dyn ToolReceipt>>,
+    json_text: Option<(usize, usize)>,
 }
 
 pub trait ToolReceipt: Send + Sync {
@@ -153,6 +154,7 @@ impl ToolOutput {
             structured_result: None,
             process_trace: None,
             receipts: Vec::new(),
+            json_text: None,
         }
     }
 
@@ -165,6 +167,7 @@ impl ToolOutput {
             structured_result: None,
             process_trace: None,
             receipts: Vec::new(),
+            json_text: None,
         }
     }
 
@@ -180,6 +183,7 @@ impl ToolOutput {
     pub fn from_json(output: Value, success: bool) -> Self {
         match serde_json::to_string(&output) {
             Ok(encoded) => Self {
+                json_text: Some((encoded.as_ptr() as usize, encoded.len())),
                 output: ToolOutputBody::Text(encoded),
                 success,
                 metadata: None,
@@ -200,6 +204,7 @@ impl ToolOutput {
             structured_result: None,
             process_trace: None,
             receipts: Vec::new(),
+            json_text: None,
         }
     }
 
@@ -235,7 +240,21 @@ impl ToolOutput {
     #[must_use]
     pub fn with_structured_result(mut self, value: Value) -> Self {
         self.structured_result = Some(value);
+        self.json_text = None;
         self
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn structured_json(&self) -> Option<&str> {
+        match (&self.output, self.json_text) {
+            (ToolOutputBody::Text(text), Some((at, len)))
+                if text.as_ptr() as usize == at && text.len() == len =>
+            {
+                Some(text)
+            }
+            _ => None,
+        }
     }
 
     #[doc(hidden)]
@@ -300,6 +319,7 @@ impl ToolOutput {
                 .transpose()?,
             process_trace: wire.process_trace.map(Into::into),
             receipts: Vec::new(),
+            json_text: None,
         })
     }
 }

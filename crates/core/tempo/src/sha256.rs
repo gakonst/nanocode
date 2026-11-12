@@ -90,8 +90,12 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_BYTES]) {
         *word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
     }
     for i in MESSAGE_WORDS..SCHEDULE_WORDS {
-        let s0 = schedule[i - 15].rotate_right(7) ^ schedule[i - 15].rotate_right(18) ^ (schedule[i - 15] >> 3);
-        let s1 = schedule[i - 2].rotate_right(17) ^ schedule[i - 2].rotate_right(19) ^ (schedule[i - 2] >> 10);
+        let s0 = schedule[i - 15].rotate_right(7)
+            ^ schedule[i - 15].rotate_right(18)
+            ^ (schedule[i - 15] >> 3);
+        let s1 = schedule[i - 2].rotate_right(17)
+            ^ schedule[i - 2].rotate_right(19)
+            ^ (schedule[i - 2] >> 10);
         schedule[i] = schedule[i - 16]
             .wrapping_add(s0)
             .wrapping_add(schedule[i - 7])

@@ -1,6 +1,5 @@
 use crate::{
-    Address, Error, U256,
-    base64,
+    Address, Error, U256, base64,
     ecdsa::{self, Signature},
     keccak::keccak256,
     rlp,
@@ -338,7 +337,9 @@ impl KeyAuthorization {
     fn decode(reader: &mut rlp::Reader<'_>) -> Result<Self, Error> {
         let mut fields = reader.list()?;
         let chain_id = fields.u64()?;
-        let key_type = SignatureType::from_code(u8::try_from(fields.u64()?).map_err(|_| Error::Rlp("invalid signature type"))?)?;
+        let key_type = SignatureType::from_code(
+            u8::try_from(fields.u64()?).map_err(|_| Error::Rlp("invalid signature type"))?,
+        )?;
         let key_id = Address(fields.fixed()?);
         let absent = |fields: &mut rlp::Reader<'_>| {
             if fields.is_empty() {
@@ -425,7 +426,11 @@ fn decode_limits(reader: &mut rlp::Reader<'_>) -> Result<Vec<TokenLimit>, Error>
             false => nonzero(item.u64()?)?,
         };
         item.finish()?;
-        limits.push(TokenLimit { token, limit, period });
+        limits.push(TokenLimit {
+            token,
+            limit,
+            period,
+        });
     }
     Ok(limits)
 }
@@ -469,10 +474,16 @@ fn decode_scopes(reader: &mut rlp::Reader<'_>) -> Result<Vec<CallScope>, Error> 
                 recipients.push(Address(recipients_reader.fixed()?));
             }
             entry.finish()?;
-            selector_rules.push(SelectorRule { selector, recipients });
+            selector_rules.push(SelectorRule {
+                selector,
+                recipients,
+            });
         }
         item.finish()?;
-        scopes.push(CallScope { target, selector_rules });
+        scopes.push(CallScope {
+            target,
+            selector_rules,
+        });
     }
     Ok(scopes)
 }

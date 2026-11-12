@@ -41,9 +41,10 @@ pub fn decode(text: &str) -> Result<Vec<u8>, Error> {
 pub fn decode_array<const N: usize>(text: &str) -> Result<[u8; N], Error> {
     let bytes = decode(text)?;
     let actual = bytes.len();
-    bytes
-        .try_into()
-        .map_err(|_| Error::InvalidLength { expected: N, actual })
+    bytes.try_into().map_err(|_| Error::InvalidLength {
+        expected: N,
+        actual,
+    })
 }
 
 const fn nibble(digit: u8) -> (u8, u8) {

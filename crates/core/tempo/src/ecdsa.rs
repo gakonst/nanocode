@@ -187,11 +187,19 @@ const fn scalar(curve: &Curve, bytes: &[u8; BYTES]) -> Result<Limbs, Error> {
     Ok(value)
 }
 
-fn combine(curve: &Curve, first: &Limbs, second: &Limbs, point: &Point) -> Option<crate::curve::Affine> {
+fn combine(
+    curve: &Curve,
+    first: &Limbs,
+    second: &Limbs,
+    point: &Point,
+) -> Option<crate::curve::Affine> {
     let order = &curve.order;
     let first = field::to_be_bytes(&order.decode(first));
     let second = field::to_be_bytes(&order.decode(second));
-    let sum = curve.add(&curve.multiply_generator(&first), &curve.multiply(point, &second));
+    let sum = curve.add(
+        &curve.multiply_generator(&first),
+        &curve.multiply(point, &second),
+    );
     curve.to_affine(&sum)
 }
 

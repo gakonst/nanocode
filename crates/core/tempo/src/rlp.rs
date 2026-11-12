@@ -49,7 +49,10 @@ fn header(out: &mut Vec<u8>, length: usize, short: u8, long: u8) {
         return;
     }
     let bytes = (length as u64).to_be_bytes();
-    let start = bytes.iter().position(|byte| *byte != 0).unwrap_or(bytes.len());
+    let start = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len());
     out.push(long + (bytes.len() - start) as u8);
     out.extend_from_slice(&bytes[start..]);
 }
@@ -83,7 +86,10 @@ impl<'a> Reader<'a> {
     }
 
     pub fn item(&mut self) -> Result<Item<'a>, Error> {
-        let (&first, rest) = self.data.split_first().ok_or(Error::Rlp("input too short"))?;
+        let (&first, rest) = self
+            .data
+            .split_first()
+            .ok_or(Error::Rlp("input too short"))?;
         let (list, offset, length) = match first {
             byte if byte < SHORT_STRING => {
                 let item = &self.data[..1];
@@ -140,12 +146,16 @@ impl<'a> Reader<'a> {
 
     pub fn u64(&mut self) -> Result<u64, Error> {
         let bytes = self.uint(std::mem::size_of::<u64>())?;
-        Ok(bytes.iter().fold(0u64, |value, byte| (value << u8::BITS) | *byte as u64))
+        Ok(bytes
+            .iter()
+            .fold(0u64, |value, byte| (value << u8::BITS) | *byte as u64))
     }
 
     pub fn fixed<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         let bytes = self.bytes()?;
-        bytes.try_into().map_err(|_| Error::Rlp("unexpected length"))
+        bytes
+            .try_into()
+            .map_err(|_| Error::Rlp("unexpected length"))
     }
 
     pub const fn finish(&self) -> Result<(), Error> {
@@ -164,7 +174,9 @@ fn long_length(data: &[u8], size: usize) -> Result<usize, Error> {
     if size > std::mem::size_of::<usize>() {
         return Err(Error::Rlp("length overflow"));
     }
-    let length = bytes.iter().fold(0usize, |value, byte| (value << u8::BITS) | *byte as usize);
+    let length = bytes
+        .iter()
+        .fold(0usize, |value, byte| (value << u8::BITS) | *byte as usize);
     if length <= SHORT_LIMIT {
         return Err(Error::Rlp("non-canonical length"));
     }

@@ -30,8 +30,10 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 mimalloc = { workspace = true, features = ["no_thp"] }
-mpp.workspace = true
 nanocode = { path = "../../crates/nanocode", version = "0.7.0", default-features = false, features = ["local-cells"] }
 nanocode-agent-host = { path = "../../crates/integrations/agent-host", version = "0.7.0", features = ["cua"] }
 nanocode-computer-repl = { path = "../../crates/integrations/computer-repl", version = "0.7.0" }
@@ -42,10 +44,12 @@ nanocode-sync.workspace = true
 nanocode-tempo.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
 opentelemetry.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest.workspace = true
+rustls-native-certs.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { workspace = true, features = ["tls12"] }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 uuid = { workspace = true, features = ["v7"] }

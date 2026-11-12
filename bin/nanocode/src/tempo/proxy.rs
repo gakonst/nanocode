@@ -1,0 +1,563 @@
+use std::collections::HashMap;
+use std::convert::Infallible;
+use std::fmt::Display;
+use std::future::Future;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::body::{Bytes, Incoming};
+use hyper::header::{
+    CONNECTION, CONTENT_TYPE, HOST, HeaderName, HeaderValue, PROXY_AUTHENTICATE,
+    PROXY_AUTHORIZATION,
+};
+use hyper::http::uri::Authority;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::upgrade::Upgraded;
+use hyper::{HeaderMap, Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use nanocode_sync::Atom;
+use reqwest::Url;
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::rustls::crypto::CryptoProvider;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+use super::error::Fault;
+use super::events::Events;
+use super::flow::{DEFAULT_MAX_PAYMENT_RETRIES, FlowError, Policy, send_with_exchange};
+use super::provider::PaymentProvider;
+use super::x509::{self, CertificateFault, Issuer, KeyPair};
+
+type Body = UnsyncBoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
+
+type Providers<P> = Box<dyn Fn(&Url) -> Result<P, String> + Send + Sync>;
+
+const HOP_BY_HOP: [&str; 9] = [
+    "connection",
+    "proxy-connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+const PROXY_USER: &str = "mpp";
+const PROXY_CHALLENGE: &str = "Basic realm=\"mpp\"";
+const THREAD_NAME: &str = "mpp-forward-proxy";
+const BUNDLE_PREFIX: &str = "mpp-forward-proxy-";
+const BUNDLE_EXTENSION: &str = "pem";
+const NO_PROXY_VARIABLES: [&str; 2] = ["NO_PROXY", "no_proxy"];
+const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+const NODE_USE_ENV_PROXY: &str = "1";
+const ALPN_HTTP1: &[u8] = b"http/1.1";
+const EVENT_STREAM: &str = "text/event-stream";
+const TOKEN_BYTES: usize = 16;
+
+pub(crate) struct ForwardProxy<P> {
+    listener: std::net::TcpListener,
+    address: SocketAddr,
+    token: String,
+    certificates: PathBuf,
+    root: Vec<u8>,
+    authority: CertificateAuthority,
+    providers: Providers<P>,
+    events: Events,
+    bypass: Vec<String>,
+}
+
+impl<P: PaymentProvider + 'static> ForwardProxy<P> {
+    pub(crate) fn bind<E: Display>(
+        providers: impl Fn(&Url) -> Result<P, E> + Send + Sync + 'static,
+    ) -> Result<Self, Fault> {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let address = listener.local_addr()?;
+        let (authority, root) = CertificateAuthority::generate()?;
+        let certificates = std::env::temp_dir().join(format!(
+            "{BUNDLE_PREFIX}{}.{BUNDLE_EXTENSION}",
+            std::process::id()
+        ));
+        Ok(Self {
+            listener,
+            address,
+            token: token()?,
+            certificates,
+            root,
+            authority,
+            providers: Box::new(move |url| providers(url).map_err(|error| error.to_string())),
+            events: Events::default(),
+            bypass: Vec::new(),
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn bypass(mut self, hosts: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.bypass.extend(hosts.into_iter().map(Into::into));
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn events(mut self, events: Events) -> Self {
+        self.events = events;
+        self
+    }
+
+    pub(crate) fn certificates(&self) -> &Path {
+        &self.certificates
+    }
+
+    pub(crate) fn environment(&self) -> Vec<(&'static str, String)> {
+        let proxy = format!("http://{PROXY_USER}:{}@{}", self.token, self.address);
+        let mut bypass: Vec<String> = NO_PROXY_VARIABLES
+            .into_iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .flat_map(|hosts| {
+                hosts
+                    .split(',')
+                    .map(|host| host.trim().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .chain(LOOPBACK_HOSTS.map(String::from))
+            .chain(self.bypass.iter().cloned())
+            .filter(|host| !host.is_empty())
+            .collect();
+        bypass.sort();
+        bypass.dedup();
+        let bypass = bypass.join(",");
+        let certificates = self.certificates.display().to_string();
+        vec![
+            ("HTTP_PROXY", proxy.clone()),
+            ("HTTPS_PROXY", proxy.clone()),
+            ("http_proxy", proxy.clone()),
+            ("https_proxy", proxy),
+            ("NO_PROXY", bypass.clone()),
+            ("no_proxy", bypass),
+            ("NODE_USE_ENV_PROXY", NODE_USE_ENV_PROXY.to_owned()),
+            ("SSL_CERT_FILE", certificates.clone()),
+            ("CURL_CA_BUNDLE", certificates.clone()),
+            ("REQUESTS_CA_BUNDLE", certificates.clone()),
+            ("NODE_EXTRA_CA_CERTS", certificates),
+        ]
+    }
+
+    pub(crate) fn spawn(
+        self,
+        policy: impl Future<Output = Policy> + Send + 'static,
+    ) -> Result<(), Fault> {
+        let native = rustls_native_certs::load_native_certs();
+        if native.certs.is_empty() {
+            return Err(Fault::config(format!(
+                "no trusted root certificates to bundle with the proxy's: {:?}",
+                native.errors
+            )));
+        }
+        let bundle: String = std::iter::once(self.root.as_slice())
+            .chain(native.certs.iter().map(|certificate| certificate.as_ref()))
+            .map(x509::pem)
+            .collect();
+        std::fs::write(&self.certificates, bundle)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        self.listener.set_nonblocking(true)?;
+        let listener = {
+            let _runtime = runtime.enter();
+            tokio::net::TcpListener::from_std(self.listener)?
+        };
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .no_deflate()
+            .build()
+            .map_err(|error| {
+                Fault::http(format!("failed to build the proxy's HTTP client: {error}"))
+            })?;
+        let credentials = x509::base64(format!("{PROXY_USER}:{}", self.token).as_bytes());
+        let authorization = HeaderValue::from_str(&format!("Basic {credentials}"))
+            .map_err(|error| Fault::config(format!("invalid proxy credentials: {error}")))?;
+        let (authority, providers, events) = (self.authority, self.providers, self.events);
+        std::thread::Builder::new()
+            .name(THREAD_NAME.into())
+            .spawn(move || {
+                runtime.block_on(async move {
+                    let proxy = Arc::new(Proxy {
+                        client,
+                        policy: policy.await,
+                        events,
+                        authorization,
+                        authority,
+                        providers,
+                        paying: Atom::default(),
+                    });
+                    loop {
+                        let Ok((stream, _)) = listener.accept().await else {
+                            continue;
+                        };
+                        let proxy = proxy.clone();
+                        tokio::spawn(async move {
+                            let service = service_fn(move |request| {
+                                let proxy = proxy.clone();
+                                async move { Ok::<_, Infallible>(proxy.handle(request).await) }
+                            });
+                            let _ = http1::Builder::new()
+                                .serve_connection(TokioIo::new(stream), service)
+                                .with_upgrades()
+                                .await;
+                        });
+                    }
+                })
+            })?;
+        Ok(())
+    }
+}
+
+fn token() -> Result<String, Fault> {
+    let mut random = [0u8; TOKEN_BYTES];
+    getrandom::fill(&mut random).map_err(|error| Fault::Internal(error.to_string()))?;
+    Ok(uuid::Builder::from_random_bytes(random)
+        .into_uuid()
+        .simple()
+        .to_string())
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let difference = left
+        .iter()
+        .zip(right)
+        .fold(0u8, |difference, (left, right)| {
+            std::hint::black_box(difference | (left ^ right))
+        });
+    difference == 0
+}
+
+struct Proxy<P> {
+    client: reqwest::Client,
+    policy: Policy,
+    events: Events,
+    authorization: HeaderValue,
+    authority: CertificateAuthority,
+    providers: Providers<P>,
+    paying: Atom<HashMap<String, P>>,
+}
+
+impl<P: PaymentProvider + 'static> Proxy<P> {
+    async fn handle(self: Arc<Self>, mut request: Request<Incoming>) -> Response<Body> {
+        let authorized = request
+            .headers()
+            .get(PROXY_AUTHORIZATION)
+            .is_some_and(|value| constant_time_eq(value.as_bytes(), self.authorization.as_bytes()));
+        if !authorized {
+            let mut response = respond(
+                StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+                "proxy authentication required",
+            );
+            response.headers_mut().insert(
+                PROXY_AUTHENTICATE,
+                HeaderValue::from_static(PROXY_CHALLENGE),
+            );
+            return response;
+        }
+        if request.method() != Method::CONNECT {
+            return match Url::parse(&request.uri().to_string()) {
+                Ok(url) if url.scheme() == "http" => self.forward(request, url).await,
+                _ => respond(
+                    StatusCode::BAD_REQUEST,
+                    "expected CONNECT or an absolute http:// URL",
+                ),
+            };
+        }
+        let Some(authority) = request.uri().authority().cloned() else {
+            return respond(StatusCode::BAD_REQUEST, "CONNECT needs host:port");
+        };
+        let upgrade = hyper::upgrade::on(&mut request);
+        let intercept =
+            Url::parse(&format!("https://{authority}/")).is_ok_and(|url| self.policy.allows(&url));
+        if intercept {
+            tokio::spawn(async move {
+                if let Ok(upgraded) = upgrade.await {
+                    self.intercept(upgraded, authority).await;
+                }
+            });
+            return Response::new(empty());
+        }
+        match tokio::net::TcpStream::connect(authority.as_str()).await {
+            Ok(mut server) => {
+                tokio::spawn(async move {
+                    if let Ok(upgraded) = upgrade.await {
+                        let _ =
+                            tokio::io::copy_bidirectional(&mut TokioIo::new(upgraded), &mut server)
+                                .await;
+                    }
+                });
+                Response::new(empty())
+            }
+            Err(error) => respond(StatusCode::BAD_GATEWAY, &format!("{authority}: {error}")),
+        }
+    }
+
+    async fn intercept(self: Arc<Self>, upgraded: Upgraded, authority: Authority) {
+        let host = authority
+            .host()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let Ok(config) = self.authority.server_config(host) else {
+            return;
+        };
+        let Ok(stream) = TlsAcceptor::from(config)
+            .accept(TokioIo::new(upgraded))
+            .await
+        else {
+            return;
+        };
+        let service = service_fn(move |request: Request<Incoming>| {
+            let proxy = self.clone();
+            let url = request
+                .uri()
+                .path_and_query()
+                .map_or("/", |path| path.as_str())
+                .to_owned();
+            let url = Url::parse(&format!("https://{authority}{url}"));
+            async move {
+                Ok::<_, Infallible>(match url {
+                    Ok(url) => proxy.forward(request, url).await,
+                    Err(error) => respond(StatusCode::BAD_REQUEST, &error.to_string()),
+                })
+            }
+        });
+        let _ = http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+    }
+
+    async fn forward(&self, request: Request<Incoming>, url: Url) -> Response<Body> {
+        match self.pay(request, url).await {
+            Ok(response) => response,
+            Err((status, message)) => respond(status, &message),
+        }
+    }
+
+    async fn pay(
+        &self,
+        request: Request<Incoming>,
+        url: Url,
+    ) -> Result<Response<Body>, (StatusCode, String)> {
+        let (mut parts, body) = request.into_parts();
+        let body = body
+            .collect()
+            .await
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?
+            .to_bytes();
+        strip_hop_by_hop(&mut parts.headers);
+        parts.headers.remove(HOST);
+        let mut forwarded = reqwest::Request::new(parts.method, url.clone());
+        *forwarded.headers_mut() = parts.headers;
+        *forwarded.body_mut() = Some(body.into());
+        let provider = match self.policy.allows(&url) {
+            true => Some(
+                self.provider(&url)
+                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))?,
+            ),
+            false => None,
+        };
+        let response = match &provider {
+            Some(provider) => send_with_exchange(
+                &mut self.client.clone(),
+                forwarded,
+                provider,
+                &self.policy,
+                &self.events,
+                DEFAULT_MAX_PAYMENT_RETRIES,
+            )
+            .await
+            .map_err(|error| match error {
+                FlowError::Payment(error) => (
+                    StatusCode::PAYMENT_REQUIRED,
+                    format!("MPP payment failed: {error}"),
+                ),
+                FlowError::Send(error) => (StatusCode::BAD_GATEWAY, error.to_string()),
+            })?,
+            None => self
+                .client
+                .execute(forwarded)
+                .await
+                .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?,
+        };
+        let stream = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with(EVENT_STREAM));
+        let mut response = Response::<reqwest::Body>::from(response);
+        strip_hop_by_hop(response.headers_mut());
+        *response.version_mut() = parts.version;
+        Ok(match provider.filter(|_| stream) {
+            Some(provider) => response.map(|body| self.answer_events(body, provider, url)),
+            None => response.map(|body| body.map_err(Into::into).boxed_unsync()),
+        })
+    }
+
+    fn answer_events(&self, body: reqwest::Body, provider: P, url: Url) -> Body {
+        let client = self.client.clone();
+        let mut stream = ServerSentEvents::default();
+        body.map_frame(move |frame| {
+            for (name, data) in frame
+                .data_ref()
+                .map(|data| stream.push(data))
+                .unwrap_or_default()
+            {
+                let Some(work) = provider.stream_event(&client, url.as_str(), &name, &data) else {
+                    continue;
+                };
+                tokio::spawn(async move {
+                    let _ = work.await;
+                });
+            }
+            frame
+        })
+        .map_err(Into::into)
+        .boxed_unsync()
+    }
+
+    fn provider(&self, url: &Url) -> Result<P, String> {
+        let origin = url.origin().ascii_serialization();
+        if let Some(provider) = self.paying.read(|paying| paying.get(&origin).cloned()) {
+            return Ok(provider);
+        }
+        let provider = (self.providers)(url)?;
+        Ok(self.paying.update(|paying| {
+            paying
+                .entry(origin.clone())
+                .or_insert_with(|| provider.clone())
+                .clone()
+        }))
+    }
+}
+
+struct CertificateAuthority {
+    issuer: Issuer,
+    key: KeyPair,
+    crypto: Arc<CryptoProvider>,
+    configs: Atom<HashMap<String, Arc<ServerConfig>>>,
+}
+
+fn context(message: &'static str) -> impl FnOnce(CertificateFault) -> Fault {
+    move |error| Fault::config(format!("{message}: {error}"))
+}
+
+impl CertificateAuthority {
+    fn generate() -> Result<(Self, Vec<u8>), Fault> {
+        let crypto = CryptoProvider::get_default().cloned().ok_or_else(|| {
+            Fault::config("install a default rustls CryptoProvider before binding a ForwardProxy")
+        })?;
+        let key = KeyPair::generate().map_err(context("failed to generate the proxy CA key"))?;
+        let (issuer, root) =
+            Issuer::self_signed(key).map_err(context("failed to sign the proxy CA"))?;
+        Ok((
+            Self {
+                issuer,
+                key: KeyPair::generate().map_err(context("failed to generate the proxy key"))?,
+                crypto,
+                configs: Atom::default(),
+            },
+            root,
+        ))
+    }
+
+    fn server_config(&self, host: &str) -> Result<Arc<ServerConfig>, Fault> {
+        if let Some(config) = self.configs.read(|configs| configs.get(host).cloned()) {
+            return Ok(config);
+        }
+        let certificate = self
+            .issuer
+            .sign_server(host, &self.key)
+            .map_err(context("failed to sign a proxy certificate"))?;
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.key.pkcs8().to_vec()));
+        let mut config = ServerConfig::builder_with_provider(self.crypto.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(|error| Fault::config(format!("unsupported TLS versions: {error}")))?
+            .with_no_client_auth()
+            .with_single_cert(vec![CertificateDer::from(certificate)], key)
+            .map_err(|error| Fault::config(format!("invalid proxy certificate: {error}")))?;
+        config.alpn_protocols = vec![ALPN_HTTP1.to_vec()];
+        let config = Arc::new(config);
+        Ok(self.configs.update(|configs| {
+            configs
+                .entry(host.to_owned())
+                .or_insert_with(|| config.clone())
+                .clone()
+        }))
+    }
+}
+
+#[derive(Default)]
+struct ServerSentEvents {
+    buffer: Vec<u8>,
+    name: Option<String>,
+    data: Vec<String>,
+}
+
+impl ServerSentEvents {
+    fn push(&mut self, chunk: &[u8]) -> Vec<(String, String)> {
+        self.buffer.extend_from_slice(chunk);
+        let mut events = Vec::new();
+        while let Some(end) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.buffer.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim_end_matches(['\n', '\r']);
+            let field = |prefix: &str| {
+                line.strip_prefix(prefix)
+                    .map(|value| value.strip_prefix(' ').unwrap_or(value).to_owned())
+            };
+            if line.is_empty() {
+                let data = std::mem::take(&mut self.data).join("\n");
+                events.extend(self.name.take().map(|name| (name, data)));
+            } else if let Some(name) = field("event:") {
+                self.name = Some(name);
+            } else if let Some(data) = field("data:") {
+                self.data.push(data);
+            }
+        }
+        events
+    }
+}
+
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let nominated: Vec<HeaderName> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .collect();
+    for name in nominated {
+        headers.remove(name);
+    }
+    for name in HOP_BY_HOP {
+        headers.remove(name);
+    }
+}
+
+fn respond(status: StatusCode, message: &str) -> Response<Body> {
+    let mut response = Response::new(
+        Full::new(Bytes::from(format!("{message}\n")))
+            .map_err(|never| match never {})
+            .boxed_unsync(),
+    );
+    *response.status_mut() = status;
+    response
+}
+
+fn empty() -> Body {
+    Empty::new().map_err(|never| match never {}).boxed_unsync()
+}

@@ -132,3 +132,18 @@ impl TempoTransaction {
         keccak256(self.encode_signed(signature))
     }
 }
+
+impl TempoTransaction {
+    pub fn encode_fee_payer_envelope(
+        &self,
+        sender: &Address,
+        signature: &TempoSignature,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        self.fields(&mut payload, FeePayerSlot::Sender(sender), false);
+        rlp::encode_bytes(&mut payload, &signature.to_bytes());
+        let mut out = vec![FEE_PAYER_SIGNATURE_TYPE];
+        rlp::encode_list(&mut out, &payload);
+        out
+    }
+}

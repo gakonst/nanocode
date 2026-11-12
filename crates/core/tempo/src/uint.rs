@@ -96,7 +96,9 @@ impl U256 {
         }
         let mut value = Self::ZERO;
         for character in text.chars() {
-            let digit = character.to_digit(radix as u32).ok_or(Error::InvalidNumber)?;
+            let digit = character
+                .to_digit(radix as u32)
+                .ok_or(Error::InvalidNumber)?;
             value = value
                 .checked_mul_small(radix)
                 .and_then(|value| value.checked_add(&Self::from_u64(digit as u64)))

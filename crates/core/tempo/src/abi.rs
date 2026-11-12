@@ -118,7 +118,10 @@ impl<'a> Decoder<'a> {
 
     pub fn address(&mut self) -> Result<Address, Error> {
         let word = self.word()?;
-        if word[..WORD - crate::address::ADDRESS_BYTES].iter().any(|byte| *byte != 0) {
+        if word[..WORD - crate::address::ADDRESS_BYTES]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
             return Err(Error::Abi("address has dirty high bytes"));
         }
         Address::from_slice(&word[WORD - crate::address::ADDRESS_BYTES..])

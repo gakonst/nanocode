@@ -7,23 +7,6 @@ use std::{
 
 use async_trait::async_trait;
 use futures_util::Stream;
-use mpp::{
-    Address, MppError, PaymentChallenge, PaymentCredential, Receipt, U256,
-    client::{
-        AcceptPaymentPolicy, AutoswapConfig, ClientEventSubscription, ClientEvents,
-        DEFAULT_MAX_PAYMENT_RETRIES, DepositContext, Exchange, FlowError, ForwardProxy,
-        ManagementFuture, ManagementTransport, PaymentContext, PaymentEventFuture, PaymentProvider,
-        PendingPayment, TempoAccountsProvider, TempoClientError, TempoSessionProvider,
-        tempo::session::store::{
-            SqliteChannelStore, SqliteChannelStoreOptions, default_channel_database_path,
-        },
-    },
-    mcp::client::McpPayment,
-    protocol::{
-        intents::{INTENT_CHARGE, INTENT_SESSION},
-        methods::tempo::{CHAIN_ID, DEFAULT_RPC_URL, METHOD_NAME, PATH_USD, USDC, machine_token},
-    },
-};
 use nanocode::{
     ClaudeModel, Model, ModelSelection,
     http::{self as layer, BoxFuture, Event, EventHook, Layer, Next},
@@ -35,6 +18,41 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 mod accounts;
+mod charge;
+mod error;
+mod events;
+mod flow;
+mod keys;
+mod mcp;
+mod payer;
+mod protocol;
+mod provider;
+mod proxy;
+mod rpc;
+mod session;
+mod signing;
+mod store;
+mod tx;
+mod x509;
+
+use self::{
+    charge::AutoswapConfig,
+    error::Fault,
+    events::{Deposit, Events},
+    flow::{DEFAULT_MAX_PAYMENT_RETRIES, Exchange, FlowError, Policy},
+    mcp::McpPayment,
+    payer::Payer,
+    protocol::{Challenge, Credential, INTENT_CHARGE, INTENT_SESSION, METHOD_NAME, Receipt},
+    provider::{
+        ManagementFuture, ManagementTransport, PaymentContext, PaymentEventFuture, PaymentProvider,
+        PendingPayment,
+    },
+    proxy::ForwardProxy,
+    session::SessionProvider,
+    store::{FileChannelStore, FileChannelStoreOptions, default_channel_database_path},
+    tx::{CHAIN_ID, DEFAULT_RPC_URL, OUSD, PATH_USD, USDC, USDT0, machine_token},
+};
+use nanocode_tempo::{Address, U256};
 
 use crate::{
     cli::GatewayArgs,
@@ -58,8 +76,11 @@ const OWN_PROXY_SETTINGS: [&str; 10] = [
     "REQUESTS_CA_BUNDLE",
     "NODE_EXTRA_CA_CERTS",
 ];
-const OUSD: &str = "0x20c0000000000000000000006a37DA5C996874BE";
-const USDT0: &str = "0x20c00000000000000000000014f22ca97301eb73";
+const HELD_TOKENS: [&str; 3] = [
+    "0x20C000000000000000000000b9537d11c60E8b50",
+    "0x20c00000000000000000000014f22ca97301eb73",
+    "0x20c0000000000000000000000000000000000000",
+];
 const MACH: u128 = 1_000_000;
 const PREPAID_REQUESTS: u32 = 2;
 const SESSION_SLOTS: usize = 64;
@@ -142,11 +163,11 @@ impl Layer for Mpp {
                     .map_err(|error| layer::Error::new(error).unsent(true))?,
                 body: None,
             };
-            let response = mpp::client::send_with_exchange(
+            let response = flow::send_with_exchange(
                 &mut exchange,
                 paid,
                 &self.wallet,
-                &AcceptPaymentPolicy::Always,
+                &Policy::Always,
                 &self.wallet.payments.events,
                 DEFAULT_MAX_PAYMENT_RETRIES,
             )
@@ -237,14 +258,13 @@ struct Payments {
     client: Arc<Atom<Option<reqwest::Client>>>,
     ledger: Arc<Atom<Ledger>>,
     listeners: Arc<Listeners>,
-    events: ClientEvents,
+    events: Events,
     failure: Arc<Atom<Option<String>>>,
     session: Option<String>,
     wallets: Arc<Atom<HashMap<String, Wallet>>>,
     slots: Arc<Atom<HashMap<String, String>>>,
-    closing: Arc<Atom<Vec<(TempoSessionProvider, String)>>>,
+    closing: Arc<Atom<Vec<(SessionProvider, String)>>>,
     short: Arc<Atom<bool>>,
-    _observers: Arc<[ClientEventSubscription; 3]>,
 }
 
 #[derive(Clone, Default)]
@@ -252,7 +272,7 @@ struct Ledger {
     machine: Address,
     models: Vec<String>,
     services: BTreeMap<String, Service>,
-    sessions: HashMap<String, TempoSessionProvider>,
+    sessions: HashMap<String, SessionProvider>,
 }
 
 #[derive(Clone)]
@@ -301,7 +321,7 @@ impl Service {
 
 struct Paid<'a> {
     url: &'a reqwest::Url,
-    challenge: &'a PaymentChallenge,
+    challenge: &'a Challenge,
     amount: u128,
     funding: Option<&'a str>,
     reference: &'a str,
@@ -309,7 +329,7 @@ struct Paid<'a> {
 
 impl Payments {
     fn new(machine: Address, models: Vec<String>, session: Option<String>) -> Self {
-        let events = ClientEvents::default();
+        let events = Events::default();
         let ledger = Arc::new(Atom::new(Ledger {
             machine,
             models,
@@ -319,40 +339,30 @@ impl Payments {
         let short = Arc::<Atom<bool>>::default();
         let (paid, updated, funded) = (ledger.clone(), ledger.clone(), short.clone());
         let (told, deposits) = (listeners.clone(), listeners.clone());
-        let observers = [
-            events.on_payment_response(move |context| {
-                funded.set(false);
-                if let Some(amount) = context.amount {
-                    let receipt = context.receipt.as_deref();
-                    let funding = context.funding_currency.clone().or_else(|| {
-                        Some(
-                            receipt?
-                                .extensions
-                                .get("fundingCurrency")?
-                                .as_str()?
-                                .to_owned(),
-                        )
-                    });
-                    let charge = Paid {
-                        url: &context.url,
-                        challenge: &context.challenge,
-                        amount,
-                        funding: funding.as_deref(),
-                        reference: receipt.map_or("", |receipt| receipt.reference.as_str()),
-                    };
-                    notify(&told, paid.update(|ledger| ledger.record(&charge)));
-                }
-                async {}
-            }),
-            events.on_deposit(move |context| {
-                notify(&deposits, Some(deposit_notice(&context, machine)));
-                async {}
-            }),
-            events.on_payment_update(move |context| {
-                updated.update(|ledger| ledger.update(&context.url, context.change));
-                async {}
-            }),
-        ];
+        events.on_payment_response(move |context| {
+            funded.set(false);
+            if let Some(amount) = context.amount {
+                let receipt = context.receipt.as_ref();
+                let funding = context
+                    .funding_currency
+                    .clone()
+                    .or_else(|| Some(receipt?.extension("fundingCurrency")?.to_owned()));
+                let charge = Paid {
+                    url: &context.url,
+                    challenge: &context.challenge,
+                    amount,
+                    funding: funding.as_deref(),
+                    reference: receipt.map_or("", |receipt| receipt.reference.as_str()),
+                };
+                notify(&told, paid.update(|ledger| ledger.record(&charge)));
+            }
+        });
+        events.on_deposit(move |context| {
+            notify(&deposits, Some(deposit_notice(context, machine)));
+        });
+        events.on_payment_update(move |context| {
+            updated.update(|ledger| ledger.update(&context.url, context.change));
+        });
         Self {
             client: Arc::default(),
             ledger,
@@ -364,7 +374,6 @@ impl Payments {
             slots: Arc::default(),
             closing: Arc::default(),
             short,
-            _observers: Arc::new(observers),
         }
     }
 
@@ -397,7 +406,7 @@ impl Payments {
         })
     }
 
-    fn store(&self, origin: String, service: &str) -> Result<SqliteChannelStore> {
+    fn store(&self, origin: String, service: &str) -> Result<FileChannelStore> {
         let namespace = match self.slots.read(|slots| slots.get(&origin).cloned()) {
             Some(namespace) => namespace,
             None => {
@@ -413,26 +422,21 @@ impl Payments {
                 })
             }
         };
-        Ok(SqliteChannelStore::open(SqliteChannelStoreOptions {
+        Ok(FileChannelStore::open(FileChannelStoreOptions {
             namespace,
             path: None,
             request_url: Some(service.to_owned()),
         })?)
     }
 
-    fn sessions(
-        &self,
-        wallet: &TempoAccountsProvider,
-        service: &reqwest::Url,
-        terms: &Terms,
-    ) -> Result<TempoAccountsProvider> {
+    fn sessions(&self, wallet: &Payer, service: &reqwest::Url, terms: &Terms) -> Result<Payer> {
         let origin = service.origin().ascii_serialization();
         let origin = match &terms.variant {
             Some(variant) => format!("{origin}~{variant}"),
             None => origin,
         };
         let store = self.store(origin, service.as_str())?;
-        let wallet = wallet.clone().with_session_store(Arc::new(store));
+        let wallet = wallet.clone().with_session_store(store);
         let host = service.host_str().unwrap_or_default().to_owned();
         let session = wallet.session_for(service.as_str())?;
         self.ledger.update(|ledger| {
@@ -450,7 +454,7 @@ impl Payments {
         &self,
         terms: Terms,
         bypass: Vec<String>,
-        policy: impl Future<Output = AcceptPaymentPolicy> + Send + 'static,
+        policy: impl Future<Output = Policy> + Send + 'static,
     ) -> Result<(Vec<(&'static str, String)>, PathBuf)> {
         nanocode::codex::transport::install_default_rustls_crypto_provider();
         let payments = self.clone();
@@ -671,8 +675,7 @@ struct Terms {
 impl Terms {
     fn mainnet(deposit: Option<u128>) -> Result<Self> {
         Ok(Self {
-            currency: machine_token::token(CHAIN_ID)
-                .ok_or("MACH is not deployed on Tempo mainnet")?,
+            currency: machine_token(CHAIN_ID).ok_or("MACH is not deployed on Tempo mainnet")?,
             gas: Gas::Challenge,
             deposit,
             variant: None,
@@ -690,8 +693,8 @@ impl Terms {
             .to_lowercase();
         let currency: Address = match wanted.as_str() {
             "" | "mach" => machine,
-            "usdc.e" | "usdc" => USDC.parse()?,
-            "ousd" => OUSD.parse()?,
+            "usdc.e" | "usdc" => USDC,
+            "ousd" => OUSD,
             address if address.starts_with("0x") => address.parse()?,
             other => {
                 return Err(format!(
@@ -718,16 +721,16 @@ struct Wallet {
     url: reqwest::Url,
     terms: Terms,
     payments: Payments,
-    loaded: Arc<Atom<Option<TempoAccountsProvider>>>,
-    loading: Arc<SingleFlight<std::result::Result<TempoAccountsProvider, String>>>,
+    loaded: Arc<Atom<Option<Payer>>>,
+    loading: Arc<SingleFlight<std::result::Result<Payer, String>>>,
 }
 
 impl Wallet {
-    fn ready(&self) -> Option<TempoAccountsProvider> {
+    fn ready(&self) -> Option<Payer> {
         self.loaded.read(Clone::clone)
     }
 
-    async fn get(&self) -> std::result::Result<TempoAccountsProvider, String> {
+    async fn get(&self) -> std::result::Result<Payer, String> {
         if let Some(wallet) = self.ready() {
             return Ok(wallet);
         }
@@ -751,22 +754,22 @@ impl Wallet {
             .await
     }
 
-    async fn load(&self) -> std::result::Result<TempoAccountsProvider, MppError> {
-        self.get().await.map_err(MppError::InvalidConfig)
+    async fn load(&self) -> std::result::Result<Payer, Fault> {
+        self.get().await.map_err(Fault::Config)
     }
 
     async fn held(&self) -> std::result::Result<Address, String> {
         let host = self.url.host_str().unwrap_or_default().to_owned();
         let account = tokio::task::spawn_blocking(accounts::default_active_account)
             .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| {
-            format!("{error}; sign in to a Tempo wallet with /login tempo to pay {host}")
-        })?;
+            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                format!("{error}; sign in to a Tempo wallet with /login tempo to pay {host}")
+            })?;
         let client = self.payments.client()?;
         let mut held = (U256::ZERO, None);
-        for token in [USDC, USDT0, PATH_USD] {
-            let balance = balance(&client, token, Address::from(account.0)).await?;
+        for token in HELD_TOKENS {
+            let balance = balance(&client, token, account).await?;
             if balance > held.0 {
                 held = (balance, Some(token));
             }
@@ -777,11 +780,11 @@ impl Wallet {
             .map_err(|error| format!("{error}"))
     }
 
-    fn open(&self, fee: Option<Address>) -> std::result::Result<TempoAccountsProvider, String> {
-        let wallet = TempoAccountsProvider::from_default_store()
+    fn open(&self, fee: Option<Address>) -> std::result::Result<Payer, String> {
+        let wallet = Payer::from_default_store()
             .map_err(|error| {
                 let error = match error {
-                    MppError::InvalidConfig(message) => message,
+                    Fault::Config(message) => message,
                     error => error.to_string(),
                 };
                 format!(
@@ -809,13 +812,9 @@ impl Wallet {
             .map_err(|error| error.to_string())
     }
 
-    fn noted<T>(&self, paid: std::result::Result<T, MppError>) -> std::result::Result<T, MppError> {
+    fn noted<T>(&self, paid: std::result::Result<T, Fault>) -> std::result::Result<T, Fault> {
         if let Err(error) = &paid
-            && matches!(
-                error,
-                MppError::InsufficientBalance(_)
-                    | MppError::Tempo(TempoClientError::InsufficientBalance { .. })
-            )
+            && error.is_insufficient_balance()
             && !*self.payments.short.set(true)
         {
             notify(
@@ -838,39 +837,28 @@ impl PaymentProvider for Wallet {
         }
     }
 
-    fn select_challenge<'a>(
-        &self,
-        challenges: &[&'a PaymentChallenge],
-    ) -> Option<&'a PaymentChallenge> {
+    fn select_challenge<'a>(&self, challenges: &[&'a Challenge]) -> Option<&'a Challenge> {
         match self.ready() {
             Some(wallet) => wallet.select_challenge(challenges),
             None => challenges.first().copied(),
         }
     }
 
-    async fn pay(
-        &self,
-        challenge: &PaymentChallenge,
-    ) -> std::result::Result<PaymentCredential, MppError> {
-        let wallet = self.load().await?;
-        self.noted(wallet.pay(challenge).await)
-    }
-
     async fn pay_with_context(
         &self,
-        challenge: &PaymentChallenge,
+        challenge: &Challenge,
         context: PaymentContext,
-    ) -> std::result::Result<PaymentCredential, MppError> {
+    ) -> std::result::Result<Credential, Fault> {
         let wallet = self.load().await?;
         self.noted(wallet.pay_with_context(challenge, context).await)
     }
 
     async fn pay_with_management(
         &self,
-        challenge: &PaymentChallenge,
+        challenge: &Challenge,
         context: PaymentContext,
         management: &dyn ManagementTransport,
-    ) -> std::result::Result<PaymentCredential, MppError> {
+    ) -> std::result::Result<Credential, Fault> {
         let wallet = self.load().await?;
         self.noted(
             wallet
@@ -881,9 +869,9 @@ impl PaymentProvider for Wallet {
 
     async fn commit_payment(
         &self,
-        challenge: &PaymentChallenge,
-        credential: &PaymentCredential,
-    ) -> std::result::Result<(), MppError> {
+        challenge: &Challenge,
+        credential: &Credential,
+    ) -> std::result::Result<(), Fault> {
         match self.ready() {
             Some(wallet) => wallet.commit_payment(challenge, credential).await,
             None => Ok(()),
@@ -892,9 +880,9 @@ impl PaymentProvider for Wallet {
 
     async fn rollback_payment(
         &self,
-        challenge: &PaymentChallenge,
-        credential: &PaymentCredential,
-    ) -> std::result::Result<(), MppError> {
+        challenge: &Challenge,
+        credential: &Credential,
+    ) -> std::result::Result<(), Fault> {
         match self.ready() {
             Some(wallet) => wallet.rollback_payment(challenge, credential).await,
             None => Ok(()),
@@ -903,49 +891,35 @@ impl PaymentProvider for Wallet {
 
     async fn invalidate_payment(
         &self,
-        challenge: &PaymentChallenge,
-        credential: &PaymentCredential,
-    ) -> std::result::Result<(), MppError> {
+        challenge: &Challenge,
+        credential: &Credential,
+    ) -> std::result::Result<(), Fault> {
         match self.ready() {
             Some(wallet) => wallet.invalidate_payment(challenge, credential).await,
             None => Ok(()),
         }
     }
 
-    fn abandon_payment(&self, challenge: &PaymentChallenge, credential: &PaymentCredential) {
+    fn abandon_payment(&self, challenge: &Challenge, credential: &Credential) {
         if let Some(wallet) = self.ready() {
             wallet.abandon_payment(challenge, credential);
         }
     }
 
-    async fn prepaid_credential(
-        &self,
-        context: PaymentContext,
-    ) -> Option<(PaymentChallenge, PaymentCredential)> {
+    async fn prepaid_credential(&self, context: PaymentContext) -> Option<(Challenge, Credential)> {
         self.get().await.ok()?.prepaid_credential(context).await
-    }
-
-    fn observe_receipt(
-        &self,
-        context: &PaymentContext,
-        challenge: &PaymentChallenge,
-        receipt: &Receipt,
-    ) {
-        if let Some(wallet) = self.ready() {
-            wallet.observe_receipt(context, challenge, receipt);
-        }
     }
 
     fn record_receipt(
         &self,
         context: &PaymentContext,
-        challenge: &PaymentChallenge,
+        challenge: &Challenge,
         receipt: &Receipt,
     ) -> Option<u128> {
         self.ready()?.record_receipt(context, challenge, receipt)
     }
 
-    fn funding_currency(&self, challenge: &PaymentChallenge) -> Option<String> {
+    fn funding_currency(&self, challenge: &Challenge) -> Option<String> {
         self.ready()?.funding_currency(challenge)
     }
 
@@ -994,7 +968,7 @@ impl McpPayments {
         payment_required: &Value,
         management: Option<&ToolCall<'_>>,
     ) -> std::result::Result<Option<Box<dyn McpPendingPayment>>, String> {
-        let Some(challenges) = mpp::mcp::extract_challenges_from_data(payment_required) else {
+        let Some(challenges) = mcp::extract_challenges_from_data(payment_required) else {
             return Ok(None);
         };
         self.wallet.get().await?;
@@ -1019,7 +993,7 @@ impl McpPayments {
             return Ok(None);
         };
         Ok(Some(Box::new(McpPending {
-            credential: mpp::mcp::credential_value(pending.credential())
+            credential: mcp::credential_value(pending.credential())
                 .map_err(|error| error.to_string())?,
             pending,
             payment,
@@ -1034,16 +1008,16 @@ struct ToolCall<'a>(&'a dyn McpPaymentManagement);
 impl ManagementTransport for ToolCall<'_> {
     fn send<'a>(
         &'a self,
-        _challenge: &'a PaymentChallenge,
-        credential: &'a PaymentCredential,
+        _challenge: &'a Challenge,
+        credential: &'a Credential,
     ) -> ManagementFuture<'a> {
         Box::pin(async move {
             let receipt = self
                 .0
-                .send(mpp::mcp::credential_value(credential)?)
+                .send(mcp::credential_value(credential)?)
                 .await
-                .map_err(MppError::Http)?;
-            Ok(receipt.and_then(|receipt| serde_json::from_value(receipt).ok()))
+                .map_err(Fault::Http)?;
+            Ok(receipt.and_then(Receipt::from_value))
         })
     }
 }
@@ -1071,15 +1045,9 @@ impl McpPendingPayment for McpPending {
         let charged = self
             .receipt
             .clone()
-            .and_then(|receipt| serde_json::from_value(receipt).ok())
+            .and_then(Receipt::from_value)
             .and_then(|receipt| self.payment.record_receipt(challenge, &receipt));
-        let amount = charged.or_else(|| {
-            challenge
-                .request
-                .decode::<Value>()
-                .ok()
-                .and_then(|request| request.get("amount")?.as_str()?.parse().ok())
-        });
+        let amount = charged.or_else(|| challenge.amount());
         if let (Some(receipt), Some(amount)) = (&self.receipt, amount) {
             let wallet = self.payment.provider();
             let funding = wallet.funding_currency(challenge);
@@ -1115,7 +1083,7 @@ impl McpPendingPayment for McpPending {
     }
 }
 
-fn deposit_notice(context: &DepositContext, machine: Address) -> String {
+fn deposit_notice(context: &Deposit, machine: Address) -> String {
     let symbol = context
         .currency
         .as_deref()
@@ -1139,9 +1107,9 @@ fn deposit_notice(context: &DepositContext, machine: Address) -> String {
 fn symbol(currency: &str, machine: Address) -> String {
     match currency.parse::<Address>() {
         Ok(currency) if currency == machine => "MACH".to_owned(),
-        Ok(currency) if USDC.parse() == Ok(currency) => "USDC.e".to_owned(),
-        Ok(currency) if PATH_USD.parse() == Ok(currency) => "pathUSD".to_owned(),
-        Ok(currency) if OUSD.parse() == Ok(currency) => "OUSD".to_owned(),
+        Ok(currency) if currency == USDC => "USDC.e".to_owned(),
+        Ok(currency) if currency == PATH_USD => "pathUSD".to_owned(),
+        Ok(currency) if currency == OUSD => "OUSD".to_owned(),
         _ => currency.to_owned(),
     }
 }
@@ -1596,7 +1564,7 @@ pub(crate) async fn close(closing: Closing) {
     }
 }
 
-async fn close_session(client: &reqwest::Client, session: &TempoSessionProvider, url: &str) {
+async fn close_session(client: &reqwest::Client, session: &SessionProvider, url: &str) {
     let host = reqwest::Url::parse(url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
@@ -1663,8 +1631,8 @@ async fn balance(
 fn gas_token(token: &str) -> Result<Address> {
     let token = token.trim().to_lowercase();
     let address: Address = match token.as_str() {
-        "usdc.e" | "usdc" => USDC.parse()?,
-        "usdt0" => USDT0.parse()?,
+        "usdc.e" | "usdc" => USDC,
+        "usdt0" => USDT0,
         address if address.starts_with("0x") => address.parse()?,
         other => {
             return Err(format!(
@@ -1673,7 +1641,7 @@ fn gas_token(token: &str) -> Result<Address> {
             .into());
         }
     };
-    if machine_token::token(CHAIN_ID) == Some(address) || OUSD.parse() == Ok(address) {
+    if machine_token(CHAIN_ID) == Some(address) || OUSD == address {
         return Err(
             format!("--tempo-fee-token {token} cannot pay gas; MACH and OUSD do not").into(),
         );
@@ -1738,7 +1706,7 @@ fn shell(
     {
         return Ok((clients, None));
     }
-    let policy = AcceptPaymentPolicy::Origins(paid_origins()?);
+    let policy = Policy::Origins(paid_origins()?);
     match payments.pay_tools(
         Terms::mainnet(Some(tool_deposit(args)))?,
         Vec::new(),
@@ -1763,7 +1731,7 @@ pub(crate) fn apply(
         return Ok((clients, None));
     }
     nanocode::codex::transport::install_default_rustls_crypto_provider();
-    let machine = machine_token::token(CHAIN_ID).ok_or("MACH is not deployed on Tempo mainnet")?;
+    let machine = machine_token(CHAIN_ID).ok_or("MACH is not deployed on Tempo mainnet")?;
     let served = match models {
         true => vec![
             format!("{TEMPO_GATEWAY}/v1/responses"),

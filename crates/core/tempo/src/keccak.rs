@@ -105,7 +105,11 @@ fn permute(state: &mut [u64; LANES]) {
     for constant in ROUND_CONSTANTS {
         let mut columns = [0u64; ROW];
         for (x, column) in columns.iter_mut().enumerate() {
-            *column = state[x] ^ state[x + ROW] ^ state[x + 2 * ROW] ^ state[x + 3 * ROW] ^ state[x + 4 * ROW];
+            *column = state[x]
+                ^ state[x + ROW]
+                ^ state[x + 2 * ROW]
+                ^ state[x + 3 * ROW]
+                ^ state[x + 4 * ROW];
         }
         for x in 0..ROW {
             let d = columns[(x + ROW - 1) % ROW] ^ columns[(x + 1) % ROW].rotate_left(1);

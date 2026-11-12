@@ -1,6 +1,6 @@
 //! Line and field tools (nanocode's addition), after GNU coreutils and util-linux: tac,
 //! rev, fold, expand, unexpand, column, join, shuf, split and numfmt. Inputs are read
-//! whole.
+//! whole, except by fold, which writes each block as it reads.
 
 use psh_engine::host::{OpenOptions, error_text};
 use psh_engine::util::UtilCtx;
@@ -163,10 +163,6 @@ pub async fn fold(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         },
         None => 80,
     };
-    let data = match read_all(ctx, &p.operands).await {
-        Ok(data) => data,
-        Err(st) => return st,
-    };
     let advance = |column: usize, b: u8| -> usize {
         if bytes {
             return column + 1;
@@ -178,48 +174,87 @@ pub async fn fold(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             _ => column + 1,
         }
     };
-    let mut out = Vec::with_capacity(data.len() + data.len() / width);
+    let stdin = [b"-".to_vec()];
+    let names = if p.operands.is_empty() {
+        &stdin[..]
+    } else {
+        &p.operands[..]
+    };
+    let mut status = 0;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut out: Vec<u8> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
     let mut column = 0;
-    for &b in &data {
-        if b == b'\n' {
-            out.extend_from_slice(&line);
-            out.push(b'\n');
-            line.clear();
-            column = 0;
-            continue;
-        }
-        loop {
-            let next = advance(column, b);
-            if next <= width || line.is_empty() {
-                column = next;
-                line.push(b);
-                break;
+    for name in names {
+        let input = match Input::open(ctx, name).await {
+            Ok(input) => input,
+            Err(e) => {
+                common::file_error(ctx, name, &e).await;
+                status = 1;
+                continue;
             }
-            let blank = if spaces {
-                line.iter().rposition(|c| c.is_ascii_whitespace())
-            } else {
-                None
-            };
-            match blank {
-                Some(at) => {
-                    out.extend_from_slice(&line[..=at]);
-                    out.push(b'\n');
-                    let rest = line.split_off(at + 1);
-                    line = rest;
-                    column = line.iter().fold(0, |c, &b| advance(c, b));
+        };
+        loop {
+            let n = match input.read(ctx, &mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    common::file_error(ctx, name, &e).await;
+                    status = 1;
+                    break;
                 }
-                None => {
+            };
+            for &b in &buf[..n] {
+                if b == b'\n' {
                     out.extend_from_slice(&line);
                     out.push(b'\n');
                     line.clear();
                     column = 0;
+                    continue;
                 }
+                loop {
+                    let next = advance(column, b);
+                    if next <= width || line.is_empty() {
+                        column = next;
+                        line.push(b);
+                        break;
+                    }
+                    let blank = if spaces {
+                        line.iter().rposition(|c| c.is_ascii_whitespace())
+                    } else {
+                        None
+                    };
+                    match blank {
+                        Some(at) => {
+                            out.extend_from_slice(&line[..=at]);
+                            out.push(b'\n');
+                            let rest = line.split_off(at + 1);
+                            line = rest;
+                            column = line.iter().fold(0, |c, &b| advance(c, b));
+                        }
+                        None => {
+                            out.extend_from_slice(&line);
+                            out.push(b'\n');
+                            line.clear();
+                            column = 0;
+                        }
+                    }
+                }
+            }
+            if !out.is_empty() {
+                let st = emit(ctx, &out).await;
+                if st != 0 {
+                    return st;
+                }
+                out.clear();
             }
         }
     }
     out.extend_from_slice(&line);
-    emit(ctx, &out).await
+    match emit(ctx, &out).await {
+        0 => status,
+        st => st,
+    }
 }
 
 fn tab_stops(spec: Option<&[u8]>) -> Option<(Vec<usize>, usize)> {

@@ -429,7 +429,7 @@
   function callTool(name, encodedInput, host) {
     const id = nativeTool(name, encodedInput, host);
     return new Promise((resolve, reject) => {
-      pendingTools.set(id, [resolve, reject]);
+      pendingTools.set(id, [resolve, reject, name]);
     });
   }
 
@@ -447,7 +447,15 @@
       } else {
         const settlers = pendingTools.get(event.id);
         pendingTools.delete(event.id);
-        if (settlers) settlers[event.ok ? 0 : 1](event.value);
+        if (settlers) {
+          try {
+            const value = jsonParse(event.value);
+            if (event.ok) settlers[0](value);
+            else settlers[1](toolFailure(settlers[2], value));
+          } catch (error) {
+            settlers[1](error);
+          }
+        }
       }
     }
   }
@@ -478,8 +486,7 @@
       : jsonStringify({ type: "error", message: failure, stored: Object.fromEntries(storedWrites) });
     const invokeTool = (name, input, host = false) => {
       const encodedInput = input === undefined ? "null" : jsonStringify(input);
-      return callTool(name, encodedInput, host)
-        .then(jsonParse, (payload) => Promise.reject(toolFailure(name, jsonParse(payload))));
+      return callTool(name, encodedInput, host);
     };
     for (const definition of definitions) {
       declaredTools[definition.name] = (input) => invokeTool(

@@ -15,7 +15,6 @@ nanocode-process-contracts.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-home.workspace = true
-nanocode-psh.workspace = true
 nanocode-sync.workspace = true
 tracing.workspace = true
 getrandom.workspace = true

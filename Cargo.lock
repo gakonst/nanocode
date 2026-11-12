@@ -3501,7 +3501,6 @@ dependencies = [
  "getrandom 0.4.3",
  "nanocode-home",
  "nanocode-process-contracts",
- "nanocode-psh",
  "nanocode-sync",
  "nix 0.31.3",
  "rustix",
@@ -3524,8 +3523,6 @@ name = "nanocode-psh"
 version = "0.7.0"
 dependencies = [
  "nanocode-home",
- "psh-classify",
- "psh-syntax",
 ]
 
 [[package]]
@@ -3864,8 +3861,12 @@ dependencies = [
  "nanocode-agent-host",
  "nanocode-backend-codex",
  "nanocode-durability",
+ "nanocode-home",
+ "nanocode-psh",
+ "nanocode-psh-embedded",
  "nanocode-store-jsonl",
  "nanocode-tool-runtime",
+ "psh",
  "pulldown-cmark",
  "serde_json",
  "tokio",

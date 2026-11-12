@@ -51,15 +51,11 @@ pub(crate) fn run_bash_with_environment<'call>(
             )
             .collect();
         let (environment, secrets) = process::sanitized_environment(&overrides, &[]);
-        let shell = crate::delegated(
-            selection::bash_shell().ok_or("Bash executable not found")?,
-            command,
-        );
+        let shell = selection::chosen().ok_or("this host has not made psh its shell")?;
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let warm = match super::embedded::spawn(
             command,
             workspace,
-            &shell,
             &environment,
             super::embedded::Streams::Apart,
         ) {

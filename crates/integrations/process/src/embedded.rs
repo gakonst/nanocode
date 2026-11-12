@@ -12,7 +12,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
-use super::{process, selection::Shell};
+use super::process;
 
 pub type Sink = Box<dyn FnMut(&[u8]) -> io::Result<()> + Send>;
 
@@ -93,12 +93,11 @@ pub(crate) enum Streams {
 pub(crate) fn spawn(
     script: &str,
     workdir: &Path,
-    shell: &Shell,
     environment: &[(OsString, OsString)],
     streams: Streams,
 ) -> Option<process::SpawnedProcess> {
     let embedded = EMBEDDED.get()?;
-    if !shell.is_psh() || !embedded.contains(script, environment) {
+    if !embedded.contains(script, environment) {
         return None;
     }
     let (out, err, output) = match streams {

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    os::unix::ffi::OsStringExt,
+    os::unix::{ffi::OsStringExt, fs::MetadataExt},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, LazyLock},
@@ -9,10 +9,7 @@ use std::{
 
 use nanocode_sync::{Atom, SingleFlight};
 
-use super::{
-    selection::Shell,
-    server::{Fingerprint, UNDIFFED, fingerprint},
-};
+const UNDIFFED: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 const MARK: &str = "nanocode-login-environment";
 
@@ -29,19 +26,19 @@ static PROBE: LazyLock<SingleFlight<Result<Arc<Snapshot>, String>>> =
     LazyLock::new(SingleFlight::default);
 
 pub(crate) async fn environment(
-    shell: &Shell,
+    shell: &Path,
     workdir: &Path,
     environment: &[(OsString, OsString)],
     secrets: &[(OsString, OsString)],
 ) -> Result<Vec<(OsString, OsString)>, String> {
     let current = SNAPSHOT.get().as_ref().clone().filter(|snapshot| {
-        snapshot.shell == shell.path() && fingerprint(&snapshot.files) == snapshot.fingerprint
+        snapshot.shell == shell && fingerprint(&snapshot.files) == snapshot.fingerprint
     });
     let snapshot = match current {
         Some(snapshot) => snapshot,
         None => {
             let (shell, workdir, launched) =
-                (shell.clone(), workdir.to_owned(), environment.to_vec());
+                (shell.to_owned(), workdir.to_owned(), environment.to_vec());
             PROBE
                 .run(|| async move {
                     tokio::spawn(async move {
@@ -90,34 +87,86 @@ impl Snapshot {
     }
 }
 
-fn startup_files(shell: &Shell, environment: &HashMap<OsString, OsString>) -> Vec<PathBuf> {
-    match shell.name() {
-        "zsh" => super::server::startup_files(true, environment, None),
-        "bash" => {
-            let listed: Vec<_> = environment
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone()))
-                .collect();
-            super::warm::startup_files(true, &listed)
-        }
-        _ => environment
-            .get(OsStr::new("HOME"))
-            .map(|home| Path::new(home).join(".profile"))
-            .into_iter()
-            .chain([PathBuf::from("/etc/profile")])
+#[derive(Clone, PartialEq, Eq)]
+struct Fingerprint(Vec<Option<[i64; 7]>>);
+
+fn fingerprint(files: &[PathBuf]) -> Fingerprint {
+    Fingerprint(
+        files
+            .iter()
+            .map(|file| {
+                std::fs::metadata(file).ok().map(|metadata| {
+                    [
+                        metadata.dev() as i64,
+                        metadata.ino() as i64,
+                        metadata.size() as i64,
+                        metadata.mtime(),
+                        metadata.mtime_nsec(),
+                        metadata.ctime(),
+                        metadata.ctime_nsec(),
+                    ]
+                })
+            })
             .collect(),
+    )
+}
+
+fn startup_files(shell: &Path, environment: &HashMap<OsString, OsString>) -> Vec<PathBuf> {
+    let variable = |name: &str| environment.get(OsStr::new(name)).map(PathBuf::from);
+    let home = variable("HOME");
+    let mut files = match shell.file_name().and_then(OsStr::to_str) {
+        Some("zsh") => {
+            let dir = variable("ZDOTDIR").or(home);
+            let mut files = vec![PathBuf::from("/etc/zshenv")];
+            files.extend(dir.as_ref().map(|dir| dir.join(".zshenv")));
+            files.extend(["/etc/zprofile", "/etc/zlogin"].map(PathBuf::from));
+            if let Some(dir) = dir {
+                files.extend([".zprofile", ".zlogin"].map(|file| dir.join(file)));
+            }
+            files
+        }
+        Some("bash") => {
+            let mut files: Vec<PathBuf> = variable("BASH_ENV").into_iter().collect();
+            files.extend(
+                [
+                    "/etc/profile",
+                    "/etc/profile.d",
+                    "/etc/bash.bashrc",
+                    "/etc/bashrc",
+                ]
+                .map(PathBuf::from),
+            );
+            if let Some(home) = home {
+                files.extend(
+                    [".bash_profile", ".bash_login", ".profile", ".bashrc"]
+                        .map(|file| home.join(file)),
+                );
+            }
+            files
+        }
+        _ => {
+            return home
+                .map(|home| home.join(".profile"))
+                .into_iter()
+                .chain([PathBuf::from("/etc/profile")])
+                .collect();
+        }
+    };
+    if cfg!(target_os = "macos") {
+        files.extend(["/etc/paths", "/etc/paths.d"].map(PathBuf::from));
     }
+    files
 }
 
 async fn probe(
-    shell: &Shell,
+    shell: &Path,
     workdir: &Path,
     launched: Vec<(OsString, OsString)>,
 ) -> Result<Snapshot, String> {
     let script = format!("printf '\\0%s\\0' {MARK}; /usr/bin/env -0");
-    let failed = |why: String| format!("the login shell {} {why}", shell.path().display());
-    let output = tokio::process::Command::new(shell.path())
-        .args(shell.args(&script, true))
+    let failed = |why: String| format!("the login shell {} {why}", shell.display());
+    let output = tokio::process::Command::new(shell)
+        .args(["-lc", &script])
         .current_dir(workdir)
         .env_clear()
         .envs(launched.iter().cloned())
@@ -155,7 +204,7 @@ async fn probe(
     let reported: HashMap<OsString, OsString> = child.iter().cloned().collect();
     let files = startup_files(shell, &reported);
     Ok(Snapshot {
-        shell: shell.path().to_owned(),
+        shell: shell.to_owned(),
         origin: launched.into_iter().collect(),
         child,
         fingerprint: fingerprint(&files),

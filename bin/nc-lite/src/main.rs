@@ -91,6 +91,24 @@ fn args() -> Result<(Command, Config, Option<String>)> {
 }
 
 fn main() -> std::process::ExitCode {
+    #[cfg(unix)]
+    if let Some(code) = nanocode_psh::serve_if_requested(|arguments| psh::run_with(arguments, &[]))
+    {
+        return code;
+    }
+    #[cfg(unix)]
+    {
+        let chosen = nanocode_psh::shell().map(nanocode_home::shell::choose);
+        if !matches!(chosen, Ok(Ok(()))) || nanocode_psh_embedded::embed().is_err() {
+            eprintln!("nc-lite: failed to make psh the shell: {chosen:?}");
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        eprintln!("nc-lite: psh, the shell of its commands, is built for Unix hosts only");
+        return std::process::ExitCode::FAILURE;
+    }
     let outcome = args().and_then(|(command, config, prompt)| match command {
         Command::Version => {
             println!("nc-lite {}", env!("CARGO_PKG_VERSION"));

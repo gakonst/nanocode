@@ -1,28 +1,12 @@
-use std::{
-    env,
-    ffi::OsString,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use nix::unistd::{Uid, User};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ShellType {
-    Zsh,
-    Bash,
-    Psh(Vec<String>),
-    PowerShell,
-    Sh,
-    Cmd,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shell {
-    shell_type: ShellType,
-    path: PathBuf,
+    program: PathBuf,
+    arguments: Vec<String>,
 }
 
 static CHOSEN: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
@@ -31,88 +15,43 @@ pub fn choose(shell: Shell) -> Result<(), Shell> {
     CHOSEN.set(shell)
 }
 
+pub fn chosen() -> Option<Shell> {
+    CHOSEN.get().cloned()
+}
+
 impl Shell {
     #[must_use]
     pub const fn psh(program: PathBuf, arguments: Vec<String>) -> Self {
-        Self {
-            shell_type: ShellType::Psh(arguments),
-            path: program,
-        }
+        Self { program, arguments }
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.program
     }
 
-    pub const fn name(&self) -> &'static str {
-        match self.shell_type {
-            ShellType::Zsh => "zsh",
-            ShellType::Bash | ShellType::Psh(_) => "bash",
-            ShellType::PowerShell => "powershell",
-            ShellType::Sh => "sh",
-            ShellType::Cmd => "cmd",
-        }
-    }
-
-    pub const fn is_psh(&self) -> bool {
-        matches!(self.shell_type, ShellType::Psh(_))
-    }
-
-    pub fn warm_args(&self, login: bool) -> Option<Vec<String>> {
-        let ShellType::Psh(arguments) = &self.shell_type else {
-            return None;
-        };
-        let mut args = arguments.clone();
+    pub fn warm_args(&self, login: bool) -> Vec<String> {
+        let mut args = self.arguments.clone();
         args.push("--warm".to_owned());
         if login {
             args.push("-l".to_owned());
         }
-        Some(args)
+        args
     }
 
     pub fn args(&self, script: &str, login: bool) -> Vec<String> {
-        match &self.shell_type {
-            ShellType::Psh(arguments) => arguments
-                .iter()
-                .cloned()
-                .chain([
-                    if login { "-lc" } else { "-c" }.to_owned(),
-                    script.to_owned(),
-                ])
-                .collect(),
-            ShellType::Zsh | ShellType::Bash | ShellType::Sh => vec![
+        self.arguments
+            .iter()
+            .cloned()
+            .chain([
                 if login { "-lc" } else { "-c" }.to_owned(),
                 script.to_owned(),
-            ],
-            ShellType::PowerShell => {
-                let mut args = Vec::with_capacity(3);
-                if !login {
-                    args.push("-NoProfile".to_owned());
-                }
-                args.push("-Command".to_owned());
-                args.push(script.to_owned());
-                args
-            }
-            ShellType::Cmd => vec!["/c".to_owned(), script.to_owned()],
-        }
+            ])
+            .collect()
     }
 }
 
-fn detect_shell_type(shell_path: &Path) -> Option<ShellType> {
-    match shell_path.as_os_str().to_str() {
-        Some("zsh") => Some(ShellType::Zsh),
-        Some("bash") => Some(ShellType::Bash),
-        Some("pwsh" | "powershell") => Some(ShellType::PowerShell),
-        Some("sh") => Some(ShellType::Sh),
-        Some("cmd") => Some(ShellType::Cmd),
-        _ => {
-            let shell_name = shell_path.file_stem()?;
-            let shell_name = Path::new(shell_name);
-            (shell_name != shell_path)
-                .then(|| detect_shell_type(shell_name))
-                .flatten()
-        }
-    }
+pub const fn default_shell_name() -> &'static str {
+    "bash"
 }
 
 #[cfg(unix)]
@@ -126,6 +65,29 @@ fn user_shell_path() -> Option<PathBuf> {
                 .map(|user| user.shell)
         })
         .clone()
+}
+
+#[cfg(unix)]
+pub fn login_shell() -> Option<PathBuf> {
+    let runs_profiles = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "zsh" | "bash" | "sh"))
+            && path.is_file()
+    };
+    let fallbacks: &[&str] = if cfg!(target_os = "macos") {
+        &["/bin/zsh", "/bin/bash", "/bin/sh"]
+    } else {
+        &["/bin/bash", "/usr/bin/bash", "/bin/zsh", "/bin/sh"]
+    };
+    user_shell_path()
+        .filter(|path| runs_profiles(path))
+        .or_else(|| {
+            fallbacks
+                .iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+        })
 }
 
 #[cfg(unix)]
@@ -153,229 +115,4 @@ pub fn warm_user_shell() {
     let _ = std::thread::Builder::new()
         .name("nanocode-user-shell".to_owned())
         .spawn(|| drop(user_shell_path()));
-}
-
-#[cfg(windows)]
-fn user_shell_path() -> Option<PathBuf> {
-    env::var_os("COMSPEC").map(PathBuf::from)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn user_shell_path() -> Option<PathBuf> {
-    None
-}
-
-fn file_exists(path: &Path) -> Option<PathBuf> {
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file())
-        .then(|| path.to_path_buf())
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.metadata().is_ok_and(|metadata| metadata.is_file())
-}
-
-fn executable_names(binary: &str) -> Vec<OsString> {
-    #[cfg(windows)]
-    {
-        if Path::new(binary).extension().is_some() {
-            return vec![binary.into()];
-        }
-        let extensions = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
-        return extensions
-            .split(';')
-            .filter(|extension| !extension.is_empty())
-            .map(|extension| format!("{binary}{extension}").into())
-            .collect();
-    }
-    #[cfg(not(windows))]
-    {
-        vec![binary.into()]
-    }
-}
-
-fn find_in_path(binary: &str) -> Option<PathBuf> {
-    let names = executable_names(binary);
-    env::var_os("PATH")
-        .into_iter()
-        .flat_map(|path| env::split_paths(&path).collect::<Vec<_>>())
-        .flat_map(|directory| names.iter().map(move |name| directory.join(name)))
-        .find(|candidate| is_executable(candidate))
-}
-
-fn shell_path(
-    shell_type: &ShellType,
-    provided_path: Option<&Path>,
-    binary_name: &str,
-    fallback_paths: &[&str],
-) -> Option<PathBuf> {
-    if let Some(path) = provided_path.and_then(file_exists) {
-        return Some(path);
-    }
-
-    let user_shell = user_shell_path()
-        .filter(|path| detect_shell_type(path).as_ref() == Some(shell_type))
-        .and_then(|path| file_exists(&path));
-    if let Some(path) = user_shell {
-        return Some(path);
-    }
-
-    find_in_path(binary_name).or_else(|| {
-        fallback_paths
-            .iter()
-            .find_map(|path| file_exists(Path::new(path)))
-    })
-}
-
-fn shell(shell_type: ShellType, provided_path: Option<&Path>) -> Option<Shell> {
-    let path = match &shell_type {
-        ShellType::Zsh => shell_path(&shell_type, provided_path, "zsh", &["/bin/zsh"]),
-        ShellType::Bash => shell_path(
-            &shell_type,
-            provided_path,
-            "bash",
-            &["/bin/bash", "/usr/bin/bash"],
-        ),
-        ShellType::Psh(_) => provided_path.and_then(file_exists),
-        ShellType::PowerShell => {
-            shell_path(&shell_type, provided_path, "pwsh", &["/usr/local/bin/pwsh"])
-                .or_else(|| shell_path(&shell_type, provided_path, "powershell", &[]))
-        }
-        ShellType::Sh => shell_path(&shell_type, provided_path, "sh", &["/bin/sh"]),
-        ShellType::Cmd => shell_path(&shell_type, provided_path, "cmd", &[]),
-    }?;
-    Some(Shell { shell_type, path })
-}
-
-#[cfg(not(windows))]
-fn system_shell(shell_type: ShellType, path: &str) -> Option<Shell> {
-    file_exists(Path::new(path)).map(|path| Shell { shell_type, path })
-}
-
-fn ultimate_fallback_shell() -> Shell {
-    #[cfg(windows)]
-    {
-        return Shell {
-            shell_type: ShellType::Cmd,
-            path: env::var_os("COMSPEC").map_or_else(|| PathBuf::from("cmd.exe"), PathBuf::from),
-        };
-    }
-    #[cfg(not(windows))]
-    {
-        Shell {
-            shell_type: ShellType::Sh,
-            path: PathBuf::from("/bin/sh"),
-        }
-    }
-}
-
-pub fn bash_shell() -> Option<Shell> {
-    CHOSEN.get().cloned().or_else(system_bash_shell)
-}
-
-pub fn system_bash_shell() -> Option<Shell> {
-    shell(ShellType::Bash, None)
-}
-
-pub fn get_shell_by_model_provided_path(path: &str) -> Shell {
-    let path = Path::new(path);
-    detect_shell_type(path)
-        .and_then(|shell_type| shell(shell_type, Some(path)))
-        .unwrap_or_else(ultimate_fallback_shell)
-}
-
-pub fn default_user_shell() -> Shell {
-    CHOSEN.get().cloned().unwrap_or_else(system_user_shell)
-}
-
-pub fn system_user_shell() -> Shell {
-    static SHELL: std::sync::OnceLock<Shell> = std::sync::OnceLock::new();
-    SHELL
-        .get_or_init(|| default_user_shell_from_path(user_shell_path().as_deref()))
-        .clone()
-}
-
-fn default_user_shell_from_path(user_shell_path: Option<&Path>) -> Shell {
-    let user_default_shell = user_shell_path
-        .and_then(detect_shell_type)
-        .and_then(|shell_type| shell(shell_type, None));
-
-    #[cfg(windows)]
-    let shell_with_fallback = user_default_shell
-        .or_else(|| shell(ShellType::PowerShell, None))
-        .or_else(|| shell(ShellType::Cmd, None));
-    #[cfg(not(windows))]
-    let shell_with_fallback = if cfg!(target_os = "macos") {
-        user_default_shell
-            .or_else(|| system_shell(ShellType::Zsh, "/bin/zsh"))
-            .or_else(|| shell(ShellType::Zsh, None))
-            .or_else(|| shell(ShellType::Bash, None))
-    } else {
-        user_default_shell
-            .or_else(|| shell(ShellType::Bash, None))
-            .or_else(|| shell(ShellType::Zsh, None))
-    };
-
-    shell_with_fallback.unwrap_or_else(ultimate_fallback_shell)
-}
-
-pub fn default_shell_name() -> &'static str {
-    default_user_shell().name()
-}
-
-#[cfg(unix)]
-pub fn login_path(shell: &Path, within: std::time::Duration) -> std::io::Result<Option<OsString>> {
-    use nix::{
-        sys::signal::{Signal, killpg},
-        unistd::Pid,
-    };
-    use std::{
-        io::Read,
-        os::unix::process::CommandExt,
-        process::{Command, Stdio},
-        sync::mpsc,
-        thread,
-    };
-    const BEGIN: &str = "__NANOCODE_LOGIN_PATH_BEGIN__";
-    const END: &str = "__NANOCODE_LOGIN_PATH_END__";
-    let mut child = Command::new(shell)
-        .arg("-ilc")
-        .arg(format!("echo {BEGIN}; printenv PATH; echo {END}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()?;
-    let (group, stdout) = (i32::try_from(child.id()), child.stdout.take());
-    let (Ok(group), Some(mut stdout)) = (group, stdout) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(std::io::Error::other("the login shell has no output"));
-    };
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let mut text = String::new();
-        let _ = stdout.read_to_string(&mut text);
-        let _ = sender.send(text);
-    });
-    let output = receiver.recv_timeout(within).ok();
-    let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
-    let _ = child.wait();
-    Ok(output.and_then(|text| {
-        let path = text
-            .split_once(BEGIN)?
-            .1
-            .split_once(END)?
-            .0
-            .trim()
-            .to_owned();
-        (!path.is_empty() && !path.chars().any(char::is_control)).then(|| path.into())
-    }))
 }

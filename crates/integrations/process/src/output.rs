@@ -39,16 +39,12 @@ impl Capture {
 #[derive(Clone)]
 pub(super) enum Sender {
     Captured(Capture),
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    Unbounded(tokio::sync::mpsc::UnboundedSender<Vec<u8>>),
 }
 
 impl Sender {
     pub(super) async fn send(&self, bytes: Vec<u8>) -> Result<(), ()> {
         match self {
             Self::Captured(capture) => capture.push(bytes).await.map_err(|_| ()),
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            Self::Unbounded(sender) => sender.send(bytes).map_err(|_| ()),
         }
     }
 }

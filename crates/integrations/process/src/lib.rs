@@ -21,8 +21,6 @@ pub use embedded::{Contained, Embedded, Running, Sink, embed};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod login;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-mod server;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod warm;
 use nanocode_home::shell as selection;
 
@@ -78,21 +76,6 @@ pub(crate) fn redact(bytes: &[u8], redactor: &nanocode_process_contracts::Redact
         output = redacted;
     }
     output
-}
-
-pub(crate) fn delegated(shell: selection::Shell, script: &str) -> selection::Shell {
-    if !shell.is_psh() {
-        return shell;
-    }
-    let nanocode_psh::Plan::System(reason) = nanocode_psh::plan(script) else {
-        return shell;
-    };
-    let Some(bash) = selection::system_bash_shell() else {
-        tracing::warn!(%reason, "no system bash to hand the command to; psh reports what it lacks");
-        return shell;
-    };
-    tracing::info!(%reason, shell = %bash.path().display(), "the command runs in the system bash");
-    bash
 }
 
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
@@ -263,16 +246,14 @@ pub struct ShellSessions {
     uses: AtomicU64,
     sessions: Arc<Sessions>,
     next_session_id: AtomicI64,
-    default_shell: selection::Shell,
-    login_shell: selection::Shell,
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    login_shell: Option<PathBuf>,
     environment: Arc<Vec<(OsString, OsString)>>,
     secrets: Option<SecretEnvironment>,
     per_caller: bool,
     origin: Instant,
     busy_at: AtomicU64,
     output_limit: usize,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    servers: server::Servers,
 }
 
 struct CallEnds<'a>(&'a ShellSessions);
@@ -290,16 +271,14 @@ impl ShellSessions {
             uses: AtomicU64::new(0),
             sessions: Arc::new(Sessions::new()),
             next_session_id: AtomicI64::new(1),
-            default_shell: selection::default_user_shell(),
-            login_shell: selection::system_user_shell(),
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            login_shell: selection::login_shell(),
             environment,
             secrets: None,
             per_caller: false,
             origin: Instant::now(),
             busy_at: AtomicU64::new(0),
             output_limit: DEFAULT_OUTPUT_LIMIT_BYTES,
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            servers: server::Servers::default(),
         }
     }
 
@@ -360,7 +339,7 @@ impl ShellSessions {
     }
 
     pub const fn default_shell_name(&self) -> &'static str {
-        self.default_shell.name()
+        selection::default_shell_name()
     }
 
     pub fn execute<'call>(
@@ -374,13 +353,15 @@ impl ShellSessions {
             let started_at = Instant::now();
             let session_id = self.next_session_id.fetch_add(1, Ordering::Relaxed);
             let workdir = resolve_workdir(workspace, command.workdir.as_deref());
-            let shell = delegated(
-                command.shell.as_deref().map_or_else(
-                    || self.default_shell.clone(),
-                    selection::get_shell_by_model_provided_path,
-                ),
-                &command.script,
-            );
+            let Some(shell) = selection::chosen() else {
+                return ExecCommandResult::failed(
+                    started_at.elapsed(),
+                    format!(
+                        "exec_command failed for `{}`: this host has not made psh its shell",
+                        command.script
+                    ),
+                );
+            };
             let host_secrets = self
                 .secrets
                 .as_ref()
@@ -395,16 +376,16 @@ impl ShellSessions {
                 MAX_EXEC_YIELD_MS,
             );
             #[cfg(any(target_os = "macos", target_os = "linux"))]
-            if login && shell.is_psh() {
+            if login && let Some(login_shell) = &self.login_shell {
                 let reported = timeout(
                     yield_time,
-                    login::environment(&self.login_shell, &workdir, &environment, &host_secrets),
+                    login::environment(login_shell, &workdir, &environment, &host_secrets),
                 )
                 .await
                 .unwrap_or_else(|_| {
                     Err(format!(
                         "the login shell {} did not report its environment within {yield_time:?}",
-                        self.login_shell.path().display()
+                        login_shell.display()
                     ))
                 });
                 match reported {
@@ -418,71 +399,31 @@ impl ShellSessions {
                 }
             }
             let terminations = self.terminations.load(Ordering::SeqCst);
+            let script = command.script.clone();
             #[cfg(any(target_os = "macos", target_os = "linux"))]
-            let served = match command.tty || command.shell.is_some() {
+            let warm = match command.tty {
                 true => None,
-                false => {
-                    self.servers
-                        .spawn(server::Request {
-                            script: &command.script,
-                            workdir: &workdir,
-                            shell: &shell,
-                            login,
-                            environment: &environment,
-                            secrets: &host_secrets,
-                        })
-                        .await
-                }
+                false => match embedded::spawn(
+                    &script,
+                    &workdir,
+                    &environment,
+                    embedded::Streams::InOrder,
+                ) {
+                    Some(spawned) => Some(spawned),
+                    None => warm::spawn(&script, &workdir, &shell, login, &environment).await,
+                },
             };
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-            let served = None;
-            let spawned = match served {
-                Some(served) => Ok(served),
+            let warm = None;
+            let spawned = match warm {
+                Some(spawned) => Ok(spawned),
                 None => {
-                    let script = process::export_secrets_after_profile(
-                        &command.script,
-                        &shell,
-                        login,
-                        &host_secrets,
-                        &mut environment,
-                    )
-                    .into_owned();
-                    #[cfg(any(target_os = "macos", target_os = "linux"))]
-                    let warm = match command.tty {
-                        true => None,
-                        false => match embedded::spawn(
-                            &script,
-                            &workdir,
-                            &shell,
-                            &environment,
-                            embedded::Streams::InOrder,
-                        ) {
-                            Some(spawned) => Some(spawned),
-                            None => {
-                                warm::spawn(&script, &workdir, &shell, login, &environment).await
-                            }
-                        },
-                    };
-                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                    let warm = None;
-                    match warm {
-                        Some(spawned) => Ok(spawned),
-                        None => {
-                            let (directory, tty) = (workdir.clone(), command.tty);
-                            tokio::task::spawn_blocking(move || {
-                                process::spawn(
-                                    &script,
-                                    &directory,
-                                    &shell,
-                                    login,
-                                    tty,
-                                    &environment,
-                                )
-                            })
-                            .await
-                            .unwrap_or_else(|error| Err(std::io::Error::other(error)))
-                        }
-                    }
+                    let (directory, tty) = (workdir.clone(), command.tty);
+                    tokio::task::spawn_blocking(move || {
+                        process::spawn(&script, &directory, &shell, login, tty, &environment)
+                    })
+                    .await
+                    .unwrap_or_else(|error| Err(std::io::Error::other(error)))
                 }
             };
             let spawned = match spawned {
@@ -665,8 +606,6 @@ impl ShellSessions {
             for session in self.sessions.take() {
                 session.terminate().await;
             }
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            self.servers.stop().await;
         })
     }
 
@@ -792,10 +731,6 @@ impl Session {
                 chunks,
                 Arc::clone(&activity),
             ))],
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            process::ProcessOutput::Served(served) => served.drains(&chunks, &activity),
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            process::ProcessOutput::Fifos(fifos) => fifos.drains(&chunks, &activity),
         };
         let process_group = spawned.process_group;
         let exited = spawned.child.exited();

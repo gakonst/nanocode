@@ -1,5 +1,5 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     io,
     os::unix::{ffi::OsStrExt, fs::MetadataExt, process::CommandExt},
     path::{Path, PathBuf},
@@ -14,15 +14,7 @@ use std::{
 use nanocode_sync::{Atom, Inbox, Slot};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{
-    SessionEnvironment, process,
-    selection::Shell,
-    server::{Fingerprint, fingerprint, quote},
-};
-
-const SCRIPT_BYTES: usize = 4096;
-
-const LOADER: &str = "for __nc_f in /dev/fd/*; do __nc_f=${__nc_f##*/}; case $__nc_f in 0|1|2) ;; *) builtin eval \"exec $__nc_f>&-\";; esac; done; builtin unset __nc_f; builtin printf '\\0'; IFS= builtin read -r -d '' BASH_EXECUTION_STRING || builtin exit; builtin eval \"$BASH_EXECUTION_STRING\"; IFS= builtin read -r -d '' BASH_EXECUTION_STRING || builtin exit; exec 0</dev/null; SECONDS=0; builtin : \"$BASH\"; builtin eval \"$BASH_EXECUTION_STRING\"";
+use super::{SessionEnvironment, process, selection::Shell};
 
 static POOL: OnceLock<Pool> = OnceLock::new();
 
@@ -33,9 +25,7 @@ pub(super) async fn spawn(
     login: bool,
     environment: &[(OsString, OsString)],
 ) -> Option<process::SpawnedProcess> {
-    let psh = shell.is_psh();
-    let bash = shell.name() == "bash" && script.len() <= SCRIPT_BYTES;
-    if !(psh || bash) || script.contains('\0') {
+    if script.contains('\0') {
         return None;
     }
     let (moved, base): (Vec<_>, Vec<_>) = environment
@@ -44,24 +34,13 @@ pub(super) async fn spawn(
         .partition(|(name, _)| SessionEnvironment::controls(name));
     let mut input = Vec::with_capacity(script.len() + 128);
     for (name, value) in &moved {
-        if psh {
-            input.extend_from_slice(name.as_bytes());
-            input.push(b'=');
-            input.extend_from_slice(value.as_bytes());
-            input.push(0);
-        } else {
-            input.extend_from_slice(b"builtin export ");
-            input.extend_from_slice(name.as_bytes());
-            input.push(b'=');
-            quote(&mut input, value.as_bytes());
-            input.push(b';');
-        }
+        input.extend_from_slice(name.as_bytes());
+        input.push(b'=');
+        input.extend_from_slice(value.as_bytes());
+        input.push(0);
     }
     input.push(0);
     input.extend_from_slice(script.as_bytes());
-    if !psh {
-        input.push(0);
-    }
     let pool = POOL.get_or_init(Pool::new);
     let (lane, evicted) = pool.lane(shell, login, workdir, &base);
     let (taken, discarded) = lane.take(pool);
@@ -89,36 +68,6 @@ fn identity(directory: &Path) -> Option<(u64, u64)> {
         .map(|metadata| (metadata.dev(), metadata.ino()))
 }
 
-pub(super) fn startup_files(login: bool, environment: &[(OsString, OsString)]) -> Vec<PathBuf> {
-    let variable = |name: &str| {
-        environment
-            .iter()
-            .find(|(key, _)| key == OsStr::new(name))
-            .map(|(_, value)| PathBuf::from(value))
-    };
-    let mut files: Vec<PathBuf> = variable("BASH_ENV").into_iter().collect();
-    if login {
-        files.extend(
-            [
-                "/etc/profile",
-                "/etc/profile.d",
-                "/etc/bash.bashrc",
-                "/etc/bashrc",
-            ]
-            .map(PathBuf::from),
-        );
-        if let Some(home) = variable("HOME") {
-            files.extend(
-                [".bash_profile", ".bash_login", ".profile", ".bashrc"].map(|file| home.join(file)),
-            );
-        }
-        if cfg!(target_os = "macos") {
-            files.extend(["/etc/paths", "/etc/paths.d"].map(PathBuf::from));
-        }
-    }
-    files
-}
-
 struct Idle {
     child: Child,
     stdin: ChildStdin,
@@ -126,7 +75,6 @@ struct Idle {
     stderr: ChildStderr,
     ready: bool,
     workdir: (u64, u64),
-    files: Fingerprint,
 }
 
 impl Idle {
@@ -201,7 +149,6 @@ struct Lane {
     login: bool,
     workdir: PathBuf,
     environment: Vec<(OsString, OsString)>,
-    files: Vec<PathBuf>,
     idle: Inbox<Arc<Slot<Idle>>>,
     count: AtomicUsize,
     depth: AtomicUsize,
@@ -225,7 +172,6 @@ impl Lane {
 
     fn take(&self, pool: &Pool) -> (Option<Idle>, Vec<Idle>) {
         self.used.store(pool.now(), Ordering::Relaxed);
-        let files = fingerprint(&self.files);
         let workdir = identity(&self.workdir);
         let mut alive = Vec::new();
         let mut discarded = Vec::new();
@@ -233,7 +179,7 @@ impl Lane {
             let Some(mut idle) = entry.take() else {
                 continue;
             };
-            if idle.files == files && Some(idle.workdir) == workdir && idle.alive() {
+            if Some(idle.workdir) == workdir && idle.alive() {
                 alive.push(idle);
             } else {
                 pool.release(self);
@@ -267,7 +213,6 @@ impl Lane {
 
     fn launch(&self) -> io::Result<Idle> {
         let workdir = identity(&self.workdir).ok_or_else(|| io::Error::other("workdir is gone"))?;
-        let files = fingerprint(&self.files);
         let mut child = Command::new(&self.shell)
             .args(&self.args)
             .current_dir(&self.workdir)
@@ -292,7 +237,6 @@ impl Lane {
             stderr,
             ready: false,
             workdir,
-            files,
         };
         if let Err(error) = rustix::io::ioctl_fionbio(&idle.stdout, true) {
             idle.kill();
@@ -355,16 +299,10 @@ impl Pool {
         }
         let fresh = Arc::new(Lane {
             shell: shell.path().to_owned(),
-            args: shell
-                .warm_args(login)
-                .unwrap_or_else(|| shell.args(LOADER, login)),
+            args: shell.warm_args(login),
             login,
             workdir: workdir.to_owned(),
             environment: environment.to_vec(),
-            files: match shell.is_psh() {
-                true => Vec::new(),
-                false => startup_files(login, environment),
-            },
             idle: Inbox::default(),
             count: AtomicUsize::new(0),
             depth: AtomicUsize::new(0),

@@ -29,5 +29,11 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-width = "0.2"
 
+[target.'cfg(unix)'.dependencies]
+nanocode-home.workspace = true
+nanocode-psh.workspace = true
+nanocode-psh-embedded.workspace = true
+psh.workspace = true
+
 [lints]
 workspace = true

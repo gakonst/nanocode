@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 
 use crate::builtins::{collection, dense, number, regexp, string};
 use crate::bytecode::intrinsics::INTRINSICS;
-use crate::heap::{Heap, ObjectClass, Property, StrView, atoms};
+use crate::heap::{Heap, Lookup, ObjectClass, Property, StrView, atoms};
 use crate::interp::conv::{self, Fault};
 use crate::interp::run::promise;
 use crate::interp::{Intrinsic, realm};
@@ -252,6 +252,7 @@ pub(crate) static FAST: &[FastFn] = &[
     // ---- btoa and atob of a string ----
     f("GlobalBtoa", btoa),
     f("GlobalAtob", atob),
+    f("ObjectAssign", object_assign),
 ];
 
 // ---- argument helpers ----------------------------------------------------------------
@@ -1716,6 +1717,56 @@ fn from_char_code(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
 // changes anything observable.
 
 /// `this` if it is an object of class `c`.
+fn assignable(heap: &Heap, to: Obj, from: Value) -> bool {
+    if from.as_string().is_some_and(|s| heap.str_len(s) > 0) {
+        return false;
+    }
+    let Some(from) = from.as_object() else {
+        return true;
+    };
+    if heap.is_proxy(from) {
+        return false;
+    }
+    heap.own_keys(from)
+        .into_iter()
+        .all(|k| match heap.get_own_property(from, k) {
+            Some(Property::Accessor { flags, .. }) => !flags.enumerable(),
+            Some(Property::Data { flags, .. }) if flags.enumerable() => {
+                match heap.lookup_property(to, k) {
+                    Lookup::Found(_, Property::Data { flags, .. }) => flags.writable(),
+                    Lookup::Found(_, Property::Accessor { .. }) | Lookup::Proxy(_) => false,
+                    Lookup::Absent => heap.is_extensible(to),
+                }
+            }
+            _ => true,
+        })
+}
+
+fn object_assign(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
+    let Some((&target, sources)) = args.split_first() else {
+        return Ok(None);
+    };
+    let Some(to) = target.as_object() else {
+        return Ok(None);
+    };
+    if heap.object_class(to) != ObjectClass::Ordinary
+        || !sources.iter().all(|&from| assignable(heap, to, from))
+    {
+        return Ok(None);
+    }
+    for from in sources.iter().filter_map(|from| from.as_object()) {
+        for k in heap.own_keys(from) {
+            if let Some(Property::Data { value, flags }) = heap.get_own_property_alloc(from, k)?
+                && flags.enumerable()
+                && !heap.set_own_data_value(to, k, value)
+            {
+                heap.create_data_property(to, k, value)?;
+            }
+        }
+    }
+    Ok(Some(target))
+}
+
 fn this_collection(heap: &Heap, this: Value, c: ObjectClass) -> Option<Obj> {
     this.as_object().filter(|&o| heap.object_class(o) == c)
 }

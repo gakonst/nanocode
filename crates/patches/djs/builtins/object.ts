@@ -342,6 +342,7 @@ function ObjectEntries(o: Value): Obj {
  * Object.assign ( target, ...sources ), 20.1.2.1.
  * @builtin Object.assign
  * @length 2
+ * @fast
  */
 function ObjectAssign(target: Value, ...sources: Value[]): Obj {
   const to: Obj = ToObject(target);

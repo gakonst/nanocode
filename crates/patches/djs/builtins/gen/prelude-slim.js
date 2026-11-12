@@ -4121,7 +4121,7 @@ function ObjectEntries(o) {
   return EnumerableOwnProperties(%ToObject(o), 2);
 }
 
-// builtins/object.ts:346 Object.assign
+// builtins/object.ts:347 Object.assign
 function ObjectAssign(target, ...sources) {
   const to = %ToObject(target);
   const n = LengthOfArrayLike(sources);
@@ -4143,7 +4143,7 @@ function ObjectAssign(target, ...sources) {
   return to;
 }
 
-// builtins/object.ts:371 Object.freeze
+// builtins/object.ts:372 Object.freeze
 function ObjectFreeze(o) {
   if (!%IsObject(o)) {
     return o;
@@ -4154,7 +4154,7 @@ function ObjectFreeze(o) {
   return o;
 }
 
-// builtins/object.ts:385 Object.seal
+// builtins/object.ts:386 Object.seal
 function ObjectSeal(o) {
   if (!%IsObject(o)) {
     return o;
@@ -4165,7 +4165,7 @@ function ObjectSeal(o) {
   return o;
 }
 
-// builtins/object.ts:399 Object.preventExtensions
+// builtins/object.ts:400 Object.preventExtensions
 function ObjectPreventExtensions(o) {
   if (!%IsObject(o)) {
     return o;
@@ -4176,27 +4176,27 @@ function ObjectPreventExtensions(o) {
   return o;
 }
 
-// builtins/object.ts:413 Object.isFrozen
+// builtins/object.ts:414 Object.isFrozen
 function ObjectIsFrozen(o) {
   return !%IsObject(o) || %TestIntegrityLevel(%AsObj(o), true);
 }
 
-// builtins/object.ts:421 Object.isSealed
+// builtins/object.ts:422 Object.isSealed
 function ObjectIsSealed(o) {
   return !%IsObject(o) || %TestIntegrityLevel(%AsObj(o), false);
 }
 
-// builtins/object.ts:429 Object.isExtensible
+// builtins/object.ts:430 Object.isExtensible
 function ObjectIsExtensible(o) {
   return %IsObject(o) && %IsExtensible(%AsObj(o));
 }
 
-// builtins/object.ts:437 Object.getOwnPropertySymbols
+// builtins/object.ts:438 Object.getOwnPropertySymbols
 function ObjectGetOwnPropertySymbols(o) {
   return %OwnPropertyKeys(%ToObject(o), 1);
 }
 
-// builtins/object.ts:445 Object.getOwnPropertyDescriptors
+// builtins/object.ts:446 Object.getOwnPropertyDescriptors
 function ObjectGetOwnPropertyDescriptors(o) {
   const obj = %ToObject(o);
   const keys = %OwnPropertyKeys(obj, 2);
@@ -4212,23 +4212,23 @@ function ObjectGetOwnPropertyDescriptors(o) {
   return descriptors;
 }
 
-// builtins/object.ts:464 Object.hasOwn
+// builtins/object.ts:465 Object.hasOwn
 function ObjectHasOwn(o, p) {
   const obj = %ToObject(o);
   return %HasOwnProperty(obj, ToPropertyKey(p));
 }
 
-// builtins/object.ts:473 Object.is
+// builtins/object.ts:474 Object.is
 function ObjectIs(value1, value2) {
   return %SameValue(value1, value2);
 }
 
-// builtins/object.ts:481 Object.prototype.toString
+// builtins/object.ts:482 Object.prototype.toString
 function ObjectPrototypeToString() {
   return ObjectToString(this);
 }
 
-// builtins/object.ts:486
+// builtins/object.ts:487
 function ObjectToString(v) {
   if (v === undefined) {
     return "[object Undefined]";
@@ -4245,17 +4245,17 @@ function ObjectToString(v) {
   return "[object " + builtinTag + "]";
 }
 
-// builtins/object.ts:507 Object.prototype.toLocaleString
+// builtins/object.ts:508 Object.prototype.toLocaleString
 function ObjectPrototypeToLocaleString() {
   return %Call(%GetV(this, "toString"), this);
 }
 
-// builtins/object.ts:515 Object.prototype.valueOf
+// builtins/object.ts:516 Object.prototype.valueOf
 function ObjectPrototypeValueOf() {
   return %ToObject(this);
 }
 
-// builtins/object.ts:523 Object.prototype.isPrototypeOf
+// builtins/object.ts:524 Object.prototype.isPrototypeOf
 function ObjectPrototypeIsPrototypeOf(v) {
   if (!%IsObject(v)) {
     return false;
@@ -8532,6 +8532,7 @@ function GlobalAtob(...args) {
 %MarkFast(GlobalParseInt);
 %MarkFast(GlobalIsNaN);
 %MarkFast(GlobalIsFinite);
+%MarkFast(ObjectAssign);
 %MarkFast(PromiseResolveFunction);
 %MarkFast(ResolveWithData);
 %MarkFast(RejectWithData);

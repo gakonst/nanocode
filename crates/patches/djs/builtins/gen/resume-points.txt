@@ -2398,64 +2398,64 @@ ObjectEntries: reentrant (Object.entries)
   builtins/object.ts:338:10  EnumerableOwnProperties (builtin)
 
 ObjectAssign: reentrant (Object.assign)
-  builtins/object.ts:348:18  LengthOfArrayLike (builtin)
-  builtins/object.ts:350:31  Get (intrinsic)
-  builtins/object.ts:353:25  OwnPropertyKeys (intrinsic)
-  builtins/object.ts:354:26  LengthOfArrayLike (builtin)
-  builtins/object.ts:356:28  Get (intrinsic)
-  builtins/object.ts:357:28  OwnPropertyAttributes (intrinsic)
-  builtins/object.ts:359:24  Get (intrinsic)
-  builtins/object.ts:359:11  Set (intrinsic)
+  builtins/object.ts:349:18  LengthOfArrayLike (builtin)
+  builtins/object.ts:351:31  Get (intrinsic)
+  builtins/object.ts:354:25  OwnPropertyKeys (intrinsic)
+  builtins/object.ts:355:26  LengthOfArrayLike (builtin)
+  builtins/object.ts:357:28  Get (intrinsic)
+  builtins/object.ts:358:28  OwnPropertyAttributes (intrinsic)
+  builtins/object.ts:360:24  Get (intrinsic)
+  builtins/object.ts:360:11  Set (intrinsic)
 
 ObjectFreeze: reentrant (Object.freeze)
-  builtins/object.ts:375:8  SetIntegrityLevel (intrinsic)
+  builtins/object.ts:376:8  SetIntegrityLevel (intrinsic)
 
 ObjectSeal: reentrant (Object.seal)
-  builtins/object.ts:389:8  SetIntegrityLevel (intrinsic)
+  builtins/object.ts:390:8  SetIntegrityLevel (intrinsic)
 
 ObjectPreventExtensions: reentrant (Object.preventExtensions)
-  builtins/object.ts:403:8  PreventExtensions (intrinsic)
+  builtins/object.ts:404:8  PreventExtensions (intrinsic)
 
 ObjectIsFrozen: reentrant (Object.isFrozen)
-  builtins/object.ts:414:26  TestIntegrityLevel (intrinsic)
+  builtins/object.ts:415:26  TestIntegrityLevel (intrinsic)
 
 ObjectIsSealed: reentrant (Object.isSealed)
-  builtins/object.ts:422:26  TestIntegrityLevel (intrinsic)
+  builtins/object.ts:423:26  TestIntegrityLevel (intrinsic)
 
 ObjectIsExtensible: reentrant (Object.isExtensible)
-  builtins/object.ts:430:25  IsExtensible (intrinsic)
+  builtins/object.ts:431:25  IsExtensible (intrinsic)
 
 ObjectGetOwnPropertySymbols: reentrant (Object.getOwnPropertySymbols)
-  builtins/object.ts:438:10  OwnPropertyKeys (intrinsic)
+  builtins/object.ts:439:10  OwnPropertyKeys (intrinsic)
 
 ObjectGetOwnPropertyDescriptors: reentrant (Object.getOwnPropertyDescriptors)
-  builtins/object.ts:447:21  OwnPropertyKeys (intrinsic)
-  builtins/object.ts:448:18  LengthOfArrayLike (builtin)
-  builtins/object.ts:451:24  Get (intrinsic)
-  builtins/object.ts:452:25  GetOwnPropertyDescriptorObject (intrinsic)
-  builtins/object.ts:454:7  CreateDataPropertyOrThrow (intrinsic)
+  builtins/object.ts:448:21  OwnPropertyKeys (intrinsic)
+  builtins/object.ts:449:18  LengthOfArrayLike (builtin)
+  builtins/object.ts:452:24  Get (intrinsic)
+  builtins/object.ts:453:25  GetOwnPropertyDescriptorObject (intrinsic)
+  builtins/object.ts:455:7  CreateDataPropertyOrThrow (intrinsic)
 
 ObjectHasOwn: reentrant (Object.hasOwn)
-  builtins/object.ts:466:30  ToPropertyKey (builtin)
-  builtins/object.ts:466:10  HasOwnProperty (intrinsic)
+  builtins/object.ts:467:30  ToPropertyKey (builtin)
+  builtins/object.ts:467:10  HasOwnProperty (intrinsic)
 
 ObjectIs: leaf (Object.is)
 
 ObjectPrototypeToString: reentrant (Object.prototype.toString)
-  builtins/object.ts:482:10  ObjectToString (builtin)
+  builtins/object.ts:483:10  ObjectToString (builtin)
 
 ObjectToString: reentrant
-  builtins/object.ts:496:22  Get (intrinsic)
+  builtins/object.ts:497:22  Get (intrinsic)
 
 ObjectPrototypeToLocaleString: reentrant (Object.prototype.toLocaleString)
-  builtins/object.ts:508:15  GetV (intrinsic)
-  builtins/object.ts:508:10  Call (intrinsic)
+  builtins/object.ts:509:15  GetV (intrinsic)
+  builtins/object.ts:509:10  Call (intrinsic)
 
 ObjectPrototypeValueOf: leaf (Object.prototype.valueOf)
 
 ObjectPrototypeIsPrototypeOf: reentrant (Object.prototype.isPrototypeOf)
-  builtins/object.ts:528:18  GetPrototypeOf (intrinsic)
-  builtins/object.ts:533:9  GetPrototypeOf (intrinsic)
+  builtins/object.ts:529:18  GetPrototypeOf (intrinsic)
+  builtins/object.ts:534:9  GetPrototypeOf (intrinsic)
 
 ResolvePromise: reentrant (%ResolvePromise)
   builtins/promise.ts:31:12  Get (intrinsic)

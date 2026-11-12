@@ -12,7 +12,6 @@ autobenches = false
 
 [dependencies]
 crossbeam-utils.workspace = true
-foldhash.workspace = true
 futures-util.workspace = true
 imbl.workspace = true
 nanocode-platform.workspace = true

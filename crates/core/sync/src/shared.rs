@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use foldhash::quality::RandomState;
+use crate::hasher::SeededState as RandomState;
 
 const BITS: u32 = 5;
 const MASK: u64 = (1 << BITS) - 1;

@@ -1,6 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 mod armed;
+mod hasher;
 #[cfg(not(target_family = "wasm"))]
 mod lanes;
 #[cfg(not(target_family = "wasm"))]

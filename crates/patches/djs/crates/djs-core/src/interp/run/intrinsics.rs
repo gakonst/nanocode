@@ -287,6 +287,7 @@ pub(super) const INSTANCEOF_OPERATOR: u16 = id("InstanceofOperator");
 pub(super) const ARRAY_SPREAD: u16 = id("ArraySpread");
 /// The installed `%CopyDataProperties`, for `copy_data_props` with getters or a string.
 pub(super) const COPY_DATA_PROPERTIES: u16 = id("CopyDataProperties");
+pub(super) const COPY_DATA_PROPERTIES_EXCLUDING: u16 = id("CopyDataPropertiesExcluding");
 /// The original Array.prototype.values and %ArrayIteratorPrototype%.next: an array
 /// spread skips the iterator protocol while they are in place.
 pub(super) const ARRAY_PROTOTYPE_VALUES: u16 = id("ArrayPrototypeValues");
@@ -543,6 +544,15 @@ impl Exec<'_> {
             }
         };
         if info.kind == IntrinsicKind::Builtin {
+            if id == COPY_DATA_PROPERTIES_EXCLUDING
+                && argc == 2
+                && let Some(v) = self.rest_props(arg(self, 0), arg(self, 1))?
+            {
+                self.sp = base;
+                self.push(v);
+                self.pc = next;
+                return Ok(None);
+            }
             if let Some(v) = self.iter_intrinsic_fast(id, base, argc)? {
                 self.sp = base;
                 self.push(v);

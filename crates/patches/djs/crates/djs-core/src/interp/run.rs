@@ -3799,6 +3799,50 @@ impl<'h> Exec<'h> {
         Ok(true)
     }
 
+    fn rest_props(&mut self, src: Value, excluded: Value) -> Result<Option<Value>, Fault> {
+        let (Some(s), Some(ex)) = (src.as_object(), excluded.as_object()) else {
+            return Ok(None);
+        };
+        if self.heap.is_proxy(s) || self.heap.object_class(ex) != ObjectClass::Array {
+            return Ok(None);
+        }
+        let mut skip = alloc::vec::Vec::new();
+        for i in 0..self.heap.array_length(ex) {
+            let Some(e) = self
+                .heap
+                .get_element_fast(ex, i)
+                .and_then(|e| e.as_string())
+            else {
+                return Ok(None);
+            };
+            if let Some(k) = match self.heap.str_array_index(e) {
+                Some(index) => Atom::int(index),
+                None => self.heap.find_string_atom_of(e),
+            } {
+                skip.push(k);
+            }
+        }
+        let keys = self.heap.own_keys(s);
+        if keys.iter().any(|&k| {
+            matches!(self.heap.get_own_property(s, k),
+                Some(Property::Accessor { flags, .. }) if flags.enumerable())
+        }) {
+            return Ok(None);
+        }
+        let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
+        let o = self.heap.new_object(Some(proto))?;
+        for k in keys {
+            if !skip.contains(&k)
+                && let Some(Property::Data { value, flags }) =
+                    self.heap.get_own_property_alloc(s, k)?
+                && flags.enumerable()
+            {
+                self.heap.create_data_property(o, k, value)?;
+            }
+        }
+        Ok(Some(Value::object(o)))
+    }
+
     /// The `delete` operator (strict: failure is a TypeError).
     fn delete(&mut self, o: Value, k: Value) -> Result<bool, Fault> {
         if o.is_nullish() {

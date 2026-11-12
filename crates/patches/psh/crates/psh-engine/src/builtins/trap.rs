@@ -148,6 +148,24 @@ pub(crate) async fn run_action(vp: &mut Vp, action: &[u8], status: i32) -> Resul
     }
 }
 
+pub(crate) async fn run_action_status(vp: &mut Vp, action: &[u8], status: i32) -> R {
+    let saved_in = vp.in_trap;
+    let saved_line = vp.line;
+    vp.in_trap = Some(status);
+    vp.status = status;
+    let line_base = vp.line.saturating_sub(1);
+    let r = super::eval::run_text(vp, action, line_base, super::eval::Origin::Eval).await;
+    let last = vp.status;
+    vp.in_trap = saved_in;
+    vp.line = saved_line;
+    vp.status = status;
+    match r {
+        Ok(_) | Err(Unwind::Abort(_)) => Ok(last),
+        Err(Unwind::Return(n)) => Ok(n),
+        Err(u) => Err(u),
+    }
+}
+
 /// The EXIT trap, when the (sub)shell ends with `status`: runs once; `exit N` inside it
 /// gives the shell's status.
 pub(crate) async fn exit_trap(vp: &mut Vp, status: i32) -> i32 {
@@ -194,7 +212,8 @@ pub(crate) fn enter_function(vp: &mut Vp) -> Option<Hidden> {
     if vp.traps.map.is_empty() {
         return None;
     }
-    let functrace = vp.opts.get(crate::options::SetOpt::Functrace);
+    let functrace = vp.opts.get(crate::options::SetOpt::Functrace)
+        || vp.opts.shopt(crate::options::Shopt::Extdebug);
     let errtrace = vp.opts.get(crate::options::SetOpt::Errtrace);
     let hide = |k: &TrapKey| match k {
         TrapKey::Debug | TrapKey::Return => !functrace,

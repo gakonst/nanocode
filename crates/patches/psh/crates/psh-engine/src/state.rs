@@ -402,7 +402,8 @@ impl Vp {
         sub.fork_job = false;
         sub.traps = self.traps.for_subshell(
             self.opts.get(crate::options::SetOpt::Errtrace),
-            self.opts.get(crate::options::SetOpt::Functrace),
+            self.opts.get(crate::options::SetOpt::Functrace)
+                || self.opts.shopt(crate::options::Shopt::Extdebug),
         );
         sub.jobs = Default::default();
         sub.subshell_level += 1;

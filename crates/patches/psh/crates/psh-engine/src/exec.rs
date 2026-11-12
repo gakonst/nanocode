@@ -402,23 +402,52 @@ async fn report_signal_death(vp: &mut Vp, code: &Rc<Code>, cmd: &Command, status
 }
 
 /// The DEBUG trap before a command, with `BASH_COMMAND` set to its text (D1283).
-async fn debug_trap(vp: &mut Vp, code: &Rc<Code>, cmd: &Command) -> Result<(), Unwind> {
+async fn debug_trap(vp: &mut Vp, code: &Rc<Code>, cmd: &Command) -> Result<bool, Unwind> {
     if vp.in_trap.is_some() {
-        return Ok(());
+        return Ok(false);
     }
     // Any trap may read it (`trap 'echo "failed: $BASH_COMMAND"' EXIT`), not only DEBUG.
     let text = command_text(code, cmd);
     vp.vars.entry("BASH_COMMAND").set(text);
     if vp.traps.action(TrapKey::Debug).is_none_or(|a| a.is_empty()) {
-        return Ok(());
+        return Ok(false);
     }
     vp.line = code.line(cmd.span.start);
+    if !vp.opts.shopt(Shopt::Extdebug) {
+        return trap::run_trap(vp, TrapKey::Debug).await.map(|()| false);
+    }
+    let action = vp.traps.action(TrapKey::Debug).unwrap_or_default();
+    let status = vp.status;
+    let n = trap::run_action_status(vp, &action, status).await?;
+    if n == 2 && !vp.frames.is_empty() {
+        return Err(Unwind::Return(status));
+    }
+    Ok(n != 0)
+}
+
+async fn arith_for_debug(vp: &mut Vp, code: &Rc<Code>, w: &psh_syntax::Word) -> Result<(), Unwind> {
+    if vp.traps.map.is_empty() || vp.in_trap.is_some() {
+        return Ok(());
+    }
+    let mut text = b"(( ".to_vec();
+    text.extend_from_slice(code.ast.text(w.span).trim().as_bytes());
+    text.extend_from_slice(b" ))");
+    vp.vars.entry("BASH_COMMAND").set(text);
     trap::run_trap(vp, TrapKey::Debug).await
 }
 
 /// A command's text for `BASH_COMMAND`: its source with blanks collapsed (bash prints
 /// it from the tree; this is close for the commands agents write).
 fn command_text(code: &Rc<Code>, cmd: &Command) -> Vec<u8> {
+    if matches!(cmd.kind, CommandKind::Simple(_))
+        && let Some(id) = code
+            .ast
+            .cmd_ids()
+            .find(|&id| std::ptr::eq(code.ast.cmd(id), cmd))
+    {
+        let printed = psh_syntax::print_function_bash(&code.ast, id);
+        return printed.into_bytes();
+    }
     let text = code.ast.text(cmd.span);
     let text = match &cmd.kind {
         // The header only: `for i in 1 2`, `case x in `.
@@ -482,6 +511,20 @@ async fn run_pipeline_stages(vp: &mut Vp, code: &Rc<Code>, p: &Pipeline) -> R {
             restore_fds(vp, saved);
             last_here = Some(r);
             break;
+        }
+        let cmd = code.ast.cmd(stage.cmd);
+        if !vp.traps.map.is_empty()
+            && !vp.opts.get(SetOpt::Functrace)
+            && !vp.opts.shopt(Shopt::Extdebug)
+            && matches!(
+                cmd.kind,
+                CommandKind::Simple(_)
+                    | CommandKind::Arith(_)
+                    | CommandKind::Cond(_)
+                    | CommandKind::Case(_)
+            )
+        {
+            debug_trap(vp, code, cmd).await?;
         }
         let mut sub = enter(vp).await?;
         sub.jobs = Rc::new(std::cell::RefCell::new(vp.jobs.borrow().for_stage()));
@@ -616,8 +659,12 @@ fn run_command_with<'a>(
             return Err(Unwind::Exit(128 + sig));
         }
         let cmd = code.ast.cmd(id);
-        if let Some(f) = before_command(vp, code, cmd) {
-            f.await?;
+        let skip = match before_command(vp, code, cmd) {
+            Some(f) => f.await?,
+            None => false,
+        };
+        if skip {
+            return Ok(vp.status);
         }
         let mark = vp.subst_fds.len();
         let last_args = vp.last_args.len();
@@ -668,7 +715,7 @@ fn before_command<'a>(
     vp: &'a mut Vp,
     code: &'a Rc<Code>,
     cmd: &'a Command,
-) -> Option<LocalBoxFuture<'a, Result<(), Unwind>>> {
+) -> Option<LocalBoxFuture<'a, Result<bool, Unwind>>> {
     let signals = vp.top && vp.sigs.peek(&vp.core) != 0;
     let debug = !vp.traps.map.is_empty()
         && matches!(
@@ -686,9 +733,9 @@ fn before_command<'a>(
             trap::take_signals(vp).await?;
         }
         if debug {
-            debug_trap(vp, code, cmd).await?;
+            return debug_trap(vp, code, cmd).await;
         }
-        Ok(())
+        Ok(false)
     }))
 }
 
@@ -1129,6 +1176,7 @@ fn select_menu(vp: &Vp, items: &[Vec<u8>]) -> Vec<u8> {
 }
 
 async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCommand) -> R {
+    arith_for_debug(vp, code, &f.init).await?;
     if arith_command(vp, code, &f.init, "((: ", true)
         .await?
         .is_none()
@@ -1140,6 +1188,8 @@ async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCom
     let line = vp.line;
     loop {
         safepoint(&vp.core.sched).await;
+        vp.line = line;
+        arith_for_debug(vp, code, &f.cond).await?;
         vp.line = line;
         let cond = match crate::now::arith_word(vp, code, &f.cond) {
             Some(Ok(v)) => Some(v),
@@ -1169,6 +1219,8 @@ async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCom
                 status = vp.status;
             }
         }
+        vp.line = line;
+        arith_for_debug(vp, code, &f.step).await?;
         vp.line = line;
         let step = match crate::now::arith_word(vp, code, &f.step) {
             Some(Ok(v)) => Some(v),
@@ -1322,7 +1374,20 @@ async fn call_function(
         vp.assigned_dynamic(&n);
     }
     let hidden = trap::enter_function(vp);
-    let mut r = run_command(vp, &f.code, f.body).await;
+    let entered = match vp.traps.action(TrapKey::Debug) {
+        Some(a) if !a.is_empty() && vp.in_trap.is_none() => {
+            let line = vp.line;
+            let st = vp.status;
+            let r = trap::run_action_status(vp, &a, st).await;
+            vp.line = line;
+            r.map(|_| ())
+        }
+        _ => Ok(()),
+    };
+    let mut r = match entered {
+        Ok(()) => run_command(vp, &f.code, f.body).await,
+        Err(u) => Err(u),
+    };
     if let Some(t) = function_return(vp, &r, hidden)
         && let Err(u) = t.await
     {
@@ -1359,7 +1424,7 @@ fn function_return<'a>(
     if vp.traps.map.is_empty() && hidden.is_none() {
         return None;
     }
-    if let Ok(s) | Err(Unwind::Return(s)) = *r {
+    if let Ok(s) = *r {
         vp.status = s;
     }
     Some(Box::pin(trap::leave_function(vp, hidden)))

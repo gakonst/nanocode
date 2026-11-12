@@ -641,6 +641,10 @@ async fn functions(
             buf.extend_from_slice(name.as_bytes());
         } else if names_only {
             buf.extend_from_slice(name.as_bytes());
+            if vp.opts.shopt(crate::options::Shopt::Extdebug) {
+                let line = f.code.line(f.code.ast.cmd(f.def).span.start);
+                buf.extend_from_slice(format!(" {line} {}", f.source).as_bytes());
+            }
         } else {
             let text = psh_syntax::print_function_bash(&f.code.ast, f.def);
             buf.extend_from_slice(&f.code.ast.restore_bytes(&text));

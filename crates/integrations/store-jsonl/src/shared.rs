@@ -81,7 +81,7 @@ impl Shared {
         if path.is_file() {
             return Ok(false);
         }
-        let mut file = tempfile::NamedTempFile::new_in(&self.directory)?;
+        let mut file = nanocode_platform::TemporaryFile::new_in(&self.directory)?;
         file.write_all(bytes)?;
         sync_journal(file.as_file())?;
         match file.persist_noclobber(&path) {

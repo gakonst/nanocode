@@ -23,7 +23,6 @@ serde_json.workspace = true
 nanocode-image.workspace = true
 image.workspace = true
 tokio = { workspace = true, features = ["rt"] }
-tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

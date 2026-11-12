@@ -98,7 +98,7 @@ pub(super) fn restore(path: &Path) -> io::Result<()> {
 }
 
 fn write(directory: &Path, path: &Path, bytes: &[u8], replace: bool) -> io::Result<()> {
-    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    let mut file = nanocode_platform::TemporaryFile::new_in(directory)?;
     file.write_all(bytes)?;
     sync_journal(file.as_file())?;
     let persisted = if replace {

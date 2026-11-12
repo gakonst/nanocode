@@ -395,10 +395,8 @@ impl Summaries {
             .path
             .parent()
             .ok_or_else(|| backend("JSONL session summaries have no directory"))?;
-        let mut temporary = tempfile::Builder::new()
-            .prefix(FILE)
-            .tempfile_in(directory)
-            .map_err(backend)?;
+        let mut temporary =
+            nanocode_platform::TemporaryFile::create_in(directory, FILE, None).map_err(backend)?;
         let frame = archive::compress(&serde_json::to_vec(&self.entries).map_err(backend)?)
             .map_err(backend)?;
         let length = u32::try_from(frame.len())

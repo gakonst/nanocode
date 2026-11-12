@@ -254,15 +254,16 @@ impl ClaudeWorkspaceFiles {
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     let parent = path.parent().ok_or("file has no parent")?;
     let existing = fs::metadata(path).ok();
-    let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
-    if existing.is_none() {
+    let permissions = existing.is_none().then(|| {
         use std::os::unix::fs::PermissionsExt;
-        builder.permissions(fs::Permissions::from_mode(0o666));
-    }
-    let mut file = builder
-        .tempfile_in(parent)
-        .map_err(|e| format!("create temp file: {e}"))?;
+        fs::Permissions::from_mode(0o666)
+    });
+    #[cfg(not(unix))]
+    let permissions: Option<fs::Permissions> = None;
+    let mut file =
+        nanocode_platform::TemporaryFile::with_permissions_in(parent, permissions.as_ref())
+            .map_err(|e| format!("create temp file: {e}"))?;
     file.write_all(content.as_bytes())
         .map_err(|e| format!("write: {e}"))?;
     flush_to_disk(file.as_file()).map_err(|e| format!("sync: {e}"))?;

@@ -66,10 +66,8 @@ fn write_marker(directory: &Path, marker: &Marker) -> Result<(), StoreError> {
     File::open(directory)
         .and_then(|directory| directory.sync_all())
         .map_err(backend)?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(MARKER)
-        .tempfile_in(directory)
-        .map_err(backend)?;
+    let mut temporary =
+        nanocode_platform::TemporaryFile::create_in(directory, MARKER, None).map_err(backend)?;
     serde_json::to_writer(BufWriter::new(temporary.as_file_mut()), marker).map_err(backend)?;
     sync_journal(temporary.as_file()).map_err(backend)?;
     temporary
@@ -353,10 +351,12 @@ fn fresh(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| backend("JSONL session file has no name"))?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(&format!("{name}.migrate-{}-", std::process::id()))
-        .tempfile_in(directory)
-        .map_err(backend)?;
+    let mut temporary = nanocode_platform::TemporaryFile::create_in(
+        directory,
+        format!("{name}.migrate-{}-", std::process::id()),
+        None,
+    )
+    .map_err(backend)?;
     let mut output = BufWriter::with_capacity(JOURNAL_READ_BUFFER_BYTES, temporary.as_file_mut());
     let mut states = Vec::with_capacity(ids.len());
     for id in ids {

@@ -15,6 +15,11 @@ mod native;
 pub use native::{Host, HostFuture, host, install, now, sleep, spawn, system_time, timeout};
 
 #[cfg(not(target_family = "wasm"))]
+mod temporary;
+#[cfg(not(target_family = "wasm"))]
+pub use temporary::{PersistError, TemporaryFile, TemporaryPath};
+
+#[cfg(not(target_family = "wasm"))]
 pub use std::time::Instant;
 pub use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

@@ -44,7 +44,7 @@ struct Opened {
 }
 
 struct Archived {
-    copy: tempfile::TempPath,
+    copy: nanocode_platform::TemporaryPath,
     file: String,
     length: u64,
     anchor: Anchor,
@@ -301,14 +301,16 @@ impl Sessions {
         let metadata = file.metadata().map_err(backend)?;
         let mut stored = Vec::new();
         file.read_to_end(&mut stored).map_err(backend)?;
-        let mut copy = tempfile::Builder::new()
-            .prefix(&format!("{COPY}{}-", std::process::id()))
-            .tempfile_in(&self.directory)
-            .map_err(backend)?;
+        let mut copy = nanocode_platform::TemporaryFile::create_in(
+            &self.directory,
+            format!("{COPY}{}-", std::process::id()),
+            None,
+        )
+        .map_err(backend)?;
         copy.write_all(&archive::decompress(&stored).map_err(backend)?)
             .map_err(backend)?;
         Ok(Some(Archived {
-            copy: copy.into_temp_path(),
+            copy: copy.into_temporary_path(),
             file: identity(&metadata)?,
             length: metadata.len(),
             anchor: Anchor {

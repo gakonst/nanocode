@@ -274,7 +274,8 @@ fn read_pdf(
         return Err("invalid PDF header".into());
     }
 
-    let mut snapshot = tempfile::NamedTempFile::new().map_err(|e| format!("PDF snapshot: {e}"))?;
+    let mut snapshot =
+        nanocode_platform::TemporaryFile::new().map_err(|e| format!("PDF snapshot: {e}"))?;
     snapshot
         .write_all(bytes)
         .map_err(|e| format!("PDF snapshot: {e}"))?;

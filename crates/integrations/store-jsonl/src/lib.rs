@@ -1084,25 +1084,21 @@ impl Journal {
         Ok(store)
     }
 
-    fn temporary(&self, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
+    fn temporary(&self, suffix: &str) -> std::io::Result<nanocode_platform::TemporaryFile> {
         let (directory, prefix) = self.temporary_prefix(suffix)?;
-        tempfile::Builder::new()
-            .prefix(&prefix)
-            .tempfile_in(directory)
+        nanocode_platform::TemporaryFile::create_in(directory, prefix, None)
     }
 
     fn temporary_copy(
         &self,
         suffix: &str,
         source: &Path,
-    ) -> std::io::Result<tempfile::NamedTempFile> {
+    ) -> std::io::Result<nanocode_platform::TemporaryFile> {
         let (directory, prefix) = self.temporary_prefix(suffix)?;
-        tempfile::Builder::new()
-            .prefix(&prefix)
-            .make_in(directory, |path| {
-                std::fs::copy(source, path)?;
-                OpenOptions::new().read(true).append(true).open(path)
-            })
+        nanocode_platform::TemporaryFile::make_in(directory, prefix, |path| {
+            std::fs::copy(source, path)?;
+            OpenOptions::new().read(true).append(true).open(path)
+        })
     }
 
     fn temporary_prefix(&self, suffix: &str) -> std::io::Result<(&Path, std::ffi::OsString)> {

@@ -1001,7 +1001,9 @@ mod tests {
     #[test]
     fn skips_insecure_or_malformed_members() {
         assert_eq!(
-            requirements(r#"email;issuer="http://evil.example", email;issuer=1, email;issuer="http://localhost:8787""#),
+            requirements(
+                r#"email;issuer="http://evil.example", email;issuer=1, email;issuer="http://localhost:8787""#
+            ),
             vec![vec![email("http://localhost:8787")]]
         );
         assert!(requirements(r#"email;issuer="https://a.example","#).is_empty());
@@ -1044,7 +1046,8 @@ mod tests {
 
     #[test]
     fn usable_until_the_margin_unpaid_and_the_tolerance_paid() {
-        let held = Held::decode(&attestation("https://a", "https://i", 0, 86_400), Some(0)).unwrap();
+        let held =
+            Held::decode(&attestation("https://a", "https://i", 0, 86_400), Some(0)).unwrap();
         assert!(held.usable(86_400 - 301, false));
         assert!(!held.usable(86_400 - 300, false));
         assert!(held.usable(86_400 - 300, true));
@@ -1081,6 +1084,150 @@ mod tests {
     fn answers() {
         assert!(matches!(Answer::parse(" /pass "), Answer::Decline));
         assert!(matches!(Answer::parse("a@b.c"), Answer::Email(email) if email == "a@b.c"));
-        assert!(matches!(Answer::parse("/pass 12345678"), Answer::Code(code) if code == "12345678"));
+        assert!(
+            matches!(Answer::parse("/pass 12345678"), Answer::Code(code) if code == "12345678")
+        );
+    }
+
+    const ISSUER: &str = "https://issuer.example";
+    const AUDIENCE: &str = "https://api.example";
+
+    fn directory(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("nanocode-passes-{name}-{}", std::process::id()));
+        drop(fs::remove_dir_all(&directory));
+        directory
+    }
+
+    fn stored(directory: &Path, audience: &str, issued: i64, expires: i64, email: &str) -> Held {
+        let entry = Held::decode(
+            &attestation(audience, ISSUER, issued, expires),
+            Some(issued),
+        )
+        .unwrap();
+        save(directory, &entry.claims.key(), &entry, email).unwrap();
+        entry
+    }
+
+    #[test]
+    fn a_saved_pass_loads_with_its_received_time_and_private_modes() {
+        let directory = directory("roundtrip");
+        let now = now_seconds();
+        let entry = stored(&directory, AUDIENCE, now, now + 3_600, "a@example.com");
+        let loaded = load(&directory, &[ISSUER.to_owned()], None, now);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].token, entry.token);
+        assert_eq!(loaded[0].received, now);
+        assert_eq!(loaded[0].claims.audience, AUDIENCE);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = pass_path(&directory, &entry.claims.key());
+            let file = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            let parent = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file, PRIVATE_FILE_MODE);
+            assert_eq!(parent, PRIVATE_DIRECTORY_MODE);
+        }
+        let names: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn an_expired_pass_is_deleted_on_load() {
+        let directory = directory("expired");
+        let now = now_seconds();
+        let entry = stored(
+            &directory,
+            AUDIENCE,
+            now - 7_200,
+            now - CLOCK_TOLERANCE - 1,
+            "a@example.com",
+        );
+        assert!(load(&directory, &[ISSUER.to_owned()], None, now).is_empty());
+        assert!(!pass_path(&directory, &entry.claims.key()).exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_pass_is_kept_per_audience_and_issuer() {
+        let directory = directory("audience");
+        let now = now_seconds();
+        let first = stored(&directory, AUDIENCE, now, now + 3_600, "a@example.com");
+        let second = stored(
+            &directory,
+            "https://other.example",
+            now,
+            now + 3_600,
+            "a@example.com",
+        );
+        assert_ne!(
+            pass_path(&directory, &first.claims.key()),
+            pass_path(&directory, &second.claims.key())
+        );
+        let mut audiences: Vec<String> = load(&directory, &[ISSUER.to_owned()], None, now)
+            .into_iter()
+            .map(|entry| entry.claims.audience)
+            .collect();
+        audiences.sort();
+        assert_eq!(audiences, ["https://api.example", "https://other.example"]);
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_pass_from_an_untrusted_issuer_or_another_address_is_not_loaded() {
+        let directory = directory("trust");
+        let now = now_seconds();
+        let entry = stored(&directory, AUDIENCE, now, now + 3_600, "a@example.com");
+        assert!(load(&directory, &["https://else.example".to_owned()], None, now).is_empty());
+        assert!(load(&directory, &[ISSUER.to_owned()], Some("b@example.com"), now).is_empty());
+        assert_eq!(
+            load(&directory, &[ISSUER.to_owned()], Some("a@example.com"), now).len(),
+            1
+        );
+        assert!(pass_path(&directory, &entry.claims.key()).exists());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_file_under_another_key_is_skipped() {
+        let directory = directory("renamed");
+        let now = now_seconds();
+        let entry = stored(&directory, AUDIENCE, now, now + 3_600, "a@example.com");
+        fs::rename(
+            pass_path(&directory, &entry.claims.key()),
+            pass_path(&directory, &key("https://other.example", ISSUER, EMAIL)),
+        )
+        .unwrap();
+        assert!(load(&directory, &[ISSUER.to_owned()], None, now).is_empty());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn a_refused_pass_is_forgotten_but_a_newer_one_is_kept() {
+        let directory = directory("forget");
+        let now = now_seconds();
+        let old = Held::decode(
+            &attestation(AUDIENCE, ISSUER, now - 10, now + 3_600),
+            Some(now - 10),
+        )
+        .unwrap();
+        let entry = stored(&directory, AUDIENCE, now, now + 3_600, "a@example.com");
+        let path = pass_path(&directory, &entry.claims.key());
+        forget(&directory, &entry.claims.key(), &old.token).unwrap();
+        assert!(path.exists());
+        forget(&directory, &entry.claims.key(), &entry.token).unwrap();
+        assert!(!path.exists());
+        forget(&directory, &entry.claims.key(), &entry.token).unwrap();
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn nothing_loads_from_a_missing_directory() {
+        let directory = directory("missing");
+        assert!(load(&directory, &[ISSUER.to_owned()], None, now_seconds()).is_empty());
     }
 }

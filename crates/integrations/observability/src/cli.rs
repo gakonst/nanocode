@@ -1,66 +1,76 @@
 use std::path::{Path, PathBuf};
 
-use clap::{Args, ValueEnum, builder::NonEmptyStringValueParser};
+use nanocode_arguments::{Argument, Choice, Group, Matches, Parser};
 
 use crate::{LogFormat, LogOutput, METRICS_TARGET, ObservabilityBuilder, Telemetry};
 
-#[derive(Clone, Debug, Args)]
+#[derive(Clone, Debug)]
 pub struct ObservabilityOutputArgs {
-    #[arg(
-        long = "log",
-        env = "NANOCODE_LOG",
-        global = true,
-        value_parser = NonEmptyStringValueParser::new(),
-        help = "Tracing filter in RUST_LOG syntax for the log file and OpenTelemetry export"
-    )]
     log_filter: Option<String>,
-
-    #[arg(
-        long,
-        env = "NANOCODE_LOG_FORMAT",
-        global = true,
-        default_value_t,
-        value_enum
-    )]
     log_format: LogFormatArg,
-
-    #[arg(
-        long,
-        env = "NANOCODE_LOG_FILE",
-        global = true,
-        help = "Write tracing logs to this file"
-    )]
     log_file: Option<PathBuf>,
-
-    #[arg(
-        long,
-        env = "NANOCODE_TELEMETRY",
-        global = true,
-        value_enum,
-        help = "OpenTelemetry traces and metrics to record locally and export [default: agent, and off for nanocode hand]"
-    )]
     telemetry: Option<TelemetryArg>,
-
-    #[arg(
-        long,
-        env = "OTEL_EXPORTER_OTLP_ENDPOINT",
-        global = true,
-        value_parser = NonEmptyStringValueParser::new(),
-        help = "OTLP/HTTP collector base URL for trace and metric export"
-    )]
     otel_endpoint: Option<String>,
-
-    #[arg(
-        long,
-        env = "OTEL_DEPLOYMENT_ENVIRONMENT",
-        global = true,
-        default_value = "development",
-        value_parser = NonEmptyStringValueParser::new()
-    )]
     otel_environment: String,
 }
 
 impl ObservabilityOutputArgs {
+    pub const ARGUMENTS: Group = Group::named(
+        "ObservabilityOutputArgs",
+        &[
+            Argument::value("log_filter", "LOG_FILTER", Parser::NonEmptyText)
+                .long("log")
+                .env("NANOCODE_LOG")
+                .global()
+                .help("Tracing filter in RUST_LOG syntax for the log file and OpenTelemetry export"),
+            Argument::value("log_format", "LOG_FORMAT", Parser::Choice(&LogFormatArg::CHOICES))
+                .long("log-format")
+                .env("NANOCODE_LOG_FORMAT")
+                .global()
+                .default("compact"),
+            Argument::value("log_file", "LOG_FILE", Parser::Path)
+                .long("log-file")
+                .env("NANOCODE_LOG_FILE")
+                .global()
+                .help("Write tracing logs to this file"),
+            Argument::value("telemetry", "TELEMETRY", Parser::Choice(&TelemetryArg::CHOICES))
+                .long("telemetry")
+                .env("NANOCODE_TELEMETRY")
+                .global()
+                .help(
+                    "OpenTelemetry traces and metrics to record locally and export [default: agent, and off for nanocode hand]",
+                ),
+            Argument::value("otel_endpoint", "OTEL_ENDPOINT", Parser::NonEmptyText)
+                .long("otel-endpoint")
+                .env("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .global()
+                .help("OTLP/HTTP collector base URL for trace and metric export"),
+            Argument::value("otel_environment", "OTEL_ENVIRONMENT", Parser::NonEmptyText)
+                .long("otel-environment")
+                .env("OTEL_DEPLOYMENT_ENVIRONMENT")
+                .global()
+                .default("development"),
+        ],
+    );
+
+    #[must_use]
+    pub fn from_matches(matches: &Matches) -> Self {
+        Self {
+            log_filter: matches.text("log_filter"),
+            log_format: LogFormatArg::ALL[matches
+                .choice("log_format")
+                .expect("log_format has a default")],
+            log_file: matches.path("log_file"),
+            telemetry: matches
+                .choice("telemetry")
+                .map(|index| TelemetryArg::ALL[index]),
+            otel_endpoint: matches.text("otel_endpoint"),
+            otel_environment: matches
+                .text("otel_environment")
+                .expect("otel_environment has a default"),
+        }
+    }
+
     #[must_use]
     pub fn log_file(&self) -> Option<&Path> {
         self.log_file.as_deref()
@@ -105,16 +115,23 @@ impl ObservabilityOutputArgs {
     }
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug)]
 enum TelemetryArg {
-    #[value(help = "Record no traces or metrics")]
     Off,
-    #[value(
-        help = "Agent turns, model calls, tools and durable writes, plus terminal frame metrics"
-    )]
     Agent,
-    #[value(help = "Agent work and a span for every terminal frame, layout, render and draw")]
     All,
+}
+
+impl TelemetryArg {
+    const ALL: [Self; 3] = [Self::Off, Self::Agent, Self::All];
+    const CHOICES: [Choice; 3] = [
+        Choice::new("off").help("Record no traces or metrics"),
+        Choice::new("agent").help(
+            "Agent turns, model calls, tools and durable writes, plus terminal frame metrics",
+        ),
+        Choice::new("all")
+            .help("Agent work and a span for every terminal frame, layout, render and draw"),
+    ];
 }
 
 impl From<TelemetryArg> for Telemetry {
@@ -127,12 +144,20 @@ impl From<TelemetryArg> for Telemetry {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+#[derive(Clone, Copy, Debug)]
 enum LogFormatArg {
     Pretty,
-    #[default]
     Compact,
     Json,
+}
+
+impl LogFormatArg {
+    const ALL: [Self; 3] = [Self::Pretty, Self::Compact, Self::Json];
+    const CHOICES: [Choice; 3] = [
+        Choice::new("pretty"),
+        Choice::new("compact"),
+        Choice::new("json"),
+    ];
 }
 
 impl From<LogFormatArg> for LogFormat {

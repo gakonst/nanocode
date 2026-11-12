@@ -25,6 +25,7 @@ members = [
     "crates/core/http",
     "crates/core/zstd",
     "crates/core/digest",
+    "crates/core/arguments",
     "crates/core/compression",
     "crates/core/tempo",
     "crates/core/mcp",
@@ -119,7 +120,6 @@ brotli-decompressor = "5.0.3"
 flate2 = "1.1.9"
 mimalloc = { version = "0.1.52", default-features = false }
 imbl = { version = "7.0.2", features = ["serde"] }
-clap = { version = "4.5.54", features = ["derive", "env"] }
 futures-channel = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }
 getrandom = "0.4.3"
@@ -131,6 +131,7 @@ hyper = { version = "1.10.1", default-features = false }
 hyper-util = { version = "0.1.20", default-features = false }
 nanocode-backend-claude = { version = "0.7.0", path = "crates/backends/claude" }
 nanocode-backend-claude-client = { version = "0.7.0", path = "crates/backends/claude/client" }
+nanocode-arguments = { version = "0.7.0", path = "crates/core/arguments" }
 nanocode-home = { version = "0.7.0", path = "crates/core/home" }
 nanocode-http = { version = "0.7.0", path = "crates/core/http" }
 nanocode-mcp = { version = "0.7.0", path = "crates/core/mcp" }

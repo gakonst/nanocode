@@ -30,7 +30,6 @@ use std::{
     process::ExitCode,
 };
 
-use clap::Parser;
 use futures_util::StreamExt;
 use nanocode::{ModelSelection, ServiceTier, Thinking, durability::TranscriptItem};
 

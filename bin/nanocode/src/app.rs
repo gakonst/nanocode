@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::Parser;
 use futures_util::StreamExt;
 use nanocode::{
     AgentStatus, ExecutionPolicyDisposition, ExecutorSelection, HarnessFamily, ModelSelection,
@@ -536,8 +535,6 @@ fn reload_program() -> std::io::Result<PathBuf> {
 }
 
 fn reload_args(session: Option<&str>, state: PathBuf) -> Vec<std::ffi::OsString> {
-    let mut command = <crate::cli::Cli as clap::CommandFactory>::command();
-    command.build();
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     let mut original = std::env::args_os().skip(1).peekable();
     while let Some(arg) = original.next() {
@@ -550,8 +547,8 @@ fn reload_args(session: Option<&str>, state: PathBuf) -> Vec<std::ffi::OsString>
                 .split_once('=')
                 .map_or((long, None), |(name, value)| (name, Some(value)));
             (
-                command
-                    .get_arguments()
+                crate::cli::COMMAND
+                    .arguments()
                     .find(|arg| arg.get_long() == Some(name)),
                 value.is_some(),
             )
@@ -559,7 +556,9 @@ fn reload_args(session: Option<&str>, state: PathBuf) -> Vec<std::ffi::OsString>
             let mut chars = short.chars();
             let flag = chars.next();
             (
-                command.get_arguments().find(|arg| arg.get_short() == flag),
+                crate::cli::COMMAND
+                    .arguments()
+                    .find(|arg| arg.get_short() == flag),
                 !chars.as_str().is_empty(),
             )
         } else {
@@ -569,21 +568,16 @@ fn reload_args(session: Option<&str>, state: PathBuf) -> Vec<std::ffi::OsString>
             args.push(arg);
             continue;
         };
-        let value = (!inline && definition.get_action().takes_values())
+        let value = (!inline && definition.takes_value())
             .then(|| {
-                let required = definition
-                    .get_num_args()
-                    .is_some_and(|range| range.min_values() > 0);
+                let required = definition.requires_value();
                 let present = original
                     .peek()
                     .is_some_and(|next| !next.to_string_lossy().starts_with('-'));
                 (required || present).then(|| original.next()).flatten()
             })
             .flatten();
-        if matches!(
-            definition.get_id().as_str(),
-            "resume" | "continue_last" | "reload_state"
-        ) {
+        if matches!(definition.id(), "resume" | "continue_last" | "reload_state") {
             continue;
         }
         args.push(arg);

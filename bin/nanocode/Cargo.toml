@@ -25,7 +25,6 @@ test = false
 bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-clap.workspace = true
 futures-util = { workspace = true, features = ["async-await-macro"] }
 getrandom.workspace = true
 http.workspace = true
@@ -35,6 +34,7 @@ hyper-util = { workspace = true, features = ["tokio"] }
 mimalloc = { workspace = true, features = ["no_thp"] }
 nanocode = { path = "../../crates/nanocode", version = "0.7.0", default-features = false, features = ["local-cells"] }
 nanocode-agent-host = { path = "../../crates/integrations/agent-host", version = "0.7.0", features = ["cua"] }
+nanocode-arguments.workspace = true
 nanocode-computer-repl = { path = "../../crates/integrations/computer-repl", version = "0.7.0" }
 nanocode-home = { path = "../../crates/core/home", version = "0.7.0" }
 nanocode-observability = { path = "../../crates/integrations/observability", version = "0.7.0" }

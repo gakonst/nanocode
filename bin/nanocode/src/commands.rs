@@ -77,38 +77,60 @@ pub const COMMANDS: [(&str, &str); 34] = [
     ("/quit", "exit nanocode"),
 ];
 
-#[derive(clap::Parser)]
-#[command(
-    name = "/runner",
-    about = "Manage runner connections and listeners",
-    disable_help_subcommand = true
-)]
+use nanocode_arguments::{Alias, Argument, Command, Group, Matches, Parser};
+
+static RUNNER: Command = Command::new("/runner")
+    .about("Manage runner connections and listeners")
+    .without_help_subcommand()
+    .subcommands(&[
+        Command::new("list").aliases(&[Alias::hidden("status")]),
+        Command::new("connect").groups(&[Group::named(
+            "Connect",
+            &[
+                Argument::positional("url", "URL", Parser::Text).required(),
+                Argument::value("token", "TOKEN", Parser::Text).long("token"),
+                Argument::value("name", "NAME", Parser::Text).long("name"),
+                Argument::flag("replace").long("replace"),
+            ],
+        )]),
+        Command::new("listen").groups(&[Group::named(
+            "Listen",
+            &[
+                Argument::positional("address", "ADDRESS", Parser::SocketAddress).required(),
+                Argument::value("token", "TOKEN", Parser::Text).long("token"),
+            ],
+        )]),
+        Command::new("select")
+            .about(
+                "Run this session's exec cells on hand NAME, or on this machine without a name; scripts reach other hands with a hand argument on each tool call",
+            )
+            .groups(&[Group::named(
+                "Select",
+                &[Argument::positional("name", "NAME", Parser::Text)],
+            )]),
+        Command::new("disconnect").groups(&[Group::named(
+            "Disconnect",
+            &[Argument::positional("name", "NAME", Parser::Text).required()],
+        )]),
+        Command::new("stop-listening"),
+    ]);
+
 pub struct RunnerCommand {
-    #[command(subcommand)]
     pub action: Option<RunnerAction>,
 }
 
-#[derive(clap::Subcommand)]
 pub enum RunnerAction {
-    #[command(alias = "status")]
     List,
     Connect {
         url: String,
-        #[arg(long)]
         token: Option<String>,
-        #[arg(long)]
         name: Option<String>,
-        #[arg(long)]
         replace: bool,
     },
     Listen {
         address: std::net::SocketAddr,
-        #[arg(long)]
         token: Option<String>,
     },
-    #[command(
-        about = "Run this session's exec cells on hand NAME, or on this machine without a name; scripts reach other hands with a hand argument on each tool call"
-    )]
     Select {
         name: Option<String>,
     },
@@ -116,6 +138,47 @@ pub enum RunnerAction {
         name: String,
     },
     StopListening,
+}
+
+impl RunnerCommand {
+    pub fn try_parse_from<I, T>(arguments: I) -> Result<Self, nanocode_arguments::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString>,
+    {
+        let matches = RUNNER.parse_from(arguments)?;
+        Ok(Self {
+            action: matches
+                .subcommand()
+                .map(|(name, matches)| RunnerAction::from_matches(name, matches)),
+        })
+    }
+}
+
+impl RunnerAction {
+    fn from_matches(name: &str, matches: &Matches) -> Self {
+        match name {
+            "list" => Self::List,
+            "connect" => Self::Connect {
+                url: matches.text("url").expect("url is required"),
+                token: matches.text("token"),
+                name: matches.text("name"),
+                replace: matches.flag("replace"),
+            },
+            "listen" => Self::Listen {
+                address: matches.address("address").expect("address is required"),
+                token: matches.text("token"),
+            },
+            "select" => Self::Select {
+                name: matches.text("name"),
+            },
+            "disconnect" => Self::Disconnect {
+                name: matches.text("name").expect("name is required"),
+            },
+            "stop-listening" => Self::StopListening,
+            other => unreachable!("{other} is not a /runner subcommand"),
+        }
+    }
 }
 
 pub fn matching<'a>(

@@ -7,6 +7,7 @@ mod cli;
 mod file;
 mod otlp;
 mod typed;
+mod writer;
 
 use std::{fs::OpenOptions, io, path::PathBuf, time::Duration};
 
@@ -19,7 +20,6 @@ use opentelemetry_sdk::{
     metrics::{PeriodicReader, SdkMeterProvider},
     trace::{BatchSpanProcessor, SdkTracerProvider},
 };
-use tracing_appender::non_blocking::{NonBlockingBuilder, WorkerGuard};
 use tracing_opentelemetry::MetricsLayer;
 use tracing_subscriber::{
     EnvFilter, Layer,
@@ -93,7 +93,7 @@ pub struct ObservabilityGuard {
     tracer_provider: Option<SdkTracerProvider>,
     meter_provider: Option<SdkMeterProvider>,
     shutdown_timeout: Option<Duration>,
-    _writer: Option<WorkerGuard>,
+    _writer: Option<writer::WriterGuard>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -190,10 +190,7 @@ impl ObservabilityBuilder {
         nanocode_tls::install_default_rustls_crypto_provider();
         let (fmt_layer, writer_guard) = match self.writer()? {
             Some(output) => {
-                let (writer, guard) = NonBlockingBuilder::default()
-                    .buffered_lines_limit(LOCAL_LOG_BUFFERED_LINES_LIMIT)
-                    .lossy(false)
-                    .finish(output);
+                let (writer, guard) = writer::spawn(output, LOCAL_LOG_BUFFERED_LINES_LIMIT)?;
                 let filter = scope(self.filter.as_str())?;
                 let layer = match self.format {
                     LogFormat::Pretty => tracing_subscriber::fmt::layer()

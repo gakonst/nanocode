@@ -307,8 +307,12 @@ fn cmp_magnitude(a: (&[u8], &[u8]), b: (&[u8], &[u8])) -> Ordering {
 }
 
 fn cmp_numeric(a: &[u8], b: &[u8]) -> Ordering {
-    let (sa, ia, fa) = numeric_parts(a);
-    let (sb, ib, fb) = numeric_parts(b);
+    cmp_parts(numeric_parts(a), numeric_parts(b))
+}
+
+type Parts<'a> = (i8, &'a [u8], &'a [u8]);
+
+fn cmp_parts((sa, ia, fa): Parts<'_>, (sb, ib, fb): Parts<'_>) -> Ordering {
     sa.cmp(&sb).then_with(|| match sa {
         1 => cmp_magnitude((ia, fa), (ib, fb)),
         -1 => cmp_magnitude((ib, fb), (ia, fa)),
@@ -578,26 +582,54 @@ impl Sorter {
 
     fn cmp_keys(&self, a: &[u8], b: &[u8]) -> Ordering {
         for k in &self.keys {
-            let (ka, kb) = (key_slice(a, k, self.tab), key_slice(b, k, self.tab));
-            let o = &k.order;
-            let r = match o.kind {
-                Kind::Text => cmp_text(ka, kb, o),
-                Kind::Numeric => cmp_numeric(ka, kb),
-                Kind::General => cmp_general(ka, kb),
-                Kind::Human => cmp_human(ka, kb),
-                Kind::Month => month(ka).cmp(&month(kb)),
-                Kind::Version => filevercmp(ka, kb),
-                Kind::Random => self
-                    .hash(ka)
-                    .cmp(&self.hash(kb))
-                    .then_with(|| cmp_text(ka, kb, o)),
-            };
-            let r = if o.reverse { r.reverse() } else { r };
+            let r = self.cmp_key(k, key_slice(a, k, self.tab), key_slice(b, k, self.tab));
             if r != Ordering::Equal {
                 return r;
             }
         }
         Ordering::Equal
+    }
+
+    fn keyed<'a>(&self, line: &'a [u8], k: &Key) -> (&'a [u8], Parts<'a>) {
+        let text = key_slice(line, k, self.tab);
+        match k.order.kind {
+            Kind::Numeric => (text, numeric_parts(text)),
+            _ => (text, (0, &[], &[])),
+        }
+    }
+
+    fn cmp_keyed(&self, ka: &[(&[u8], Parts<'_>)], kb: &[(&[u8], Parts<'_>)], a: &[u8], b: &[u8]) -> Ordering {
+        for ((k, x), y) in self.keys.iter().zip(ka).zip(kb) {
+            let r = match k.order.kind {
+                Kind::Numeric if k.order.reverse => cmp_parts(x.1, y.1).reverse(),
+                Kind::Numeric => cmp_parts(x.1, y.1),
+                _ => self.cmp_key(k, x.0, y.0),
+            };
+            if r != Ordering::Equal {
+                return r;
+            }
+        }
+        if !self.last_resort {
+            return Ordering::Equal;
+        }
+        if self.reverse { b.cmp(a) } else { a.cmp(b) }
+    }
+
+    fn cmp_key(&self, k: &Key, ka: &[u8], kb: &[u8]) -> Ordering {
+        let o = &k.order;
+        let r = match o.kind {
+            Kind::Text => cmp_text(ka, kb, o),
+            Kind::Numeric => cmp_numeric(ka, kb),
+            Kind::General => cmp_general(ka, kb),
+            Kind::Human => cmp_human(ka, kb),
+            Kind::Month => month(ka).cmp(&month(kb)),
+            Kind::Version => filevercmp(ka, kb),
+            Kind::Random => self
+                .hash(ka)
+                .cmp(&self.hash(kb))
+                .then_with(|| cmp_text(ka, kb, o)),
+        };
+        if o.reverse { r.reverse() } else { r }
     }
 
     fn cmp(&self, a: &[u8], b: &[u8]) -> Ordering {
@@ -778,7 +810,27 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         return 0;
     }
 
-    lines.sort_by(|a, b| sorter.cmp(a, b));
+    let whole = |k: &Key| {
+        k.start_field == 1
+            && k.start_char == 1
+            && k.end.is_none()
+            && !k.order.blank_start
+            && matches!(k.order.kind, Kind::Text)
+    };
+    if sorter.keys.iter().all(whole) {
+        lines.sort_by(|a, b| sorter.cmp(a, b));
+    } else {
+        let n = sorter.keys.len();
+        let keyed: Vec<(&[u8], Parts<'_>)> = lines
+            .iter()
+            .flat_map(|l| sorter.keys.iter().map(|k| sorter.keyed(l, k)))
+            .collect();
+        let mut order: Vec<usize> = (0..lines.len()).collect();
+        order.sort_by(|&a, &b| {
+            sorter.cmp_keyed(&keyed[a * n..][..n], &keyed[b * n..][..n], lines[a], lines[b])
+        });
+        lines = order.into_iter().map(|i| lines[i]).collect();
+    }
     ctx.check().await;
     if unique {
         lines.dedup_by(|b, a| sorter.cmp_keys(a, b) == Ordering::Equal);

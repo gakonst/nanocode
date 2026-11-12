@@ -2065,7 +2065,6 @@ dependencies = [
  "nanocode-sync",
  "nanocode-tempo",
  "nanocode-tui",
- "opentelemetry",
  "psh",
  "reqwest",
  "rustls-native-certs",
@@ -2074,7 +2073,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
- "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2314,15 +2312,14 @@ version = "0.7.0"
 dependencies = [
  "clap",
  "http",
+ "nanocode-platform",
+ "nanocode-sync",
  "nanocode-tls",
- "opentelemetry",
- "opentelemetry_sdk",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -4356,21 +4353,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-opentelemetry"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
-dependencies = [
- "js-sys",
- "opentelemetry",
- "smallvec",
- "tracing",
- "tracing-core",
- "tracing-subscriber",
- "web-time",
-]
-
-[[package]]
 name = "tracing-serde"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4618,16 +4600,6 @@ name = "web-sys"
 version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "web-time"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

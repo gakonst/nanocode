@@ -1,12 +1,10 @@
 use std::{collections::HashMap, time::Instant};
 
 use nanocode::agent::events::{AgentEvent, AgentEventKind};
-use nanocode_observability::{METRICS_TARGET, TUI_TARGET};
+use nanocode_observability::{METRICS_TARGET, SpanContext, TUI_TARGET};
 use nanocode_tui::input::{Event, KeyCode, KeyModifiers, MouseEventKind};
-use opentelemetry::{Context, trace::TraceContextExt};
 use serde_json::Value;
 use tracing::{Level, Span, field::Empty};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub fn input_span(event: &Event) -> Span {
     let action = match event {
@@ -230,7 +228,7 @@ pub struct FrameMetrics {
     input: Option<Instant>,
     stream: Option<Instant>,
     resize: Option<Instant>,
-    input_context: Option<Context>,
+    input_context: Option<SpanContext>,
 }
 
 impl FrameMetrics {
@@ -254,7 +252,8 @@ impl FrameMetrics {
         if self.enabled {
             let now = Instant::now();
             self.input.get_or_insert(now);
-            self.input_context.get_or_insert_with(|| span.context());
+            self.input_context
+                .get_or_insert_with(|| nanocode_observability::span_context(span));
             if resize {
                 self.resize.get_or_insert(now);
                 tracing::event!(target: METRICS_TARGET, Level::INFO, { monotonic_counter.nc.resize.events = 1_u64 });
@@ -271,7 +270,7 @@ impl FrameMetrics {
     pub fn frame(&mut self, session: Option<&str>) -> Span {
         let span = tracing::info_span!(target: TUI_TARGET, "nc.frame", session.id = session, frame.input = self.input.is_some(), frame.stream = self.stream.is_some(), frame.resize = self.resize.is_some(), frame.input_ms = Empty, frame.stream_ms = Empty, frame.resize_ms = Empty, thread.cpu_ns = Empty, otel.status_code = Empty);
         if let Some(context) = self.input_context.take() {
-            span.add_link(context.span().span_context().clone());
+            nanocode_observability::add_link(&span, context);
         }
         span
     }

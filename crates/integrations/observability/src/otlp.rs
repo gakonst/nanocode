@@ -1,20 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use opentelemetry::{
-    Array, InstrumentationScope, Key, KeyValue, Value,
-    trace::{Event, Link, SpanContext, SpanId, SpanKind, Status},
-};
-use opentelemetry_sdk::{
-    Resource,
+use crate::{
     metrics::{
-        Temporality,
-        data::{
-            AggregatedMetrics, Exemplar, ExponentialBucket, ExponentialHistogram,
-            ExponentialHistogramDataPoint, Histogram, HistogramDataPoint, Metric, MetricData,
-            ResourceMetrics,
-        },
+        HISTOGRAM_BOUNDS, HistogramPoint, Metric, MetricData, NumberPoint, Point, ResourceMetrics,
     },
-    trace::SpanData,
+    model::{Event, KeyValue, Resource, Scope, SpanContext, SpanData, SpanKind, Status, Value},
 };
 
 pub(crate) const SPAN_KIND_INTERNAL: i32 = 1;
@@ -25,13 +15,13 @@ pub(crate) const SPAN_KIND_CONSUMER: i32 = 5;
 pub(crate) const STATUS_CODE_UNSET: i32 = 0;
 pub(crate) const STATUS_CODE_OK: i32 = 1;
 pub(crate) const STATUS_CODE_ERROR: i32 = 2;
+pub(crate) const SPAN_FLAGS_SAMPLED: u32 = 0x1;
 pub(crate) const SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK: u32 = 0x100;
-pub(crate) const SPAN_FLAGS_CONTEXT_IS_REMOTE_MASK: u32 = 0x200;
 pub(crate) const AGGREGATION_TEMPORALITY_DELTA: i32 = 1;
 pub(crate) const AGGREGATION_TEMPORALITY_CUMULATIVE: i32 = 2;
 pub(crate) const DATA_POINT_FLAGS_NONE: u32 = 0;
 
-pub(crate) const fn kind(kind: &SpanKind) -> i32 {
+pub(crate) const fn kind(kind: SpanKind) -> i32 {
     match kind {
         SpanKind::Client => SPAN_KIND_CLIENT,
         SpanKind::Consumer => SPAN_KIND_CONSUMER,
@@ -44,76 +34,30 @@ pub(crate) const fn kind(kind: &SpanKind) -> i32 {
 pub(crate) fn status(status: &Status) -> (&str, i32) {
     match status {
         Status::Unset => ("", STATUS_CODE_UNSET),
-        Status::Error { description } => (description, STATUS_CODE_ERROR),
+        Status::Error(description) => (description, STATUS_CODE_ERROR),
         Status::Ok => ("", STATUS_CODE_OK),
     }
 }
 
-pub(crate) fn flags(context: &SpanContext, remote: bool) -> u32 {
-    let flags = u32::from(context.trace_flags().to_u8()) | SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK;
-    if remote {
-        flags | SPAN_FLAGS_CONTEXT_IS_REMOTE_MASK
+pub(crate) const fn flags(context: &SpanContext) -> u32 {
+    if context.sampled {
+        SPAN_FLAGS_SAMPLED | SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK
     } else {
-        flags
+        SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK
     }
 }
 
-pub(crate) const fn temporality(temporality: Temporality) -> i32 {
-    match temporality {
-        Temporality::Delta => AGGREGATION_TEMPORALITY_DELTA,
-        _ => AGGREGATION_TEMPORALITY_CUMULATIVE,
+pub(crate) const fn temporality(delta: bool) -> i32 {
+    if delta {
+        AGGREGATION_TEMPORALITY_DELTA
+    } else {
+        AGGREGATION_TEMPORALITY_CUMULATIVE
     }
 }
 
 pub(crate) fn unix_nanos(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos() as u64)
-}
-
-pub(crate) const fn pair(pair: &KeyValue) -> (&Key, &Value) {
-    (&pair.key, &pair.value)
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum Point {
-    Int(i64),
-    Double(f64),
-}
-
-pub(crate) trait Number: Copy {
-    fn point(self) -> Point;
-
-    fn float(self) -> f64;
-}
-
-impl Number for u64 {
-    fn point(self) -> Point {
-        Point::Int(i64::try_from(self).unwrap_or_default())
-    }
-
-    fn float(self) -> f64 {
-        self as f64
-    }
-}
-
-impl Number for i64 {
-    fn point(self) -> Point {
-        Point::Int(self)
-    }
-
-    fn float(self) -> f64 {
-        self as f64
-    }
-}
-
-impl Number for f64 {
-    fn point(self) -> Point {
-        Point::Double(self)
-    }
-
-    fn float(self) -> f64 {
-        self
-    }
 }
 
 pub(crate) fn unsigned_integer(text: &str) -> Option<i64> {
@@ -226,16 +170,6 @@ fn float(json: &mut Vec<u8>, value: f64) -> serde_json::Result<()> {
     serde_json::to_writer(&mut *json, &value)
 }
 
-fn optional_float(json: &mut Vec<u8>, value: Option<f64>) -> serde_json::Result<()> {
-    match value {
-        Some(value) => float(json, value),
-        None => {
-            json.extend_from_slice(b"null");
-            Ok(())
-        }
-    }
-}
-
 fn boolean(json: &mut Vec<u8>, value: bool) {
     json.extend_from_slice(if value {
         br#"{"boolValue":true}"#
@@ -263,10 +197,6 @@ fn text(json: &mut Vec<u8>, value: &str) {
     json.push(b'}');
 }
 
-fn unknown(what: &str) -> serde_json::Error {
-    <serde_json::Error as serde::ser::Error>::custom(format_args!("{what} OTLP does not define"))
-}
-
 fn listed<T>(
     json: &mut Vec<u8>,
     items: impl IntoIterator<Item = T>,
@@ -289,47 +219,34 @@ fn any(json: &mut Vec<u8>, value: &Value, integers: bool) -> serde_json::Result<
         Value::I64(value) => whole(json, *value),
         Value::F64(value) => double(json, *value)?,
         Value::String(value) => {
-            if integers && let Some(value) = unsigned_integer(value.as_str()) {
+            if integers && let Some(value) = unsigned_integer(value) {
                 whole(json, value);
             } else {
-                text(json, value.as_str());
+                text(json, value);
             }
         }
-        Value::Array(values) => {
+        Value::Strings(values) => {
             json.extend_from_slice(br#"{"arrayValue":{"values":"#);
-            match values {
-                Array::Bool(values) => listed(json, values, |json, value| {
-                    boolean(json, *value);
-                    Ok(())
-                })?,
-                Array::I64(values) => listed(json, values, |json, value| {
-                    whole(json, *value);
-                    Ok(())
-                })?,
-                Array::F64(values) => listed(json, values, |json, value| double(json, *value))?,
-                Array::String(values) => listed(json, values, |json, value| {
-                    text(json, value.as_str());
-                    Ok(())
-                })?,
-                _ => return Err(unknown("an attribute array")),
-            }
+            listed(json, values, |json, value| {
+                text(json, value);
+                Ok(())
+            })?;
             json.extend_from_slice(b"}}");
         }
-        _ => return Err(unknown("an attribute value")),
     }
     Ok(())
 }
 
 fn attributes<'a>(
     json: &mut Vec<u8>,
-    pairs: impl IntoIterator<Item = (&'a Key, &'a Value)>,
+    pairs: impl IntoIterator<Item = &'a KeyValue>,
     integers: bool,
 ) -> serde_json::Result<()> {
-    listed(json, pairs, |json, (key, value)| {
+    listed(json, pairs, |json, pair| {
         json.extend_from_slice(br#"{"key":"#);
-        string(json, key.as_str());
+        string(json, &pair.key);
         json.extend_from_slice(br#","value":"#);
-        any(json, value, integers)?;
+        any(json, &pair.value, integers)?;
         json.push(b'}');
         Ok(())
     })
@@ -346,7 +263,7 @@ fn event(json: &mut Vec<u8>, event: &Event) -> serde_json::Result<()> {
     json.extend_from_slice(br#","name":"#);
     string(json, &event.name);
     json.extend_from_slice(br#","attributes":"#);
-    attributes(json, event.attributes.iter().map(pair), false)?;
+    attributes(json, &event.attributes, false)?;
     count(
         json,
         br#","droppedAttributesCount":"#,
@@ -356,54 +273,43 @@ fn event(json: &mut Vec<u8>, event: &Event) -> serde_json::Result<()> {
     Ok(())
 }
 
-fn link(json: &mut Vec<u8>, link: &Link) -> serde_json::Result<()> {
-    let context = &link.span_context;
+fn link(json: &mut Vec<u8>, context: &SpanContext) {
     json.extend_from_slice(br#"{"traceId":"#);
-    hex(json, &context.trace_id().to_bytes());
+    hex(json, &context.trace_id.to_be_bytes());
     json.extend_from_slice(br#","spanId":"#);
-    hex(json, &context.span_id().to_bytes());
-    json.extend_from_slice(br#","traceState":"#);
-    string(json, &context.trace_state().header());
-    json.extend_from_slice(br#","attributes":"#);
-    attributes(json, link.attributes.iter().map(pair), false)?;
-    count(
-        json,
-        br#","droppedAttributesCount":"#,
-        link.dropped_attributes_count,
+    hex(json, &context.span_id.to_be_bytes());
+    json.extend_from_slice(
+        br#","traceState":"","attributes":[],"droppedAttributesCount":0,"flags":"#,
     );
-    json.extend_from_slice(br#","flags":"#);
-    decimal(json, u64::from(flags(context, context.is_remote())));
+    decimal(json, u64::from(flags(context)));
     json.push(b'}');
-    Ok(())
 }
 
 pub(crate) fn span(data: &SpanData, json: &mut Vec<u8>) -> serde_json::Result<()> {
-    let context = &data.span_context;
+    let context = &data.context;
     let (message, code) = status(&data.status);
     json.extend_from_slice(br#"{"traceId":"#);
-    hex(json, &context.trace_id().to_bytes());
+    hex(json, &context.trace_id.to_be_bytes());
     json.extend_from_slice(br#","spanId":"#);
-    hex(json, &context.span_id().to_bytes());
-    json.extend_from_slice(br#","traceState":"#);
-    string(json, &context.trace_state().header());
-    json.extend_from_slice(br#","parentSpanId":"#);
-    if data.parent_span_id == SpanId::INVALID {
+    hex(json, &context.span_id.to_be_bytes());
+    json.extend_from_slice(br#","traceState":"","parentSpanId":"#);
+    if data.parent_span_id == 0 {
         hex(json, &[]);
     } else {
-        hex(json, &data.parent_span_id.to_bytes());
+        hex(json, &data.parent_span_id.to_be_bytes());
     }
     json.extend_from_slice(br#","flags":"#);
-    decimal(json, u64::from(flags(context, data.parent_span_is_remote)));
+    decimal(json, u64::from(flags(context)));
     json.extend_from_slice(br#","name":"#);
     string(json, &data.name);
     json.extend_from_slice(br#","kind":"#);
-    integer(json, i64::from(kind(&data.span_kind)));
+    integer(json, i64::from(kind(data.kind)));
     json.extend_from_slice(br#","startTimeUnixNano":"#);
     nanos(json, data.start_time);
     json.extend_from_slice(br#","endTimeUnixNano":"#);
     nanos(json, data.end_time);
     json.extend_from_slice(br#","attributes":"#);
-    attributes(json, data.attributes.iter().map(pair), true)?;
+    attributes(json, &data.attributes, true)?;
     count(
         json,
         br#","droppedAttributesCount":"#,
@@ -414,11 +320,14 @@ pub(crate) fn span(data: &SpanData, json: &mut Vec<u8>) -> serde_json::Result<()
     count(
         json,
         br#","droppedEventsCount":"#,
-        data.events.dropped_count,
+        data.dropped_events_count,
     );
     json.extend_from_slice(br#","links":"#);
-    listed(json, data.links.iter(), link)?;
-    count(json, br#","droppedLinksCount":"#, data.links.dropped_count);
+    listed(json, data.links.iter(), |json, context| {
+        link(json, context);
+        Ok(())
+    })?;
+    count(json, br#","droppedLinksCount":"#, data.dropped_links_count);
     json.extend_from_slice(br#","status":{"message":"#);
     string(json, message);
     json.extend_from_slice(br#","code":"#);
@@ -429,175 +338,142 @@ pub(crate) fn span(data: &SpanData, json: &mut Vec<u8>) -> serde_json::Result<()
 
 fn resource(json: &mut Vec<u8>, resource: &Resource) -> serde_json::Result<()> {
     json.extend_from_slice(br#"{"attributes":"#);
-    attributes(json, resource.iter(), false)?;
+    attributes(json, &resource.attributes, false)?;
     json.extend_from_slice(br#","droppedAttributesCount":0,"entityRefs":[]}"#);
     Ok(())
 }
 
-fn scope(json: &mut Vec<u8>, scope: &InstrumentationScope) -> serde_json::Result<()> {
+fn scope(json: &mut Vec<u8>, scope: &Scope) {
     json.extend_from_slice(br#"{"name":"#);
-    string(json, scope.name());
+    string(json, &scope.name);
     json.extend_from_slice(br#","version":"#);
-    string(json, scope.version().unwrap_or_default());
-    json.extend_from_slice(br#","attributes":"#);
-    attributes(json, scope.attributes().map(pair), false)?;
-    json.extend_from_slice(br#","droppedAttributesCount":0}"#);
-    Ok(())
+    string(json, scope.version.as_deref().unwrap_or_default());
+    json.extend_from_slice(br#","attributes":[],"droppedAttributesCount":0}"#);
 }
 
 #[derive(Debug)]
 pub(crate) struct Origin {
     resource: Vec<u8>,
     schema_url: Vec<u8>,
+    scope: Vec<u8>,
 }
 
 impl Origin {
-    pub(crate) fn of(resource: &Resource) -> serde_json::Result<Self> {
+    pub(crate) fn of(held: &Resource, held_scope: &Scope) -> serde_json::Result<Self> {
         let mut json = Vec::new();
-        self::resource(&mut json, resource)?;
+        resource(&mut json, held)?;
         let mut schema_url = Vec::new();
-        string(&mut schema_url, resource.schema_url().unwrap_or_default());
+        string(
+            &mut schema_url,
+            held.schema_url.as_deref().unwrap_or_default(),
+        );
+        let mut encoded_scope = Vec::new();
+        scope(&mut encoded_scope, held_scope);
         Ok(Self {
             resource: json,
             schema_url,
+            scope: encoded_scope,
         })
     }
 }
 
 #[derive(Default)]
 pub(crate) struct Batch {
-    scopes: Vec<(InstrumentationScope, Vec<u8>)>,
+    spans: Vec<u8>,
 }
 
 impl Batch {
     pub(crate) const fn is_empty(&self) -> bool {
-        self.scopes.is_empty()
+        self.spans.is_empty()
     }
 
-    pub(crate) fn push(&mut self, scope: InstrumentationScope, span: &[u8]) {
-        match self.scopes.iter_mut().find(|(held, _)| *held == scope) {
-            Some((_, spans)) => {
-                spans.push(b',');
-                spans.extend_from_slice(span);
-            }
-            None => self.scopes.push((scope, span.to_vec())),
+    pub(crate) fn push(&mut self, span: &[u8]) {
+        if !self.spans.is_empty() {
+            self.spans.push(b',');
         }
+        self.spans.extend_from_slice(span);
     }
 
-    pub(crate) fn line(&mut self, origin: &Origin, line: &mut Vec<u8>) -> serde_json::Result<()> {
+    pub(crate) fn line(&mut self, origin: &Origin, line: &mut Vec<u8>) {
         line.extend_from_slice(br#"{"resourceSpans":[{"resource":"#);
         line.extend_from_slice(&origin.resource);
-        line.extend_from_slice(br#","scopeSpans":"#);
-        listed(line, self.scopes.drain(..), |line, (held, spans)| {
-            line.extend_from_slice(br#"{"scope":"#);
-            scope(line, &held)?;
-            line.extend_from_slice(br#","spans":["#);
-            line.extend_from_slice(&spans);
-            line.extend_from_slice(br#"],"schemaUrl":"#);
-            string(line, held.schema_url().unwrap_or_default());
-            line.push(b'}');
-            Ok(())
-        })?;
-        line.extend_from_slice(br#","schemaUrl":"#);
+        line.extend_from_slice(br#","scopeSpans":[{"scope":"#);
+        line.extend_from_slice(&origin.scope);
+        line.extend_from_slice(br#","spans":["#);
+        line.extend_from_slice(&self.spans);
+        line.extend_from_slice(br#"],"schemaUrl":""}],"schemaUrl":"#);
         line.extend_from_slice(&origin.schema_url);
         line.extend_from_slice(b"}]}\n");
-        Ok(())
+        self.spans.clear();
     }
 }
 
-pub(crate) fn metrics(metrics: &ResourceMetrics, json: &mut Vec<u8>) -> serde_json::Result<()> {
+pub(crate) fn metrics(metrics: &ResourceMetrics<'_>, json: &mut Vec<u8>) -> serde_json::Result<()> {
     json.extend_from_slice(br#"{"resourceMetrics":[{"resource":"#);
-    resource(json, metrics.resource())?;
-    json.extend_from_slice(br#","scopeMetrics":"#);
-    listed(json, metrics.scope_metrics(), |json, held| {
-        json.extend_from_slice(br#"{"scope":"#);
-        scope(json, held.scope())?;
-        json.extend_from_slice(br#","metrics":"#);
-        listed(json, held.metrics(), metric)?;
-        json.extend_from_slice(br#","schemaUrl":"#);
-        string(json, held.scope().schema_url().unwrap_or_default());
-        json.push(b'}');
-        Ok(())
-    })?;
-    json.extend_from_slice(br#","schemaUrl":"#);
-    string(json, metrics.resource().schema_url().unwrap_or_default());
+    resource(json, metrics.resource)?;
+    json.extend_from_slice(br#","scopeMetrics":[{"scope":"#);
+    scope(json, metrics.scope);
+    json.extend_from_slice(br#","metrics":"#);
+    listed(json, &metrics.metrics, metric)?;
+    json.extend_from_slice(br#","schemaUrl":""}],"schemaUrl":"#);
+    string(
+        json,
+        metrics.resource.schema_url.as_deref().unwrap_or_default(),
+    );
     json.extend_from_slice(b"}]}");
     Ok(())
 }
 
 fn metric(json: &mut Vec<u8>, metric: &Metric) -> serde_json::Result<()> {
     json.extend_from_slice(br#"{"name":"#);
-    string(json, metric.name());
-    json.extend_from_slice(br#","description":"#);
-    string(json, metric.description());
-    json.extend_from_slice(br#","unit":"#);
-    string(json, metric.unit());
-    json.extend_from_slice(br#","metadata":[],"#);
-    match metric.data() {
-        AggregatedMetrics::F64(data) => metric_data(json, data)?,
-        AggregatedMetrics::U64(data) => metric_data(json, data)?,
-        AggregatedMetrics::I64(data) => metric_data(json, data)?,
-    }
-    json.push(b'}');
-    Ok(())
-}
-
-fn metric_data<T: Number>(json: &mut Vec<u8>, data: &MetricData<T>) -> serde_json::Result<()> {
-    match data {
-        MetricData::Gauge(gauge) => {
-            let start = gauge.start_time().map_or(0, unix_nanos);
-            let time = unix_nanos(gauge.time());
+    string(json, &metric.name);
+    json.extend_from_slice(br#","description":"","unit":"","metadata":[],"#);
+    match &metric.data {
+        MetricData::Gauge {
+            points,
+            start,
+            time,
+        } => {
+            let span = (unix_nanos(*start), unix_nanos(*time));
             json.extend_from_slice(br#""gauge":{"dataPoints":"#);
-            listed(json, gauge.data_points(), |json, point| {
-                number_point(
-                    json,
-                    point.attributes(),
-                    (start, time),
-                    point.exemplars(),
-                    point.value(),
-                )
-            })?;
+            listed(json, points, |json, point| number_point(json, point, span))?;
             json.push(b'}');
         }
-        MetricData::Sum(sum) => {
-            let times = (unix_nanos(sum.start_time()), unix_nanos(sum.time()));
+        MetricData::Sum {
+            points,
+            start,
+            time,
+            delta,
+            monotonic,
+        } => {
+            let span = (unix_nanos(*start), unix_nanos(*time));
             json.extend_from_slice(br#""sum":{"dataPoints":"#);
-            listed(json, sum.data_points(), |json, point| {
-                number_point(
-                    json,
-                    point.attributes(),
-                    times,
-                    point.exemplars(),
-                    point.value(),
-                )
-            })?;
+            listed(json, points, |json, point| number_point(json, point, span))?;
             json.extend_from_slice(br#","aggregationTemporality":"#);
-            integer(json, i64::from(temporality(sum.temporality())));
-            json.extend_from_slice(if sum.is_monotonic() {
+            integer(json, i64::from(temporality(*delta)));
+            json.extend_from_slice(if *monotonic {
                 br#","isMonotonic":true}"#
             } else {
                 br#","isMonotonic":false}"#
             });
         }
-        MetricData::Histogram(histogram) => {
+        MetricData::Histogram {
+            points,
+            start,
+            time,
+            delta,
+        } => {
+            let span = (unix_nanos(*start), unix_nanos(*time));
             json.extend_from_slice(br#""histogram":{"dataPoints":"#);
-            listed(json, histogram.data_points(), |json, point| {
-                histogram_point(json, histogram, point)
+            listed(json, points, |json, point| {
+                histogram_point(json, point, span)
             })?;
             json.extend_from_slice(br#","aggregationTemporality":"#);
-            integer(json, i64::from(temporality(histogram.temporality())));
-            json.push(b'}');
-        }
-        MetricData::ExponentialHistogram(histogram) => {
-            json.extend_from_slice(br#""exponentialHistogram":{"dataPoints":"#);
-            listed(json, histogram.data_points(), |json, point| {
-                exponential_point(json, histogram, point)
-            })?;
-            json.extend_from_slice(br#","aggregationTemporality":"#);
-            integer(json, i64::from(temporality(histogram.temporality())));
+            integer(json, i64::from(temporality(*delta)));
             json.push(b'}');
         }
     }
+    json.push(b'}');
     Ok(())
 }
 
@@ -623,125 +499,47 @@ fn times(json: &mut Vec<u8>, (start, time): (u64, u64)) {
     quoted(json, time);
 }
 
-fn number_point<'a, T: Number + 'a>(
+fn number_point(
     json: &mut Vec<u8>,
-    pairs: impl Iterator<Item = &'a KeyValue>,
+    point: &NumberPoint,
     span: (u64, u64),
-    exemplars: impl Iterator<Item = &'a Exemplar<T>>,
-    value: T,
 ) -> serde_json::Result<()> {
     json.extend_from_slice(br#"{"attributes":"#);
-    attributes(json, pairs.map(pair), false)?;
+    attributes(json, &point.attributes, false)?;
     times(json, span);
-    json.extend_from_slice(br#","exemplars":"#);
-    listed(json, exemplars, exemplar)?;
-    json.extend_from_slice(br#","flags":"#);
+    json.extend_from_slice(br#","exemplars":[],"flags":"#);
     decimal(json, u64::from(DATA_POINT_FLAGS_NONE));
     json.push(b',');
-    point_value(json, value.point())?;
+    point_value(json, point.value)?;
     json.push(b'}');
     Ok(())
 }
 
-fn exemplar<T: Number>(json: &mut Vec<u8>, exemplar: &Exemplar<T>) -> serde_json::Result<()> {
-    json.extend_from_slice(br#"{"filteredAttributes":"#);
-    attributes(json, exemplar.filtered_attributes().map(pair), false)?;
-    json.extend_from_slice(br#","timeUnixNano":"#);
-    nanos(json, exemplar.time());
-    json.extend_from_slice(br#","spanId":"#);
-    hex(json, exemplar.span_id());
-    json.extend_from_slice(br#","traceId":"#);
-    hex(json, exemplar.trace_id());
-    json.extend_from_slice(br#","value":{"#);
-    point_value(json, exemplar.value.point())?;
-    json.extend_from_slice(b"}}");
-    Ok(())
-}
-
-fn histogram_point<T: Number>(
+fn histogram_point(
     json: &mut Vec<u8>,
-    histogram: &Histogram<T>,
-    point: &HistogramDataPoint<T>,
+    point: &HistogramPoint,
+    span: (u64, u64),
 ) -> serde_json::Result<()> {
     json.extend_from_slice(br#"{"attributes":"#);
-    attributes(json, point.attributes().map(pair), false)?;
-    times(
-        json,
-        (
-            unix_nanos(histogram.start_time()),
-            unix_nanos(histogram.time()),
-        ),
-    );
+    attributes(json, &point.attributes, false)?;
+    times(json, span);
     json.extend_from_slice(br#","count":"#);
-    quoted(json, point.count());
+    quoted(json, point.count);
     json.extend_from_slice(br#","sum":"#);
-    float(json, point.sum().float())?;
+    float(json, point.sum)?;
     json.extend_from_slice(br#","bucketCounts":"#);
-    listed(json, point.bucket_counts(), |json, count| {
-        quoted(json, count);
+    listed(json, &point.bucket_counts, |json, count| {
+        quoted(json, *count);
         Ok(())
     })?;
     json.extend_from_slice(br#","explicitBounds":"#);
-    listed(json, point.bounds(), float)?;
-    json.extend_from_slice(br#","exemplars":"#);
-    listed(json, point.exemplars(), exemplar)?;
-    json.extend_from_slice(br#","flags":"#);
+    listed(json, &HISTOGRAM_BOUNDS, |json, bound| float(json, *bound))?;
+    json.extend_from_slice(br#","exemplars":[],"flags":"#);
     decimal(json, u64::from(DATA_POINT_FLAGS_NONE));
     json.extend_from_slice(br#","min":"#);
-    optional_float(json, point.min().map(Number::float))?;
+    float(json, point.min)?;
     json.extend_from_slice(br#","max":"#);
-    optional_float(json, point.max().map(Number::float))?;
-    json.push(b'}');
-    Ok(())
-}
-
-fn buckets(json: &mut Vec<u8>, name: &[u8], buckets: &ExponentialBucket) -> serde_json::Result<()> {
-    json.extend_from_slice(name);
-    json.extend_from_slice(br#"{"offset":"#);
-    integer(json, i64::from(buckets.offset()));
-    json.extend_from_slice(br#","bucketCounts":"#);
-    listed(json, buckets.counts(), |json, count| {
-        quoted(json, count);
-        Ok(())
-    })?;
-    json.push(b'}');
-    Ok(())
-}
-
-fn exponential_point<T: Number>(
-    json: &mut Vec<u8>,
-    histogram: &ExponentialHistogram<T>,
-    point: &ExponentialHistogramDataPoint<T>,
-) -> serde_json::Result<()> {
-    json.extend_from_slice(br#"{"attributes":"#);
-    attributes(json, point.attributes().map(pair), false)?;
-    times(
-        json,
-        (
-            unix_nanos(histogram.start_time()),
-            unix_nanos(histogram.time()),
-        ),
-    );
-    json.extend_from_slice(br#","count":"#);
-    quoted(json, point.count() as u64);
-    json.extend_from_slice(br#","sum":"#);
-    float(json, point.sum().float())?;
-    json.extend_from_slice(br#","scale":"#);
-    integer(json, i64::from(point.scale()));
-    json.extend_from_slice(br#","zeroCount":"#);
-    quoted(json, point.zero_count());
-    buckets(json, br#","positive":"#, point.positive_bucket())?;
-    buckets(json, br#","negative":"#, point.negative_bucket())?;
-    json.extend_from_slice(br#","flags":"#);
-    decimal(json, u64::from(DATA_POINT_FLAGS_NONE));
-    json.extend_from_slice(br#","exemplars":"#);
-    listed(json, point.exemplars(), exemplar)?;
-    json.extend_from_slice(br#","min":"#);
-    optional_float(json, point.min().map(Number::float))?;
-    json.extend_from_slice(br#","max":"#);
-    optional_float(json, point.max().map(Number::float))?;
-    json.extend_from_slice(br#","zeroThreshold":"#);
-    float(json, point.zero_threshold())?;
+    float(json, point.max)?;
     json.push(b'}');
     Ok(())
 }

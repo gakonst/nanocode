@@ -26,7 +26,7 @@ bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 clap.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["async-await-macro"] }
 getrandom.workspace = true
 http.workspace = true
 http-body-util.workspace = true
@@ -42,7 +42,6 @@ nanocode-store-jsonl = { path = "../../crates/integrations/store-jsonl", version
 nanocode-sync.workspace = true
 nanocode-tempo.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
-opentelemetry.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest.workspace = true
 rustls-native-certs.workspace = true
@@ -50,7 +49,6 @@ serde.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["tls12"] }
 tracing.workspace = true
-tracing-opentelemetry.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nanocode-process.workspace = true

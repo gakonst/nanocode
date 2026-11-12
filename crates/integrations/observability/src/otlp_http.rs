@@ -2,21 +2,19 @@ use std::{
     env,
     str::FromStr,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    time::Duration,
 };
 
-use opentelemetry_sdk::{
-    Resource,
-    error::{OTelSdkError, OTelSdkResult},
-    metrics::{Temporality, data::ResourceMetrics, exporter::PushMetricExporter},
-    trace::SpanData,
-};
 use reqwest::{
     blocking::{Client, Response},
     header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT},
 };
 
-use crate::protobuf;
+use crate::{
+    batch,
+    metrics::{self, ResourceMetrics, Temporality},
+    model::{ExportError, Exported, Resource, Scope, SpanData, Value},
+    protobuf,
+};
 
 const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 const EXPORTER_USER_AGENT: &str = "OTel-OTLP-Exporter-Rust/0.32.0";
@@ -114,7 +112,7 @@ impl Http {
         Vec::with_capacity(self.body_bytes.load(Ordering::Relaxed))
     }
 
-    fn post(&self, body: Vec<u8>) -> OTelSdkResult {
+    fn post(&self, body: Vec<u8>) -> Exported {
         self.body_bytes.store(body.len(), Ordering::Relaxed);
         self.client
             .post(&self.url)
@@ -125,10 +123,7 @@ impl Http {
             .and_then(Response::bytes)
             .map(drop)
             .map_err(|error| {
-                OTelSdkError::InternalFailure(format!(
-                    "HTTP export failed: {}",
-                    error.without_url()
-                ))
+                ExportError::InternalFailure(format!("HTTP export failed: {}", error.without_url()))
             })
     }
 }
@@ -202,32 +197,38 @@ fn percent_decoded(value: &str) -> Option<String> {
 #[derive(Debug)]
 pub(crate) struct SpanExporter {
     http: Http,
-    origin: Result<protobuf::Origin, protobuf::Undefined>,
+    origin: protobuf::Origin,
 }
 
 impl SpanExporter {
-    pub(crate) fn build(endpoint: &str) -> Result<Self, OtlpError> {
+    pub(crate) fn build(
+        endpoint: &str,
+        resource: &Resource,
+        scope: &Scope,
+    ) -> Result<Self, OtlpError> {
         Ok(Self {
             http: Http::build(&TRACES, endpoint)?,
-            origin: Ok(protobuf::Origin::default()),
+            origin: protobuf::Origin::of(resource, scope),
         })
     }
 }
 
-impl opentelemetry_sdk::trace::SpanExporter for SpanExporter {
-    async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
-        let origin = self
-            .origin
-            .as_ref()
-            .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))?;
-        let mut body = self.http.body();
-        protobuf::traces(&mut body, origin, &batch)
-            .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))?;
-        self.http.post(body)
+fn restore_integers(span: &mut SpanData) {
+    for attribute in &mut span.attributes {
+        if let Value::String(text) = &attribute.value
+            && let Some(integer) = crate::otlp::unsigned_integer(text)
+        {
+            attribute.value = Value::I64(integer);
+        }
     }
+}
 
-    fn set_resource(&mut self, resource: &Resource) {
-        self.origin = protobuf::Origin::of(resource);
+impl batch::SpanExporter for SpanExporter {
+    fn export(&self, mut batch: Vec<SpanData>) -> Exported {
+        batch.iter_mut().for_each(restore_integers);
+        let mut body = self.http.body();
+        protobuf::traces(&mut body, &self.origin, &batch);
+        self.http.post(body)
     }
 }
 
@@ -255,22 +256,17 @@ impl MetricExporter {
     }
 }
 
-impl PushMetricExporter for MetricExporter {
-    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+impl metrics::MetricExporter for MetricExporter {
+    fn export(&self, metrics: &ResourceMetrics<'_>) -> Exported {
         if self.shut_down.load(Ordering::Acquire) {
-            return Err(OTelSdkError::InternalFailure(ALREADY_SHUT_DOWN.to_owned()));
+            return Err(ExportError::InternalFailure(ALREADY_SHUT_DOWN.to_owned()));
         }
         let mut body = self.http.body();
-        protobuf::metrics(&mut body, metrics)
-            .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))?;
+        protobuf::metrics(&mut body, metrics);
         self.http.post(body)
     }
 
-    fn force_flush(&self) -> OTelSdkResult {
-        Ok(())
-    }
-
-    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+    fn shutdown(&self) -> Exported {
         self.shut_down.store(true, Ordering::Release);
         Ok(())
     }

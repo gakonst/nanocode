@@ -10,12 +10,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use opentelemetry::{Context, InstrumentationScope};
-use opentelemetry_sdk::{
-    Resource,
-    error::{OTelSdkError, OTelSdkResult},
-    metrics::{Temporality, data::ResourceMetrics, exporter::PushMetricExporter},
-    trace::{Span, SpanData, SpanProcessor},
+use crate::{
+    metrics::{self, ResourceMetrics, Temporality},
+    model::{ExportError, Exported, Resource, Scope, SpanData},
+    trace::SpanProcessor,
 };
 use tokio::sync::mpsc::{
     UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
@@ -30,7 +28,7 @@ pub struct Exporters {
 }
 
 impl Exporters {
-    pub fn create(directory: &Path) -> io::Result<Self> {
+    pub fn create(directory: &Path, resource: &Resource, scope: &Scope) -> io::Result<Self> {
         std::fs::create_dir_all(directory)?;
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -48,6 +46,7 @@ impl Exporters {
             traces: TraceProcessor::spawn(
                 create_file(&directory.join("traces.jsonl"))?,
                 max_queue_size()?,
+                crate::otlp::Origin::of(resource, scope).map_err(io::Error::from)?,
             )?,
             metrics: MetricExporter {
                 output: Jsonl::create(&directory.join("metrics.jsonl"))?,
@@ -93,9 +92,9 @@ fn create_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-fn write_failed(error: impl std::fmt::Display) -> OTelSdkError {
+fn write_failed(error: impl std::fmt::Display) -> ExportError {
     eprintln!("nanocode: failed to write local OTLP telemetry: {error}");
-    OTelSdkError::InternalFailure(error.to_string())
+    ExportError::InternalFailure(error.to_string())
 }
 
 impl Jsonl {
@@ -127,7 +126,7 @@ impl Jsonl {
         }
     }
 
-    fn write(&self, mut encoded: Vec<u8>) -> OTelSdkResult {
+    fn write(&self, mut encoded: Vec<u8>) -> Exported {
         let result = (|| {
             encoded.push(b'\n');
             let (reply, response) = mpsc::sync_channel(1);
@@ -141,8 +140,8 @@ impl Jsonl {
         result.map_err(write_failed)
     }
 
-    fn shutdown(&self) -> OTelSdkResult {
-        let stopped = || OTelSdkError::InternalFailure("OTLP file exporter stopped".to_owned());
+    fn shutdown(&self) -> Exported {
+        let stopped = || ExportError::InternalFailure("OTLP file exporter stopped".to_owned());
         let (reply, response) = mpsc::sync_channel(1);
         self.sender
             .send(JsonlMessage::Shutdown(reply))
@@ -153,14 +152,9 @@ impl Jsonl {
 
 #[derive(Debug)]
 enum TraceMessage {
-    Span {
-        scope: InstrumentationScope,
-        json: Vec<u8>,
-    },
+    Span(Vec<u8>),
     Unencoded(String),
-    Resource(Resource),
-    Flush(SyncSender<OTelSdkResult>),
-    Shutdown(SyncSender<OTelSdkResult>),
+    Shutdown(SyncSender<Exported>),
 }
 
 #[derive(Debug, Default)]
@@ -179,14 +173,13 @@ pub struct TraceProcessor {
 }
 
 impl TraceProcessor {
-    fn spawn(file: File, capacity: usize) -> io::Result<Self> {
+    fn spawn(file: File, capacity: usize, origin: crate::otlp::Origin) -> io::Result<Self> {
         let (sender, receiver) = unbounded_channel();
         let queue = Arc::new(TraceQueue {
             capacity,
             ..TraceQueue::default()
         });
         let writer_queue = Arc::clone(&queue);
-        let origin = crate::otlp::Origin::of(&Resource::builder_empty().build())?;
         std::thread::Builder::new()
             .name("nanocode-otlp-traces".to_owned())
             .spawn(move || {
@@ -210,34 +203,11 @@ impl TraceProcessor {
             write_failed("OTLP file exporter is shut down; later spans are not written");
         }
     }
-
-    fn request(
-        &self,
-        message: fn(SyncSender<OTelSdkResult>) -> TraceMessage,
-        timeout: Option<Duration>,
-    ) -> OTelSdkResult {
-        let (reply, response) = mpsc::sync_channel(1);
-        self.sender
-            .send(message(reply))
-            .map_err(|_| OTelSdkError::AlreadyShutdown)?;
-        let stopped = || OTelSdkError::InternalFailure("OTLP file exporter stopped".to_owned());
-        match timeout {
-            Some(timeout) => response
-                .recv_timeout(timeout)
-                .map_err(|error| match error {
-                    RecvTimeoutError::Timeout => OTelSdkError::Timeout(timeout),
-                    RecvTimeoutError::Disconnected => stopped(),
-                })?,
-            None => response.recv().map_err(|_| stopped())?,
-        }
-    }
 }
 
 impl SpanProcessor for TraceProcessor {
-    fn on_start(&self, _span: &mut Span, _cx: &Context) {}
-
     fn on_end(&self, span: SpanData) {
-        if !span.span_context.is_sampled() {
+        if !span.context.sampled {
             return;
         }
         let capacity = self.queue.capacity;
@@ -253,10 +223,7 @@ impl SpanProcessor for TraceProcessor {
             let message = match crate::otlp::span(&span, &mut json) {
                 Ok(()) => {
                     self.queue.span_bytes.store(json.len(), Ordering::Relaxed);
-                    TraceMessage::Span {
-                        scope: span.instrumentation_scope,
-                        json,
-                    }
+                    TraceMessage::Span(json)
                 }
                 Err(error) => TraceMessage::Unencoded(error.to_string()),
             };
@@ -269,22 +236,19 @@ impl SpanProcessor for TraceProcessor {
         }
     }
 
-    fn force_flush(&self) -> OTelSdkResult {
-        self.request(TraceMessage::Flush, None)
-    }
-
-    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
-        self.request(TraceMessage::Shutdown, Some(timeout))
-    }
-
-    fn set_resource(&mut self, resource: &Resource) {
-        if self
-            .sender
-            .send(TraceMessage::Resource(resource.clone()))
-            .is_err()
-        {
-            self.closed();
-        }
+    fn shutdown_with_timeout(&self, timeout: Duration) -> Exported {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.sender
+            .send(TraceMessage::Shutdown(reply))
+            .map_err(|_| ExportError::AlreadyShutdown)?;
+        response
+            .recv_timeout(timeout)
+            .map_err(|error| match error {
+                RecvTimeoutError::Timeout => ExportError::Timeout(timeout),
+                RecvTimeoutError::Disconnected => {
+                    ExportError::InternalFailure("OTLP file exporter stopped".to_owned())
+                }
+            })?
     }
 }
 
@@ -294,7 +258,7 @@ struct TraceWriter {
     batch: crate::otlp::Batch,
     waiting: usize,
     line: Vec<u8>,
-    error: Option<OTelSdkError>,
+    error: Option<ExportError>,
     queue: Arc<TraceQueue>,
     dropped: usize,
 }
@@ -306,24 +270,14 @@ impl TraceWriter {
             let mut message = Some(message);
             while let Some(next) = message.take() {
                 match next {
-                    TraceMessage::Span { scope, json } => {
-                        self.batch.push(scope, &json);
+                    TraceMessage::Span(json) => {
+                        self.batch.push(&json);
                         self.waiting += 1;
                     }
                     TraceMessage::Unencoded(error) => {
                         self.error.get_or_insert(write_failed(error));
                         self.waiting += 1;
                     }
-                    TraceMessage::Resource(resource) => {
-                        self.write();
-                        match crate::otlp::Origin::of(&resource) {
-                            Ok(origin) => self.origin = origin,
-                            Err(error) => {
-                                self.error.get_or_insert(write_failed(error));
-                            }
-                        }
-                    }
-                    TraceMessage::Flush(reply) => drop(reply.send(self.result())),
                     TraceMessage::Shutdown(reply) => {
                         let result = self.result();
                         drop(self);
@@ -340,13 +294,13 @@ impl TraceWriter {
         }
     }
 
-    fn result(&mut self) -> OTelSdkResult {
+    fn result(&mut self) -> Exported {
         self.write();
         self.report_dropped();
         let dropped = std::mem::take(&mut self.dropped);
         match self.error.take() {
             Some(error) => Err(error),
-            None if dropped > 0 => Err(OTelSdkError::InternalFailure(format!(
+            None if dropped > 0 => Err(ExportError::InternalFailure(format!(
                 "dropped {dropped} spans because {} spans were waiting for the local OTLP file ({OTEL_BSP_MAX_QUEUE_SIZE})",
                 self.queue.capacity
             ))),
@@ -373,12 +327,8 @@ impl TraceWriter {
         self.queue.queued.fetch_sub(taken, Ordering::Relaxed);
         if !self.batch.is_empty() {
             self.line.clear();
-            let result = self
-                .batch
-                .line(&self.origin, &mut self.line)
-                .map_err(io::Error::from)
-                .and_then(|()| self.file.write_all(&self.line));
-            if let Err(error) = result {
+            self.batch.line(&self.origin, &mut self.line);
+            if let Err(error) = self.file.write_all(&self.line) {
                 self.error.get_or_insert(write_failed(error));
             }
         }
@@ -401,10 +351,9 @@ fn reject_after_shutdown(mut receiver: UnboundedReceiver<TraceMessage>) {
     let mut late = 0_usize;
     while let Ok(message) = receiver.try_recv() {
         match message {
-            TraceMessage::Span { .. } | TraceMessage::Unencoded(_) => late += 1,
-            TraceMessage::Resource(_) => {}
-            TraceMessage::Flush(reply) | TraceMessage::Shutdown(reply) => {
-                drop(reply.send(Err(OTelSdkError::AlreadyShutdown)));
+            TraceMessage::Span(_) | TraceMessage::Unencoded(_) => late += 1,
+            TraceMessage::Shutdown(reply) => {
+                drop(reply.send(Err(ExportError::AlreadyShutdown)));
             }
         }
     }
@@ -420,20 +369,16 @@ pub struct MetricExporter {
     json_bytes: AtomicUsize,
 }
 
-impl PushMetricExporter for MetricExporter {
-    async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
+impl metrics::MetricExporter for MetricExporter {
+    fn export(&self, metrics: &ResourceMetrics<'_>) -> Exported {
         let mut json = Vec::with_capacity(self.json_bytes.load(Ordering::Relaxed));
         crate::otlp::metrics(metrics, &mut json)
-            .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))?;
+            .map_err(|error| ExportError::InternalFailure(error.to_string()))?;
         self.json_bytes.store(json.len(), Ordering::Relaxed);
         self.output.write(json)
     }
 
-    fn force_flush(&self) -> OTelSdkResult {
-        Ok(())
-    }
-
-    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+    fn shutdown(&self) -> Exported {
         self.output.shutdown()
     }
 

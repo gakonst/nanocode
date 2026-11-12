@@ -3,23 +3,20 @@
 
 extern crate self as nanocode_observability;
 
+mod batch;
 mod cli;
 mod file;
+mod layer;
+mod metrics;
+mod model;
 mod otlp;
 mod otlp_http;
 mod protobuf;
-mod typed;
+mod trace;
 mod writer;
 
-use std::{fs::OpenOptions, io, path::PathBuf, time::Duration};
+use std::{borrow::Cow, fs::OpenOptions, io, path::PathBuf, sync::Arc, time::Duration};
 
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::{
-    Resource,
-    metrics::{PeriodicReader, SdkMeterProvider},
-    trace::{BatchSpanProcessor, SdkTracerProvider},
-};
-use tracing_opentelemetry::MetricsLayer;
 use tracing_subscriber::{
     EnvFilter, Layer,
     filter::{FilterExt, Targets},
@@ -30,7 +27,17 @@ use tracing_subscriber::{
 };
 
 pub use cli::ObservabilityOutputArgs;
+pub use layer::{add_link, span_context};
+pub use model::{ExportError, SpanContext};
 pub use otlp_http::OtlpError;
+
+use crate::{
+    batch::BatchSpanProcessor,
+    layer::OtelLayer,
+    metrics::{Meter, MetricsFilter, MetricsLayer},
+    model::{KeyValue, Resource, Scope},
+    trace::{SpanProcessor, Tracer},
+};
 
 pub const DEFAULT_FILTER: &str = "warn,nanocode=info,nanocode_backend_codex=info,nanocode_backend_claude=info,nanocode_claude=info,nanocode_agent=info,nanocode_code_mode=info,nanocode_subagents=info,nanocode_durability=info,nanocode_store_jsonl=info,nanocode=info";
 pub const METRICS_TARGET: &str = "nc_metrics";
@@ -43,6 +50,17 @@ const PROCESS_PID: &str = "process.pid";
 const PROCESS_EXECUTABLE_PATH: &str = "process.executable.path";
 const EXECUTABLE_MODIFIED: &str = "nanocode.executable.modified";
 const LOCAL_LOG_BUFFERED_LINES_LIMIT: usize = 4_096;
+const SERVICE_NAME: &str = "service.name";
+const TELEMETRY_SDK_NAME: &str = "telemetry.sdk.name";
+const TELEMETRY_SDK_LANGUAGE: &str = "telemetry.sdk.language";
+const TELEMETRY_SDK_VERSION: &str = "telemetry.sdk.version";
+const TELEMETRY_SDK: (&str, &str, &str) = ("opentelemetry", "rust", "0.32.1");
+const OTEL_SERVICE_NAME: &str = "OTEL_SERVICE_NAME";
+const OTEL_RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
+const UNKNOWN_SERVICE: &str = "unknown_service";
+const METER_SCOPE: &str = "tracing/tracing-opentelemetry";
+const METER_SCOPE_VERSION: &str = "0.33.0";
+const TRACER_SHUTDOWN_DEFAULT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum LogFormat {
@@ -90,8 +108,8 @@ pub struct ObservabilityBuilder {
 }
 
 pub struct ObservabilityGuard {
-    tracer_provider: Option<SdkTracerProvider>,
-    meter_provider: Option<SdkMeterProvider>,
+    tracer_provider: Option<Tracer>,
+    meter_provider: Option<Arc<Meter>>,
     shutdown_timeout: Option<Duration>,
     _writer: Option<writer::WriterGuard>,
 }
@@ -104,7 +122,7 @@ pub enum ObservabilityError {
 
     Otlp(OtlpError),
 
-    OTelSdk(opentelemetry_sdk::error::OTelSdkError),
+    OTelSdk(ExportError),
 
     Subscriber,
 }
@@ -156,8 +174,8 @@ impl From<OtlpError> for ObservabilityError {
     }
 }
 
-impl From<opentelemetry_sdk::error::OTelSdkError> for ObservabilityError {
-    fn from(source: opentelemetry_sdk::error::OTelSdkError) -> Self {
+impl From<ExportError> for ObservabilityError {
+    fn from(source: ExportError) -> Self {
         Self::OTelSdk(source)
     }
 }
@@ -274,38 +292,45 @@ impl ObservabilityBuilder {
             _ if self.telemetry == Telemetry::Off => (None, None),
             (endpoint, directory) if endpoint.is_some() || directory.is_some() => {
                 let resource = self.resource();
-                let files = directory.map(file::Exporters::create).transpose()?;
+                let tracer_scope = Scope {
+                    name: Cow::Owned(self.service_name.clone()),
+                    version: None,
+                };
+                let files = directory
+                    .map(|directory| file::Exporters::create(directory, &resource, &tracer_scope))
+                    .transpose()?;
                 let (traces, metrics) = files.map_or((None, None), |files| {
                     (Some(files.traces), Some(files.metrics))
                 });
                 (
-                    Some(tracer_provider(endpoint, traces, resource.clone())?),
-                    Some(meter_provider(endpoint, metrics, resource)?),
+                    Some(tracer_provider(endpoint, traces, &resource, tracer_scope)?),
+                    Some(meter_provider(endpoint, metrics, &resource)?),
                 )
             }
             _ => (None, None),
         };
         let terminal = self.telemetry == Telemetry::All;
         let tracing_layer = match &tracer_provider {
-            Some(provider) => Some(
-                tracing_opentelemetry::layer()
-                    .with_tracer(provider.tracer(self.service_name.clone()))
-                    .with_context_activation(false)
-                    .with_filter(scope(self.otel_filter.as_str())?.and(
-                        tracing_subscriber::filter::filter_fn(move |metadata| {
-                            metadata.target() != METRICS_TARGET
-                                && (terminal || !terminal_target(metadata.target()))
-                        }),
-                    )),
-            ),
+            Some(provider) => Some(OtelLayer::new(provider.clone()).with_filter(
+                scope(self.otel_filter.as_str())?.and(tracing_subscriber::filter::filter_fn(
+                    move |metadata| {
+                        metadata.target() != METRICS_TARGET
+                            && (terminal || !terminal_target(metadata.target()))
+                    },
+                )),
+            )),
             None => None,
         };
         let metrics_layer = match &meter_provider {
-            Some(provider) => Some(MetricsLayer::new(provider.clone()).with_filter(
-                scope(self.otel_filter.as_str())?.and(tracing_subscriber::filter::filter_fn(
-                    move |metadata| terminal || !terminal_target(metadata.target()),
-                )),
-            )),
+            Some(provider) => Some(
+                MetricsLayer::new(Arc::clone(provider))
+                    .with_filter(MetricsFilter)
+                    .with_filter(scope(self.otel_filter.as_str())?.and(
+                        tracing_subscriber::filter::filter_fn(move |metadata| {
+                            terminal || !terminal_target(metadata.target())
+                        }),
+                    )),
+            ),
             None => None,
         };
         tracing_subscriber::registry()
@@ -339,21 +364,22 @@ impl ObservabilityBuilder {
     }
 
     fn resource(&self) -> Resource {
-        let builder = Resource::builder();
-        let builder = if std::env::var_os("OTEL_SERVICE_NAME").is_some() {
-            builder
-        } else {
-            builder.with_service_name(self.service_name.clone())
-        };
+        let mut resource = detected();
+        if std::env::var_os(OTEL_SERVICE_NAME).is_none() {
+            resource = resource.merge(&Resource {
+                attributes: vec![KeyValue::new(SERVICE_NAME, self.service_name.clone())],
+                schema_url: None,
+            });
+        }
         let mut attributes = vec![
-            opentelemetry::KeyValue::new(SERVICE_VERSION, self.service_version.clone()),
-            opentelemetry::KeyValue::new(
+            KeyValue::new(SERVICE_VERSION, self.service_version.clone()),
+            KeyValue::new(
                 DEPLOYMENT_ENVIRONMENT_NAME,
                 self.environment
                     .clone()
                     .unwrap_or_else(|| "development".to_owned()),
             ),
-            opentelemetry::KeyValue::new(PROCESS_PID, i64::from(std::process::id())),
+            KeyValue::new(PROCESS_PID, i64::from(std::process::id())),
         ];
         if let Ok(executable) = std::env::current_exe().and_then(std::fs::canonicalize) {
             if let Some(modified) = std::fs::metadata(&executable)
@@ -362,15 +388,77 @@ impl ObservabilityBuilder {
                 .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
                 .and_then(|modified| i64::try_from(modified.as_micros()).ok())
             {
-                attributes.push(opentelemetry::KeyValue::new(EXECUTABLE_MODIFIED, modified));
+                attributes.push(KeyValue::new(EXECUTABLE_MODIFIED, modified));
             }
-            attributes.push(opentelemetry::KeyValue::new(
+            attributes.push(KeyValue::new(
                 PROCESS_EXECUTABLE_PATH,
                 executable.to_string_lossy().into_owned(),
             ));
         }
-        builder.with_schema_url(attributes, SCHEMA_URL).build()
+        let mut base = Resource {
+            attributes: Vec::new(),
+            schema_url: Some(Cow::Borrowed(SCHEMA_URL)),
+        };
+        for pair in attributes {
+            base.insert(pair);
+        }
+        base.merge(&resource)
     }
+}
+
+fn environment_attributes() -> Resource {
+    let mut resource = Resource::default();
+    if let Ok(attributes) = std::env::var(OTEL_RESOURCE_ATTRIBUTES)
+        && !attributes.is_empty()
+    {
+        for (key, value) in attributes
+            .split_terminator(',')
+            .filter_map(|entry| entry.split_once('='))
+        {
+            resource.insert(KeyValue::new(
+                key.trim().to_owned(),
+                value.trim().to_owned(),
+            ));
+        }
+    }
+    resource
+}
+
+fn detected() -> Resource {
+    let service = std::env::var(OTEL_SERVICE_NAME)
+        .ok()
+        .filter(|name| !name.is_empty())
+        .map(model::Value::from)
+        .or_else(|| {
+            environment_attributes()
+                .attributes
+                .into_iter()
+                .find(|pair| pair.key == SERVICE_NAME)
+                .map(|pair| pair.value)
+        })
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| format!("{UNKNOWN_SERVICE}:{name}"))
+                })
+                .unwrap_or_else(|| UNKNOWN_SERVICE.to_owned())
+                .into()
+        });
+    let mut resource = Resource::default();
+    resource.insert(KeyValue {
+        key: Cow::Borrowed(SERVICE_NAME),
+        value: service,
+    });
+    resource.insert(KeyValue::new(TELEMETRY_SDK_NAME, TELEMETRY_SDK.0));
+    resource.insert(KeyValue::new(TELEMETRY_SDK_LANGUAGE, TELEMETRY_SDK.1));
+    resource.insert(KeyValue::new(TELEMETRY_SDK_VERSION, TELEMETRY_SDK.2));
+    for pair in environment_attributes().attributes {
+        resource.insert(pair);
+    }
+    resource
 }
 
 fn scope<S>(directives: &str) -> Result<Box<dyn Filter<S> + Send + Sync>, ObservabilityError>
@@ -392,35 +480,39 @@ where
 fn tracer_provider(
     endpoint: Option<&str>,
     file: Option<file::TraceProcessor>,
-    resource: Resource,
-) -> Result<SdkTracerProvider, ObservabilityError> {
-    let mut builder = SdkTracerProvider::builder().with_resource(resource);
+    resource: &Resource,
+    scope: Scope,
+) -> Result<Tracer, ObservabilityError> {
+    let mut processors: Vec<Box<dyn SpanProcessor>> = Vec::new();
     if let Some(file) = file {
-        builder = builder.with_span_processor(file);
+        processors.push(Box::new(file));
     }
     if let Some(endpoint) = endpoint {
-        let exporter = otlp_http::SpanExporter::build(&signal_endpoint(endpoint, "traces"))?;
-        builder = builder.with_span_processor(
-            BatchSpanProcessor::builder(typed::IntegerAttributes(exporter)).build(),
-        );
+        let exporter =
+            otlp_http::SpanExporter::build(&signal_endpoint(endpoint, "traces"), resource, &scope)?;
+        processors.push(Box::new(BatchSpanProcessor::new(exporter)));
     }
-    Ok(builder.build())
+    Ok(Tracer::new(processors))
 }
 
 fn meter_provider(
     endpoint: Option<&str>,
     file: Option<file::MetricExporter>,
-    resource: Resource,
-) -> Result<SdkMeterProvider, ObservabilityError> {
-    let mut builder = SdkMeterProvider::builder().with_resource(resource);
+    resource: &Resource,
+) -> Result<Arc<Meter>, ObservabilityError> {
+    let scope = Scope {
+        name: Cow::Borrowed(METER_SCOPE),
+        version: Some(Cow::Borrowed(METER_SCOPE_VERSION)),
+    };
+    let mut meter = Meter::new();
     if let Some(file) = file {
-        builder = builder.with_reader(PeriodicReader::builder(file).build());
+        meter.add(Box::new(file), resource, &scope);
     }
     if let Some(endpoint) = endpoint {
         let exporter = otlp_http::MetricExporter::build(&signal_endpoint(endpoint, "metrics"))?;
-        builder = builder.with_reader(PeriodicReader::builder(exporter).build());
+        meter.add(Box::new(exporter), resource, &scope);
     }
-    Ok(builder.build())
+    Ok(Arc::new(meter))
 }
 
 fn terminal_target(target: &str) -> bool {
@@ -444,15 +536,11 @@ impl ObservabilityGuard {
         let meter = self.meter_provider.take();
         let (tracer, meter) = std::thread::scope(|scope| {
             let tracer = scope.spawn(move || {
-                tracer.map(|provider| match timeout {
-                    Some(timeout) => provider.shutdown_with_timeout(timeout),
-                    None => provider.shutdown(),
+                tracer.map(|provider| {
+                    provider.shutdown_with_timeout(timeout.unwrap_or(TRACER_SHUTDOWN_DEFAULT))
                 })
             });
-            let meter = meter.map(|provider| match timeout {
-                Some(timeout) => provider.shutdown_with_timeout(timeout),
-                None => provider.shutdown(),
-            });
+            let meter = meter.map(|provider| provider.shutdown());
             (tracer.join(), meter)
         });
         if let Ok(tracer) = tracer {

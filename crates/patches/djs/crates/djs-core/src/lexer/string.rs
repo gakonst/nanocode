@@ -11,6 +11,29 @@ const MSG_UNTERMINATED: &str = "unexpected end of string";
 const MSG_MALFORMED: &str = "malformed escape sequence in string literal";
 const MSG_OCTAL: &str = "octal escape sequences are not allowed in strict mode";
 
+/// The bytes a template part's scan steps over in a run: ASCII other than a backtick,
+/// `$`, a backslash or CR.
+const TEMPLATE_PLAIN: [bool; 256] = plain(b"`$\\\r");
+/// The bytes a string literal's scan steps over in a run: ASCII other than a quote, a
+/// backslash or a line terminator.
+const STRING_PLAIN: [bool; 256] = plain(b"'\"\\\n\r");
+
+/// A table of the ASCII bytes not in `stops`.
+const fn plain(stops: &[u8]) -> [bool; 256] {
+    let mut t = [false; 256];
+    let mut b = 0;
+    while b < 0x80 {
+        t[b] = true;
+        b += 1;
+    }
+    let mut i = 0;
+    while i < stops.len() {
+        t[stops[i] as usize] = false;
+        i += 1;
+    }
+    t
+}
+
 /// The result of parsing one escape sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Escape {
@@ -99,7 +122,12 @@ impl<'a> Lexer<'a> {
                     p += len;
                 }
                 _ if b == quote => break,
-                _ => p += 1,
+                _ => {
+                    p += 1;
+                    while src.get(p).is_some_and(|&b| STRING_PLAIN[b as usize]) {
+                        p += 1;
+                    }
+                }
             }
         }
         self.pos = (p + 1) as u32;
@@ -158,7 +186,12 @@ impl<'a> Lexer<'a> {
                     let (_, len) = decode_utf8(src, p).ok_or(LexError::new(p, MSG_UTF8))?;
                     p += len;
                 }
-                _ => p += 1,
+                _ => {
+                    p += 1;
+                    while src.get(p).is_some_and(|&b| TEMPLATE_PLAIN[b as usize]) {
+                        p += 1;
+                    }
+                }
             }
         };
         let kind = match (continuation, tail) {

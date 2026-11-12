@@ -321,9 +321,9 @@ impl<'a, 'h> Parser<'a, 'h> {
             Goal::Eval => FuncKind::Eval,
             Goal::Module => FuncKind::Module,
         };
-        let atom_undefined = heap.atom_str("undefined")?;
+        let atom_undefined = crate::heap::atoms::UNDEFINED;
         let atom_this = heap.atom_str("this")?;
-        let atom_arguments = heap.atom_str("arguments")?;
+        let atom_arguments = crate::heap::atoms::ARGUMENTS;
         // Not an identifier, so it cannot collide with a user binding.
         let atom_new_target = heap.atom_str("new.target")?;
         let atom_home = heap.atom_str("<home>")?;

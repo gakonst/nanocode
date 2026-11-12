@@ -352,6 +352,7 @@ impl Heap {
 
     /// The threshold, the pending flag, the reserve and the capacity after a collection.
     fn after_collect(&mut self, after: u32, cheap: u32) {
+        self.mega_ic.fill(0);
         self.refresh_frozen();
         let t = next_threshold_cheap(after, self.base_end(), self.arena.limit(), cheap);
         self.set_gc_threshold(t);

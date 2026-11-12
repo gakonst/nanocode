@@ -198,6 +198,11 @@ pub struct Heap {
     /// its memory instead of allocating one each (builtins/regexp.rs). Not part of the
     /// image.
     pub(crate) regexp_state: crate::regexp::ExecState,
+    /// The megamorphic inline cache: cache slots shared by every get site, keyed by the
+    /// key and the receiver, for sites whose own slot keeps missing (several receiver
+    /// shapes or prototypes). Its slots hold arena offsets, so every collection empties
+    /// it. Allocated on first fill; not part of the image.
+    pub(crate) mega_ic: alloc::vec::Vec<u32>,
     /// The prefix as it was when the barrier was armed (debug builds, D2065): what
     /// [`Heap::check_prefix`] compares against, for writes that bypass `Arena::write`.
     #[cfg(debug_assertions)]
@@ -340,6 +345,7 @@ impl Heap {
             #[cfg(feature = "unicode-normalization")]
             compositions: Default::default(),
             regexp_state: Default::default(),
+            mega_ic: Default::default(),
             #[cfg(debug_assertions)]
             prefix_copy: None,
             barrier_forced: false,

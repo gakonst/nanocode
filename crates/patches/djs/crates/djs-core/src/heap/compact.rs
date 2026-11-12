@@ -205,6 +205,7 @@ impl Heap {
             debug_assert_eq!(arena.get(off, Header::SIZE), c.size);
         }
         self.arena = arena;
+        self.mega_ic.fill(0);
         for o in collections {
             self.collection_rehash(Obj(o));
         }

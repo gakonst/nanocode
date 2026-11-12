@@ -3344,6 +3344,9 @@ impl<'h> Exec<'h> {
     /// of an object receiver fills the cache (D1620).
     #[inline]
     fn lookup_ic(&mut self, o: Value, key: Atom, ic: u32) -> Result<Got, Fault> {
+        if let Some(v) = ic::mega_get(self.heap, o, key) {
+            return Ok(Got::Value(v));
+        }
         let start = match o.as_object() {
             Some(obj) => obj,
             None => match realm::primitive_proto(self.heap, o) {

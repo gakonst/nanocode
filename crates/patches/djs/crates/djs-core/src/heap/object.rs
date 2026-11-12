@@ -457,7 +457,7 @@ enum Outcome {
 }
 
 #[inline]
-fn key_hash(a: Atom) -> u32 {
+pub(crate) fn key_hash(a: Atom) -> u32 {
     let h = a.id().wrapping_mul(0x9E37_79B9);
     h ^ (h >> 15)
 }

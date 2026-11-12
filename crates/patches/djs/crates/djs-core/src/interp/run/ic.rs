@@ -53,6 +53,9 @@ const MAX_DEPTH: u32 = KIND_ADD - 1;
 /// Addition slot word 0: a `put_field` site.
 const ADD_SET: u32 = 1;
 
+/// The slots of the megamorphic cache (`Heap::mega_ic`), a power of two.
+const MEGA_SLOTS: u32 = 256;
+
 /// Global slot word 0: the entry is in the global lexical record.
 const IN_LEX: u32 = 1 << 31;
 
@@ -136,7 +139,19 @@ pub(crate) fn cached_get(heap: &Heap, at: u32, o: Value, key: Atom) -> Option<Va
     if at == 0 {
         return None;
     }
-    let [w0, w1, w2] = head(heap, at);
+    get_hit(heap, head(heap, at), |h| word(h, at, 3), o, key)
+}
+
+/// The hit check of a get slot whose first three words are `[w0, w1, w2]`; `w3` reads
+/// word 3 (only prototype reads need it).
+#[inline(always)]
+fn get_hit(
+    heap: &Heap,
+    [w0, w1, w2]: [u32; 3],
+    w3: impl FnOnce(&Heap) -> u32,
+    o: Value,
+    key: Atom,
+) -> Option<Value> {
     if w0 & IC_OFFSET_SLOT == 0 {
         // Empty, or a verified index into a dictionary.
         return match (w0, o.as_object()) {
@@ -151,7 +166,7 @@ pub(crate) fn cached_get(heap: &Heap, at: u32, o: Value, key: Atom) -> Option<Va
             if w2 != heap.proto_epoch() {
                 return None;
             }
-            let proto = proto_start(heap, o, key, word(heap, at, 3))?;
+            let proto = proto_start(heap, o, key, w3(heap))?;
             if proto.offset() != w1 {
                 return None;
             }
@@ -162,6 +177,33 @@ pub(crate) fn cached_get(heap: &Heap, at: u32, o: Value, key: Atom) -> Option<Va
             heap.data_at(h, (w0 & INDEX_MASK) - 1, key)
         }
     }
+}
+
+/// The index of the first word of `o[key]`'s slot in the megamorphic cache: by the key,
+/// the receiver's shape word (its own offset for a dictionary-mode object) and its
+/// prototype (a primitive's realm prototype).
+#[inline(always)]
+fn mega_at(heap: &Heap, o: Value, key: Atom) -> Option<usize> {
+    let w = match o.as_object() {
+        Some(obj) => {
+            let shape = match heap.receiver_shape(obj) {
+                0 => obj.offset(),
+                shape => shape,
+            };
+            shape ^ heap.get_prototype_of(obj).map_or(0, |p| p.offset())
+        }
+        None => realm::primitive_proto(heap, o)?.offset(),
+    };
+    let h = crate::heap::object::key_hash(key) ^ w >> 3;
+    Some(((h & (MEGA_SLOTS - 1)) * WORDS) as usize)
+}
+
+/// A get site's megamorphic cache hit: `o[key]` if its slot there applies.
+#[inline(never)]
+pub(crate) fn mega_get(heap: &Heap, o: Value, key: Atom) -> Option<Value> {
+    let i = mega_at(heap, o, key)?;
+    let s = heap.mega_ic.get(i..i + WORDS as usize)?;
+    get_hit(heap, [s[0], s[1], s[2]], |_| s[3], o, key)
 }
 
 /// A put or define site's cache hit: true if the slot at `at` (0: none) still applies to
@@ -247,6 +289,24 @@ impl Exec<'_> {
             let at = U32Array::DATA.at(a, ic * WORDS + k as u32);
             self.heap.arena_mut().write(at, w);
         }
+    }
+
+    /// Fills get slot `ic` for `o[key]` with `words`. A slot that held something already
+    /// missed for another receiver: the site is polymorphic, and the megamorphic cache
+    /// gets the slot too.
+    fn ic_get_write(&mut self, o: Value, key: Atom, ic: u32, words: Slot) {
+        let at = slot_at(self.heap, self.template, ic);
+        if at != 0
+            && word(self.heap, at, 0) != 0
+            && let Some(i) = mega_at(self.heap, o, key)
+        {
+            let mega = &mut self.heap.mega_ic;
+            if mega.is_empty() {
+                mega.resize((MEGA_SLOTS * WORDS) as usize, 0);
+            }
+            mega[i..i + WORDS as usize].copy_from_slice(&words);
+        }
+        self.ic_write(ic, words);
     }
 
     fn lex_epoch(&self) -> u32 {
@@ -380,7 +440,7 @@ impl Exec<'_> {
         let w0 = IC_OFFSET_SLOT | depth << KIND_SHIFT | (i + 1);
         let epoch = self.heap.proto_epoch();
         let shape = o.as_object().map_or(0, |obj| self.heap.receiver_shape(obj));
-        self.ic_write(ic, [w0, proto.offset(), epoch, shape, 0]);
+        self.ic_get_write(o, key, ic, [w0, proto.offset(), epoch, shape, 0]);
     }
 
     /// After a slow access to `obj[key]`: remembers the property if `key` is an own data
@@ -393,14 +453,19 @@ impl Exec<'_> {
         if let Some((shape, slot, writable)) = self.heap.shape_slot(obj, key) {
             if slot < INDEX_MASK {
                 let w0 = IC_OFFSET_SLOT | (slot + 1);
-                self.ic_write(ic, [w0, shape, writable as u32, 0, 0]);
+                self.ic_get_write(
+                    Value::object(obj),
+                    key,
+                    ic,
+                    [w0, shape, writable as u32, 0, 0],
+                );
             }
             return;
         }
         if let Some(i) = self.heap.own_entry_index(obj, key)
             && self.heap.data_at(obj, i, key).is_some()
         {
-            self.ic_write(ic, [i + 1, 0, 0, 0, 0]);
+            self.ic_get_write(Value::object(obj), key, ic, [i + 1, 0, 0, 0, 0]);
         }
     }
 

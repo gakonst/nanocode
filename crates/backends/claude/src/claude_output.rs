@@ -1,4 +1,10 @@
+use nanocode_tool_host::{ToolOutput, contract::ToolOutputContent};
 use serde_json::{Value, json};
+
+pub(super) fn media(content: Vec<ToolOutputContent>) -> ToolOutput {
+    let value = json!({ "content": &content });
+    ToolOutput::content(content).with_structured_result(value)
+}
 
 pub(super) fn schema(name: &str) -> Value {
     match name {
@@ -34,10 +40,13 @@ pub(super) fn host_schema(name: &str) -> Value {
     }
 }
 
-fn read(media: Value) -> Value {
+fn read(blocks: Value) -> Value {
     json!({
-        "description": "Rendered file text or media content blocks. Text reads are strings, not arrays or FileReadOutput objects.",
-        "oneOf": [{"type": "string", "description": "line-numbered text or system reminder"}, media]
+        "description": "Rendered file text, or media as a tool result's content blocks. Text reads are strings, not FileReadOutput objects; pass an image block to image(), as in image(result.content[0]).",
+        "oneOf": [
+            {"type": "string", "description": "line-numbered text or system reminder"},
+            {"type": "object", "properties": {"content": blocks}, "required": ["content"], "additionalProperties": false}
+        ]
     })
 }
 

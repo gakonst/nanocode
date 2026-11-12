@@ -173,11 +173,13 @@ impl HostFileTool {
             Ok(_) => return Err("unsupported image format; use PNG, JPEG, GIF or WebP".into()),
             Err(error) => return Err(format!("invalid image: {error}")),
         };
-        Ok(ToolOutput::content(vec![ToolOutputContent::InputImage {
-            image_url: format!("data:{media_type};base64,{}", STANDARD.encode(&bytes)),
-            detail: ImageDetail::Auto,
-        }])
-        .with_metadata(json!({"kind": "image", "bytes": bytes.len()})))
+        Ok(
+            crate::claude_output::media(vec![ToolOutputContent::InputImage {
+                image_url: format!("data:{media_type};base64,{}", STANDARD.encode(&bytes)),
+                detail: ImageDetail::Auto,
+            }])
+            .with_metadata(json!({"kind": "image", "bytes": bytes.len()})),
+        )
     }
 
     async fn existing(&self, path: &Path) -> Result<String, String> {

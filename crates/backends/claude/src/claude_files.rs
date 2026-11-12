@@ -70,7 +70,7 @@ impl Tool for ClaudeFileTool {
             ToolContent::Text(text) if output.is_error => ToolOutput::error(text),
             ToolContent::Text(text) => ToolOutput::text(text),
             ToolContent::Blocks(blocks) => {
-                ToolOutput::content(blocks.into_iter().map(item).collect())
+                super::claude_output::media(blocks.into_iter().map(item).collect())
             }
         };
         Ok(match output.metadata {

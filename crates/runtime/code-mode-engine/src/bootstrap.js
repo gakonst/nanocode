@@ -505,6 +505,7 @@
     }
 
     function image(value, detail) {
+      if (Array.isArray(value?.content)) value = value.content;
       if (!Array.isArray(value)) return nativeContent(jsonStringify(normalizeImage(value, detail)));
       if (!value.length) throw "image expects at least one image item in an array";
       for (const item of value.map((entry) => normalizeImage(entry, detail))) nativeContent(jsonStringify(item));

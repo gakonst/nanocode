@@ -186,7 +186,7 @@ pub fn exec_description_with(
     if let Some(read) = reader {
         let _ = write!(
             description,
-            "\n- Nanocode extension: `image` also takes an array of image items. To show an image file, such as a chart a script saved, pass what reading it returns: `image({read})`. Do not base64-encode it through a shell, whose output is cut off."
+            "\n- Nanocode extension: `image` also takes an array of image items, or a tool result whose `content` is one. To show an image file, such as a chart a script saved, pass what reading it returns: `image({read})`. Do not base64-encode it through a shell, whose output is cut off."
         );
     }
     if !provider_summaries.is_empty() {

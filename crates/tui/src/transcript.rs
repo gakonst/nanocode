@@ -8,7 +8,7 @@ use std::{
 use crate::ui::{
     buffer::{Buffer, symbol_width},
     layout::{Alignment, Position, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
@@ -154,9 +154,23 @@ impl ToolCell {
     }
 }
 
+/// A message from someone, as chat apps show one: a header naming them, their
+/// words as Markdown (where a line break stays one) and a bar beside both.
+#[derive(Clone, Debug)]
+pub struct Said {
+    /// Who and when; none continues the message above as one group.
+    pub header: Option<Line<'static>>,
+    pub text: String,
+    /// The bar's colour, or no bar.
+    pub bar: Option<Color>,
+    /// Its rows on the code background, which sets it apart.
+    pub band: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum CellKind {
     User(String),
+    Said(Said),
     Assistant(String),
     Reasoning(String),
     Tool(ToolCell),
@@ -550,6 +564,25 @@ impl Transcript {
 
     pub const fn scroll_to_bottom(&mut self) {
         self.scroll = 0;
+    }
+
+    /// Scrolls so that cell `index` starts at the top, below the blank row
+    /// above it, or as near as the end allows.
+    pub fn scroll_to(&mut self, index: usize) {
+        if index >= self.cells.len() {
+            return;
+        }
+        let Some(theme) = self.theme.take() else {
+            return;
+        };
+        let mut total = 0;
+        for cell in index..self.cells.len() {
+            total += self.rows(cell, self.last_width, &theme);
+        }
+        self.theme = Some(theme);
+        let gap = usize::from(index > 0);
+        self.scroll = total.saturating_sub(gap + self.last_height);
+        self.anchor = Some((index, total));
     }
 
     pub fn scroll_to_top(&mut self) {
@@ -1459,6 +1492,7 @@ impl RenderContext<'_> {
                     Span::raw("  "),
                 );
             }
+            CellKind::Said(said) => self.said(said, out),
             CellKind::Assistant(_) | CellKind::Btw { .. } => {}
             CellKind::Reasoning(text) => {
                 let style = Style::default()
@@ -1516,6 +1550,53 @@ impl RenderContext<'_> {
                     whole(Part::Text),
                 );
             }
+        }
+    }
+
+    fn said(&self, said: &Said, out: &mut Output) {
+        let bar = said.bar.map_or_else(
+            || Span::raw("  "),
+            |color| Span::styled("▎ ", Style::default().fg(color)),
+        );
+        let band = said
+            .band
+            .then(|| Style::default().bg(self.theme.code_background()));
+        let width = usize::from(self.width);
+        let row = |line: Line<'static>| {
+            let mut line = prefixed(line, bar.clone());
+            if let Some(band) = band {
+                let fill = width.saturating_sub(line.width());
+                line.spans.push(Span::raw(" ".repeat(fill)));
+                line.style = line.style.patch(band);
+            }
+            line
+        };
+        // A message that continues a group joins it across the blank row between them.
+        if said.header.is_none()
+            && let Some(gap) = out.lines.last_mut()
+        {
+            *gap = row(Line::default());
+        }
+        let inner = self.width.saturating_sub(2);
+        if let Some(header) = &said.header {
+            for line in markdown::wrap_spans(&header.spans, inner, true)
+                .into_iter()
+                .take(1)
+            {
+                out.push(row(line), whole(Part::Question));
+            }
+        }
+        let mut layout = markdown::render_chat(&said.text, inner, self.theme);
+        let links = std::mem::take(&mut layout.links);
+        for ((line, source), mut links) in rendered(layout, &Part::Text)
+            .into_iter()
+            .zip(links.into_iter().chain(std::iter::repeat_with(Vec::new)))
+        {
+            for link in &mut links {
+                link.start = link.start.saturating_add(2);
+                link.end = link.end.saturating_add(2);
+            }
+            out.push_linked(row(line), source, links);
         }
     }
 
@@ -2066,6 +2147,16 @@ fn part_text<'a>(kind: &'a CellKind, part: &Part, mode: DisplayMode) -> Option<C
             Part::Text,
         ) => Some(Cow::Borrowed(text)),
         (CellKind::Reasoning(text), Part::Text) => Some(Cow::Borrowed(text.trim())),
+        (CellKind::Said(said), Part::Text) => Some(Cow::Borrowed(&said.text)),
+        (CellKind::Said(said), Part::Question) => said.header.as_ref().map(|header| {
+            Cow::Owned(
+                header
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect(),
+            )
+        }),
         (CellKind::Btw { question, .. }, Part::Question) => Some(Cow::Borrowed(question)),
         (CellKind::Tool(tool), Part::Header(index)) => nth_tool(tool, *index).map(|tool| {
             if tool.title.is_empty() {

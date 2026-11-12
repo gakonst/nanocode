@@ -3,6 +3,7 @@ use std::ops::{Index, IndexMut};
 use super::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
 };
 
 const SYMBOL_INLINE_BYTES: usize = 22;
@@ -252,6 +253,31 @@ impl Buffer {
                 self[(x, y)].reset();
                 x += 1;
             }
+        }
+        (x, y)
+    }
+
+    #[must_use]
+    pub const fn area(&self) -> &Rect {
+        &self.area
+    }
+
+    pub fn set_line(&mut self, x: u16, y: u16, line: &Line<'_>, width_max: u16) -> (u16, u16) {
+        let mut remaining = width_max;
+        let mut x = x;
+        for span in &line.spans {
+            if remaining == 0 {
+                break;
+            }
+            let (next, _) = self.set_stringn(
+                x,
+                y,
+                span.content.as_ref(),
+                usize::from(remaining),
+                line.style.patch(span.style),
+            );
+            remaining = remaining.saturating_sub(next.saturating_sub(x));
+            x = next;
         }
         (x, y)
     }

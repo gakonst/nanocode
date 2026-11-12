@@ -27,10 +27,16 @@ impl Widget for Clear {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Wrap {
+    pub trim: bool,
+}
+
 pub struct Paragraph<'a> {
     text: Text<'a>,
     style: Style,
     alignment: Alignment,
+    wrap: Option<Wrap>,
 }
 
 impl<'a> Paragraph<'a> {
@@ -41,7 +47,14 @@ impl<'a> Paragraph<'a> {
             text,
             style: Style::default(),
             alignment,
+            wrap: None,
         }
+    }
+
+    #[must_use]
+    pub const fn wrap(mut self, wrap: Wrap) -> Self {
+        self.wrap = Some(wrap);
+        self
     }
 
     #[must_use]
@@ -57,6 +70,26 @@ impl<'a> Paragraph<'a> {
     }
 }
 
+fn wrap_lines(lines: &[Line<'_>], width: u16, trim: bool) -> Vec<Line<'static>> {
+    let mut wrapped = Vec::with_capacity(lines.len());
+    for line in lines {
+        let rows = crate::markdown::wrap_spans_with_whitespace(&line.spans, width, true, !trim);
+        if rows.is_empty() {
+            wrapped.push(Line {
+                style: line.style,
+                alignment: line.alignment,
+                spans: Vec::new(),
+            });
+        }
+        wrapped.extend(rows.into_iter().map(|row| Line {
+            style: line.style,
+            alignment: line.alignment,
+            spans: row.spans,
+        }));
+    }
+    wrapped
+}
+
 impl Widget for Paragraph<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
         let area = area.intersection(buffer.area);
@@ -64,8 +97,16 @@ impl Widget for Paragraph<'_> {
         if area.is_empty() {
             return;
         }
+        let wrapped;
+        let lines = match self.wrap {
+            None => &self.text.lines,
+            Some(Wrap { trim }) => {
+                wrapped = wrap_lines(&self.text.lines, area.width, trim);
+                &wrapped
+            }
+        };
         let mut graphemes = Vec::new();
-        for (row, line) in (0..area.height).zip(&self.text.lines) {
+        for (row, line) in (0..area.height).zip(lines) {
             graphemes.clear();
             let mut line_width = 0_u16;
             for (symbol, style) in line.styled_graphemes(self.text.style) {
@@ -166,11 +207,17 @@ enum TitlePosition {
 pub struct Block<'a> {
     titles: Vec<(TitlePosition, Line<'a>)>,
     borders: Borders,
+    style: Style,
     border_style: Style,
     border_type: BorderType,
 }
 
 impl<'a> Block<'a> {
+    #[must_use]
+    pub fn bordered() -> Self {
+        Self::default().borders(Borders::ALL)
+    }
+
     #[must_use]
     pub const fn borders(mut self, borders: Borders) -> Self {
         self.borders = borders;
@@ -180,6 +227,12 @@ impl<'a> Block<'a> {
     #[must_use]
     pub const fn border_type(mut self, border_type: BorderType) -> Self {
         self.border_type = border_type;
+        self
+    }
+
+    #[must_use]
+    pub fn style(mut self, style: impl Into<Style>) -> Self {
+        self.style = style.into();
         self
     }
 
@@ -324,6 +377,7 @@ impl Widget for Block<'_> {
         if area.is_empty() {
             return;
         }
+        buffer.set_style(area, self.style);
         self.render_borders(area, buffer);
         self.render_titles(TitlePosition::Top, area, buffer);
         self.render_titles(TitlePosition::Bottom, area, buffer);
@@ -336,6 +390,7 @@ impl Widget for &Block<'_> {
         if area.is_empty() {
             return;
         }
+        buffer.set_style(area, self.style);
         self.render_borders(area, buffer);
         self.render_titles(TitlePosition::Top, area, buffer);
         self.render_titles(TitlePosition::Bottom, area, buffer);

@@ -30,6 +30,24 @@ impl KeyModifiers {
     }
 
     #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    #[must_use]
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    pub const fn set(&mut self, other: Self, value: bool) {
+        if value {
+            self.0 |= other.0;
+        } else {
+            self.0 &= !other.0;
+        }
+    }
+
+    #[must_use]
     pub const fn bits(self) -> u8 {
         self.0
     }
@@ -57,6 +75,11 @@ impl KeyEventState {
     pub const KEYPAD: Self = Self(1);
     pub const CAPS_LOCK: Self = Self(1 << 1);
     pub const NUM_LOCK: Self = Self(1 << 2);
+
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self::NONE
+    }
 
     #[must_use]
     pub const fn bits(self) -> u8 {
@@ -150,7 +173,7 @@ pub enum KeyCode {
     Modifier(ModifierKeyCode),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct KeyEvent {
     pub code: KeyCode,
     pub modifiers: KeyModifiers,
@@ -167,6 +190,73 @@ impl KeyEvent {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         }
+    }
+
+    #[must_use]
+    pub const fn new_with_kind(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> Self {
+        Self::new_with_kind_and_state(code, modifiers, kind, KeyEventState::NONE)
+    }
+
+    #[must_use]
+    pub const fn new_with_kind_and_state(
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        kind: KeyEventKind,
+        state: KeyEventState,
+    ) -> Self {
+        Self {
+            code,
+            modifiers,
+            kind,
+            state,
+        }
+    }
+}
+
+impl KeyEvent {
+    const fn normalize_case(mut self) -> Self {
+        let KeyCode::Char(c) = self.code else {
+            return self;
+        };
+        if c.is_ascii_uppercase() {
+            self.modifiers.0 |= KeyModifiers::SHIFT.0;
+        } else if self.modifiers.contains(KeyModifiers::SHIFT) {
+            self.code = KeyCode::Char(c.to_ascii_uppercase());
+        }
+        self
+    }
+}
+
+impl PartialEq for KeyEvent {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            code,
+            modifiers,
+            kind,
+            state,
+        } = self.normalize_case();
+        let other = other.normalize_case();
+        code == other.code
+            && modifiers == other.modifiers
+            && kind == other.kind
+            && state == other.state
+    }
+}
+
+impl Eq for KeyEvent {}
+
+impl std::hash::Hash for KeyEvent {
+    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        let Self {
+            code,
+            modifiers,
+            kind,
+            state,
+        } = self.normalize_case();
+        code.hash(hasher);
+        modifiers.hash(hasher);
+        kind.hash(hasher);
+        state.hash(hasher);
     }
 }
 

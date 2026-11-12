@@ -79,7 +79,12 @@ struct Resume {
 }
 
 pub fn render(markdown: &str, width: u16, theme: &Theme) -> Layout {
-    render_with(markdown, width, theme, &mut Highlights::default())
+    render_with(markdown, width, theme, &mut Highlights::default(), false)
+}
+
+/// Renders a chat message: as `render`, but a line break stays a break.
+pub fn render_chat(markdown: &str, width: u16, theme: &Theme) -> Layout {
+    render_with(markdown, width, theme, &mut Highlights::default(), true)
 }
 
 pub(crate) fn render_with(
@@ -87,15 +92,15 @@ pub(crate) fn render_with(
     width: u16,
     theme: &Theme,
     highlights: &mut Highlights,
+    breaks: bool,
 ) -> Layout {
-    render_from(
+    render_lines(
         markdown,
-        0,
-        0,
-        Continuation::Block,
+        (0, 0, Continuation::Block),
         width,
         theme,
         highlights,
+        breaks,
     )
     .layout
 }
@@ -148,6 +153,25 @@ pub(crate) fn render_from(
     theme: &Theme,
     highlights: &mut Highlights,
 ) -> Rendered {
+    render_lines(
+        markdown,
+        (start, blocks, continuation),
+        width,
+        theme,
+        highlights,
+        false,
+    )
+}
+
+/// Renders from `(start, blocks, continuation)`; with `breaks`, a line break stays one.
+fn render_lines(
+    markdown: &str,
+    (start, blocks, continuation): (usize, usize, Continuation),
+    width: u16,
+    theme: &Theme,
+    highlights: &mut Highlights,
+    breaks: bool,
+) -> Rendered {
     let text = &markdown[start..];
     let span = tracing::info_span!(
         "tui.markdown.render",
@@ -181,6 +205,7 @@ pub(crate) fn render_from(
     let mut renderer = Renderer::new(text, width, theme, highlights);
     renderer.block = blocks;
     renderer.continued = start > 0;
+    renderer.breaks = breaks;
     let mut depth = 0_usize;
     let mut boundary = None;
     let mut trailing = None;
@@ -471,6 +496,8 @@ struct Renderer<'a> {
     block: usize,
     highlighted: usize,
     continued: bool,
+    /// Soft line breaks break the line, as chat messages read.
+    breaks: bool,
     anchor: bool,
     cut: Option<Cut>,
     group: Option<(usize, usize)>,
@@ -525,6 +552,7 @@ impl<'a> Renderer<'a> {
             block: 0,
             highlighted: 0,
             continued: false,
+            breaks: false,
             anchor: false,
             cut: None,
             group: None,
@@ -549,6 +577,7 @@ impl<'a> Renderer<'a> {
                 &format!("[{}]", sanitize(&reference)),
                 Style::default().fg(self.theme.thinking_medium()),
             ),
+            Event::SoftBreak if self.breaks => self.flush(),
             Event::SoftBreak => self.text(" "),
             Event::HardBreak => self.flush(),
             Event::Rule => {
@@ -1165,7 +1194,7 @@ pub fn wrap_spans(spans: &[Span<'static>], width: u16, prefer_words: bool) -> Ve
     wrap_spans_with_whitespace(spans, width, prefer_words, false)
 }
 
-fn wrap_spans_with_whitespace(
+pub(crate) fn wrap_spans_with_whitespace(
     spans: &[Span<'_>],
     width: u16,
     prefer_words: bool,

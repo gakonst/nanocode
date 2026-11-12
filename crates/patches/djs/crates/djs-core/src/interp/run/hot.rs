@@ -33,7 +33,7 @@ use crate::heap::{Atom, ObjectClass, atoms};
 use crate::interp::conv::{self, FaultKind};
 use crate::interp::frame::{self, Continuation, HEADER};
 use crate::interp::realm::{self, Intrinsic};
-use crate::value::{Kind, Value};
+use crate::value::{Kind, Str, Value};
 
 /// Backward jumps before `run_hot` returns to the run loop anyway: V8 tiers wasm code up
 /// only between calls (no OSR, 0081 F0), so a loop that never leaves `run_hot` would
@@ -63,6 +63,9 @@ const NEW_BOX_INIT: u8 = Op::NewBoxInit as u8;
 const PUSH_ATOM: u8 = Op::PushAtom as u8;
 const REQUIRE_OBJECT_COERCIBLE: u8 = Op::RequireObjectCoercible as u8;
 const TO_STRING: u8 = Op::ToString as u8;
+const PLUS: u8 = Op::Plus as u8;
+const NEG: u8 = Op::Neg as u8;
+const CONCAT: u8 = Op::Concat as u8;
 const ARRAY_FROM_INLINE: usize = 16;
 
 /// The flags word of a `PushResult` frame (`fast_return`'s condition).
@@ -571,6 +574,50 @@ impl Exec<'_> {
                 }
                 Op::RequireObjectCoercible
             }
+            PLUS | NEG => {
+                let a = self.get(self.sp - 1);
+                if matches!(a.kind(), Kind::Object | Kind::Symbol) || a.as_bigint().is_some() {
+                    return false;
+                }
+                let v = match (op, a.as_int()) {
+                    (NEG, Some(i)) if i != 0 && i != i32::MIN => Value::int(-i),
+                    _ => {
+                        let Ok(n) = conv::to_number(self.heap, a) else {
+                            return false;
+                        };
+                        if op == NEG {
+                            Value::number(-n)
+                        } else {
+                            conv::number(n)
+                        }
+                    }
+                };
+                self.set(self.sp - 1, v);
+                if op == NEG { Op::Neg } else { Op::Plus }
+            }
+            CONCAT => {
+                let n = self.imm_u16(1);
+                let mut parts = [Str(0); crate::heap::string::CONCAT_FLAT_PARTS];
+                if n as usize > parts.len() {
+                    return false;
+                }
+                for i in 0..n {
+                    let v = self.get(self.sp - n + i);
+                    if matches!(v.kind(), Kind::Object | Kind::Symbol) {
+                        return false;
+                    }
+                    let Ok(s) = conv::to_string(self.heap, v) else {
+                        return false;
+                    };
+                    parts[i as usize] = s;
+                }
+                let Ok(Some(s)) = self.heap.concat_flat(&parts[..n as usize]) else {
+                    return false;
+                };
+                self.sp -= n;
+                self.push(Value::string(s));
+                Op::Concat
+            }
             _ => {
                 let a = self.get(self.sp - 1);
                 if matches!(a.kind(), Kind::Object | Kind::Symbol) {
@@ -712,6 +759,9 @@ impl Exec<'_> {
                 | PUSH_ATOM
                 | REQUIRE_OBJECT_COERCIBLE
                 | TO_STRING
+                | PLUS
+                | NEG
+                | CONCAT
         ) {
             return self.decline_plain(op);
         }

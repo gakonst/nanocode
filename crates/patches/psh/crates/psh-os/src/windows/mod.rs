@@ -679,6 +679,8 @@ fn info(fake_pid: bool) -> psh_engine::host::HostInfo {
         ostype: "msys".into(),
         machtype: format!("{arch}-pc-msys"),
         hosttype: arch,
+        release: String::new(),
+        version: String::new(),
     }
 }
 

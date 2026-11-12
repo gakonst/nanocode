@@ -389,6 +389,8 @@ pub struct HostInfo {
     pub machtype: String,
     /// The processor: `x86_64`, `aarch64`.
     pub hosttype: String,
+    pub release: String,
+    pub version: String,
 }
 
 impl Default for HostInfo {
@@ -405,6 +407,8 @@ impl Default for HostInfo {
             ostype: "unknown".into(),
             machtype: format!("{arch}-unknown-unknown"),
             hosttype: arch,
+            release: String::new(),
+            version: String::new(),
         }
     }
 }

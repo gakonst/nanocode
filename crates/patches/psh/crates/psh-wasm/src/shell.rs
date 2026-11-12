@@ -86,6 +86,7 @@ fn new_shell(cfg: &[u8]) -> Option<Shell> {
     let hostname = r.bytes()?.to_vec();
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let (ostype, machtype, hosttype) = (text(r.bytes()?), text(r.bytes()?), text(r.bytes()?));
+    let (release, version) = (text(r.bytes()?), text(r.bytes()?));
     let mut without = Vec::new();
     for _ in 0..r.u32()? {
         without.push(r.bytes()?.to_vec());
@@ -118,6 +119,8 @@ fn new_shell(cfg: &[u8]) -> Option<Shell> {
                 ostype,
                 machtype,
                 hosttype,
+                release,
+                version,
             },
             pid,
             user,

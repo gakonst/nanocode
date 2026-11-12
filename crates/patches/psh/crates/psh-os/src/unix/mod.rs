@@ -713,6 +713,22 @@ fn info(fake_pid: bool) -> psh_engine::host::HostInfo {
     }
     let arch = std::env::consts::ARCH.to_string();
     let (ostype, machtype) = os_names(&arch);
+    // SAFETY: utsname is plain bytes, and uname fills it.
+    let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
+    // SAFETY: the pointer is to a utsname this function owns.
+    let (release, version) = if unsafe { libc::uname(&mut uts) } == 0 {
+        let field = |f: &[libc::c_char]| {
+            let bytes: Vec<u8> = f
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8)
+                .collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        (field(&uts.release), field(&uts.version))
+    } else {
+        (String::new(), String::new())
+    };
     psh_engine::host::HostInfo {
         uid,
         euid,
@@ -726,6 +742,8 @@ fn info(fake_pid: bool) -> psh_engine::host::HostInfo {
         ostype,
         machtype,
         hosttype: arch,
+        release,
+        version,
     }
 }
 

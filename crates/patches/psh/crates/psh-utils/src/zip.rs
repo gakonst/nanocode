@@ -240,6 +240,7 @@ pub async fn zip(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     let mut excludes: Vec<Vec<u8>> = Vec::new();
     let mut operands: Vec<Vec<u8>> = Vec::new();
     let mut excluding = false;
+    let mut verbose = false;
     for arg in &argv[1..] {
         if arg.len() > 1 && arg[0] == b'-' {
             excluding = false;
@@ -253,7 +254,8 @@ pub async fn zip(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                     b'X' => plain = true,
                     b'x' => excluding = true,
                     b'0'..=b'9' => level = c - b'0',
-                    b'o' | b'v' => {}
+                    b'v' => verbose = true,
+                    b'o' => {}
                     _ => {
                         let text = String::from_utf8_lossy(arg).into_owned();
                         return lacks(ctx, argv, &format!("the option {text}")).await;
@@ -265,6 +267,9 @@ pub async fn zip(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         } else {
             operands.push(arg.clone());
         }
+    }
+    if verbose && operands.is_empty() {
+        return lacks(ctx, argv, "the option -v").await;
     }
     let Some((archive, paths)) = operands.split_first() else {
         ctx.error_raw(b"\nzip error: Nothing to do!\n").await;

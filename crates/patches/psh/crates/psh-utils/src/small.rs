@@ -768,9 +768,17 @@ pub async fn uname(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     };
     let node = String::from_utf8_lossy(&info.hostname).into_owned();
     let unknown = "unknown".to_string();
+    let known = |s: &String| {
+        if s.is_empty() {
+            unknown.clone()
+        } else {
+            s.clone()
+        }
+    };
+    let (release, version) = (known(&info.release), known(&info.version));
     // In GNU's order: -s -n -r -v -m -p -i -o. What the host does not say is unknown.
     let fields = [
-        &system, &node, &unknown, &unknown, &machine, &unknown, &unknown, &os,
+        &system, &node, &release, &version, &machine, &unknown, &unknown, &os,
     ];
     let mut wanted = [false; 8];
     let mut all = false;

@@ -260,10 +260,11 @@ impl Exec<'_> {
             Some(a) if self.heap.value_array_capacity(a) >= len => a,
             _ => self.heap.alloc_value_array(len)?,
         };
-        for i in 0..len {
-            let v = self.get(self.bp + i);
-            self.heap.value_array_set(arr, i, v);
-        }
+        let src = ValueArray::VALUES.at(self.stack, self.bp);
+        let bytes = ValueArray::VALUES.at(self.stack, self.bp + len) - src;
+        self.heap
+            .arena_mut()
+            .copy_within(src, bytes, ValueArray::VALUES.at(arr, 0));
         self.heap.arena_mut().set(arr, ValueArray::LEN, len);
         self.fuel -= (len / 8) as i64;
         for (slot, v) in [
@@ -482,10 +483,10 @@ impl Exec<'_> {
             + self.heap.arena().get(t, FuncTemplate::LOCALS) as u32
             + self.heap.arena().get(t, FuncTemplate::STACK) as u32;
         self.ensure(top.max(base + len + 2))?;
-        for i in 0..len {
-            let v = self.heap.value_array_get(arr, i);
-            self.set(base + i, v);
-        }
+        let src = ValueArray::VALUES.at(arr, 0);
+        let bytes = ValueArray::VALUES.at(arr, len) - src;
+        let dst = ValueArray::VALUES.at(self.stack, base);
+        self.heap.arena_mut().copy_within(src, bytes, dst);
         self.fuel -= (len / 8) as i64;
         let hp = base + hp_off;
         let bottom = cont.is_bottom();

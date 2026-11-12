@@ -597,6 +597,65 @@ impl Heap {
         Ok(true)
     }
 
+    pub(crate) fn plain_shape(&self, o: Obj) -> Option<u32> {
+        if self.object_class(o) != ObjectClass::Ordinary
+            || self.obj_flags(o) & (OBJ_DICTIONARY | OBJ_INDEXED_PROPS | OBJ_IS_PROTO) != 0
+            || self.elements(o) != 0
+        {
+            return None;
+        }
+        let v = self.props(o);
+        if v == 0 {
+            return Some(0);
+        }
+        let s = self.arena().get(v, PropValues::SHAPE).0;
+        let flags = PropFlags::ALL.bits() as u32;
+        (0..self.shape_count(s))
+            .all(|i| {
+                let (k, f) = self.shape_desc(s, i);
+                k.is_string() && f == flags
+            })
+            .then_some(s)
+    }
+
+    pub(crate) fn plain_entries(&self, o: Obj) -> Option<(Vec<Atom>, Vec<Value>)> {
+        let s = self.plain_shape(o)?;
+        if s == 0 {
+            return Some((Vec::new(), Vec::new()));
+        }
+        let v = self.props(o);
+        let count = self.shape_count(s);
+        let keys = (0..count).map(|i| self.shape_desc(s, i).0).collect();
+        let values = (0..count)
+            .map(|i| self.arena().read(PropValues::VALUES.at(v, i)))
+            .collect();
+        Some((keys, values))
+    }
+
+    pub(crate) fn clone_plain_props(&mut self, o: Obj, s: Obj) -> Result<bool, HeapError> {
+        if self.plain_shape(o) != Some(0) || self.obj_flags(o) & OBJ_EXTENSIBLE == 0 {
+            return Ok(false);
+        }
+        let Some(shape) = self.plain_shape(s) else {
+            return Ok(false);
+        };
+        if shape == 0 {
+            return Ok(true);
+        }
+        let count = self.shape_count(shape);
+        let from = self.props(s);
+        let v = self.alloc_values(count)?;
+        let a = self.arena_mut();
+        for i in 0..count {
+            let value: Value = a.read(PropValues::VALUES.at(from, i));
+            a.write(PropValues::VALUES.at(v, i), value);
+        }
+        a.set(v, PropValues::LEN, count);
+        a.set(v, PropValues::SHAPE, Ref(shape));
+        a.set(o.0, Object::PROPS, Ref(v));
+        Ok(true)
+    }
+
     pub(crate) fn new_object_from_entries_like(
         &mut self,
         proto: Option<Obj>,

@@ -1820,6 +1820,9 @@ fn object_assign(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
         return Ok(None);
     }
     for from in sources.iter().filter_map(|from| from.as_object()) {
+        if heap.clone_plain_props(to, from)? {
+            continue;
+        }
         for k in heap.own_keys(from) {
             if let Some(Property::Data { value, flags }) = heap.get_own_property_alloc(from, k)?
                 && flags.enumerable()

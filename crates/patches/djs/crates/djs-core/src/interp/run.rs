@@ -3781,6 +3781,9 @@ impl<'h> Exec<'h> {
         if self.heap.is_proxy(s) {
             return Ok(false);
         }
+        if self.heap.clone_plain_props(o, s)? {
+            return Ok(true);
+        }
         let keys = self.heap.own_keys(s);
         let getter = keys.iter().any(|&k| {
             matches!(self.heap.get_own_property(s, k),
@@ -3822,6 +3825,18 @@ impl<'h> Exec<'h> {
                 skip.push(k);
             }
         }
+        let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
+        if let Some((keys, values)) = self.heap.plain_entries(s) {
+            let (keys, values): (alloc::vec::Vec<Atom>, alloc::vec::Vec<Value>) = keys
+                .into_iter()
+                .zip(values)
+                .filter(|(k, _)| !skip.contains(k))
+                .unzip();
+            let o = self
+                .heap
+                .new_object_from_entries(Some(proto), &keys, &values)?;
+            return Ok(Some(Value::object(o)));
+        }
         let keys = self.heap.own_keys(s);
         if keys.iter().any(|&k| {
             matches!(self.heap.get_own_property(s, k),
@@ -3829,7 +3844,6 @@ impl<'h> Exec<'h> {
         }) {
             return Ok(None);
         }
-        let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
         let o = self.heap.new_object(Some(proto))?;
         for k in keys {
             if !skip.contains(&k)

@@ -107,6 +107,10 @@ pub enum ParseErrorType {
     /// An unexpected error occurred.
     OtherError(String),
 
+    NestingTooDeep,
+
+    ParserThreadUnavailable(String),
+
     /// An error specific to stringified annotations occurred.
     StringAnnotationError(&'static str),
 
@@ -222,6 +226,12 @@ impl std::fmt::Display for ParseErrorType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             ParseErrorType::OtherError(msg) => f.write_str(msg),
+            ParseErrorType::NestingTooDeep => {
+                f.write_str("maximum recursion depth exceeded during compilation")
+            }
+            ParseErrorType::ParserThreadUnavailable(reason) => {
+                write!(f, "could not start the parser thread: {reason}")
+            }
             ParseErrorType::StringAnnotationError(msg) => f.write_str(msg),
             ParseErrorType::ExpectedToken { found, expected } => {
                 write!(f, "Expected {expected}, found {found}")

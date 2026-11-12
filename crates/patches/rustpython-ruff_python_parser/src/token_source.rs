@@ -37,6 +37,11 @@ impl<'src> TokenSource<'src> {
         source
     }
 
+    pub(crate) fn end_early(&mut self) {
+        self.lexer.end_early();
+        self.do_bump();
+    }
+
     /// Returns the kind of the current token.
     pub(crate) const fn current_kind(&self) -> TokenKind {
         self.lexer.current_kind()

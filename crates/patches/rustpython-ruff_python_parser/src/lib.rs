@@ -392,6 +392,39 @@ pub struct Parsed<T> {
     unsupported_syntax_errors: Vec<UnsupportedSyntaxError>,
 }
 
+impl Parsed<Mod> {
+    #[cfg(not(target_family = "wasm"))]
+    fn thread_unavailable(mode: Mode, range: TextRange, error: &std::io::Error) -> Self {
+        let syntax = match mode {
+            Mode::Expression | Mode::ParenthesizedExpression => Mod::Expression(ModExpression {
+                node_index: AtomicNodeIndex::NONE,
+                range,
+                body: Box::new(Expr::Name(ruff_python_ast::ExprName {
+                    node_index: AtomicNodeIndex::NONE,
+                    range: TextRange::empty(range.start()),
+                    id: ruff_python_ast::name::Name::empty(),
+                    ctx: ruff_python_ast::ExprContext::Invalid,
+                })),
+            }),
+            Mode::Module | Mode::Ipython => Mod::Module(ModModule {
+                node_index: AtomicNodeIndex::NONE,
+                range,
+                body: Vec::new(),
+                runtime_body: None,
+            }),
+        };
+        Self {
+            syntax,
+            tokens: Tokens::new(Vec::new()),
+            errors: vec![ParseError {
+                error: ParseErrorType::ParserThreadUnavailable(error.to_string()),
+                location: TextRange::empty(range.start()),
+            }],
+            unsupported_syntax_errors: Vec::new(),
+        }
+    }
+}
+
 impl<T> Parsed<T> {
     /// Returns the syntax node represented by this parsed output.
     pub fn syntax(&self) -> &T {

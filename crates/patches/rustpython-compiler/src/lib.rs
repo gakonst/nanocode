@@ -61,6 +61,9 @@ impl CompileError {
         mode: Mode,
     ) -> Self {
         let raw_location = error.location;
+        if let Some(too_deep) = Self::from_nesting_too_deep(&error, source_file) {
+            return too_deep;
+        }
         let diagnostic = match cpython_parse_diagnostic_override(&error, source_file, mode) {
             Some(diagnostic) => diagnostic,
             None => default_parse_diagnostic(error, source_file),
@@ -75,6 +78,21 @@ impl CompileError {
             is_unclosed_bracket: diagnostic.is_unclosed_bracket,
             is_unclosed_string: diagnostic.is_unclosed_string,
         })
+    }
+
+    #[must_use]
+    pub fn from_nesting_too_deep(error: &parser::ParseError, source_file: &SourceFile) -> Option<Self> {
+        if !matches!(error.error, parser::ParseErrorType::NestingTooDeep) {
+            return None;
+        }
+        let (location, end_location) =
+            source_locations(source_file, error.location.start(), error.location.end());
+        Some(Self::Codegen(codegen::error::CodegenError {
+            location: Some(location),
+            end_location: Some(end_location),
+            error: codegen::error::CodegenErrorType::RecursionError,
+            source_path: source_file.name().to_owned(),
+        }))
     }
 
     fn from_source_error(source_file: &SourceFile, diagnostic: CpythonDiagnostic) -> Self {

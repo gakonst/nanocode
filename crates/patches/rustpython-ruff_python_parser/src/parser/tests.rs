@@ -347,7 +347,7 @@ fn test_tstring_fstring_middle_fuzzer() {
 #[test]
 fn nested_parens_grow_stack() {
     let src = format!("{}1{}", "(".repeat(1_000), ")".repeat(1_000));
-    let parsed = stacker::grow(32 * 1024, || parse_module(&src));
+    let parsed = parse_module(&src);
     assert!(parsed.is_ok());
 }
 

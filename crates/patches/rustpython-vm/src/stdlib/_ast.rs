@@ -1824,6 +1824,11 @@ pub(crate) fn parse(
     }
     if let Err(errors) = parsed.as_result() {
         let parse_error = errors[0].clone();
+        if let Some(error) =
+            rustpython_compiler::CompileError::from_nesting_too_deep(&parse_error, &source_file)
+        {
+            return Err(error);
+        }
         if let Some(error) = barry_source.diagnostic(Some(&parse_error), &source_file) {
             return Err(error);
         }

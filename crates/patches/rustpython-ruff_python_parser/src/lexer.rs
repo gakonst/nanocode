@@ -113,6 +113,14 @@ impl<'src> Lexer<'src> {
         lexer
     }
 
+    pub(crate) fn end_early(&mut self) {
+        self.cursor.skip_bytes(self.cursor.rest().len());
+        self.cursor.start_token();
+        self.interpolated_strings = InterpolatedStrings::default();
+        self.nesting = u32::from(self.mode == Mode::ParenthesizedExpression);
+        self.pending_indentation = None;
+    }
+
     /// Returns the kind of the current token.
     pub(crate) const fn current_kind(&self) -> TokenKind {
         self.current_kind

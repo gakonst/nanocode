@@ -2484,6 +2484,13 @@ impl VirtualMachine {
         self.recursion_depth.get()
     }
 
+    #[cfg_attr(any(miri, target_env = "musl"), allow(dead_code))]
+    #[inline(always)]
+    fn current_stack_address() -> usize {
+        let marker = 0u8;
+        core::ptr::from_ref(core::hint::black_box(&marker)).addr()
+    }
+
     /// Stack margin bytes (like _PyOS_STACK_MARGIN_BYTES).
     /// The margin is doubled for debug/sanitized builds because frame
     /// evaluation consumes more native stack in those configurations.
@@ -2550,7 +2557,7 @@ impl VirtualMachine {
         // Fallback: estimate based on current SP and a default stack size
         #[allow(unreachable_code)]
         {
-            let current_sp = psm::stack_pointer() as usize;
+            let current_sp = Self::current_stack_address();
             // Assume 8MB stack, estimate base
             let estimated_size = 8 * 1024 * 1024;
             let base = current_sp.saturating_sub(estimated_size);
@@ -2586,7 +2593,7 @@ impl VirtualMachine {
     #[cfg(all(not(miri), not(target_env = "musl")))]
     #[inline(always)]
     pub(crate) fn check_c_stack_overflow(&self) -> bool {
-        let current_sp = psm::stack_pointer() as usize;
+        let current_sp = Self::current_stack_address();
         let soft_limit = self.c_stack_soft_limit.get();
         current_sp < soft_limit
     }

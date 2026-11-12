@@ -63,9 +63,6 @@ package = "rustpython-ruff_python_trivia"
 version = "0.16.5"
 package = "rustpython-ruff_text_size"
 
-[dependencies.stacker]
-version = "0.1.24"
-
 [dependencies.rustpython-unicode]
 version = "0.6.0"
 

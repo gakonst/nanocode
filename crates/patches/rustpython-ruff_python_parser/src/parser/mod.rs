@@ -10,7 +10,7 @@ use ruff_python_ast::{
     ModModule, ParameterWithDefault, Stmt, StringFlags,
 };
 use ruff_python_trivia::is_python_whitespace;
-use ruff_text_size::{Ranged, TextRange, TextSize};
+use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 use ruff_python_trivia::fx_hash::FxHashSet;
 use unicode_normalization::UnicodeNormalization;
 
@@ -54,11 +54,79 @@ impl NameInterner {
     }
 }
 
-// Stack probes access thread-local state, so avoid them while recursive parser calls remain
-// shallow. `STACK_RED_ZONE` must cover the stack used before the first deferred probe.
-const STACK_RED_ZONE: usize = 100 * 1024;
-const STACK_SIZE: usize = 1024 * 1024;
-const MAX_UNCHECKED_RECURSION_DEPTH: usize = 20;
+const RECURSION_DEPTH_MAX: usize = 20_000;
+const STACK_BYTES_PER_RECURSION_MAX: usize = 12 * 1024;
+const PARSER_STACK_BYTES: usize = RECURSION_DEPTH_MAX * STACK_BYTES_PER_RECURSION_MAX;
+
+#[cfg(not(target_family = "wasm"))]
+struct ParseJob {
+    source: String,
+    start_offset: TextSize,
+    options: ParseOptions,
+}
+
+#[cfg(not(target_family = "wasm"))]
+type ParseOutcome = std::thread::Result<Parsed<Mod>>;
+
+#[cfg(not(target_family = "wasm"))]
+struct ParserWorker {
+    jobs: std::cell::OnceCell<std::sync::mpsc::Sender<(ParseJob, std::sync::mpsc::SyncSender<ParseOutcome>)>>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ParserWorker {
+    fn parse(&self, job: ParseJob) -> std::io::Result<ParseOutcome> {
+        let jobs = match self.jobs.get() {
+            Some(jobs) => jobs,
+            None => {
+                let jobs = Self::spawn()?;
+                self.jobs.get_or_init(|| jobs)
+            }
+        };
+        let (reply, outcome) = std::sync::mpsc::sync_channel(1);
+        jobs.send((job, reply))
+            .expect("the parser thread lives as long as its owning thread");
+        Ok(outcome
+            .recv()
+            .expect("the parser thread answers every job it receives"))
+    }
+
+    fn spawn() -> std::io::Result<std::sync::mpsc::Sender<(ParseJob, std::sync::mpsc::SyncSender<ParseOutcome>)>> {
+        let (jobs, received) =
+            std::sync::mpsc::channel::<(ParseJob, std::sync::mpsc::SyncSender<ParseOutcome>)>();
+        std::thread::Builder::new()
+            .name("python-parser".to_owned())
+            .stack_size(PARSER_STACK_BYTES)
+            .spawn(move || {
+                for (job, reply) in received {
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        Parser::new_starts_at(&job.source, job.start_offset, job.options)
+                            .parse_here()
+                    }));
+                    if reply.send(outcome).is_err() {
+                        return;
+                    }
+                }
+            })?;
+        Ok(jobs)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+thread_local! {
+    static PARSER_WORKER: ParserWorker = const {
+        ParserWorker {
+            jobs: std::cell::OnceCell::new(),
+        }
+    };
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NestingTooDeep {
+    range: TextRange,
+    errors: usize,
+    unsupported_syntax_errors: usize,
+}
 
 #[derive(Debug)]
 pub(crate) struct Parser<'src> {
@@ -97,6 +165,8 @@ pub(crate) struct Parser<'src> {
 
     /// Number of active recursive statement, expression, and pattern parsing operations.
     recursion_depth: usize,
+
+    nesting_too_deep: Option<NestingTooDeep>,
 
     /// Reusable, nesting-safe scratch storage for expression lists.
     expr_scratch: ScratchBuffer<Expr>,
@@ -143,6 +213,7 @@ impl<'src> Parser<'src> {
             prev_token_end: TextSize::new(0),
             start_offset,
             recursion_depth: 0,
+            nesting_too_deep: None,
             current_token_id: TokenId::default(),
             expr_scratch: ScratchBuffer::with_capacity(16),
             keyword_scratch: ScratchBuffer::new(),
@@ -153,34 +224,57 @@ impl<'src> Parser<'src> {
         }
     }
 
-    /// Grows the stack for recursive parser calls only after shallow nesting is exceeded.
     #[inline]
     fn with_recursion<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.recursion_depth += 1;
-
-        let result = if self.recursion_depth > MAX_UNCHECKED_RECURSION_DEPTH {
-            self.grow_stack(f)
-        } else {
-            f(self)
-        };
-
+        if self.recursion_depth > RECURSION_DEPTH_MAX && self.nesting_too_deep.is_none() {
+            self.stop_nesting();
+        }
+        let result = f(self);
         self.recursion_depth -= 1;
         result
     }
 
     #[cold]
-    fn grow_stack<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        stacker::maybe_grow(STACK_RED_ZONE, STACK_SIZE, || f(self))
+    fn stop_nesting(&mut self) {
+        self.nesting_too_deep = Some(NestingTooDeep {
+            range: self.current_token_range(),
+            errors: self.errors.len(),
+            unsupported_syntax_errors: self.unsupported_syntax_errors.len(),
+        });
+        self.tokens.end_early();
     }
 
     /// Consumes the [`Parser`] and returns the parsed [`Parsed`].
-    pub(crate) fn parse(mut self) -> Parsed<Mod> {
-        let syntax = stacker::maybe_grow(STACK_RED_ZONE, STACK_SIZE, || match self.options.mode {
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn parse(self) -> Parsed<Mod> {
+        let job = ParseJob {
+            source: self.source.to_owned(),
+            start_offset: self.start_offset,
+            options: self.options.clone(),
+        };
+        let range = TextRange::new(self.start_offset, self.source.text_len());
+        let mode = self.options.mode;
+        match PARSER_WORKER.with(|worker| worker.parse(job)) {
+            Ok(Ok(parsed)) => parsed,
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            Err(error) => Parsed::thread_unavailable(mode, range, &error),
+        }
+    }
+
+    /// Consumes the [`Parser`] and returns the parsed [`Parsed`].
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn parse(self) -> Parsed<Mod> {
+        self.parse_here()
+    }
+
+    fn parse_here(mut self) -> Parsed<Mod> {
+        let syntax = match self.options.mode {
             Mode::Expression | Mode::ParenthesizedExpression => {
                 Mod::Expression(self.parse_single_expression())
             }
             Mode::Module | Mode::Ipython => Mod::Module(self.parse_module()),
-        });
+        };
 
         self.finish(syntax)
     }
@@ -244,12 +338,23 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn finish(self, syntax: Mod) -> Parsed<Mod> {
+    fn finish(mut self, syntax: Mod) -> Parsed<Mod> {
         assert_eq!(
             self.current_token_kind(),
             TokenKind::EndOfFile,
             "Parser should be at the end of the file."
         );
+        if let Some(too_deep) = self.nesting_too_deep.take() {
+            assert!(too_deep.errors <= self.errors.len());
+            assert!(too_deep.unsupported_syntax_errors <= self.unsupported_syntax_errors.len());
+            self.errors.truncate(too_deep.errors);
+            self.unsupported_syntax_errors
+                .truncate(too_deep.unsupported_syntax_errors);
+            self.errors.push(ParseError {
+                error: ParseErrorType::NestingTooDeep,
+                location: too_deep.range,
+            });
+        }
         // TODO consider re-integrating lexical error handling into the parser?
         let parse_errors = self.errors;
         let (tokens, lex_errors) = self.tokens.finish();

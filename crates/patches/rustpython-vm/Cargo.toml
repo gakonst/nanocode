@@ -130,9 +130,6 @@ optional = true
 version = "0.12.3"
 optional = true
 
-[dependencies.psm]
-version = "0.1"
-
 [dependencies.ruff_python_ast]
 version = "0.16.5"
 optional = true

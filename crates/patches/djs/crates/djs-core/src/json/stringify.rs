@@ -401,8 +401,8 @@ enum Class {
     Skip,
     Primitive,
     Object(Obj, bool),
-    /// A Date whose `toJSON` is the original (D1901): its time value.
-    Date(f64),
+    /// A Date whose `toJSON` is the original (D1901).
+    Date(Obj),
 }
 
 /// Date.prototype's methods that `toJSON` of a Date runs: with the originals in place,
@@ -558,8 +558,7 @@ impl Ser<'_, '_> {
                 _ => return None,
             }
         }
-        let t = self.heap.object_slot(o, 0).as_number().unwrap_or(f64::NAN);
-        Some(Class::Date(t))
+        Some(Class::Date(o))
     }
 
     /// A check point: moves a buffer past [`SPILL_AT`] into the heap, where the string
@@ -678,7 +677,8 @@ impl Ser<'_, '_> {
         let (o, is_array) = match c {
             Class::Skip => unreachable!(),
             Class::Primitive => return self.primitive(v),
-            Class::Date(t) => {
+            Class::Date(d) => {
+                let t = self.heap.object_slot(d, 0).as_number().unwrap_or(f64::NAN);
                 match crate::builtins::date::format(t, 2, 3, 0) {
                     Some(iso) => {
                         self.out.byte(b'"');

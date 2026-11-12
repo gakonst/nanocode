@@ -36,6 +36,13 @@ pub enum Flow {
 
 type R<T> = Result<T, Flow>;
 
+enum Step {
+    Done,
+    Check,
+    Flush,
+    Wait,
+}
+
 fn fatal<T>(msg: impl Into<String>) -> R<T> {
     Err(Flow::Fatal(msg.into()))
 }
@@ -741,7 +748,32 @@ impl<'c, 'v> Interp<'c, 'v> {
     pub async fn exec(&mut self, id: CodeId) -> R<()> {
         let depth = self.frames.len();
         let stack_base = self.stack.len();
-        let r = self.run(id).await;
+        self.frames.push(Frame {
+            code: id,
+            ip: 0,
+            base: stack_base,
+            arrays: Vec::new(),
+            for_in_base: self.for_in.len(),
+        });
+        let prog = self.prog.clone();
+        let r = loop {
+            let next = match self.step(&prog, depth) {
+                Ok(Step::Done) => break Ok(()),
+                Ok(next) => next,
+                Err(f) => break Err(f),
+            };
+            let waited = match next {
+                Step::Check => {
+                    self.ctx.check().await;
+                    Ok(())
+                }
+                Step::Flush => self.flush_printed().await,
+                _ => self.wait(&prog).await,
+            };
+            if let Err(f) = waited {
+                break Err(f);
+            }
+        };
         if r.is_err() {
             // Unwind what the error left: frames, locals, loop snapshots.
             self.frames.truncate(depth);
@@ -751,24 +783,92 @@ impl<'c, 'v> Interp<'c, 'v> {
         r
     }
 
-    async fn run(&mut self, id: CodeId) -> R<()> {
-        let prog = self.prog.clone();
-        let depth = self.frames.len();
-        self.frames.push(Frame {
-            code: id,
-            ip: 0,
-            base: self.stack.len(),
-            arrays: Vec::new(),
-            for_in_base: self.for_in.len(),
-        });
-        let mut code: &[Op] = prog.code(id);
-        let mut ip = 0usize;
+    async fn wait(&mut self, prog: &Program) -> R<()> {
+        let f = self.frames.last().unwrap();
+        match &prog.code(f.code)[f.ip - 1] {
+            Op::Call(b, n) => self.call_io(*b, *n as usize).await,
+            Op::PrintFields(fields, redir) => {
+                let out = self.print_fields(fields);
+                let written = self.write_out(*redir, &out).await;
+                self.printed = out;
+                written
+            }
+            Op::Print(n, redir) => {
+                let out = self.print_values(*n as usize);
+                let written = self.write_out(*redir, &out).await;
+                self.printed = out;
+                written
+            }
+            Op::Printf(n, redir) => {
+                let out = self.printf_values(*n as usize)?;
+                self.write_out(*redir, &out).await
+            }
+            Op::Getline(src, target) => self.getline(*src, *target).await,
+            _ => unreachable!(),
+        }
+    }
+
+    fn print_fields(&mut self, fields: &[u32]) -> Vec<u8> {
+        let mut out = std::mem::take(&mut self.printed);
+        out.clear();
+        for (k, i) in fields.iter().enumerate() {
+            if k > 0 {
+                out.extend_from_slice(&self.ofs);
+            }
+            self.field_text(*i as usize, &mut out);
+        }
+        out.extend_from_slice(&self.ors);
+        out
+    }
+
+    fn print_values(&mut self, n: usize) -> Vec<u8> {
+        let at = self.stack.len() - n;
+        let mut out = std::mem::take(&mut self.printed);
+        out.clear();
+        if n == 0 {
+            out.extend_from_slice(&self.rec);
+        } else {
+            for (k, v) in self.stack[at..].iter().enumerate() {
+                if k > 0 {
+                    out.extend_from_slice(&self.ofs);
+                }
+                out.extend_from_slice(&self.to_output_str(v));
+            }
+        }
+        self.stack.truncate(at);
+        out.extend_from_slice(&self.ors);
+        out
+    }
+
+    fn printf_values(&mut self, n: usize) -> R<Vec<u8>> {
+        let at = self.stack.len() - n;
+        let args: Vec<Value> = self.stack.drain(at..).collect();
+        let fmt = self.to_str(&args[0]);
+        self.sprintf(&fmt, &args[1..])
+    }
+
+    fn print_now(&mut self, out: Vec<u8>) -> bool {
+        let now = self.ctx.write_now(&out);
+        self.printed = out;
+        now
+    }
+
+    async fn flush_printed(&mut self) -> R<()> {
+        let out = std::mem::take(&mut self.printed);
+        let written = self.write_stdout(&out).await;
+        self.printed = out;
+        written
+    }
+
+    fn step(&mut self, prog: &Program, depth: usize) -> R<Step> {
+        let f = self.frames.last().unwrap();
+        let (mut code, mut ip) = (prog.code(f.code), f.ip);
         loop {
             if ip >= code.len() {
                 // The end of a block, or a function's end without return.
                 if self.frames.len() == depth + 1 {
                     self.frames.pop();
-                    return Ok(());
+                    return Ok(Step::Done);
                 }
                 self.return_from(Value::Uninit);
                 let f = self.frames.last().unwrap();
@@ -779,7 +879,8 @@ impl<'c, 'v> Interp<'c, 'v> {
             self.steps += 1;
             if self.steps >= CHECK_EVERY {
                 self.steps = 0;
-                self.ctx.check().await;
+                self.frames.last_mut().unwrap().ip = ip;
+                return Ok(Step::Check);
             }
             let op = &code[ip];
             ip += 1;
@@ -1002,7 +1103,6 @@ impl<'c, 'v> Interp<'c, 'v> {
                 Op::ForInEnd => {
                     self.for_in.pop();
                 }
-                Op::Call(b, n) => self.call_builtin(*b, *n as usize).await?,
                 Op::LengthArray(a) => {
                     let n = self.array(*a).borrow().len();
                     self.push(Value::Num(n as f64));
@@ -1119,51 +1219,35 @@ impl<'c, 'v> Interp<'c, 'v> {
                         self.push(Value::Uninit);
                     }
                 }
-                Op::PrintFields(fields, redir) => {
-                    let mut out = std::mem::take(&mut self.printed);
-                    out.clear();
-                    for (k, i) in fields.iter().enumerate() {
-                        if k > 0 {
-                            out.extend_from_slice(&self.ofs);
-                        }
-                        self.field_text(*i as usize, &mut out);
-                    }
-                    out.extend_from_slice(&self.ors);
-                    let written = self.write_out(*redir, &out).await;
-                    self.printed = out;
-                    written?;
-                }
-                Op::Print(n, redir) => {
-                    let n = *n as usize;
-                    let at = self.stack.len() - n;
-                    let mut out = std::mem::take(&mut self.printed);
-                    out.clear();
-                    if n == 0 {
-                        out.extend_from_slice(&self.rec);
-                    } else {
-                        for (k, v) in self.stack[at..].iter().enumerate() {
-                            if k > 0 {
-                                out.extend_from_slice(&self.ofs);
-                            }
-                            out.extend_from_slice(&self.to_output_str(v));
-                        }
-                    }
-                    self.stack.truncate(at);
-                    out.extend_from_slice(&self.ors);
-                    let written = self.write_out(*redir, &out).await;
-                    self.printed = out;
-                    written?;
-                }
-                Op::Printf(n, redir) => {
-                    let n = *n as usize;
-                    let at = self.stack.len() - n;
-                    let args: Vec<Value> = self.stack.drain(at..).collect();
-                    let fmt = self.to_str(&args[0]);
-                    let out = self.sprintf(&fmt, &args[1..])?;
-                    self.write_out(*redir, &out).await?;
-                }
-                Op::Getline(src, target) => self.getline(*src, *target).await?,
                 Op::Line(n) => self.src_line = *n,
+                Op::Call(b, n) if !matches!(b, Builtin::System | Builtin::Close | Builtin::Fflush) => {
+                    self.call_builtin(*b, *n as usize)?
+                }
+                Op::PrintFields(fields, Redir::None) => {
+                    let out = self.print_fields(fields);
+                    if !self.print_now(out) {
+                        self.frames.last_mut().unwrap().ip = ip;
+                        return Ok(Step::Flush);
+                    }
+                }
+                Op::Print(n, Redir::None) => {
+                    let out = self.print_values(*n as usize);
+                    if !self.print_now(out) {
+                        self.frames.last_mut().unwrap().ip = ip;
+                        return Ok(Step::Flush);
+                    }
+                }
+                Op::Printf(n, Redir::None) => {
+                    let out = self.printf_values(*n as usize)?;
+                    if !self.print_now(out) {
+                        self.frames.last_mut().unwrap().ip = ip;
+                        return Ok(Step::Flush);
+                    }
+                }
+                Op::Call(..) | Op::PrintFields(..) | Op::Print(..) | Op::Printf(..) | Op::Getline(..) => {
+                    self.frames.last_mut().unwrap().ip = ip;
+                    return Ok(Step::Wait);
+                }
             }
         }
     }
@@ -1653,9 +1737,10 @@ impl<'c, 'v> Interp<'c, 'v> {
                     continue;
                 }
                 if action.body.is_none() {
-                    let mut out = self.rec.clone();
-                    out.extend_from_slice(&self.ors);
-                    self.write_stdout(&out).await?;
+                    let out = self.print_values(0);
+                    if !self.print_now(out) {
+                        self.flush_printed().await?;
+                    }
                     continue;
                 }
                 match self.exec(CodeId::Action(i)).await {
@@ -1673,7 +1758,7 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     // ---- Builtins.
 
-    async fn call_builtin(&mut self, b: Builtin, n: usize) -> R<()> {
+    fn call_builtin(&mut self, b: Builtin, n: usize) -> R<()> {
         use Builtin as B;
         let at = self.stack.len() - n;
         // The arguments move into the list the last call left: no list per call.
@@ -1806,6 +1891,41 @@ impl<'c, 'v> Interp<'c, 'v> {
                 };
                 Value::Str(Rc::from(gensub(&re, &repl, &text, which, self.utf8)))
             }
+            B::Systime => Value::Num(self.ctx.now().as_secs() as f64),
+            B::Strftime => {
+                let fmt = match args.first() {
+                    Some(f) => self.to_str(f),
+                    None => s(b"%a %b %e %H:%M:%S %Z %Y"),
+                };
+                let t = match args.get(1) {
+                    Some(t) => t.num().trunc() as i64,
+                    None => self.ctx.now().as_secs() as i64,
+                };
+                let utc = args.get(2).is_some_and(|u| u.truth());
+                Value::Str(Rc::from(super::builtins::strftime(self.ctx, &fmt, t, utc)))
+            }
+            B::Mktime => {
+                let spec = self.to_str(&args[0]);
+                let utc = args.get(1).is_some_and(|u| u.truth());
+                Value::Num(super::builtins::mktime(self.ctx, &spec, utc))
+            }
+            B::Split | B::Sprintf => unreachable!("compiled to their own instructions"),
+            B::System | B::Close | B::Fflush => unreachable!("run by call_io"),
+        };
+        args.clear();
+        self.call_args = args;
+        self.push(v);
+        Ok(())
+    }
+
+    async fn call_io(&mut self, b: Builtin, n: usize) -> R<()> {
+        use Builtin as B;
+        let at = self.stack.len() - n;
+        // The arguments move into the list the last call left: no list per call.
+        let mut args = std::mem::take(&mut self.call_args);
+        args.clear();
+        args.extend(self.stack.drain(at..));
+        let v = match b {
             B::System => {
                 let cmd = self.to_str(&args[0]);
                 self.flush_all().await;
@@ -1839,25 +1959,7 @@ impl<'c, 'v> Interp<'c, 'v> {
                 };
                 Value::Num(if ok { 0.0 } else { -1.0 })
             }
-            B::Systime => Value::Num(self.ctx.now().as_secs() as f64),
-            B::Strftime => {
-                let fmt = match args.first() {
-                    Some(f) => self.to_str(f),
-                    None => s(b"%a %b %e %H:%M:%S %Z %Y"),
-                };
-                let t = match args.get(1) {
-                    Some(t) => t.num().trunc() as i64,
-                    None => self.ctx.now().as_secs() as i64,
-                };
-                let utc = args.get(2).is_some_and(|u| u.truth());
-                Value::Str(Rc::from(super::builtins::strftime(self.ctx, &fmt, t, utc)))
-            }
-            B::Mktime => {
-                let spec = self.to_str(&args[0]);
-                let utc = args.get(1).is_some_and(|u| u.truth());
-                Value::Num(super::builtins::mktime(self.ctx, &spec, utc))
-            }
-            B::Split | B::Sprintf => unreachable!("compiled to their own instructions"),
+            _ => unreachable!("run by call_builtin"),
         };
         args.clear();
         self.call_args = args;

@@ -489,6 +489,17 @@ impl UtilCtx<'_> {
         }
     }
 
+    pub fn write_now(&mut self, data: &[u8]) -> bool {
+        if self.write_error.is_some()
+            || self.out.len() + data.len() >= BUFFER
+            || (data.contains(&b'\n') && self.is_terminal(1))
+        {
+            return false;
+        }
+        self.out.extend_from_slice(data);
+        true
+    }
+
     /// Writes to stdout through the buffer (flushed when full, and at line ends when
     /// stdout is a terminal).
     pub async fn write(&mut self, data: &[u8]) -> io::Result<()> {

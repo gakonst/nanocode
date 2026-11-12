@@ -456,6 +456,25 @@ impl Exec<'_> {
     }
 
     #[inline(never)]
+    fn decline_field(&mut self, op: u8) -> bool {
+        let o = self.get(self.sp - 1);
+        let Some(v) = super::ic::mega_get(self.heap, o, self.imm_atom()) else {
+            return false;
+        };
+        self.set(self.sp - 1, v);
+        let o = if op == fast::GET_FIELD {
+            Op::GetField
+        } else {
+            self.push(o);
+            Op::GetMethod
+        };
+        let info = &OPS[o as usize];
+        self.fuel -= info.cost.fuel() as i64;
+        self.pc += info.size as u32;
+        true
+    }
+
+    #[inline(never)]
     fn decline_plain(&mut self, op: u8) -> bool {
         let o = match op {
             OBJECT => {
@@ -669,6 +688,9 @@ impl Exec<'_> {
                 | TO_STRING
         ) {
             return self.decline_plain(op);
+        }
+        if op == fast::GET_FIELD || op == fast::GET_METHOD {
+            return self.decline_field(op);
         }
         if op == fast::MOD {
             let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));

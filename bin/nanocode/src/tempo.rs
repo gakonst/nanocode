@@ -34,6 +34,8 @@ use reqwest::ResponseBuilderExt;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
+mod accounts;
+
 use crate::{
     cli::GatewayArgs,
     host::{ModelClients, Panel, Result, Route},
@@ -755,10 +757,8 @@ impl Wallet {
 
     async fn held(&self) -> std::result::Result<Address, String> {
         let host = self.url.host_str().unwrap_or_default().to_owned();
-        let account = tokio::task::spawn_blocking(|| {
-            tempo_alloy::accounts::TempoAccountsWallet::from_default_store()?.active_account()
-        })
-        .await
+        let account = tokio::task::spawn_blocking(accounts::default_active_account)
+            .await
         .map_err(|error| error.to_string())?
         .map_err(|error| {
             format!("{error}; sign in to a Tempo wallet with /login tempo to pay {host}")
@@ -766,7 +766,7 @@ impl Wallet {
         let client = self.payments.client()?;
         let mut held = (U256::ZERO, None);
         for token in [USDC, USDT0, PATH_USD] {
-            let balance = balance(&client, token, account).await?;
+            let balance = balance(&client, token, Address::from(account.0)).await?;
             if balance > held.0 {
                 held = (balance, Some(token));
             }

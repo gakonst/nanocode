@@ -39,12 +39,12 @@ nanocode-home = { path = "../../crates/core/home", version = "0.7.0" }
 nanocode-observability = { path = "../../crates/integrations/observability", version = "0.7.0" }
 nanocode-store-jsonl = { path = "../../crates/integrations/store-jsonl", version = "0.7.0" }
 nanocode-sync.workspace = true
+nanocode-tempo.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
 opentelemetry.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-tempo-alloy.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true

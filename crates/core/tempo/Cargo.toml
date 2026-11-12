@@ -1,0 +1,19 @@
+[package]
+name = "nanocode-tempo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tempo primitives without dependencies: keccak, secp256k1 and P-256 ECDSA, RLP, ABI and Tempo transactions"
+autotests = false
+autobenches = false
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

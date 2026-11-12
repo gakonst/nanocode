@@ -5997,6 +5997,7 @@ dependencies = [
  "nanocode-python",
  "nanocode-store-jsonl",
  "nanocode-sync",
+ "nanocode-tempo",
  "nanocode-tui",
  "nix 0.31.3",
  "opentelemetry",
@@ -6004,7 +6005,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tempo-alloy",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -6476,6 +6476,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
+
+[[package]]
+name = "nanocode-tempo"
+version = "0.7.0"
 
 [[package]]
 name = "nanocode-tls"

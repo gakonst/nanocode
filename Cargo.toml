@@ -22,6 +22,7 @@ members = [
     "crates/core/home",
     "crates/core/http",
     "crates/core/zstd",
+    "crates/core/tempo",
     "crates/core/mcp",
     "crates/core/mcp-http",
     "crates/core/platform",
@@ -138,6 +139,7 @@ nanocode-platform = { version = "0.7.0", path = "crates/core/platform" }
 nanocode-python = { version = "0.7.0", path = "crates/core/python" }
 nanocode-machine = { version = "0.7.0", path = "crates/core/machine" }
 nanocode-sync = { version = "0.7.0", path = "crates/core/sync" }
+nanocode-tempo = { version = "0.7.0", path = "crates/core/tempo" }
 nanocode-schema = { version = "0.7.0", path = "crates/core/schema" }
 nanocode-shell = { version = "0.7.0", path = "crates/core/shell" }
 nanocode-durability = { version = "0.7.0", path = "crates/runtime/durability" }
@@ -157,7 +159,6 @@ nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 image = { version = "=0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "webp"] }
 iana-time-zone = "0.1.64"
 mpp = { git = "https://github.com/tempoxyz/mpp-rs", rev = "65fe50a94fd3f60c2355179828acb11bf1478864", default-features = false, features = ["client", "tempo", "sqlite", "forward-proxy", "reqwest-rustls-tls-no-provider"] }
-tempo-alloy = { version = "1.11.0", default-features = false }
 nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
 portable-pty = "0.9.0"
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }

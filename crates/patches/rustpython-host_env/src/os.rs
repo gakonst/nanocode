@@ -6,8 +6,6 @@ use crate::crt_fd;
 use crate::fs;
 #[cfg(windows)]
 pub use crate::posix::rename;
-#[cfg(any(unix, target_os = "wasi"))]
-pub use crate::posix_unix_like::rename;
 #[cfg(any(unix, windows))]
 use core::ffi::CStr;
 use core::str::Utf8Error;
@@ -467,7 +465,8 @@ pub fn cpu_count() -> usize {
 
 #[cfg(unix)]
 pub fn page_size() -> usize {
-    rustix::param::page_size()
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    usize::try_from(size).expect("sysconf(_SC_PAGESIZE) returns the page size")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -583,19 +582,6 @@ pub fn isatty(_fd: i32) -> bool {
 #[cfg(any(unix, windows))]
 pub fn system(command: &CStr) -> libc::c_int {
     unsafe { libc::system(command.as_ptr()) }
-}
-
-#[cfg(target_os = "linux")]
-pub fn copy_file_range(
-    src: crt_fd::Borrowed<'_>,
-    offset_src: Option<&mut u64>,
-    dst: crt_fd::Borrowed<'_>,
-    offset_dst: Option<&mut u64>,
-    count: usize,
-) -> rustix::io::Result<usize> {
-    // `copy_file_range` isn't wrapped in every libc (i.e. musl).
-    // However, Rustix is a safe wrapper around the syscall that bypasses libc.
-    rustix::fs::copy_file_range(src, offset_src, dst, offset_dst, count)
 }
 
 #[cfg(windows)]
@@ -722,13 +708,6 @@ pub fn io_error_from_errno(errno: i32) -> io::Error {
     io::Error::new(kind, CrtErrno(errno))
 }
 
-#[cfg(all(not(windows), not(target_arch = "wasm32")))]
-impl ErrorExt for rustix::io::Errno {
-    fn posix_errno(&self) -> i32 {
-        self.raw_os_error()
-    }
-}
-
 /// Get the last error from C runtime library functions (like _dup, _dup2, _fstat, etc.)
 /// CRT functions set errno, not GetLastError(), so we need to read errno directly.
 #[cfg(windows)]
@@ -818,9 +797,14 @@ pub fn set_errno(value: i32) {
     unsafe { suppress_iph!(_set_errno(value)) };
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn set_errno(value: i32) {
-    nix::errno::Errno::from_raw(value).set();
+    unsafe { *libc::__errno_location() = value };
+}
+
+#[cfg(target_vendor = "apple")]
+pub fn set_errno(value: i32) {
+    unsafe { *libc::__error() = value };
 }
 
 #[cfg(target_os = "wasi")]
@@ -1053,4 +1037,9 @@ mod tests {
     fn o_wronly_is_one() {
         assert_eq!(super::O_WRONLY, 1);
     }
+}
+
+#[cfg(unix)]
+pub fn is_session_leader() -> bool {
+    unsafe { libc::getsid(0) == libc::getpid() }
 }

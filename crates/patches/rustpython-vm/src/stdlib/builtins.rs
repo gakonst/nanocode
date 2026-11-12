@@ -830,7 +830,7 @@ mod builtins {
     /// In this case, rustyline may hang because it uses raw mode.
     #[cfg(unix)]
     fn is_pty_child() -> bool {
-        crate::host_env::posix::is_session_leader()
+        crate::host_env::os::is_session_leader()
     }
 
     #[cfg(not(unix))]

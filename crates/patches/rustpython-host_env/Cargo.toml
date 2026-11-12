@@ -122,21 +122,9 @@ version = "5"
 features = ["system"]
 optional = true
 
-[target.'cfg(any(unix, target_os = "macos", target_os = "redox", target_os = "wasi"))'.dependencies.rustix]
-version = "1.1"
-features = [
-    "event",
-    "fs",
-    "param",
-    "system",
-]
-
 [target."cfg(any(unix, windows))".dependencies.libloading]
 version = "0.9"
 optional = true
-
-[target."cfg(any(unix, windows))".dependencies.memmap2]
-version = "0.9.10"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.rustls-native-certs]
 version = "0.8"
@@ -146,25 +134,6 @@ optional = true
 version = "0.23.39"
 features = ["aws_lc_rs"]
 default-features = false
-
-[target."cfg(unix)".dependencies.nix]
-version = "0.31"
-features = [
-    "fs",
-    "user",
-    "process",
-    "term",
-    "time",
-    "signal",
-    "ioctl",
-    "socket",
-    "sched",
-    "zerocopy",
-    "dir",
-    "hostname",
-    "net",
-    "poll",
-]
 
 [target."cfg(windows)".dependencies.junction]
 version = "2.0.0"

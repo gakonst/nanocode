@@ -1540,7 +1540,7 @@ impl IntoPyException for std::io::Error {
     }
 }
 
-#[cfg(all(unix, not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "redox"), feature = "host_env"))]
 impl ToPyException for rustpython_host_env::fcntl::LockfError {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         match self {
@@ -1551,7 +1551,7 @@ impl ToPyException for rustpython_host_env::fcntl::LockfError {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "host_env"))]
 impl ToPyException for rustpython_host_env::posix::AccessError {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         match self {
@@ -1563,7 +1563,7 @@ impl ToPyException for rustpython_host_env::posix::AccessError {
     }
 }
 
-#[cfg(all(unix, not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "redox"), feature = "host_env"))]
 impl ToPyException for rustpython_host_env::socket::AncillaryPackError {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         match self {
@@ -1683,7 +1683,7 @@ impl ToPyException for rustpython_host_env::wmi::ExecQueryError {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "host_env"))]
 impl ToPyException for rustpython_host_env::multiprocessing::SemError {
     fn to_pyexception(&self, vm: &VirtualMachine) -> PyBaseExceptionRef {
         let excs = &vm.ctx.exceptions;

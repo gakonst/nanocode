@@ -19,8 +19,6 @@ pub mod io;
 #[path = "io_unsupported.rs"]
 pub mod io;
 pub mod os;
-#[cfg(any(unix, windows))]
-pub mod thread;
 
 #[cfg(any(unix, windows, target_os = "wasi"))]
 pub mod crt_fd;
@@ -42,50 +40,24 @@ pub mod ssl;
 #[cfg(windows)]
 pub mod windows;
 
-#[cfg(any(unix, target_os = "wasi"))]
-pub mod fcntl;
-#[cfg(any(unix, windows, target_os = "wasi"))]
-pub mod select;
-#[cfg(any(unix, windows))]
-pub mod socket;
 #[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "wasi"))]
 #[path = "socket_wasm.rs"]
 pub mod socket;
-#[cfg(unix)]
-pub mod syslog;
 
-#[cfg(unix)]
-pub mod grp;
-#[cfg(unix)]
-pub mod posix;
 #[cfg(target_os = "wasi")]
 #[path = "posix_wasi.rs"]
 pub mod posix;
 #[cfg(windows)]
 #[path = "posix_windows.rs"]
 pub mod posix;
-#[cfg(any(unix, target_os = "wasi"))]
-pub mod posix_unix_like;
-#[cfg(unix)]
-pub mod pwd;
-#[cfg(unix)]
-pub mod resource;
-#[cfg(all(unix, not(target_os = "redox"), not(target_os = "android")))]
-pub mod shm;
 #[cfg(any(unix, windows))]
 pub mod signal;
 pub mod time;
 
 #[cfg(windows)]
 pub mod cert_store;
-#[cfg(any(unix, windows))]
-pub mod faulthandler;
-#[cfg(any(unix, windows))]
-pub mod mmap;
 #[cfg(windows)]
 pub mod msvcrt;
-#[cfg(any(unix, windows))]
-pub mod multiprocessing;
 #[cfg(windows)]
 pub mod nt;
 #[cfg(windows)]

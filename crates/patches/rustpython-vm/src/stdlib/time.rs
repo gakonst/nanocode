@@ -164,7 +164,7 @@ mod decl {
                         let errno = err.raw_os_error().unwrap_or(0);
                         return Err(vm.new_os_error(format!(
                             "nanosleep: {}",
-                            host_time::nix_errno_display(errno)
+                            host_time::strerror(errno)
                         )));
                     }
                 }

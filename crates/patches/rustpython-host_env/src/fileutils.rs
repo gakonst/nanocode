@@ -4,14 +4,20 @@
 use alloc::ffi::CString;
 
 #[cfg(not(windows))]
-pub use rustix::fs::Stat as StatStruct;
+pub use libc::stat as StatStruct;
 
 #[cfg(windows)]
 pub use windows::{StatStruct, fstat};
 
 #[cfg(not(windows))]
 pub fn fstat(fd: crate::crt_fd::Borrowed<'_>) -> std::io::Result<StatStruct> {
-    rustix::fs::fstat(fd).map_err(Into::into)
+    use std::os::fd::AsRawFd;
+    let mut status = core::mem::MaybeUninit::<StatStruct>::uninit();
+    let ret = unsafe { libc::fstat(fd.as_raw_fd(), status.as_mut_ptr()) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { status.assume_init() })
 }
 
 #[cfg(windows)]

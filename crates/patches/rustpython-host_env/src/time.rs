@@ -172,11 +172,6 @@ pub fn strerror(errno: i32) -> String {
         .into_owned()
 }
 
-#[cfg(unix)]
-pub fn nix_errno_display(errno: i32) -> String {
-    nix::errno::Errno::from_raw(errno).to_string()
-}
-
 #[cfg(all(unix, not(any(target_os = "redox", target_os = "android"))))]
 pub fn getloadavg() -> std::io::Result<[f64; 3]> {
     let mut loadavg = [0f64; 3];
@@ -310,19 +305,7 @@ pub use libc::{CLOCK_MONOTONIC_RAW_APPROX, CLOCK_UPTIME_RAW, CLOCK_UPTIME_RAW_AP
 #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "dragonfly"))]
 pub use libc::{CLOCK_PROF, CLOCK_UPTIME};
 
-#[cfg(unix)]
-fn nix_clock_id(id: ClockId) -> nix::time::ClockId {
-    nix::time::ClockId::from_raw(id.as_raw())
-}
-
-#[cfg(unix)]
-pub fn clock_gettime(id: ClockId) -> std::io::Result<Duration> {
-    nix::time::clock_gettime(nix_clock_id(id))
-        .map(Duration::from)
-        .map_err(std::io::Error::from)
-}
-
-#[cfg(target_os = "wasi")]
+#[cfg(any(unix, target_os = "wasi"))]
 pub fn clock_gettime(id: ClockId) -> std::io::Result<Duration> {
     let mut ts = core::mem::MaybeUninit::<libc::timespec>::uninit();
 
@@ -336,14 +319,7 @@ pub fn clock_gettime(id: ClockId) -> std::io::Result<Duration> {
     Ok(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
 }
 
-#[cfg(all(unix, not(target_os = "redox")))]
-pub fn clock_getres(id: ClockId) -> std::io::Result<Duration> {
-    nix::time::clock_getres(nix_clock_id(id))
-        .map(Duration::from)
-        .map_err(std::io::Error::from)
-}
-
-#[cfg(target_os = "wasi")]
+#[cfg(any(all(unix, not(target_os = "redox")), target_os = "wasi"))]
 pub fn clock_getres(id: ClockId) -> std::io::Result<Duration> {
     let mut ts = core::mem::MaybeUninit::<libc::timespec>::uninit();
     let ret = unsafe { libc::clock_getres(id.as_raw(), ts.as_mut_ptr()) };
@@ -354,18 +330,24 @@ pub fn clock_getres(id: ClockId) -> std::io::Result<Duration> {
     Ok(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
 }
 
-#[cfg(all(unix, not(target_os = "redox"), not(target_vendor = "apple")))]
-pub fn clock_settime(id: ClockId, time: Duration) -> std::io::Result<()> {
-    let ts = nix::sys::time::TimeSpec::from(time);
-    nix::time::clock_settime(nix_clock_id(id), ts)
-        .map(drop)
-        .map_err(std::io::Error::from)
+#[cfg(unix)]
+fn timespec_from(duration: Duration) -> std::io::Result<libc::timespec> {
+    let seconds = libc::time_t::try_from(duration.as_secs())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    Ok(libc::timespec {
+        tv_sec: seconds,
+        tv_nsec: libc::c_long::from(duration.subsec_nanos()),
+    })
 }
 
-#[cfg(all(unix, not(target_os = "redox"), target_os = "macos"))]
+#[cfg(all(
+    unix,
+    not(target_os = "redox"),
+    any(not(target_vendor = "apple"), target_os = "macos")
+))]
 pub fn clock_settime(id: ClockId, time: Duration) -> std::io::Result<()> {
-    let ts = nix::sys::time::TimeSpec::from(time);
-    let ret = unsafe { libc::clock_settime(id.as_raw(), ts.as_ref()) };
+    let ts = timespec_from(time)?;
+    let ret = unsafe { libc::clock_settime(id.as_raw(), &ts) };
     if ret != 0 {
         Err(std::io::Error::last_os_error())
     } else {
@@ -375,8 +357,8 @@ pub fn clock_settime(id: ClockId, time: Duration) -> std::io::Result<()> {
 
 #[cfg(unix)]
 pub fn nanosleep(duration: Duration) -> std::io::Result<()> {
-    let ts = nix::sys::time::TimeSpec::from(duration);
-    let ret = unsafe { libc::nanosleep(ts.as_ref(), core::ptr::null_mut()) };
+    let ts = timespec_from(duration)?;
+    let ret = unsafe { libc::nanosleep(&ts, core::ptr::null_mut()) };
     if ret != 0 {
         Err(std::io::Error::last_os_error())
     } else {

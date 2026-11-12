@@ -19,6 +19,7 @@
 
 mod classify_json;
 mod cli;
+mod command_line;
 #[cfg(unix)]
 pub mod embed;
 mod json;

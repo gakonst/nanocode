@@ -8,12 +8,14 @@
 //! outside the platform modules and are shared by both hosts.
 
 pub mod lifecycle;
+mod terminal;
 mod timer;
 #[cfg(unix)]
 pub mod unix;
 #[cfg(windows)]
 pub mod windows;
 
+pub use terminal::stdout_columns;
 pub use timer::sleep;
 
 /// The fate of a run's leftovers when its host is dropped (D1067).

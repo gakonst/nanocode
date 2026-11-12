@@ -18,21 +18,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "argument"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2ce63739a078df7f1f27fa78d1fc629a96a8e3af7a5370449a79b13de88a3f9"
-dependencies = [
- "argument-parser",
-]
-
-[[package]]
-name = "argument-parser"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce8e764dfe3de31014e13e9dd3f63fe46d4e398ead11bb09fde417a26cf24517"
-
-[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -306,7 +291,6 @@ dependencies = [
 name = "psh"
 version = "0.0.0"
 dependencies = [
- "argument",
  "psh-classify",
  "psh-engine",
  "psh-os",

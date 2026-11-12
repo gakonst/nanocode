@@ -1,16 +1,16 @@
-//! psh's own command line (D035, D1340). `argument` parses psh's modes (`--parse`,
+//! psh's own command line (D035, D1340). `command_line` parses psh's modes (`--parse`,
 //! `--classify`, `--utils`), `--help` and `--version`, and renders the help pages, usage lines and
 //! errors. Bash's invocation (`-c`, `-euc`, `+o NAME`, `-O NAME`, `--`, the first operand
-//! ending the options, bash's long options) is not expressible in `argument` (`+`
+//! ending the options, bash's long options) is not expressible in `command_line` (`+`
 //! options, `-o` taking the next argument even inside `-eo`, `-c` as a flag whose command
 //! is the first operand) and stays with `psh_engine::invocation`, which the conformance
-//! runner shares: here `argument` reads only the leading `--name` arguments that are not
+//! runner shares: here `command_line` reads only the leading `--name` arguments that are not
 //! bash's and hands everything else over untouched.
 
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use argument::{Cli, Error, Opt, Parser, Pos, ValueHint};
+use crate::command_line::{Cli, Error, Opt, Parser, Pos};
 use psh_engine::invocation::LONG_OPTIONS;
 
 /// What the command line asks for.
@@ -96,7 +96,7 @@ static PSH: Cli<Top> = Cli::new("psh")
             .value("NAME")
             .help("Turn on the shopt option NAME (extglob, nullglob, ...)"),
         // bash's `-h` is `set -h` (hashall) and `-V` is no option: neither may print the
-        // help or the version, as `argument` would without these.
+        // help or the version, as `command_line` would without these.
         Opt::new(Top::Shell).short('h').hidden(),
         Opt::new(Top::Shell).short('V').hidden(),
     ])
@@ -144,7 +144,6 @@ const PARSE_OPTS: [Opt<D>; 4] = [
 
 const DIAG_FILE: [Pos<D>; 1] = [Pos::new(D::File, "FILE")
     .optional()
-    .value_hint(ValueHint::FilePath)
     .help("The script; stdin without FILE or -c")];
 
 static PARSE: Cli<D> = Cli::new("--parse")
@@ -196,12 +195,12 @@ static UTILS: Cli<U> = Cli::new("--utils")
     );
 
 /// Parses the command line after the program name. Help, version and errors are
-/// printed by `argument`'s `Error::exit` (status 0 for help and version, 2 for errors).
+/// printed by `command_line`'s `Error::print` (status 0 for help and version, 2 for errors).
 pub fn parse(args: Vec<OsString>) -> Result<Mode, Error> {
     let mut p = PSH.parser_from_args(args);
     let mut shell = Vec::new();
     loop {
-        // Only `--name` arguments that are not bash's go to `argument`; the first other
+        // Only `--name` arguments that are not bash's go to `command_line`; the first other
         // argument (an option, `--`, an operand) starts bash's part.
         match p.peek_raw_arg() {
             Some(a) if is_long(a) => {
@@ -356,7 +355,7 @@ mod tests {
 
     #[test]
     fn errors() {
-        use argument::ErrorKind;
+        use crate::command_line::ErrorKind;
         let kind = |args: &[&str]| run(args).err().map(|e| e.kind());
         assert_eq!(kind(&["--help"]), Some(ErrorKind::Help));
         assert_eq!(kind(&["--version"]), Some(ErrorKind::Version));

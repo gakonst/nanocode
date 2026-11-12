@@ -14,8 +14,6 @@ psh-classify.workspace = true
 psh-os.workspace = true
 # The in-process utilities (D1080).
 psh-utils.workspace = true
-# psh's own command line: its modes, help page, usage and errors (D035, D1340).
-argument = "0.1.0"
 
 [lints]
 workspace = true

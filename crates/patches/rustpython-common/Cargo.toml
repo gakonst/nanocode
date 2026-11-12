@@ -34,7 +34,7 @@ binascii = [
 ]
 bz2 = [
     "std",
-    "dep:bzip2",
+    "dep:nanocode-compression",
 ]
 cjk-codecs = []
 default = ["std"]
@@ -92,10 +92,6 @@ optional = true
 
 [dependencies.blake2s_simd]
 version = "1.0.4"
-optional = true
-
-[dependencies.bzip2]
-version = "0.6"
 optional = true
 
 [dependencies.getrandom]

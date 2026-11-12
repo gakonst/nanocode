@@ -5,7 +5,10 @@
 //! interpreter and embedding layers can provide their own object and exception
 //! adapters.
 
-use bzip2::{Action, Compress, Compression, Decompress, Error, Status};
+use nanocode_compression::bzip2::{
+    Action, Bzip2Error, CompressStatus, Compressor as Compress, DecompressStatus,
+    Decompressor as Decompress, Level,
+};
 
 use super::Chunker;
 
@@ -35,12 +38,12 @@ pub enum Bz2Error {
     Mem,
 }
 
-impl From<Error> for Bz2Error {
-    fn from(error: Error) -> Self {
+impl From<Bzip2Error> for Bz2Error {
+    fn from(error: Bzip2Error) -> Self {
         match error {
-            Error::Param => Self::Param,
-            Error::Data | Error::DataMagic => Self::Data,
-            Error::Sequence => Self::Sequence,
+            Bzip2Error::Param => Self::Param,
+            Bzip2Error::Data | Bzip2Error::DataMagic => Self::Data,
+            Bzip2Error::Sequence => Self::Sequence,
         }
     }
 }
@@ -54,13 +57,11 @@ pub struct Compressor {
 
 impl Compressor {
     /// Create a compressor. Returns `None` when `compresslevel` is outside
-    /// `1..=9`. A zero work factor selects libbz2's default of 30.
+    /// `1..=9`. The block sort uses libbz2's default work factor of 30.
     pub fn new(compresslevel: i64) -> Option<Self> {
-        let level = u32::try_from(compresslevel)
-            .ok()
-            .and_then(Compression::try_new)?;
+        let level = u32::try_from(compresslevel).ok().and_then(Level::new)?;
         Some(Self {
-            compress: Compress::new(level, 0),
+            compress: Compress::new(level),
             flushed: false,
         })
     }
@@ -82,7 +83,7 @@ impl Compressor {
     }
 
     /// One pass over the input with the requested action, growing the output
-    /// block whenever libbz2 fills it.
+    /// block whenever the compressor fills it.
     fn run(&mut self, mut input: &[u8], action: Action) -> Result<Vec<u8>, Bz2Error> {
         let mut out = Vec::new();
         let mut block = vec![0u8; INITIAL_BUFFER_SIZE];
@@ -99,7 +100,7 @@ impl Compressor {
             out.extend_from_slice(&block[..produced]);
             input = &input[consumed..];
             // In flushing mode, stop when all buffered data has been flushed.
-            if action == Action::Finish && status == Status::StreamEnd {
+            if action == Action::Finish && status == CompressStatus::StreamEnd {
                 break;
             }
             if produced == block.len() {
@@ -112,15 +113,14 @@ impl Compressor {
 }
 
 /// Incremental decompressor. The first failure is latched so later calls
-/// can be refused by the caller; re-entering the native stream after a
-/// failure can write out of bounds.
+/// can be refused by the caller.
 pub struct Decompressor {
     decompress: Decompress,
     eof: bool,
     failed: bool,
     needs_input: bool,
     unused_data: Vec<u8>,
-    /// Input handed to `decompress` that libbz2 has not consumed yet.
+    /// Input handed to `decompress` that the decompressor has not consumed yet.
     input_buffer: Vec<u8>,
 }
 
@@ -129,7 +129,7 @@ impl Decompressor {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            decompress: Decompress::new(false),
+            decompress: Decompress::new(),
             eof: false,
             failed: false,
             needs_input: true,
@@ -187,15 +187,11 @@ impl Decompressor {
                         failed = Some(error.into());
                         break;
                     }
-                    Ok(Status::MemNeeded) => {
-                        failed = Some(Bz2Error::Mem);
-                        break;
-                    }
-                    Ok(Status::StreamEnd) => {
+                    Ok(DecompressStatus::StreamEnd) => {
                         stream_end = true;
                         break;
                     }
-                    Ok(_) => {}
+                    Ok(DecompressStatus::InProgress) => {}
                 }
                 if chunks.is_empty() {
                     break;

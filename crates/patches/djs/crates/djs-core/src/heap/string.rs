@@ -332,6 +332,9 @@ pub(crate) fn is_ascii_blocks(bytes: &[u8]) -> bool {
 /// Iterator over the flat pieces of a string, in order, without flattening it.
 pub struct Chunks<'a> {
     heap: &'a Heap,
+    /// The piece to look at first, kept out of `stack` so that a flat string
+    /// allocates nothing.
+    first: Option<(u32, u32)>,
     /// `(cell, length)`: the length clips an append rope's buffer.
     stack: Vec<(u32, u32)>,
 }
@@ -340,7 +343,7 @@ impl<'a> Iterator for Chunks<'a> {
     type Item = StrView<'a>;
 
     fn next(&mut self) -> Option<StrView<'a>> {
-        while let Some((off, len)) = self.stack.pop() {
+        while let Some((off, len)) = self.first.take().or_else(|| self.stack.pop()) {
             match self.heap.cell_kind(off) {
                 CellKind::Str8 | CellKind::Str16 => {
                     let v = self.heap.prefix_view(off, len);
@@ -799,7 +802,8 @@ impl Heap {
     pub fn str_chunks(&self, s: Str) -> Chunks<'_> {
         Chunks {
             heap: self,
-            stack: alloc::vec![(s.0, self.str_len(s))],
+            first: Some((s.0, self.str_len(s))),
+            stack: Vec::new(),
         }
     }
 

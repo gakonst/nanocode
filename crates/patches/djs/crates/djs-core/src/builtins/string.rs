@@ -423,6 +423,14 @@ pub(crate) fn repeat(heap: &mut Heap, s: Str, n: u32) -> Result<Str, Fault> {
     }
     // Short results are written once (no ropes, no intermediate strings).
     if len * n as u64 <= 4096 && n <= 4096 {
+        if let Some(StrView::Latin1(b)) = heap.str_view(s) {
+            let mut bytes: Vec<u8> = crate::buf::vec_with_capacity(total);
+            bytes.extend_from_slice(b);
+            while bytes.len() < total {
+                bytes.extend_from_within(..(total - bytes.len()).min(bytes.len()));
+            }
+            return Ok(heap.alloc_latin1(&bytes)?);
+        }
         let l = len as u32;
         let mut pieces: Vec<(Str, u32, u32)> = (0..n).map(|_| (s, 0, l)).collect();
         return join(heap, &mut pieces);

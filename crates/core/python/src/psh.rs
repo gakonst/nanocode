@@ -95,8 +95,9 @@ fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
 
 #[cfg(not(target_family = "wasm"))]
 fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
+    use nanocode_sync::Slot;
     use psh_engine::host::NativePathFn;
-    use std::sync::{OnceLock, mpsc};
+    use std::sync::{LazyLock, mpsc};
 
     struct Job {
         run: Run,
@@ -104,29 +105,33 @@ fn execute(run: Run, files: SyncFiles) -> io::Result<Ran> {
         reply: mpsc::Sender<io::Result<Ran>>,
     }
 
-    static OWNER: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+    static IDLE: LazyLock<Slot<mpsc::Sender<Job>>> = LazyLock::new(Slot::default);
 
     let Some(native) = files.native() else {
         return kept(run, files);
     };
-    let owner = OWNER.get_or_init(|| {
-        let (jobs, queue) = mpsc::channel::<Job>();
-        let owner = move || {
-            for job in queue {
-                let _ = job.reply.send(kept(job.run, SyncFiles::on(job.native)));
-            }
-        };
-        let spawned = std::thread::Builder::new()
-            .name("python3".to_owned())
-            .spawn(owner);
-        spawned.ok().map(|_| jobs)
-    });
+    let jobs = match IDLE.take() {
+        Some(jobs) => jobs,
+        None => {
+            let (jobs, queue) = mpsc::channel::<Job>();
+            let owner = move || {
+                for job in queue {
+                    let _ = job.reply.send(kept(job.run, SyncFiles::on(job.native)));
+                }
+            };
+            std::thread::Builder::new()
+                .name("python3".to_owned())
+                .spawn(owner)?;
+            jobs
+        }
+    };
     let ended = || io::Error::other("the thread that keeps the interpreter ended");
-    let jobs = owner.as_ref().ok_or_else(ended)?;
     let (reply, ran) = mpsc::channel();
     let job = Job { run, native, reply };
     jobs.send(job).map_err(|_| ended())?;
-    ran.recv().map_err(|_| ended())?
+    let ran = ran.recv().map_err(|_| ended())?;
+    drop(IDLE.put(jobs));
+    ran
 }
 
 fn body(ctx: &mut SyncCtx, argv: Vec<Vec<u8>>) -> i32 {

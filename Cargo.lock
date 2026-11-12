@@ -6326,6 +6326,7 @@ version = "0.7.0"
 dependencies = [
  "nanocode-platform",
  "nanocode-shell",
+ "nanocode-sync",
  "psh-engine",
  "rustpython-pylib",
  "rustpython-ruff_python_ast",

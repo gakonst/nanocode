@@ -20,6 +20,9 @@ rustpython-pylib.workspace = true
 rustpython-stdlib.workspace = true
 rustpython-vm.workspace = true
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-sync.workspace = true
+
 [lints]
 workspace = true
 

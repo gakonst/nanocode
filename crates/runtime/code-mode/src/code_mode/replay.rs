@@ -278,7 +278,7 @@ enum Saving {
     Saved {
         persisted: usize,
         next_seq: u64,
-        calls: imbl::OrdMap<u64, u8>,
+        calls: nanocode_sync::OrdMap<u64, u8>,
         observer_call_id: Option<String>,
         observer_yield_ms: Option<u64>,
         observer_since_ms: Option<u64>,
@@ -608,11 +608,11 @@ pub(super) struct CellStatus {
     pub(super) life: CellLife,
     pub(super) unsupported: bool,
     pub(super) content_returned: u64,
-    pub(super) calls: imbl::OrdMap<u64, Arc<JournaledCall>>,
+    pub(super) calls: nanocode_sync::OrdMap<u64, Arc<JournaledCall>>,
 }
 
 impl CellStatus {
-    pub(super) fn new(life: CellLife) -> Self {
+    pub(super) const fn new(life: CellLife) -> Self {
         Self {
             observer_call_id: None,
             observer_yield_ms: None,
@@ -620,7 +620,7 @@ impl CellStatus {
             life,
             unsupported: false,
             content_returned: 0,
-            calls: imbl::OrdMap::new(),
+            calls: nanocode_sync::OrdMap::new(),
         }
     }
 }
@@ -864,7 +864,7 @@ impl CellRecord {
                 }
                 saved.clone()
             }
-            _ => imbl::OrdMap::new(),
+            _ => nanocode_sync::OrdMap::new(),
         };
         marks.extend(calls.iter().map(|call| (call.id, call_mark(&call.state))));
         let header = matches!(*saving, Saving::Unsaved).then(|| CellJournalHeader {

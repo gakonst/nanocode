@@ -107,7 +107,7 @@ enum Command {
 enum Latest {
     Open {
         payload: std::sync::Arc<str>,
-        records: imbl::Vector<crate::StoreRecord>,
+        records: nanocode_sync::Vector<crate::StoreRecord>,
         keys: nanocode_sync::Set<String>,
     },
     Taken,

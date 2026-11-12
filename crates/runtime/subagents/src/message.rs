@@ -65,7 +65,7 @@ impl MessageThreads {
         (self.next_message_id, messages, logged, pending)
     }
 
-    pub(super) fn logged(&self, ids: &imbl::Vector<MessageId>) -> Option<MessageLog> {
+    pub(super) fn logged(&self, ids: &nanocode_sync::Vector<MessageId>) -> Option<MessageLog> {
         (self.log.len() == ids.len() && self.log.iter().eq(ids)).then_some(MessageLog {
             len: self.log.len(),
             revision: self.log_revision,

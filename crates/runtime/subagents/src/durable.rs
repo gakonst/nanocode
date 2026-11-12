@@ -708,7 +708,7 @@ impl AgentPages {
     ) -> std::io::Result<(Vec<(u64, Arc<str>)>, AgentTree)> {
         let height = usize::try_from(self.height).map_err(std::io::Error::other)?;
         let mut tree = AgentTree {
-            levels: vec![imbl::OrdMap::new(); height],
+            levels: vec![nanocode_sync::OrdMap::new(); height],
         };
         let mut entries = self.pages;
         for level in (0..height).rev() {
@@ -747,14 +747,14 @@ impl AgentPages {
 
 #[derive(Clone, Default)]
 struct TreePage {
-    entries: imbl::OrdMap<u64, Arc<str>>,
-    stubs: imbl::OrdMap<u64, Arc<str>>,
+    entries: nanocode_sync::OrdMap<u64, Arc<str>>,
+    stubs: nanocode_sync::OrdMap<u64, Arc<str>>,
     key: Option<Arc<str>>,
 }
 
 #[derive(Clone, Default)]
 struct AgentTree {
-    levels: Vec<imbl::OrdMap<u64, TreePage>>,
+    levels: Vec<nanocode_sync::OrdMap<u64, TreePage>>,
 }
 
 impl AgentTree {
@@ -779,7 +779,7 @@ impl AgentTree {
             return;
         }
         if self.levels.is_empty() {
-            self.levels.push(imbl::OrdMap::new());
+            self.levels.push(nanocode_sync::OrdMap::new());
         }
         let page = self.levels[0].entry(leaf >> PAGE_AGENT_BITS).or_default();
         match stub {
@@ -804,14 +804,19 @@ impl AgentTree {
             }
             keep = kept;
         }
-        while self.levels.last().is_some_and(imbl::OrdMap::is_empty) {
+        while self
+            .levels
+            .last()
+            .is_some_and(nanocode_sync::OrdMap::is_empty)
+        {
             self.levels.pop();
         }
     }
 
     fn set(&mut self, level: usize, index: u64, key: Arc<str>) {
         if self.levels.len() <= level {
-            self.levels.resize_with(level + 1, imbl::OrdMap::new);
+            self.levels
+                .resize_with(level + 1, nanocode_sync::OrdMap::new);
         }
         let page = self.levels[level]
             .entry(index >> PAGE_AGENT_BITS)
@@ -912,7 +917,7 @@ struct MessageLeaf {
     messages: Vec<Box<RawValue>>,
 }
 
-fn message_leaf(messages: &imbl::Vector<Arc<str>>) -> (Arc<str>, Arc<str>) {
+fn message_leaf(messages: &nanocode_sync::Vector<Arc<str>>) -> (Arc<str>, Arc<str>) {
     let mut json = String::with_capacity(
         16 + messages
             .iter()
@@ -992,14 +997,14 @@ pub(super) struct JournalCache {
     agents: nanocode_sync::Map<AgentId, CachedAgent>,
     tree: AgentTree,
     messages: AgentTree,
-    logged_ids: imbl::Vector<super::model::MessageId>,
-    message_tail: imbl::Vector<Arc<str>>,
+    logged_ids: nanocode_sync::Vector<super::model::MessageId>,
+    message_tail: nanocode_sync::Vector<Arc<str>>,
     logged: Option<super::message::MessageLog>,
-    unfolded: imbl::OrdSet<AgentId>,
-    unfolded_messages: imbl::Vector<Arc<str>>,
-    deltas: Vec<imbl::Vector<Arc<str>>>,
+    unfolded: nanocode_sync::OrdSet<AgentId>,
+    unfolded_messages: nanocode_sync::Vector<Arc<str>>,
+    deltas: Vec<nanocode_sync::Vector<Arc<str>>>,
     delta_bytes: usize,
-    leaf_bytes: imbl::OrdMap<u64, usize>,
+    leaf_bytes: nanocode_sync::OrdMap<u64, usize>,
     folded_bytes: usize,
     settled: std::collections::BTreeSet<u64>,
     version: u32,
@@ -1014,14 +1019,14 @@ impl Default for JournalCache {
             agents: nanocode_sync::Map::new(),
             tree: AgentTree::default(),
             messages: AgentTree::default(),
-            logged_ids: imbl::Vector::new(),
-            message_tail: imbl::Vector::new(),
+            logged_ids: nanocode_sync::Vector::new(),
+            message_tail: nanocode_sync::Vector::new(),
             logged: None,
-            unfolded: imbl::OrdSet::new(),
-            unfolded_messages: imbl::Vector::new(),
+            unfolded: nanocode_sync::OrdSet::new(),
+            unfolded_messages: nanocode_sync::Vector::new(),
             deltas: Vec::new(),
             delta_bytes: 0,
-            leaf_bytes: imbl::OrdMap::new(),
+            leaf_bytes: nanocode_sync::OrdMap::new(),
             folded_bytes: 0,
             settled: std::collections::BTreeSet::new(),
             version: JOURNAL_VERSION,
@@ -1103,7 +1108,7 @@ pub(super) struct ColdLeaf {
 
 pub(super) struct JournalSnapshot {
     pub(super) fold: bool,
-    pub(super) cold: imbl::OrdMap<u64, ColdLeaf>,
+    pub(super) cold: nanocode_sync::OrdMap<u64, ColdLeaf>,
     pub(super) agents: Vec<(u64, Vec<(AgentId, AgentEntry)>)>,
     pub(super) messages: MessagesSnapshot,
     pub(super) logged: super::message::MessageLog,
@@ -1659,11 +1664,11 @@ impl JournalCache {
         })
     }
 
-    pub(super) const fn logged_ids(&self) -> &imbl::Vector<super::model::MessageId> {
+    pub(super) const fn logged_ids(&self) -> &nanocode_sync::Vector<super::model::MessageId> {
         &self.logged_ids
     }
 
-    pub(super) fn sealed_messages(&self) -> usize {
+    pub(super) const fn sealed_messages(&self) -> usize {
         self.logged_ids.len() - self.message_tail.len() - self.unfolded_messages.len()
     }
 
@@ -1734,7 +1739,7 @@ impl JournalCache {
         let mut level = 0;
         loop {
             if self.deltas.len() == level {
-                self.deltas.push(imbl::Vector::new());
+                self.deltas.push(nanocode_sync::Vector::new());
             }
             self.deltas[level].push_back(entry);
             if self.deltas[level].len() < DELTA_PAGE {
@@ -1762,7 +1767,7 @@ impl JournalSnapshot {
         if update.full {
             update.agents = nanocode_sync::Map::new();
             update.tree = AgentTree::default();
-            update.leaf_bytes = imbl::OrdMap::new();
+            update.leaf_bytes = nanocode_sync::OrdMap::new();
             update.folded_bytes = 0;
             for (leaf, cold) in &self.cold {
                 update.tree.set(0, *leaf, Arc::clone(&cold.key));
@@ -1877,9 +1882,9 @@ impl JournalSnapshot {
             let mut unfolded = std::mem::take(&mut update.unfolded_messages);
             if let Some(kept) = kept {
                 sealed = kept * PAGE_MESSAGES;
-                unfolded = imbl::Vector::new();
+                unfolded = nanocode_sync::Vector::new();
                 update.logged_ids = update.logged_ids.take(sealed);
-                update.message_tail = imbl::Vector::new();
+                update.message_tail = nanocode_sync::Vector::new();
                 update
                     .messages
                     .truncate(u64::try_from(kept).map_err(std::io::Error::other)?);
@@ -1899,14 +1904,14 @@ impl JournalSnapshot {
                 update.message_tail.push_back(json);
                 if update.message_tail.len() == PAGE_MESSAGES {
                     update.write_message_leaf(sealed, &mut records)?;
-                    update.message_tail = imbl::Vector::new();
+                    update.message_tail = nanocode_sync::Vector::new();
                     sealed += PAGE_MESSAGES;
                 }
             }
             if written && !update.message_tail.is_empty() {
                 update.write_message_leaf(sealed, &mut records)?;
             }
-            update.unfolded = imbl::OrdSet::new();
+            update.unfolded = nanocode_sync::OrdSet::new();
             update.deltas.clear();
             update.delta_bytes = 0;
         } else {

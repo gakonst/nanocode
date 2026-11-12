@@ -76,14 +76,14 @@ mod aged {
     #[derive(Clone)]
     pub(crate) struct Aged<K, V> {
         entries: crate::Map<K, (Instant, V)>,
-        ages: imbl::OrdSet<(Instant, K)>,
+        ages: crate::OrdSet<(Instant, K)>,
     }
 
     impl<K: Hash + Eq + Ord + Clone, V: Clone> Default for Aged<K, V> {
         fn default() -> Self {
             Self {
                 entries: crate::Map::new(),
-                ages: imbl::OrdSet::new(),
+                ages: crate::OrdSet::new(),
             }
         }
     }

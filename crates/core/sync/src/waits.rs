@@ -21,8 +21,8 @@ fn elapsed() -> u64 {
     u64::try_from((Instant::now() - epoch).as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn holders() -> &'static Atom<imbl::Vector<Weak<Holder>>> {
-    static HOLDERS: OnceLock<Atom<imbl::Vector<Weak<Holder>>>> = OnceLock::new();
+fn holders() -> &'static Atom<crate::Vector<Weak<Holder>>> {
+    static HOLDERS: OnceLock<Atom<crate::Vector<Weak<Holder>>>> = OnceLock::new();
     HOLDERS.get_or_init(Atom::default)
 }
 

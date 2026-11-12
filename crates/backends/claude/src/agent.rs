@@ -3419,7 +3419,7 @@ struct State {
 #[derive(Clone, Default)]
 struct LiveNestedStarts {
     open: nanocode_sync::Set<Arc<str>>,
-    order: imbl::Vector<Arc<str>>,
+    order: nanocode_sync::Vector<Arc<str>>,
 }
 impl LiveNestedStarts {
     const LIMIT: usize = 4096;

@@ -192,8 +192,8 @@ pub struct IdentifiedSteerReceipt {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationState {
-    #[serde(default, skip_serializing_if = "imbl::OrdMap::is_empty")]
-    pub steer_receipts: imbl::OrdMap<String, IdentifiedSteerReceipt>,
+    #[serde(default, skip_serializing_if = "nanocode_sync::OrdMap::is_empty")]
+    pub steer_receipts: nanocode_sync::OrdMap<String, IdentifiedSteerReceipt>,
 
     #[serde(
         default,
@@ -214,8 +214,8 @@ pub struct OperationState {
 
     pub steps: BTreeMap<String, StepState>,
 
-    #[serde(default, skip_serializing_if = "imbl::Vector::is_empty")]
-    pub steers: imbl::Vector<SteerState>,
+    #[serde(default, skip_serializing_if = "nanocode_sync::Vector::is_empty")]
+    pub steers: nanocode_sync::Vector<SteerState>,
 
     #[serde(default, skip_serializing_if = "SealedSteers::is_empty")]
     steered: SealedSteers,
@@ -262,7 +262,7 @@ impl OperationState {
         self.steered.count == 0 || self.steered.loaded
     }
 
-    fn seals_steers(&self, inline: bool) -> bool {
+    const fn seals_steers(&self, inline: bool) -> bool {
         self.steered.count > 0
             || (!inline
                 && self.retired_steers == 0
@@ -285,14 +285,14 @@ impl OperationState {
             }
         }
         std::borrow::Cow::Owned(Self {
-            steer_receipts: imbl::OrdMap::new(),
+            steer_receipts: nanocode_sync::OrdMap::new(),
             continuation: self.continuation.clone(),
             retired_model_calls: self.retired_model_calls,
             retired_steers: self.retired_steers,
             input: self.input.clone(),
             status: self.status.clone(),
             steps: self.steps.clone(),
-            steers: imbl::Vector::new(),
+            steers: nanocode_sync::Vector::new(),
             steered: SealedSteers {
                 bound: if self.steered.loaded {
                     bound
@@ -491,7 +491,7 @@ impl serde::Serialize for PageOperations<'_> {
 
 #[derive(Clone, Debug, Default)]
 struct Archive {
-    operations: imbl::OrdMap<String, OperationState>,
+    operations: nanocode_sync::OrdMap<String, OperationState>,
     first: Option<(u64, String)>,
 }
 
@@ -1397,14 +1397,14 @@ impl JournalState {
                 self.operations.insert(
                     operation_id,
                     Box::new(OperationState {
-                        steer_receipts: imbl::OrdMap::new(),
+                        steer_receipts: nanocode_sync::OrdMap::new(),
                         continuation: None,
                         retired_model_calls: 0,
                         retired_steers: 0,
                         input,
                         status: OperationStatus::Pending,
                         steps: BTreeMap::new(),
-                        steers: imbl::Vector::new(),
+                        steers: nanocode_sync::Vector::new(),
                         steered: SealedSteers::default(),
                         accepted_order: revision,
                     }),

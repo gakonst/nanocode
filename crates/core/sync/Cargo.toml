@@ -12,9 +12,9 @@ autobenches = false
 
 [dependencies]
 futures-util.workspace = true
-imbl.workspace = true
 nanocode-platform.workspace = true
 nanocode-sys.workspace = true
+serde.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

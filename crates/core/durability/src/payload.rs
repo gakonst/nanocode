@@ -651,7 +651,7 @@ impl EncodedPayload {
 
     pub(crate) async fn reachable<S: crate::StateStore + ?Sized>(
         head: &str,
-        staged: &imbl::OrdMap<String, Arc<str>>,
+        staged: &nanocode_sync::OrdMap<String, Arc<str>>,
         store: &mut S,
         state_id: &str,
     ) -> Result<HashSet<String>> {
@@ -949,7 +949,7 @@ impl RecordSource for Noting<'_, '_> {
 }
 
 struct Overlay<'a, S: ?Sized> {
-    staged: &'a imbl::OrdMap<String, Arc<str>>,
+    staged: &'a nanocode_sync::OrdMap<String, Arc<str>>,
     store: &'a mut S,
     reached: &'a mut HashSet<String>,
 }

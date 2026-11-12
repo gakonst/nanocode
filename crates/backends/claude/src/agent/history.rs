@@ -259,7 +259,7 @@ impl<'de> Deserialize<'de> for CodeRound {
 static ADMITTED_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct AdmittedIds {
-    order: imbl::Vector<Arc<str>>,
+    order: nanocode_sync::Vector<Arc<str>>,
     positions: Option<nanocode_sync::Map<Arc<str>, usize>>,
     epoch: u64,
 }
@@ -267,7 +267,7 @@ pub(super) struct AdmittedIds {
 impl Default for AdmittedIds {
     fn default() -> Self {
         Self {
-            order: imbl::Vector::new(),
+            order: nanocode_sync::Vector::new(),
             positions: None,
             epoch: ADMITTED_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
@@ -299,11 +299,11 @@ impl AdmittedIds {
         self.positions.as_ref()?.get(id).copied()
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.order.is_empty()
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(super) const fn len(&self) -> usize {
         self.order.len()
     }
 
@@ -343,7 +343,7 @@ impl Extend<Arc<str>> for AdmittedIds {
 
 impl IntoIterator for AdmittedIds {
     type Item = Arc<str>;
-    type IntoIter = <imbl::Vector<Arc<str>> as IntoIterator>::IntoIter;
+    type IntoIter = <nanocode_sync::Vector<Arc<str>> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.order.into_iter()

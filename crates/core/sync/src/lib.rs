@@ -7,6 +7,7 @@ mod lanes;
 #[cfg(not(target_family = "wasm"))]
 mod lease;
 mod map;
+mod ordered;
 #[cfg(not(target_family = "wasm"))]
 mod reentry;
 #[cfg(not(target_family = "wasm"))]
@@ -14,7 +15,9 @@ mod session;
 mod shared;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
+mod tree;
 pub mod unbounded;
+mod vector;
 mod waits;
 mod wakes;
 mod weighed;
@@ -27,6 +30,7 @@ pub use lease::{Backoff, Keeping, Lease, Renew, keep_lease, retry};
 pub use map::AtomMap;
 #[cfg(not(target_family = "wasm"))]
 pub use map::{Kept, Throttle};
+pub use ordered::{OrdMap, OrdSet};
 #[cfg(not(target_family = "wasm"))]
 pub use reentry::{Claim, Reentry};
 #[cfg(not(target_family = "wasm"))]
@@ -34,6 +38,7 @@ pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 pub use shared::{Map, Set};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{Duplex, pipe, splice};
+pub use vector::Vector;
 pub use waits::{SlowWait, slow_waits};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
 pub use weighed::Weighed;
@@ -395,7 +400,7 @@ impl<T: Clone> SingleFlight<T> {
 #[derive(Clone, Default)]
 struct Queue {
     holder: Option<u64>,
-    waiting: imbl::OrdMap<u64, Arc<Signal>>,
+    waiting: crate::OrdMap<u64, Arc<Signal>>,
 }
 
 const LINE_FREE: u8 = 0;
@@ -1193,7 +1198,7 @@ struct Waiter<V, E, C> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-type Waiting<V, E, C> = crate::Map<Arc<str>, imbl::Vector<Arc<Slot<Waiter<V, E, C>>>>>;
+type Waiting<V, E, C> = crate::Map<Arc<str>, crate::Vector<Arc<Slot<Waiter<V, E, C>>>>>;
 
 #[cfg(not(target_family = "wasm"))]
 pub struct Coalesce<V, E, C = ()>(Atom<Waiting<V, E, C>>);
@@ -1226,7 +1231,7 @@ where
                 false
             }
             None => {
-                waiting.insert(Arc::clone(&key), imbl::Vector::new());
+                waiting.insert(Arc::clone(&key), crate::Vector::new());
                 true
             }
         });

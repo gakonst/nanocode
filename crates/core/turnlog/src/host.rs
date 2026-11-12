@@ -197,8 +197,8 @@ pub struct MemoryWrites {
 
 #[derive(Clone, Default)]
 struct Memory {
-    rows: imbl::Vector<(u64, Arc<str>, Arc<str>)>,
-    snapshots: imbl::OrdMap<Arc<str>, (u64, Arc<str>)>,
+    rows: nanocode_sync::Vector<(u64, Arc<str>, Arc<str>)>,
+    snapshots: nanocode_sync::OrdMap<Arc<str>, (u64, Arc<str>)>,
     writes: MemoryWrites,
 }
 

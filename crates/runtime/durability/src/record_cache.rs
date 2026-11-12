@@ -13,7 +13,7 @@ type Key = (Arc<str>, Arc<str>);
 struct Records {
     used: usize,
     values: nanocode_sync::Map<Key, Arc<str>>,
-    order: imbl::Vector<Key>,
+    order: nanocode_sync::Vector<Key>,
 }
 
 impl Records {

@@ -17,9 +17,9 @@ struct Staged {
     owner: OwnerToken,
     revision: u64,
     payload: Option<Arc<str>>,
-    payloads: imbl::Vector<Arc<str>>,
-    records: imbl::OrdMap<String, Arc<str>>,
-    stored: imbl::OrdSet<String>,
+    payloads: nanocode_sync::Vector<Arc<str>>,
+    records: nanocode_sync::OrdMap<String, Arc<str>>,
+    stored: nanocode_sync::OrdSet<String>,
     reached: Option<(u64, Arc<HashSet<String>>)>,
 }
 
@@ -416,9 +416,9 @@ impl<S: StateStore> StagedStore<S> {
                     owner: OwnerToken::new(owner_id.clone(), fence),
                     revision: state.revision,
                     payload: state.payload.map(Arc::from),
-                    payloads: imbl::Vector::new(),
-                    records: imbl::OrdMap::new(),
-                    stored: imbl::OrdSet::new(),
+                    payloads: nanocode_sync::Vector::new(),
+                    records: nanocode_sync::OrdMap::new(),
+                    stored: nanocode_sync::OrdSet::new(),
                     reached: None,
                 }
             }

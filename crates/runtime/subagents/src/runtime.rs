@@ -594,15 +594,15 @@ pub struct Registry {
     steer_watchers: Atom<HashMap<String, mpsc::UnboundedSender<SteerWatch>>>,
     checkpoints: Atom<AgentMap<durable::JournalCheckpoint>>,
 
-    checkpoint_changes: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
+    checkpoint_changes: Atom<nanocode_sync::Map<String, nanocode_sync::OrdSet<AgentId>>>,
 
-    pending_resume: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
+    pending_resume: Atom<nanocode_sync::Map<String, nanocode_sync::OrdSet<AgentId>>>,
 
     manual_resume: std::sync::atomic::AtomicBool,
 
     journal_version: std::sync::atomic::AtomicU32,
 
-    deferred_resume: Atom<nanocode_sync::Map<String, imbl::OrdSet<AgentId>>>,
+    deferred_resume: Atom<nanocode_sync::Map<String, nanocode_sync::OrdSet<AgentId>>>,
 
     wait_reported: Atom<AgentMap<u64>>,
 
@@ -956,7 +956,7 @@ struct AgentScope {
 
     paused: usize,
 
-    cold: imbl::OrdMap<u64, durable::ColdLeaf>,
+    cold: nanocode_sync::OrdMap<u64, durable::ColdLeaf>,
 
     pins: HashMap<u64, usize>,
 

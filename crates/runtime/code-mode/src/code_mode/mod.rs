@@ -2501,9 +2501,9 @@ impl EmbeddedHost {
             status.life = status.life.holding(Hold::Running);
             let (running, undelivered) = std::mem::take(&mut status.calls)
                 .into_iter()
-                .partition::<imbl::OrdMap<_, _>, _>(|(_, call)| {
-                    matches!(call.state, JournaledCallState::Running)
-                });
+                .partition::<nanocode_sync::OrdMap<_, _>, _>(
+                |(_, call)| matches!(call.state, JournaledCallState::Running),
+            );
             status.calls = running;
             undelivered
         });

@@ -14,7 +14,6 @@ autobenches = false
 base64.workspace = true
 nanocode-digest.workspace = true
 futures-util.workspace = true
-imbl.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 serde.workspace = true

@@ -13,7 +13,7 @@ pub type Wakeups = broadcast::Receiver<Arc<str>>;
 
 type Hook = Arc<dyn Fn(Option<&'static str>, &str) + Send + Sync>;
 
-type Waiting = crate::Map<Arc<str>, imbl::OrdMap<u64, Arc<Notify>>>;
+type Waiting = crate::Map<Arc<str>, crate::OrdMap<u64, Arc<Notify>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Wake {
@@ -226,11 +226,11 @@ impl Keyed {
             Some(key) => waiting
                 .get(key)
                 .into_iter()
-                .flat_map(imbl::OrdMap::values)
+                .flat_map(crate::OrdMap::values)
                 .for_each(|notify| notify.notify_one()),
             None => waiting
                 .values()
-                .flat_map(imbl::OrdMap::values)
+                .flat_map(crate::OrdMap::values)
                 .for_each(|notify| notify.notify_one()),
         };
         match key {

@@ -18,7 +18,6 @@ nanocode-platform.workspace = true
 nanocode-agent-core.workspace = true
 nanocode-durability-core.workspace = true
 futures-util.workspace = true
-imbl.workspace = true
 nanocode-schema.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true

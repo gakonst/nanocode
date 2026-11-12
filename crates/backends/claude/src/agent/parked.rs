@@ -29,7 +29,7 @@ pub(super) struct Key {
 
 pub(super) struct ModelCall {
     key: Key,
-    events: Atom<imbl::Vector<StreamEvent>>,
+    events: Atom<nanocode_sync::Vector<StreamEvent>>,
     phase: AtomicU8,
     failure: Slot<ClaudeError>,
     changed: Notify,

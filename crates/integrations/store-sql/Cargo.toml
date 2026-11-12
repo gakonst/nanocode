@@ -9,20 +9,14 @@ publish.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Postgres hosts for Nanocode's SQL stores: a host's own sqlx connections, and pipelined tokio-postgres lanes"
+description = "Postgres hosts for Nanocode's SQL stores over a host's own sqlx connections"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 futures-util.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-sync.workspace = true
 sqlx.workspace = true
-percent-encoding = "2"
-rustls = { workspace = true, features = ["ring", "std", "tls12"] }
-thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "rt", "sync", "time"] }
-tokio-postgres.workspace = true
-tokio-postgres-rustls = "0.13"
-webpki-roots = "1"
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 nanocode-zstd.workspace = true
 
 [lints]

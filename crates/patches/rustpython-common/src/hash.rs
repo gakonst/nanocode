@@ -1,7 +1,8 @@
 use core::hash::{BuildHasher, Hash, Hasher};
 use malachite_bigint::BigInt;
 use num_traits::ToPrimitive;
-use siphasher::sip::SipHasher24;
+
+use crate::siphash::SipHasher24;
 
 pub type PyHash = i64;
 pub type PyUHash = u64;

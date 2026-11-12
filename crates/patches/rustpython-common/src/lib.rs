@@ -34,6 +34,7 @@ pub mod random_state;
 pub mod rc;
 pub mod scope;
 pub mod refcount;
+pub mod siphash;
 pub mod static_cell;
 pub mod str;
 pub mod wtf8_index;

@@ -125,9 +125,6 @@ version = "0.6.0"
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
 
-[dependencies.siphasher]
-version = "1"
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

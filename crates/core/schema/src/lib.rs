@@ -5,6 +5,7 @@ mod compiler;
 mod content;
 mod draft;
 mod ecma;
+mod email;
 mod format_compat;
 mod formats;
 mod loader;

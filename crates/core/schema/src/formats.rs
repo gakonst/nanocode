@@ -255,7 +255,7 @@ fn validate_email(v: &Value) -> Result<(), Box<dyn Error>> {
     let Value::String(s) = v else {
         return Ok(());
     };
-    if crate::format_compat::is_valid_email(s, None) {
+    if crate::format_compat::is_valid_email(s) {
         Ok(())
     } else {
         Err("invalid email".into())
@@ -266,7 +266,7 @@ fn validate_idn_email(v: &Value) -> Result<(), Box<dyn Error>> {
     let Value::String(s) = v else {
         return Ok(());
     };
-    if crate::format_compat::is_valid_idn_email(s, None) {
+    if crate::format_compat::is_valid_idn_email(s) {
         Ok(())
     } else {
         Err("invalid IDN email".into())

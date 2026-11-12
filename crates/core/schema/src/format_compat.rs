@@ -1,9 +1,5 @@
 use crate::unicode::{GeneralCategory, get_general_category};
-use email_address::{EmailAddress, Options as EmailAddressOptions};
-use std::{
-    net::{Ipv4Addr, Ipv6Addr},
-    str::FromStr,
-};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 pub(crate) const fn is_valid_uri_template(template: &str) -> bool {
     let bytes = template.as_bytes();
@@ -198,15 +194,6 @@ const fn is_literal_char(b: u8) -> bool {
     )
 }
 
-fn parse_email(email: &str, options: Option<&EmailAddressOptions>) -> Option<EmailAddress> {
-    if let Some(opts) = options {
-        EmailAddress::parse_with_options(email, *opts)
-    } else {
-        EmailAddress::from_str(email)
-    }
-    .ok()
-}
-
 fn validate_email_domain<F>(domain: &str, is_valid_hostname_impl: &F) -> bool
 where
     F: Fn(&str) -> bool,
@@ -225,14 +212,13 @@ where
 fn is_valid_email_impl<F>(
     email: &str,
     is_valid_hostname_impl: F,
-    options: Option<&EmailAddressOptions>,
     allow_non_ascii_local_part: bool,
 ) -> bool
 where
     F: Fn(&str) -> bool,
 {
-    if let Some(parsed) = parse_email(email, options) {
-        return validate_email_domain(parsed.domain(), &is_valid_hostname_impl);
+    if let Some(domain) = crate::email::address_domain(email) {
+        return validate_email_domain(domain, &is_valid_hostname_impl);
     }
 
     if !allow_non_ascii_local_part || email.is_ascii() {
@@ -242,7 +228,7 @@ where
         .chars()
         .map(|c| if c.is_ascii() { c } else { 'a' })
         .collect();
-    if parse_email(&masked, options).is_none() {
+    if crate::email::address_domain(&masked).is_none() {
         return false;
     }
     let mut parts = email.rsplitn(2, '@');
@@ -253,12 +239,12 @@ where
     validate_email_domain(domain, &is_valid_hostname_impl)
 }
 
-pub(crate) fn is_valid_email(email: &str, options: Option<&EmailAddressOptions>) -> bool {
-    is_valid_email_impl(email, is_valid_hostname, options, false)
+pub(crate) fn is_valid_email(email: &str) -> bool {
+    is_valid_email_impl(email, is_valid_hostname, false)
 }
 
-pub(crate) fn is_valid_idn_email(email: &str, options: Option<&EmailAddressOptions>) -> bool {
-    is_valid_email_impl(email, is_valid_idn_hostname, options, true)
+pub(crate) fn is_valid_idn_email(email: &str) -> bool {
+    is_valid_email_impl(email, is_valid_idn_hostname, true)
 }
 
 const VALID_HOSTNAME_CHARS: [bool; 256] = {

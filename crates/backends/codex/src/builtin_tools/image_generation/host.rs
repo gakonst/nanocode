@@ -196,15 +196,27 @@ fn status_text(status: u16) -> String {
         .map_or_else(|_| status.to_string(), |status| status.to_string())
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for HostImageGeneration {
     fn definition(&self) -> ToolDefinition {
         definition()
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input = input.function_json()?;
-        Ok(self.run(input.get(), context).await)
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.function_json()?;
+                Ok(self.run(input.get(), context).await)
+            };
+            output
+        })
     }
 }

@@ -22,7 +22,6 @@ pub(super) fn wrap(handlers: Vec<Arc<dyn Tool>>, gateway: &str) -> Vec<Arc<dyn T
         .collect()
 }
 
-#[async_trait::async_trait]
 impl Tool for GatewayUnsupportedTool {
     fn definition(&self) -> ToolDefinition {
         self.inner.definition()
@@ -32,7 +31,19 @@ impl Tool for GatewayUnsupportedTool {
         self.inner.supports_parallel_tool_calls()
     }
 
-    async fn execute(&self, _input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        Ok(ToolOutput::error(self.message.clone()))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = { Ok(ToolOutput::error(self.message.clone())) };
+            output
+        })
     }
 }

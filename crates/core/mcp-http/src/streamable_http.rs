@@ -42,12 +42,28 @@ pub enum HttpAuth {
     Source(Arc<dyn BearerSource>),
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
-pub trait BearerSource: Send + Sync {
-    async fn token(&self) -> Result<String, String>;
+#[cfg(not(target_family = "wasm"))]
+type BearerFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
 
-    async fn rejected(&self, token: &str) -> Result<String, String>;
+#[cfg(target_family = "wasm")]
+type BearerFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+
+pub trait BearerSource: Send + Sync {
+    fn token<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> BearerFuture<'async_trait, Result<String, String>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait;
+
+    fn rejected<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        token: &'life1 str,
+    ) -> BearerFuture<'async_trait, Result<String, String>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait;
 }
 
 pub fn validate_custom_headers<'a>(

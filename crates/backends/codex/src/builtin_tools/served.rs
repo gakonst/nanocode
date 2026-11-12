@@ -216,41 +216,54 @@ struct ServedShell {
     redactions: Option<Redactions>,
 }
 
-#[async_trait::async_trait]
 impl Tool for ServedShell {
     fn definition(&self) -> ToolDefinition {
         self.kind.definition()
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let mut args: Value = input.decode_json()?;
-        let Some(object) = args.as_object_mut() else {
-            return Ok(ToolOutput::error("expected shell arguments"));
-        };
-        if self.kind == StandardTool::ExecCommand {
-            let workdir = match self.directories.resolve(object.get("workdir")) {
-                Ok(workdir) => workdir,
-                Err(message) => return Ok(ToolOutput::error(message)),
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let mut args: Value = input.decode_json()?;
+                let Some(object) = args.as_object_mut() else {
+                    return Ok(ToolOutput::error("expected shell arguments"));
+                };
+                if self.kind == StandardTool::ExecCommand {
+                    let workdir = match self.directories.resolve(object.get("workdir")) {
+                        Ok(workdir) => workdir,
+                        Err(message) => return Ok(ToolOutput::error(message)),
+                    };
+                    object.insert(
+                        "workdir".into(),
+                        Value::String(workdir.to_string_lossy().into_owned()),
+                    );
+                    for field in ["sandbox_permissions", "justification", "prefix_rule"] {
+                        object.remove(field);
+                    }
+                }
+                let output = self
+                    .runtime
+                    .execute_tool(
+                        self.kind.name(),
+                        ToolInput::Function(to_raw_value(&args)?),
+                        context,
+                    )
+                    .await;
+                Ok(match &self.redactions {
+                    Some(redactions) => redact(output, &redactions()),
+                    None => output,
+                })
             };
-            object.insert(
-                "workdir".into(),
-                Value::String(workdir.to_string_lossy().into_owned()),
-            );
-            for field in ["sandbox_permissions", "justification", "prefix_rule"] {
-                object.remove(field);
-            }
-        }
-        let output = self
-            .runtime
-            .execute_tool(
-                self.kind.name(),
-                ToolInput::Function(to_raw_value(&args)?),
-                context,
-            )
-            .await;
-        Ok(match &self.redactions {
-            Some(redactions) => redact(output, &redactions()),
-            None => output,
+            output
         })
     }
 }
@@ -483,7 +496,6 @@ impl ReadFile {
     }
 }
 
-#[async_trait::async_trait]
 impl Tool for ReadFile {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
@@ -493,27 +505,40 @@ impl Tool for ReadFile {
         true
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let args: ReadArgs = input.decode_json()?;
-        Ok(match self.read(&args) {
-            Ok(Outcome::Missing) => {
-                ToolOutput::text("file not found").with_structured_result(json!({"exists":false}))
-            }
-            Ok(Outcome::Link(target)) => ToolOutput::text("symbolic link, not followed")
-                .with_structured_result(json!({"exists":true,"link":target})),
-            Ok(Outcome::Chunk {
-                size,
-                modified_ns,
-                data,
-            }) => ToolOutput::text(format!("read {} of {size} bytes", data.len()))
-                .with_structured_result(json!({
-                    "exists": true,
-                    "size": size,
-                    "modified_ns": modified_ns,
-                    "offset": args.offset,
-                    "data": base64_simd::STANDARD.encode_to_string(&data),
-                })),
-            Err(message) => ToolOutput::error(message),
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let args: ReadArgs = input.decode_json()?;
+                Ok(match self.read(&args) {
+                    Ok(Outcome::Missing) => ToolOutput::text("file not found")
+                        .with_structured_result(json!({"exists":false})),
+                    Ok(Outcome::Link(target)) => ToolOutput::text("symbolic link, not followed")
+                        .with_structured_result(json!({"exists":true,"link":target})),
+                    Ok(Outcome::Chunk {
+                        size,
+                        modified_ns,
+                        data,
+                    }) => ToolOutput::text(format!("read {} of {size} bytes", data.len()))
+                        .with_structured_result(json!({
+                            "exists": true,
+                            "size": size,
+                            "modified_ns": modified_ns,
+                            "offset": args.offset,
+                            "data": base64_simd::STANDARD.encode_to_string(&data),
+                        })),
+                    Err(message) => ToolOutput::error(message),
+                })
+            };
+            output
         })
     }
 }

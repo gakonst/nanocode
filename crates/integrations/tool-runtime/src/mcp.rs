@@ -1,6 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use async_trait::async_trait;
 use nanocode_tool_provider::{DynamicToolProvider, ToolExposure};
 use nanocode_tools::{Tool, ToolContext, ToolDefinition, ToolOutput};
 use serde_json::Value;
@@ -53,7 +52,6 @@ impl crate::ToolSource for Mcp {
     }
 }
 
-#[async_trait]
 impl DynamicToolProvider for Mcp {
     fn start(&self) {
         self.0.start();
@@ -91,25 +89,43 @@ impl DynamicToolProvider for Mcp {
         self.0.supports_parallel_tool_calls(name)
     }
 
-    async fn execute(
-        &self,
-        name: &str,
+    fn execute<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        self.0.execute(name, input, context).await
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = { self.0.execute(name, input, context).await };
+            output
+        })
     }
 
     fn resumes(&self, name: &str) -> bool {
         self.0.resumes(name)
     }
 
-    async fn recover(
-        &self,
-        name: &str,
+    fn recover<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        self.0.recover(name, input, context).await
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = { self.0.recover(name, input, context).await };
+            output
+        })
     }
 }

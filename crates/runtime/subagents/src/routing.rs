@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use nanocode_agent_core::SpawnOptions;
 
 pub struct SpawnRoute {
@@ -98,29 +97,53 @@ impl SpawnDecision {
     }
 }
 
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-pub trait SpawnRouter: Send + Sync {
-    async fn resolve(
-        &self,
-        parent_session_id: &str,
-        role: &str,
-        task: &str,
-        options: SpawnOptions,
-        host_context: Option<&str>,
-    ) -> std::io::Result<SpawnRoute>;
+#[cfg(not(target_family = "wasm"))]
+type RouteFuture<'a, T> = futures_util::future::BoxFuture<'a, T>;
 
-    async fn resolve_spawn(
-        &self,
-        parent_session_id: &str,
-        role: &str,
-        task: &str,
+#[cfg(target_family = "wasm")]
+type RouteFuture<'a, T> = futures_util::future::LocalBoxFuture<'a, T>;
+
+pub trait SpawnRouter: Send + Sync {
+    fn resolve<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(
+        &'life0 self,
+        parent_session_id: &'life1 str,
+        role: &'life2 str,
+        task: &'life3 str,
         options: SpawnOptions,
-        host_context: Option<&str>,
-    ) -> std::io::Result<SpawnDecision> {
-        self.resolve(parent_session_id, role, task, options, host_context)
-            .await
-            .map(SpawnDecision::Routed)
+        host_context: Option<&'life4 str>,
+    ) -> RouteFuture<'async_trait, std::io::Result<SpawnRoute>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        'life4: 'async_trait,
+        Self: 'async_trait;
+
+    fn resolve_spawn<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(
+        &'life0 self,
+        parent_session_id: &'life1 str,
+        role: &'life2 str,
+        task: &'life3 str,
+        options: SpawnOptions,
+        host_context: Option<&'life4 str>,
+    ) -> RouteFuture<'async_trait, std::io::Result<SpawnDecision>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        'life4: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: std::io::Result<SpawnDecision> = {
+                self.resolve(parent_session_id, role, task, options, host_context)
+                    .await
+                    .map(SpawnDecision::Routed)
+            };
+            output
+        })
     }
 
     fn bind(

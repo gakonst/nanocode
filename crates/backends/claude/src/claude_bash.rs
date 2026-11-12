@@ -5,7 +5,6 @@ use crate::{
         bash::DEFAULT_BACKGROUND_TIMEOUT_MS,
     },
 };
-use async_trait::async_trait;
 use nanocode_agent_core::{Agent, PromptRequest, WeakAgent};
 use nanocode_process_contracts::{ForegroundExecutor, LastActivity, OutputSink};
 use nanocode_sync::{Atom, Signal};
@@ -758,7 +757,6 @@ struct BashTool {
     jobs: Arc<Jobs>,
     session: Option<SessionEnvironment>,
 }
-#[async_trait]
 impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
         let schema = ClaudeBash::<LocalBash>::definitions().remove(0);
@@ -783,29 +781,44 @@ impl Tool for BashTool {
                 .collect()
         })
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input = input.decode_json::<Value>()?;
-        let owned = Owned {
-            jobs: &self.jobs,
-            call_id: context.call_id(),
-        };
-        self.jobs.owners.update(|owners| {
-            owners.insert(owned.call_id.to_owned(), context.session_id().to_owned());
-        });
-        Ok(
-            match self
-                .bash
-                .execute_call("Bash", input, self.session.clone(), Some(context.call_id()))
-                .await
-            {
-                Ok(output) => {
-                    let value = serde_json::from_str::<Value>(&output).unwrap_or(Value::Null);
-                    let text = value["message"].as_str().map_or(output, str::to_owned);
-                    ToolOutput::text(text).with_structured_result(value)
-                }
-                Err(error) => ToolOutput::error(error),
-            },
-        )
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.decode_json::<Value>()?;
+                let owned = Owned {
+                    jobs: &self.jobs,
+                    call_id: context.call_id(),
+                };
+                self.jobs.owners.update(|owners| {
+                    owners.insert(owned.call_id.to_owned(), context.session_id().to_owned());
+                });
+                Ok(
+                    match self
+                        .bash
+                        .execute_call("Bash", input, self.session.clone(), Some(context.call_id()))
+                        .await
+                    {
+                        Ok(output) => {
+                            let value =
+                                serde_json::from_str::<Value>(&output).unwrap_or(Value::Null);
+                            let text = value["message"].as_str().map_or(output, str::to_owned);
+                            ToolOutput::text(text).with_structured_result(value)
+                        }
+                        Err(error) => ToolOutput::error(error),
+                    },
+                )
+            };
+            output
+        })
     }
 }
 struct Owned<'a> {
@@ -828,7 +841,6 @@ impl nanocode_tool_host::CodeModeToolPolicy for JobNotices {
 struct TaskStopTool {
     jobs: Arc<Jobs>,
 }
-#[async_trait]
 impl Tool for TaskStopTool {
     fn definition(&self) -> ToolDefinition {
         let definition = crate::upstream::tool_value("TaskStop");
@@ -841,11 +853,25 @@ impl Tool for TaskStopTool {
         )
         .with_output_schema(super::claude_output::schema("TaskStop"))
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input = input.decode_json::<Value>()?;
-        Ok(match self.invoke(input, context).await {
-            Ok(value) => ToolOutput::text(value.to_string()).with_structured_result(value),
-            Err(error) => ToolOutput::error(error),
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.decode_json::<Value>()?;
+                Ok(match self.invoke(input, context).await {
+                    Ok(value) => ToolOutput::text(value.to_string()).with_structured_result(value),
+                    Err(error) => ToolOutput::error(error),
+                })
+            };
+            output
         })
     }
 }

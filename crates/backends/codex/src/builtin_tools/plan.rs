@@ -24,30 +24,42 @@ impl Default for UpdatePlanTool {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for UpdatePlanTool {
     fn definition(&self) -> ToolDefinition {
         StandardTool::UpdatePlan.definition()
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let plan = input.decode_json::<UpdatePlanArgs>()?;
-        tracing::debug!(
-            explanation = ?plan.explanation,
-            step_count = plan.plan.len(),
-            "updating plan"
-        );
-        for (index, item) in plan.plan.iter().enumerate() {
-            tracing::debug!(
-                index,
-                step = item.step,
-                status = ?item.status,
-                "updated plan item"
-            );
-        }
-        self.current.store(Some(std::sync::Arc::new(plan)));
-        Ok(ToolOutput::text("Plan updated").with_structured_result(json!({})))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let plan = input.decode_json::<UpdatePlanArgs>()?;
+                tracing::debug!(
+                    explanation = ?plan.explanation,
+                    step_count = plan.plan.len(),
+                    "updating plan"
+                );
+                for (index, item) in plan.plan.iter().enumerate() {
+                    tracing::debug!(
+                        index,
+                        step = item.step,
+                        status = ?item.status,
+                        "updated plan item"
+                    );
+                }
+                self.current.store(Some(std::sync::Arc::new(plan)));
+                Ok(ToolOutput::text("Plan updated").with_structured_result(json!({})))
+            };
+            output
+        })
     }
 }
 

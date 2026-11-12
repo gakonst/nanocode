@@ -34,7 +34,6 @@ use std::{
 };
 
 #[cfg(not(target_family = "wasm"))]
-use async_trait::async_trait;
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
 use nanocode_mcp::{
     CallToolParams, CallToolResult, ContentBlock, ContentKind, Resumption,
@@ -454,8 +453,6 @@ impl PreparedMcpTool {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for PreparedMcpTool {
     fn definition(&self) -> ToolDefinition {
         self.entry.definition.clone()
@@ -465,9 +462,23 @@ impl Tool for PreparedMcpTool {
         self.entry.supports_parallel_tool_calls
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input = input.decode_json::<Value>()?;
-        Ok(execute_mcp_entry(&self.entry, input, self.timeout, context).await)
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.decode_json::<Value>()?;
+                Ok(execute_mcp_entry(&self.entry, input, self.timeout, context).await)
+            };
+            output
+        })
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -893,7 +904,6 @@ impl Mcp {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[async_trait]
 impl DynamicToolProvider for Mcp {
     fn bind_session(&self, session: &SessionEnvironment) {
         let _ = self.session.set(session.clone());
@@ -923,17 +933,28 @@ impl DynamicToolProvider for Mcp {
         })
     }
 
-    async fn execute(
-        &self,
-        name: &str,
+    fn execute<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        let entry = self.state.ready_entry(name).await?;
-        if !entry.tool_exposure.is_callable() {
-            return None;
-        }
-        Some(execute_mcp_entry(&entry, input, entry.timeout, context).await)
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = {
+                let entry = self.state.ready_entry(name).await?;
+                if !entry.tool_exposure.is_callable() {
+                    return None;
+                }
+                Some(execute_mcp_entry(&entry, input, entry.timeout, context).await)
+            };
+            output
+        })
     }
 
     fn resumes(&self, name: &str) -> bool {
@@ -942,17 +963,31 @@ impl DynamicToolProvider for Mcp {
             .is_some_and(|entry| entry.tool_exposure.is_callable() && entry.resumable)
     }
 
-    async fn recover(
-        &self,
-        name: &str,
+    fn recover<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        let entry = self.state.ready_entry(name).await?;
-        if !entry.tool_exposure.is_callable() || !entry.resumable || context.turn_id().is_none() {
-            return None;
-        }
-        resume_mcp_entry(&entry, input, entry.timeout, context).await
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = {
+                let entry = self.state.ready_entry(name).await?;
+                if !entry.tool_exposure.is_callable()
+                    || !entry.resumable
+                    || context.turn_id().is_none()
+                {
+                    return None;
+                }
+                resume_mcp_entry(&entry, input, entry.timeout, context).await
+            };
+            output
+        })
     }
 }
 
@@ -1202,8 +1237,6 @@ struct SearchInput {
     limit: Option<usize>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for McpSearch {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::tool_search(
@@ -1231,54 +1264,68 @@ impl Tool for McpSearch {
         true
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let input = input.decode_json::<SearchInput>()?;
-        let span = info_span!(
-            target: "nanocode_code_mode",
-            "mcp.catalog_search",
-            otel.kind = "internal",
-            otel.status_code = tracing::field::Empty,
-            query.bytes = input.query.len(),
-            result.count = tracing::field::Empty,
-            pending_servers = tracing::field::Empty,
-            status = tracing::field::Empty,
-        );
-        tracing::info!(
-            target: "nanocode_code_mode",
-            parent: &span,
-            query = %input.query,
-            limit = input.limit,
-            "MCP catalog search"
-        );
-        let result = self
-            .state
-            .search(&input.query, input.limit)
-            .instrument(span.clone())
-            .await;
-        span.record(
-            "status",
-            if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            },
-        );
-        span.record(
-            "otel.status_code",
-            if result.is_ok() { "OK" } else { "ERROR" },
-        );
-        if let Ok(result) = &result {
-            span.record("result.count", result.tool_count());
-            span.record("pending_servers", result.pending_server_count());
-        }
-        Ok(match result {
-            Ok(result) => match result.loadable_tools() {
-                Ok(tools) => ToolOutput::json(&result).with_structured_result(tools),
-                Err(error) => {
-                    ToolOutput::error(format!("failed to encode MCP tool definitions: {error}"))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.decode_json::<SearchInput>()?;
+                let span = info_span!(
+                    target: "nanocode_code_mode",
+                    "mcp.catalog_search",
+                    otel.kind = "internal",
+                    otel.status_code = tracing::field::Empty,
+                    query.bytes = input.query.len(),
+                    result.count = tracing::field::Empty,
+                    pending_servers = tracing::field::Empty,
+                    status = tracing::field::Empty,
+                );
+                tracing::info!(
+                    target: "nanocode_code_mode",
+                    parent: &span,
+                    query = %input.query,
+                    limit = input.limit,
+                    "MCP catalog search"
+                );
+                let result = self
+                    .state
+                    .search(&input.query, input.limit)
+                    .instrument(span.clone())
+                    .await;
+                span.record(
+                    "status",
+                    if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    },
+                );
+                span.record(
+                    "otel.status_code",
+                    if result.is_ok() { "OK" } else { "ERROR" },
+                );
+                if let Ok(result) = &result {
+                    span.record("result.count", result.tool_count());
+                    span.record("pending_servers", result.pending_server_count());
                 }
-            },
-            Err(error) => ToolOutput::error(error),
+                Ok(match result {
+                    Ok(result) => match result.loadable_tools() {
+                        Ok(tools) => ToolOutput::json(&result).with_structured_result(tools),
+                        Err(error) => ToolOutput::error(format!(
+                            "failed to encode MCP tool definitions: {error}"
+                        )),
+                    },
+                    Err(error) => ToolOutput::error(error),
+                })
+            };
+            output
         })
     }
 }

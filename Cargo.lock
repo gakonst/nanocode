@@ -2637,7 +2637,6 @@ dependencies = [
 name = "nanocode-agent-host"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "nanocode-agent",
  "nanocode-agent-core",
  "nanocode-computer-repl",
@@ -2680,7 +2679,6 @@ dependencies = [
 name = "nanocode-backend-claude"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "futures-util",
  "http",
@@ -2763,7 +2761,6 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "base64-simd",
  "futures-util",
  "http",
@@ -2833,7 +2830,6 @@ dependencies = [
 name = "nanocode-chatgpt-extension"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "getrandom 0.4.3",
  "nanocode-sync",
  "nanocode-tool-contracts",
@@ -2849,7 +2845,6 @@ dependencies = [
 name = "nanocode-cli"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "clap",
  "futures-util",
  "getrandom 0.4.3",
@@ -2927,7 +2922,6 @@ dependencies = [
 name = "nanocode-computer"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "atspi-common",
  "atspi-proxies",
  "base64 0.22.1",
@@ -2951,7 +2945,6 @@ dependencies = [
 name = "nanocode-computer-repl"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "base64-simd",
  "nanocode-sync",
  "nanocode-tool-contracts",
@@ -3067,7 +3060,6 @@ dependencies = [
 name = "nanocode-mcp-http"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "futures-util",
  "getrandom 0.4.3",
  "http",
@@ -3088,7 +3080,6 @@ dependencies = [
 name = "nanocode-mcp-tools"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "futures-util",
  "http",
  "nanocode-home",
@@ -3292,7 +3283,6 @@ dependencies = [
 name = "nanocode-subagents"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "futures-util",
  "imbl",
  "nanocode-agent-core",
@@ -3363,7 +3353,6 @@ dependencies = [
 name = "nanocode-tool-host"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "blake3",
  "futures-util",
  "nanocode-code-mode",
@@ -3386,7 +3375,6 @@ dependencies = [
 name = "nanocode-tool-provider"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "nanocode-home",
  "nanocode-tool-contracts",
  "serde_json",
@@ -3396,7 +3384,6 @@ dependencies = [
 name = "nanocode-tool-runtime"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "futures-util",
  "getrandom 0.4.3",
@@ -3427,7 +3414,6 @@ dependencies = [
 name = "nanocode-tools"
 version = "0.7.0"
 dependencies = [
- "async-trait",
  "nanocode-tool-contracts",
  "nanocode-tools-macros",
  "schemars",

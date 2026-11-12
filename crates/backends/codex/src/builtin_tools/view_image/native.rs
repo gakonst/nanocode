@@ -29,7 +29,6 @@ impl ViewImageHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl Tool for ViewImageHandler {
     fn definition(&self) -> ToolDefinition {
         StandardTool::ViewImage.definition()
@@ -39,60 +38,82 @@ impl Tool for ViewImageHandler {
         true
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let arguments = input.decode_json::<ViewImageArguments>()?;
-        let detail = match detail(arguments.detail.as_deref()) {
-            Ok(detail) => detail,
-            Err(error) => return Ok(error),
-        };
-        let path = resolve(&self.workspace, Path::new(&arguments.path));
-        let mut file = match tokio::fs::File::open(&path).await {
-            Ok(file) => file,
-            Err(error) => {
-                return Ok(ToolOutput::error(format!(
-                    "unable to locate image at `{}`: {error}",
-                    path.display()
-                )));
-            }
-        };
-        let metadata = match file.metadata().await {
-            Ok(metadata) if metadata.is_file() => metadata,
-            Ok(_) => {
-                return Ok(ToolOutput::error(format!(
-                    "image path `{}` is not a file",
-                    path.display()
-                )));
-            }
-            Err(error) => {
-                return Ok(ToolOutput::error(format!(
-                    "unable to locate image at `{}`: {error}",
-                    path.display()
-                )));
-            }
-        };
-        let bytes = match self.max_wire_bytes {
-            Some(max_wire_bytes) => {
-                let max_raw_bytes = max_raw_bytes(max_wire_bytes);
-                if metadata.len() > max_raw_bytes {
-                    return Ok(oversized_image_error(&path, metadata.len(), max_wire_bytes));
-                }
-                match read_bounded(&mut file, metadata.len(), max_raw_bytes).await {
-                    Ok(BoundedRead::Complete(bytes)) => bytes,
-                    Ok(BoundedRead::TooLarge) => {
-                        return Ok(growing_image_error(&path, max_raw_bytes, max_wire_bytes));
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let arguments = input.decode_json::<ViewImageArguments>()?;
+                let detail = match detail(arguments.detail.as_deref()) {
+                    Ok(detail) => detail,
+                    Err(error) => return Ok(error),
+                };
+                let path = resolve(&self.workspace, Path::new(&arguments.path));
+                let mut file = match tokio::fs::File::open(&path).await {
+                    Ok(file) => file,
+                    Err(error) => {
+                        return Ok(ToolOutput::error(format!(
+                            "unable to locate image at `{}`: {error}",
+                            path.display()
+                        )));
                     }
-                    Err(error) => return Ok(read_error(&path, error)),
-                }
-            }
-            None => {
-                let mut bytes = Vec::new();
-                match file.read_to_end(&mut bytes).await {
-                    Ok(_) => bytes,
-                    Err(error) => return Ok(read_error(&path, error)),
-                }
-            }
-        };
-        Ok(output(&bytes, detail))
+                };
+                let metadata = match file.metadata().await {
+                    Ok(metadata) if metadata.is_file() => metadata,
+                    Ok(_) => {
+                        return Ok(ToolOutput::error(format!(
+                            "image path `{}` is not a file",
+                            path.display()
+                        )));
+                    }
+                    Err(error) => {
+                        return Ok(ToolOutput::error(format!(
+                            "unable to locate image at `{}`: {error}",
+                            path.display()
+                        )));
+                    }
+                };
+                let bytes = match self.max_wire_bytes {
+                    Some(max_wire_bytes) => {
+                        let max_raw_bytes = max_raw_bytes(max_wire_bytes);
+                        if metadata.len() > max_raw_bytes {
+                            return Ok(oversized_image_error(
+                                &path,
+                                metadata.len(),
+                                max_wire_bytes,
+                            ));
+                        }
+                        match read_bounded(&mut file, metadata.len(), max_raw_bytes).await {
+                            Ok(BoundedRead::Complete(bytes)) => bytes,
+                            Ok(BoundedRead::TooLarge) => {
+                                return Ok(growing_image_error(
+                                    &path,
+                                    max_raw_bytes,
+                                    max_wire_bytes,
+                                ));
+                            }
+                            Err(error) => return Ok(read_error(&path, error)),
+                        }
+                    }
+                    None => {
+                        let mut bytes = Vec::new();
+                        match file.read_to_end(&mut bytes).await {
+                            Ok(_) => bytes,
+                            Err(error) => return Ok(read_error(&path, error)),
+                        }
+                    }
+                };
+                Ok(output(&bytes, detail))
+            };
+            output
+        })
     }
 }
 

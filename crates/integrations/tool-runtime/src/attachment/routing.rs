@@ -7,7 +7,6 @@ use crate::{
     Tool, ToolContext, ToolDefinition, ToolExposure, ToolInput, ToolResult, ToolSource,
     ToolsBuilder, host::RoutingCatalog,
 };
-use async_trait::async_trait;
 use nanocode_tool_host::{
     CodeModeToolObservation, CodeModeToolPolicy, WorkspaceToolRouting,
     attachment::{RemoteRoute, RemoteRunnerCatalog, WorkspaceRouter},
@@ -353,7 +352,6 @@ pub(crate) struct RemoteOnlyTool {
     pub definition: ToolDefinition,
     pub providers: Vec<Arc<dyn crate::DynamicToolProvider>>,
 }
-#[async_trait]
 impl Tool for RemoteOnlyTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
@@ -364,24 +362,38 @@ impl Tool for RemoteOnlyTool {
             .find(|provider| provider.contains(self.definition.name()))
             .is_some_and(|provider| provider.supports_parallel_tool_calls(self.definition.name()))
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let ToolInput::Function(input) = input else {
-            return Err("dynamic provider requires object arguments".into());
-        };
-        let value: Value = serde_json::from_str(input.get())?;
-        for provider in &self.providers {
-            if let Some(output) = provider
-                .execute(self.definition.name(), value.clone(), context)
-                .await
-            {
-                return Ok(output);
-            }
-        }
-        Err(format!(
-            "local workspace does not provide `{}`; select an attached runner workdir",
-            self.definition.name()
-        )
-        .into())
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let ToolInput::Function(input) = input else {
+                    return Err("dynamic provider requires object arguments".into());
+                };
+                let value: Value = serde_json::from_str(input.get())?;
+                for provider in &self.providers {
+                    if let Some(output) = provider
+                        .execute(self.definition.name(), value.clone(), context)
+                        .await
+                    {
+                        return Ok(output);
+                    }
+                }
+                Err(format!(
+                    "local workspace does not provide `{}`; select an attached runner workdir",
+                    self.definition.name()
+                )
+                .into())
+            };
+            output
+        })
     }
 }
 
@@ -455,7 +467,6 @@ impl RoutedTool {
     }
 }
 
-#[async_trait]
 impl Tool for RoutedTool {
     fn definition(&self) -> ToolDefinition {
         let mut definition = self.local.definition();
@@ -536,24 +547,50 @@ impl Tool for RoutedTool {
                 .filter_map(|route| route.remote(self.local.definition().name()))
                 .all(|remote| remote.supports_parallel_tool_calls())
     }
-    async fn end_turn(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        hook: &str,
-    ) -> Result<(), crate::contract::ToolError> {
-        self.local.end_turn(session_id, turn_id, hook).await?;
-        let routes = self.snapshot();
-        for remote in routes
-            .iter()
-            .filter_map(|route| route.remote(self.local.definition().name()))
-        {
-            remote.end_turn(session_id, turn_id, hook).await?;
-        }
-        Ok(())
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        hook: &'life3 str,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<(), crate::contract::ToolError>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), crate::contract::ToolError> = {
+                self.local.end_turn(session_id, turn_id, hook).await?;
+                let routes = self.snapshot();
+                for remote in routes
+                    .iter()
+                    .filter_map(|route| route.remote(self.local.definition().name()))
+                {
+                    remote.end_turn(session_id, turn_id, hook).await?;
+                }
+                Ok(())
+            };
+            output
+        })
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.execute_routes(input, context, self.snapshot()).await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = { self.execute_routes(input, context, self.snapshot()).await };
+            output
+        })
     }
 }
 
@@ -918,7 +955,6 @@ impl RunnerProvider {
     }
 }
 
-#[async_trait]
 impl crate::DynamicToolProvider for RunnerProvider {
     fn start(&self) {}
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -944,54 +980,76 @@ impl crate::DynamicToolProvider for RunnerProvider {
             .map(|definition| self.routed(definition, &snapshot).definition())
             .collect()
     }
-    async fn execute(
-        &self,
-        name: &str,
+    fn execute<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<crate::ToolOutput> {
-        let snapshot = self.snapshot();
-        let definition = self.definition(&snapshot, name)?;
-        let routed = self.routed(definition, &snapshot);
-        Some(match serde_json::value::to_raw_value(&input) {
-            Ok(raw) => match routed
-                .execute_routes(ToolInput::Function(raw), context, snapshot.effective)
-                .await
-            {
-                Ok(output) => output,
-                Err(error) => crate::ToolOutput::error(error.to_string()),
-            },
-            Err(error) => crate::ToolOutput::error(error.to_string()),
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<crate::ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<crate::ToolOutput> = {
+                let snapshot = self.snapshot();
+                let definition = self.definition(&snapshot, name)?;
+                let routed = self.routed(definition, &snapshot);
+                Some(match serde_json::value::to_raw_value(&input) {
+                    Ok(raw) => match routed
+                        .execute_routes(ToolInput::Function(raw), context, snapshot.effective)
+                        .await
+                    {
+                        Ok(output) => output,
+                        Err(error) => crate::ToolOutput::error(error.to_string()),
+                    },
+                    Err(error) => crate::ToolOutput::error(error.to_string()),
+                })
+            };
+            output
         })
     }
     fn resumes(&self, name: &str) -> bool {
         self.local_provider(&self.snapshot(), name)
             .is_some_and(|provider| provider.resumes(name))
     }
-    async fn recover(
-        &self,
-        name: &str,
+    fn recover<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         mut input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<crate::ToolOutput> {
-        let snapshot = self.snapshot();
-        let provider = self.local_provider(&snapshot, name)?;
-        let key = ["workdir", "cwd", "path", "file_path"]
-            .into_iter()
-            .find(|key| input.get(key).is_some());
-        if let Some(path) = key.and_then(|key| input.get(key)).and_then(Value::as_str) {
-            let path = normalize(Path::new(path)).ok()?;
-            if snapshot
-                .effective
-                .iter()
-                .any(|route| path.starts_with(route.mount()))
-            {
-                return None;
-            }
-        }
-        if let Some(object) = input.as_object_mut() {
-            object.remove("workdir");
-        }
-        provider.recover(name, input, context).await
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<crate::ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<crate::ToolOutput> = {
+                let snapshot = self.snapshot();
+                let provider = self.local_provider(&snapshot, name)?;
+                let key = ["workdir", "cwd", "path", "file_path"]
+                    .into_iter()
+                    .find(|key| input.get(key).is_some());
+                if let Some(path) = key.and_then(|key| input.get(key)).and_then(Value::as_str) {
+                    let path = normalize(Path::new(path)).ok()?;
+                    if snapshot
+                        .effective
+                        .iter()
+                        .any(|route| path.starts_with(route.mount()))
+                    {
+                        return None;
+                    }
+                }
+                if let Some(object) = input.as_object_mut() {
+                    object.remove("workdir");
+                }
+                provider.recover(name, input, context).await
+            };
+            output
+        })
     }
 }

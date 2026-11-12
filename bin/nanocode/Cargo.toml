@@ -25,7 +25,6 @@ test = false
 bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-trait.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true

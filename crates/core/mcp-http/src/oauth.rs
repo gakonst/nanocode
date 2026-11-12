@@ -4,7 +4,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use async_trait::async_trait;
 use http::{HeaderName, HeaderValue};
 use nanocode_mcp::oauth::{
     AuthorizationCallback, AuthorizationMetadata, AuthorizationUrl, ClientAuthentication,
@@ -250,30 +249,61 @@ impl McpOAuthCredentials {
     }
 }
 
-#[async_trait]
 pub trait McpOAuthStore: Send + Sync {
-    async fn load(
-        &self,
-        server_name: &str,
-        server_url: &str,
-    ) -> Result<Option<McpOAuthCredentials>, String>;
+    fn load<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        server_name: &'life1 str,
+        server_url: &'life2 str,
+    ) -> futures_util::future::BoxFuture<'async_trait, Result<Option<McpOAuthCredentials>, String>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait;
 
-    async fn save(
-        &self,
-        server_name: &str,
-        server_url: &str,
-        credentials: &McpOAuthCredentials,
-    ) -> Result<(), String>;
+    fn save<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        server_name: &'life1 str,
+        server_url: &'life2 str,
+        credentials: &'life3 McpOAuthCredentials,
+    ) -> futures_util::future::BoxFuture<'async_trait, Result<(), String>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait;
 
-    async fn acquire_refresh_lock(
-        &self,
-        _server_name: &str,
-        _server_url: &str,
-    ) -> Result<Box<dyn McpOAuthRefreshGuard>, String> {
-        Ok(Box::new(()))
+    fn acquire_refresh_lock<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _server_name: &'life1 str,
+        _server_url: &'life2 str,
+    ) -> futures_util::future::BoxFuture<'async_trait, Result<Box<dyn McpOAuthRefreshGuard>, String>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<Box<dyn McpOAuthRefreshGuard>, String> = { Ok(Box::new(())) };
+            output
+        })
     }
 
-    async fn authorization_required(&self, _server_name: &str, _server_url: &str) {}
+    fn authorization_required<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _server_name: &'life1 str,
+        _server_url: &'life2 str,
+    ) -> futures_util::future::BoxFuture<'async_trait, ()>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {})
+    }
 
     fn refresh_key(&self) -> Option<String> {
         None

@@ -27,7 +27,6 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-trait.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
 

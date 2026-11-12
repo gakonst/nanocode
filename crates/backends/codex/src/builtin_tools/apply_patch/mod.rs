@@ -28,24 +28,41 @@ impl ApplyPatchHandler {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[async_trait::async_trait]
 impl Tool for ApplyPatchHandler {
     fn definition(&self) -> ToolDefinition {
         StandardTool::ApplyPatch.definition()
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let input = input.into_freeform()?;
-        let workspace = self.workspace.clone();
-        Ok(
-            match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
-                Ok(Ok(output)) => ToolOutput::text(output).with_structured_result(json!({})),
-                Ok(Err(error)) => {
-                    ToolOutput::error(format!("apply_patch verification failed: {error}"))
-                }
-                Err(error) => ToolOutput::error(format!("apply_patch task failed: {error}")),
-            },
-        )
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.into_freeform()?;
+                let workspace = self.workspace.clone();
+                Ok(
+                    match tokio::task::spawn_blocking(move || apply(&input, &workspace)).await {
+                        Ok(Ok(output)) => {
+                            ToolOutput::text(output).with_structured_result(json!({}))
+                        }
+                        Ok(Err(error)) => {
+                            ToolOutput::error(format!("apply_patch verification failed: {error}"))
+                        }
+                        Err(error) => {
+                            ToolOutput::error(format!("apply_patch task failed: {error}"))
+                        }
+                    },
+                )
+            };
+            output
+        })
     }
 }
 
@@ -101,18 +118,32 @@ impl HostApplyPatchHandler {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for HostApplyPatchHandler {
     fn definition(&self) -> ToolDefinition {
         StandardTool::ApplyPatch.definition()
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let input = input.into_freeform()?;
-        Ok(match self.apply(&input).await {
-            Ok(output) => ToolOutput::text(output).with_structured_result(json!({})),
-            Err(error) => ToolOutput::error(format!("apply_patch verification failed: {error}")),
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input = input.into_freeform()?;
+                Ok(match self.apply(&input).await {
+                    Ok(output) => ToolOutput::text(output).with_structured_result(json!({})),
+                    Err(error) => {
+                        ToolOutput::error(format!("apply_patch verification failed: {error}"))
+                    }
+                })
+            };
+            output
         })
     }
 }

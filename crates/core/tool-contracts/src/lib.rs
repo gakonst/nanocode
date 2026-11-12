@@ -9,6 +9,12 @@ use std::{
     time::Duration,
 };
 
+#[cfg(not(target_family = "wasm"))]
+pub type ToolCallFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[cfg(target_family = "wasm")]
+pub type ToolCallFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
 pub trait HistorySource: Send + Sync {
     fn items(&self) -> Vec<ResponseItem>;
 }

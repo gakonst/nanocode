@@ -29,7 +29,6 @@ nanocode-home.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
 nanocode-process.workspace = true
-async-trait.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]

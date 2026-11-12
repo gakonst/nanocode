@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use nanocode_mcp_http::{SecretSource, streamable_http::BearerSource};
 use serde_json::Value;
 
@@ -54,38 +53,70 @@ pub struct McpServer {
     pub(crate) http: nanocode_mcp_http::streamable_http::HttpOptions,
 }
 
-#[async_trait]
 pub trait McpPaymentProvider: Send + Sync {
-    async fn prepare(
-        &self,
-        payment_required: &Value,
-    ) -> Result<Option<Box<dyn McpPendingPayment>>, String>;
+    fn prepare<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        payment_required: &'life1 Value,
+    ) -> futures_util::future::BoxFuture<
+        'async_trait,
+        Result<Option<Box<dyn McpPendingPayment>>, String>,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait;
 
-    async fn prepare_with_management(
-        &self,
-        payment_required: &Value,
-        management: &dyn McpPaymentManagement,
-    ) -> Result<Option<Box<dyn McpPendingPayment>>, String> {
-        let _ = management;
-        self.prepare(payment_required).await
+    fn prepare_with_management<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        payment_required: &'life1 Value,
+        management: &'life2 dyn McpPaymentManagement,
+    ) -> futures_util::future::BoxFuture<
+        'async_trait,
+        Result<Option<Box<dyn McpPendingPayment>>, String>,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<Option<Box<dyn McpPendingPayment>>, String> = {
+                let _ = management;
+                self.prepare(payment_required).await
+            };
+            output
+        })
     }
 }
 
-#[async_trait]
 pub trait McpPaymentManagement: Send + Sync {
-    async fn send(&self, credential: Value) -> Result<Option<Value>, String>;
+    fn send<'life0, 'async_trait>(
+        &'life0 self,
+        credential: Value,
+    ) -> futures_util::future::BoxFuture<'async_trait, Result<Option<Value>, String>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait;
 }
 
-#[async_trait]
 pub trait McpPendingPayment: Send {
     fn credential(&self) -> &Value;
     fn receipt(&mut self, receipt: &Value) {
         let _ = receipt;
     }
 
-    async fn commit(self: Box<Self>) -> Result<(), String>;
+    fn commit<'async_trait>(
+        self: Box<Self>,
+    ) -> futures_util::future::BoxFuture<'async_trait, Result<(), String>>
+    where
+        Self: 'async_trait;
 
-    async fn rollback(self: Box<Self>) -> Result<(), String>;
+    fn rollback<'async_trait>(
+        self: Box<Self>,
+    ) -> futures_util::future::BoxFuture<'async_trait, Result<(), String>>
+    where
+        Self: 'async_trait;
 }
 
 #[derive(Clone)]

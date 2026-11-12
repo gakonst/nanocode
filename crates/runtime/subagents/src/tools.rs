@@ -11,7 +11,6 @@ use super::{
         forward_events,
     },
 };
-use async_trait::async_trait;
 use futures_util::future::join_all;
 use nanocode_agent_core::usage::{UsdAmount, usd_number};
 use nanocode_agent_core::{
@@ -1098,8 +1097,6 @@ struct SpawnAgent {
     registry: Weak<Registry>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
         static LATEST: LazyLock<Atom<Option<Offered>>> = LazyLock::new(Atom::default);
@@ -1128,8 +1125,20 @@ impl Tool for SpawnAgent {
 
     recovers!(self, input, context, self.spawn(input, context, true));
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.spawn(input, context, false).await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = { self.spawn(input, context, false).await };
+            output
+        })
     }
 }
 
@@ -1434,8 +1443,6 @@ struct SubmitResult {
     registry: Weak<Registry>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SubmitResult {
     fn definition(&self) -> ToolDefinition {
         memoized(SUBMIT_RESULT_TOOL, || {
@@ -1477,8 +1484,20 @@ impl Tool for SubmitResult {
 
     recovers!(self, input, context, self.submit(input, context, true));
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.submit(input, context, false).await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = { self.submit(input, context, false).await };
+            output
+        })
     }
 }
 
@@ -1530,8 +1549,6 @@ struct SendAgentMessage {
     registry: Weak<Registry>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for SendAgentMessage {
     fn definition(&self) -> ToolDefinition {
         memoized(SEND_AGENT_MESSAGE_TOOL, || {
@@ -1584,8 +1601,20 @@ impl Tool for SendAgentMessage {
 
     recovers!(self, input, context, self.send(input, context, true));
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.send(input, context, false).await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = { self.send(input, context, false).await };
+            output
+        })
     }
 }
 
@@ -1678,8 +1707,6 @@ struct CatalogModel {
     harness: HarnessFamily,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ListModels {
     fn definition(&self) -> ToolDefinition {
         memoized(LIST_MODELS_TOOL, || {
@@ -1704,34 +1731,48 @@ impl Tool for ListModels {
 
     recovers!(self, input, context, self.execute(input, context));
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let ModelQuery { query } = input.decode_json()?;
-        let query = query.unwrap_or_default().to_lowercase();
-        let registry = self
-            .registry
-            .upgrade()
-            .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let policy = registry.spawn_policy();
-        json_output(&ModelCatalog {
-            providers: policy
-                .providers
-                .iter()
-                .flatten()
-                .map(|provider| CatalogProvider {
-                    name: &provider.name,
-                    about: &provider.about,
-                    note: provider.note.as_deref(),
-                    models: provider
-                        .models
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let ModelQuery { query } = input.decode_json()?;
+                let query = query.unwrap_or_default().to_lowercase();
+                let registry = self
+                    .registry
+                    .upgrade()
+                    .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+                let policy = registry.spawn_policy();
+                json_output(&ModelCatalog {
+                    providers: policy
+                        .providers
                         .iter()
-                        .map(|model| CatalogModel {
-                            model: format!("{}/{}", provider.name, model.as_str()),
-                            harness: model.family(),
+                        .flatten()
+                        .map(|provider| CatalogProvider {
+                            name: &provider.name,
+                            about: &provider.about,
+                            note: provider.note.as_deref(),
+                            models: provider
+                                .models
+                                .iter()
+                                .map(|model| CatalogModel {
+                                    model: format!("{}/{}", provider.name, model.as_str()),
+                                    harness: model.family(),
+                                })
+                                .filter(|model| model.model.to_lowercase().contains(&query))
+                                .collect(),
                         })
-                        .filter(|model| model.model.to_lowercase().contains(&query))
                         .collect(),
                 })
-                .collect(),
+            };
+            output
         })
     }
 }
@@ -1740,8 +1781,6 @@ struct ListAgents {
     registry: Weak<Registry>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ListAgents {
     fn definition(&self) -> ToolDefinition {
         memoized(LIST_AGENTS_TOOL, || {
@@ -1782,36 +1821,50 @@ impl Tool for ListAgents {
 
     recovers!(self, input, context, self.execute(input, context));
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let DirectoryTask {
-            include_completed,
-            include_self,
-            after_agent_id,
-            limit,
-        } = input.decode_json()?;
-        let registry = self
-            .registry
-            .upgrade()
-            .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let (agents, next_after_agent_id) = registry
-            .directory_page(
-                context.session_id(),
-                include_completed,
-                include_self,
-                after_agent_id,
-                limit,
-            )
-            .await?;
-        let receipt = registry
-            .observe_listed(context.session_id(), &agents, context.call_id())
-            .await;
-        let output = json_output(&AgentDirectory {
-            agents,
-            next_after_agent_id,
-        })?;
-        Ok(match receipt {
-            Some(receipt) => output.with_receipt(receipt),
-            None => output,
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let DirectoryTask {
+                    include_completed,
+                    include_self,
+                    after_agent_id,
+                    limit,
+                } = input.decode_json()?;
+                let registry = self
+                    .registry
+                    .upgrade()
+                    .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+                let (agents, next_after_agent_id) = registry
+                    .directory_page(
+                        context.session_id(),
+                        include_completed,
+                        include_self,
+                        after_agent_id,
+                        limit,
+                    )
+                    .await?;
+                let receipt = registry
+                    .observe_listed(context.session_id(), &agents, context.call_id())
+                    .await;
+                let output = json_output(&AgentDirectory {
+                    agents,
+                    next_after_agent_id,
+                })?;
+                Ok(match receipt {
+                    Some(receipt) => output.with_receipt(receipt),
+                    None => output,
+                })
+            };
+            output
         })
     }
 }
@@ -1820,8 +1873,6 @@ struct WaitAgent {
     registry: Weak<Registry>,
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for WaitAgent {
     fn definition(&self) -> ToolDefinition {
         let continues = self
@@ -1866,8 +1917,20 @@ impl Tool for WaitAgent {
 
     recovers!(self, input, context, self.wait(input, context, true));
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.wait(input, context, false).await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = { self.wait(input, context, false).await };
+            output
+        })
     }
 }
 
@@ -1935,8 +1998,6 @@ impl ChangeAgentLifecycle {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for ChangeAgentLifecycle {
     fn definition(&self) -> ToolDefinition {
         memoized(self.tool_name(), || {
@@ -1971,20 +2032,36 @@ impl Tool for ChangeAgentLifecycle {
 
     recovers!(self, input, context, self.execute(input, context));
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let TargetAgent { agent_id } = input.decode_json()?;
-        let registry = self
-            .registry
-            .upgrade()
-            .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let agents = match self.operation {
-            LifecycleOperation::Interrupt => {
-                registry.interrupt(context.session_id(), agent_id).await?
-            }
-            LifecycleOperation::Close => registry.close(context.session_id(), agent_id).await?,
-        };
-        json_output(&LifecycleReport {
-            agents: agent_reports(agents, &std::collections::HashSet::new())?,
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let TargetAgent { agent_id } = input.decode_json()?;
+                let registry = self
+                    .registry
+                    .upgrade()
+                    .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+                let agents = match self.operation {
+                    LifecycleOperation::Interrupt => {
+                        registry.interrupt(context.session_id(), agent_id).await?
+                    }
+                    LifecycleOperation::Close => {
+                        registry.close(context.session_id(), agent_id).await?
+                    }
+                };
+                json_output(&LifecycleReport {
+                    agents: agent_reports(agents, &std::collections::HashSet::new())?,
+                })
+            };
+            output
         })
     }
 }
@@ -2047,17 +2124,29 @@ pub fn install_claude_tools<T: nanocode_tool_contracts::ToolCollection>(
 
 struct TurnAuthority(Arc<dyn Tool>);
 
-#[cfg_attr(not(target_family = "wasm"), async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl Tool for TurnAuthority {
     fn definition(&self) -> ToolDefinition {
         self.0.definition()
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let host_context = context.host_context().or(context.turn_id());
-        self.0
-            .execute(input, context.with_host_context(host_context))
-            .await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tool_contracts::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let host_context = context.host_context().or(context.turn_id());
+                self.0
+                    .execute(input, context.with_host_context(host_context))
+                    .await
+            };
+            output
+        })
     }
 
     #[cfg(not(target_family = "wasm"))]

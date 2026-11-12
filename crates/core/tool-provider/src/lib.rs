@@ -1,5 +1,4 @@
 #[cfg(not(target_family = "wasm"))]
-use async_trait::async_trait;
 #[cfg(not(target_family = "wasm"))]
 pub use nanocode_home::SessionEnvironment;
 #[cfg(not(target_family = "wasm"))]
@@ -33,7 +32,6 @@ impl ToolExposure {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[async_trait]
 pub trait DynamicToolProvider: Send + Sync {
     fn start(&self) {}
 
@@ -69,29 +67,58 @@ pub trait DynamicToolProvider: Send + Sync {
         false
     }
 
-    async fn resolve(&self, _name: &str) -> bool {
-        false
+    fn resolve<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _name: &'life1 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: bool = { false };
+            output
+        })
     }
 
-    async fn execute(
-        &self,
-        _name: &str,
+    fn execute<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _name: &'life1 str,
         _input: Value,
-        _context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        None
+        _context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = { None };
+            output
+        })
     }
 
     fn resumes(&self, _name: &str) -> bool {
         false
     }
 
-    async fn recover(
-        &self,
-        _name: &str,
+    fn recover<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _name: &'life1 str,
         _input: Value,
-        _context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        None
+        _context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = { None };
+            output
+        })
     }
 }

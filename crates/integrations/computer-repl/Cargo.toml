@@ -12,7 +12,6 @@ description = "The Sky-compatible cua_repl tools over an MCP computer provider, 
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-trait.workspace = true
 base64-simd.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true

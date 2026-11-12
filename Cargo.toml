@@ -113,7 +113,6 @@ mimalloc = { version = "0.1.52", default-features = false }
 imbl = { version = "7.0.2", features = ["serde"] }
 crossbeam-utils = { version = "0.8.22", default-features = false, features = ["std"] }
 foldhash = "0.2.0"
-async-trait = "=0.1.89"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 futures-channel = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }

@@ -77,8 +77,6 @@ fn expand_tool(
             #(#fields,)*
         }
 
-        #[cfg_attr(not(target_family = "wasm"), #nanocode::__private::async_trait)]
-        #[cfg_attr(target_family = "wasm", #nanocode::__private::async_trait(?Send))]
         impl #nanocode::__private::Tool for #original_ident {
             fn definition(&self) -> #nanocode::__private::ToolDefinition {
                 #nanocode::__private::ToolDefinition::function(
@@ -93,18 +91,25 @@ fn expand_tool(
                 #parallel
             }
 
-            async fn execute(
-                &self,
+            fn execute<'life0, 'life1, 'async_trait>(
+                &'life0 self,
                 input: #nanocode::__private::ToolInput,
-                _context: #nanocode::__private::ToolContext<'_>,
-            ) -> #nanocode::__private::ToolResult {
-                let input = input.decode_json::<#input_ident>()?;
-                match #handler_ident(#(#calls),*).await {
-                    Ok(output) => Ok(#nanocode::__private::ToolOutput::json(&output)),
-                    Err(error) => Err(
-                        ::std::io::Error::other(error.to_string()).into()
-                    ),
-                }
+                _context: #nanocode::__private::ToolContext<'life1>,
+            ) -> #nanocode::__private::ToolCallFuture<'async_trait, #nanocode::__private::ToolResult>
+            where
+                'life0: 'async_trait,
+                'life1: 'async_trait,
+                Self: 'async_trait,
+            {
+                ::std::boxed::Box::pin(async move {
+                    let input = input.decode_json::<#input_ident>()?;
+                    match #handler_ident(#(#calls),*).await {
+                        Ok(output) => Ok(#nanocode::__private::ToolOutput::json(&output)),
+                        Err(error) => Err(
+                            ::std::io::Error::other(error.to_string()).into()
+                        ),
+                    }
+                })
             }
         }
     })

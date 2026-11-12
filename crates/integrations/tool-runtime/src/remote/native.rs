@@ -1040,7 +1040,6 @@ impl HandSession for NativeSession {
 
 struct BrainProvider(HandBrain);
 
-#[async_trait::async_trait]
 impl crate::runtime::DynamicToolProvider for BrainProvider {
     fn start(&self) {}
     fn direct_tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -1049,13 +1048,22 @@ impl crate::runtime::DynamicToolProvider for BrainProvider {
     fn available_definitions(&self) -> Vec<ToolDefinition> {
         self.0.definitions()
     }
-    async fn execute(
-        &self,
-        name: &str,
+    fn execute<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         input: Value,
-        context: ToolContext<'_>,
-    ) -> Option<ToolOutput> {
-        self.0.execute(name, input, context).await
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Option<ToolOutput>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Option<ToolOutput> = { self.0.execute(name, input, context).await };
+            output
+        })
     }
 }
 

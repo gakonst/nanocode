@@ -3,7 +3,6 @@
 #[cfg(unix)]
 pub mod browser;
 
-use async_trait::async_trait;
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolOutputContent,
     ToolResult,
@@ -376,23 +375,37 @@ fn executable(path: &std::path::Path) -> bool {
     path.is_file()
 }
 
-#[async_trait]
 pub trait ComputerExecutor: Send + Sync + 'static {
-    async fn end_turn(
-        &self,
-        _session_id: &str,
-        _turn_id: &str,
-        _hook_event_name: &str,
-    ) -> Result<(), ToolError> {
-        Ok(())
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        _session_id: &'life1 str,
+        _turn_id: &'life2 str,
+        _hook_event_name: &'life3 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), ToolError> = { Ok(()) };
+            output
+        })
     }
 
-    async fn invoke_tool(
-        &self,
-        name: &str,
+    fn invoke_tool<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         arguments: Value,
-        context: ToolContext<'_>,
-    ) -> ToolResult;
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -516,17 +529,28 @@ impl ComputerTool {
     }
 }
 
-#[async_trait]
 impl Tool for ComputerTool {
-    async fn end_turn(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        hook_event_name: &str,
-    ) -> Result<(), ToolError> {
-        self.executor
-            .end_turn(session_id, turn_id, hook_event_name)
-            .await
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        hook_event_name: &'life3 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), ToolError> = {
+                self.executor
+                    .end_turn(session_id, turn_id, hook_event_name)
+                    .await
+            };
+            output
+        })
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -543,14 +567,28 @@ impl Tool for ComputerTool {
             None => definition,
         }
     }
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.executor
-            .invoke_tool(
-                &self.definition.name,
-                input.decode_json::<Value>()?,
-                context,
-            )
-            .await
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                self.executor
+                    .invoke_tool(
+                        &self.definition.name,
+                        input.decode_json::<Value>()?,
+                        context,
+                    )
+                    .await
+            };
+            output
+        })
     }
 }
 
@@ -569,19 +607,27 @@ struct SessionRequest {
     response: oneshot::Sender<ToolResult>,
 }
 
-#[async_trait]
 impl ComputerExecutor for LocalComputer {
-    async fn end_turn(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        hook_event_name: &str,
-    ) -> Result<(), ToolError> {
-        if !matches!(hook_event_name, "Stop" | "Interrupt" | "SubagentStop") {
-            return Err("Invalid CUA turn lifecycle event".into());
-        }
-        let (response, result) = oneshot::channel();
-        self.dispatch
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        hook_event_name: &'life3 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), ToolError> = {
+                if !matches!(hook_event_name, "Stop" | "Interrupt" | "SubagentStop") {
+                    return Err("Invalid CUA turn lifecycle event".into());
+                }
+                let (response, result) = oneshot::channel();
+                self.dispatch
             .send(SessionRequest {
                 lifecycle: true,
                 session: session_id.into(),
@@ -593,34 +639,48 @@ impl ComputerExecutor for LocalComputer {
                 response,
             })
             .map_err(|_| "CUA attachment is closed")?;
-        let output = result.await.map_err(|_| "CUA attachment is closed")??;
-        if !output.success {
-            return Err("CUA turn_ended failed; cleanup was not retried".into());
-        }
-        Ok(())
+                let output = result.await.map_err(|_| "CUA attachment is closed")??;
+                if !output.success {
+                    return Err("CUA turn_ended failed; cleanup was not retried".into());
+                }
+                Ok(())
+            };
+            output
+        })
     }
 
-    async fn invoke_tool(
-        &self,
-        name: &str,
+    fn invoke_tool<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        name: &'life1 str,
         arguments: Value,
-        context: ToolContext<'_>,
-    ) -> ToolResult {
-        let session = context.session_id().to_owned();
-        let (response, result) = oneshot::channel();
-        self.dispatch
-            .send(SessionRequest {
-                lifecycle: false,
-                session,
-                turn_id: context.turn_id().map(str::to_owned),
-                call_id: context.call_id().to_owned(),
-                model: context.model().to_owned(),
-                name: name.into(),
-                arguments,
-                response,
-            })
-            .map_err(|_| "CUA attachment is closed")?;
-        result.await.map_err(|_| "CUA attachment is closed")?
+        context: ToolContext<'life2>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let session = context.session_id().to_owned();
+                let (response, result) = oneshot::channel();
+                self.dispatch
+                    .send(SessionRequest {
+                        lifecycle: false,
+                        session,
+                        turn_id: context.turn_id().map(str::to_owned),
+                        call_id: context.call_id().to_owned(),
+                        model: context.model().to_owned(),
+                        name: name.into(),
+                        arguments,
+                        response,
+                    })
+                    .map_err(|_| "CUA attachment is closed")?;
+                result.await.map_err(|_| "CUA attachment is closed")?
+            };
+            output
+        })
     }
 }
 

@@ -12,7 +12,6 @@ description = "Computer use for agents: one computer tool over macOS accessibili
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-trait.workspace = true
 base64.workspace = true
 nanocode-computer-repl.workspace = true
 nanocode-mcp.workspace = true

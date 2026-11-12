@@ -1,6 +1,5 @@
 use std::{any::Any, path::PathBuf, sync::Arc};
 
-use async_trait::async_trait;
 use nanocode_code_mode::remote::CodeModeExecutors;
 use nanocode_tool_contracts::ToolError;
 use serde_json::Value;
@@ -10,10 +9,26 @@ use crate::host::RoutingCatalog;
 pub const ATTACHMENT_REVOKED_REASON: &str =
     "attachment endpoint permanently revoked this attachment";
 
-#[async_trait]
 pub trait ProcessRouteStore: Send + Sync {
-    async fn load(&self, session_id: &str) -> Result<Option<Value>, ToolError>;
-    async fn save(&self, session_id: &str, routes: Value) -> Result<(), ToolError>;
+    fn load<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Option<Value>, ToolError>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait;
+    fn save<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        routes: Value,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

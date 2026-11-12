@@ -5,7 +5,6 @@ use crate::{
     mcp::Mcp,
     policy::{Leases, Policy, app_key},
 };
-use async_trait::async_trait;
 use nanocode_sync::{Atom, Owned};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolResult,
@@ -401,7 +400,6 @@ impl Computer {
 
 static MISSING: Provider = Provider::Missing(String::new());
 
-#[async_trait]
 impl Tool for Computer {
     fn definition(&self) -> ToolDefinition {
         self.definition
@@ -409,34 +407,65 @@ impl Tool for Computer {
             .unwrap_or_else(|| definition(self.capabilities()))
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input: Value = input.decode_json()?;
-        if !input.is_object() || input.to_string().len() > self.limits.input {
-            return Ok(ToolOutput::error(format!(
-                "expected computer arguments of at most {} KiB",
-                self.limits.input / 1024
-            )));
-        }
-        let key = self.key(&input).await;
-        if let Some(key) = &key
-            && !self.leases.acquire().await.take(
-                key,
-                context.session_id(),
-                context.turn_id().unwrap_or_default(),
-                Instant::now(),
-            )
-        {
-            return Ok(ToolOutput::error((self.refusal)(
-                input["app"].as_str().unwrap_or(key),
-            )));
-        }
-        let scope = json!([context.session_id(), context.turn_id()]).to_string();
-        Ok(self.keyed(&input, &scope, key.as_deref()).await)
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input: Value = input.decode_json()?;
+                if !input.is_object() || input.to_string().len() > self.limits.input {
+                    return Ok(ToolOutput::error(format!(
+                        "expected computer arguments of at most {} KiB",
+                        self.limits.input / 1024
+                    )));
+                }
+                let key = self.key(&input).await;
+                if let Some(key) = &key
+                    && !self.leases.acquire().await.take(
+                        key,
+                        context.session_id(),
+                        context.turn_id().unwrap_or_default(),
+                        Instant::now(),
+                    )
+                {
+                    return Ok(ToolOutput::error((self.refusal)(
+                        input["app"].as_str().unwrap_or(key),
+                    )));
+                }
+                let scope = json!([context.session_id(), context.turn_id()]).to_string();
+                Ok(self.keyed(&input, &scope, key.as_deref()).await)
+            };
+            output
+        })
     }
 
-    async fn end_turn(&self, session_id: &str, turn_id: &str, _: &str) -> Result<(), ToolError> {
-        self.leases.acquire().await.end(session_id, turn_id);
-        Ok(())
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        _: &'life3 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), ToolError> = {
+                self.leases.acquire().await.end(session_id, turn_id);
+                Ok(())
+            };
+            output
+        })
     }
 }
 

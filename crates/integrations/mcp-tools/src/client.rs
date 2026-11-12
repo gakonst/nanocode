@@ -212,24 +212,37 @@ struct ToolManagement<'a> {
     params: CallToolParams,
 }
 
-#[async_trait::async_trait]
 impl McpPaymentManagement for ToolManagement<'_> {
-    async fn send(&self, credential: Value) -> Result<Option<Value>, String> {
-        let mut params = self.params.clone();
-        params.insert_meta(MCP_CREDENTIAL_META_KEY, credential);
-        let result = self
-            .session
-            .call_tool(&params)
-            .await
-            .map_err(|error| error.to_string())?;
-        if payment_required_result(&result).is_some() {
-            return Err("the MCP server rejected the payment management credential".to_owned());
-        }
-        Ok(result
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.get(MCP_RECEIPT_META_KEY))
-            .cloned())
+    fn send<'life0, 'async_trait>(
+        &'life0 self,
+        credential: Value,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<Value>, String>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<Option<Value>, String> = {
+                let mut params = self.params.clone();
+                params.insert_meta(MCP_CREDENTIAL_META_KEY, credential);
+                let result = self
+                    .session
+                    .call_tool(&params)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if payment_required_result(&result).is_some() {
+                    return Err(
+                        "the MCP server rejected the payment management credential".to_owned()
+                    );
+                }
+                Ok(result
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get(MCP_RECEIPT_META_KEY))
+                    .cloned())
+            };
+            output
+        })
     }
 }
 

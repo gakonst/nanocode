@@ -13,7 +13,6 @@ description = "Shared dynamic tool provider contracts"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-tool-contracts.workspace = true
 nanocode-home.workspace = true
-async-trait.workspace = true
 serde_json.workspace = true
 
 [lints]

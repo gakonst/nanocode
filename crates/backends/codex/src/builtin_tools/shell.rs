@@ -21,8 +21,6 @@ impl ExecCommandHandler {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for ExecCommandHandler {
     fn definition(&self) -> ToolDefinition {
         StandardTool::ExecCommand.definition()
@@ -44,20 +42,34 @@ impl Tool for ExecCommandHandler {
             .collect()
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let arguments = input.decode_json::<ExecCommandArguments>()?;
-        let command = ExecCommand::new(
-            arguments.cmd,
-            arguments.workdir,
-            arguments.shell,
-            arguments.login,
-            arguments.tty,
-            arguments.yield_time_ms,
-            arguments.max_output_tokens,
-        )
-        .from_caller(context.session_id());
-        let result = self.sessions.execute(command, &self.workspace).await;
-        Ok(shell_execution(&result))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let arguments = input.decode_json::<ExecCommandArguments>()?;
+                let command = ExecCommand::new(
+                    arguments.cmd,
+                    arguments.workdir,
+                    arguments.shell,
+                    arguments.login,
+                    arguments.tty,
+                    arguments.yield_time_ms,
+                    arguments.max_output_tokens,
+                )
+                .from_caller(context.session_id());
+                let result = self.sessions.execute(command, &self.workspace).await;
+                Ok(shell_execution(&result))
+            };
+            output
+        })
     }
 }
 
@@ -71,8 +83,6 @@ impl WriteStdinHandler {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for WriteStdinHandler {
     fn definition(&self) -> ToolDefinition {
         StandardTool::WriteStdin.definition()
@@ -82,17 +92,31 @@ impl Tool for WriteStdinHandler {
         true
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let arguments = input.decode_json::<WriteStdinArguments>()?;
-        let request = WriteStdin::new(
-            arguments.session_id,
-            arguments.chars,
-            arguments.yield_time_ms,
-            arguments.max_output_tokens,
-        )
-        .from_caller(context.session_id());
-        let result = self.sessions.write_stdin(request).await;
-        Ok(shell_execution(&result))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let arguments = input.decode_json::<WriteStdinArguments>()?;
+                let request = WriteStdin::new(
+                    arguments.session_id,
+                    arguments.chars,
+                    arguments.yield_time_ms,
+                    arguments.max_output_tokens,
+                )
+                .from_caller(context.session_id());
+                let result = self.sessions.write_stdin(request).await;
+                Ok(shell_execution(&result))
+            };
+            output
+        })
     }
 }
 

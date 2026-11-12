@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::{path::PathBuf, sync::Arc};
 
 use crate::tools::{ClaudeWorkspaceFiles, ImageSource, ToolContent, ToolResultBlock};
@@ -52,35 +51,48 @@ struct ClaudeFileTool {
     session: Option<SessionEnvironment>,
 }
 
-#[async_trait]
 impl Tool for ClaudeFileTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let input: Value = input.decode_json()?;
-        let output = match self
-            .files
-            .as_ref()
-            .clone()
-            .with_read_token_budget(context.output_token_budget())
-            .execute_output_in_session(&self.name, input, self.session.clone())
-            .await
-        {
-            Ok(output) => output,
-            Err(error) => return Ok(ToolOutput::error(error)),
-        };
-        let result = match output.content {
-            ToolContent::Text(text) if output.is_error => ToolOutput::error(text),
-            ToolContent::Text(text) => ToolOutput::text(text),
-            ToolContent::Blocks(blocks) => {
-                super::claude_output::media(blocks.into_iter().map(item).collect())
-            }
-        };
-        Ok(match output.metadata {
-            Some(metadata) => result.with_metadata(metadata),
-            None => result,
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let input: Value = input.decode_json()?;
+                let output = match self
+                    .files
+                    .as_ref()
+                    .clone()
+                    .with_read_token_budget(context.output_token_budget())
+                    .execute_output_in_session(&self.name, input, self.session.clone())
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(error) => return Ok(ToolOutput::error(error)),
+                };
+                let result = match output.content {
+                    ToolContent::Text(text) if output.is_error => ToolOutput::error(text),
+                    ToolContent::Text(text) => ToolOutput::text(text),
+                    ToolContent::Blocks(blocks) => {
+                        super::claude_output::media(blocks.into_iter().map(item).collect())
+                    }
+                };
+                Ok(match output.metadata {
+                    Some(metadata) => result.with_metadata(metadata),
+                    None => result,
+                })
+            };
+            output
         })
     }
 }

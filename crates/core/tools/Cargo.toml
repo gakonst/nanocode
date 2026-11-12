@@ -13,7 +13,6 @@ description = "Shared tool traits, invocation contracts and macros for both harn
 [dependencies]
 nanocode-tool-contracts.workspace = true
 nanocode-tools-macros.workspace = true
-async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

@@ -6,7 +6,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use async_trait::async_trait;
 use futures_util::{Sink, SinkExt, Stream, StreamExt, future};
 use nanocode_sync::{Atom, Slot};
 use serde::Deserialize;
@@ -895,7 +894,6 @@ impl RemoteTool {
     }
 }
 
-#[async_trait]
 impl Tool for RemoteTool {
     fn definition(&self) -> ToolDefinition {
         self.spec.definition.clone()
@@ -905,21 +903,47 @@ impl Tool for RemoteTool {
         self.spec.parallel_safe
     }
 
-    async fn end_turn(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        hook_event_name: &str,
-    ) -> Result<(), ToolError> {
-        Ok(self
-            .runner
-            .turn_ended(session_id, turn_id, hook_event_name)?)
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        hook_event_name: &'life3 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), ToolError> = {
+                Ok(self
+                    .runner
+                    .turn_ended(session_id, turn_id, hook_event_name)?)
+            };
+            output
+        })
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        self.execute_with_runtime(input, context)
-            .await
-            .map(|(output, _)| output)
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                self.execute_with_runtime(input, context)
+                    .await
+                    .map(|(output, _)| output)
+            };
+            output
+        })
     }
 }
 

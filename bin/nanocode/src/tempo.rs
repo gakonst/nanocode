@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use futures_util::Stream;
 use nanocode::{
     ClaudeModel, Model, ModelSelection,
@@ -943,22 +942,53 @@ impl PaymentProvider for Wallet {
     }
 }
 
-#[async_trait]
 impl McpPaymentProvider for McpPayments {
-    async fn prepare(
-        &self,
-        payment_required: &Value,
-    ) -> std::result::Result<Option<Box<dyn McpPendingPayment>>, String> {
-        self.pay(payment_required, None).await
+    fn prepare<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        payment_required: &'life1 Value,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = std::result::Result<Option<Box<dyn McpPendingPayment>>, String>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: std::result::Result<Option<Box<dyn McpPendingPayment>>, String> =
+                { self.pay(payment_required, None).await };
+            output
+        })
     }
 
-    async fn prepare_with_management(
-        &self,
-        payment_required: &Value,
-        management: &dyn McpPaymentManagement,
-    ) -> std::result::Result<Option<Box<dyn McpPendingPayment>>, String> {
-        self.pay(payment_required, Some(&ToolCall(management)))
-            .await
+    fn prepare_with_management<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        payment_required: &'life1 Value,
+        management: &'life2 dyn McpPaymentManagement,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = std::result::Result<Option<Box<dyn McpPendingPayment>>, String>>
+                + Send
+                + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: std::result::Result<Option<Box<dyn McpPendingPayment>>, String> = {
+                self.pay(payment_required, Some(&ToolCall(management)))
+                    .await
+            };
+            output
+        })
     }
 }
 
@@ -1030,7 +1060,6 @@ struct McpPending {
     url: reqwest::Url,
 }
 
-#[async_trait]
 impl McpPendingPayment for McpPending {
     fn credential(&self) -> &Value {
         &self.credential
@@ -1040,46 +1069,70 @@ impl McpPendingPayment for McpPending {
         self.receipt = Some(receipt.clone());
     }
 
-    async fn commit(self: Box<Self>) -> std::result::Result<(), String> {
-        let challenge = self.pending.challenge();
-        let charged = self
-            .receipt
-            .clone()
-            .and_then(Receipt::from_value)
-            .and_then(|receipt| self.payment.record_receipt(challenge, &receipt));
-        let amount = charged.or_else(|| challenge.amount());
-        if let (Some(receipt), Some(amount)) = (&self.receipt, amount) {
-            let wallet = self.payment.provider();
-            let funding = wallet.funding_currency(challenge);
-            let charge = Paid {
-                url: &self.url,
-                challenge,
-                amount,
-                funding: funding.as_deref(),
-                reference: receipt
-                    .get("reference")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
+    fn commit<'async_trait>(
+        self: Box<Self>,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = std::result::Result<(), String>> + Send + 'async_trait>,
+    >
+    where
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: std::result::Result<(), String> = {
+                let challenge = self.pending.challenge();
+                let charged = self
+                    .receipt
+                    .clone()
+                    .and_then(Receipt::from_value)
+                    .and_then(|receipt| self.payment.record_receipt(challenge, &receipt));
+                let amount = charged.or_else(|| challenge.amount());
+                if let (Some(receipt), Some(amount)) = (&self.receipt, amount) {
+                    let wallet = self.payment.provider();
+                    let funding = wallet.funding_currency(challenge);
+                    let charge = Paid {
+                        url: &self.url,
+                        challenge,
+                        amount,
+                        funding: funding.as_deref(),
+                        reference: receipt
+                            .get("reference")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    };
+                    notify(
+                        &wallet.payments.listeners,
+                        wallet
+                            .payments
+                            .ledger
+                            .update(|ledger| ledger.record(&charge)),
+                    );
+                }
+                self.pending
+                    .commit()
+                    .await
+                    .map_err(|error| error.to_string())
             };
-            notify(
-                &wallet.payments.listeners,
-                wallet
-                    .payments
-                    .ledger
-                    .update(|ledger| ledger.record(&charge)),
-            );
-        }
-        self.pending
-            .commit()
-            .await
-            .map_err(|error| error.to_string())
+            output
+        })
     }
 
-    async fn rollback(self: Box<Self>) -> std::result::Result<(), String> {
-        self.pending
-            .rollback()
-            .await
-            .map_err(|error| error.to_string())
+    fn rollback<'async_trait>(
+        self: Box<Self>,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = std::result::Result<(), String>> + Send + 'async_trait>,
+    >
+    where
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: std::result::Result<(), String> = {
+                self.pending
+                    .rollback()
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            output
+        })
     }
 }
 

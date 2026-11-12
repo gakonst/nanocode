@@ -1,5 +1,4 @@
 use crate::{read_body, write_body};
-use async_trait::async_trait;
 use nanocode_sync::{Atom, Slot};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolResult,
@@ -305,36 +304,61 @@ impl ExtensionTool {
     }
 }
 
-#[async_trait]
 impl Tool for ExtensionTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let mut input: Value = input.decode_json()?;
-        let authorization = self.authorization.map(|key| {
-            input
-                .as_object_mut()
-                .and_then(|object| object.remove(key))
-                .unwrap_or(Value::Null)
-        });
-        if !input.is_object() || input.to_string().len() > MAX_INPUT {
-            return Ok(ToolOutput::error(
-                "expected browser arguments of at most 32 KiB",
-            ));
-        }
-        Ok(self.link.step(context, input, authorization).await)
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let mut input: Value = input.decode_json()?;
+                let authorization = self.authorization.map(|key| {
+                    input
+                        .as_object_mut()
+                        .and_then(|object| object.remove(key))
+                        .unwrap_or(Value::Null)
+                });
+                if !input.is_object() || input.to_string().len() > MAX_INPUT {
+                    return Ok(ToolOutput::error(
+                        "expected browser arguments of at most 32 KiB",
+                    ));
+                }
+                Ok(self.link.step(context, input, authorization).await)
+            };
+            output
+        })
     }
 
-    async fn end_turn(
-        &self,
-        session_id: &str,
-        turn_id: &str,
-        _hook_event_name: &str,
-    ) -> Result<(), ToolError> {
-        self.link.turn_ended(session_id, turn_id).await;
-        Ok(())
+    fn end_turn<'life0, 'life1, 'life2, 'life3, 'async_trait>(
+        &'life0 self,
+        session_id: &'life1 str,
+        turn_id: &'life2 str,
+        _hook_event_name: &'life3 str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), ToolError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        'life3: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: Result<(), ToolError> = {
+                self.link.turn_ended(session_id, turn_id).await;
+                Ok(())
+            };
+            output
+        })
     }
 }
 

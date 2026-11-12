@@ -3,7 +3,6 @@ use crate::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult,
     remote::{HandRoute, Placement},
 };
-use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -42,7 +41,6 @@ enum Mode {
     Replace,
 }
 
-#[async_trait]
 impl Tool for RunnerManagement {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
@@ -65,70 +63,84 @@ impl Tool for RunnerManagement {
         )
     }
 
-    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let request: Request = input.decode_json()?;
-        let session = context.session_id();
-        let result = match request {
-            Request::List {} => {
-                json!({"runners":self.pool.list().into_iter().map(info).collect::<Vec<_>>(),"listeners":self.pool.servers().iter().map(|server| json!({"url":server.endpoint(),"token":"[REDACTED]"})).collect::<Vec<_>>(),"code_mode":self.placement(session)})
-            }
-            Request::Connect {
-                url,
-                token,
-                name,
-                mode,
-                call_timeout_ms,
-            } => {
-                let mut config = Runner::connect(url).token(token);
-                if let Some(name) = name {
-                    config = config.name(name);
-                }
-                let replace = matches!(mode, Some(Mode::Replace));
-                if replace {
-                    config = config.replace();
-                }
-                if let Some(ms) = call_timeout_ms {
-                    config = config.call_timeout(Duration::from_millis(ms));
-                }
-                let connected = self.pool.connect(config).await?.info();
-                let protocol = connected.protocol;
-                let mut result = info(connected);
-                if protocol == RunnerProtocol::CodeMode {
-                    result["code_mode"] = self.placement(session);
-                }
-                result
-            }
-            Request::Listen {
-                address,
-                token,
-                mode,
-                call_timeout_ms,
-            } => {
-                let mut config = RunnerServerConfig::listen(address);
-                if let Some(token) = token {
-                    config = config.token(token);
-                }
-                if matches!(mode, Some(Mode::Replace)) {
-                    config = config.replace();
-                }
-                if let Some(ms) = call_timeout_ms {
-                    config = config.call_timeout(Duration::from_millis(ms));
-                }
-                let server = self.pool.listen(config).await?;
-                json!({"url":server.endpoint(), "token":server.token(), "instruction":"Give this endpoint and credential to the hand, for example `nanocode hand URL` with NANOCODE_RUNNER_TOKEN set to the credential."})
-            }
-            Request::Disconnect { name } => {
-                self.pool.disconnect(&name).await?;
-                json!({"name":name,"status":"disconnected"})
-            }
-            Request::StopListening {} => {
-                for server in self.pool.servers() {
-                    server.stop().await?;
-                }
-                json!({"status":"stopped_listening"})
-            }
-        };
-        Ok(ToolOutput::json(&result).with_structured_result(result))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        context: ToolContext<'life1>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolResult> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let request: Request = input.decode_json()?;
+                let session = context.session_id();
+                let result = match request {
+                    Request::List {} => {
+                        json!({"runners":self.pool.list().into_iter().map(info).collect::<Vec<_>>(),"listeners":self.pool.servers().iter().map(|server| json!({"url":server.endpoint(),"token":"[REDACTED]"})).collect::<Vec<_>>(),"code_mode":self.placement(session)})
+                    }
+                    Request::Connect {
+                        url,
+                        token,
+                        name,
+                        mode,
+                        call_timeout_ms,
+                    } => {
+                        let mut config = Runner::connect(url).token(token);
+                        if let Some(name) = name {
+                            config = config.name(name);
+                        }
+                        let replace = matches!(mode, Some(Mode::Replace));
+                        if replace {
+                            config = config.replace();
+                        }
+                        if let Some(ms) = call_timeout_ms {
+                            config = config.call_timeout(Duration::from_millis(ms));
+                        }
+                        let connected = self.pool.connect(config).await?.info();
+                        let protocol = connected.protocol;
+                        let mut result = info(connected);
+                        if protocol == RunnerProtocol::CodeMode {
+                            result["code_mode"] = self.placement(session);
+                        }
+                        result
+                    }
+                    Request::Listen {
+                        address,
+                        token,
+                        mode,
+                        call_timeout_ms,
+                    } => {
+                        let mut config = RunnerServerConfig::listen(address);
+                        if let Some(token) = token {
+                            config = config.token(token);
+                        }
+                        if matches!(mode, Some(Mode::Replace)) {
+                            config = config.replace();
+                        }
+                        if let Some(ms) = call_timeout_ms {
+                            config = config.call_timeout(Duration::from_millis(ms));
+                        }
+                        let server = self.pool.listen(config).await?;
+                        json!({"url":server.endpoint(), "token":server.token(), "instruction":"Give this endpoint and credential to the hand, for example `nanocode hand URL` with NANOCODE_RUNNER_TOKEN set to the credential."})
+                    }
+                    Request::Disconnect { name } => {
+                        self.pool.disconnect(&name).await?;
+                        json!({"name":name,"status":"disconnected"})
+                    }
+                    Request::StopListening {} => {
+                        for server in self.pool.servers() {
+                            server.stop().await?;
+                        }
+                        json!({"status":"stopped_listening"})
+                    }
+                };
+                Ok(ToolOutput::json(&result).with_structured_result(result))
+            };
+            output
+        })
     }
 }
 

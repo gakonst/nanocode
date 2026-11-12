@@ -41,7 +41,6 @@ tracing.workspace = true
 libc.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-trait.workspace = true
 nanocode-process.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread"] }
 

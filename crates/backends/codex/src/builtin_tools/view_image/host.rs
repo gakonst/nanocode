@@ -48,8 +48,6 @@ impl HostViewImageHandler {
     }
 }
 
-#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
-#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl Tool for HostViewImageHandler {
     fn definition(&self) -> ToolDefinition {
         StandardTool::ViewImage.definition()
@@ -59,29 +57,43 @@ impl Tool for HostViewImageHandler {
         true
     }
 
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let arguments = input.decode_json::<ViewImageArguments>()?;
-        let detail = match detail(arguments.detail.as_deref()) {
-            Ok(detail) => detail,
-            Err(error) => return Ok(error),
-        };
-        let path = resolve(&self.workspace, Path::new(&arguments.path));
-        let bytes = match self.files.read_bytes(&path).await {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => {
-                return Ok(ToolOutput::error(format!(
-                    "unable to locate image at `{}`: No such file or directory",
-                    path.display()
-                )));
-            }
-            Err(error) => {
-                return Ok(ToolOutput::error(format!(
-                    "unable to read image at `{}`: {error}",
-                    path.display()
-                )));
-            }
-        };
-        Ok(output(&bytes, detail))
+    fn execute<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        input: ToolInput,
+        _context: ToolContext<'life1>,
+    ) -> nanocode_tools::ToolCallFuture<'async_trait, ToolResult>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let output: ToolResult = {
+                let arguments = input.decode_json::<ViewImageArguments>()?;
+                let detail = match detail(arguments.detail.as_deref()) {
+                    Ok(detail) => detail,
+                    Err(error) => return Ok(error),
+                };
+                let path = resolve(&self.workspace, Path::new(&arguments.path));
+                let bytes = match self.files.read_bytes(&path).await {
+                    Ok(Some(bytes)) => bytes,
+                    Ok(None) => {
+                        return Ok(ToolOutput::error(format!(
+                            "unable to locate image at `{}`: No such file or directory",
+                            path.display()
+                        )));
+                    }
+                    Err(error) => {
+                        return Ok(ToolOutput::error(format!(
+                            "unable to read image at `{}`: {error}",
+                            path.display()
+                        )));
+                    }
+                };
+                Ok(output(&bytes, detail))
+            };
+            output
+        })
     }
 }
 

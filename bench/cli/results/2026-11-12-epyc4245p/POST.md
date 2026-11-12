@@ -2,9 +2,11 @@
 
 *Draft for nanocode.xyz/experiments. Not published.*
 
-We ran seven terminal coding agents through the same scripted work on AMD EPYC 4245P bare-metal servers (6 cores, 12 threads, 46 GB, Ubuntu 24.04, kernel 6.8) on 2026-11-12, between 03:11 and 05:22 UTC. The CLIs are nc (nanocode, built from master 3c16e6c8e with the dist profile, the one releases use), nc-lite (the same SDK trimmed to what fx ships, built from the same commit), Vercel fx 0.0.16, Pi 1.5.2, OpenCode 1.19.5, Claude Code 2.1.322 and Codex CLI 0.167.2. No lane talks to a real model: each one points at a local fixture that streams a fixed reply, runs with its own empty HOME, and runs inside a network namespace where only loopback works. Lanes take turns in every round. Every number is a median with the sample count in parentheses, and CPU and memory cover the CLI's whole process tree. The terminal runs use a 120x40 PTY. What reached the screen is replayed through a VT emulator, so lag means time until the token is visible. The raw JSONL, the commands and the generated [REPORT.md](REPORT.md) are next to this file.
+We ran seven terminal coding agents through the same scripted work on AMD EPYC 4245P bare-metal servers (6 cores, 12 threads, 46 GB, Ubuntu 24.04, kernel 6.8) on 2026-11-12, between 03:11 and 05:22 UTC. The CLIs are nc (nanocode, master 3c16e6c8e, dist profile), nc-lite (the same SDK trimmed to what fx ships, same commit, lite profile), Vercel fx 0.0.16, Pi 1.5.2, OpenCode 1.19.5, Claude Code 2.1.322 and Codex CLI 0.167.2. No lane talks to a real model: each one points at a local fixture that streams a fixed reply, runs with its own empty HOME, and runs inside a network namespace where only loopback works. Lanes take turns in every round. Every number is a median with the sample count in parentheses, and CPU and memory cover the CLI's whole process tree. The terminal runs use a 120x40 PTY. What reached the screen is replayed through a VT emulator, so lag means time until the token is visible. The raw JSONL, the commands and the generated [REPORT.md](REPORT.md) are next to this file.
 
 Four servers of the same model ran the work in parallel: one ran the startup, first-frame, idle, keystroke, one-shot and tool-turn suites; one ran netaudit, the cold-cache rows, fleets and install size; two ran the streaming sweeps (headless and 50,000 tok/s; 120x40 and 240x70). The session store ran on a sweep server after its sweeps. [machine.json](machine.json) records each one.
+
+nc releases are not built like the nc lane. Since 7837aae16 they go through scripts/build-cli.sh: the dist profile without position-independent code, then laid out by BOLT from a training run. A fifth server of the same model ran those builds of nc and nc-lite at 7837aae16, with fx as a control, through the same suites ([2026-11-12-epyc4245p-lite3](../2026-11-12-epyc4245p-lite3/REPORT.md), cold rows in [-lite3-cold](../2026-11-12-epyc4245p-lite3-cold/REPORT.md)). Their rows are nc-bolt and nclite-bolt below. fx there was within 8% of fx here on wall-clock medians (first frame 1.86 against 2.01 ms, one-shot 22.9 against 23.2 ms), and its CPU medians were up to 15% lower (one-shot 1.62 against 1.87 ms, cold start 4.74 against 5.32 ms), so read CPU differences between nc-bolt and the other lanes with that margin. The BOLT nanocode binary is 82.1 MB and nc-lite's 19.1 MB (that run's disk step failed; sizes from its VERSIONS.md). That run's streaming sweeps took 6 samples, fewer than the 10 we require, so the streaming tables have no BOLT rows.
 
 ## Startup and first frame
 
@@ -14,36 +16,42 @@ Four servers of the same model ran the work in parallel: one ran the startup, fi
 |---|---:|---:|---:|---:|---:|---:|
 | true | 100 | 0 | 2.82 [1.38–137] (100) | 0.181 (100) | 1.25 (100) | n/a |
 | nc | 100 | 0 | 2.68 [2.61–2.91] (100) | 1.18 (100) | 9.13 (100) | n/a |
+| nc-bolt | 100 | 0 | 2.63 [2.59–2.86] (100) | 0.444 (100) | 5.88 (100) | n/a |
 | fx | 100 | 0 | 2.74 [2.65–2.88] (100) | 0.154 (100) | 1.38 (100) | n/a |
 | pi | 100 | 0 | 101 [96.8–105] (100) | 126 (100) | 103 (100) | n/a |
 | opencode | 100 | 0 | 201 [199–209] (100) | 267 (100) | 130 (100) | n/a |
 | claude | 100 | 0 | 5.05 [4.68–7.05] (100) | 4.09 (100) | 21.9 (100) | n/a |
 | codex | 100 | 0 | 4.78 [4.69–4.90] (100) | 4.23 (100) | 25.6 (100) | n/a |
 | nclite | 100 | 0 | 2.69 [2.63–2.87] (100) | 0.548 (100) | 4.75 (100) | n/a |
+| nclite-bolt | 100 | 0 | 2.62 [2.56–2.78] (100) | 0.252 (100) | 3.25 (100) | n/a |
 
 ### Cold start: --version after dropping the page cache
 
 | lane | samples | errors | wall ms | CPU ms | peak RSS MB |
 |---|---:|---:|---:|---:|---:|
 | nc | 10 | 0 | 11.1 [11.0–11.3] (10) | 2.64 (10) | 9.13 (10) |
+| nc-bolt | 10 | 0 | 8.84 [8.70–8.90] (10) | 1.56 (10) | 5.75 (10) |
 | fx | 10 | 0 | 5.32 [5.27–5.58] (10) | 0.622 (10) | 1.38 (10) |
 | pi | 10 | 0 | 119 [115–121] (10) | 130 (10) | 103 (10) |
 | opencode | 10 | 0 | 236 [236–244] (10) | 281 (10) | 130 (10) |
 | claude | 10 | 0 | 29.8 [29.7–31.9] (10) | 13.0 (10) | 21.6 (10) |
 | codex | 10 | 0 | 27.6 [27.5–27.7] (10) | 9.62 (10) | 25.8 (10) |
 | nclite | 10 | 0 | 7.07 [6.95–7.19] (10) | 1.21 (10) | 4.63 (10) |
+| nclite-bolt | 10 | 0 | 6.81 [6.76–7.08] (10) | 0.731 (10) | 3.13 (10) |
 
 ### Time to first frame
 
 | lane | samples | errors | first byte ms | first frame ms | CPU ms | peak RSS MB | processes |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | nc | 30 | 0 | 2.26 (30) | 2.89 [2.67–3.31] (30) | 8.56 (30) | 31.0 (30) | 0.000 (30) |
+| nc-bolt | 30 | 0 | 1.52 (30) | 2.02 [1.86–2.37] (30) | 6.84 (30) | 19.0 (30) | 0.000 (30) |
 | fx | 30 | 0 | 1.03 (30) | 2.01 [1.89–2.36] (30) | 3.90 (30) | 8.89 (30) | 0.000 (30) |
 | pi | 30 | 0 | 126 (30) | 138 [127–145] (30) | 216 (30) | 121 (30) | 0.000 (30) |
 | opencode | 30 | 0 | 285 (30) | 1,376 [1,357–1,399] (30) | 3,435 (30) | 923 (30) | 0.000 (30) |
 | claude | 30 | 0 | 84.8 (30) | 151 [149–152] (30) | 404 (30) | 218 (30) | 4.00 (30) |
 | codex | 30 | 0 | 5.76 (30) | 126 [118–129] (30) | 190 (30) | 177 (30) | 8.00 (30) |
 | nclite | 30 | 0 | 1.14 (30) | 1.25 [1.11–1.77] (30) | 1.37 (30) | 10.0 (30) | 0.000 (30) |
+| nclite-bolt | 30 | 0 | 0.864 (30) | 0.959 [0.836–1.35] (30) | 0.917 (30) | 5.19 (30) | 0.000 (30) |
 
 ### Time to first frame, cold page cache
 
@@ -64,12 +72,14 @@ Summed over the CLI's process tree from /proc/<pid>/smaps_rollup. RSS counts the
 | lane | samples | errors | RSS MB | PSS MB | private (USS) MB | anonymous MB |
 |---|---:|---:|---:|---:|---:|---:|
 | nc | 30 | 0 | 30.9 (30) | 28.5 (30) | 28.3 (30) | 5.97 (30) |
+| nc-bolt | 30 | 0 | 19.0 (30) | 16.7 (30) | 16.4 (30) | 4.36 (30) |
 | fx | 30 | 0 | 8.80 (30) | 8.79 (30) | 8.78 (30) | 1.25 (30) |
 | pi | 30 | 0 | 121 (30) | 86.2 (30) | 74.8 (30) | 67.7 (30) |
 | opencode | 30 | 0 | n/a | n/a | n/a | n/a |
 | claude | 30 | 0 | 209 (30) | 207 (30) | 207 (30) | 133 (30) |
 | codex | 30 | 0 | 175 (30) | 175 (30) | 175 (30) | 34.6 (30) |
 | nclite | 30 | 0 | 10.0 (30) | 7.85 (30) | 7.64 (30) | 0.887 (30) |
+| nclite-bolt | 30 | 0 | 5.19 (30) | 3.07 (30) | 2.84 (30) | 0.352 (30) |
 
 ## Headless runs
 
@@ -78,36 +88,42 @@ Summed over the CLI's process tree from /proc/<pid>/smaps_rollup. RSS counts the
 | lane | samples | errors | wall ms | spawn to request ms | reply end to exit ms | CPU ms | peak RSS MB | first request bytes | side requests | processes left behind |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | nc | 30 | 0 | 6.87 [6.79–7.04] (30) | 4.27 (30) | 2.42 (30) | 7.36 (30) | 33.6 (30) | 62,483 (30) | 0.000 (30) | 0.000 (30) |
+| nc-bolt | 30 | 0 | 4.83 [4.75–5.00] (30) | 2.62 (30) | 2.01 (30) | 4.93 (30) | 19.0 (30) | 62,482 (30) | 0.000 (30) | 0.000 (30) |
 | fx | 30 | 0 | 23.2 [23.1–33.2] (30) | 12.5 (30) | 10.5 (30) | 1.87 (30) | 7.52 (30) | 26,281 (30) | 0.000 (30) | 0.000 (30) |
 | pi | 30 | 0 | 151 [149–157] (30) | 139 (30) | 12.7 (30) | 203 (30) | 118 (30) | 5,444 (30) | 0.000 (30) | 0.000 (30) |
 | opencode | 30 | 0 | 997 [987–1,019] (30) | 963 (30) | 33.4 (30) | 1,853 (30) | 676 (30) | 30,705 (30) | 1.00 (30) | 0.000 (30) |
 | claude | 30 | 0 | 163 [159–167] (30) | 144 (30) | 18.9 (30) | 183 (30) | 186 (30) | 46,398 (30) | 0.000 (30) | 0.000 (30) |
 | codex | 30 | 0 | 5,045 [5,043–5,047] (30) | 51.5 (30) | 4,993 (30) | 90.4 (30) | 153 (30) | 39,395 (30) | 0.000 (30) | 0.000 (30) |
 | nclite | 30 | 0 | 4.89 [4.79–5.19] (30) | 2.52 (30) | 2.21 (30) | 2.70 (30) | 14.1 (30) | 23,942 (30) | 0.000 (30) | 0.000 (30) |
+| nclite-bolt | 30 | 0 | 2.81 [2.77–4.97] (30) | 1.79 (30) | 0.902 (30) | 1.77 (30) | 7.75 (30) | 23,941 (30) | 0.000 (30) | 0.000 (30) |
 
 ### Long tool turn: 50 shell steps, headless
 
 | lane | samples | errors | wall ms | tool result to next request p50 ms | CPU per step ms | peak RSS MB | last request bytes |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | nc | 10 | 0 | 69.1 [67.1–71.2] (10) | 0.903 (10) | 3.01 (10) | 51.7 (10) | 83,907 (10) |
+| nc-bolt | 10 | 0 | 63.1 [61.1–65.1] (10) | 0.830 (10) | 2.88 (10) | 36.1 (10) | 83,906 (10) |
 | fx | 10 | 0 | 1,057 [1,049–1,061] (10) | 20.5 (10) | 2.12 (10) | 17.4 (10) | 59,767 (10) |
 | pi | 10 | 0 | 299 [293–303] (10) | 2.56 (10) | 8.47 (10) | 163 (10) | 14,818 (10) |
 | opencode | 10 | 0 | 1,593 [1,579–1,627] (10) | 10.3 (10) | 59.4 (10) | 770 (10) | 42,844 (10) |
 | claude | 10 | 0 | 656 [653–665] (10) | 8.57 (10) | 18.4 (10) | 287 (10) | 60,617 (10) |
 | codex | 10 | 0 | 5,045 [5,045–5,047] (10) | 41.0 (10) | 23.0 (10) | 319 (10) | 57,225 (10) |
 | nclite | 10 | 0 | 55.1 [55.1–59.2] (10) | 0.813 (10) | 2.77 (10) | 29.8 (10) | 41,772 (10) |
+| nclite-bolt | 10 | 0 | 53.1 [53.0–58.3] (10) | 0.782 (10) | 2.72 (10) | 23.9 (10) | 41,771 (10) |
 
 ### Fleet: 32 concurrent headless runs, 1,000 tokens each at 1,000 tok/s
 
 | lane | samples | errors | wall ms | CPU per run ms | peak RSS per run MB | stream end to exit p50 ms |
 |---|---:|---:|---:|---:|---:|---:|
 | nc | 10 | 0 | 1,055 [1,050–1,058] (10) | 17.8 (10) | 33.2 (10) | 2.42 (10) |
+| nc-bolt | 10 | 0 | 1,042 [1,039–1,045] (10) | 13.3 (10) | 19.2 (10) | 2.17 (10) |
 | fx | 10 | 0 | 1,051 [1,048–1,063] (10) | 5.92 (10) | 7.55 (10) | 7.58 (10) |
 | pi | 10 | 0 | 2,476 [2,410–2,561] (10) | 594 (10) | 135 (10) | 13.3 (10) |
 | opencode | 10 | 0 | 13,997 [13,673–14,243] (10) | 4,453 (10) | 584 (10) | 275 (10) |
 | claude | 10 | 0 | 3,082 [2,976–3,355] (10) | 835 (10) | 221 (10) | 26.7 (10) |
 | codex | 10 | 0 | 5,569 [5,541–5,584] (10) | 210 (10) | 197 (10) | 3,873 (10) |
 | nclite | 8 | 2 | 1,034 [1,030–1,035] (8) | 19.3 (8) | 14.1 (8) | 1.43 (8) |
+| nclite-bolt | 10 | 0 | 1,029 [1,024–1,032] (10) | 12.2 (10) | 7.71 (10) | 1.83 (10) |
 
 - nclite error: missing tokens
 
@@ -304,24 +320,28 @@ Summed over the CLI's process tree from /proc/<pid>/smaps_rollup. RSS counts the
 | lane | samples | errors | idle CPU ms/s | bytes written while idle | peak RSS MB | processes |
 |---|---:|---:|---:|---:|---:|---:|
 | nc | 10 | 0 | -0.009 [-0.073–0.036] (10) | 0.000 (10) | 30.9 (10) | 0.000 (10) |
+| nc-bolt | 10 | 0 | -0.023 [-0.041–0.020] (10) | 0.000 (10) | 19.0 (10) | 0.000 (10) |
 | fx | 10 | 0 | 0.550 [0.372–0.646] (10) | 0.000 (10) | 9.54 (10) | 0.000 (10) |
 | pi | 10 | 0 | -0.031 [-0.402–0.638] (10) | 0.000 (10) | 121 (10) | 0.000 (10) |
 | opencode | 10 | 0 | 24.2 [20.1–27.0] (10) | 0.000 (10) | 926 (10) | 0.000 (10) |
 | claude | 10 | 0 | 5.46 [3.29–6.42] (10) | 241 (10) | 219 (10) | 4.00 (10) |
 | codex | 10 | 0 | 0.413 [0.249–0.705] (10) | 0.000 (10) | 176 (10) | 7.00 (10) |
 | nclite | 10 | 0 | -0.002 [-0.011–0.010] (10) | 0.000 (10) | 10.1 (10) | 0.000 (10) |
+| nclite-bolt | 10 | 0 | -0.003 [-0.016–0.018] (10) | 0.000 (10) | 5.22 (10) | 0.000 (10) |
 
 ### Keystroke echo
 
 | lane | samples | errors | echo p50 ms | echo max ms | keys echoed of 26 |
 |---|---:|---:|---:|---:|---:|
 | nc | 10 | 0 | 0.078 [0.076–0.081] (10) | 0.100 (10) | 26.0 (10) |
+| nc-bolt | 10 | 0 | 0.076 [0.048–0.082] (10) | 0.101 (10) | 26.0 (10) |
 | fx | 10 | 0 | 0.315 [0.308–0.319] (10) | 113 (10) | 26.0 (10) |
 | pi | 10 | 0 | 0.317 [0.198–0.406] (10) | 2.18 (10) | 26.0 (10) |
 | opencode | 10 | 0 | 1.50 [1.43–1.56] (10) | 21.4 (10) | 26.0 (10) |
 | claude | 10 | 0 | 1.30 [0.992–1.36] (10) | 9.83 (10) | 26.0 (10) |
 | codex | 10 | 0 | 20.9 [20.8–21.0] (10) | 22.0 (10) | 26.0 (10) |
 | nclite | 10 | 0 | 0.013 [0.011–0.014] (10) | 0.031 (10) | 26.0 (10) |
+| nclite-bolt | 10 | 0 | 0.014 [0.012–0.014] (10) | 0.028 (10) | 26.0 (10) |
 
 ### Install size
 
@@ -356,28 +376,34 @@ Runtimes a lane needs but does not install (Node for npm packages) are not count
 | lane | samples | errors | store KB | KB per session | files | CPU per saved session ms |
 |---|---:|---:|---:|---:|---:|---:|
 | nc | 1 | 0 | 4,264 (1) | 4.26 (1) | 1,006 (1) | 11.4 (1) |
+| nc-bolt | 1 | 0 | 4,252 (1) | 4.25 (1) | 1,006 (1) | 10.3 (1) |
 | fx | 1 | 0 | 12,780 (1) | 12.8 (1) | 2,005 (1) | 1.57 (1) |
 | pi | 1 | 0 | 8,144 (1) | 8.14 (1) | 1,004 (1) | 203 (1) |
 | claude | 1 | 0 | 132,132 (1) | 132 (1) | 1,004 (1) | 176 (1) |
 | nclite | 1 | 0 | 4,216 (1) | 4.22 (1) | 1,003 (1) | 9.34 (1) |
+| nclite-bolt | 1 | 0 | 4,208 (1) | 4.21 (1) | 1,003 (1) | 10.5 (1) |
 
 ### Listing 1,000 sessions
 
 | lane | samples | errors | wall ms | CPU ms | peak RSS MB |
 |---|---:|---:|---:|---:|---:|
 | nc | 20 | 0 | 9.23 [7.11–9.31] (20) | 6.50 (20) | 20.0 (20) |
+| nc-bolt | 20 | 0 | 7.25 [7.01–9.65] (20) | 5.99 (20) | 13.5 (20) |
 | fx | 20 | 0 | 6.88 [6.83–7.00] (20) | 4.94 (20) | 6.28 (20) |
 | nclite | 20 | 0 | 8.98 [8.90–9.10] (20) | 6.72 (20) | 11.1 (20) |
+| nclite-bolt | 20 | 0 | 9.01 [8.95–9.36] (20) | 6.86 (20) | 7.87 (20) |
 
 ### Continuing the latest of 1,000 sessions
 
 | lane | samples | errors | wall ms | spawn to request ms | CPU ms | peak RSS MB |
 |---|---:|---:|---:|---:|---:|---:|
 | nc | 20 | 0 | 19.1 [17.0–23.1] (20) | 8.92 (20) | 18.7 (20) | 41.9 (20) |
+| nc-bolt | 20 | 0 | 17.1 [17.0–19.3] (20) | 8.09 (20) | 18.0 (20) | 29.3 (20) |
 | fx | 20 | 0 | 28.9 [26.8–28.9] (20) | 16.3 (20) | 6.17 (20) | 8.88 (20) |
 | pi | 20 | 0 | 155 [154–160] (20) | 143 (20) | 206 (20) | 114 (20) |
 | claude | 20 | 0 | 166 [162–168] (20) | 148 (20) | 187 (20) | 195 (20) |
 | nclite | 20 | 0 | 22.9 [20.9–23.0] (20) | 8.77 (20) | 20.2 (20) | 18.6 (20) |
+| nclite-bolt | 20 | 0 | 25.0 [24.9–27.0] (20) | 8.88 (20) | 23.1 (20) | 13.2 (20) |
 
 ## The three largest differences
 
@@ -389,7 +415,7 @@ Runtimes a lane needs but does not install (Node for npm packages) are not count
 
 ## Where nc is behind
 
-nc is the heaviest of the native binaries. Its 71.4 MB executable holds 30.9 MB resident one second after the first frame (fx: 8.80 MB). It needs 7.36 ms of CPU for a one-word reply (fx: 1.87 ms) and 20.6 ms to its first frame from a cold page cache (fx: 9.48 ms). A profile of the nc TUI on the same machine (smaps, massif) attributes that memory as follows. About 25 MB is resident pages of the executable's code. About 9 MB is read-only data, of which about 6 MB is relocation tables and data the position-independent executable fixes up at load. The allocator's heap is about 7 MB for under 2 MB of live allocations. About 6 MB, and most of a one-shot run's remaining instructions, belong to the built-in Tempo tools: a payment proxy thread that loads and re-encodes the system's trusted roots at start, and their MCP clients. Those tools also make four outbound connection attempts at every start (netaudit), which fx and nc-lite do not make.
+nc is the heaviest of the native binaries. As released (nc-bolt) it holds 19.0 MB resident one second after the first frame against fx's 8.91 MB, needs 4.93 ms of CPU for a one-word reply (fx: 1.62 ms), and starts `--version` from a cold page cache in 8.84 ms (fx: 4.74 ms). The plain dist build is heavier still: 30.9 MB, 7.36 ms and 11.1 ms. A profile of that build's TUI on the same machine (smaps, massif) attributes its memory as follows. About 25 MB is resident pages of the executable's code; Linux maps code a folio at a time, so this counts every page near code that ran, which is what BOLT's layout shrinks. About 9 MB is read-only data, of which about 6 MB is relocation tables and data a position-independent executable fixes up at load, which the release build no longer has. The allocator's heap is about 7 MB for under 2 MB of live allocations. About 6 MB, and most of a one-shot run's remaining instructions, belong to the built-in Tempo tools: a payment proxy thread that loads and re-encodes the system's trusted roots at start, and their MCP clients. Those tools also make four outbound connection attempts at every start (netaudit), which fx and nc-lite do not make.
 
 ## What changed in nc today
 
@@ -405,7 +431,7 @@ Three changes landed on nanocode master on 2026-11-12. Each column adds one chan
 | one-shot CPU ms | 12.7 | 10.7 | 9.16 | 9.06 |
 | spawn to request ms | 8.22 | 7.51 | 5.85 | 5.72 |
 
-The tables above use the dist profile (fat LTO), so their absolute numbers are lower than these release-build numbers.
+These are release-profile builds, so their absolute numbers are higher than the dist and BOLT rows above.
 
 ## What we could not measure
 

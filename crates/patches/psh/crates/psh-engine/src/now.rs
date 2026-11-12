@@ -28,6 +28,7 @@ const BUILTINS: &[&[u8]] = &[
     b"return",
     b"break",
     b"continue",
+    b"read",
 ];
 
 pub(crate) fn command<'a>(
@@ -73,12 +74,24 @@ fn simple<'a>(
             let [p] = w.parts.as_slice() else {
                 return None;
             };
-            if !matches!(p.kind, Part::Lit) || !s.assigns.is_empty() {
+            if !matches!(p.kind, Part::Lit) {
                 return None;
             }
             let name = code.ast.text(p.span);
             if !BUILTINS.contains(&name.as_bytes()) || vp.funcs.contains_key(name) {
                 return None;
+            }
+            for a in &s.assigns {
+                let plain = vp.vars.get(code.ast.text(a.name)).is_none_or(|v| {
+                    !v.nameref
+                        && !v.integer
+                        && !v.readonly
+                        && v.case == crate::vars::Case::None
+                        && v.dynamic.is_none()
+                });
+                if a.append || !plain {
+                    return None;
+                }
             }
             Some(builtins::get(vp, name.as_bytes())?)
         }
@@ -128,9 +141,28 @@ fn simple<'a>(
         Err(msg) => return Some(arith_failed(vp, msg)),
     };
     let last = argv.last().cloned().unwrap_or_default();
+    let mut saved: Vec<(&str, Option<crate::vars::Var>)> = Vec::new();
+    for a in &s.assigns {
+        let AssignValue::Scalar(w) = &a.value else {
+            continue;
+        };
+        let v = match expand::single_now(vp, code, w) {
+            Ok(v) => v,
+            Err(msg) => {
+                restore(vp, saved);
+                return Some(arith_failed(vp, msg));
+            }
+        };
+        let name = code.ast.text(a.name);
+        saved.push((name, vp.vars.get(name).cloned()));
+        let var = vp.vars.entry(name);
+        var.set(v);
+        var.exported = true;
+    }
     vp.exec_now = false;
     let mut fut: LocalBoxFuture<'a, R> = Box::pin(async move {
         let r = (b.run)(vp, &argv).await;
+        restore(vp, saved);
         exec::set_underscore(vp, last);
         let status = r?;
         match finish(vp, code, cmd, status, check) {
@@ -144,6 +176,17 @@ fn simple<'a>(
             Poll::Pending => Now::Later(fut),
         },
     )
+}
+
+fn restore(vp: &mut Vp, saved: Vec<(&str, Option<crate::vars::Var>)>) {
+    for (name, old) in saved.into_iter().rev() {
+        match old {
+            Some(var) => vp.vars.insert(name, var),
+            None => {
+                vp.vars.remove(name);
+            }
+        }
+    }
 }
 
 fn arith_failed(vp: &mut Vp, msg: String) -> Now<'_> {

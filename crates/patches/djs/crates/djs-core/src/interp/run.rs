@@ -4334,13 +4334,17 @@ impl<'h> Exec<'h> {
             return Ok(Some(Value::UNDEFINED));
         }
         let proto_source = new_target.and_then(|v| v.as_object()).unwrap_or(fo);
-        let proto = match self
-            .heap
-            .lookup_property(proto_source, crate::heap::atoms::PROTOTYPE)
-        {
-            Lookup::Found(_, Property::Data { value, .. }) => value.as_object(),
-            Lookup::Absent => None,
-            Lookup::Found(..) | Lookup::Proxy(_) => return Ok(None),
+        let key = crate::heap::atoms::PROTOTYPE;
+        let proto = match ic::mega_get(self.heap, Value::object(proto_source), key) {
+            Some(value) => value.as_object(),
+            None => match self.heap.lookup_property(proto_source, key) {
+                Lookup::Found(h, Property::Data { value, .. }) => {
+                    self.mega_fill(Value::object(proto_source), key, h);
+                    value.as_object()
+                }
+                Lookup::Absent => None,
+                Lookup::Found(..) | Lookup::Proxy(_) => return Ok(None),
+            },
         };
         let proto = proto.unwrap_or_else(|| intrinsic_obj(self.heap, Intrinsic::ObjectProto));
         Ok(Some(Value::object(self.heap.new_object(Some(proto))?)))

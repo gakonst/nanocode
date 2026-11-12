@@ -122,11 +122,13 @@ pub fn matching<'a>(
     prefix: &'a str,
     extra: Option<(&'static str, &'static str)>,
 ) -> impl Iterator<Item = (&'static str, &'static str)> + 'a {
-    COMMANDS
-        .iter()
-        .copied()
-        .chain(extra)
-        .filter(move |(command, _)| command.starts_with(prefix))
+    let commands = COMMANDS.iter().copied().chain(extra);
+    commands
+        .clone()
+        .filter(move |(command, _)| *command == prefix)
+        .chain(
+            commands.filter(move |(command, _)| *command != prefix && command.starts_with(prefix)),
+        )
 }
 
 pub fn complete(prefix: &str, extra: Option<(&'static str, &'static str)>) -> Option<&'static str> {

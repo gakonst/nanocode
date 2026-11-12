@@ -122,7 +122,6 @@ base64 = "0.22.1"
 memchr = "2.8.3"
 mimalloc = { version = "0.1.52", default-features = false }
 imbl = { version = "7.0.2", features = ["serde"] }
-futures-channel = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }
 getrandom = "0.4.3"
 bytes = "1.12.1"

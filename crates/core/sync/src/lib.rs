@@ -14,6 +14,7 @@ mod session;
 mod shared;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
+pub mod unbounded;
 mod waits;
 mod wakes;
 mod weighed;

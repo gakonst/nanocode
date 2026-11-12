@@ -10,7 +10,8 @@ use std::{
 
 use nanocode_sync::{Slot, Swap, SwapOption};
 
-use futures_channel::{mpsc, oneshot};
+use nanocode_sync::unbounded;
+use tokio::sync::oneshot;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -144,12 +145,12 @@ const CLIENT_CANCELLED_REASON: &str = "request cancelled by client";
 
 type Reply = oneshot::Sender<Result<Value, Error>>;
 
-pub type Outgoing = mpsc::UnboundedReceiver<Message>;
+pub type Outgoing = unbounded::Receiver<Message>;
 
 type Pending = HashMap<RequestId, Arc<Slot<Reply>>>;
 
 struct Shared {
-    outbound: mpsc::UnboundedSender<Message>,
+    outbound: unbounded::Sender<Message>,
     next_id: AtomicU32,
     pending: Swap<Pending>,
     closed: AtomicBool,
@@ -182,7 +183,7 @@ impl Shared {
                 let _ = reply.send(Err(Error::Closed));
             }
         }
-        self.outbound.close_channel();
+        self.outbound.close();
     }
 }
 
@@ -209,7 +210,7 @@ impl Drop for PendingGuard<'_> {
         };
         let pending = self.shared.take_pending(&id).is_some() && !self.shared.is_closed();
         if pending && self.cancellable {
-            let _ = self.shared.outbound.unbounded_send(Message::notification(
+            let _ = self.shared.outbound.send(Message::notification(
                 CANCELLED,
                 Some(json!({"requestId": id, "reason": CLIENT_CANCELLED_REASON})),
             ));
@@ -220,7 +221,7 @@ impl Drop for PendingGuard<'_> {
 impl Session {
     #[must_use]
     pub fn new() -> (Self, Outgoing, Inbound) {
-        let (outbound, receiver) = mpsc::unbounded();
+        let (outbound, receiver) = unbounded::channel();
         let shared = Arc::new(Shared {
             outbound,
             next_id: AtomicU32::new(0),
@@ -298,7 +299,7 @@ impl Session {
         };
         self.shared
             .outbound
-            .unbounded_send(Message::request(id, method, params))
+            .send(Message::request(id, method, params))
             .map_err(|_| unsent_closed())?;
         let result = response.await.map_err(|_| Error::Closed)?;
         guard.id = None;
@@ -328,7 +329,7 @@ impl Session {
         }
         self.shared
             .outbound
-            .unbounded_send(Message::notification(method, params))
+            .send(Message::notification(method, params))
             .map_err(|_| Error::Closed)
     }
 
@@ -415,7 +416,7 @@ impl Inbound {
             }
             Message::Request { id, method, .. } => {
                 let reply = server_request_reply(id, &method);
-                let _ = shared.outbound.unbounded_send(reply);
+                let _ = shared.outbound.send(reply);
             }
             Message::Notification { method, params } if method == CANCELLED => {
                 let params = params.unwrap_or_default();
@@ -442,7 +443,7 @@ impl Inbound {
     pub fn send(&self, message: Message) -> bool {
         self.shared
             .upgrade()
-            .is_some_and(|shared| shared.outbound.unbounded_send(message).is_ok())
+            .is_some_and(|shared| shared.outbound.send(message).is_ok())
     }
 
     #[must_use]

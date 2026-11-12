@@ -1811,12 +1811,12 @@ name = "nanocode-mcp"
 version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
- "futures-channel",
  "memchr",
  "nanocode-digest",
  "nanocode-sync",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "url",
 ]

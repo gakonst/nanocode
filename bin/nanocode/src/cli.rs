@@ -506,6 +506,12 @@ pub struct HandArgs {
 
     #[arg(
         long,
+        help = "Run every command in a process of its own, never in the hand's: one that exhausts memory then ends alone"
+    )]
+    pub own_processes: bool,
+
+    #[arg(
+        long,
         value_name = "FILE",
         help = "Charge for operations by the rules in this JSON file, matched first to last: {\"payee\": \"0x…\", \"describe\": \"…\", \"currency\": \"OUSD\" (default) or \"USDC.e\", \"rules\": [{\"paths\": [\"data/**\"], \"ops\": [\"read\"], \"usd\": 0.01}]}"
     )]

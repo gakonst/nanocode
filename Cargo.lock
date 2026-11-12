@@ -1950,6 +1950,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-jpeg"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-machine"
 version = "0.7.0"
 dependencies = [

@@ -27,6 +27,7 @@ members = [
     "crates/core/digest",
     "crates/core/arguments",
     "crates/core/compression",
+    "crates/core/jpeg",
     "crates/core/tempo",
     "crates/core/mcp",
     "crates/core/mcp-http",
@@ -187,6 +188,7 @@ nanocode-digest = { version = "0.7.0", path = "crates/core/digest" }
 nanocode-compression = { version = "0.7.0", path = "crates/core/compression" }
 nanocode-png = { version = "0.7.0", path = "crates/core/png" }
 nanocode-gif = { version = "0.7.0", path = "crates/core/gif" }
+nanocode-jpeg = { version = "0.7.0", path = "crates/core/jpeg" }
 ruff_python_ast = { package = "rustpython-ruff_python_ast", version = "=0.16.5" }
 ruff_python_parser = { package = "rustpython-ruff_python_parser", version = "=0.16.5" }
 rustpython-pylib = { version = "=0.6.0", features = ["freeze-stdlib"] }

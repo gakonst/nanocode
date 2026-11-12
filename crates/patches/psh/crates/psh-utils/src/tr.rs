@@ -415,6 +415,9 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             .collect()
     });
 
+    let map: Option<Vec<u8>> = bytes
+        .as_ref()
+        .and_then(|t| t.iter().map(|e| e.map(|(t, _)| t)).collect());
     let mut buf = vec![0u8; 64 * 1024];
     let mut pending: Vec<u8> = Vec::new();
     let mut last_out: Option<u32> = None;
@@ -429,6 +432,33 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             }
         };
         let eof = n == 0;
+        if let Some(bytes) = &bytes
+            && plan.squeeze.is_none()
+        {
+            let data = if let Some(map) = &map {
+                buf[..n].iter_mut().for_each(|b| *b = map[usize::from(*b)]);
+                &buf[..n]
+            } else {
+                out.resize(n + 1, 0);
+                let mut j = 0;
+                for &b in &buf[..n] {
+                    let (t, keep) = bytes[usize::from(b)].map_or((0, 0), |(t, _)| (t, 1));
+                    out[j] = t;
+                    j += keep;
+                }
+                &out[..j]
+            };
+            if !data.is_empty()
+                && let Err(e) = ctx.write(data).await
+            {
+                return common::write_failed(ctx, &e).await;
+            }
+            if eof {
+                break;
+            }
+            ctx.check().await;
+            continue;
+        }
         let mut data = std::mem::take(&mut pending);
         data.extend_from_slice(&buf[..n]);
         let mut i = 0;

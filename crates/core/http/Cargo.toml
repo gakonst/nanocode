@@ -15,9 +15,9 @@ futures-util.workspace = true
 http.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+nanocode-compression.workspace = true
 nanocode-zstd.workspace = true
 brotli-decompressor.workspace = true
-flate2.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 
 [lints]

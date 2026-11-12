@@ -1,9 +1,10 @@
-use std::{
-    error::Error,
-    io::{self, Write},
-};
+use std::{error::Error, io};
 
 use futures_util::{Stream, StreamExt, stream};
+use nanocode_compression::{
+    checksum::crc32,
+    miniz::{self, Format, Level},
+};
 use nanocode_zstd::{BlockHeader, BlockType, FrameHeader, StreamingDecoder, parse_frame_header};
 
 use crate::brotli;
@@ -168,10 +169,39 @@ fn decode_error(error: nanocode_zstd::Error) -> io::Error {
     io::Error::new(kind, error)
 }
 
+const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
+const GZIP_METHOD_DEFLATE: u8 = 8;
+const GZIP_FLAGS_NONE: u8 = 0;
+const GZIP_MODIFICATION_TIME_UNSET: [u8; 4] = [0; 4];
+const GZIP_EXTRA_FLAGS_SLOWEST: u8 = 2;
+const GZIP_EXTRA_FLAGS_FASTEST: u8 = 4;
+const GZIP_EXTRA_FLAGS_DEFAULT: u8 = 0;
+const GZIP_OPERATING_SYSTEM_UNKNOWN: u8 = 255;
+const GZIP_SIZE_MODULUS: u64 = 1 << u32::BITS;
+const CRC32_INITIAL: u32 = 0;
+
 pub fn gzip(bytes: &[u8], level: u32) -> io::Result<Vec<u8>> {
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
-    encoder.write_all(bytes)?;
-    encoder.finish()
+    let level =
+        Level::new(level).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let extra_flags = if level.get() >= Level::BEST.get() {
+        GZIP_EXTRA_FLAGS_SLOWEST
+    } else if level.get() <= Level::FAST.get() {
+        GZIP_EXTRA_FLAGS_FASTEST
+    } else {
+        GZIP_EXTRA_FLAGS_DEFAULT
+    };
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&GZIP_MAGIC);
+    encoded.push(GZIP_METHOD_DEFLATE);
+    encoded.push(GZIP_FLAGS_NONE);
+    encoded.extend_from_slice(&GZIP_MODIFICATION_TIME_UNSET);
+    encoded.push(extra_flags);
+    encoded.push(GZIP_OPERATING_SYSTEM_UNKNOWN);
+    encoded.extend_from_slice(&miniz::compress(bytes, level, Format::Raw));
+    encoded.extend_from_slice(&crc32(CRC32_INITIAL, bytes).to_le_bytes());
+    let size = (bytes.len() as u64 % GZIP_SIZE_MODULUS) as u32;
+    encoded.extend_from_slice(&size.to_le_bytes());
+    Ok(encoded)
 }
 
 pub fn decode_response(mut response: reqwest::Response) -> reqwest::Response {

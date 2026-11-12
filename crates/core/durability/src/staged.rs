@@ -306,11 +306,15 @@ impl StagedWrites {
                 actual: staged.revision,
             });
         }
-        if records.iter().any(|record| {
+        let mut written = BTreeMap::new();
+        for record in records {
+            written.insert(record.key.as_str(), record.value.as_str());
+        }
+        if written.iter().any(|(key, value)| {
             staged
                 .records
-                .get(&record.key)
-                .is_some_and(|value| **value != *record.value)
+                .get(*key)
+                .is_some_and(|kept| !kept.is_empty() && **kept != **value)
         }) {
             return Err(StoreError::NotCommitted(
                 "a staged record already has different content".to_owned(),
@@ -319,11 +323,17 @@ impl StagedWrites {
         let revision = staged.revision.checked_add(1).ok_or_else(|| {
             StoreError::NotCommitted("staged durability revision overflow".to_owned())
         })?;
-        for record in records {
-            staged
-                .records
-                .entry(record.key.clone())
-                .or_insert_with(|| Arc::from(record.value.as_str()));
+        for (key, value) in written {
+            match staged.records.get(key) {
+                None => {
+                    staged.records.insert(key.to_owned(), Arc::from(value));
+                }
+                Some(kept) if kept.is_empty() && !value.is_empty() => {
+                    staged.records.insert(key.to_owned(), Arc::from(value));
+                    staged.stored.remove(key);
+                }
+                Some(_) => {}
+            }
         }
         let payload = Arc::<str>::from(payload);
         staged.revision = revision;
@@ -357,12 +367,6 @@ impl<S: StateStore> StagedStore<S> {
         keys: &[String],
     ) -> Result<Vec<Option<String>>, StoreError> {
         let staged = self.writes.get(state_id);
-        let staged_record = |key: &str| {
-            staged
-                .as_ref()
-                .and_then(|staged| staged.records.get(key))
-                .map(|value| value.to_string())
-        };
         let missing: Vec<_> = keys
             .iter()
             .filter(|key| {
@@ -380,7 +384,15 @@ impl<S: StateStore> StagedStore<S> {
         .into_iter();
         Ok(keys
             .iter()
-            .map(|key| staged_record(key).or_else(|| read.next().flatten()))
+            .map(|key| {
+                match staged
+                    .as_ref()
+                    .and_then(|staged| staged.records.get(key.as_str()))
+                {
+                    Some(value) => (!value.is_empty()).then(|| value.to_string()),
+                    None => read.next().flatten(),
+                }
+            })
             .collect())
     }
 

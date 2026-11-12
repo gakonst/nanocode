@@ -8,7 +8,7 @@
 //! character, where GNU would translate its two bytes separately (D1162). Classes are
 //! the C locale's (ASCII) in both modes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use psh_engine::util::UtilCtx;
 
@@ -239,19 +239,19 @@ fn expand(items: &[Item], fill: usize) -> Vec<u32> {
 
 /// What happens to each unit.
 struct Plan {
-    delete: HashSet<u32>,
-    map: HashMap<u32, u32>,
+    delete: BTreeSet<u32>,
+    map: BTreeMap<u32, u32>,
     /// With `-c` while translating: everything outside SET1 maps by its position in the
     /// complement (`map_rest` holds SET2, padded by its last unit).
-    complement_of: Option<HashSet<u32>>,
+    complement_of: Option<BTreeSet<u32>>,
     complement_sorted: Vec<u32>,
     map_rest: Vec<u32>,
     squeeze: Option<SqueezeSet>,
 }
 
 enum SqueezeSet {
-    In(HashSet<u32>),
-    NotIn(HashSet<u32>),
+    In(BTreeSet<u32>),
+    NotIn(BTreeSet<u32>),
 }
 
 impl SqueezeSet {
@@ -347,10 +347,10 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         }
         None => None,
     };
-    let set1_lookup: HashSet<u32> = set1.iter().copied().collect();
+    let set1_lookup: BTreeSet<u32> = set1.iter().copied().collect();
     let mut plan = Plan {
-        delete: HashSet::new(),
-        map: HashMap::new(),
+        delete: BTreeSet::new(),
+        map: BTreeMap::new(),
         complement_of: None,
         complement_sorted: Vec::new(),
         map_rest: Vec::new(),
@@ -401,6 +401,24 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     // Sets of single bytes: what becomes of each byte (deleted, or the byte it turns
     // into and whether its repeats are squeezed) is worked out once, not per byte read.
     let bytes: Option<Vec<Option<(u8, bool)>>> = (!chars).then(|| {
+        if !delete_complement && plan.complement_of.is_none() {
+            let mut table: Vec<Option<(u8, bool)>> =
+                (0..=u8::MAX).map(|b| Some((b, false))).collect();
+            if translating {
+                for (&a, &b) in &plan.map {
+                    table[a as usize] = Some((b as u8, false));
+                }
+            }
+            for &d in &plan.delete {
+                table[d as usize] = None;
+            }
+            if let Some(sq) = &plan.squeeze {
+                for (t, squeezed) in table.iter_mut().flatten() {
+                    *squeezed = sq.contains(u32::from(*t));
+                }
+            }
+            return table;
+        }
         (0..=u32::from(u8::MAX))
             .map(|u| {
                 let deleted = if delete_complement {

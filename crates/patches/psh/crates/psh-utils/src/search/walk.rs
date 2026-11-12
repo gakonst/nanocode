@@ -14,9 +14,10 @@
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use ignore::overrides::{Override, OverrideBuilder};
-use ignore::types::Types;
-use ignore::{Error, WalkBuilder, WalkState};
+use super::ignore::overrides::{Override, OverrideBuilder};
+use super::ignore::types::Types;
+use super::ignore::walk::WalkBuilder;
+use super::ignore::{Error, WalkState};
 use psh_engine::host::{DirEntry, FileKind, Metadata};
 use psh_engine::util::SyncCtx;
 
@@ -272,7 +273,7 @@ impl<'h> Walker<'h> {
                 }
             }
         }
-        let mut b = WalkBuilder::empty();
+        let mut b = WalkBuilder::new(cwd.clone());
         for (n, _, _) in &mapped {
             b.add(n);
         }
@@ -287,9 +288,7 @@ impl<'h> Walker<'h> {
             .max_depth(o.max_depth)
             .follow_links(o.follow_links)
             .same_file_system(o.same_file_system)
-            .max_filesize(o.max_filesize)
-            .current_dir(cwd.clone())
-            .sort_by_file_name(|a, b| a.cmp(b));
+            .max_filesize(o.max_filesize);
         for name in &o.custom_ignore_filenames {
             b.add_custom_ignore_filename(name);
         }
@@ -325,7 +324,8 @@ impl<'h> Walker<'h> {
         let mut seen_root = false;
         // The directory the visitor skipped: what is under it is not visited.
         let mut skipped: Option<PathBuf> = None;
-        for r in b.build() {
+        let mut walk = b.build();
+        while let Some(r) = walk.next() {
             if host.cancelled() {
                 return WalkState::Quit;
             }
@@ -367,7 +367,7 @@ impl<'h> Walker<'h> {
                     let Some((path, abs)) = map(dent.path(), cur) else {
                         continue;
                     };
-                    let kind = dent.file_type().map_or(FileKind::Other, file_kind);
+                    let kind = file_kind(dent.file_type());
                     let err = dent.error().map(|e| {
                         map_error(e.clone(), o.parallel_errors, &|p| {
                             map(p, cur).map(|(d, _)| to_path(&d))
@@ -391,7 +391,12 @@ impl<'h> Walker<'h> {
                 .and_then(|e| e.native.clone());
             match visit(item) {
                 WalkState::Quit => return WalkState::Quit,
-                WalkState::Skip => skipped = dir,
+                WalkState::Skip => {
+                    skipped = dir;
+                    if !o.follow_links {
+                        walk.skip_current_dir();
+                    }
+                }
                 WalkState::Continue => {}
             }
         }
@@ -419,10 +424,10 @@ fn process_env_matches(host: &dyn WalkHost) -> bool {
 pub fn build_overrides(root: &Path, globs: &[(String, bool)]) -> Result<Override, Error> {
     let mut b = OverrideBuilder::new(root);
     for (glob, icase) in globs {
-        b.case_insensitive(*icase)?;
+        b.case_insensitive(*icase);
         b.add(glob)?;
     }
-    b.build()
+    Ok(b.build())
 }
 
 /// Rewrites the paths in a walk error (`map` gives the display path of an OS path).

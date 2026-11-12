@@ -18,10 +18,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use ignore::overrides::Override;
-use ignore::types::Types;
-use ignore::{Error, Match, WalkState};
+use super::ignore::gitignore::{Gitignore, GitignoreBuilder};
+use super::ignore::overrides::Override;
+use super::ignore::types::Types;
+use super::ignore::{Error, Match, WalkState};
 use psh_engine::host::FileKind;
 
 use super::gitconfig;
@@ -89,12 +89,6 @@ impl Errs {
     }
 }
 
-fn empty(dir: &Path) -> Gitignore {
-    GitignoreBuilder::new(dir)
-        .build()
-        .unwrap_or_else(|_| Gitignore::empty())
-}
-
 struct Chain<'h> {
     host: &'h dyn WalkHost,
     shared: Shared,
@@ -133,21 +127,14 @@ impl Chain<'_> {
         let dir_path = to_path(dir);
         let mut b = GitignoreBuilder::new(&dir_path);
         let mut errs = Errs::default();
-        let _ = b.case_insensitive(self.shared.case_insensitive);
+        b.case_insensitive(self.shared.case_insensitive);
         for name in names {
             let gipath = join(file_dir, name.as_bytes());
             if let Ok(data) = self.read(&gipath) {
                 errs.maybe_push(add_lines(&mut b, &to_path(&gipath), &data));
             }
         }
-        let gi = match b.build() {
-            Ok(gi) => gi,
-            Err(e) => {
-                errs.push(e);
-                empty(&dir_path)
-            }
-        };
-        (gi, errs.into_option())
+        (b.build(), errs.into_option())
     }
 
     /// `git_dir` for `info/exclude`: `.git`, or for a worktree (`.git` is a file) the
@@ -188,7 +175,6 @@ impl Chain<'_> {
         let has_jj = check_vcs_dir && no_git && stat(b".jj").is_ok();
         let has_git = check_vcs_dir && (git_type.is_some() || has_jj);
         let mut errs = Errs::default();
-        let dir_path = to_path(dir);
         let custom = if s.custom_names.is_empty() {
             Gitignore::empty()
         } else {
@@ -223,7 +209,7 @@ impl Chain<'_> {
                 }
                 Err(e) => {
                     errs.maybe_push(e);
-                    empty(&dir_path)
+                    Gitignore::empty()
                 }
             }
         };
@@ -347,7 +333,7 @@ impl Chain<'_> {
         let path = strip_prefix(Path::new("./"), path).unwrap_or(path);
         let s = &self.shared;
         if !s.overrides.is_empty() {
-            let m = s.overrides.matched(path, is_dir).map(|_| ());
+            let m = s.overrides.matched(path, is_dir);
             if !m.is_none() {
                 return m;
             }
@@ -362,7 +348,7 @@ impl Chain<'_> {
             }
         }
         if !s.types.is_empty() {
-            let m = s.types.matched(path, is_dir).map(|_| ());
+            let m = s.types.matched(path, is_dir);
             if m.is_ignore() {
                 return m;
             } else if m.is_whitelist() {
@@ -386,16 +372,16 @@ impl Chain<'_> {
         let mut saw_git = false;
         let mut step = |n: &Node, path: &Path, saw_git: &mut bool| {
             if m_custom.is_none() {
-                m_custom = n.custom.matched(path, is_dir).map(|_| ());
+                m_custom = n.custom.matched(path, is_dir);
             }
             if m_ignore.is_none() {
-                m_ignore = n.ignore.matched(path, is_dir).map(|_| ());
+                m_ignore = n.ignore.matched(path, is_dir);
             }
             if any_git && !*saw_git && m_gi.is_none() {
-                m_gi = n.git_ignore.matched(path, is_dir).map(|_| ());
+                m_gi = n.git_ignore.matched(path, is_dir);
             }
             if any_git && !*saw_git && m_gi_exclude.is_none() {
-                m_gi_exclude = n.git_exclude.matched(path, is_dir).map(|_| ());
+                m_gi_exclude = n.git_exclude.matched(path, is_dir);
             }
             *saw_git = *saw_git || n.has_git;
         };
@@ -431,10 +417,10 @@ impl Chain<'_> {
             if !m_explicit.is_none() {
                 break;
             }
-            m_explicit = gi.matched(path, is_dir).map(|_| ());
+            m_explicit = gi.matched(path, is_dir);
         }
         let m_global = if any_git {
-            s.global.matched(path, is_dir).map(|_| ())
+            s.global.matched(path, is_dir)
         } else {
             Match::None
         };
@@ -485,7 +471,7 @@ fn add_lines(b: &mut GitignoreBuilder, path: &Path, data: &[u8]) -> Option<Error
         } else {
             line
         };
-        if let Err(e) = b.add_line(Some(path.to_path_buf()), line) {
+        if let Err(e) = b.add_line(line) {
             errs.push(tagged(e, path, lineno));
         }
     }
@@ -625,7 +611,7 @@ pub fn run(
     for f in &o.ignore_files {
         // Relative to nothing, as `WalkBuilder::add_ignore` builds them.
         let mut b = GitignoreBuilder::new("");
-        let _ = b.case_insensitive(o.ignore_case_insensitive);
+        b.case_insensitive(o.ignore_case_insensitive);
         match host.read_file(&host.abs(f)) {
             Ok(data) => {
                 if let Some(e) = add_lines(&mut b, &to_path(f), &data) {
@@ -634,10 +620,7 @@ pub fn run(
             }
             Err(e) => explicit_errs.push(with_path(Error::Io(e), f)),
         }
-        match b.build() {
-            Ok(gi) => explicit.push(gi),
-            Err(e) => explicit_errs.push(e),
-        }
+        explicit.push(b.build());
     }
     let chain = Chain {
         host,
@@ -690,11 +673,11 @@ fn global_gitignore(host: &dyn WalkHost, cwd: &Path, case_insensitive: bool) -> 
         return Gitignore::empty();
     }
     let mut b = GitignoreBuilder::new(cwd);
-    let _ = b.case_insensitive(case_insensitive);
+    b.case_insensitive(case_insensitive);
     if let Ok(data) = host.read_file(&abs) {
         let _ = add_lines(&mut b, &to_path(&path), &data);
     }
-    b.build().unwrap_or_else(|_| Gitignore::empty())
+    b.build()
 }
 
 struct Walk<'a, 'h> {

@@ -1,13 +1,13 @@
 //! The working tree against the index: which tracked files changed, and which files
-//! are untracked (gitignore(5), through the ignore crate's matcher).
+//! are untracked (gitignore(5), through `search::ignore`'s matcher).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
-use ignore::Match;
-use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use crate::search::ignore::Match;
+use crate::search::ignore::gitignore::{Gitignore, GitignoreBuilder};
 use psh_engine::host::{FileKind, Metadata};
 
 use super::diff::{Change, File};
@@ -634,9 +634,9 @@ fn rules(dir: &[u8], text: &[u8]) -> Gitignore {
     let root = format!("/{}", String::from_utf8_lossy(dir));
     let mut builder = GitignoreBuilder::new(Path::new(&root));
     for line in String::from_utf8_lossy(text).lines() {
-        let _ = builder.add_line(None, line);
+        let _ = builder.add_line(line);
     }
-    builder.build().unwrap_or_else(|_| Gitignore::empty())
+    builder.build()
 }
 
 struct Scan<'w, 'r, 'a> {

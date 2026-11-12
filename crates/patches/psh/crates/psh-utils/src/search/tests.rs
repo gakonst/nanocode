@@ -1,12 +1,12 @@
-//! The walker parity test (D1132): the native walk (`ignore::Walk`) and the virtual
+//! The walker parity test (D1132): the native walk (`ignore::walk::Walk`) and the virtual
 //! walk give the same entries and errors, in the same order, over fixture trees.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ignore::WalkState;
-use ignore::types::TypesBuilder;
+use super::ignore::WalkState;
+use super::ignore::types::TypesBuilder;
 use psh_engine::host::{DirEntry, FileKind, Metadata};
 
 use super::walk::{WalkHost, WalkOptions, Walker, os_bytes, to_path};

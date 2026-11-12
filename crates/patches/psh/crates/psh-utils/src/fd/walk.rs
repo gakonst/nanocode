@@ -14,7 +14,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use ignore::{Error, WalkState};
+use crate::search::ignore::{Error, WalkState};
 use psh_engine::host::{DirEntry, FileKind, Metadata};
 use psh_engine::util::SyncCtx;
 use psh_pattern::bytes::RegexSet;

@@ -71,7 +71,7 @@ struct Opts {
     left_column: bool,
     recursive: bool,
     new_file: bool,
-    exclude: Vec<globset::GlobMatcher>,
+    exclude: Vec<crate::search::glob::GlobMatcher>,
     ignore_re: Vec<psh_pattern::bytes::Regex>,
     icase: bool,
     all_space: bool,
@@ -238,7 +238,7 @@ async fn options(ctx: &mut UtilCtx<'_>, p: &Parsed, argv: &[Vec<u8>]) -> Result<
         }
     }
     for pat in patterns {
-        match globset::GlobBuilder::new(&String::from_utf8_lossy(&pat))
+        match crate::search::glob::GlobBuilder::new(&String::from_utf8_lossy(&pat))
             .literal_separator(true)
             .backslash_escape(true)
             .build()

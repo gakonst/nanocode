@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::io::{self, Read};
 
-use ignore::WalkState;
+use crate::search::ignore::WalkState;
 use psh_engine::host::{FileKind, error_text};
 use psh_engine::util::SyncCtx;
 
@@ -351,7 +351,7 @@ impl Run<'_> {
     }
 
     /// A walk error: `PATH: reason` (an error), or a loop (a warning).
-    fn walk_error(&mut self, err: &ignore::Error, implicit: bool) {
+    fn walk_error(&mut self, err: &crate::search::ignore::Error, implicit: bool) {
         let shown = |p: &std::path::Path| {
             let b = crate::search::walk::os_bytes(p.as_os_str());
             String::from_utf8_lossy(display(&b, implicit)).into_owned()
@@ -382,23 +382,24 @@ impl Run<'_> {
 
 /// The path, I/O error and loop (its child) in a walk error.
 fn dissect(
-    e: &ignore::Error,
+    e: &crate::search::ignore::Error,
 ) -> (
     Option<&std::path::Path>,
     Option<&io::Error>,
     Option<&std::path::Path>,
 ) {
     match e {
-        ignore::Error::WithPath { path, err } => {
+        crate::search::ignore::Error::WithPath { path, err } => {
             let (p, io, l) = dissect(err);
             (p.or(Some(path)), io, l)
         }
-        ignore::Error::WithDepth { err, .. } | ignore::Error::WithLineNumber { err, .. } => {
-            dissect(err)
+        crate::search::ignore::Error::WithDepth { err, .. }
+        | crate::search::ignore::Error::WithLineNumber { err, .. } => dissect(err),
+        crate::search::ignore::Error::Loop { child, .. } => (None, None, Some(child)),
+        crate::search::ignore::Error::Io(io) => (None, Some(io), None),
+        crate::search::ignore::Error::Partial(errs) => {
+            errs.first().map_or((None, None, None), dissect)
         }
-        ignore::Error::Loop { child, .. } => (None, None, Some(child)),
-        ignore::Error::Io(io) => (None, Some(io), None),
-        ignore::Error::Partial(errs) => errs.first().map_or((None, None, None), dissect),
         _ => (None, None, None),
     }
 }

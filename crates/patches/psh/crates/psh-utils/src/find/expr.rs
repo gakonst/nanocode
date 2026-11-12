@@ -66,24 +66,23 @@ pub enum PermHow {
 /// A name pattern (`-name`, `-path`, `-lname`), fnmatch without `FNM_PATHNAME` or
 /// `FNM_PERIOD`: `*` matches `/` and leading dots.
 #[derive(Debug)]
-pub struct Glob(globset::GlobMatcher);
+pub struct Glob(crate::search::glob::GlobMatcher);
 
 impl Glob {
     fn new(pat: &[u8], icase: bool) -> Glob {
         let text = String::from_utf8_lossy(pat);
         let build = |p: &str| {
-            globset::GlobBuilder::new(p)
+            crate::search::glob::GlobBuilder::new(p)
                 .literal_separator(false)
                 .backslash_escape(true)
                 .case_insensitive(icase)
-                .empty_alternates(true)
                 .build()
         };
         // Braces are not special to fnmatch.
         let escaped = text.replace('{', "[{]").replace('}', "[}]");
         let glob = build(&escaped).or_else(|_| {
-            // What fnmatch takes literally (an unclosed `[`) globset rejects.
-            build(&globset::escape(&text))
+            // What fnmatch takes literally (an unclosed `[`) the glob parser rejects.
+            build(&crate::search::glob::escape(&text))
         });
         Glob(glob.expect("an escaped glob compiles").compile_matcher())
     }

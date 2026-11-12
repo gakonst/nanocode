@@ -4,8 +4,8 @@
 
 // psh: paths are bytes (globs see them as `Path`s); errors are messages (no anyhow);
 // bstr's substring search stands in for memchr's.
+use crate::search::glob::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use bstr::ByteSlice;
-use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 use psh_pattern::bytes::{RegexSet, RegexSetBuilder};
 
 use self::regex_helper::pattern_matches_strings_with_leading_dot;
@@ -137,7 +137,7 @@ fn build_glob_matcher(patterns: Vec<String>, ignore_case: bool) -> Result<Patter
         for pat in patterns {
             builder.add(build_glob(&pat, ignore_case)?);
         }
-        Box::new(builder.build().map_err(|e| e.to_string())?)
+        Box::new(builder.build())
     })
 }
 

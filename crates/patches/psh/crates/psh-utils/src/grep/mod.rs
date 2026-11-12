@@ -15,7 +15,7 @@ mod pattern;
 mod search;
 mod sink;
 
-use globset::{GlobBuilder, GlobMatcher};
+use crate::search::glob::{GlobBuilder, GlobMatcher};
 use psh_engine::host::{OpenOptions, error_text};
 use psh_engine::util::{BlockingOptions, UtilCtx};
 
@@ -658,8 +658,8 @@ fn fnmatch(glob: &[u8]) -> GlobMatcher {
             .map(|g| g.compile_matcher())
     };
     build(&s).unwrap_or_else(|_| {
-        // fnmatch takes what globset rejects (an unclosed `[`) literally.
-        build(&globset::escape(&g)).expect("an escaped glob builds")
+        // fnmatch takes what the glob parser rejects (an unclosed `[`) literally.
+        build(&crate::search::glob::escape(&g)).expect("an escaped glob builds")
     })
 }
 

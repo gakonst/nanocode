@@ -43,7 +43,7 @@ impl HaystackBuilder {
     pub(crate) fn build_from_result(
         &self,
         host: &dyn WalkHost,
-        result: Result<Entry, ignore::Error>,
+        result: Result<Entry, crate::search::ignore::Error>,
     ) -> Option<Haystack> {
         match result {
             Ok(dent) => self.build(host, dent),

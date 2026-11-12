@@ -102,7 +102,7 @@ pub(crate) struct HiArgs {
     stop_on_nonmatch: bool,
     threads: usize,
     trim: bool,
-    types: ignore::types::Types,
+    types: crate::search::ignore::types::Types,
     vimgrep: bool,
     /// psh: the walk's settings (what `walk_builder` gave `ignore`).
     walk: WalkOptions,
@@ -859,7 +859,7 @@ impl HiArgs {
     ///
     /// The matcher includes both the default rules and any rules added by the
     /// user for this specific invocation.
-    pub(crate) fn types(&self) -> &ignore::types::Types {
+    pub(crate) fn types(&self) -> &crate::search::ignore::types::Types {
         &self.types
     }
 
@@ -876,7 +876,10 @@ impl HiArgs {
 }
 
 /// psh: `walk_builder`'s settings as `WalkOptions`.
-fn walk_options(low: &LowArgs, types: ignore::types::Types) -> WalkOptions {
+fn walk_options(
+    low: &LowArgs,
+    types: crate::search::ignore::types::Types,
+) -> WalkOptions {
     let mut globs: Vec<(String, bool)> = low
         .globs
         .iter()
@@ -1185,8 +1188,10 @@ impl BinaryDetection {
 }
 
 /// Builds the file type matcher from low level arguments.
-fn types(low: &LowArgs) -> anyhow::Result<ignore::types::Types> {
-    let mut builder = ignore::types::TypesBuilder::new();
+fn types(
+    low: &LowArgs,
+) -> anyhow::Result<crate::search::ignore::types::Types> {
+    let mut builder = crate::search::ignore::types::TypesBuilder::new();
     builder.add_defaults();
     for tychange in low.type_changes.iter() {
         match *tychange {
@@ -1212,24 +1217,25 @@ fn types(low: &LowArgs) -> anyhow::Result<ignore::types::Types> {
 fn globs(
     state: &State,
     low: &LowArgs,
-) -> anyhow::Result<ignore::overrides::Override> {
+) -> anyhow::Result<crate::search::ignore::overrides::Override> {
     if low.globs.is_empty() && low.iglobs.is_empty() {
-        return Ok(ignore::overrides::Override::empty());
+        return Ok(crate::search::ignore::overrides::Override::empty());
     }
-    let mut builder = ignore::overrides::OverrideBuilder::new(&state.cwd);
+    let mut builder =
+        crate::search::ignore::overrides::OverrideBuilder::new(&state.cwd);
     // Make all globs case insensitive with --glob-case-insensitive.
     if low.glob_case_insensitive {
-        builder.case_insensitive(true).unwrap();
+        builder.case_insensitive(true);
     }
     for glob in low.globs.iter() {
         builder.add(glob)?;
     }
     // This only enables case insensitivity for subsequent globs.
-    builder.case_insensitive(true).unwrap();
+    builder.case_insensitive(true);
     for glob in low.iglobs.iter() {
         builder.add(&glob)?;
     }
-    Ok(builder.build()?)
+    Ok(builder.build())
 }
 
 /// Determines whether stats should be tracked for this search. If so, a stats

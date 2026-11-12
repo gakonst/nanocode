@@ -15,7 +15,7 @@ The main entry point into ripgrep.
 
 use std::{collections::BTreeMap, io::Write, sync::mpsc};
 
-use ignore::WalkState;
+use crate::search::ignore::WalkState;
 use psh_engine::util::SyncCtx;
 
 use crate::rg::anyhow;

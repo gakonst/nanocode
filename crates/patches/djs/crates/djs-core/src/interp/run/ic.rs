@@ -54,7 +54,7 @@ const MAX_DEPTH: u32 = KIND_ADD - 1;
 const ADD_SET: u32 = 1;
 
 /// The slots of the megamorphic cache (`Heap::mega_ic`), a power of two.
-const MEGA_SLOTS: u32 = 256;
+const MEGA_SLOTS: u32 = 1024;
 const MEGA_KEY: usize = WORDS as usize - 1;
 
 /// Global slot word 0: the entry is in the global lexical record.

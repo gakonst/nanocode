@@ -411,6 +411,9 @@ impl VirtualMachine {
             None
         };
 
+        if is_ast_only || type_comments {
+            self.import("_ast", 0)?;
+        }
         if is_ast_only {
             if start == CompileStart::FuncType {
                 return _ast::parse_func_type(self, source, filename, optimize, target_version)

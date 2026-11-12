@@ -1443,8 +1443,6 @@ impl VirtualMachine {
             import::import_builtin(self, "_typing")?;
             #[cfg(all(not(target_arch = "wasm32"), feature = "host_env"))]
             import::import_builtin(self, "_signal")?;
-            #[cfg(any(feature = "parser", feature = "compiler"))]
-            import::import_builtin(self, "_ast")?;
             #[cfg(not(feature = "threading"))]
             import::import_frozen(self, "_thread")?;
             let importlib = import::init_importlib_base(self)?;

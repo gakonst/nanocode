@@ -32,8 +32,8 @@ use crate::heap::layout::{arena_read, arena_write};
 use crate::heap::{Atom, ObjectClass, atoms};
 use crate::interp::conv::{self, FaultKind};
 use crate::interp::frame::{self, Continuation, HEADER};
-use crate::interp::realm::Intrinsic;
-use crate::value::Value;
+use crate::interp::realm::{self, Intrinsic};
+use crate::value::{Kind, Value};
 
 /// Backward jumps before `run_hot` returns to the run loop anyway: V8 tiers wasm code up
 /// only between calls (no OSR, 0081 F0), so a loop that never leaves `run_hot` would
@@ -55,6 +55,15 @@ const ARGUMENT_COUNT: u16 = super::intrinsics::id("ArgumentCount");
 const GET_GLOBAL: u8 = Op::GetGlobal as u8;
 const GET_GLOBAL_TYPEOF: u8 = Op::GetGlobalTypeof as u8;
 const PUT_GLOBAL: u8 = Op::PutGlobal as u8;
+const OBJECT: u8 = Op::Object as u8;
+const ARRAY_FROM: u8 = Op::ArrayFrom as u8;
+const ARRAY_PUSH: u8 = Op::ArrayPush as u8;
+const FCLOSURE: u8 = Op::FClosure as u8;
+const NEW_BOX_INIT: u8 = Op::NewBoxInit as u8;
+const PUSH_ATOM: u8 = Op::PushAtom as u8;
+const REQUIRE_OBJECT_COERCIBLE: u8 = Op::RequireObjectCoercible as u8;
+const TO_STRING: u8 = Op::ToString as u8;
+const ARRAY_FROM_INLINE: usize = 16;
 
 /// The flags word of a `PushResult` frame (`fast_return`'s condition).
 const PUSH_RESULT: i32 = Continuation::PushResult.to_flags();
@@ -447,6 +456,95 @@ impl Exec<'_> {
     }
 
     #[inline(never)]
+    fn decline_plain(&mut self, op: u8) -> bool {
+        let o = match op {
+            OBJECT => {
+                let proto = realm::intrinsic_obj(self.heap, Intrinsic::ObjectProto);
+                let Ok(o) = self.heap.new_object(Some(proto)) else {
+                    return false;
+                };
+                self.push(Value::object(o));
+                Op::Object
+            }
+            ARRAY_FROM => {
+                let n = self.imm_u16(1);
+                let mut vals = [Value::UNDEFINED; ARRAY_FROM_INLINE];
+                if n as usize > vals.len() {
+                    return false;
+                }
+                for i in 0..n {
+                    vals[i as usize] = self.get(self.sp - n + i);
+                }
+                let proto = realm::intrinsic_obj(self.heap, Intrinsic::ArrayProto);
+                let Ok(a) = self
+                    .heap
+                    .new_array_from_values(Some(proto), &vals[..n as usize])
+                else {
+                    return false;
+                };
+                self.sp -= n;
+                self.push(Value::object(a));
+                Op::ArrayFrom
+            }
+            ARRAY_PUSH => {
+                let v = self.get(self.sp - 1);
+                let Some(a) = self.get(self.sp - 2).as_object() else {
+                    return false;
+                };
+                let len = self.heap.array_length(a);
+                if !matches!(self.heap.set_element_fast(a, len, v), Ok(true)) {
+                    return false;
+                }
+                self.sp -= 1;
+                Op::ArrayPush
+            }
+            FCLOSURE => {
+                let Ok(v) = self.closure(self.imm_u32(1)) else {
+                    return false;
+                };
+                self.push(v);
+                Op::FClosure
+            }
+            NEW_BOX_INIT => {
+                let Ok(b) = self.new_box(self.get(self.sp - 1)) else {
+                    return false;
+                };
+                self.sp -= 1;
+                self.set(self.lp + self.imm_u16(1), b);
+                Op::NewBoxInit
+            }
+            PUSH_ATOM => {
+                let Ok(s) = self.heap.atom_to_value(self.imm_atom()) else {
+                    return false;
+                };
+                self.push(s);
+                Op::PushAtom
+            }
+            REQUIRE_OBJECT_COERCIBLE => {
+                if self.get(self.sp - 1).is_nullish() {
+                    return false;
+                }
+                Op::RequireObjectCoercible
+            }
+            _ => {
+                let a = self.get(self.sp - 1);
+                if matches!(a.kind(), Kind::Object | Kind::Symbol) {
+                    return false;
+                }
+                let Ok(s) = conv::to_string(self.heap, a) else {
+                    return false;
+                };
+                self.set(self.sp - 1, Value::string(s));
+                Op::ToString
+            }
+        };
+        let info = &OPS[o as usize];
+        self.fuel -= info.cost.fuel() as i64;
+        self.pc += info.size as u32;
+        true
+    }
+
+    #[inline(never)]
     fn decline_operator(&mut self, op: u8) -> bool {
         let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));
         let (v, o) = match op {
@@ -558,6 +656,19 @@ impl Exec<'_> {
                 | fast::GE
         ) {
             return self.decline_operator(op);
+        }
+        if matches!(
+            op,
+            OBJECT
+                | ARRAY_FROM
+                | ARRAY_PUSH
+                | FCLOSURE
+                | NEW_BOX_INIT
+                | PUSH_ATOM
+                | REQUIRE_OBJECT_COERCIBLE
+                | TO_STRING
+        ) {
+            return self.decline_plain(op);
         }
         if op == fast::MOD {
             let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));

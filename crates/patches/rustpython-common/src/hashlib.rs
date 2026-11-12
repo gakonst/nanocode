@@ -6,11 +6,18 @@
 //! plain Rust results so interpreter and embedding layers can provide their
 //! own object and exception adapters.
 
+mod block;
+mod md5;
+mod sha1;
+mod sha256;
+mod sha512;
+
 use md5::Md5;
 use parking_lot::Mutex;
 use sha1::Sha1;
-use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
-use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
+use sha3::{Digest, Sha3_224, Sha3_256, Sha3_384, Sha3_512};
+use sha256::{SHA224_INITIAL_STATE, SHA224_OUTPUT_BYTES, SHA256_INITIAL_STATE, Sha256};
+use sha512::{SHA384_INITIAL_STATE, SHA384_OUTPUT_BYTES, SHA512_INITIAL_STATE, Sha512};
 use shake::{
     Shake128, Shake256,
     digest::{ExtendableOutput, Update, XofReader},
@@ -20,9 +27,9 @@ use shake::{
 enum HashState {
     Md5(Md5),
     Sha1(Sha1),
-    Sha224(Sha224),
+    Sha224(Sha256),
     Sha256(Sha256),
-    Sha384(Sha384),
+    Sha384(Sha512),
     Sha512(Sha512),
     Sha3_224(Sha3_224),
     Sha3_256(Sha3_256),
@@ -37,12 +44,12 @@ enum HashState {
 impl HashState {
     fn new(name: &str) -> Option<Self> {
         Some(match name {
-            "md5" => Self::Md5(Md5::default()),
-            "sha1" => Self::Sha1(Sha1::default()),
-            "sha224" => Self::Sha224(Sha224::default()),
-            "sha256" => Self::Sha256(Sha256::default()),
-            "sha384" => Self::Sha384(Sha384::default()),
-            "sha512" => Self::Sha512(Sha512::default()),
+            "md5" => Self::Md5(Md5::new()),
+            "sha1" => Self::Sha1(Sha1::new()),
+            "sha224" => Self::Sha224(Sha256::new(SHA224_INITIAL_STATE)),
+            "sha256" => Self::Sha256(Sha256::new(SHA256_INITIAL_STATE)),
+            "sha384" => Self::Sha384(Sha512::new(SHA384_INITIAL_STATE)),
+            "sha512" => Self::Sha512(Sha512::new(SHA512_INITIAL_STATE)),
             "sha3_224" => Self::Sha3_224(Sha3_224::default()),
             "sha3_256" => Self::Sha3_256(Sha3_256::default()),
             "sha3_384" => Self::Sha3_384(Sha3_384::default()),
@@ -62,12 +69,10 @@ impl HashState {
             };
         }
         match self {
-            Self::Md5(state) => update!(state),
-            Self::Sha1(state) => update!(state),
-            Self::Sha224(state) => update!(state),
-            Self::Sha256(state) => update!(state),
-            Self::Sha384(state) => update!(state),
-            Self::Sha512(state) => update!(state),
+            Self::Md5(state) => state.update(data),
+            Self::Sha1(state) => state.update(data),
+            Self::Sha224(state) | Self::Sha256(state) => state.update(data),
+            Self::Sha384(state) | Self::Sha512(state) => state.update(data),
             Self::Sha3_224(state) => update!(state),
             Self::Sha3_256(state) => update!(state),
             Self::Sha3_384(state) => update!(state),
@@ -90,12 +95,12 @@ impl HashState {
             };
         }
         match self {
-            Self::Md5(state) => fixed!(state),
-            Self::Sha1(state) => fixed!(state),
-            Self::Sha224(state) => fixed!(state),
-            Self::Sha256(state) => fixed!(state),
-            Self::Sha384(state) => fixed!(state),
-            Self::Sha512(state) => fixed!(state),
+            Self::Md5(state) => state.clone().finalize().to_vec(),
+            Self::Sha1(state) => state.clone().finalize().to_vec(),
+            Self::Sha224(state) => state.clone().finalize()[..SHA224_OUTPUT_BYTES].to_vec(),
+            Self::Sha256(state) => state.clone().finalize().to_vec(),
+            Self::Sha384(state) => state.clone().finalize()[..SHA384_OUTPUT_BYTES].to_vec(),
+            Self::Sha512(state) => state.clone().finalize().to_vec(),
             Self::Sha3_224(state) => fixed!(state),
             Self::Sha3_256(state) => fixed!(state),
             Self::Sha3_384(state) => fixed!(state),
@@ -385,8 +390,12 @@ impl HashState {
 #[must_use]
 pub fn digest_block_size(name: &str) -> Option<usize> {
     Some(match name {
-        "md5" | "sha1" | "sha224" | "sha256" | "blake2s" => 64,
-        "sha384" | "sha512" | "blake2b" => 128,
+        "md5" => md5::BLOCK_BYTES,
+        "sha1" => sha1::BLOCK_BYTES,
+        "sha224" | "sha256" => sha256::BLOCK_BYTES,
+        "sha384" | "sha512" => sha512::BLOCK_BYTES,
+        "blake2s" => 64,
+        "blake2b" => 128,
         "sha3_224" => 144,
         "sha3_256" => 136,
         "sha3_384" => 104,
@@ -400,12 +409,16 @@ pub fn digest_block_size(name: &str) -> Option<usize> {
 #[must_use]
 pub fn digest_output_size(name: &str) -> Option<usize> {
     Some(match name {
-        "md5" => 16,
-        "sha1" => 20,
-        "sha224" | "sha3_224" => 28,
-        "sha256" | "sha3_256" | "blake2s" => 32,
-        "sha384" | "sha3_384" => 48,
-        "sha512" | "sha3_512" | "blake2b" => 64,
+        "md5" => md5::OUTPUT_BYTES,
+        "sha1" => sha1::OUTPUT_BYTES,
+        "sha224" => SHA224_OUTPUT_BYTES,
+        "sha256" => sha256::OUTPUT_BYTES,
+        "sha384" => SHA384_OUTPUT_BYTES,
+        "sha512" => sha512::OUTPUT_BYTES,
+        "sha3_224" => 28,
+        "sha3_256" | "blake2s" => 32,
+        "sha3_384" => 48,
+        "sha3_512" | "blake2b" => 64,
         "shake_128" | "shake_256" => return None,
         _ => return None,
     })
@@ -492,36 +505,9 @@ pub unsafe fn hmac_state_drop(storage: *mut usize, words: usize) {
 #[must_use]
 #[inline(never)]
 pub fn compute_digest(name: &str, data: &[u8], length: usize) -> Option<Vec<u8>> {
-    let digest = match name {
-        "md5" => Md5::digest(data).to_vec(),
-        "sha1" => Sha1::digest(data).to_vec(),
-        "sha224" => Sha224::digest(data).to_vec(),
-        "sha256" => Sha256::digest(data).to_vec(),
-        "sha384" => Sha384::digest(data).to_vec(),
-        "sha512" => Sha512::digest(data).to_vec(),
-        "sha3_224" => Sha3_224::digest(data).to_vec(),
-        "sha3_256" => Sha3_256::digest(data).to_vec(),
-        "sha3_384" => Sha3_384::digest(data).to_vec(),
-        "sha3_512" => Sha3_512::digest(data).to_vec(),
-        "blake2b" => blake2b_simd::blake2b(data).as_bytes().to_vec(),
-        "blake2s" => blake2s_simd::blake2s(data).as_bytes().to_vec(),
-        "shake_128" => {
-            let mut h = Shake128::default();
-            h.update(data);
-            let mut out = vec![0u8; length];
-            h.finalize_xof().read(&mut out);
-            out
-        }
-        "shake_256" => {
-            let mut h = Shake256::default();
-            h.update(data);
-            let mut out = vec![0u8; length];
-            h.finalize_xof().read(&mut out);
-            out
-        }
-        _ => return None,
-    };
-    Some(digest)
+    let mut state = HashState::new(name)?;
+    state.update(data);
+    Some(state.digest(length))
 }
 
 #[cfg(test)]

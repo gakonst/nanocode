@@ -41,9 +41,6 @@ default = ["std"]
 hashlib = [
     "std",
     "parking_lot",
-    "dep:md-5",
-    "dep:sha1",
-    "dep:sha2",
     "dep:sha3",
     "dep:shake",
     "dep:blake2b_simd",
@@ -112,10 +109,6 @@ version = "0.12.0"
 [dependencies.malachite-q]
 version = "0.12.0"
 
-[dependencies.md-5]
-version = "0.11"
-optional = true
-
 [dependencies.memchr]
 version = "2.8.1"
 features = ["alloc"]
@@ -149,14 +142,6 @@ version = "0.6.0"
 version = "0.12"
 optional = true
 default-features = false
-
-[dependencies.sha1]
-version = "0.11"
-optional = true
-
-[dependencies.sha2]
-version = "0.11"
-optional = true
 
 [dependencies.sha3]
 version = "0.12"

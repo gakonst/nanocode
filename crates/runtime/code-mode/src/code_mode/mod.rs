@@ -67,12 +67,12 @@ pub use crate::{CodeModeToolObservation, CodeModeToolset};
 pub use local::LocalCells;
 pub use nanocode_code_mode_engine::JournalEntry;
 pub use nanocode_code_mode_engine::bytes;
-pub use nanocode_code_mode_engine::{SnapshotStore, set_cell_memory, set_snapshot_store};
 use nanocode_code_mode_engine::{
     CellTools, EmbeddedHost as ExecutionWorker, Interrupt, RuntimeEvent,
 };
 #[cfg(target_family = "wasm")]
 pub use nanocode_code_mode_engine::{DEFAULT_INTERRUPT_CHECKS, set_interrupt_checks};
+pub use nanocode_code_mode_engine::{SnapshotStore, set_cell_memory, set_snapshot_store};
 use nanocode_tool_contracts::{ToolProcessTraceWire, ToolReceipt};
 pub use replay::{
     CELL_JOURNAL_VERSION, CellHold, CellJournal, CellJournalHeader, CellJournalSink,
@@ -2226,17 +2226,24 @@ impl CellCalls<'_, '_> {
 
     fn start(&mut self, id: u64, name: String, input: Value, host: bool, recovering: bool) {
         let nested_call_id = format!("{}/code-{id}", self.context.call_id);
-        let journaled = JournaledCall {
+        let persists = self
+            .journal
+            .as_ref()
+            .is_some_and(|record| record.persistence.is_some());
+        let mut journaled = (self.record.is_some() || persists).then(|| JournaledCall {
             id,
             call_id: nested_call_id.clone(),
             name: name.clone(),
             input: input.clone(),
             host,
             state: JournaledCallState::Running,
-        };
-        if let Some(record) = self.record {
-            let journaled = Arc::new(journaled.clone());
-            record.update(|status| status.calls.insert(id, Arc::clone(&journaled)));
+        });
+        if let Some(record) = self.record
+            && let Some(call) = journaled.take()
+        {
+            let shared = Arc::new(call);
+            record.update(|status| status.calls.insert(id, Arc::clone(&shared)));
+            journaled = persists.then(|| JournaledCall::clone(&shared));
         }
         let started = Instant::now();
         let input = Arc::new(input);
@@ -2935,10 +2942,11 @@ fn ordered_calls(mut calls: Vec<ObservedNestedCall>) -> Vec<NestedToolCall> {
 
 async fn journaled_call(
     journal: Option<Arc<CellRecord>>,
-    call: JournaledCall,
+    call: Option<JournaledCall>,
     execution: impl std::future::Future<Output = CompletedNestedCall>,
 ) -> CompletedNestedCall {
-    let Some(journal) = journal.filter(|record| record.persistence.is_some()) else {
+    let (Some(journal), Some(call)) = (journal.filter(|record| record.persistence.is_some()), call)
+    else {
         return execution.await;
     };
     journal.persist(vec![call]).await;

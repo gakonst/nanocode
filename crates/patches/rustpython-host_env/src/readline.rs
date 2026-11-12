@@ -1,7 +1,6 @@
 //! Readline interface for REPLs
 //!
 //! This module provides a common interface for reading lines from the console, with support for history and completion.
-//! It uses the [`rustyline`] crate on non-WASM platforms and a custom implementation on WASM platforms.
 
 use std::{io, path::Path};
 
@@ -69,107 +68,7 @@ pub mod basic_readline {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod rustyline_readline {
-    use super::*;
-
-    pub trait Helper: rustyline::Helper {}
-    impl<T: rustyline::Helper> Helper for T {}
-
-    /// Readline: the REPL
-    pub struct Readline<H: Helper> {
-        repl: rustyline::Editor<H, rustyline::history::DefaultHistory>,
-    }
-
-    #[cfg(windows)]
-    const EOF_CHAR: &str = "\u{001A}";
-
-    impl<H: Helper> Readline<H> {
-        pub fn new(helper: H) -> Self {
-            use rustyline::*;
-            let mut repl = Editor::with_config(
-                Config::builder()
-                    .completion_type(CompletionType::List)
-                    .tab_stop(8)
-                    .bracketed_paste(false) // multi-line paste
-                    .build(),
-            )
-            .expect("failed to initialize line editor");
-            repl.set_helper(Some(helper));
-
-            // Bind CTRL + Z to insert EOF character on Windows
-            #[cfg(windows)]
-            {
-                repl.bind_sequence(
-                    KeyEvent::new('z', Modifiers::CTRL),
-                    EventHandler::Simple(Cmd::Insert(1, EOF_CHAR.into())),
-                );
-            }
-
-            Self { repl }
-        }
-
-        pub fn load_history(&mut self, path: &Path) -> OtherResult<()> {
-            self.repl.load_history(path)?;
-            Ok(())
-        }
-
-        pub fn save_history(&mut self, path: &Path) -> OtherResult<()> {
-            if !path.exists()
-                && let Some(parent) = path.parent()
-            {
-                crate::fs::create_dir_all(parent)?;
-            }
-            self.repl.save_history(path)?;
-            Ok(())
-        }
-
-        pub fn add_history_entry(&mut self, entry: &str) -> OtherResult<()> {
-            self.repl.add_history_entry(entry)?;
-            Ok(())
-        }
-
-        pub fn readline(&mut self, prompt: &str) -> ReadlineResult {
-            use std::io::IsTerminal;
-            // Pipes have no termios. Write the prompt to stderr and read
-            // stdin, matching PyOS_StdioReadline, so `python -i` under
-            // spawn still emits `>>> `.
-            if !io::stdin().is_terminal() {
-                return stdio_readline(prompt);
-            }
-            use rustyline::error::ReadlineError;
-            loop {
-                break match self.repl.readline(prompt) {
-                    Ok(line) => {
-                        // Check for CTRL + Z on Windows
-                        #[cfg(windows)]
-                        {
-                            use std::io::IsTerminal;
-
-                            let trimmed = line.trim_end_matches(&['\r', '\n'][..]);
-                            if trimmed == EOF_CHAR && io::stdin().is_terminal() {
-                                return ReadlineResult::Eof;
-                            }
-                        }
-                        ReadlineResult::Line(line)
-                    }
-                    Err(ReadlineError::Interrupted) => ReadlineResult::Interrupt,
-                    Err(ReadlineError::Eof) => ReadlineResult::Eof,
-                    Err(ReadlineError::Io(e)) => ReadlineResult::Io(e),
-                    Err(ReadlineError::Signal(_)) => continue,
-                    #[cfg(unix)]
-                    Err(ReadlineError::Errno(num)) => ReadlineResult::OsError(num.to_string()),
-                    Err(e) => ReadlineResult::Other(e.into()),
-                };
-            }
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
 use basic_readline as readline_inner;
-#[cfg(not(target_arch = "wasm32"))]
-use rustyline_readline as readline_inner;
 
 pub use readline_inner::Helper;
 

@@ -53,8 +53,6 @@ pub mod socket;
 pub mod socket;
 #[cfg(unix)]
 pub mod syslog;
-#[cfg(all(unix, not(target_os = "redox"), not(target_os = "ios")))]
-pub mod termios;
 
 #[cfg(unix)]
 pub mod grp;

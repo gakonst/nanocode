@@ -425,7 +425,7 @@ pub fn process_id() -> u32 {
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub fn cpu_count() -> usize {
-    num_cpus::get()
+    std::thread::available_parallelism().map_or(1, core::num::NonZeroUsize::get)
 }
 
 #[cfg(not(any(not(target_arch = "wasm32"), target_os = "wasi")))]

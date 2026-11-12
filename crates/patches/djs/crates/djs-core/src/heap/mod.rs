@@ -206,6 +206,7 @@ pub struct Heap {
     pub(crate) iterator_ic: [u32; cells::IC_WORDS as usize],
     pub(crate) return_ic: [u32; 2],
     pub(crate) regexp_shape: u32,
+    pub(crate) rest_shape: u32,
     pub(crate) atom_memo: alloc::vec::Vec<[u32; 2]>,
     /// The compiler's buffers, kept between compiles so that each one starts with their
     /// capacity (`resolve::finish`). Not part of the image.
@@ -357,6 +358,7 @@ impl Heap {
             iterator_ic: Default::default(),
             return_ic: Default::default(),
             regexp_shape: 0,
+            rest_shape: 0,
             atom_memo: Default::default(),
             compile_scratch: Default::default(),
             #[cfg(debug_assertions)]

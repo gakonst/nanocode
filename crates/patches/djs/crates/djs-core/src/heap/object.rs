@@ -632,6 +632,28 @@ impl Heap {
         Some((keys, values))
     }
 
+    pub(crate) fn plain_entries_into(
+        &self,
+        o: Obj,
+        keys: &mut [Atom],
+        values: &mut [Value],
+    ) -> Option<usize> {
+        let s = self.plain_shape(o)?;
+        if s == 0 {
+            return Some(0);
+        }
+        let v = self.props(o);
+        let count = self.shape_count(s) as usize;
+        if count > keys.len().min(values.len()) {
+            return None;
+        }
+        for i in 0..count {
+            keys[i] = self.shape_desc(s, i as u32).0;
+            values[i] = self.arena().read(PropValues::VALUES.at(v, i as u32));
+        }
+        Some(count)
+    }
+
     pub(crate) fn clone_plain_props(&mut self, o: Obj, s: Obj) -> Result<bool, HeapError> {
         if self.plain_shape(o) != Some(0) || self.obj_flags(o) & OBJ_EXTENSIBLE == 0 {
             return Ok(false);

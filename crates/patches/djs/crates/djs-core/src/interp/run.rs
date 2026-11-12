@@ -346,6 +346,8 @@ pub(crate) struct Exec<'h> {
 /// `Exec::retry_len` when the current instruction is not retried.
 const NO_RETRY: u32 = u32::MAX;
 
+const REST_INLINE: usize = 16;
+
 impl<'h> Exec<'h> {
     /// Loads the registers from the `Interp` cell.
     pub fn new(heap: &'h mut Heap, opts: ExecOptions) -> Exec<'h> {
@@ -3873,6 +3875,26 @@ impl<'h> Exec<'h> {
             }
         }
         let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
+        let mut keys = [crate::heap::atoms::EMPTY; REST_INLINE];
+        let mut values = [Value::UNDEFINED; REST_INLINE];
+        if let Some(n) = self.heap.plain_entries_into(s, &mut keys, &mut values) {
+            let mut kept = 0;
+            for i in 0..n {
+                if !skip.contains(&keys[i]) {
+                    (keys[kept], values[kept]) = (keys[i], values[i]);
+                    kept += 1;
+                }
+            }
+            let mut last = self.heap.rest_shape;
+            let o = self.heap.new_object_from_entries_like(
+                Some(proto),
+                &keys[..kept],
+                &values[..kept],
+                &mut last,
+            )?;
+            self.heap.rest_shape = last;
+            return Ok(Some(Value::object(o)));
+        }
         if let Some((keys, values)) = self.heap.plain_entries(s) {
             let (keys, values): (alloc::vec::Vec<Atom>, alloc::vec::Vec<Value>) = keys
                 .into_iter()

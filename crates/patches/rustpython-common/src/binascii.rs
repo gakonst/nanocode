@@ -7,11 +7,11 @@
 //! the caller's responsibility (see `mod.rs`).
 
 use alloc::{vec, vec::Vec};
-use base64::Engine;
 
 /// The base64 pad character `=`.
 pub const PAD: u8 = 61u8;
 const MAXLINESIZE: usize = 76; // Excluding the CRLF
+const BASE64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// A transform error carrying enough information to build the matching
 /// `binascii.Error` message.
@@ -353,9 +353,24 @@ pub fn a2b_base64(b: &[u8], strict_mode: bool) -> Result<Vec<u8>, Error> {
 #[must_use]
 pub fn b2a_base64(data: &[u8], newline: bool) -> Vec<u8> {
     // https://stackoverflow.com/questions/63916821
-    let mut encoded = base64::engine::general_purpose::STANDARD
-        .encode(data)
-        .into_bytes();
+    let mut encoded = Vec::with_capacity(data.len().div_ceil(3) * 4 + usize::from(newline));
+    for chunk in data.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(BASE64_ALPHABET[usize::from(first >> 2)]);
+        encoded.push(BASE64_ALPHABET[usize::from(((first & 0x03) << 4) | (second >> 4))]);
+        encoded.push(if chunk.len() > 1 {
+            BASE64_ALPHABET[usize::from(((second & 0x0f) << 2) | (third >> 6))]
+        } else {
+            PAD
+        });
+        encoded.push(if chunk.len() > 2 {
+            BASE64_ALPHABET[usize::from(third & 0x3f)]
+        } else {
+            PAD
+        });
+    }
     if newline {
         encoded.push(b'\n');
     }

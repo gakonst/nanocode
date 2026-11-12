@@ -29,7 +29,6 @@ resolver = "2"
 
 [features]
 binascii = [
-    "dep:base64",
     "dep:nanocode-compression",
 ]
 bz2 = [
@@ -69,10 +68,6 @@ path = "src/lib.rs"
 [dependencies.ascii]
 version = "1.1"
 default-features = false
-
-[dependencies.base64]
-version = "0.23"
-optional = true
 
 [dependencies.bitflags]
 version = "2.11.0"

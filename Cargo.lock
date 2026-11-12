@@ -3395,7 +3395,6 @@ name = "rustpython-common"
 version = "0.6.0"
 dependencies = [
  "ascii",
- "base64 0.23.1",
  "bitflags 2.13.1",
  "getrandom 0.4.3",
  "libc",

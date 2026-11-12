@@ -20,7 +20,7 @@ use crate::{
 };
 use alloc::borrow::Cow;
 use core::{mem, slice};
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_complex::Complex;
 use num_traits::{Num, ToPrimitive, Zero};
 use ruff_python_ast::{self as ast, name::Name};

@@ -1115,7 +1115,7 @@ fn member_uint_value(
 ) -> PyResult<(u32, Option<&'static str>)> {
     let int_obj = value.try_index(vm)?;
     let big = int_obj.as_bigint();
-    if big.sign() == malachite_bigint::Sign::Minus {
+    if big.sign() == nanocode_numeric::Sign::Minus {
         let long_val = core::ffi::c_long::try_from(big)
             .map_err(|_| vm.new_overflow_error("Python int too large to convert to C long"))?;
         // Keeps the low 32 bits whether `c_long` is 32 or 64 bits wide.
@@ -1475,7 +1475,7 @@ fn member_ulong_value(
 ) -> PyResult<(core::ffi::c_ulong, Option<&'static str>)> {
     let int_obj = value.try_index(vm)?;
     let big = int_obj.as_bigint();
-    if big.sign() == malachite_bigint::Sign::Minus {
+    if big.sign() == nanocode_numeric::Sign::Minus {
         let long_val = core::ffi::c_long::try_from(big)
             .map_err(|_| vm.new_overflow_error("Python int too large to convert to C long"))?;
         return Ok((
@@ -1494,7 +1494,7 @@ fn member_ulonglong_value(
 ) -> PyResult<(u64, Option<&'static str>)> {
     let int_obj = value.try_index(vm)?;
     let big = int_obj.as_bigint();
-    if big.sign() == malachite_bigint::Sign::Minus {
+    if big.sign() == nanocode_numeric::Sign::Minus {
         let long_val = core::ffi::c_long::try_from(big)
             .map_err(|_| vm.new_overflow_error("Python int too large to convert to C long"))?;
         return Ok((

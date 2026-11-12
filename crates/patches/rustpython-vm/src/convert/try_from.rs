@@ -1,4 +1,4 @@
-use malachite_bigint::Sign;
+use nanocode_numeric::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{

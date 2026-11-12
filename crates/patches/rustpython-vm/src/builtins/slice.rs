@@ -13,7 +13,7 @@ use crate::{
     sliceable::SaturatedSlice,
     types::{Comparable, Constructor, Hashable, PyComparisonOp, Representable},
 };
-use malachite_bigint::{BigInt, ToBigInt};
+use nanocode_numeric::{BigInt, ToBigInt};
 use num_traits::{One, Signed, Zero};
 
 #[pyclass(module = false, name = "slice", unhashable = true, traverse = "manual")]

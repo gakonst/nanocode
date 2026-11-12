@@ -7,7 +7,7 @@ mod _stat {
     #[cfg(windows)]
     use rustpython_host_env::nt as host_nt;
 
-    use malachite_bigint::Sign;
+    use nanocode_numeric::Sign;
     use num_traits::ToPrimitive;
 
     use crate::{PyObjectRef, PyResult, VirtualMachine, convert::TryFromObject};

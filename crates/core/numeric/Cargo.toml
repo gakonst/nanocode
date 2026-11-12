@@ -1,0 +1,24 @@
+[package]
+name = "nanocode-numeric"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Arbitrary-precision integers and the numeric conversions the embedded Python needs"
+autotests = false
+autobenches = false
+
+[dependencies]
+num-integer = { version = "0.1.47", default-features = false, features = ["i128"] }
+num-traits = { version = "0.2.19", default-features = false, features = ["i128"] }
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false
+

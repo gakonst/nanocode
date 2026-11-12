@@ -14,7 +14,7 @@ mod _json {
     };
     use core::cell::RefCell;
     use core::str::FromStr;
-    use malachite_bigint::BigInt;
+    use nanocode_numeric::BigInt;
     use rustpython_common::{
         json,
         wtf8::{Wtf8, Wtf8Buf},

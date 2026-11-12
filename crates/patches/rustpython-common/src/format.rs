@@ -2,8 +2,7 @@
 use core::ops::Deref;
 use core::{cmp, str::FromStr};
 use crate::wtf8::iteration::{Itertools, PeekingNext};
-use malachite_base::num::basic::floats::PrimitiveFloat;
-use malachite_bigint::{BigInt, Sign};
+use nanocode_numeric::{BigInt, Sign};
 use num_complex::Complex64;
 use num_traits::FromPrimitive;
 use num_traits::{Signed, cast::ToPrimitive};
@@ -1147,7 +1146,7 @@ impl FormatSpec {
     fn format_complex_re_im(&self, num: &Complex64) -> Result<(String, String), FormatSpecError> {
         // Format real part
         let formatted_re =
-            if num.re != 0.0 || num.re.is_negative_zero() || self.format_type.is_some() {
+            if num.re != 0.0 || (num.re == 0.0 && num.re.is_sign_negative()) || self.format_type.is_some() {
                 let re = self.format_complex_float(num.re)?;
                 let sign_re = if self.is_negative_after_zero_coercion(num.re, &re) {
                     "-"

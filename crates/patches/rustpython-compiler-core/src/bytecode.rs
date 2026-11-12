@@ -15,7 +15,7 @@ use core::{
     sync::atomic::{AtomicU8, AtomicU16, AtomicUsize, Ordering},
 };
 use rustpython_wtf8::iteration::Itertools;
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_complex::Complex64;
 use num_traits::Zero;
 use rustpython_wtf8::{Wtf8, Wtf8Buf};

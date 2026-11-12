@@ -29,6 +29,7 @@ members = [
     "crates/core/mcp",
     "crates/core/mcp-http",
     "crates/core/platform",
+    "crates/core/numeric",
     "crates/core/python",
     "crates/core/schema",
     "crates/core/shell",

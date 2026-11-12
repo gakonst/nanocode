@@ -1,12 +1,9 @@
-use malachite_base::{num::conversion::traits::RoundingInto, rounding_modes::RoundingMode};
-use malachite_bigint::{BigInt, BigUint, Sign};
-use malachite_q::Rational;
+use nanocode_numeric::{BigInt, BigUint, Sign};
 use num_traits::{One, ToPrimitive, Zero};
 
 #[must_use]
 pub fn true_div(numerator: &BigInt, denominator: &BigInt) -> f64 {
-    let rational = Rational::from_integers_ref(numerator.into(), denominator.into());
-    match rational.rounding_into(RoundingMode::Nearest) {
+    match nanocode_numeric::rational_to_f64(numerator, denominator) {
         // returned value is $t::MAX but still less than the original
         (val, core::cmp::Ordering::Less) if val == f64::MAX => f64::INFINITY,
         // returned value is $t::MIN but still greater than the original
@@ -22,13 +19,8 @@ pub fn float_to_ratio(value: f64) -> Option<(BigInt, BigInt)> {
         core::cmp::Ordering::Equal => return Some((BigInt::zero(), BigInt::one())),
         core::cmp::Ordering::Greater => Sign::Plus,
     };
-    Rational::try_from(value).ok().map(|x| {
-        let (numer, denom) = x.into_numerator_and_denominator();
-        (
-            BigInt::from_biguint(sign, numer.into()),
-            BigUint::from(denom).into(),
-        )
-    })
+    nanocode_numeric::f64_to_ratio(value)
+        .map(|(numer, denom)| (BigInt::from_biguint(sign, numer), denom.into()))
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

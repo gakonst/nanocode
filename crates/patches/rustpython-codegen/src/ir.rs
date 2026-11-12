@@ -1,7 +1,7 @@
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 
 use crate::{IndexMap, IndexSet, error::InternalError};
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_complex::Complex;
 use num_traits::{ToPrimitive, Zero};
 use rustpython_wtf8::Wtf8Buf;

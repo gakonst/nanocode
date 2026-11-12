@@ -1,5 +1,5 @@
 use core::f64::consts::LOG10_2;
-use malachite_bigint::{BigInt, ToBigInt};
+use nanocode_numeric::{BigInt, ToBigInt};
 use num_traits::{Signed, ToPrimitive};
 
 #[must_use]
@@ -29,7 +29,7 @@ pub const fn decompose_float(value: f64) -> (f64, i32) {
 /// # Examples
 ///
 /// ```
-/// use malachite_bigint::BigInt;
+/// use nanocode_numeric::BigInt;
 /// use rustpython_common::float_ops::eq_int;
 /// let a = 1.0f64;
 /// let b = BigInt::from(1);

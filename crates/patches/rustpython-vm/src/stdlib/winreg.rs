@@ -16,7 +16,7 @@ mod winreg {
     use crate::{Py, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine};
     use core::ptr;
     use crossbeam_utils::atomic::AtomicCell;
-    use malachite_bigint::Sign;
+    use nanocode_numeric::Sign;
     use num_traits::ToPrimitive;
     use rustpython_common::wtf8::Wtf8Buf;
     use rustpython_host_env::windows::ToWideString;

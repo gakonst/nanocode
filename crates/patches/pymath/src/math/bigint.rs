@@ -5,10 +5,8 @@
 //! for RustPython's internal implementation.
 
 use super::integer::perm_comb_small;
-#[cfg(feature = "malachite-bigint")]
-pub(crate) use malachite_bigint::{BigInt, BigUint};
-#[cfg(feature = "num-bigint")]
-pub(crate) use num_bigint::{BigInt, BigUint};
+#[cfg(feature = "bigint")]
+pub(crate) use nanocode_numeric::{BigInt, BigUint};
 use num_traits::{One, Signed, ToPrimitive};
 
 // Perm/Comb for BigInt n

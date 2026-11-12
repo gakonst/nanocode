@@ -519,7 +519,7 @@ impl PyCArray {
         PyGenericAlias::from_args(cls, object, vm)
     }
 
-    fn int_to_bytes(i: &malachite_bigint::BigInt, size: usize) -> Vec<u8> {
+    fn int_to_bytes(i: &nanocode_numeric::BigInt, size: usize) -> Vec<u8> {
         // Try unsigned first (handles values like 0xFFFFFFFF that overflow signed)
         // then fall back to signed (handles negative values)
         match size {

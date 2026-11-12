@@ -98,8 +98,8 @@ features = ["std"]
 [dependencies.libc]
 version = "0.2.186"
 
-[dependencies.malachite-bigint]
-version = "0.12.0"
+[dependencies.nanocode-numeric]
+path = "../../core/numeric"
 
 [dependencies.memchr]
 version = "2.8.1"
@@ -119,7 +119,7 @@ version = "0.12.3"
 version = "0.2.0"
 features = [
     "mul_add",
-    "malachite-bigint",
+    "bigint",
     "complex",
 ]
 

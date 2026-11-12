@@ -872,7 +872,7 @@ mod tests {
         builtins::{PyStr, int},
         vm::{MAIN_INTERPRETER_ID, runtime},
     };
-    use malachite_bigint::ToBigInt;
+    use nanocode_numeric::ToBigInt;
 
     #[test]
     fn add_py_integers() {

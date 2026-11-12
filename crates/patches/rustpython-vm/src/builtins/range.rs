@@ -19,7 +19,7 @@ use core::cell::Cell;
 use core::cmp::max;
 use core::ptr::NonNull;
 use crossbeam_utils::atomic::AtomicCell;
-use malachite_bigint::{BigInt, Sign};
+use nanocode_numeric::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 

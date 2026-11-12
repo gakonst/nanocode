@@ -1684,7 +1684,7 @@ dependencies = [
  "rand_xoshiro",
  "serde_core",
  "version_check",
- "wide 0.7.33",
+ "wide",
 ]
 
 [[package]]
@@ -1714,15 +1714,6 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
-
-[[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
 
 [[package]]
 name = "itoa"
@@ -1929,55 +1920,6 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
-
-[[package]]
-name = "malachite-base"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f368e032195e6f046f237a982cd541cac7d4e17d5c680cac5534dfa71cd8879e"
-dependencies = [
- "hashbrown 0.16.1",
- "itertools",
- "libm",
- "ryu",
-]
-
-[[package]]
-name = "malachite-bigint"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d673b71d4521ba5ca045cd23d62eda6b321474ff231d6a1698cc9b892851f2"
-dependencies = [
- "malachite-base",
- "malachite-nz",
- "num-integer",
- "num-traits",
- "paste",
-]
-
-[[package]]
-name = "malachite-nz"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0b3ad1a8d2a722fbfad2e1fc7c5044f7ab38e027240cfbcb086a62ca95c9c2"
-dependencies = [
- "itertools",
- "libm",
- "malachite-base",
- "wide 1.7.1",
-]
-
-[[package]]
-name = "malachite-q"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7841d36b3f5d39f1c65d4bcc45cb104fde66cf7eafc10da3922483fa2847cb94"
-dependencies = [
- "itertools",
- "libm",
- "malachite-base",
- "malachite-nz",
-]
 
 [[package]]
 name = "matchers"
@@ -2597,6 +2539,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-numeric"
+version = "0.7.0"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "nanocode-observability"
 version = "0.7.0"
 dependencies = [
@@ -3178,12 +3128,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "paste"
-version = "1.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
-
-[[package]]
 name = "pem"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3393,7 +3337,7 @@ version = "0.2.0"
 dependencies = [
  "libc",
  "libm",
- "malachite-bigint",
+ "nanocode-numeric",
  "num-complex",
  "num-integer",
  "num-traits",
@@ -3783,8 +3727,8 @@ dependencies = [
  "bitflags 2.13.1",
  "indexmap",
  "log",
- "malachite-bigint",
  "memchr",
+ "nanocode-numeric",
  "num-complex",
  "num-traits",
  "rustpython-common",
@@ -3807,11 +3751,9 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "lock_api",
- "malachite-base",
- "malachite-bigint",
- "malachite-q",
  "memchr",
  "nanocode-compression",
+ "nanocode-numeric",
  "num-complex",
  "num-traits",
  "parking_lot",
@@ -3839,8 +3781,8 @@ version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
  "bitflagset",
- "malachite-bigint",
  "nanocode-compression",
+ "nanocode-numeric",
  "num-complex",
  "num-traits",
  "rustpython-ruff_source_file",
@@ -3983,8 +3925,8 @@ dependencies = [
  "getrandom 0.4.3",
  "indexmap",
  "libc",
- "malachite-bigint",
  "memchr",
+ "nanocode-numeric",
  "num-complex",
  "num-traits",
  "parking_lot",
@@ -4026,8 +3968,8 @@ dependencies = [
  "jiff",
  "libc",
  "log",
- "malachite-bigint",
  "memchr",
+ "nanocode-numeric",
  "num-complex",
  "num-integer",
  "num-traits",
@@ -4065,25 +4007,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
-name = "ryu"
-version = "1.0.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
 name = "safe_arch"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
-name = "safe_arch"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
 dependencies = [
  "bytemuck",
 ]
@@ -5114,17 +5041,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
 dependencies = [
  "bytemuck",
- "safe_arch 0.7.4",
-]
-
-[[package]]
-name = "wide"
-version = "1.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
-dependencies = [
- "bytemuck",
- "safe_arch 1.2.0",
+ "safe_arch",
 ]
 
 [[package]]

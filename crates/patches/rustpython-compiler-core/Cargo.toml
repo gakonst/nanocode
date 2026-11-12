@@ -40,8 +40,8 @@ version = "0.0.4"
 [dependencies.nanocode-compression]
 path = "../../core/compression"
 
-[dependencies.malachite-bigint]
-version = "0.12.0"
+[dependencies.nanocode-numeric]
+path = "../../core/numeric"
 
 [dependencies.num-complex]
 version = "0.4.6"

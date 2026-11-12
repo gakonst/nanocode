@@ -87,14 +87,8 @@ version = "0.2.186"
 [dependencies.lock_api]
 version = "0.4"
 
-[dependencies.malachite-base]
-version = "0.12.0"
-
-[dependencies.malachite-bigint]
-version = "0.12.0"
-
-[dependencies.malachite-q]
-version = "0.12.0"
+[dependencies.nanocode-numeric]
+path = "../../core/numeric"
 
 [dependencies.memchr]
 version = "2.8.1"

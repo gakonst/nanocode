@@ -10,7 +10,7 @@ use crate::{
     raise_if_stop,
     types::{Constructor, IterNext, Iterable, SelfIter},
 };
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_traits::ToPrimitive;
 
 /// Fast-path counter for `enumerate`.

@@ -43,7 +43,7 @@ use core::ptr::NonNull;
 use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed};
 use rustpython_common::wtf8::iteration::Itertools;
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use rustpython_common::atomic::{PyAtomic, Radium};
 use rustpython_common::{

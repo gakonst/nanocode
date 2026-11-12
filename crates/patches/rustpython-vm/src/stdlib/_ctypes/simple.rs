@@ -73,7 +73,7 @@ fn new_simple_type(
     Ok(PyCSimple(PyCData::from_bytes(zeroed_bytes(size), None)))
 }
 
-pub(super) fn bigint_to_i128_wrapping(value: &malachite_bigint::BigInt) -> i128 {
+pub(super) fn bigint_to_i128_wrapping(value: &nanocode_numeric::BigInt) -> i128 {
     let bytes = value.to_signed_bytes_le();
     let fill = bytes
         .last()

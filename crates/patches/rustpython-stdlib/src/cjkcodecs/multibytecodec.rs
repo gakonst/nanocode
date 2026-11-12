@@ -16,7 +16,7 @@ mod _multibytecodec {
         protocol::PySequence,
         types::{Constructor, Initializer},
     };
-    use malachite_bigint::{BigInt, Sign};
+    use nanocode_numeric::{BigInt, Sign};
 
     /// Pending code points an encoder may hold between calls.
     const MAXENCPENDING: usize = 2;

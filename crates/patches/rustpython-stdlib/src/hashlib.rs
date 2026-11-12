@@ -878,7 +878,7 @@ pub(crate) mod _hashlib {
 
     fn parse_unsigned_int(obj: &PyObject, vm: &VirtualMachine) -> PyResult<u64> {
         let value = obj.try_index(vm)?;
-        if value.as_bigint().sign() == malachite_bigint::Sign::Minus {
+        if value.as_bigint().sign() == nanocode_numeric::Sign::Minus {
             return Err(vm.new_value_error("Cannot convert negative int"));
         }
         value.try_to_primitive(vm)

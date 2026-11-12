@@ -152,7 +152,7 @@ mod _io {
         sync::atomic::{AtomicBool, Ordering},
     };
     use crossbeam_utils::atomic::AtomicCell;
-    use malachite_bigint::BigInt;
+    use nanocode_numeric::BigInt;
     use num_traits::ToPrimitive;
     use std::io::{self, Cursor, SeekFrom, prelude::*};
 

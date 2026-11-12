@@ -15,7 +15,7 @@ use crate::{
 
 use core::cell::Cell;
 use core::ptr::NonNull;
-use malachite_bigint::{BigInt, ToBigInt};
+use nanocode_numeric::{BigInt, ToBigInt};
 use num_complex::Complex64;
 use num_traits::{Signed, ToPrimitive, Zero};
 use rustpython_common::int::float_to_ratio;

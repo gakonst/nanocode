@@ -11,7 +11,7 @@ mod _random {
         types::{Constructor, Initializer},
     };
     use rustpython_common::wtf8::iteration::Itertools;
-    use malachite_bigint::{BigInt, BigUint, Sign};
+    use nanocode_numeric::{BigInt, BigUint, Sign};
     use crate::mersenne_twister::{self as mt19937, MT19937};
     use num_traits::{Signed, Zero};
     use rustpython_vm::types::DefaultConstructor;

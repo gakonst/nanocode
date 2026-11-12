@@ -1,5 +1,5 @@
 use core::hash::{BuildHasher, Hash, Hasher};
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_traits::ToPrimitive;
 
 use crate::siphash::SipHasher24;

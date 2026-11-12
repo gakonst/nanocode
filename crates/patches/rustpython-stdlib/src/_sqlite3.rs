@@ -43,7 +43,7 @@ mod _sqlite3 {
         sqlite3_value_blob, sqlite3_value_bytes, sqlite3_value_double, sqlite3_value_int64,
         sqlite3_value_text, sqlite3_value_type,
     };
-    use malachite_bigint::Sign;
+    use nanocode_numeric::Sign;
     use num_traits::ToPrimitive;
     use rustpython_common::{
         atomic::{Ordering, PyAtomic, Radium},

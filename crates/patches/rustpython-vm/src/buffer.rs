@@ -12,7 +12,7 @@ use rustpython_common::wtf8::Wtf8Buf;
 use core::{fmt, iter::Peekable, mem};
 use crate::half::Half;
 use rustpython_common::wtf8::iteration::Itertools;
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_complex::Complex64;
 use num_traits::{PrimInt, ToPrimitive};
 use std::{collections::HashMap, os::raw};

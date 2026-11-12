@@ -32,15 +32,11 @@ _bigint = [
 ]
 complex = ["dep:num-complex"]
 default = ["complex"]
-malachite-bigint = [
+bigint = [
     "_bigint",
-    "dep:malachite-bigint",
+    "dep:nanocode-numeric",
 ]
 mul_add = []
-num-bigint = [
-    "_bigint",
-    "dep:num-bigint",
-]
 
 [lib]
 name = "pymath"
@@ -49,12 +45,8 @@ path = "src/lib.rs"
 [dependencies.libc]
 version = "0.2"
 
-[dependencies.malachite-bigint]
-version = "0"
-optional = true
-
-[dependencies.num-bigint]
-version = "0.4"
+[dependencies.nanocode-numeric]
+path = "../../core/numeric"
 optional = true
 
 [dependencies.num-complex]

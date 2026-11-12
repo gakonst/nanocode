@@ -4,7 +4,7 @@ use crate::{
     builtins::{PyInt, PyIntRef},
 };
 use core::ops::Deref;
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_complex::Complex64;
 use num_traits::PrimInt;
 

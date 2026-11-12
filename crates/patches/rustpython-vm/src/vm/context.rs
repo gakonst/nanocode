@@ -26,7 +26,7 @@ use crate::{
     types::{PyTypeFlags, PyTypeSlots, TypeZoo},
 };
 use core::ffi::{CStr, c_void};
-use malachite_bigint::BigInt;
+use nanocode_numeric::BigInt;
 use num_complex::Complex64;
 use num_traits::ToPrimitive;
 use rustpython_common::lock::PyRwLock;

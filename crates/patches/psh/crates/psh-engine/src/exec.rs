@@ -2294,6 +2294,48 @@ fn read_only_redirect(code: &Code, list: ListId) -> Option<&Redirect> {
     }
 }
 
+fn single_command(code: &Code, list: ListId) -> Option<CmdId> {
+    let l = code.ast.list(list);
+    let [item] = &l.items[..] else { return None };
+    if item.background
+        || !item.rest.is_empty()
+        || item.first.stages.len() != 1
+        || item.first.negated()
+        || item.first.time.is_some()
+    {
+        return None;
+    }
+    Some(item.first.stages[0].cmd)
+}
+
+async fn subst_now(
+    sub: &mut Vp,
+    code: &Rc<Code>,
+    id: CmdId,
+    reader: &FdObj,
+    out: &mut Vec<u8>,
+) -> Option<i32> {
+    let r = match crate::now::command(sub, code, id, true)? {
+        Now::Done(r) => r,
+        Now::Later(mut f) => {
+            let mut buf = [0u8; 8192];
+            poll_fn(|cx| {
+                while let Poll::Ready(Ok(n)) = reader.poll_read(cx, &mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    out.extend_from_slice(&buf[..n]);
+                }
+                f.as_mut().poll(cx)
+            })
+            .await
+        }
+    };
+    let last = sub.status;
+    let status = r.unwrap_or_else(|u| u.status(last));
+    Some(Box::pin(trap::exit_trap(sub, status)).await)
+}
+
 async fn subst(vp: &mut Vp, code: Rc<Code>, list: ListId) -> Result<(Vec<u8>, i32), Unwind> {
     if let Some(r) = read_only_redirect(&code, list)
         && let RedirTarget::Word(w) = &r.target
@@ -2344,20 +2386,33 @@ async fn subst(vp: &mut Vp, code: Rc<Code>, list: ListId) -> Result<(Vec<u8>, i3
     sub.in_subst = true;
     let (r, w) = pipe::pipe();
     sub.fds.set(1, Rc::new(FdObj::PipeWrite(w)));
-    let join = spawn_sub(sub, code, Body::List(list));
     let reader = FdObj::PipeRead(r);
     let mut out = Vec::new();
-    // The substitution's output and status, unless a signal that ends the shell comes
-    // first (D1306): the shell then ends at its next safepoint.
-    let collected = crate::signals::or_signal(vp, crate::signals::Gives::Fatal, async {
-        let _ = reader.read_to_end(&mut out).await;
-        drop(reader);
-        join.await
-    })
-    .await;
-    let status = match collected {
-        Ok(s) => s,
-        Err(sig) => 128 + sig,
+    let status = match single_command(&code, list) {
+        Some(id) => subst_now(&mut sub, &code, id, &reader, &mut out).await,
+        None => None,
+    };
+    let status = match status {
+        Some(status) => {
+            drop(sub);
+            let _ = reader.read_to_end(&mut out).await;
+            status
+        }
+        None => {
+            let join = spawn_sub(sub, code, Body::List(list));
+            // The substitution's output and status, unless a signal that ends the shell
+            // comes first (D1306): the shell then ends at its next safepoint.
+            let collected = crate::signals::or_signal(vp, crate::signals::Gives::Fatal, async {
+                let _ = reader.read_to_end(&mut out).await;
+                drop(reader);
+                join.await
+            })
+            .await;
+            match collected {
+                Ok(s) => s,
+                Err(sig) => 128 + sig,
+            }
+        }
     };
     vp.status = status;
     if out.contains(&0) {

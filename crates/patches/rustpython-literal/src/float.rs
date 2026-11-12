@@ -15,15 +15,79 @@ pub fn parse_bytes(literal: &[u8]) -> Option<f64> {
 }
 
 fn parse_inner(literal: &[u8]) -> Option<f64> {
-    use lexical_parse_float::{
-        FromLexicalWithOptions, NumberFormatBuilder, Options, format::PYTHON3_LITERAL,
+    let (negative, unsigned) = match literal.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        Some((b'+', rest)) => (false, rest),
+        _ => (false, literal),
     };
+    let special = if unsigned.eq_ignore_ascii_case(b"inf") || unsigned.eq_ignore_ascii_case(b"infinity") {
+        Some(f64::INFINITY)
+    } else if unsigned.eq_ignore_ascii_case(b"nan") {
+        Some(f64::NAN)
+    } else {
+        None
+    };
+    if let Some(value) = special {
+        return Some(if negative { -value } else { value });
+    }
+    let mut digits = alloc::vec::Vec::with_capacity(literal.len());
+    if negative {
+        digits.push(b'-');
+    }
+    let rest = take_digit_part(unsigned, &mut digits);
+    let integer_digits = digits.len() - usize::from(negative);
+    let (rest, fraction_digits) = match rest.split_first() {
+        Some((b'.', after)) => {
+            digits.push(b'.');
+            let before = digits.len();
+            let after = take_digit_part(after, &mut digits);
+            (after, digits.len() - before)
+        }
+        _ => (rest, 0),
+    };
+    if integer_digits + fraction_digits == 0 {
+        return None;
+    }
+    let rest = match rest.split_first() {
+        Some((b'e' | b'E', after)) => {
+            digits.push(b'e');
+            let after = match after.split_first() {
+                Some((&sign @ (b'+' | b'-'), signed)) => {
+                    digits.push(sign);
+                    signed
+                }
+                _ => after,
+            };
+            let before = digits.len();
+            let after = take_digit_part(after, &mut digits);
+            if digits.len() == before {
+                return None;
+            }
+            after
+        }
+        _ => rest,
+    };
+    if !rest.is_empty() {
+        return None;
+    }
+    core::str::from_utf8(&digits).ok()?.parse::<f64>().ok()
+}
 
-    // lexical-core's format::PYTHON_STRING is inaccurate
-    const PYTHON_STRING: u128 = NumberFormatBuilder::rebuild(PYTHON3_LITERAL)
-        .no_special(false)
-        .build_unchecked();
-    f64::from_lexical_with_options::<PYTHON_STRING>(literal, &Options::new()).ok()
+fn take_digit_part<'a>(mut input: &'a [u8], digits: &mut alloc::vec::Vec<u8>) -> &'a [u8] {
+    while let Some((&byte, rest)) = input.split_first() {
+        if byte.is_ascii_digit() {
+            digits.push(byte);
+            input = rest;
+        } else if byte == b'_'
+            && digits.last().is_some_and(u8::is_ascii_digit)
+            && rest.first().is_some_and(u8::is_ascii_digit)
+        {
+            input = rest;
+        } else {
+            break;
+        }
+    }
+    input
 }
 
 #[must_use]
@@ -346,9 +410,165 @@ pub fn to_string(value: f64) -> String {
     }
 }
 
+const HEX_FLOAT_MANTISSA_BITS_MAX: u32 = 64;
+const HEX_DIGIT_BITS: isize = 4;
+const HEX_DIGITS_PER_MANTISSA: isize = 16;
+const HEX_FLOAT_EXPONENT_LIMIT: isize = 0xffff;
+const DECIMAL_RADIX: isize = 10;
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_hex_float_parts(text: &[u8]) -> Option<(bool, u64, isize)> {
+    let (text, negative) = match text.split_first() {
+        Some((&b'+', rest)) => (rest, false),
+        Some((&b'-', rest)) => (rest, true),
+        Some(_) => (text, false),
+        None => return None,
+    };
+    let mut text = text
+        .strip_prefix(b"0x")
+        .or_else(|| text.strip_prefix(b"0X"))?;
+    let mut mantissa: u64 = 0;
+    let mut digit_seen = false;
+    while let Some(digit) = text.first().copied().and_then(hex_digit) {
+        text = &text[1..];
+        digit_seen = true;
+        if mantissa >> (HEX_FLOAT_MANTISSA_BITS_MAX - 4) != 0 {
+            return None;
+        }
+        mantissa = (mantissa << 4) | u64::from(digit);
+    }
+    let mut fraction_digits: isize = 0;
+    let mut pending_zeros: isize = 0;
+    let mut fraction_digit_seen = false;
+    if let Some(rest) = text.strip_prefix(b".") {
+        text = rest;
+        while let Some(digit) = text.first().copied().and_then(hex_digit) {
+            text = &text[1..];
+            fraction_digit_seen = true;
+            if digit == 0 {
+                pending_zeros = pending_zeros.checked_add(1)?;
+            } else {
+                let new_digits = pending_zeros.checked_add(1)?;
+                fraction_digits = fraction_digits.checked_add(new_digits)?;
+                pending_zeros = 0;
+                if mantissa != 0 {
+                    if new_digits >= HEX_DIGITS_PER_MANTISSA
+                        || mantissa >> (64 - new_digits * HEX_DIGIT_BITS) != 0
+                    {
+                        return None;
+                    }
+                    mantissa <<= new_digits * HEX_DIGIT_BITS;
+                }
+                mantissa |= u64::from(digit);
+            }
+        }
+    }
+    if !(digit_seen || fraction_digit_seen) {
+        return None;
+    }
+    let text = match text.split_first() {
+        Some((&(b'P' | b'p'), rest)) => rest,
+        _ => return None,
+    };
+    let (mut text, negative_exponent) = match text.split_first() {
+        Some((&b'+', rest)) => (rest, false),
+        Some((&b'-', rest)) => (rest, true),
+        Some(_) => (text, false),
+        None => return None,
+    };
+    let mut exponent_digit_seen = false;
+    let mut exponent: isize = 0;
+    loop {
+        match text.split_first() {
+            Some((&digit @ b'0'..=b'9', rest)) => {
+                text = rest;
+                exponent_digit_seen = true;
+                if mantissa != 0 {
+                    exponent = exponent
+                        .checked_mul(DECIMAL_RADIX)
+                        .and_then(|value| value.checked_add(isize::from(digit - b'0')))?;
+                }
+            }
+            None if exponent_digit_seen => break,
+            _ => return None,
+        }
+    }
+    if negative_exponent {
+        exponent = -exponent;
+    }
+    if mantissa == 0 {
+        return Some((negative, 0, 0));
+    }
+    let exponent = fraction_digits
+        .checked_mul(HEX_DIGIT_BITS)
+        .and_then(|value| exponent.checked_sub(value))?;
+    Some((negative, mantissa, exponent))
+}
+
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_wrap)]
+fn hex_float_value(negative: bool, mantissa: u64, exponent: isize) -> Option<f64> {
+    if !(-HEX_FLOAT_EXPONENT_LIMIT..=HEX_FLOAT_EXPONENT_LIMIT).contains(&exponent) {
+        return None;
+    }
+    let trailing = mantissa.trailing_zeros() & 63;
+    let mantissa = mantissa >> trailing;
+    let exponent = exponent + trailing as isize;
+    let leading = mantissa.leading_zeros();
+    let normal_exponent = exponent + (63 - leading as isize);
+    let mantissa_bits = if normal_exponent < f64::MIN_EXP as isize - f64::MANTISSA_DIGITS as isize {
+        return None;
+    } else if normal_exponent < (f64::MIN_EXP - 1) as isize {
+        f64::MANTISSA_DIGITS as isize - f64::MIN_EXP as isize + normal_exponent + 1
+    } else if normal_exponent < f64::MAX_EXP as isize {
+        f64::MANTISSA_DIGITS as isize
+    } else {
+        return None;
+    };
+    if mantissa >> mantissa_bits != 0 {
+        return None;
+    }
+    let mut value = mantissa as f64;
+    if negative {
+        value = -value;
+    }
+    Some(value * power_of_two(exponent))
+}
+
+const DOUBLE_EXPONENT_BIAS: isize = 1023;
+const DOUBLE_EXPONENT_MAX: isize = 1023;
+const DOUBLE_EXPONENT_MIN_NORMAL: isize = -1022;
+const DOUBLE_EXPONENT_MIN_SUBNORMAL: isize = -1074;
+const DOUBLE_MANTISSA_BITS: isize = 52;
+
+#[allow(clippy::cast_sign_loss)]
+fn power_of_two(exponent: isize) -> f64 {
+    if exponent > DOUBLE_EXPONENT_MAX {
+        f64::INFINITY
+    } else if exponent >= DOUBLE_EXPONENT_MIN_NORMAL {
+        f64::from_bits(((exponent + DOUBLE_EXPONENT_BIAS) as u64) << DOUBLE_MANTISSA_BITS)
+    } else if exponent >= DOUBLE_EXPONENT_MIN_SUBNORMAL {
+        f64::from_bits(1u64 << (exponent - DOUBLE_EXPONENT_MIN_SUBNORMAL))
+    } else {
+        0.0
+    }
+}
+
+fn parse_hex_float(text: &str) -> Option<f64> {
+    let (negative, mantissa, exponent) = parse_hex_float_parts(text.as_bytes())?;
+    hex_float_value(negative, mantissa, exponent)
+}
+
 #[must_use]
 pub fn from_hex(s: &str) -> Option<f64> {
-    if let Ok(f) = hexf_parse::parse_hexf64(s, false) {
+    if let Some(f) = parse_hex_float(s) {
         return Some(f);
     }
     match s.to_ascii_lowercase().as_str() {
@@ -390,7 +610,7 @@ pub fn from_hex(s: &str) -> Option<f64> {
                 hex.push_str(".p0")
             }
 
-            hexf_parse::parse_hexf64(hex.as_str(), false).ok()
+            parse_hex_float(hex.as_str())
         }
     }
 }
@@ -463,7 +683,7 @@ mod tests {
             }
             let hex = to_hex(f);
             // println!("{} -> {}", f, hex);
-            let roundtrip = hexf_parse::parse_hexf64(&hex, false).unwrap();
+            let roundtrip = parse_hex_float(&hex).unwrap();
             // println!("  -> {}", roundtrip);
             assert!(f == roundtrip, "{f} {hex} {roundtrip}");
         }

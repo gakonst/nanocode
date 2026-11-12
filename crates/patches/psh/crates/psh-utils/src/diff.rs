@@ -378,7 +378,7 @@ impl Text {
     }
 }
 
-type LineIds<'a> = HashMap<(Cow<'a, [u8]>, bool), u32, foldhash::fast::RandomState>;
+type LineIds<'a> = HashMap<(Cow<'a, [u8]>, bool), u32, crate::hasher::SeededState>;
 
 struct Differ {
     o: Opts,

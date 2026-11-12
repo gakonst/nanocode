@@ -3075,7 +3075,6 @@ version = "0.0.0"
 dependencies = [
  "bstr",
  "encoding_rs",
- "foldhash",
  "memchr",
  "psh-classify",
  "psh-engine",

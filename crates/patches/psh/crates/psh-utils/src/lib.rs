@@ -8,6 +8,7 @@
 mod ansi;
 mod common;
 mod fsutil;
+mod hasher;
 mod math;
 mod modes;
 pub mod opts;

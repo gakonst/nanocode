@@ -22,7 +22,6 @@ bstr = "1.12"
 # Byte and substring searches of the record readers (already in the tree through bstr
 # and the regex crates).
 memchr = "2.8.3"
-foldhash = "0.2.0"
 
 [lints]
 workspace = true

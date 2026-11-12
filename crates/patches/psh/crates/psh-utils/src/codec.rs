@@ -1,9 +1,14 @@
-//! What the archive utilities share (nanocode's addition): CRC-32, raw deflate through
-//! miniz_oxide, and the gzip container (RFC 1952).
+//! What the archive utilities share (nanocode's addition): CRC-32, Adler-32, raw deflate
+//! through psh's own deflate and inflate, and the gzip container (RFC 1952).
 
-use miniz_oxide::deflate::compress_to_vec;
-use miniz_oxide::inflate::TINFLStatus;
-use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
+use crate::deflate::compress;
+use crate::inflate::{Inflater, InputEnd, Progress};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Raw,
+    Zlib,
+}
 
 /// The CRC-32 of gzip and zip (polynomial 0xedb88320), eight bytes at a step
 /// (slicing-by-8: one table per byte of the step).
@@ -57,37 +62,32 @@ pub fn crc32(data: &[u8]) -> u32 {
     !c
 }
 
+pub fn adler32(adler: u32, data: &[u8]) -> u32 {
+    const MODULUS: u32 = 65_521;
+    const CHUNK_BYTES: usize = 5_552;
+    let (mut low, mut high) = (adler & 0xffff, adler >> 16);
+    for chunk in data.chunks(CHUNK_BYTES) {
+        for &byte in chunk {
+            low += u32::from(byte);
+            high += low;
+        }
+        low %= MODULUS;
+        high %= MODULUS;
+    }
+    high << 16 | low
+}
+
 pub fn deflate(data: &[u8], level: u8) -> Vec<u8> {
-    compress_to_vec(data, level)
+    compress(data, level, Format::Raw)
 }
 
 /// Inflates a raw deflate stream at the start of data: what it holds and how many
 /// bytes of data the stream took. None: not a deflate stream.
 pub fn inflate(data: &[u8]) -> Option<(Vec<u8>, usize)> {
-    let mut state = Box::<DecompressorOxide>::default();
-    let mut out = vec![0u8; data.len().saturating_mul(3).max(64 * 1024)];
-    let (mut read, mut written) = (0, 0);
-    loop {
-        let (status, used, wrote) = decompress(
-            &mut state,
-            &data[read..],
-            &mut out,
-            written,
-            inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
-        );
-        read += used;
-        written += wrote;
-        match status {
-            TINFLStatus::Done => {
-                out.truncate(written);
-                return Some((out, read));
-            }
-            TINFLStatus::HasMoreOutput => {
-                let len = out.len();
-                out.resize(len * 2, 0);
-            }
-            _ => return None,
-        }
+    let mut out = Vec::new();
+    match Inflater::new(Format::Raw).inflate(data, InputEnd::Final, &mut out, usize::MAX) {
+        Ok(Progress::Done { consumed }) => Some((out, consumed)),
+        Ok(Progress::NeedsInput) | Err(_) => None,
     }
 }
 
@@ -123,31 +123,9 @@ pub fn gunzip_partial(data: &[u8]) -> Vec<u8> {
     let Some(body) = data.get(pos..) else {
         return Vec::new();
     };
-    let mut state = Box::<DecompressorOxide>::default();
-    let mut out = vec![0u8; body.len().saturating_mul(3).max(64 * 1024)];
-    let (mut read, mut written) = (0, 0);
-    loop {
-        let (status, used, wrote) = decompress(
-            &mut state,
-            &body[read..],
-            &mut out,
-            written,
-            inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF
-                | inflate_flags::TINFL_FLAG_HAS_MORE_INPUT,
-        );
-        read += used;
-        written += wrote;
-        match status {
-            TINFLStatus::HasMoreOutput => {
-                let len = out.len();
-                out.resize(len * 2, 0);
-            }
-            _ => {
-                out.truncate(written);
-                return out;
-            }
-        }
-    }
+    let mut out = Vec::new();
+    let _ = Inflater::new(Format::Raw).inflate(body, InputEnd::More, &mut out, usize::MAX);
+    out
 }
 
 /// One member of a gzip file.

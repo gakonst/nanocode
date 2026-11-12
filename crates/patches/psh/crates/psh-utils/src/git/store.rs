@@ -11,8 +11,9 @@ use std::collections::HashMap;
 use std::io::{self, Read};
 use std::rc::Rc;
 
-use miniz_oxide::inflate::TINFLStatus;
-use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
+use crate::codec::Format;
+use crate::deflate::compress;
+use crate::inflate::{Inflater, InputEnd, Progress};
 use psh_engine::host::Metadata;
 use psh_engine::util::SyncCtx;
 
@@ -381,7 +382,7 @@ pub struct Odb<'a> {
     loose: RefCell<Loose>,
     bases: RefCell<Bases>,
     base_limit: usize,
-    inflater: RefCell<Box<DecompressorOxide>>,
+    inflater: RefCell<Inflater>,
     /// The objects this command made: read as any other, and written as loose objects
     /// when its changes are carried out.
     made: RefCell<HashMap<Oid, (Kind, Data)>>,
@@ -426,7 +427,7 @@ impl<'a> Odb<'a> {
             loose: RefCell::default(),
             bases: RefCell::default(),
             base_limit,
-            inflater: RefCell::new(Box::default()),
+            inflater: RefCell::new(Inflater::new(Format::Zlib)),
             made: RefCell::default(),
         })
     }
@@ -452,7 +453,7 @@ impl<'a> Odb<'a> {
                 raw.extend_from_slice(&data);
                 (
                     Self::loose_path(&self.dirs[0], &oid),
-                    miniz_oxide::deflate::compress_to_vec_zlib(&raw, BEST_SPEED),
+                    compress(&raw, BEST_SPEED, Format::Zlib),
                 )
             })
             .collect()
@@ -547,8 +548,12 @@ impl<'a> Odb<'a> {
             let Some(raw) = self.fs.read_opt(&Self::loose_path(dir, oid))? else {
                 continue;
             };
-            let data = miniz_oxide::inflate::decompress_to_vec_zlib(&raw)
-                .map_err(|_| corrupt("a loose object does not inflate"))?;
+            let mut data = Vec::new();
+            let Ok(Progress::Done { .. }) =
+                Inflater::new(Format::Zlib).inflate(&raw, InputEnd::Final, &mut data, usize::MAX)
+            else {
+                return Err(corrupt("a loose object does not inflate"));
+            };
             let nul = data
                 .iter()
                 .position(|&b| b == 0)
@@ -611,11 +616,11 @@ impl<'a> Odb<'a> {
     }
 
     fn inflate(&self, data: &Random, off: u64, size: usize) -> io::Result<Vec<u8>> {
-        let mut out = vec![0u8; size.max(1)];
+        let bytes_max = size.max(1);
+        let mut out = Vec::with_capacity(bytes_max);
         let mut state = self.inflater.borrow_mut();
-        state.init();
+        state.reset();
         let mut pos = off;
-        let mut written = 0;
         // A stream is seldom longer than what it holds; stored blocks add five bytes
         // to each 65,535.
         let mut want = if data.whole() {
@@ -626,24 +631,23 @@ impl<'a> Odb<'a> {
         loop {
             let chunk = data.upto(pos, want)?;
             let more = !data.whole() && chunk.len() == want;
-            let mut flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
-                | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-            if more {
-                flags |= inflate_flags::TINFL_FLAG_HAS_MORE_INPUT;
-            }
-            let (status, used, wrote) = decompress(&mut state, &chunk, &mut out, written, flags);
-            written += wrote;
-            pos += used as u64;
-            match status {
-                TINFLStatus::Done => break,
-                TINFLStatus::NeedsMoreInput if more => want = 4096,
-                _ => return Err(corrupt("a packed object does not inflate")),
+            let end = if more {
+                InputEnd::More
+            } else {
+                InputEnd::Final
+            };
+            match state.inflate(&chunk, end, &mut out, bytes_max) {
+                Ok(Progress::Done { .. }) => break,
+                Ok(Progress::NeedsInput) => {
+                    pos += chunk.len() as u64;
+                    want = 4096;
+                }
+                Err(_) => return Err(corrupt("a packed object does not inflate")),
             }
         }
-        if written != size {
+        if out.len() != size {
             return Err(corrupt("a packed object is not the size its header says"));
         }
-        out.truncate(size);
         Ok(out)
     }
 

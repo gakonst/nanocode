@@ -2,8 +2,8 @@
 //! -q -v -S and the levels. A file is replaced by its compressed or expanded form,
 //! with its mode and time, unless -c or -k says otherwise; no operand, or -, is stdin to
 //! stdout. Whole files are held in memory. GNU's messages; where BSD's gzip (macOS)
-//! differs, GNU (D016). The deflate stream is miniz_oxide's, so compressed bytes differ
-//! from GNU's while each reads the other's.
+//! differs, GNU (D016). The deflate stream is psh's own (deflate.rs), so compressed bytes
+//! differ from GNU's while each reads the other's.
 
 use psh_engine::host::{FileKind, OpenOptions, error_text};
 use psh_engine::util::UtilCtx;

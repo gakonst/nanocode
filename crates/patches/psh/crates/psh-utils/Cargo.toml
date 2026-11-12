@@ -38,8 +38,5 @@ jaq-core = "3.1.2"
 # jq's math builtins with C libm's results (D1180).
 libm = "0.2.16"
 
-# git (nanocode's addition): objects inflate with miniz_oxide.
-miniz_oxide = "0.8.9"
-
 [lints]
 workspace = true

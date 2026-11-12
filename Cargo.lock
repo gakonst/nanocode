@@ -3199,7 +3199,6 @@ dependencies = [
  "jaq-core",
  "libm",
  "memchr",
- "miniz_oxide",
  "psh-classify",
  "psh-engine",
  "psh-regex",

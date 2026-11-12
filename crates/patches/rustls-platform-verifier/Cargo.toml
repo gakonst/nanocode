@@ -35,6 +35,7 @@ security-framework = "3.5.0"
 security-framework-sys = "2.15"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+arc-swap = "1.9.2"
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
 webpki-root-certs = "1"
 

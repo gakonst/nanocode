@@ -203,6 +203,9 @@ pub struct Heap {
     /// shapes or prototypes). Its slots hold arena offsets, so every collection empties
     /// it. Allocated on first fill; not part of the image.
     pub(crate) mega_ic: alloc::vec::Vec<u32>,
+    /// The compiler's buffers, kept between compiles so that each one starts with their
+    /// capacity (`resolve::finish`). Not part of the image.
+    pub(crate) compile_scratch: crate::compiler::CompileScratch,
     /// The prefix as it was when the barrier was armed (debug builds, D2065): what
     /// [`Heap::check_prefix`] compares against, for writes that bypass `Arena::write`.
     #[cfg(debug_assertions)]
@@ -288,6 +291,7 @@ impl Heap {
         {
             fresh.compositions = core::mem::take(&mut self.compositions);
         }
+        fresh.compile_scratch = core::mem::take(&mut self.compile_scratch);
         *self = fresh;
         true
     }
@@ -346,6 +350,7 @@ impl Heap {
             compositions: Default::default(),
             regexp_state: Default::default(),
             mega_ic: Default::default(),
+            compile_scratch: Default::default(),
             #[cfg(debug_assertions)]
             prefix_copy: None,
             barrier_forced: false,

@@ -567,7 +567,7 @@ pub(super) fn finish(
     let _ = globals;
     let mut pools = plan.pools();
     let mut templates: Vec<Ref> = vec![Ref::NULL; funcs.len()];
-    let mut scratch = Scratch::default();
+    let mut scratch = core::mem::take(&mut heap.compile_scratch);
     for id in (0..funcs.len()).rev() {
         let f = &mut funcs[id];
         let parent_storage = f.parent.map(|(p, _)| &storages[p as usize].0);
@@ -619,6 +619,7 @@ pub(super) fn finish(
         )?;
         templates[id] = t;
     }
+    heap.compile_scratch = scratch;
     #[cfg(not(feature = "lazy"))]
     {
         set_pool(heap, &pools[1], &templates[1..])?;
@@ -1668,9 +1669,9 @@ fn template_flags(f: &FuncState, privileged: bool) -> u32 {
 }
 
 /// Buffers reused across the functions of a unit (0096: per-function allocations were
-/// a tenth of a compile).
+/// a tenth of a compile), and across units (`Heap::compile_scratch`).
 #[derive(Default)]
-struct Scratch {
+pub(crate) struct Scratch {
     lines: Vec<(u32, u32)>,
     stack: crate::bytecode::StackScratch,
     insns: Vec<crate::bytecode::Insn>,

@@ -32,6 +32,7 @@ mod parser;
 mod pattern;
 mod peephole;
 mod resolve;
+pub(crate) use resolve::Scratch as CompileScratch;
 mod scan;
 mod smap;
 #[cfg(all(feature = "dump", feature = "compile-cache"))]

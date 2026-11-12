@@ -937,8 +937,15 @@ async fn run_chunk(
             vp.line = line;
             let dash_c = if vp.opts.dash_c { "-c: " } else { "" };
             let name = vp.msg_name();
-            let mut msg = format!("{name}: {dash_c}line {line}: {}\n", e.message).into_bytes();
-            if e.message.starts_with("syntax error near") {
+            let mut msg = Vec::new();
+            for l in e.message.split('\n') {
+                msg.extend_from_slice(format!("{name}: {dash_c}line {line}: {l}\n").as_bytes());
+            }
+            if e.message
+                .lines()
+                .last()
+                .is_some_and(|l| l.starts_with("syntax error near"))
+            {
                 let text = source_line(source, line);
                 msg.extend_from_slice(format!("{name}: {dash_c}line {line}: `").as_bytes());
                 msg.extend_from_slice(text);

@@ -59,8 +59,15 @@ pub(crate) async fn run_text(vp: &mut Vp, text: &[u8], line_base: u32, origin: O
                     Origin::Eval => format!("{}: eval: line {line}: ", vp.msg_name()),
                     Origin::File => format!("{}: line {line}: ", vp.msg_name()),
                 };
-                let mut msg = format!("{prefix}{}\n", e.message).into_bytes();
-                if e.message.starts_with("syntax error near") {
+                let mut msg = Vec::new();
+                for l in e.message.split('\n') {
+                    msg.extend_from_slice(format!("{prefix}{l}\n").as_bytes());
+                }
+                if e.message
+                    .lines()
+                    .last()
+                    .is_some_and(|l| l.starts_with("syntax error near"))
+                {
                     let n = (line - line_base) as usize;
                     let l = text.split(|&b| b == b'\n').nth(n - 1).unwrap_or(b"");
                     msg.extend_from_slice(prefix.as_bytes());

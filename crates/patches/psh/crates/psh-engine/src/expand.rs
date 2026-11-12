@@ -1249,16 +1249,23 @@ pub(crate) async fn expand_sub_text(vp: &mut Vp, sub: &[u8]) -> Result<Vec<u8>, 
     let psh_syntax::CommandKind::Simple(sc) = &ast.cmd(id).kind else {
         return Ok(sub.to_vec());
     };
-    let Some(w) = sc.words.get(1).cloned() else {
-        return Ok(sub.to_vec());
-    };
+    let words = sc.words.get(1..).unwrap_or_default().to_vec();
     let code = Rc::new(Code {
         lines: Rc::new(psh_syntax::LineIndex::from_bytes(ast.source_bytes())),
         ast: std::sync::Arc::new(ast),
         line_base: vp.line.saturating_sub(1),
         arith: Default::default(),
     });
-    Ok(expand_single(vp, &code, &w, Ctx::Word).await?.0)
+    let mut out = Vec::new();
+    let mut end = None;
+    for w in &words {
+        if let Some(e) = end {
+            out.extend_from_slice(&src[e as usize..w.span.start as usize]);
+        }
+        out.extend_from_slice(&expand_single(vp, &code, w, Ctx::Word).await?.0);
+        end = Some(w.span.end);
+    }
+    Ok(out)
 }
 
 pub(crate) async fn unsupported<T>(vp: &Vp, what: &str) -> Result<T, Unwind> {
@@ -1365,7 +1372,16 @@ async fn param(
     };
     let is_list = matches!(p.index, Some(Subscript::At | Subscript::Star));
     // `${!a[@]}`: the keys of an array.
-    if p.prefix == ParamPrefix::Indirect && is_list && p.name == ParamName::Var {
+    if p.prefix == ParamPrefix::Indirect
+        && is_list
+        && p.name == ParamName::Var
+        && (matches!(p.op, ParamOp::None)
+            || (matches!(p.op, ParamOp::Default { .. })
+                && vp
+                    .vars
+                    .get(&vp.resolve(code.ast.text(p.name_span)))
+                    .is_some_and(|v| v.keys().is_empty())))
+    {
         let name = vp.resolve(code.ast.text(p.name_span)).into_owned();
         let keys = vp.vars.get(&name).map(|v| v.keys()).unwrap_or_default();
         let star = matches!(p.index, Some(Subscript::Star));
@@ -1542,6 +1558,20 @@ async fn param(
                         vp.error(&format!(
                             "{}: invalid indirect expansion",
                             String::from_utf8_lossy(name_text)
+                        ))
+                        .await;
+                        return Err(Unwind::Abort(1));
+                    }
+                    Val::List(l, _) if !l.is_empty() && is_list => l.join(&b' '),
+                    Val::List(..) if is_list => {
+                        vp.error(&format!(
+                            "{}[{}]: invalid indirect expansion",
+                            String::from_utf8_lossy(name_text),
+                            if matches!(p.index, Some(Subscript::Star)) {
+                                '*'
+                            } else {
+                                '@'
+                            }
                         ))
                         .await;
                         return Err(Unwind::Abort(1));

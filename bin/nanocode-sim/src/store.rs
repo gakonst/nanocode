@@ -68,12 +68,14 @@ impl Mutation {
 pub struct Entry {
     pub version: String,
     pub value: String,
+    pub seq: u64,
 }
 
 #[derive(Clone, Debug)]
 pub struct CasEvent {
     pub key: String,
     pub prev: Option<String>,
+    pub prev_seq: Option<u64>,
     pub new: String,
     pub value: String,
     pub swapped: bool,
@@ -132,8 +134,13 @@ impl Kv {
         true
     }
 
-    fn write(&mut self, key: &str, entry: Entry) {
+    pub const fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    fn write(&mut self, key: &str, mut entry: Entry) {
         self.seq += 1;
+        entry.seq = self.seq;
         let line = format!(
             "  kv write #{} {key} = {:?} {:?}",
             self.seq, entry.version, entry.value
@@ -294,6 +301,7 @@ impl Kv {
             let entry = Entry {
                 version: String::new(),
                 value: value.clone(),
+                seq: 0,
             };
             self.write(key, entry);
         }
@@ -317,6 +325,7 @@ impl Kv {
             return Err(injected("compare_and_swap", "before apply"));
         }
         let prev = self.pending.get(key).map(|entry| entry.version.clone());
+        let prev_seq = self.pending.get(key).map(|entry| entry.seq);
         let swapped =
             prev.as_deref() == expected_version || self.mutated_swap(key, expected_version);
         let (new, value) = (entry.version.clone(), entry.value.clone());
@@ -327,6 +336,7 @@ impl Kv {
         let event = CasEvent {
             key: key.to_owned(),
             prev,
+            prev_seq,
             new,
             value,
             swapped,
@@ -510,6 +520,7 @@ impl KeyValue for SimKv {
             let entry = Entry {
                 version: version.to_owned(),
                 value: value.to_owned(),
+                seq: 0,
             };
             kv.compare_and_swap(op, key, expected_version, entry)
         })

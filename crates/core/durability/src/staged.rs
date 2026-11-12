@@ -69,6 +69,38 @@ impl Staged {
 
 type States = BTreeMap<String, Arc<Staged>>;
 
+fn partial(committed: &[&str], error: StoreError) -> StoreError {
+    if committed.is_empty() {
+        return error;
+    }
+    StoreError::Backend(format!(
+        "staged writes committed state {} and then failed: {error}",
+        committed.join(", ")
+    ))
+}
+
+async fn unmoved<T: StateStore + ?Sized>(
+    state_id: &str,
+    staged: &Staged,
+    store: &mut T,
+) -> Result<(), StoreError> {
+    let fence = store
+        .owner(state_id)
+        .await?
+        .map_or(0, |owner| owner.fence());
+    if fence != staged.base_fence {
+        return Err(StoreError::Fenced);
+    }
+    let current = store.peek(state_id).await?;
+    if current.revision != staged.base_revision {
+        return Err(StoreError::Conflict {
+            expected: staged.base_revision,
+            actual: current.revision,
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct StagedWrites(Arc<Atom<States>>);
 
@@ -143,59 +175,83 @@ impl StagedWrites {
 
     pub async fn commit_to<T: StateStore + ?Sized>(&self, store: &mut T) -> Result<(), StoreError> {
         let states = self.0.get();
+        let mut committed = Vec::new();
         for (state_id, staged) in states
             .iter()
             .filter(|(_, staged)| staged.revision != staged.base_revision)
         {
-            let state_id = state_id.as_str();
-            let acquired = store
-                .acquire(state_id, staged.owner.owner_id().clone())
-                .await?;
-            if Some(acquired.owner.fence()) != staged.base_fence.checked_add(1) {
-                return Err(StoreError::Fenced);
-            }
-            if acquired.state.revision != staged.base_revision {
-                return Err(StoreError::Conflict {
-                    expected: staged.base_revision,
-                    actual: acquired.state.revision,
-                });
-            }
-            let reached = self.reached(state_id, staged, store).await?;
-            if let Some(payload) = staged.payloads.last()
-                && store
-                    .replace_to(
-                        state_id,
-                        &acquired.owner,
-                        staged.base_revision,
-                        staged.revision,
-                        payload,
-                        &staged.unstored(reached.as_deref()),
-                    )
-                    .await?
-                    .is_some()
+            let mut landed = false;
+            if let Err(error) = self
+                .commit_state(state_id, staged, store, &mut landed)
+                .await
             {
-                continue;
+                if landed {
+                    committed.push(state_id.as_str());
+                }
+                return Err(partial(&committed, error));
             }
-            let mut records = staged.unstored(None);
-            let mut revision = staged.base_revision;
-            for payload in &staged.payloads {
-                revision = store
-                    .commit(
-                        state_id,
-                        &acquired.owner,
-                        revision,
-                        StateCommit {
-                            payload,
-                            records: &records,
-                            events: &[],
-                            summary: &SummaryUpdate::Unchanged,
-                            settle: crate::Settle::Durable,
-                        },
-                    )
-                    .await?
-                    .revision;
-                records.clear();
-            }
+            committed.push(state_id.as_str());
+        }
+        Ok(())
+    }
+
+    async fn commit_state<T: StateStore + ?Sized>(
+        &self,
+        state_id: &str,
+        staged: &Staged,
+        store: &mut T,
+        landed: &mut bool,
+    ) -> Result<(), StoreError> {
+        unmoved(state_id, staged, store).await?;
+        let acquired = store
+            .acquire(state_id, staged.owner.owner_id().clone())
+            .await?;
+        if Some(acquired.owner.fence()) != staged.base_fence.checked_add(1) {
+            return Err(StoreError::Fenced);
+        }
+        if acquired.state.revision != staged.base_revision {
+            return Err(StoreError::Conflict {
+                expected: staged.base_revision,
+                actual: acquired.state.revision,
+            });
+        }
+        let reached = self.reached(state_id, staged, store).await?;
+        if let Some(payload) = staged.payloads.last()
+            && store
+                .replace_to(
+                    state_id,
+                    &acquired.owner,
+                    staged.base_revision,
+                    staged.revision,
+                    payload,
+                    &staged.unstored(reached.as_deref()),
+                )
+                .await?
+                .is_some()
+        {
+            *landed = true;
+            return Ok(());
+        }
+        let mut records = staged.unstored(None);
+        let mut revision = staged.base_revision;
+        for payload in &staged.payloads {
+            revision = store
+                .commit(
+                    state_id,
+                    &acquired.owner,
+                    revision,
+                    StateCommit {
+                        payload,
+                        records: &records,
+                        events: &[],
+                        summary: &SummaryUpdate::Unchanged,
+                        settle: crate::Settle::Durable,
+                    },
+                )
+                .await?
+                .revision;
+            *landed = true;
+            records.clear();
         }
         Ok(())
     }

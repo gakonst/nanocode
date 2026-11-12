@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use nanocode_durability_core::{StoreError, StoredState};
+use nanocode_durability_core::{StoreError, StoreRecord, StoredState};
 
 use crate::{
     faults::Durability,
@@ -97,6 +97,7 @@ pub struct Stats {
     pub damaged_reads: u64,
     pub partial_commit_to: u64,
     pub record_conflicts: u64,
+    pub staged_fence_races: u64,
     pub kv_faults: u64,
     pub epochs: u64,
 }
@@ -114,6 +115,7 @@ impl Stats {
         self.damaged_reads += other.damaged_reads;
         self.partial_commit_to += other.partial_commit_to;
         self.record_conflicts += other.record_conflicts;
+        self.staged_fence_races += other.staged_fence_races;
         self.kv_faults += other.kv_faults;
         self.epochs += other.epochs;
     }
@@ -127,6 +129,7 @@ pub struct Observed {
 
 pub struct Ctx {
     pub op: u64,
+    pub seq_start: u64,
     pub start: u64,
     pub end: u64,
     pub log: OpLog,
@@ -157,6 +160,14 @@ impl Model {
             wrong: None,
             stats: Stats::default(),
         }
+    }
+
+    pub fn plan(&mut self, attempt: Attempt, records: &[StoreRecord]) {
+        for record in records {
+            self.records
+                .insert(record.key.clone(), record.value.clone());
+        }
+        self.attempts.push(attempt);
     }
 
     pub fn wrong(&mut self, message: String) {

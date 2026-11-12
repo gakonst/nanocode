@@ -14,7 +14,7 @@ use nanocode_durability_core::{
 
 use crate::{
     executor::Clock,
-    model::{Attempt, Ctx, Model, Observed, Status, parse_version, state_id, version},
+    model::{Attempt, Ctx, Model, Observed, Status, head_state, parse_version, state_id, version},
     rng::{FNV_OFFSET, Rng, fnv},
     store::SimKv,
 };
@@ -52,6 +52,7 @@ impl World {
         self.kv.trace(&format!("{op} > {what}"));
         Ctx {
             op,
+            seq_start: self.kv.with(|kv| kv.seq()),
             start: model.clock,
             end: 0,
             log: crate::store::OpLog::default(),
@@ -327,26 +328,20 @@ impl Proc {
         let (records, refs) = self.plan_records(world, attempt, &held);
         let payload = format!("a{attempt};{}", refs.join(","));
         let revision = held.revision + 1;
-        {
-            let mut model = world.model.borrow_mut();
-            for record in &records {
-                model
-                    .records
-                    .insert(record.key.clone(), record.value.clone());
-            }
-            model.attempts.push(Attempt {
-                state,
-                revision,
-                refs: refs.clone(),
-                payload: payload.clone(),
-                status: if staged {
-                    Status::Staged
-                } else {
-                    Status::InFlight
-                },
-                rejected: None,
-            });
-        }
+        let status = if staged {
+            Status::Staged
+        } else {
+            Status::InFlight
+        };
+        let planned = Attempt {
+            state,
+            revision,
+            refs: refs.clone(),
+            payload: payload.clone(),
+            status,
+            rejected: None,
+        };
+        world.model.borrow_mut().plan(planned, &records);
         let id = state_id(state);
         let what = format!(
             "p{} {} commit {id} fence={} rev {}->{revision} attempt {attempt} records={}",
@@ -381,21 +376,16 @@ impl Proc {
             Ok(committed) => self.judge_committed(world, &judged, &held, committed.revision, &ctx),
             Err(error) => judge_commit_failed(world, &judged, staged, error, &ctx),
         }
-        match result {
-            Ok(_) => {
-                let token = held.token;
-                self.held.insert(
-                    state,
-                    Held {
-                        token,
-                        revision,
-                        refs,
-                    },
-                );
-            }
-            Err(_) => {
-                self.held.remove(&state);
-            }
+        if result.is_ok() {
+            let token = held.token;
+            let held = Held {
+                token,
+                revision,
+                refs,
+            };
+            self.held.insert(state, held);
+        } else {
+            self.held.remove(&state);
         }
     }
 
@@ -447,7 +437,7 @@ impl Proc {
         let ctx = world.end(ctx, &result);
         match &result {
             Ok(()) => judge_committed_to(world, staging, &pending, &ctx, &what),
-            Err(error) => judge_commit_to_failed(world, &self.kv, &pending, error, &ctx, &what),
+            Err(error) => judge_commit_to_failed(world, staging, &pending, error, &ctx, &what),
         }
         self.mode = Mode::Staged(Staging::fresh(&self.kv));
         self.held.clear();
@@ -779,29 +769,41 @@ fn acknowledge_staged(model: &mut Model, attempt: usize, ctx: &Ctx, what: &str) 
     model.stats.acked_commits += 1;
 }
 
+const fn uncertain(error: &StoreError) -> bool {
+    matches!(error, StoreError::Backend(_))
+}
+
 fn judge_commit_to_failed(
     world: &World,
-    kv: &SimKv,
+    staging: &Staging,
     pending: &[usize],
     error: &StoreError,
     ctx: &Ctx,
     what: &str,
 ) {
     let mut model = world.model.borrow_mut();
-    model.failed(error, ctx, what);
-    for attempt in pending {
-        let payload = model.attempts[*attempt].payload.clone();
-        let landed = ctx
-            .log
-            .cas
-            .iter()
-            .any(|cas| cas.swapped && cas.value == payload);
-        if landed && definite(error) {
-            model.stats.partial_commit_to += 1;
-            kv.trace(&format!(
-                "  partial commit_to: attempt {attempt} landed but reported {error}"
-            ));
-        }
+    let landed: Vec<bool> = pending
+        .iter()
+        .map(|attempt| {
+            let payload = &model.attempts[*attempt].payload;
+            ctx.log
+                .cas
+                .iter()
+                .any(|cas| cas.swapped && cas.value == *payload)
+        })
+        .collect();
+    let partial = landed.contains(&true);
+    if partial && uncertain(error) && !ctx.log.faulted {
+        model.stats.partial_commit_to += 1;
+    } else if partial && !uncertain(error) {
+        model.wrong(format!(
+            "{what}: reported `{error}`, which says nothing was committed, after one of its states committed"
+        ));
+    } else {
+        model.failed(error, ctx, what);
+    }
+    judge_staged_fences(&mut model, staging, ctx, what);
+    for (attempt, landed) in pending.iter().zip(landed) {
         model.attempts[*attempt].status = if landed {
             Status::Uncertain
         } else {
@@ -809,6 +811,38 @@ fn judge_commit_to_failed(
         };
     }
     model.register(ctx);
+}
+
+fn judge_staged_fences(model: &mut Model, staging: &Staging, ctx: &Ctx, what: &str) {
+    for cas in ctx.log.cas.iter().filter(|cas| cas.swapped) {
+        let Some(state) = head_state(&cas.key) else {
+            continue;
+        };
+        let Some(base) = staging.bases.get(&state).copied() else {
+            continue;
+        };
+        let prev = cas
+            .prev
+            .as_deref()
+            .and_then(parse_version)
+            .map_or((0, 0), |prev| (prev.0, prev.1));
+        let fence = parse_version(&cas.new).map(|new| new.0);
+        if fence == Some(prev.0) || prev == base {
+            continue;
+        }
+        if cas.prev_seq.is_none_or(|seq| seq > ctx.seq_start) {
+            model.stats.staged_fence_races += 1;
+            continue;
+        }
+        model.wrong(format!(
+            "{what}: took fence {} of s{state} from the head at fence {} revision {}, written before it began, although it staged on fence {} revision {}",
+            fence.unwrap_or_default(),
+            prev.0,
+            prev.1,
+            base.0,
+            base.1
+        ));
+    }
 }
 
 fn writer_of(value: &str) -> Option<usize> {

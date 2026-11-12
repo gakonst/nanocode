@@ -694,6 +694,7 @@ static SLOTS: [AtomicU32; GETTERS + REGEXP_GETTERS.len()] =
     [const { AtomicU32::new(0) }; GETTERS + REGEXP_GETTERS.len()];
 
 /// %RegExp.prototype%'s own property `key` (whose hint is `SLOTS[which]`).
+#[inline]
 fn proto_property(heap: &Heap, which: usize, key: Atom) -> Option<Property> {
     let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
     let Some(slots) = heap.plain_entry_slots(proto) else {

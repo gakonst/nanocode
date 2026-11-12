@@ -71,6 +71,41 @@ impl Counter {
         let mut i = 0;
         while i < data.len() {
             let b = data[i];
+            if b < 0x80 {
+                i += 1;
+                self.c.chars += 1;
+                match b {
+                    b'\n' => {
+                        self.c.lines += 1;
+                        self.c.max_line = self.c.max_line.max(self.line_width);
+                        self.line_width = 0;
+                        self.in_word = false;
+                    }
+                    b' ' => {
+                        self.line_width += 1;
+                        self.in_word = false;
+                    }
+                    0x0b => self.in_word = false,
+                    b'\t' => {
+                        self.line_width = (self.line_width / 8 + 1) * 8;
+                        self.in_word = false;
+                    }
+                    b'\r' | 0x0c => {
+                        self.c.max_line = self.c.max_line.max(self.line_width);
+                        self.line_width = 0;
+                        self.in_word = false;
+                    }
+                    0..=0x1f | 0x7f => {}
+                    _ => {
+                        self.line_width += 1;
+                        if !self.in_word {
+                            self.in_word = true;
+                            self.c.words += 1;
+                        }
+                    }
+                }
+                continue;
+            }
             let (ch, len) = if utf8 && b >= 0x80 {
                 let len = match b {
                     0xc2..=0xdf => 2,

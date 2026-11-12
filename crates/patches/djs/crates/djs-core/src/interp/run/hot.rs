@@ -446,9 +446,45 @@ impl Exec<'_> {
         }
     }
 
+    #[inline(never)]
+    fn decline_branch(&mut self, op: u8) -> bool {
+        let v = self.pop();
+        let t = conv::to_boolean(self.heap, v);
+        let (o, offset) = match op {
+            fast::JUMP_IF_FALSE8 | fast::JUMP_IF_TRUE8 => (
+                if op == fast::JUMP_IF_TRUE8 {
+                    Op::JumpIfTrue8
+                } else {
+                    Op::JumpIfFalse8
+                },
+                self.byte(self.pc + 1) as i8 as i32,
+            ),
+            _ => (
+                if op == fast::JUMP_IF_TRUE {
+                    Op::JumpIfTrue
+                } else {
+                    Op::JumpIfFalse
+                },
+                self.imm_i32(1),
+            ),
+        };
+        let info = &OPS[o as usize];
+        self.fuel -= info.cost.fuel() as i64;
+        let next = self.pc + info.size as u32;
+        self.pc = next;
+        if t == matches!(o, Op::JumpIfTrue | Op::JumpIfTrue8) {
+            self.pc = (next as i64 + offset as i64) as u32;
+            if self.pc < next {
+                self.safepoint();
+            }
+        }
+        true
+    }
+
     /// What the loop declined, done here instead of through `step` where that is cheap:
     /// a call of a `@fast` builtin (D1850), `+` of a string and a primitive whose
-    /// ToString runs no user code and cannot throw (`"id " + i`, 0231), or an
+    /// ToString runs no user code and cannot throw (`"id " + i`, 0231), a conditional
+    /// jump on a value that is not a boolean, `%` of two Numbers, or an
     /// instruction of the construct path (`decline_construct`, 0236). False, with
     /// nothing changed, for anything else or at the heap cap (`step` runs it then and
     /// retries, D1700). One out-of-line call: changes to the loop's own code, even a
@@ -457,6 +493,12 @@ impl Exec<'_> {
     fn decline_fast(&mut self, op: u8) -> bool {
         if fast::is_call(op) {
             return self.pc < self.code_len && self.fast_leaf_call(op);
+        }
+        if matches!(
+            op,
+            fast::JUMP_IF_FALSE | fast::JUMP_IF_TRUE | fast::JUMP_IF_FALSE8 | fast::JUMP_IF_TRUE8
+        ) {
+            return self.decline_branch(op);
         }
         if op == fast::MOD {
             let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));

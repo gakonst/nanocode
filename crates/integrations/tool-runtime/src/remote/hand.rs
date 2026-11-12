@@ -13,7 +13,7 @@ use super::native::{
 use super::pricing::{HandPricing, Meter, Priced};
 use super::{ExecutorOptions, HandActivity};
 use crate::embedded::CodeModeHostError;
-use nanocode_code_mode::remote::HandCore;
+use nanocode_code_mode::remote::{HandCore, HandHostInfo, HostInfoLimits, HostInfoSource};
 use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
@@ -74,6 +74,8 @@ pub struct Hand {
     device: Option<std::sync::Arc<dyn super::HandCapabilities>>,
     tools_only: bool,
     environment: Option<nanocode_code_mode::remote::HandEnvironment>,
+    host_info: Option<HostInfoSource>,
+    host_info_limits: HostInfoLimits,
     pricing: Option<HandPricing>,
     confirm: Option<(ConfirmRefusal, Duration)>,
     runtime: Option<String>,
@@ -103,6 +105,8 @@ impl Hand {
             device: None,
             tools_only: false,
             environment: None,
+            host_info: None,
+            host_info_limits: HostInfoLimits::default(),
             pricing: None,
             confirm: None,
             runtime: None,
@@ -149,6 +153,26 @@ impl Hand {
     #[must_use]
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
+        self
+    }
+
+    #[must_use]
+    pub fn host_info(self, host_info: HandHostInfo) -> Self {
+        self.host_info_source(std::sync::Arc::new(move || {
+            let host_info = host_info.clone();
+            Box::pin(async move { host_info })
+        }))
+    }
+
+    #[must_use]
+    pub fn host_info_source(mut self, source: HostInfoSource) -> Self {
+        self.host_info = Some(source);
+        self
+    }
+
+    #[must_use]
+    pub const fn host_info_limits(mut self, limits: HostInfoLimits) -> Self {
+        self.host_info_limits = limits;
         self
     }
 
@@ -261,6 +285,14 @@ impl Hand {
                 environment: self.environment.clone(),
                 moves: false,
                 version: self.version.clone(),
+                host_info: self.host_info.clone().map(|source| {
+                    let limits = self.host_info_limits;
+                    std::sync::Arc::new(move || {
+                        let collected = source();
+                        Box::pin(async move { collected.await.limited(limits) })
+                            as crate::embedded::HostFuture<'static, HandHostInfo>
+                    }) as HostInfoSource
+                }),
             };
             let policy = self.policy;
             match self.endpoint {

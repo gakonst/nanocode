@@ -16,8 +16,8 @@ pub use hand::{ConfirmRefusal, Hand, HandEndpoint, HandEvent};
 pub(crate) use native::SocketShutdown;
 #[cfg(not(target_family = "wasm"))]
 pub use native::{
-    DialStages, SocketPolicy, SocketTransport, serve_accept, serve_connect, serve_connect_with,
-    serve_stream,
+    DialStages, SocketPolicy, SocketTransport, local_host_info, serve_accept, serve_connect,
+    serve_connect_with, serve_stream,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use pricing::{HandPricing, PricedOperation};

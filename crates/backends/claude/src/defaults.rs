@@ -53,8 +53,23 @@ pub fn runner_tools_with_executor(
     .map_err(|error| NanocodeError::InvalidRequest(error.to_string()))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HandFiles {
+    #[default]
+    Machine,
+    Confined,
+}
+
 pub fn hand_tools(directory: PathBuf) -> Result<Tools> {
-    let files = crate::tools::ClaudeWorkspaceFiles::machine(&directory).map_err(|error| {
+    hand_tools_with(directory, HandFiles::Machine)
+}
+
+pub fn hand_tools_with(directory: PathBuf, files: HandFiles) -> Result<Tools> {
+    let files = match files {
+        HandFiles::Machine => crate::tools::ClaudeWorkspaceFiles::machine(&directory),
+        HandFiles::Confined => crate::tools::ClaudeWorkspaceFiles::confined(&directory),
+    }
+    .map_err(|error| {
         NanocodeError::InvalidRequest(format!(
             "Claude file tools require the hand directory {}: {error}",
             directory.display()

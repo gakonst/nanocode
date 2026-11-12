@@ -46,9 +46,9 @@ pub use host_tools::{host_file_tools, host_tools};
 mod defaults;
 #[cfg(not(target_family = "wasm"))]
 pub use defaults::{
-    hand_tools, install_default_tools, install_default_tools_with_executor,
-    install_default_tools_with_process_routes, install_default_tools_with_runner_pool,
-    runner_tools, runner_tools_with_executor,
+    HandFiles, hand_tools, hand_tools_with, install_default_tools,
+    install_default_tools_with_executor, install_default_tools_with_process_routes,
+    install_default_tools_with_runner_pool, runner_tools, runner_tools_with_executor,
 };
 
 pub use nanocode_backend_claude_tools::tools;

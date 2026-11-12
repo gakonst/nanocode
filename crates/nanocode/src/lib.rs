@@ -43,9 +43,11 @@ pub use nanocode_code_mode::embedded::{
 };
 pub use nanocode_code_mode::remote::{
     CodeModeExecutors, ExecutorSelection, HandAuthorizer, HandCallDecision, HandCapability,
-    HandDescription, HandEnvironment, HandPermission, HandRequestDecision, HandToolSelection,
-    RemoteCatalog, RemoteClient, RemoteCodeModeHost, RemoteContext, RemoteDelivery, RemoteFrame,
-    RemoteLink, RemoteOperation, RemoteTransport, ResumedReply,
+    HandDescription, HandEnvironment, HandHostInfo, HandList, HandListener, HandPermission,
+    HandProgram, HandRequestDecision, HandTailscale, HandTailscalePeer, HandToolSelection,
+    HostInfoLimits, HostInfoSource, RemoteCatalog, RemoteClient, RemoteCodeModeHost,
+    RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink, RemoteOperation, RemoteTransport,
+    ResumedReply,
 };
 pub use nanocode_code_mode::tool;
 pub use nanocode_tool_runtime::{
@@ -58,13 +60,22 @@ pub use nanocode_durability::DurableAgentExt;
 pub mod hand {
     use std::{net::SocketAddr, path::PathBuf};
 
+    pub use crate::claude::HandFiles;
     pub use nanocode_tool_runtime::remote::{
-        Hand, HandCapabilities, HandEndpoint, HandEvent, HandPricing, PricedOperation, SocketPolicy,
+        Hand, HandCapabilities, HandEndpoint, HandEvent, HandPricing, PricedOperation,
+        SocketPolicy, local_host_info,
     };
 
     pub fn tools(directory: impl Into<PathBuf>) -> Result<crate::Tools, crate::NanocodeError> {
+        tools_with(directory, HandFiles::Machine)
+    }
+
+    pub fn tools_with(
+        directory: impl Into<PathBuf>,
+        files: HandFiles,
+    ) -> Result<crate::Tools, crate::NanocodeError> {
         let directory = directory.into();
-        crate::claude::hand_tools(directory.clone())?
+        crate::claude::hand_tools_with(directory.clone(), files)?
             .into_builder()
             .add(crate::tools::WorkspaceTools::new(directory))
             .build()
@@ -76,8 +87,17 @@ pub mod hand {
         token: impl Into<String>,
         directory: impl Into<PathBuf>,
     ) -> Result<Hand, crate::NanocodeError> {
+        connect_with(url, token, directory, HandFiles::Machine)
+    }
+
+    pub fn connect_with(
+        url: impl Into<String>,
+        token: impl Into<String>,
+        directory: impl Into<PathBuf>,
+        files: HandFiles,
+    ) -> Result<Hand, crate::NanocodeError> {
         let directory = directory.into();
-        Ok(Hand::connect(url, token, tools(directory.clone())?).directory(directory))
+        Ok(Hand::connect(url, token, tools_with(directory.clone(), files)?).directory(directory))
     }
 
     pub fn listen(
@@ -85,8 +105,20 @@ pub mod hand {
         token: impl Into<String>,
         directory: impl Into<PathBuf>,
     ) -> Result<Hand, crate::NanocodeError> {
+        listen_with(address, token, directory, HandFiles::Machine)
+    }
+
+    pub fn listen_with(
+        address: SocketAddr,
+        token: impl Into<String>,
+        directory: impl Into<PathBuf>,
+        files: HandFiles,
+    ) -> Result<Hand, crate::NanocodeError> {
         let directory = directory.into();
-        Ok(Hand::listen(address, token, tools(directory.clone())?).directory(directory))
+        Ok(
+            Hand::listen(address, token, tools_with(directory.clone(), files)?)
+                .directory(directory),
+        )
     }
 }
 

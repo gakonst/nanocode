@@ -922,6 +922,7 @@ impl<'a, 'o> Parser<'a, 'o> {
     }
 
     /// Expects a property name and a colon; returns the token after the colon.
+    #[inline(always)]
     fn key_colon<const E: u8>(&mut self, tok: Token) -> Result<Token, Fail> {
         let Tok::Str(s) = tok.tok else {
             return fail(Msg::ExpectingPropertyName, tok.start);

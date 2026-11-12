@@ -34,6 +34,12 @@ impl Records {
         self.order.push_back(key.clone());
         self.values.insert(key, value);
     }
+
+    fn forget(&mut self, key: &Key) {
+        if let Some(removed) = self.values.remove(key) {
+            self.used -= key.0.len() + key.1.len() + removed.len();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -76,7 +82,11 @@ impl RecordCache {
         let budget = self.budget;
         self.records.update(|cached| {
             for (key, value) in &records {
-                cached.insert(budget, key.clone(), Arc::clone(value));
+                if value.is_empty() {
+                    cached.forget(key);
+                } else {
+                    cached.insert(budget, key.clone(), Arc::clone(value));
+                }
             }
         });
     }

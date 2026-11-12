@@ -41,7 +41,6 @@ default = ["std"]
 hashlib = [
     "std",
     "parking_lot",
-    "dep:scrypt",
 ]
 inet = ["std"]
 json = [
@@ -125,11 +124,6 @@ version = "0.6.0"
 
 [dependencies.rustpython-wtf8]
 version = "0.6.0"
-
-[dependencies.scrypt]
-version = "0.12"
-optional = true
-default-features = false
 
 [dependencies.siphasher]
 version = "1"

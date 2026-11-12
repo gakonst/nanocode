@@ -12,6 +12,7 @@ mod blake2s;
 mod block;
 mod keccak;
 mod md5;
+mod scrypt;
 mod sha1;
 mod sha256;
 mod sha512;
@@ -316,15 +317,16 @@ pub fn compute_pbkdf2_hmac(
     let mut derived = Vec::with_capacity(blocks * digest_size);
     let mut first_input = Vec::with_capacity(salt.len() + 4);
     first_input.extend_from_slice(salt);
+    let keyed = HmacState::new(name, password)?;
     for block in 1..=blocks {
         first_input.truncate(salt.len());
         first_input.extend_from_slice(&(block as u32).to_be_bytes());
-        let mut hmac = HmacState::new(name, password)?;
+        let mut hmac = keyed.clone();
         hmac.update(&first_input);
         let mut u = hmac.digest();
         let mut accumulator = u.clone();
         for _ in 1..iterations {
-            let mut hmac = HmacState::new(name, password)?;
+            let mut hmac = keyed.clone();
             hmac.update(&u);
             u = hmac.digest();
             for (out, byte) in accumulator.iter_mut().zip(&u) {
@@ -352,10 +354,7 @@ pub fn compute_scrypt(
     p: u32,
     dklen: usize,
 ) -> Option<Vec<u8>> {
-    let params = scrypt::Params::new(log_n, r, p).ok()?;
-    let mut output = vec![0; dklen];
-    scrypt::scrypt(password, salt, &params, &mut output).ok()?;
-    Some(output)
+    scrypt::scrypt(password, salt, log_n, r, p, dklen)
 }
 
 impl HashState {

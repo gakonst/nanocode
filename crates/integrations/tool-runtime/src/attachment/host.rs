@@ -8,16 +8,15 @@ use std::{
 
 use futures_util::{Sink, SinkExt, Stream, StreamExt, future};
 use nanocode_sync::{Atom, Slot};
+use nanocode_websocket::{
+    CloseCode, CloseFrame, Message,
+    server::{ErrorResponse, Request, Response},
+};
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
 use tokio::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     sync::{mpsc, oneshot, watch},
-};
-use tokio_tungstenite::tungstenite::{
-    self, Message,
-    handshake::server::{ErrorResponse, Request, Response},
-    protocol::{CloseFrame, frame::coding::CloseCode},
 };
 
 use super::AttachmentError;
@@ -1116,7 +1115,7 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
     };
     let socket = match tokio::time::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
-        tokio_tungstenite::accept_hdr_async(stream, authenticate),
+        nanocode_websocket::accept_hdr_async(stream, authenticate),
     )
     .await
     .map_err(transport_error)
@@ -1130,14 +1129,16 @@ async fn serve_socket(stream: TcpStream, runners: Runners) {
     };
     let Some(runner) = runner else { return };
     let mut frames = socket
-        .with(|text: String| future::ready(Ok::<_, tungstenite::Error>(Message::text(text))))
+        .with(|text: String| future::ready(Ok::<_, nanocode_websocket::Error>(Message::text(text))))
         .filter_map(|message| {
             future::ready(match message {
                 Ok(Message::Text(text)) => Some(Ok(text.as_str().to_owned())),
-                Ok(Message::Binary(_)) => Some(Err(tungstenite::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "runner sent a binary frame",
-                )))),
+                Ok(Message::Binary(_)) => {
+                    Some(Err(nanocode_websocket::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "runner sent a binary frame",
+                    ))))
+                }
                 Ok(_) => None,
                 Err(error) => Some(Err(error)),
             })
@@ -1308,7 +1309,7 @@ impl Drop for RunnerConnection {
 }
 
 pub(crate) type DialedSocket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+    nanocode_websocket::WebSocketStream<nanocode_websocket::MaybeTlsStream<tokio::net::TcpStream>>;
 
 impl RemoteRunner {
     pub fn connect(
@@ -1323,7 +1324,7 @@ impl RemoteRunner {
         target: super::AttachmentTarget,
         mut initial: Option<(DialedSocket, String)>,
     ) -> Result<RunnerConnection, AttachmentError> {
-        use tungstenite::client::IntoClientRequest;
+        use nanocode_websocket::IntoClientRequest;
         let mut request = target
             .endpoint()
             .as_str()
@@ -1343,7 +1344,7 @@ impl RemoteRunner {
                     Some((socket, first)) => Ok((socket, Some(first))),
                     None => tokio::time::timeout(super::driver::HANDSHAKE_TIMEOUT, async {
                         let connector = super::driver::tls_connector(&request).await?;
-                        tokio_tungstenite::connect_async_tls_with_config(
+                        nanocode_websocket::connect_async_tls_with_config(
                             request.clone(),
                             None,
                             false,
@@ -1353,7 +1354,7 @@ impl RemoteRunner {
                     })
                     .await
                     .map_err(|error| {
-                        tungstenite::Error::Io(std::io::Error::new(
+                        nanocode_websocket::Error::Io(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
                             error,
                         ))
@@ -1363,10 +1364,10 @@ impl RemoteRunner {
                 };
                 match connected {
                     Ok((socket, first)) => {
-                        let mut frames = socket.with(|text: String| future::ready(Ok::<_, tungstenite::Error>(Message::text(text)))).filter_map(|message| future::ready(match message {
+                        let mut frames = socket.with(|text: String| future::ready(Ok::<_, nanocode_websocket::Error>(Message::text(text)))).filter_map(|message| future::ready(match message {
                             Ok(Message::Text(text)) => Some(Ok(text.to_string())),
                             Ok(Message::Close(_)) => None,
-                            Ok(Message::Binary(_)) => Some(Err(tungstenite::Error::Protocol(tungstenite::error::ProtocolError::ResetWithoutClosingHandshake))),
+                            Ok(Message::Binary(_)) => Some(Err(nanocode_websocket::Error::Protocol(nanocode_websocket::ProtocolError::ResetWithoutClosingHandshake))),
                             Ok(_) => None,
                             Err(error) => Some(Err(error)),
                         }));
@@ -1382,7 +1383,7 @@ impl RemoteRunner {
                             return;
                         }
                     }
-                    Err(tungstenite::Error::Http(response))
+                    Err(nanocode_websocket::Error::Http(response))
                         if matches!(response.status().as_u16(), 401 | 403) =>
                     {
                         runner

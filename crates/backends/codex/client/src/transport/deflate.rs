@@ -5,11 +5,9 @@ use std::{
 };
 
 use flate2::{Compression, Decompress, FlushDecompress, Status, write::DeflateEncoder};
+use http::{HeaderMap, header};
+use nanocode_websocket::WebSocketConfig;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_tungstenite::tungstenite::{
-    http::{HeaderMap, header},
-    protocol::WebSocketConfig,
-};
 
 const EXTENSION: &str = "permessage-deflate";
 pub(crate) const OFFER: &str = "permessage-deflate; client_no_context_takeover";
@@ -76,7 +74,7 @@ impl<S> InflateStream<S> {
         Self {
             inner,
             mode: Mode::Handshake,
-            scratch: vec![0; WebSocketConfig::default().read_buffer_size].into_boxed_slice(),
+            scratch: vec![0; WebSocketConfig::default().read_buffer_bytes].into_boxed_slice(),
             input: Vec::new(),
             output: Vec::new(),
             output_start: 0,

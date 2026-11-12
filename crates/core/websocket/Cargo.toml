@@ -1,0 +1,28 @@
+[package]
+name = "nanocode-websocket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RFC 6455 WebSocket client and server over Tokio"
+autotests = false
+autobenches = false
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+base64.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+http.workspace = true
+httparse.workspace = true
+tokio = { workspace = true, features = ["io-util", "net"] }
+tokio-rustls.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

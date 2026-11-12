@@ -3,20 +3,16 @@ use std::{collections::VecDeque, env, future::Future, io, net::SocketAddr, time:
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use http::Uri;
+use nanocode_websocket::{
+    Error, MaybeTlsStream, Result, TlsError, WebSocketStream, client::Request, client::Response,
+    client_async_with_config,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     time::{Instant, sleep_until},
 };
 use tokio_rustls::{TlsConnector, rustls::pki_types::ServerName};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, client_async_with_config,
-    tungstenite::{
-        Error, Result,
-        error::TlsError,
-        handshake::client::{Request, Response},
-    },
-};
 
 use super::deflate::InflateStream;
 

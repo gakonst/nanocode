@@ -33,7 +33,7 @@ nanocode-tls.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util.workspace = true
 tokio-rustls.workspace = true
-tokio-tungstenite.workspace = true
+nanocode-websocket.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 

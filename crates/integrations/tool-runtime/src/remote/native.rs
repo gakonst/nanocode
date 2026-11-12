@@ -18,14 +18,11 @@ use std::{
 };
 
 use nanocode_sync::{Atom, Owned, Signal};
+use nanocode_websocket::{IntoClientRequest, Message, WebSocketStream};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
-};
-use tokio_tungstenite::{
-    WebSocketStream,
-    tungstenite::{self, Message, client::IntoClientRequest},
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -39,9 +36,7 @@ impl SocketPolicy {
     #[must_use]
     pub fn runner() -> Self {
         Self {
-            max_frame_bytes: tungstenite::protocol::WebSocketConfig::default()
-                .max_message_size
-                .unwrap_or(usize::MAX),
+            max_frame_bytes: nanocode_websocket::WebSocketConfig::default().message_bytes_max,
             request_timeout: crate::attachment::HEARTBEAT_INTERVAL * 2,
         }
     }
@@ -182,7 +177,7 @@ impl Liveness {
 const UNRESPONSIVE: &str =
     "remote peer did not answer a WebSocket heartbeat ping within half of request_timeout";
 
-async fn read_live<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
+async fn read_live<S: Stream<Item = Result<Message, nanocode_websocket::Error>> + Unpin>(
     socket: &mut S,
     liveness: &Liveness,
     watchdog: std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
@@ -196,14 +191,14 @@ async fn read_live<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
 
 const READ_BUFFER_BYTES: usize = 16 * 1024;
 
-fn config(policy: SocketPolicy) -> tungstenite::protocol::WebSocketConfig {
-    tungstenite::protocol::WebSocketConfig::default()
-        .read_buffer_size(READ_BUFFER_BYTES)
-        .max_message_size(Some(policy.max_frame_bytes))
-        .max_frame_size(Some(policy.max_frame_bytes))
+fn config(policy: SocketPolicy) -> nanocode_websocket::WebSocketConfig {
+    nanocode_websocket::WebSocketConfig::default()
+        .read_buffer_bytes(READ_BUFFER_BYTES)
+        .message_bytes_max(policy.max_frame_bytes)
+        .frame_bytes_max(policy.max_frame_bytes)
 }
 
-pub(super) type DialedSocket = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
+pub(super) type DialedSocket = WebSocketStream<nanocode_websocket::MaybeTlsStream<TcpStream>>;
 
 pub(super) enum Dial {
     Rejected(CodeModeHostError, Option<u16>),
@@ -342,13 +337,13 @@ pub(super) async fn dial_staged(
                     .connect(name, tcp)
                     .await
                     .map_err(|issue| Dial::Failed(error(format!("TLS with {host}: {issue}"))))?;
-                tokio_tungstenite::MaybeTlsStream::Rustls(stream)
+                nanocode_websocket::MaybeTlsStream::Rustls(stream)
             }
-            None => tokio_tungstenite::MaybeTlsStream::Plain(tcp),
+            None => nanocode_websocket::MaybeTlsStream::Plain(tcp),
         };
         lap(&mut stages.tls);
         let upgraded =
-            tokio_tungstenite::client_async_with_config(request, stream, Some(config(policy)))
+            nanocode_websocket::client_async_with_config(request, stream, Some(config(policy)))
                 .await
                 .map(|(socket, _)| socket)
                 .map_err(rejection)?;
@@ -368,9 +363,9 @@ pub(super) async fn dial_staged(
     Ok((socket, stages))
 }
 
-fn rejection(issue: tungstenite::Error) -> Dial {
+fn rejection(issue: nanocode_websocket::Error) -> Dial {
     match issue {
-        tungstenite::Error::Http(response)
+        nanocode_websocket::Error::Http(response)
             if matches!(response.status().as_u16(), 401 | 403 | 410 | 426) =>
         {
             Dial::Rejected(
@@ -411,53 +406,56 @@ async fn handshake(
     }
     stream.set_nodelay(true).map_err(error)?;
     let refused = AtomicBool::new(false);
-    let authenticate =
-        |request: &tungstenite::handshake::server::Request,
-         mut response: tungstenite::handshake::server::Response| {
-            let header = request
-                .headers()
-                .get(http::header::AUTHORIZATION)
-                .and_then(|h| h.to_str().ok())
-                .and_then(|h| h.strip_prefix("Bearer "));
-            let protocol = request
-                .headers()
-                .get(http::header::SEC_WEBSOCKET_PROTOCOL)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| {
-                    let mut values = value.split(',').map(str::trim);
-                    (values.next() == Some("bearer"))
-                        .then(|| values.next())
-                        .flatten()
-                });
-            if protocol.is_some() {
-                response.headers_mut().insert(
-                    http::header::SEC_WEBSOCKET_PROTOCOL,
-                    http::HeaderValue::from_static("bearer"),
-                );
-            }
-            if header.or(protocol) == Some(bearer) {
-                Ok(response)
-            } else if header.is_none() && protocol.is_some() {
-                refused.store(true, Ordering::Relaxed);
-                Ok(response)
-            } else {
-                let mut rejection = tungstenite::handshake::server::ErrorResponse::new(Some(
-                    "invalid runner credential".into(),
-                ));
-                *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
-                Err(rejection)
-            }
-        };
+    let authenticate = |request: &nanocode_websocket::server::Request,
+                        mut response: nanocode_websocket::server::Response| {
+        let header = request
+            .headers()
+            .get(http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "));
+        let protocol = request
+            .headers()
+            .get(http::header::SEC_WEBSOCKET_PROTOCOL)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| {
+                let mut values = value.split(',').map(str::trim);
+                (values.next() == Some("bearer"))
+                    .then(|| values.next())
+                    .flatten()
+            });
+        if protocol.is_some() {
+            response.headers_mut().insert(
+                http::header::SEC_WEBSOCKET_PROTOCOL,
+                http::HeaderValue::from_static("bearer"),
+            );
+        }
+        if header.or(protocol) == Some(bearer) {
+            Ok(response)
+        } else if header.is_none() && protocol.is_some() {
+            refused.store(true, Ordering::Relaxed);
+            Ok(response)
+        } else {
+            let mut rejection = nanocode_websocket::server::ErrorResponse::new(Some(
+                "invalid runner credential".into(),
+            ));
+            *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
+            Err(rejection)
+        }
+    };
     let mut socket = tokio::time::timeout(
         policy.request_timeout,
-        tokio_tungstenite::accept_hdr_async_with_config(stream, authenticate, Some(config(policy))),
+        nanocode_websocket::accept_hdr_async_with_config(
+            stream,
+            authenticate,
+            Some(config(policy)),
+        ),
     )
     .await
     .map_err(error)?
     .map_err(error)?;
     if refused.load(Ordering::Relaxed) {
-        let close = tungstenite::protocol::CloseFrame {
-            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+        let close = nanocode_websocket::CloseFrame {
+            code: nanocode_websocket::CloseCode::Policy,
             reason: REFUSED_CREDENTIAL.into(),
         };
         let _ = tokio::time::timeout(policy.request_timeout, socket.close(Some(close))).await;
@@ -468,7 +466,7 @@ async fn handshake(
 
 const REFUSED_CREDENTIAL: &str = "invalid runner credential";
 
-async fn read<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
+async fn read<S: Stream<Item = Result<Message, nanocode_websocket::Error>> + Unpin>(
     socket: &mut S,
     liveness: &Liveness,
 ) -> Result<Option<Frame>, CodeModeHostError> {
@@ -478,7 +476,7 @@ async fn read<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
     }
 }
 
-async fn read_text<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
+async fn read_text<S: Stream<Item = Result<Message, nanocode_websocket::Error>> + Unpin>(
     socket: &mut S,
     liveness: &Liveness,
 ) -> Result<Option<String>, CodeModeHostError> {
@@ -509,7 +507,7 @@ async fn read_text<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
     Ok(None)
 }
 
-async fn write<S: Sink<Message, Error = tungstenite::Error> + Unpin>(
+async fn write<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin>(
     socket: &mut S,
     text: String,
     policy: SocketPolicy,
@@ -520,7 +518,7 @@ async fn write<S: Sink<Message, Error = tungstenite::Error> + Unpin>(
         .map_err(error)
 }
 
-async fn write_all<S: Sink<Message, Error = tungstenite::Error> + Unpin>(
+async fn write_all<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin>(
     socket: &mut S,
     frames: Vec<String>,
     policy: SocketPolicy,
@@ -542,7 +540,7 @@ impl Drop for Writer {
         self.0.abort();
     }
 }
-fn writer<S: Sink<Message, Error = tungstenite::Error> + Unpin + Send + 'static>(
+fn writer<S: Sink<Message, Error = nanocode_websocket::Error> + Unpin + Send + 'static>(
     mut sink: S,
     policy: SocketPolicy,
     liveness: Arc<Liveness>,
@@ -565,8 +563,8 @@ fn writer<S: Sink<Message, Error = tungstenite::Error> + Unpin + Send + 'static>
                     }
                     None => {
                         let reason = *reason.get();
-                        let close = reason.map(|reason| tungstenite::protocol::CloseFrame {
-                            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                        let close = reason.map(|reason| nanocode_websocket::CloseFrame {
+                            code: nanocode_websocket::CloseCode::Policy,
                             reason: reason.into(),
                         });
                         tokio::time::timeout(policy.request_timeout, sink.send(Message::Close(close)))

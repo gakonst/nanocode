@@ -19,15 +19,14 @@ use std::{
 };
 
 use nanocode_sync::{Atom, Ordered, Slot};
+use nanocode_websocket::{
+    CloseCode, CloseFrame, Message,
+    server::{ErrorResponse, Request, Response},
+};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
     task::{AbortHandle, JoinHandle, JoinSet},
-};
-use tokio_tungstenite::tungstenite::{
-    self, Message,
-    handshake::server::{ErrorResponse, Request, Response},
-    protocol::{CloseFrame, frame::coding::CloseCode},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -1183,7 +1182,7 @@ fn executor_monitor(
     .abort_handle()
 }
 async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), AttachmentError> {
-    use tungstenite::client::IntoClientRequest;
+    use nanocode_websocket::IntoClientRequest;
     let mut request = target
         .endpoint()
         .as_str()
@@ -1200,12 +1199,14 @@ async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), Attac
         .map_err(error)?;
     let (mut socket, _) = tokio::time::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
-        tokio_tungstenite::connect_async_tls_with_config(request, None, true, connector),
+        nanocode_websocket::connect_async_tls_with_config(request, None, true, connector),
     )
     .await
     .map_err(error)?
     .map_err(|failure| match failure {
-        tungstenite::Error::Http(response) if matches!(response.status().as_u16(), 401 | 403) => {
+        nanocode_websocket::Error::Http(response)
+            if matches!(response.status().as_u16(), 401 | 403) =>
+        {
             AttachmentError::Authentication("runner rejected the bearer credential".into())
         }
         failure => error(failure),
@@ -1216,7 +1217,7 @@ async fn dial(target: &AttachmentTarget) -> Result<(DialedSocket, String), Attac
     Ok((socket, first))
 }
 async fn first_text<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
 ) -> Result<String, AttachmentError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1240,7 +1241,7 @@ fn code_mode_catalog(first: &str) -> bool {
 const UNNAMED_EXECUTOR: &str = "executor";
 const DUPLICATE_EXECUTOR: &str = "another runner already uses this name; pass a different --name";
 async fn incoming_executor(
-    socket: tokio_tungstenite::WebSocketStream<TcpStream>,
+    socket: nanocode_websocket::WebSocketStream<TcpStream>,
     first: String,
     pool: Weak<PoolInner>,
     endpoint: String,
@@ -1506,14 +1507,14 @@ async fn incoming(
     };
     let mut socket = tokio::time::timeout(
         super::driver::HANDSHAKE_TIMEOUT,
-        tokio_tungstenite::accept_hdr_async(stream, authenticate),
+        nanocode_websocket::accept_hdr_async(stream, authenticate),
     )
     .await
     .map_err(error)?
     .map_err(error)?;
     if refused.load(std::sync::atomic::Ordering::Relaxed) {
-        let close = tungstenite::protocol::CloseFrame {
-            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+        let close = nanocode_websocket::CloseFrame {
+            code: nanocode_websocket::CloseCode::Policy,
             reason: "invalid runner credential".into(),
         };
         let _ =
@@ -1529,14 +1530,16 @@ async fn incoming(
         return incoming_executor(socket, first, pool, endpoint, timeout, mode, workspace).await;
     }
     let mut frames = socket
-        .with(|text: String| future::ready(Ok::<_, tungstenite::Error>(Message::text(text))))
+        .with(|text: String| future::ready(Ok::<_, nanocode_websocket::Error>(Message::text(text))))
         .filter_map(|message| {
             future::ready(match message {
                 Ok(Message::Text(text)) => Some(Ok(text.to_string())),
-                Ok(Message::Binary(_)) => Some(Err(tungstenite::Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "runner sent a binary frame",
-                )))),
+                Ok(Message::Binary(_)) => {
+                    Some(Err(nanocode_websocket::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "runner sent a binary frame",
+                    ))))
+                }
                 Ok(_) => None,
                 Err(error) => Some(Err(error)),
             })

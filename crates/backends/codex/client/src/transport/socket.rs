@@ -7,23 +7,15 @@ use std::{
 };
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
+use http::{HeaderValue, header};
 use nanocode_http::layer::retry;
+use nanocode_websocket::{
+    Error as WebSocketError, Frame, IntoClientRequest, MaybeTlsStream, Message, OpCode,
+    ProtocolError, Utf8Bytes, WebSocketStream,
+};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream,
-    tungstenite::{
-        Error as WebSocketError, Message, Utf8Bytes,
-        client::IntoClientRequest,
-        error::ProtocolError,
-        http::{HeaderValue, header},
-        protocol::frame::{
-            Frame,
-            coding::{Data, OpCode},
-        },
-    },
-};
 
 use crate::client::{
     EncodedRequest, OpenAiAuthSnapshot, ResponsesError,
@@ -212,7 +204,7 @@ impl ResponsesSocket {
                 .map_err(|error| deflate_error(&error))?
                 .map_err(|error| deflate_error(&error))?;
             tracing::Span::current().record("request.deflate_bytes", payload.len());
-            let mut frame = Frame::message(payload, OpCode::Data(Data::Text), true);
+            let mut frame = Frame::message(payload, OpCode::Text, true);
             frame.header_mut().rsv1 = true;
             Message::Frame(frame)
         } else {
@@ -462,10 +454,7 @@ fn map_handshake_error(error: WebSocketError) -> ResponsesError {
     }
 }
 
-fn handshake_rejection_detail(
-    body: Option<&[u8]>,
-    headers: &tokio_tungstenite::tungstenite::http::HeaderMap,
-) -> String {
+fn handshake_rejection_detail(body: Option<&[u8]>, headers: &http::HeaderMap) -> String {
     let body = body.map_or_else(String::new, |body| {
         String::from_utf8_lossy(body).into_owned()
     });
@@ -526,10 +515,7 @@ const fn is_transient_websocket(error: &WebSocketError) -> bool {
     )
 }
 
-fn header_string(
-    headers: &tokio_tungstenite::tungstenite::http::HeaderMap,
-    name: &str,
-) -> Option<String> {
+fn header_string(headers: &http::HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())

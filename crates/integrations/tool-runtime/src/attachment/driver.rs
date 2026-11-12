@@ -8,16 +8,12 @@ use std::{
 use nanocode_sync::Atom;
 
 use futures_util::{SinkExt, StreamExt};
+use nanocode_websocket::{
+    CloseCode, CloseFrame, Connector, IntoClientRequest, Message, Utf8Bytes,
+    client_async_tls_with_config,
+};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::{
-    client_async_tls_with_config,
-    tungstenite::{
-        Message, Utf8Bytes,
-        client::IntoClientRequest,
-        protocol::{CloseFrame, frame::coding::CloseCode},
-    },
-};
 use tracing::Instrument as _;
 use url::Url;
 
@@ -33,15 +29,13 @@ pub(crate) const INITIAL_TRANSPORT_BACKOFF: Duration = Duration::from_millis(100
 
 pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(crate) async fn tls_connector<T>(
-    request: &http::Request<T>,
-) -> std::io::Result<Option<tokio_tungstenite::Connector>> {
+pub(crate) async fn tls_connector<T>(request: &http::Request<T>) -> std::io::Result<Connector> {
     if request.uri().scheme_str() != Some("wss") {
-        return Ok(None);
+        return Ok(Connector::Plain);
     }
-    Ok(Some(tokio_tungstenite::Connector::Rustls(
+    Ok(Connector::Rustls(
         nanocode_tls::native_client_config().await?,
-    )))
+    ))
 }
 
 const PONG_TIMEOUT: Duration = Duration::from_secs(10);
@@ -116,11 +110,11 @@ pub(crate) async fn run(
                         stage = "attachment.socket.trust",
                         elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
                         "attachment TLS trust ready");
-                    let host = request.uri().host().ok_or(tokio_tungstenite::tungstenite::Error::Url(
-                        tokio_tungstenite::tungstenite::error::UrlError::NoHostName,
+                    let host = request.uri().host().ok_or(nanocode_websocket::Error::Url(
+                        nanocode_websocket::UrlError::NoHostName,
                     ))?;
                     let host = host.trim_start_matches('[').trim_end_matches(']');
-                    let port = request.uri().port_u16().unwrap_or(if connector.is_some() { 443 } else { 80 });
+                    let port = request.uri().port_u16().unwrap_or(if matches!(connector, Connector::Rustls(_)) { 443 } else { 80 });
                     let dns_started = Instant::now();
                     let addresses: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
                     tracing::info!(target: "nanocode_code_mode::attachment",
@@ -156,7 +150,7 @@ pub(crate) async fn run(
                     "attachment WebSocket connected");
                 socket
             }
-            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
+            Ok(Err(nanocode_websocket::Error::Http(response)))
                 if matches!(response.status().as_u16(), 401 | 403) =>
             {
                 connection_span.in_scope(|| tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.rejected", reason_code = "authentication_rejected", pending_calls = active.len(), "attachment connection rejected"));
@@ -164,7 +158,7 @@ pub(crate) async fn run(
                     "endpoint rejected the bearer credential".into(),
                 ));
             }
-            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
+            Ok(Err(nanocode_websocket::Error::Http(response)))
                 if response.status().as_u16() == 410 =>
             {
                 connection_span.in_scope(|| tracing::warn!(target: "nanocode_code_mode::attachment", stage = "attachment.socket.rejected", reason_code = "attachment_revoked", pending_calls = active.len(), "attachment permanently revoked"));
@@ -172,7 +166,7 @@ pub(crate) async fn run(
             }
             other => {
                 let (failure, http_status) = match &other {
-                    Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response))) => {
+                    Ok(Err(nanocode_websocket::Error::Http(response))) => {
                         let code = response.status().as_u16();
                         let retry_after = retry_after(response.headers());
                         let failure = if (500..=599).contains(&code) {
@@ -888,7 +882,7 @@ struct ConnectionContext<'a> {
 }
 
 async fn connection<S>(
-    mut socket: tokio_tungstenite::WebSocketStream<S>,
+    mut socket: nanocode_websocket::WebSocketStream<S>,
     context: ConnectionContext<'_>,
     commands: &mut mpsc::Receiver<Command>,
 ) -> ConnectionEnd
@@ -1026,7 +1020,7 @@ where
                 if ping.is_some() { break ConnectionEnd::HeartbeatTimeout; }
                 let nonce = uuid::Uuid::new_v4().as_bytes().to_vec();
                 let started = Instant::now();
-                if let Err(error) = socket.send(Message::Ping(nonce.clone().into())).await.map_err(|error| AttachmentError::Transport(error.to_string().into())) {
+                if let Err(error) = socket.send(Message::Ping(nonce.clone())).await.map_err(|error| AttachmentError::Transport(error.to_string().into())) {
                     break if drain.detaching() { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
                 }
                 tracing::info!(target: "nanocode_code_mode::attachment", stage = "attachment.heartbeat_ping", pending_calls = journal.values().filter(|call| call.running()).count(), pending_receipts = journal.values().filter(|call| call.receipt().is_some()).count(), "attachment heartbeat sent");
@@ -1055,7 +1049,7 @@ where
             },
             incoming = socket.next() => {
                 if let Some(Ok(Message::Pong(payload))) = &incoming {
-                    if ping.as_ref().is_some_and(|(nonce, _)| nonce.as_slice() == payload.as_ref())
+                    if ping.as_ref().is_some_and(|(nonce, _)| nonce.as_slice() == payload.as_slice())
                         && let Some((_, started)) = ping.take()
                     {
                         let roundtrip_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1205,7 +1199,7 @@ where
     end
 }
 
-async fn close_heartbeat_timeout<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>)
+async fn close_heartbeat_timeout<S>(socket: &mut nanocode_websocket::WebSocketStream<S>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -1221,7 +1215,7 @@ where
 }
 
 async fn next_handshake_frame<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
     commands: &mut mpsc::Receiver<Command>,
 ) -> Result<EndpointFrame, ConnectionEnd>
 where
@@ -1240,8 +1234,8 @@ where
 }
 
 async fn incoming_frame<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
-    incoming: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
+    incoming: Option<Result<Message, nanocode_websocket::Error>>,
 ) -> Result<Option<EndpointFrame>, ConnectionEnd>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1279,7 +1273,7 @@ where
 }
 
 async fn next_frame<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
 ) -> Result<EndpointFrame, ConnectionEnd>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1294,7 +1288,7 @@ where
 }
 
 async fn reject<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
     reason: impl Into<Box<str>>,
 ) -> ConnectionEnd
 where
@@ -1305,7 +1299,7 @@ where
     ConnectionEnd::Rejected(reason)
 }
 
-async fn policy_close<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>, reason: &str)
+async fn policy_close<S>(socket: &mut nanocode_websocket::WebSocketStream<S>, reason: &str)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -1323,7 +1317,7 @@ where
 }
 
 async fn send_diagnostics<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
     call_id: &str,
     clock: &Arc<Atom<CallClock>>,
     prepared: bool,
@@ -1382,7 +1376,7 @@ where
 }
 
 async fn send_retained<S>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
     call: &RetainedCall,
     receipt: &Utf8Bytes,
     replayed: bool,
@@ -1453,7 +1447,7 @@ fn encode_result(
 }
 
 async fn send<S, T: serde::Serialize>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
     frame: &T,
 ) -> Result<(), AttachmentError>
 where
@@ -1468,7 +1462,7 @@ where
 }
 
 async fn feed<S, T: serde::Serialize>(
-    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+    socket: &mut nanocode_websocket::WebSocketStream<S>,
     frame: &T,
 ) -> Result<(), AttachmentError>
 where
@@ -1564,27 +1558,44 @@ async fn accept_runner(
     events: &mpsc::Sender<AttachmentEvent>,
 ) -> Result<
     (
-        tokio_tungstenite::WebSocketStream<
-            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        nanocode_websocket::WebSocketStream<
+            nanocode_websocket::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         http::Response<Option<Vec<u8>>>,
     ),
-    tokio_tungstenite::tungstenite::Error,
+    nanocode_websocket::Error,
 > {
     loop {
         let (stream, _) = listener.accept().await?;
         stream.set_nodelay(true)?;
         let authenticate =
-            |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-             mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                let header = request.headers().get(http::header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-                let protocol = request.headers().get(http::header::SEC_WEBSOCKET_PROTOCOL).and_then(|value| value.to_str().ok()).and_then(|value| {
-                    let mut values = value.split(',').map(str::trim);
-                    if values.next() == Some("bearer") { values.next() } else { None }
-                });
-                if header == Some(authorization) || protocol.is_some_and(|token| authorization.strip_prefix("Bearer ") == Some(token)) {
+            |request: &nanocode_websocket::server::Request,
+             mut response: nanocode_websocket::server::Response| {
+                let header = request
+                    .headers()
+                    .get(http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok());
+                let protocol = request
+                    .headers()
+                    .get(http::header::SEC_WEBSOCKET_PROTOCOL)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| {
+                        let mut values = value.split(',').map(str::trim);
+                        if values.next() == Some("bearer") {
+                            values.next()
+                        } else {
+                            None
+                        }
+                    });
+                if header == Some(authorization)
+                    || protocol
+                        .is_some_and(|token| authorization.strip_prefix("Bearer ") == Some(token))
+                {
                     if protocol.is_some() {
-                        response.headers_mut().insert(http::header::SEC_WEBSOCKET_PROTOCOL, http::HeaderValue::from_static("bearer"));
+                        response.headers_mut().insert(
+                            http::header::SEC_WEBSOCKET_PROTOCOL,
+                            http::HeaderValue::from_static("bearer"),
+                        );
                     }
                     Ok(response)
                 } else {
@@ -1595,18 +1606,17 @@ async fn accept_runner(
                             delay_ms: 0,
                         },
                     );
-                    let mut rejection =
-                        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(
-                            Some("invalid runner credential".into()),
-                        );
+                    let mut rejection = nanocode_websocket::server::ErrorResponse::new(Some(
+                        "invalid runner credential".into(),
+                    ));
                     *rejection.status_mut() = http::StatusCode::UNAUTHORIZED;
                     Err(rejection)
                 }
             };
         if let Ok(Ok(socket)) = tokio::time::timeout(
             HANDSHAKE_TIMEOUT,
-            tokio_tungstenite::accept_hdr_async(
-                tokio_tungstenite::MaybeTlsStream::Plain(stream),
+            nanocode_websocket::accept_hdr_async(
+                nanocode_websocket::MaybeTlsStream::Plain(stream),
                 authenticate,
             ),
         )

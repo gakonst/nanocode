@@ -2809,6 +2809,7 @@ dependencies = [
  "nanocode-sync",
  "nanocode-tls",
  "nanocode-types",
+ "nanocode-websocket",
  "nanocode-zstd",
  "reqwest",
  "serde",
@@ -2816,7 +2817,6 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
- "tokio-tungstenite",
  "tracing",
  "url",
  "uuid",
@@ -3397,11 +3397,11 @@ dependencies = [
  "nanocode-tool-host",
  "nanocode-tool-provider",
  "nanocode-tools",
+ "nanocode-websocket",
  "serde",
  "serde_json",
  "tokio",
  "tokio-rustls",
- "tokio-tungstenite",
  "tokio-util",
  "tracing",
  "url",
@@ -3463,6 +3463,19 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+]
+
+[[package]]
+name = "nanocode-websocket"
+version = "0.7.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "getrandom 0.4.3",
+ "http",
+ "httparse",
+ "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]
@@ -5694,21 +5707,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-tungstenite"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
-dependencies = [
- "futures-util",
- "log",
- "rustls",
- "rustls-pki-types",
- "tokio",
- "tokio-rustls",
- "tungstenite",
-]
-
-[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5896,24 +5894,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "tungstenite"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
-dependencies = [
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "rand 0.10.2",
- "rustls",
- "rustls-pki-types",
- "sha1",
- "thiserror",
-]
 
 [[package]]
 name = "twox-hash"

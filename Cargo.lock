@@ -3412,6 +3412,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "httparse",
+ "nanocode-digest",
  "tokio",
  "tokio-rustls",
 ]

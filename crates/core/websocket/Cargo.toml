@@ -16,6 +16,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
 httparse.workspace = true
+nanocode-digest.workspace = true
 tokio = { workspace = true, features = ["io-util", "net"] }
 tokio-rustls.workspace = true
 

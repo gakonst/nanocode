@@ -6,7 +6,6 @@ mod frame;
 mod handshake;
 mod message;
 mod protocol;
-mod sha1;
 mod stream;
 
 pub use connect::{

@@ -5,10 +5,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version}
 use httparse::Status;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
-use crate::{
-    error::{Error, ProtocolError, Result, SubProtocolError, UrlError},
-    sha1::sha1,
-};
+use crate::error::{Error, ProtocolError, Result, SubProtocolError, UrlError};
 
 const ACCEPT_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const HEADERS_MAX: usize = 124;
@@ -145,7 +142,7 @@ pub(crate) fn derive_accept_key(key: &[u8]) -> String {
     let mut input = Vec::with_capacity(key.len() + ACCEPT_GUID.len());
     input.extend_from_slice(key);
     input.extend_from_slice(ACCEPT_GUID);
-    STANDARD.encode(sha1(&input))
+    STANDARD.encode(nanocode_digest::Sha1::digest(&input))
 }
 
 const fn version_text(version: Version) -> Result<&'static str> {

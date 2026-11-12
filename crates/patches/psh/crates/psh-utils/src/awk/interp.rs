@@ -428,6 +428,51 @@ impl<'c, 'v> Interp<'c, 'v> {
         self.nf = self.fields.len();
     }
 
+    fn field_at(&self, i: usize) -> Option<Option<(usize, usize)>> {
+        if self.fields_ok || i > 8 || matches!(self.rs_mode, Rs::Paragraph) {
+            return None;
+        }
+        let rec = &self.rec[..];
+        match &*self.record_fs {
+            Fs::Space => {
+                let blank = |b: u8| b == b' ' || b == b'\t' || b == b'\n';
+                let mut pos = 0;
+                for k in 1..=i {
+                    while pos < rec.len() && blank(rec[pos]) {
+                        pos += 1;
+                    }
+                    if pos == rec.len() {
+                        return Some(None);
+                    }
+                    let start = pos;
+                    while pos < rec.len() && !blank(rec[pos]) {
+                        pos += 1;
+                    }
+                    if k == i {
+                        return Some(Some((start, pos)));
+                    }
+                }
+                None
+            }
+            Fs::Char(c) if c.len() == 1 => {
+                if rec.is_empty() {
+                    return Some(None);
+                }
+                let mut start = 0;
+                for k in 1..=i {
+                    match rec[start..].iter().position(|&b| b == c[0]) {
+                        Some(n) if k == i => return Some(Some((start, start + n))),
+                        Some(n) => start += n + 1,
+                        None if k == i => return Some(Some((start, rec.len()))),
+                        None => return Some(None),
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// The value of a field that is still a place in the line (the line itself when
     /// the field is all of it).
     fn field_value(&mut self, from: usize, to: usize) -> Value {
@@ -443,6 +488,12 @@ impl<'c, 'v> Interp<'c, 'v> {
     fn field_text(&mut self, i: usize, out: &mut Vec<u8>) {
         if i == 0 {
             return out.extend_from_slice(&self.rec);
+        }
+        if let Some(at) = self.field_at(i) {
+            if let Some((from, to)) = at {
+                out.extend_from_slice(&self.rec[from..to]);
+            }
+            return;
         }
         self.ensure_fields();
         match self.fields.get(i - 1) {
@@ -474,6 +525,9 @@ impl<'c, 'v> Interp<'c, 'v> {
         if i == 0 {
             return parse_prefix(&self.rec);
         }
+        if let Some(at) = self.field_at(i) {
+            return at.map_or(0.0, |(from, to)| parse_prefix(&self.rec[from..to]));
+        }
         self.ensure_fields();
         match self.fields.get(i - 1) {
             None => 0.0,
@@ -502,6 +556,12 @@ impl<'c, 'v> Interp<'c, 'v> {
                 Value::Str(line)
             } else {
                 Value::StrNum(line)
+            });
+        }
+        if let Some(at) = self.field_at(i) {
+            return Ok(match at {
+                None => Value::Str(s(b"")),
+                Some((from, to)) => self.field_value(from, to),
             });
         }
         self.ensure_fields();
@@ -767,6 +827,13 @@ impl<'c, 'v> Interp<'c, 'v> {
     /// Runs a block (BEGIN, END, a pattern, an action). A pattern leaves its value on
     /// the stack.
     pub async fn exec(&mut self, id: CodeId) -> R<()> {
+        match self.exec_now(id) {
+            Ok(r) => r,
+            Err((depth, stack_base, next)) => self.exec_wait(depth, stack_base, next).await,
+        }
+    }
+
+    fn exec_now(&mut self, id: CodeId) -> Result<R<()>, (usize, usize, Step)> {
         let depth = self.frames.len();
         let stack_base = self.stack.len();
         self.frames.push(Frame {
@@ -777,12 +844,16 @@ impl<'c, 'v> Interp<'c, 'v> {
             for_in_base: self.for_in.len(),
         });
         let prog = self.prog.clone();
+        match self.step(&prog, depth) {
+            Ok(Step::Done) => Ok(Ok(())),
+            Ok(next) => Err((depth, stack_base, next)),
+            Err(f) => Ok(self.unwind(depth, stack_base, f)),
+        }
+    }
+
+    async fn exec_wait(&mut self, depth: usize, stack_base: usize, mut next: Step) -> R<()> {
+        let prog = self.prog.clone();
         let r = loop {
-            let next = match self.step(&prog, depth) {
-                Ok(Step::Done) => break Ok(()),
-                Ok(next) => next,
-                Err(f) => break Err(f),
-            };
             let waited = match next {
                 Step::Check => {
                     self.ctx.check().await;
@@ -794,14 +865,24 @@ impl<'c, 'v> Interp<'c, 'v> {
             if let Err(f) = waited {
                 break Err(f);
             }
+            next = match self.step(&prog, depth) {
+                Ok(Step::Done) => break Ok(()),
+                Ok(next) => next,
+                Err(f) => break Err(f),
+            };
         };
-        if r.is_err() {
-            // Unwind what the error left: frames, locals, loop snapshots.
-            self.frames.truncate(depth);
-            self.stack.truncate(stack_base);
-            self.for_in.clear();
+        match r {
+            Err(f) => self.unwind(depth, stack_base, f),
+            ok => ok,
         }
-        r
+    }
+
+    fn unwind(&mut self, depth: usize, stack_base: usize, f: Flow) -> R<()> {
+        // Unwind what the error left: frames, locals, loop snapshots.
+        self.frames.truncate(depth);
+        self.stack.truncate(stack_base);
+        self.for_in.clear();
+        Err(f)
     }
 
     async fn wait(&mut self, prog: &Program) -> R<()> {
@@ -1733,7 +1814,12 @@ impl<'c, 'v> Interp<'c, 'v> {
                 let matched = match action.pattern.len() {
                     0 => true,
                     1 => {
-                        self.exec(CodeId::Pattern(i, 0)).await?;
+                        match self.exec_now(CodeId::Pattern(i, 0)) {
+                            Ok(r) => r?,
+                            Err((depth, stack_base, next)) => {
+                                self.exec_wait(depth, stack_base, next).await?
+                            }
+                        }
                         self.pop().truth()
                     }
                     _ => {
@@ -1759,7 +1845,11 @@ impl<'c, 'v> Interp<'c, 'v> {
                     }
                     continue;
                 }
-                match self.exec(CodeId::Action(i)).await {
+                let r = match self.exec_now(CodeId::Action(i)) {
+                    Ok(r) => r,
+                    Err((depth, stack_base, next)) => self.exec_wait(depth, stack_base, next).await,
+                };
+                match r {
                     Ok(()) => {}
                     Err(Flow::Next) => continue 'records,
                     Err(Flow::Nextfile) => {

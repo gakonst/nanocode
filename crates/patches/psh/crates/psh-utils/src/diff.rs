@@ -72,7 +72,7 @@ struct Opts {
     recursive: bool,
     new_file: bool,
     exclude: Vec<globset::GlobMatcher>,
-    ignore_re: Vec<regex::bytes::Regex>,
+    ignore_re: Vec<psh_pattern::bytes::Regex>,
     icase: bool,
     all_space: bool,
     space_change: bool,
@@ -81,7 +81,7 @@ struct Opts {
     text: bool,
     labels: Vec<Vec<u8>>,
     color: bool,
-    function_re: Option<regex::bytes::Regex>,
+    function_re: Option<psh_pattern::bytes::Regex>,
     /// The options as written, for the `diff -r a/x b/x` lines.
     header_opts: Vec<u8>,
 }
@@ -120,9 +120,9 @@ fn context_arg(v: Option<&[u8]>) -> Option<usize> {
     }
 }
 
-fn compile_bre(pat: &[u8]) -> Option<regex::bytes::Regex> {
+fn compile_bre(pat: &[u8]) -> Option<psh_pattern::bytes::Regex> {
     let t = crate::search::posix::for_lines(pat, false).ok()?;
-    regex::bytes::Regex::new(&t.pattern?).ok()
+    psh_pattern::bytes::Regex::new(&t.pattern?).ok()
 }
 
 async fn options(ctx: &mut UtilCtx<'_>, p: &Parsed, argv: &[Vec<u8>]) -> Result<Opts, i32> {

@@ -5,10 +5,7 @@
 //! Where git's global excludes file is, found from the shell's environment and file
 //! system rather than the process's (D1132).
 
-use std::sync::OnceLock;
-
-use regex_automata::meta::Regex;
-use regex_automata::util::syntax;
+use psh_pattern::bytes::Regex;
 
 use super::walk::{WalkHost, join};
 
@@ -63,17 +60,8 @@ fn home_dir(host: &dyn WalkHost) -> Option<Vec<u8>> {
 /// git's `core.excludesfile` from the raw contents of a config file. Like `ignore`, a
 /// lazy line match rather than an INI parser.
 fn parse_excludes_file(data: &[u8], home: Option<&[u8]>) -> Option<Vec<u8>> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::builder()
-            .configure(Regex::config().utf8_empty(false))
-            .syntax(syntax::Config::new().utf8(false))
-            .build(r#"(?im-u)^\s*excludesfile\s*=\s*"?\s*(\S+?)\s*"?\s*$"#)
-            .unwrap()
-    });
-    let mut caps = re.create_captures();
-    re.captures(data, &mut caps);
-    let span = caps.get_group(1)?;
+    let re = Regex::new(r#"(?im-u)^\s*excludesfile\s*=\s*"?\s*(\S+?)\s*"?\s*$"#).unwrap();
+    let span = re.captures(data)?.get(1)?.range();
     let candidate = std::str::from_utf8(&data[span]).ok()?;
     // `~` anywhere is replaced by the home directory, as `ignore` does.
     Some(match home {

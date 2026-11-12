@@ -3,7 +3,7 @@
 use std::collections::{BinaryHeap, HashMap};
 use std::io::Write;
 
-use regex::bytes::{Regex, RegexBuilder};
+use psh_pattern::bytes::{Regex, RegexBuilder};
 
 use super::cmd::{quote_path, shorten};
 use super::diff::{DiffOpts, Printer, detect_renames, trees};
@@ -433,7 +433,7 @@ pub fn describe(git: &Git<'_>, io: &mut Io<'_>, args: &[String]) -> Res<i32> {
 /// A pattern of grep or log as a regex: POSIX basic or extended, or a fixed string.
 pub fn pattern(text: &str, extended: bool, fixed: bool, ignore_case: bool) -> Res<Regex> {
     let source = if fixed {
-        regex::escape(text)
+        psh_pattern::escape(text)
     } else {
         for_lines(text.as_bytes(), extended)
             .ok()

@@ -2,11 +2,7 @@
 // with the psh patches marked `psh:` (D1138):
 // Copyright (c) 2017-present The fd developers. Licensed under the MIT License (see NOTICE).
 
-use std::sync::OnceLock;
-
-use regex::Regex;
-
-static SIZE_CAPTURES: OnceLock<Regex> = OnceLock::new();
+use psh_pattern::Regex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SizeFilter {
@@ -35,8 +31,7 @@ impl SizeFilter {
     }
 
     fn parse_opt(s: &str) -> Option<Self> {
-        let pattern =
-            SIZE_CAPTURES.get_or_init(|| Regex::new(r"(?i)^([+-]?)(\d+)(b|[kmgt]i?b?)$").unwrap());
+        let pattern = Regex::new(r"(?i)^([+-]?)(\d+)(b|[kmgt]i?b?)$").unwrap();
         if !pattern.is_match(s) {
             return None;
         }

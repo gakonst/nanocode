@@ -99,28 +99,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "grep-matcher"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9417543f4870fc8f1c8e1af870afae2431007626d9e703fce6471c468d33847"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "grep-regex"
-version = "0.1.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce0c256c3ad82bcc07b812c15a45ec1d398122e8e15124f96695234db7112ef"
-dependencies = [
- "bstr",
- "grep-matcher",
- "log",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "ignore"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -216,6 +194,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "psh-pattern"
+version = "0.0.0"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "psh-regex"
 version = "0.0.0"
 
@@ -231,16 +216,12 @@ dependencies = [
  "encoding_rs",
  "foldhash",
  "globset",
- "grep-matcher",
- "grep-regex",
  "ignore",
  "memchr",
  "psh-classify",
  "psh-engine",
+ "psh-pattern",
  "psh-regex",
- "regex",
- "regex-automata",
- "regex-syntax",
 ]
 
 [[package]]
@@ -270,18 +251,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "regex"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
 ]
 
 [[package]]

@@ -27,7 +27,7 @@ mod tests {
     }
 
     fn matches(p: &str, ere: bool, text: &str) -> Option<(usize, usize)> {
-        let re = regex::bytes::Regex::new(&rs(p, ere)).unwrap();
+        let re = psh_pattern::bytes::Regex::new(&rs(p, ere)).unwrap();
         re.find(text.as_bytes()).map(|m| (m.start(), m.end()))
     }
 
@@ -128,7 +128,7 @@ mod tests {
             },
         )
         .unwrap();
-        let re = regex::bytes::Regex::new(&t.pattern.unwrap()).unwrap();
+        let re = psh_pattern::bytes::Regex::new(&t.pattern.unwrap()).unwrap();
         assert_eq!(re.find(b"a\xfe\xfd\xff").map(|m| m.range()), Some(1..4));
     }
 
@@ -189,7 +189,7 @@ mod tests {
                 continue;
             }
             let Some(p) = t.pattern else { continue };
-            let re = match regex::bytes::RegexBuilder::new(&p)
+            let re = match psh_pattern::bytes::RegexBuilder::new(&p)
                 .case_insensitive(opts.icase)
                 .size_limit(1 << 26)
                 .build()

@@ -135,7 +135,7 @@ impl SearchResult {
 /// The pattern matcher used by a search worker.
 #[derive(Clone, Debug)]
 pub(crate) enum PatternMatcher {
-    RustRegex(grep_regex::RegexMatcher),
+    RustRegex(crate::search::matcher::RegexMatcher),
 }
 
 /// The printer used by a search worker.

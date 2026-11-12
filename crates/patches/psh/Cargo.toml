@@ -17,6 +17,7 @@ psh-classify = { path = "crates/psh-classify" }
 psh-os = { path = "crates/psh-os" }
 psh-utils = { path = "crates/psh-utils" }
 psh-regex = { path = "crates/psh-regex" }
+psh-pattern = { path = "crates/psh-pattern" }
 
 # Every crate opts in with `[lints] workspace = true`. `unsafe` is forbidden outside the
 # OS host crates (AGENTS.md); psh-os declares its own lint table when it lands.

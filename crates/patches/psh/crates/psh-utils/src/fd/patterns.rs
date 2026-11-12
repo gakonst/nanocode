@@ -6,7 +6,7 @@
 // bstr's substring search stands in for memchr's.
 use bstr::ByteSlice;
 use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
-use regex::bytes::{RegexSet, RegexSetBuilder};
+use psh_pattern::bytes::{RegexSet, RegexSetBuilder};
 
 use self::regex_helper::pattern_matches_strings_with_leading_dot;
 use crate::search::walk::to_path;
@@ -18,7 +18,7 @@ pub trait Matcher {
     fn matches_path(&self, path: &OsStr) -> bool;
 }
 
-pub type Patterns = Box<dyn Matcher + Send + Sync>;
+pub type Patterns = Box<dyn Matcher + Send>;
 
 #[derive(Eq, PartialEq, Copy, Clone)]
 pub enum PatternType {
@@ -92,14 +92,14 @@ pub fn build_patterns(
             // TODO: is there a better way we could handle case insensitive fixed strings?
             if typ == PatternType::Fixed {
                 for pattern in patterns.iter_mut() {
-                    *pattern = regex::escape(pattern);
+                    *pattern = psh_pattern::escape(pattern);
                 }
             } else if typ == PatternType::Exact {
                 // Would using eq_ignore_ascii case be good enough?
                 for pattern in patterns.iter_mut() {
                     // Anchor the escaped pattern so the full filename (or path) must match exactly.
                     // Literal. No substring matching.
-                    *pattern = format!("^{}$", regex::escape(pattern));
+                    *pattern = format!("^{}$", psh_pattern::escape(pattern));
                 }
             }
             Ok(Box::new(build_regex_matcher(patterns, ignore_case)?))
@@ -185,67 +185,26 @@ fn empty_matches_all() {
 
 // psh: src/regex_helper.rs
 mod regex_helper {
-    use regex_syntax::ParserBuilder;
-    use regex_syntax::hir::Hir;
+    use psh_pattern::syntax::{HirKind, Look, Options, ParseOptions};
 
     /// Determine if a regex pattern contains a literal uppercase character.
     pub fn pattern_has_uppercase_char(pattern: &str) -> bool {
         // The HIR includes case-folded alternatives introduced by inline flags.
         // Smart case must consider the original literals, before case folding.
-        regex_syntax::ast::parse::Parser::new()
-            .parse(pattern)
-            .map(|ast| regex_syntax::ast::visit(&ast, UppercaseVisitor(false)).unwrap_or(false))
+        psh_pattern::syntax::parse(pattern, ParseOptions::default())
+            .map(|ast| ast.literal_chars().iter().any(|c| c.is_uppercase()))
             .unwrap_or(false)
-    }
-
-    struct UppercaseVisitor(bool);
-
-    impl regex_syntax::ast::Visitor for UppercaseVisitor {
-        type Output = bool;
-        type Err = std::convert::Infallible;
-
-        fn finish(self) -> Result<bool, Self::Err> {
-            Ok(self.0)
-        }
-
-        fn visit_pre(&mut self, ast: &regex_syntax::ast::Ast) -> Result<(), Self::Err> {
-            if let regex_syntax::ast::Ast::Literal(literal) = ast {
-                self.0 |= literal.c.is_uppercase();
-            }
-            Ok(())
-        }
-
-        fn visit_class_set_item_pre(
-            &mut self,
-            item: &regex_syntax::ast::ClassSetItem,
-        ) -> Result<(), Self::Err> {
-            use regex_syntax::ast::ClassSetItem;
-
-            self.0 |= match item {
-                ClassSetItem::Literal(literal) => literal.c.is_uppercase(),
-                ClassSetItem::Range(range) => {
-                    range.start.c.is_uppercase() || range.end.c.is_uppercase()
-                }
-                _ => false,
-            };
-            Ok(())
-        }
     }
 
     /// Determine if a regex pattern only matches strings starting with a literal dot (hidden files)
     pub fn pattern_matches_strings_with_leading_dot(pattern: &str) -> bool {
-        let mut parser = ParserBuilder::new().utf8(false).build();
-
-        parser
-            .parse(pattern)
+        psh_pattern::syntax::hir(pattern, &Options::default(), false)
             .map(|hir| hir_matches_strings_with_leading_dot(&hir))
             .unwrap_or(false)
     }
 
     /// See above.
-    fn hir_matches_strings_with_leading_dot(hir: &Hir) -> bool {
-        use regex_syntax::hir::*;
-
+    fn hir_matches_strings_with_leading_dot(hir: &psh_pattern::syntax::Hir) -> bool {
         // Note: this only really detects the simplest case where a regex starts with
         // "^\\.", i.e. a start text anchor and a literal dot character. There are a lot
         // of other patterns that ONLY match hidden files, e.g. ^(\\.foo|\\.bar) which are
@@ -263,7 +222,7 @@ mod regex_helper {
 
                 if let Some(hir) = hirs.next() {
                     match hir.kind() {
-                        HirKind::Literal(Literal(bytes)) => bytes.starts_with(b"."),
+                        HirKind::Literal(bytes) => bytes.starts_with(b"."),
                         _ => false,
                     }
                 } else {

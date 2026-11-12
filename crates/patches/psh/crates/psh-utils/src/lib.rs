@@ -74,7 +74,6 @@ mod lines;
 mod matcher;
 mod patch;
 mod printer;
-mod regex_matcher;
 mod searcher;
 mod small;
 mod tar;

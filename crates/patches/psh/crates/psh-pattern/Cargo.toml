@@ -1,0 +1,15 @@
+[package]
+name = "psh-pattern"
+description = "psh's own Rust-syntax regular expressions: the syntax, matching and errors of the regex crate (ARCH.md \"psh-utils\")"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+memchr = { version = "2.8.3", default-features = false, features = ["alloc"] }
+
+[lints]
+workspace = true
+

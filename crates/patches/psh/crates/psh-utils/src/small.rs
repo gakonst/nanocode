@@ -255,7 +255,7 @@ fn matched(s: &[u8], pattern: &[u8]) -> Result<Vec<u8>, ExprError> {
         .ok()
         .and_then(|t| t.pattern)
         .ok_or_else(|| ExprError::Other("Invalid regular expression".to_string()))?;
-    let regex = regex::bytes::Regex::new(&format!("^(?:{source})"))
+    let regex = psh_pattern::bytes::Regex::new(&format!("^(?:{source})"))
         .map_err(|_| ExprError::Other("Invalid regular expression".to_string()))?;
     let groups = regex.captures_len() > 1;
     match regex.captures(s) {

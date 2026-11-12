@@ -3,6 +3,7 @@
 //! seam with its native (`ignore::Walk`) and virtual (`SyncCtx` file system) halves.
 
 mod gitconfig;
+pub mod matcher;
 pub mod posix;
 mod vwalk;
 pub mod walk;

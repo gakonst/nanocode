@@ -12,12 +12,13 @@
 
 use std::fmt::Write as _;
 
-use grep_regex::{RegexMatcher, RegexMatcherBuilder};
+use psh_pattern::bytes::{Regex, RegexBuilder};
+use psh_pattern::matcher::RegexMatcherBuilder;
 use psh_regex::{ExecOptions, Options, Regex as Posix};
-use regex::bytes::{Regex, RegexBuilder};
 
 use super::Syntax;
 use crate::matcher::{Match, Matcher, NoCaptures};
+use crate::search::matcher::RegexMatcher;
 
 /// How patterns match (the options that change the matchers).
 #[derive(Clone, Copy, Debug)]
@@ -270,7 +271,7 @@ fn fast_matcher(rust: &[&str], o: MatchOptions) -> Option<RegexMatcher> {
             b.crlf(true).line_terminator(Some(b'\n'));
         }
     }
-    b.build_many(rust).ok()
+    b.build_many(rust).ok().map(RegexMatcher::new)
 }
 
 /// The patterns for spans: one Rust regex where leftmost-first is leftmost-longest,
@@ -352,12 +353,12 @@ fn rust_regex(r: &str, o: MatchOptions) -> Option<Regex> {
 /// A fixed string as Rust regex syntax (bytes that are not UTF-8 as `\xNN`).
 fn escape_literal(p: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(p) {
-        return regex_syntax::escape(s);
+        return psh_pattern::escape(s);
     }
     let mut out = String::from("(?-u:");
     for &b in p {
         if b.is_ascii() {
-            out.push_str(&regex_syntax::escape(&(b as char).to_string()));
+            out.push_str(&psh_pattern::escape(&(b as char).to_string()));
         } else {
             let _ = write!(out, "\\x{b:02X}");
         }

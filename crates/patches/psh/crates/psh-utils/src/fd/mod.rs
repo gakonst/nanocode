@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 
 use psh_engine::host::{FileKind, OpenOptions};
 use psh_engine::util::{BlockingOptions, UtilCtx};
-use regex::bytes::RegexSetBuilder;
+use psh_pattern::bytes::RegexSetBuilder;
 
 pub use cli::SPEC;
 use cli::{CliError, Opts, Parsed, When};
@@ -464,7 +464,7 @@ async fn prepare(
             .extensions
             .iter()
             .map(|e| e.trim_start_matches('.'))
-            .map(|e| format!(r".\.{}$", regex::escape(e)));
+            .map(|e| format!(r".\.{}$", psh_pattern::escape(e)));
         Some(
             RegexSetBuilder::new(patterns)
                 .case_insensitive(true)

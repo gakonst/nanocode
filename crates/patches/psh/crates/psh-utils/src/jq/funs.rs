@@ -537,7 +537,7 @@ fn match_impl(input: &Val, re: &Val, flags: &Val, test: bool) -> ValR {
     };
     let mut global = false;
     let mut skip_empty = false;
-    let mut b = regex::RegexBuilder::new(&re_s);
+    let mut b = psh_pattern::RegexBuilder::new(&re_s);
     b.multi_line(true);
     for c in flags_s.chars() {
         match c {

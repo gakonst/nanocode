@@ -13,20 +13,13 @@ psh-engine.workspace = true
 # The per-utility option tables the utilities check their parsers against (D1090).
 psh-classify.workspace = true
 # POSIX patterns: the parser behind the BRE/ERE translator and the leftmost-longest,
-# back-reference matcher where the regex crate cannot answer (D1131).
+# back-reference matcher where psh-pattern cannot answer (D1131).
 psh-regex.workspace = true
-# The search utilities (rg, fd, grep; later find and sed): grep-regex's matcher behind
-# psh's own searcher and printers (crate::matcher; grep-matcher only for the trait the
-# adapter calls through); no grep-cli, no grep-pcre2.
-grep-matcher = "0.1.9"
-grep-regex = "0.1.14"
+psh-pattern.workspace = true
 # The encoding tables behind rg -E and BOM sniffing; the streaming decoder is psh's own.
 encoding_rs = "0.8.44"
 ignore = "0.4.34"
 globset = "0.4.21"
-regex = "1.13.1"
-regex-automata = "0.4.18"
-regex-syntax = "0.8.11"
 bstr = "1.12"
 # Byte and substring searches of the record readers (already in the tree through bstr
 # and the regex crates).

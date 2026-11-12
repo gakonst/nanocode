@@ -424,7 +424,7 @@ impl HiArgs {
     /// If there was a problem building the matcher (such as a regex syntax
     /// error), then an error is returned.
     fn matcher_rust(&self) -> anyhow::Result<PatternMatcher> {
-        let mut builder = grep_regex::RegexMatcherBuilder::new();
+        let mut builder = psh_pattern::matcher::RegexMatcherBuilder::new();
         builder
             .multi_line(true)
             .unicode(!self.no_unicode)
@@ -479,7 +479,7 @@ impl HiArgs {
                 anyhow::bail!(suggest_text(suggest_multiline(err.to_string())))
             }
         };
-        Ok(PatternMatcher::RustRegex(m))
+        Ok(PatternMatcher::RustRegex(crate::search::matcher::RegexMatcher::new(m)))
     }
 
     /// Returns true if some non-zero number of matches is believed to be

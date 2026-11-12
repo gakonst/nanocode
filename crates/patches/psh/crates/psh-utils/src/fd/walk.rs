@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use ignore::{Error, WalkState};
 use psh_engine::host::{DirEntry, FileKind, Metadata};
 use psh_engine::util::SyncCtx;
-use regex::bytes::RegexSet;
+use psh_pattern::bytes::RegexSet;
 
 use super::cli::FileType;
 use super::colors::Facts;

@@ -76,9 +76,6 @@ threading = [
 name = "rustpython_stdlib"
 path = "src/lib.rs"
 
-[dependencies.adler32]
-version = "1.2.0"
-
 [dependencies.ascii]
 version = "1.1"
 default-features = false

@@ -186,9 +186,7 @@ pub fn unhexlify(hex_bytes: &[u8]) -> Result<Vec<u8>, Error> {
 /// `crc32`. `init` is the (masked to u32) starting value.
 #[must_use]
 pub fn crc32(bytes: &[u8], init: u32) -> u32 {
-    let mut hasher = crc32fast::Hasher::new_with_initial(init);
-    hasher.update(bytes);
-    hasher.finalize()
+    nanocode_compression::checksum::crc32(init, bytes)
 }
 
 /// `crc_hqx`. `init` is the (masked to u32) starting value.

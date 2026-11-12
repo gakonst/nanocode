@@ -9,12 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "adler32"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aae1277d39aeec15cb388266ecc24b11c80469deae6067e17a1a7aa9e5c1f234"
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1988,15 +1982,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libz-rs-sys"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434324ee61a8e4a05dd3fdf03d51c073ea7fdaf5a35b2ca33c4ca9f3f37def4a"
-dependencies = [
- "zlib-rs",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3910,16 +3895,15 @@ dependencies = [
  "blake2b_simd",
  "blake2s_simd",
  "bzip2",
- "crc32fast",
  "getrandom 0.4.3",
  "libc",
- "libz-rs-sys",
  "lock_api",
  "malachite-base",
  "malachite-bigint",
  "malachite-q",
  "md-5",
  "memchr",
+ "nanocode-compression",
  "num-complex",
  "num-traits",
  "parking_lot",
@@ -3934,7 +3918,6 @@ dependencies = [
  "siphasher",
  "xz",
  "xz-sys",
- "zlib-rs",
 ]
 
 [[package]]
@@ -4095,7 +4078,6 @@ dependencies = [
 name = "rustpython-stdlib"
 version = "0.6.0"
 dependencies = [
- "adler32",
  "ascii",
  "crossbeam-utils",
  "getrandom 0.4.3",
@@ -4126,8 +4108,8 @@ version = "0.6.0"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+ "nanocode-compression",
  "rustpython-wtf8",
- "zlib-rs",
 ]
 
 [[package]]
@@ -5721,12 +5703,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "zlib-rs"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 
 [[package]]
 name = "zmij"

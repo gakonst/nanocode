@@ -26,7 +26,7 @@ use std::{
 use icu_properties::props::{
     BidiClass, EnumeratedProperty, GeneralCategory, NamedEnumeratedProperty, NumericType,
 };
-use zlib_rs::{Inflate, InflateFlush};
+use nanocode_compression::inflate::{InflateStatus, inflate_all};
 
 // Uncompressed size of Unihan-3.2.0.txt
 const UNIHAN_3_2_LEN: NonZeroUsize = NonZeroUsize::new(26301774).unwrap();
@@ -71,34 +71,19 @@ impl UnicodeLineReader<Cursor<String>> {
         open_reader(file_name, modern)
             .read_to_end(&mut input)
             .unwrap();
-        let mut output = Vec::with_capacity(len.get());
-        let mut inflator = Inflate::new(true, 0);
-
-        match inflator
-            .decompress_uninit(&input, output.spare_capacity_mut(), InflateFlush::NoFlush)
-            .unwrap()
-        {
-            zlib_rs::Status::Ok | zlib_rs::Status::BufError => {
-                panic!(
-                    "buffer too small to hold decompressed data: {}",
-                    output.capacity()
-                )
+        let (status, output) = inflate_all(0, &input, len.get()).unwrap();
+        match status {
+            InflateStatus::Ok | InflateStatus::BufError => {
+                panic!("buffer too small to hold decompressed data: {}", len.get())
             }
-            zlib_rs::Status::StreamEnd => {
+            InflateStatus::StreamEnd => {
                 assert_eq!(
                     len.get(),
-                    inflator.total_out() as _,
+                    output.len(),
                     "expected decompressed size and actual size differs"
                 );
             }
         }
-
-        // SAFETY: The inflator filled the vector with decompressed bytes, and the final size was
-        // checked above.
-        unsafe {
-            output.set_len(len.get());
-        }
-
         Self::new(Cursor::new(
             String::from_utf8(output).expect("Parsed Unicode data should be Unicode"),
         ))

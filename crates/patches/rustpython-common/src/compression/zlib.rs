@@ -2,32 +2,42 @@
 
 //! VM-independent zlib DEFLATE engine.
 //!
-//! The engine owns its native stream state and reports plain Rust errors so
+//! The engine owns its stream state and reports plain Rust errors so
 //! interpreter and embedding layers can provide their own object and exception
 //! adapters.
 
-use core::ffi::CStr;
-use core::mem::MaybeUninit;
-
-use zlib_rs::{
-    DeflateError, DeflateFlush, InflateError, InflateFlush, ReturnCode, Status,
-    c_api::z_stream,
-    deflate::{self, DeflateConfig, DeflateStream, Method, Strategy},
-    inflate::{self, InflateConfig, InflateStream},
+use nanocode_compression::checksum;
+use nanocode_compression::deflate::{
+    Deflate, DeflateConfig, DeflateError, DeflateFlush, DeflateStatus, Strategy,
 };
+use nanocode_compression::inflate::{Inflate, InflateError, InflateFlush, InflateStatus};
 
 use super::{CHUNKSIZE, Chunker};
 
-pub use zlib_rs::c_api::{
-    Z_BEST_COMPRESSION, Z_BEST_SPEED, Z_BLOCK, Z_DEFAULT_COMPRESSION, Z_DEFAULT_STRATEGY,
-    Z_DEFLATED, Z_FILTERED, Z_FINISH, Z_FIXED, Z_FULL_FLUSH, Z_HUFFMAN_ONLY, Z_NO_COMPRESSION,
-    Z_NO_FLUSH, Z_PARTIAL_FLUSH, Z_RLE, Z_SYNC_FLUSH, Z_TREES,
-};
+pub const Z_NO_FLUSH: i32 = 0;
+pub const Z_PARTIAL_FLUSH: i32 = 1;
+pub const Z_SYNC_FLUSH: i32 = 2;
+pub const Z_FULL_FLUSH: i32 = 3;
+pub const Z_FINISH: i32 = 4;
+pub const Z_BLOCK: i32 = 5;
+pub const Z_TREES: i32 = 6;
+pub const Z_NO_COMPRESSION: i32 = 0;
+pub const Z_BEST_SPEED: i32 = 1;
+pub const Z_BEST_COMPRESSION: i32 = 9;
+pub const Z_DEFAULT_COMPRESSION: i32 = -1;
+pub const Z_FILTERED: i32 = 1;
+pub const Z_HUFFMAN_ONLY: i32 = 2;
+pub const Z_RLE: i32 = 3;
+pub const Z_FIXED: i32 = 4;
+pub const Z_DEFAULT_STRATEGY: i32 = 0;
+pub const Z_DEFLATED: i32 = 8;
 
 pub const MAX_WBITS: i32 = 15;
 pub const DEF_BUF_SIZE: usize = 16 * 1024;
 pub const DEF_MEM_LEVEL: u8 = 8;
 
+const ZLIB_VERSION: &str = "1.3.0-zlib-rs-0.6.8";
+const STREAM_BYTES_MAX: usize = u32::MAX as usize;
 const USE_AFTER_FINISH_ERR: &str = "Error -2: inconsistent stream state";
 
 fn valid_level(level: i32) -> bool {
@@ -39,35 +49,14 @@ fn valid_level(level: i32) -> bool {
 
 #[must_use]
 pub const fn version() -> &'static str {
-    unsafe {
-        match CStr::from_ptr(libz_rs_sys::zlibVersion()).to_str() {
-            Ok(version) => version,
-            Err(_) => unreachable!(),
-        }
-    }
+    ZLIB_VERSION
 }
 
-const fn z_size_to_u64(value: core::ffi::c_ulong) -> u64 {
-    #[cfg(all(target_pointer_width = "64", not(windows)))]
-    {
-        value
-    }
-    #[cfg(any(target_pointer_width = "32", windows))]
-    {
-        value as u64
-    }
+#[must_use]
+pub fn adler32(start: u32, data: &[u8]) -> u32 {
+    checksum::adler32(start, data)
 }
 
-const fn z_checksum_to_u32(value: core::ffi::c_ulong) -> u32 {
-    #[cfg(all(target_pointer_width = "64", not(windows)))]
-    {
-        value as u32
-    }
-    #[cfg(any(target_pointer_width = "32", windows))]
-    {
-        value
-    }
-}
 
 enum InitOptions {
     Standard { header: bool, wbits: i32 },
@@ -126,56 +115,23 @@ impl InitOptions {
     }
 }
 
-fn return_code_message(code: ReturnCode) -> &'static str {
-    match code {
-        ReturnCode::Ok => "",
-        ReturnCode::StreamEnd => "stream end",
-        ReturnCode::NeedDict => "need dictionary",
-        ReturnCode::ErrNo => "file error",
-        ReturnCode::StreamError => "stream error",
-        ReturnCode::DataError => "data error",
-        ReturnCode::MemError => "insufficient memory",
-        ReturnCode::BufError => "buffer error",
-        ReturnCode::VersionError => "incompatible version",
-    }
-}
-
-fn stream_message(stream: &z_stream) -> Option<&str> {
-    if stream.msg.is_null() {
-        None
-    } else {
-        unsafe { CStr::from_ptr(stream.msg).to_str().ok() }
-    }
-}
-
-/// The public `zlib_rs::Deflate` wrapper exposes only the common constructor.
-/// Python's streaming API needs the full zlib configuration and exact native
-/// state copies, so the engine owns the crate's low-level `z_stream` instead.
 struct RawDeflate {
-    stream: z_stream,
+    stream: Deflate,
 }
-
-// The raw pointers belong to this stream and are never accessed without the
-// mutable owner. Moving the owner between threads does not share the stream.
-unsafe impl Send for RawDeflate {}
 
 impl RawDeflate {
     fn new(config: DeflateConfig) -> Result<Self, String> {
-        let mut stream = z_stream::default();
-        let code = deflate::init(&mut stream, config);
-        if code == ReturnCode::Ok {
-            Ok(Self { stream })
-        } else {
-            Err(return_code_message(code).to_owned())
-        }
+        Deflate::new(config)
+            .map(|stream| Self { stream })
+            .map_err(|error| error.as_str().to_owned())
     }
 
-    fn total_in(&self) -> u64 {
-        z_size_to_u64(self.stream.total_in)
+    const fn total_in(&self) -> u64 {
+        self.stream.total_in()
     }
 
-    fn total_out(&self) -> u64 {
-        z_size_to_u64(self.stream.total_out)
+    const fn total_out(&self) -> u64 {
+        self.stream.total_out()
     }
 
     fn compress(
@@ -183,100 +139,44 @@ impl RawDeflate {
         input: &[u8],
         output: &mut [u8],
         flush: DeflateFlush,
-    ) -> Result<Status, DeflateError> {
-        self.stream.avail_in = input.len().min(u32::MAX as usize) as u32;
-        self.stream.avail_out = output.len().min(u32::MAX as usize) as u32;
-        self.stream.next_in = input.as_ptr();
-        self.stream.next_out = output.as_mut_ptr();
-        let stream = unsafe { DeflateStream::from_stream_mut(&mut self.stream) }
-            .expect("initialized deflate stream");
-        match deflate::deflate(stream, flush) {
-            ReturnCode::Ok => Ok(Status::Ok),
-            ReturnCode::StreamEnd => Ok(Status::StreamEnd),
-            ReturnCode::BufError => Ok(Status::BufError),
-            ReturnCode::StreamError => Err(DeflateError::StreamError),
-            ReturnCode::DataError => Err(DeflateError::DataError),
-            ReturnCode::MemError => Err(DeflateError::MemError),
-            ReturnCode::NeedDict => unreachable!("compression does not use dictionaries here"),
-            ReturnCode::ErrNo | ReturnCode::VersionError => {
-                unreachable!("pure-Rust deflate returned an unsupported status")
-            }
-        }
+    ) -> Result<DeflateStatus, DeflateError> {
+        let input = input.get(..STREAM_BYTES_MAX).unwrap_or(input);
+        let output_bytes = output.len().min(STREAM_BYTES_MAX);
+        self.stream.deflate(input, &mut output[..output_bytes], flush)
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) -> Result<(), DeflateError> {
-        let stream = unsafe { DeflateStream::from_stream_mut(&mut self.stream) }
-            .expect("initialized deflate stream");
-        match deflate::set_dictionary(stream, dictionary) {
-            ReturnCode::Ok => Ok(()),
-            ReturnCode::StreamError => Err(DeflateError::StreamError),
-            ReturnCode::DataError => Err(DeflateError::DataError),
-            ReturnCode::MemError => Err(DeflateError::MemError),
-            code => unreachable!("deflate set_dictionary returned {code:?}"),
-        }
+        self.stream.set_dictionary(dictionary)
     }
 
-    fn copy(&mut self) -> Result<Self, String> {
-        let mut destination = MaybeUninit::<DeflateStream<'static>>::uninit();
-        let code = {
-            let source = unsafe { DeflateStream::from_stream_mut(&mut self.stream) }
-                .expect("initialized deflate stream");
-            deflate::copy(&mut destination, source)
-        };
-        if code != ReturnCode::Ok {
-            return Err(return_code_message(code).to_owned());
-        }
-        let copied = unsafe { destination.assume_init() };
-        let stream = unsafe { core::mem::transmute::<DeflateStream<'static>, z_stream>(copied) };
-        Ok(Self { stream })
-    }
-}
-
-impl Drop for RawDeflate {
-    fn drop(&mut self) {
-        if let Some(stream) = unsafe { DeflateStream::from_stream_mut(&mut self.stream) } {
-            let _ = deflate::end(stream);
+    fn copy(&self) -> Self {
+        Self {
+            stream: self.stream.clone(),
         }
     }
 }
 
-/// Low-level inflate owner paired with [`RawDeflate`].  `inflate::copy` fixes
-/// every internal allocation in the clone, exactly like zlib's `inflateCopy`;
-/// no replay log or side table is involved.
 struct RawInflate {
-    stream: z_stream,
+    stream: Inflate,
 }
-
-// See `RawDeflate`: this is an owned, movable stream, not a shared handle.
-unsafe impl Send for RawInflate {}
 
 impl RawInflate {
     fn new(window_bits: i32) -> Result<Self, String> {
-        let mut stream = z_stream::default();
-        let code = inflate::init(&mut stream, InflateConfig { window_bits });
-        if code == ReturnCode::Ok {
-            // zlib-rs' low-level `inflate::copy` requires a non-null next_out
-            // even when avail_out is zero.  Its stable wrapper gets exactly
-            // such a dangling empty-slice pointer from `Writer::new(&mut [])`;
-            // reproduce that initialized-stream shape so a pristine
-            // `Decompress.copy()` succeeds before the first input byte.
-            stream.next_out = core::ptr::NonNull::<u8>::dangling().as_ptr();
-            Ok(Self { stream })
-        } else {
-            Err(return_code_message(code).to_owned())
-        }
+        Inflate::new(window_bits)
+            .map(|stream| Self { stream })
+            .map_err(|error| error.as_str().to_owned())
     }
 
-    fn total_in(&self) -> u64 {
-        z_size_to_u64(self.stream.total_in)
+    const fn total_in(&self) -> u64 {
+        self.stream.total_in()
     }
 
-    fn total_out(&self) -> u64 {
-        z_size_to_u64(self.stream.total_out)
+    const fn total_out(&self) -> u64 {
+        self.stream.total_out()
     }
 
-    fn error_message(&self) -> Option<&str> {
-        stream_message(&self.stream)
+    const fn error_message(&self) -> Option<&'static str> {
+        self.stream.message()
     }
 
     fn decompress(
@@ -284,61 +184,23 @@ impl RawInflate {
         input: &[u8],
         output: &mut [u8],
         flush: InflateFlush,
-    ) -> Result<Status, InflateError> {
-        self.stream.avail_in = input.len().min(u32::MAX as usize) as u32;
-        self.stream.avail_out = output.len().min(u32::MAX as usize) as u32;
-        self.stream.next_in = input.as_ptr();
-        self.stream.next_out = output.as_mut_ptr();
-        let stream = unsafe { InflateStream::from_stream_mut(&mut self.stream) }
-            .expect("initialized inflate stream");
-        match unsafe { inflate::inflate(stream, flush) } {
-            ReturnCode::Ok => Ok(Status::Ok),
-            ReturnCode::StreamEnd => Ok(Status::StreamEnd),
-            ReturnCode::BufError => Ok(Status::BufError),
-            ReturnCode::NeedDict => Err(InflateError::NeedDict {
-                dict_id: z_checksum_to_u32(self.stream.adler),
-            }),
-            ReturnCode::StreamError => Err(InflateError::StreamError),
-            ReturnCode::DataError => Err(InflateError::DataError),
-            ReturnCode::MemError => Err(InflateError::MemError),
-            ReturnCode::ErrNo | ReturnCode::VersionError => {
-                unreachable!("pure-Rust inflate returned an unsupported status")
-            }
-        }
+    ) -> Result<InflateStatus, InflateError> {
+        let input = input.get(..STREAM_BYTES_MAX).unwrap_or(input);
+        let output_bytes = output.len().min(STREAM_BYTES_MAX);
+        self.stream.inflate(input, &mut output[..output_bytes], flush)
     }
 
     fn set_dictionary(&mut self, dictionary: &[u8]) -> Result<(), InflateError> {
-        let stream = unsafe { InflateStream::from_stream_mut(&mut self.stream) }
-            .expect("initialized inflate stream");
-        match inflate::set_dictionary(stream, dictionary) {
-            ReturnCode::Ok => Ok(()),
-            ReturnCode::StreamError => Err(InflateError::StreamError),
-            ReturnCode::DataError => Err(InflateError::DataError),
-            code => unreachable!("inflate set_dictionary returned {code:?}"),
-        }
+        self.stream.set_dictionary(dictionary)
     }
 
-    fn copy(&self) -> Result<Self, String> {
-        let source = unsafe { InflateStream::from_stream_ref(&self.stream) }
-            .expect("initialized inflate stream");
-        let mut destination = MaybeUninit::<InflateStream<'static>>::uninit();
-        let code = unsafe { inflate::copy(&mut destination, source) };
-        if code != ReturnCode::Ok {
-            return Err(return_code_message(code).to_owned());
+    fn copy(&self) -> Self {
+        Self {
+            stream: self.stream.clone(),
         }
-        let copied = unsafe { destination.assume_init() };
-        let stream = unsafe { core::mem::transmute::<InflateStream<'static>, z_stream>(copied) };
-        Ok(Self { stream })
     }
 }
 
-impl Drop for RawInflate {
-    fn drop(&mut self) {
-        if let Some(stream) = unsafe { InflateStream::from_stream_mut(&mut self.stream) } {
-            inflate::end(stream);
-        }
-    }
-}
 
 /// Drive an inflate stream over chained input, retrying with an optional
 /// preset dictionary when the stream requests one.
@@ -377,7 +239,7 @@ fn decompress_chunks(
 
             match res {
                 Ok(status) => {
-                    let stream_end = status == Status::StreamEnd;
+                    let stream_end = status == InflateStatus::StreamEnd;
                     if stream_end || data.is_empty() {
                         buf.shrink_to_fit();
                         return Ok((buf, stream_end));
@@ -461,7 +323,6 @@ impl Compressor {
         if method != Z_DEFLATED {
             return Err(InitError::InvalidOption);
         }
-        let method = Method::try_from(method).map_err(|_| InitError::InvalidOption)?;
         let strategy = Strategy::try_from(strategy).map_err(|_| InitError::InvalidOption)?;
         if !(1..=9).contains(&mem_level) {
             return Err(InitError::InvalidOption);
@@ -469,7 +330,6 @@ impl Compressor {
         let window_bits = InitOptions::new(wbits)?.deflate_window_bits()?;
         let mut compress = RawDeflate::new(DeflateConfig {
             level,
-            method,
             window_bits,
             mem_level,
             strategy,
@@ -534,11 +394,11 @@ impl Compressor {
                 .map_err(|e| e.as_str().to_owned())?;
             let produced = (compressor.total_out() - prev_out) as usize;
             buf.extend_from_slice(&output[..produced]);
-            if produced != output.len() || status == Status::StreamEnd {
+            if produced != output.len() || status == DeflateStatus::StreamEnd {
                 break status;
             }
         };
-        if status == Status::StreamEnd {
+        if status == DeflateStatus::StreamEnd {
             if mode == Z_FINISH {
                 self.compress = None;
             } else {
@@ -561,7 +421,7 @@ impl Compressor {
             .compress
             .as_mut()
             .ok_or_else(|| "Compressor was already flushed".to_owned())?
-            .copy()?;
+            .copy();
         Ok(Self {
             compress: Some(compress),
         })
@@ -619,7 +479,7 @@ impl Decompressor {
             .decompress
             .as_ref()
             .ok_or_else(|| "Decompressor was already flushed".to_owned())?
-            .copy()?;
+            .copy();
         Ok(Self {
             decompress: Some(decompress),
             zdict: self.zdict.clone(),

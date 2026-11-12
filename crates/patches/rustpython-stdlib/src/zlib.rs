@@ -14,7 +14,6 @@ mod zlib {
         object::PyAtomicRef,
         types::Constructor,
     };
-    use adler32::RollingAdler32 as Adler32;
     use alloc::fmt;
     use core::sync::atomic::{AtomicBool, Ordering};
     use rustpython_common::compression::zlib as backend;
@@ -64,9 +63,7 @@ mod zlib {
         let Adler32Args { data, value } = args;
         data.with_ref(|data| {
             let value = value.into_int_ref().as_u32_mask();
-            let mut hasher = Adler32::from_value(value);
-            hasher.update_buffer(data);
-            hasher.hash()
+            backend::adler32(value, data)
         })
     }
 

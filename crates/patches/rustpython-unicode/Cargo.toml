@@ -47,13 +47,8 @@ version = "0.6.0"
 [build-dependencies.icu_properties]
 version = "2"
 
-[build-dependencies.zlib-rs]
-version = "=0.6.8"
-features = [
-    "rust-allocator",
-    "__internal-api",
-]
-default-features = false
+[build-dependencies.nanocode-compression]
+path = "../../core/compression"
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

@@ -3,4 +3,7 @@
 
 extern crate alloc;
 
+pub mod checksum;
+pub mod deflate;
+pub mod inflate;
 pub mod lz4;

@@ -1,97 +1,51 @@
 use std::ops::Range;
-use wide::u8x16;
+
+const BLOCK_BYTES: usize = 32;
+const PRINTABLE_FIRST: u8 = b' ';
+const PRINTABLE_LAST: u8 = b'~';
+const DELETE: u8 = 0x7f;
+const C1_LEAD: u8 = 0xc2;
+const C1_CONTINUATION_END: u8 = 0xa0;
+
+fn first(bytes: &[u8], candidate: impl Fn(u8) -> bool, matches: impl Fn(usize) -> bool) -> usize {
+    let (blocks, _) = bytes.as_chunks::<BLOCK_BYTES>();
+    let mut offset = 0;
+    for block in blocks {
+        if block.iter().fold(false, |any, byte| any | candidate(*byte))
+            && let Some(found) = (offset..offset + BLOCK_BYTES).find(|index| matches(*index))
+        {
+            return found;
+        }
+        offset += BLOCK_BYTES;
+    }
+    (offset..bytes.len())
+        .find(|index| matches(*index))
+        .unwrap_or(bytes.len())
+}
 
 pub(crate) fn ascii_prefix(text: &str, newline: bool) -> usize {
-    prefix(
-        text,
-        |values| {
-            let special = values.simd_lt(u8x16::splat(b' ')) | values.simd_gt(u8x16::splat(b'~'));
-            if newline {
-                special & !values.simd_eq(u8x16::splat(b'\n'))
-            } else {
-                special
-            }
+    let bytes = text.as_bytes();
+    first(
+        bytes,
+        |byte| !(PRINTABLE_FIRST..=PRINTABLE_LAST).contains(&byte),
+        |index| {
+            let byte = bytes[index];
+            !(PRINTABLE_FIRST..=PRINTABLE_LAST).contains(&byte) && !(newline && byte == b'\n')
         },
-        |byte| !(b' '..=b'~').contains(&byte) && !(newline && byte == b'\n'),
     )
 }
 
 pub(crate) fn control_prefix(text: &str, newline: bool) -> usize {
-    let offset = prefix(
-        text,
-        |values| {
-            let special = values.simd_lt(u8x16::splat(b' '))
-                | values.simd_eq(u8x16::splat(0x7f))
-                | values.simd_eq(u8x16::splat(0xc2));
-            if newline {
-                special & !values.simd_eq(u8x16::splat(b'\n'))
-            } else {
-                special
-            }
+    let bytes = text.as_bytes();
+    first(
+        bytes,
+        |byte| (byte < PRINTABLE_FIRST) | (byte == DELETE) | (byte == C1_LEAD),
+        |index| {
+            let byte = bytes[index];
+            (byte < PRINTABLE_FIRST || byte == DELETE) && !(newline && byte == b'\n')
+                || (byte == C1_LEAD && bytes[index + 1] < C1_CONTINUATION_END)
         },
-        |byte| (byte < b' ' || byte == 0x7f || byte == 0xc2) && !(newline && byte == b'\n'),
-    );
-    if text.as_bytes().get(offset) == Some(&0xc2) && text.as_bytes()[offset + 1] >= 0xa0 {
-        offset + control_prefix_unicode(&text[offset..], newline)
-    } else {
-        offset
-    }
-}
-
-fn control_prefix_unicode(text: &str, newline: bool) -> usize {
-    let bytes = text.as_bytes();
-    let mut offset = 0;
-    let (chunks, remainder) = bytes.as_chunks::<{ u8x16::LANES as usize }>();
-    for chunk in chunks {
-        let values = u8x16::from(*chunk);
-        let c2 = values.simd_eq(u8x16::splat(0xc2));
-        let mut special =
-            values.simd_lt(u8x16::splat(b' ')) | values.simd_eq(u8x16::splat(0x7f)) | c2;
-        if newline {
-            special &= !values.simd_eq(u8x16::splat(b'\n'));
-        }
-        if special.any() {
-            let next = values.shuffle(u8x16::new([
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 15,
-            ]));
-            special &= !c2 | next.simd_lt(u8x16::splat(0xa0));
-            if special.any() {
-                return offset + special.to_bitmask().trailing_zeros() as usize;
-            }
-            let next_offset = offset + u8x16::LANES as usize;
-            if chunk[chunk.len() - 1] == 0xc2 && bytes[next_offset] < 0xa0 {
-                return next_offset - 1;
-            }
-        }
-        offset += u8x16::LANES as usize;
-    }
-    offset
-        + remainder
-            .iter()
-            .enumerate()
-            .position(|(index, byte)| {
-                (*byte < b' ' || *byte == 0x7f) && !(newline && *byte == b'\n')
-                    || (*byte == 0xc2 && bytes[offset + index + 1] < 0xa0)
-            })
-            .unwrap_or(remainder.len())
-}
-
-fn prefix(text: &str, special: impl Fn(u8x16) -> u8x16, scalar: impl Fn(u8) -> bool) -> usize {
-    let bytes = text.as_bytes();
-    let mut offset = 0;
-    let (chunks, remainder) = bytes.as_chunks::<{ u8x16::LANES as usize }>();
-    for chunk in chunks {
-        let mask = special(u8x16::from(*chunk));
-        if mask.any() {
-            return offset + mask.to_bitmask().trailing_zeros() as usize;
-        }
-        offset += u8x16::LANES as usize;
-    }
-    offset
-        + remainder
-            .iter()
-            .position(|byte| scalar(*byte))
-            .unwrap_or(remainder.len())
+    )
 }
 
 pub(crate) fn ascii_rows(

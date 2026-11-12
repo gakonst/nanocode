@@ -3487,7 +3487,6 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
- "wide 1.7.1",
 ]
 
 [[package]]

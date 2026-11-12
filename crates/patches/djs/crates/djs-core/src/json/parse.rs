@@ -762,6 +762,7 @@ struct Parser<'a, 'o> {
     key_cache: [(u32, u32, Atom); KEY_CACHE],
     /// The parent and offset string values may be slices of (a long one-byte input).
     slices: Option<(u32, u32)>,
+    shapes: Vec<u32>,
 }
 
 #[inline]
@@ -791,6 +792,7 @@ impl<'a, 'o> Parser<'a, 'o> {
             key_buf: Vec::new(),
             key_cache: [(0, 0, Atom::NULL); KEY_CACHE],
             slices: None,
+            shapes: Vec::new(),
         }
     }
 
@@ -899,10 +901,15 @@ impl<'a, 'o> Parser<'a, 'o> {
     /// Creates the object or array from the pending keys and values from `ks`/`vs` on.
     fn build(&mut self, is_obj: bool, ks: usize, vs: usize) -> Result<Value, Fail> {
         let o = if is_obj {
-            self.heap.new_object_from_entries(
+            let depth = self.stack.len();
+            if self.shapes.len() <= depth {
+                self.shapes.resize(depth + 1, 0);
+            }
+            self.heap.new_object_from_entries_like(
                 self.opts.object_proto,
                 &self.keys[ks..],
                 &self.values[vs..],
+                &mut self.shapes[depth],
             )?
         } else {
             self.heap

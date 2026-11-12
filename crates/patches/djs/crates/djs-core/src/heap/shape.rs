@@ -110,6 +110,21 @@ impl Heap {
         (Atom::from_id(a.read(at)), a.read(at + 4))
     }
 
+    pub(super) fn shape_is(&self, s: u32, keys: &[Atom], flags: u32) -> bool {
+        let n = self.shape_count(s);
+        if n as usize != keys.len() {
+            return false;
+        }
+        let d = self.arena().get(s, Shape::DESCS).0;
+        let pairs = self.arena().slice(U32Array::DATA.at(d, 1), 8 * n);
+        pairs
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(keys)
+            .all(|(p, k)| p[..4] == k.id().to_le_bytes() && p[4..] == flags.to_le_bytes())
+    }
+
     /// The slot of `key` in shape `s`.
     #[inline]
     pub(super) fn shape_find(&self, s: u32, key: Atom) -> Option<u32> {

@@ -597,6 +597,37 @@ impl Heap {
         Ok(true)
     }
 
+    pub(crate) fn new_object_from_entries_like(
+        &mut self,
+        proto: Option<Obj>,
+        keys: &[Atom],
+        values: &[Value],
+        last: &mut u32,
+    ) -> Result<Obj, HeapError> {
+        let s = *last;
+        if s != 0 && self.shape_is(s, keys, PropFlags::ALL.bits() as u32) {
+            let o = self.new_object(proto)?;
+            let count = self.shape_count(s);
+            let v = self.alloc_values(count)?;
+            let a = self.arena_mut();
+            for (i, &value) in (0..count).zip(values) {
+                a.write(PropValues::VALUES.at(v, i), value);
+            }
+            a.set(v, PropValues::LEN, count);
+            a.set(v, PropValues::SHAPE, Ref(s));
+            a.set(o.0, Object::PROPS, Ref(v));
+            return Ok(o);
+        }
+        let o = self.new_object_from_entries(proto, keys, values)?;
+        let v = self.props(o);
+        *last = if keys.is_empty() || self.is_dictionary(o) || v == 0 {
+            0
+        } else {
+            self.arena().get(v, PropValues::SHAPE).0
+        };
+        Ok(o)
+    }
+
     /// A new array with `values` as its dense elements (`length` = `values.len()`).
     /// Values may be holes.
     pub fn new_array_from_values(

@@ -21,6 +21,8 @@ pub struct UnixFile {
     nonblocking: bool,
     terminal: bool,
     write_waits: bool,
+    #[cfg(target_os = "macos")]
+    pipe: bool,
 }
 
 impl UnixFile {
@@ -28,7 +30,8 @@ impl UnixFile {
     pub fn new(fd: impl Into<OwnedFd>) -> UnixFile {
         use std::os::unix::fs::FileTypeExt;
         let file = File::from(fd.into());
-        let kind = file.metadata().ok().map(|m| m.file_type());
+        let meta = file.metadata().ok();
+        let kind = meta.as_ref().map(|m| m.file_type());
         let stream = kind.is_none_or(|ft| !(ft.is_file() || ft.is_dir() || ft.is_block_device()));
         let terminal = stream && {
             use std::io::IsTerminal;
@@ -41,6 +44,11 @@ impl UnixFile {
             nonblocking: false,
             terminal,
             write_waits: stream && (terminal || !device),
+            #[cfg(target_os = "macos")]
+            pipe: meta.as_ref().is_some_and(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.file_type().is_fifo() && m.dev() == 0
+            }),
         }
     }
 
@@ -53,6 +61,8 @@ impl UnixFile {
             nonblocking: true,
             terminal: false,
             write_waits: true,
+            #[cfg(target_os = "macos")]
+            pipe: true,
         })
     }
 
@@ -71,6 +81,21 @@ impl UnixFile {
 
     pub fn raw_fd(&self) -> RawFd {
         self.file.as_raw_fd()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn room(&self) -> usize {
+        match self.file.metadata() {
+            Ok(m) if self.pipe => ready::PIPE_ROOM
+                .saturating_sub(m.len() as usize)
+                .max(ready::WRITE_CHUNK),
+            _ => ready::WRITE_CHUNK,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn room(&self) -> usize {
+        ready::WRITE_CHUNK
     }
 
     fn wait(&self, cx: &mut Context<'_>, events: i16) -> Poll<io::Result<usize>> {
@@ -140,7 +165,7 @@ impl HostFile for UnixFile {
                     Err(e) => return Poll::Ready(Err(e)),
                 }
                 // A blocking write larger than what the pipe has room for would wait.
-                buf = &buf[..buf.len().min(ready::WRITE_CHUNK)];
+                buf = &buf[..buf.len().min(self.room())];
             }
             match (&self.file).write(buf) {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,

@@ -32,6 +32,9 @@ pub const WRITE: i16 = libc::POLLOUT;
 /// a wait: `PIPE_BUF` (a pipe that polls writable takes this much atomically).
 pub const WRITE_CHUNK: usize = libc::PIPE_BUF;
 
+#[cfg(target_os = "macos")]
+pub const PIPE_ROOM: usize = 64 * 1024;
+
 /// Whether `fd` is ready for `events` right now; also when it hung up or failed (the
 /// I/O then returns end of file or the error at once).
 pub fn now(fd: RawFd, events: i16) -> io::Result<bool> {

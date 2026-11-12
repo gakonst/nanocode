@@ -1411,7 +1411,7 @@ impl ByteInnerHexOptions {
 
 fn hex_impl_no_sep(bytes: &[u8]) -> String {
     let mut buf: Vec<u8> = vec![0; bytes.len() * 2];
-    hex::encode_to_slice(bytes, buf.as_mut_slice()).unwrap();
+    rustpython_common::hex::encode_to_slice(bytes, buf.as_mut_slice()).unwrap();
     unsafe { String::from_utf8_unchecked(buf) }
 }
 
@@ -1426,7 +1426,7 @@ fn hex_impl(bytes: &[u8], sep: u8, bytes_per_sep: isize) -> String {
         let mut buf = vec![0; len * 2 + chunks];
         let mut j = 0;
         for i in (0..chunks).map(|i| i * bytes_per_sep) {
-            hex::encode_to_slice(
+            rustpython_common::hex::encode_to_slice(
                 &bytes[i..i + bytes_per_sep],
                 &mut buf[j..j + bytes_per_sep * 2],
             )
@@ -1435,7 +1435,7 @@ fn hex_impl(bytes: &[u8], sep: u8, bytes_per_sep: isize) -> String {
             buf[j] = sep;
             j += 1;
         }
-        hex::encode_to_slice(&bytes[chunked..], &mut buf[j..j + unchunked * 2]).unwrap();
+        rustpython_common::hex::encode_to_slice(&bytes[chunked..], &mut buf[j..j + unchunked * 2]).unwrap();
         buf
     } else {
         let bytes_per_sep = core::cmp::min(len, bytes_per_sep as usize);
@@ -1443,12 +1443,12 @@ fn hex_impl(bytes: &[u8], sep: u8, bytes_per_sep: isize) -> String {
         let chunked = chunks * bytes_per_sep;
         let unchunked = len - chunked;
         let mut buf = vec![0; len * 2 + chunks];
-        hex::encode_to_slice(&bytes[..unchunked], &mut buf[..unchunked * 2]).unwrap();
+        rustpython_common::hex::encode_to_slice(&bytes[..unchunked], &mut buf[..unchunked * 2]).unwrap();
         let mut j = unchunked * 2;
         for i in (0..chunks).map(|i| i * bytes_per_sep + unchunked) {
             buf[j] = sep;
             j += 1;
-            hex::encode_to_slice(
+            rustpython_common::hex::encode_to_slice(
                 &bytes[i..i + bytes_per_sep],
                 &mut buf[j..j + bytes_per_sep * 2],
             )

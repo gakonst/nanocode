@@ -2630,7 +2630,7 @@ impl VirtualMachine {
         #[cfg(any(miri, target_env = "musl", target_arch = "wasm32"))]
         let _native_depth_guard = {
             self.native_recursion_depth.update(|d| d + 1);
-            scopeguard::guard((), |()| {
+            rustpython_common::scope::guard((), |()| {
                 self.native_recursion_depth.update(|d| d.saturating_sub(1))
             })
         };
@@ -2657,7 +2657,7 @@ impl VirtualMachine {
         self.recursion_depth.update(|d| d + 1);
         // Decrement on all exit paths (including panic between here and
         // the explicit decrement at the bottom).
-        let _depth_guard = scopeguard::guard((), |()| {
+        let _depth_guard = rustpython_common::scope::guard((), |()| {
             self.recursion_depth.update(|d| d.saturating_sub(1))
         });
 
@@ -2728,7 +2728,7 @@ impl VirtualMachine {
         #[cfg(all(not(unix), feature = "threading"))]
         crate::vm::thread::pop_thread_frame();
         // Disarm the panic guard — normal decrement.
-        scopeguard::ScopeGuard::into_inner(_depth_guard);
+        rustpython_common::scope::ScopeGuard::into_inner(_depth_guard);
         self.recursion_depth.update(|d| d - 1);
 
         result
@@ -2970,7 +2970,7 @@ impl VirtualMachine {
         // guarded there either, since a panic in this codebase is a bug, not
         // a control-flow path any Python-level construct can observe or
         // resume from.
-        let _depth_guard = scopeguard::guard((), |()| {
+        let _depth_guard = rustpython_common::scope::guard((), |()| {
             self.recursion_depth.update(|d| d.saturating_sub(1))
         });
 
@@ -2979,7 +2979,7 @@ impl VirtualMachine {
         // Restore owner, pop exc_info slot, frame chain and frames Vec on
         // every normal exit (Ok or Err) — captured above rather than
         // propagated with `?`, so this always runs.
-        scopeguard::ScopeGuard::into_inner(_depth_guard);
+        rustpython_common::scope::ScopeGuard::into_inner(_depth_guard);
         self.gen_frame_unlink(frame, link);
 
         result

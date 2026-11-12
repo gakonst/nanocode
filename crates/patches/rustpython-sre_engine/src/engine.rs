@@ -8,7 +8,6 @@ use crate::string::{
 use super::{MAXREPEAT, SreAtCode, SreCatCode, SreInfo, SreOpcode, StrDrive, StringCursor};
 use alloc::{vec, vec::Vec};
 use core::{convert::TryFrom, ptr::null};
-use optional::Optioned;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Request<'a, S> {
@@ -53,8 +52,8 @@ impl<'a, S: StrDrive> Request<'a, S> {
 #[derive(Debug)]
 pub struct Marks {
     last_index: isize,
-    marks: Vec<Optioned<usize>>,
-    marks_stack: Vec<(Vec<Optioned<usize>>, isize)>,
+    marks: Vec<Option<usize>>,
+    marks_stack: Vec<(Vec<Option<usize>>, isize)>,
 }
 
 impl Default for Marks {
@@ -69,12 +68,12 @@ impl Default for Marks {
 
 impl Marks {
     #[must_use]
-    pub fn get(&self, group_index: usize) -> (Optioned<usize>, Optioned<usize>) {
+    pub fn get(&self, group_index: usize) -> (Option<usize>, Option<usize>) {
         let marks_index = 2 * group_index;
         if marks_index + 1 < self.marks.len() {
             (self.marks[marks_index], self.marks[marks_index + 1])
         } else {
-            (Optioned::none(), Optioned::none())
+            (None, None)
         }
     }
 
@@ -84,7 +83,7 @@ impl Marks {
     }
 
     #[must_use]
-    pub fn raw(&self) -> &[Optioned<usize>] {
+    pub fn raw(&self) -> &[Option<usize>] {
         self.marks.as_slice()
     }
 
@@ -93,9 +92,9 @@ impl Marks {
             self.last_index = mark_nr as isize / 2 + 1;
         }
         if mark_nr >= self.marks.len() {
-            self.marks.resize(mark_nr + 1, Optioned::none());
+            self.marks.resize(mark_nr + 1, None);
         }
-        self.marks[mark_nr] = Optioned::some(position);
+        self.marks[mark_nr] = Some(position);
     }
 
     fn push(&mut self) {
@@ -586,9 +585,9 @@ fn _match<S: StrDrive>(req: &Request<'_, S>, state: &mut State, mut ctx: MatchCo
                                 state.marks.get(ctx.peek_code(req, 1) as usize);
                             let (group_start, group_end) = if group_start.is_some()
                                 && group_end.is_some()
-                                && group_start.unpack() <= group_end.unpack()
+                                && group_start.unwrap() <= group_end.unwrap()
                             {
-                                (group_start.unpack(), group_end.unpack())
+                                (group_start.unwrap(), group_end.unwrap())
                             } else {
                                 break 'result false;
                             };
@@ -867,7 +866,7 @@ fn _match<S: StrDrive>(req: &Request<'_, S>, state: &mut State, mut ctx: MatchCo
                                 state.marks.get(ctx.peek_code(req, 1) as usize);
                             if group_start.is_some()
                                 && group_end.is_some()
-                                && group_start.unpack() <= group_end.unpack()
+                                && group_start.unwrap() <= group_end.unwrap()
                             {
                                 ctx.skip_code(3);
                             } else {

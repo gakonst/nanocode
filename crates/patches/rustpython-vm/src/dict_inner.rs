@@ -254,7 +254,7 @@ struct DictEntry<T> {
     index: IndexIndex,
     value: T,
 }
-static_assertions::assert_eq_size!(DictEntry<PyObjectRef>, Option<DictEntry<PyObjectRef>>);
+const _: () = assert!(size_of::<DictEntry<PyObjectRef>>() == size_of::<Option<DictEntry<PyObjectRef>>>());
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DictSize {

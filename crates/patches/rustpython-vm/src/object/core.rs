@@ -3024,10 +3024,10 @@ pub(crate) fn init_type_hierarchy() -> BootstrapTypeHierarchy {
     };
     use core::mem::MaybeUninit;
 
-    static_assertions::assert_eq_size!(MaybeUninit<Py<PyType>>, Py<PyType>);
-    static_assertions::assert_eq_align!(MaybeUninit<Py<PyType>>, Py<PyType>);
-    static_assertions::assert_eq_size!(MaybeUninit<Py<PyTuple>>, Py<PyTuple>);
-    static_assertions::assert_eq_align!(MaybeUninit<Py<PyTuple>>, Py<PyTuple>);
+    const _: () = assert!(size_of::<MaybeUninit<Py<PyType>>>() == size_of::<Py<PyType>>());
+    const _: () = assert!(align_of::<MaybeUninit<Py<PyType>>>() == align_of::<Py<PyType>>());
+    const _: () = assert!(size_of::<MaybeUninit<Py<PyTuple>>>() == size_of::<Py<PyTuple>>());
+    const _: () = assert!(align_of::<MaybeUninit<Py<PyTuple>>>() == align_of::<Py<PyTuple>>());
 
     // All three core type objects are instances of `type`, which has HAS_DICT
     // and HAS_WEAKREF. Their allocations therefore need both prefixes,

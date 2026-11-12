@@ -504,7 +504,7 @@ pub(crate) mod _hashlib {
 
         #[pymethod]
         fn hexdigest(zelf: &Py<Self>) -> String {
-            hex::encode(zelf.ctx.digest())
+            rustpython_common::hex::encode(zelf.ctx.digest())
         }
 
         #[pymethod]
@@ -646,7 +646,7 @@ pub(crate) mod _hashlib {
 
         #[pymethod]
         fn hexdigest(zelf: &Py<Self>) -> String {
-            hex::encode(zelf.ctx.digest(zelf.digest_size))
+            rustpython_common::hex::encode(zelf.ctx.digest(zelf.digest_size))
         }
 
         #[pymethod]
@@ -749,7 +749,7 @@ pub(crate) mod _hashlib {
             args: XofDigestArgs,
             vm: &VirtualMachine,
         ) -> PyResult<String> {
-            Ok(hex::encode(zelf.ctx.digest(args.length(vm)?)))
+            Ok(rustpython_common::hex::encode(zelf.ctx.digest(args.length(vm)?)))
         }
 
         #[pymethod]
@@ -923,7 +923,7 @@ pub(crate) mod _hashlib {
         }
 
         pub(crate) fn hexdigest(&self) -> String {
-            hex::encode(self.digest())
+            rustpython_common::hex::encode(self.digest())
         }
 
         pub(crate) fn copy(&self) -> Self {
@@ -1119,7 +1119,7 @@ pub(crate) mod _hashlib {
         b: ArgStrOrBytesLike,
         vm: &VirtualMachine,
     ) -> PyResult<bool> {
-        use constant_time_eq::constant_time_eq;
+        use rustpython_common::constant_time::constant_time_eq;
 
         match (&a, &b) {
             (ArgStrOrBytesLike::Str(a), ArgStrOrBytesLike::Str(b)) => {

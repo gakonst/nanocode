@@ -163,10 +163,160 @@ impl TryFromObject for PyIter<PyObjectRef> {
     }
 }
 
-#[derive(result_like::ResultLike)]
 pub enum PyIterReturn<T = PyObjectRef> {
     Return(T),
     StopIteration(Option<PyObjectRef>),
+}
+
+impl<T> PyIterReturn<T> {
+    #[inline]
+    pub fn from_result(result: Result<T, Option<PyObjectRef>>) -> Self {
+        match result {
+            Ok(value) => Self::Return(value),
+            Err(error) => Self::StopIteration(error),
+        }
+    }
+
+    #[inline]
+    pub fn into_result(self) -> Result<T, Option<PyObjectRef>> {
+        match self {
+            Self::Return(value) => Ok(value),
+            Self::StopIteration(error) => Err(error),
+        }
+    }
+
+    #[inline]
+    pub const fn as_result(&self) -> Result<&T, &Option<PyObjectRef>> {
+        match self {
+            Self::Return(value) => Ok(value),
+            Self::StopIteration(error) => Err(error),
+        }
+    }
+
+    #[inline]
+    pub const fn as_result_mut(&mut self) -> Result<&mut T, &mut Option<PyObjectRef>> {
+        match self {
+            Self::Return(value) => Ok(value),
+            Self::StopIteration(error) => Err(error),
+        }
+    }
+
+    #[inline]
+    pub fn map_or<U, F: FnOnce(T) -> U>(self, default: U, function: F) -> U {
+        match self {
+            Self::Return(value) => function(value),
+            Self::StopIteration(_) => default,
+        }
+    }
+
+    #[inline]
+    pub fn unwrap_or(self, default: T) -> T {
+        self.into_result().unwrap_or(default)
+    }
+
+    #[inline]
+    pub fn unwrap_or_else<F: FnOnce(Option<PyObjectRef>) -> T>(self, function: F) -> T {
+        self.into_result().unwrap_or_else(function)
+    }
+
+    #[inline]
+    pub fn expect(self, message: &str) -> T {
+        self.into_result().expect(message)
+    }
+
+    #[inline]
+    pub fn unwrap(self) -> T {
+        self.into_result().unwrap()
+    }
+
+    #[inline]
+    pub fn map<U, F: FnOnce(T) -> U>(self, function: F) -> PyIterReturn<U> {
+        match self {
+            Self::Return(value) => PyIterReturn::Return(function(value)),
+            Self::StopIteration(error) => PyIterReturn::StopIteration(error),
+        }
+    }
+
+    #[inline]
+    pub fn map_or_else<U, M: FnOnce(T) -> U, F: FnOnce(Option<PyObjectRef>) -> U>(
+        self,
+        fallback: F,
+        map: M,
+    ) -> U {
+        self.map(map).unwrap_or_else(fallback)
+    }
+
+    #[inline]
+    pub fn and<U>(self, other: PyIterReturn<U>) -> PyIterReturn<U> {
+        match self {
+            Self::Return(_) => other,
+            Self::StopIteration(error) => PyIterReturn::StopIteration(error),
+        }
+    }
+
+    #[inline]
+    pub fn and_then<U, F: FnOnce(T) -> PyIterReturn<U>>(self, function: F) -> PyIterReturn<U> {
+        match self {
+            Self::Return(value) => function(value),
+            Self::StopIteration(error) => PyIterReturn::StopIteration(error),
+        }
+    }
+
+    #[inline]
+    pub fn unwrap_or_default(self) -> T
+    where
+        T: Default,
+    {
+        self.into_result().unwrap_or_default()
+    }
+}
+
+impl<T: core::fmt::Debug> PyIterReturn<T> {
+    #[inline]
+    pub fn unwrap_err(self) -> Option<PyObjectRef> {
+        self.into_result().unwrap_err()
+    }
+}
+
+impl<T> From<Result<T, Option<PyObjectRef>>> for PyIterReturn<T> {
+    fn from(value: Result<T, Option<PyObjectRef>>) -> Self {
+        Self::from_result(value)
+    }
+}
+
+impl<T> From<PyIterReturn<T>> for Result<T, Option<PyObjectRef>> {
+    fn from(value: PyIterReturn<T>) -> Self {
+        value.into_result()
+    }
+}
+
+impl<T> IntoIterator for PyIterReturn<T> {
+    type Item = T;
+    type IntoIter = core::result::IntoIter<T>;
+
+    #[inline]
+    fn into_iter(self) -> core::result::IntoIter<T> {
+        self.into_result().into_iter()
+    }
+}
+
+impl<T: Copy> PyIterReturn<&T> {
+    pub fn copied(self) -> PyIterReturn<T> {
+        self.map(|&value| value)
+    }
+}
+
+impl<T: Clone> PyIterReturn<&T> {
+    pub fn cloned(self) -> PyIterReturn<T> {
+        self.map(Clone::clone)
+    }
+}
+
+impl<T> PyIterReturn<Option<T>> {
+    #[inline]
+    pub fn transpose(self) -> Option<PyIterReturn<T>> {
+        self.into_result().transpose().map(PyIterReturn::from_result)
+    }
 }
 
 unsafe impl<T: Traverse> Traverse for PyIterReturn<T> {

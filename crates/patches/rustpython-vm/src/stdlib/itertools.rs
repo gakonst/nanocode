@@ -1059,7 +1059,7 @@ mod decl {
             if self.running.swap(true, Ordering::Acquire) {
                 return Err(vm.new_runtime_error("cannot re-enter the tee iterator"));
             }
-            scopeguard::defer! { self.running.store(false, Ordering::Release) }
+            rustpython_common::defer! { self.running.store(false, Ordering::Release) }
             let obj = raise_if_stop!(self.iterable.next(vm)?);
             let Some(mut values) = self.values.try_lock() else {
                 return Err(vm.new_runtime_error("cannot re-enter the tee iterator"));
@@ -1170,7 +1170,7 @@ mod decl {
             if zelf.advancing.swap(true, Ordering::Acquire) {
                 return Err(vm.new_runtime_error("cannot re-enter the tee iterator"));
             }
-            scopeguard::defer! { zelf.advancing.store(false, Ordering::Release) }
+            rustpython_common::defer! { zelf.advancing.store(false, Ordering::Release) }
             let index = zelf.index.load();
             let value = raise_if_stop!(zelf.tee_data.get_item(vm, index)?);
             zelf.index.store(index + 1);

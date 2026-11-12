@@ -37,20 +37,43 @@ pub mod errors {
         },
     };
     #[cfg(windows)]
-    macro_rules! reexport_wsa {
-        ($($errname:ident),*$(,)?) => {
-            paste::paste! {
-                $(pub const $errname: i32 = windows_sys::Win32::Networking::WinSock:: [<WSA $errname>] as i32;)*
-            }
-        }
+    mod wsa {
+        use windows_sys::Win32::Networking::WinSock;
+        pub const EADDRINUSE: i32 = WinSock::WSAEADDRINUSE as i32;
+        pub const EADDRNOTAVAIL: i32 = WinSock::WSAEADDRNOTAVAIL as i32;
+        pub const EAFNOSUPPORT: i32 = WinSock::WSAEAFNOSUPPORT as i32;
+        pub const EALREADY: i32 = WinSock::WSAEALREADY as i32;
+        pub const ECONNABORTED: i32 = WinSock::WSAECONNABORTED as i32;
+        pub const ECONNREFUSED: i32 = WinSock::WSAECONNREFUSED as i32;
+        pub const ECONNRESET: i32 = WinSock::WSAECONNRESET as i32;
+        pub const EDESTADDRREQ: i32 = WinSock::WSAEDESTADDRREQ as i32;
+        pub const EDQUOT: i32 = WinSock::WSAEDQUOT as i32;
+        pub const EHOSTDOWN: i32 = WinSock::WSAEHOSTDOWN as i32;
+        pub const EHOSTUNREACH: i32 = WinSock::WSAEHOSTUNREACH as i32;
+        pub const EINPROGRESS: i32 = WinSock::WSAEINPROGRESS as i32;
+        pub const EISCONN: i32 = WinSock::WSAEISCONN as i32;
+        pub const ELOOP: i32 = WinSock::WSAELOOP as i32;
+        pub const EMSGSIZE: i32 = WinSock::WSAEMSGSIZE as i32;
+        pub const ENETDOWN: i32 = WinSock::WSAENETDOWN as i32;
+        pub const ENETRESET: i32 = WinSock::WSAENETRESET as i32;
+        pub const ENETUNREACH: i32 = WinSock::WSAENETUNREACH as i32;
+        pub const ENOBUFS: i32 = WinSock::WSAENOBUFS as i32;
+        pub const ENOPROTOOPT: i32 = WinSock::WSAENOPROTOOPT as i32;
+        pub const ENOTCONN: i32 = WinSock::WSAENOTCONN as i32;
+        pub const ENOTSOCK: i32 = WinSock::WSAENOTSOCK as i32;
+        pub const EOPNOTSUPP: i32 = WinSock::WSAEOPNOTSUPP as i32;
+        pub const EPFNOSUPPORT: i32 = WinSock::WSAEPFNOSUPPORT as i32;
+        pub const EPROTONOSUPPORT: i32 = WinSock::WSAEPROTONOSUPPORT as i32;
+        pub const EPROTOTYPE: i32 = WinSock::WSAEPROTOTYPE as i32;
+        pub const EREMOTE: i32 = WinSock::WSAEREMOTE as i32;
+        pub const ESHUTDOWN: i32 = WinSock::WSAESHUTDOWN as i32;
+        pub const ESOCKTNOSUPPORT: i32 = WinSock::WSAESOCKTNOSUPPORT as i32;
+        pub const ESTALE: i32 = WinSock::WSAESTALE as i32;
+        pub const ETIMEDOUT: i32 = WinSock::WSAETIMEDOUT as i32;
+        pub const ETOOMANYREFS: i32 = WinSock::WSAETOOMANYREFS as i32;
+        pub const EUSERS: i32 = WinSock::WSAEUSERS as i32;
+        pub const EWOULDBLOCK: i32 = WinSock::WSAEWOULDBLOCK as i32;
     }
     #[cfg(windows)]
-    reexport_wsa! {
-        EADDRINUSE, EADDRNOTAVAIL, EAFNOSUPPORT, EALREADY, ECONNABORTED, ECONNREFUSED, ECONNRESET,
-        EDESTADDRREQ, EDQUOT, EHOSTDOWN, EHOSTUNREACH, EINPROGRESS, EISCONN, ELOOP, EMSGSIZE,
-        ENETDOWN, ENETRESET, ENETUNREACH, ENOBUFS, ENOPROTOOPT, ENOTCONN, ENOTSOCK, EOPNOTSUPP,
-        EPFNOSUPPORT, EPROTONOSUPPORT, EPROTOTYPE, EREMOTE, ESHUTDOWN, ESOCKTNOSUPPORT, ESTALE,
-        ETIMEDOUT, ETOOMANYREFS, EUSERS, EWOULDBLOCK,
-        // TODO: EBADF should be here once winerrs are translated to errnos but it messes up some things atm
-    }
+    pub use wsa::*;
 }

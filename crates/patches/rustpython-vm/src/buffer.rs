@@ -10,7 +10,7 @@ use crate::{
 use rustpython_common::wtf8::Wtf8Buf;
 
 use core::{fmt, iter::Peekable, mem};
-use half::f16;
+use crate::half::Half;
 use itertools::Itertools;
 use malachite_bigint::BigInt;
 use num_complex::Complex64;
@@ -132,7 +132,7 @@ type NativeEndian = cfg_select! {
     target_endian = "little" => LittleEndian,
 };
 
-#[derive(Copy, Clone, num_enum::TryFromPrimitive, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(u8)]
 pub(crate) enum FormatType {
     Pad = b'x',
@@ -162,6 +162,43 @@ pub(crate) enum FormatType {
     DoubleComplex = b'D',
     VoidP = b'P',
     PyObject = b'O',
+}
+
+impl TryFrom<u8> for FormatType {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            b'x' => Ok(Self::Pad),
+            b'b' => Ok(Self::SByte),
+            b'B' => Ok(Self::UByte),
+            b'c' => Ok(Self::Char),
+            b'u' => Ok(Self::WideChar),
+            b'w' => Ok(Self::Ucs4Char),
+            b's' => Ok(Self::Str),
+            b'p' => Ok(Self::Pascal),
+            b'h' => Ok(Self::Short),
+            b'H' => Ok(Self::UShort),
+            b'i' => Ok(Self::Int),
+            b'I' => Ok(Self::UInt),
+            b'l' => Ok(Self::Long),
+            b'L' => Ok(Self::ULong),
+            b'n' => Ok(Self::SSizeT),
+            b'N' => Ok(Self::SizeT),
+            b'q' => Ok(Self::LongLong),
+            b'Q' => Ok(Self::ULongLong),
+            b'?' => Ok(Self::Bool),
+            b'e' => Ok(Self::Half),
+            b'f' => Ok(Self::Float),
+            b'd' => Ok(Self::Double),
+            b'g' => Ok(Self::LongDouble),
+            b'F' => Ok(Self::FloatComplex),
+            b'D' => Ok(Self::DoubleComplex),
+            b'P' => Ok(Self::VoidP),
+            b'O' => Ok(Self::PyObject),
+            _ => Err(value),
+        }
+    }
 }
 
 impl fmt::Debug for FormatType {
@@ -220,7 +257,7 @@ impl FormatType {
                     Self::LongLong => nonnative_info!(i64, $end),
                     Self::ULongLong => nonnative_info!(u64, $end),
                     Self::Bool => nonnative_info!(bool, $end),
-                    Self::Half => nonnative_info!(f16, $end),
+                    Self::Half => nonnative_info!(Half, $end),
                     Self::Float => nonnative_info!(f32, $end),
                     Self::Double => nonnative_info!(f64, $end),
                     Self::LongDouble => nonnative_info!(f64, $end), // long double same as double
@@ -261,7 +298,7 @@ impl FormatType {
                 Self::LongLong => native_info!(raw::c_longlong),
                 Self::ULongLong => native_info!(raw::c_ulonglong),
                 Self::Bool => native_info!(bool),
-                Self::Half => native_info!(f16),
+                Self::Half => native_info!(Half),
                 Self::Float => native_info!(raw::c_float),
                 Self::Double => native_info!(raw::c_double),
                 Self::LongDouble => native_info!(raw::c_double), // long double same as double for now
@@ -866,7 +903,7 @@ macro_rules! make_pack_complex {
 make_pack_complex!(PackFloatComplex, f32, u32, "f");
 make_pack_complex!(PackDoubleComplex, f64, u64, "d");
 
-impl Packable for f16 {
+impl Packable for Half {
     fn pack<E: ByteOrder>(
         vm: &VirtualMachine,
         _code: FormatType,
@@ -876,8 +913,7 @@ impl Packable for f16 {
         let f_64 = ArgIntoFloat::try_from_object(vm, arg)
             .map_err(|e| PackError::from_exception(e, vm))?
             .into_float();
-        // "from_f64 should be preferred in any non-`const` context" except it gives the wrong result :/
-        let f_16 = Self::from_f64_const(f_64);
+        let f_16 = Self::from_f64(f_64);
         if f_16.is_infinite() != f_64.is_infinite() {
             return Err(PackError {
                 kind: PackErrorKind::Value,

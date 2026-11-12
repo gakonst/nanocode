@@ -168,13 +168,41 @@ pub struct Settings {
     pub profile_format: Option<String>,
 }
 
-#[derive(Debug, Default, Copy, Clone, strum_macros::Display, strum_macros::EnumString)]
-#[strum(serialize_all = "lowercase")]
+#[derive(Debug, Default, Copy, Clone)]
 pub enum CheckHashPycsMode {
     #[default]
     Default,
     Always,
     Never,
+}
+
+impl CheckHashPycsMode {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
+}
+
+impl core::fmt::Display for CheckHashPycsMode {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.pad(self.name())
+    }
+}
+
+impl core::str::FromStr for CheckHashPycsMode {
+    type Err = ();
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "default" => Ok(Self::Default),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            _ => Err(()),
+        }
+    }
 }
 
 impl Settings {

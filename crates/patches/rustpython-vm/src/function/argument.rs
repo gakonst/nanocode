@@ -856,10 +856,32 @@ where
 /// An argument that may or may not be provided by the caller.
 ///
 /// This style of argument is not possible in pure Python.
-#[derive(Debug, result_like::OptionLike, is_macro::Is)]
+#[derive(Debug)]
 pub enum OptionalArg<T = PyObjectRef> {
     Present(T),
     Missing,
+}
+
+crate::like::option_like!(OptionalArg, Present, Missing);
+
+impl<T> OptionalArg<T> {
+    #[inline]
+    pub const fn is_present(&self) -> bool {
+        matches!(*self, Self::Present { .. })
+    }
+
+    #[inline]
+    pub const fn is_missing(&self) -> bool {
+        matches!(*self, Self::Missing { .. })
+    }
+
+    #[inline]
+    pub fn present(self) -> Option<T> {
+        match self {
+            Self::Present(value) => Some(value),
+            Self::Missing => None,
+        }
+    }
 }
 
 unsafe impl<T> Traverse for OptionalArg<T>

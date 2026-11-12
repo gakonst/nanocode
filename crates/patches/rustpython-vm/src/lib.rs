@@ -46,6 +46,8 @@ pub use rustpython_derive::*;
 // This is above everything else so that the defined macros are available everywhere
 #[macro_use]
 pub(crate) mod macros;
+mod like;
+mod half;
 
 mod anystr;
 pub mod buffer;
@@ -125,7 +127,3 @@ pub use rustpython_compiler_core::{bytecode, frozen};
 pub use rustpython_host_env as host_env;
 pub use rustpython_literal as literal;
 
-#[doc(hidden)]
-pub mod __exports {
-    pub use paste;
-}

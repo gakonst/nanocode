@@ -238,25 +238,6 @@ macro_rules! class_or_notimplemented {
     }};
 }
 
-#[macro_export]
-macro_rules! named_function {
-    ($ctx:expr, $module:ident, $func:ident) => {{
-        #[allow(unused_variables)] // weird lint, something to do with paste probably
-        let ctx: &$crate::Context = &$ctx;
-        $crate::__exports::paste::expr! {
-            ctx.new_method_def(
-                stringify!($func),
-                [<$module _ $func>],
-                ::rustpython_vm::function::PyMethodFlags::empty(),
-                ::rustpython_vm::function::ItemDoc::NONE,
-            )
-            .to_function()
-            .with_module(ctx.intern_str(stringify!($module)).into())
-            .into_ref(ctx)
-        }
-    }};
-}
-
 // can't use PyThreadingConstraint for stuff like this since it's not an auto trait, and
 // therefore we can't add it ad-hoc to a trait object
 macro_rules! py_dyn_fn {

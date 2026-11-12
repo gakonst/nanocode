@@ -207,7 +207,7 @@ fn set_current_vm<R>(vm: &VirtualMachine, f: impl FnOnce() -> R) -> R {
 
     VM_STACK.with(|vms| {
         vms.borrow_mut().push(vm.into());
-        scopeguard::defer! {
+        rustpython_common::defer! {
             vms.borrow_mut().pop();
             #[cfg(feature = "threading")]
             end_interpreter_section(switched);
@@ -721,7 +721,7 @@ pub fn allow_threads<R>(vm: &VirtualMachine, f: impl FnOnce() -> R) -> R {
     }
 
     detach_thread();
-    let reattach_guard = scopeguard::guard(vm, attach_thread);
+    let reattach_guard = rustpython_common::scope::guard(vm, attach_thread);
     let result = f();
     drop(reattach_guard);
     result
@@ -760,7 +760,7 @@ pub fn attach_for_callback<R>(vm: &VirtualMachine, f: impl FnOnce() -> R) -> R {
     attach_thread(vm);
     // Detach again even if `f` unwinds, so the `allow_threads` this is nested
     // inside still finds the state it left behind.
-    let redetach_guard = scopeguard::guard((), |()| detach_thread());
+    let redetach_guard = rustpython_common::scope::guard((), |()| detach_thread());
     let result = f();
     drop(redetach_guard);
     result

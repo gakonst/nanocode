@@ -83,9 +83,6 @@ version = "1.2.0"
 version = "1.1"
 default-features = false
 
-[dependencies.constant_time_eq]
-version = "0.6"
-
 [dependencies.crossbeam-utils]
 version = "0.8.21"
 
@@ -96,9 +93,6 @@ optional = true
 [dependencies.getrandom]
 version = "0.4"
 features = ["std"]
-
-[dependencies.hex]
-version = "0.4.3"
 
 [dependencies.indexmap]
 version = "2.14.0"
@@ -128,10 +122,6 @@ version = "0.4.6"
 
 [dependencies.num-traits]
 version = "0.2"
-
-[dependencies.num_enum]
-version = "0.7"
-default-features = false
 
 [dependencies.parking_lot]
 version = "0.12.3"
@@ -201,9 +191,6 @@ version = "0.6.0"
 features = ["compiler"]
 default-features = false
 
-[dependencies.scopeguard]
-version = "1"
-
 [dependencies.xml]
 version = "1.3"
 
@@ -245,10 +232,6 @@ version = "0.38"
 features = ["bundled"]
 optional = true
 
-[target.'cfg(not(any(target_os = "ios", target_os = "android", target_os = "windows", target_arch = "wasm32", target_os = "redox")))'.dependencies.uuid]
-version = "1.23.2"
-features = ["v1"]
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.foreign-types-shared]
 version = "0.1"
 optional = true
@@ -265,9 +248,6 @@ optional = true
 version = "0.23.39"
 features = ["aws_lc_rs"]
 default-features = false
-
-[target."cfg(windows)".dependencies.paste]
-version = "1.0.15"
 
 [target."cfg(windows)".dependencies.widestring]
 version = "1.2.0"

@@ -11,12 +11,12 @@ use std::{
 };
 
 fn main() {
-    let frozen_libs = if cfg!(feature = "freeze-stdlib") {
-        "Lib/*/*.py"
+    let frozen_libs: &[&str] = if cfg!(feature = "freeze-stdlib") {
+        &["Lib"]
     } else {
-        "Lib/python_builtins/*.py"
+        &["Lib", "python_builtins"]
     };
-    for entry in glob::glob(frozen_libs).expect("Lib/ exists?").flatten() {
+    for entry in python_files(frozen_libs) {
         let display = entry.display();
         println!("cargo:rerun-if-changed={display}");
     }
@@ -210,4 +210,32 @@ fn command(cmd: impl AsRef<std::ffi::OsStr>, args: &[&str]) -> io::Result<String
             .map(|s| s.trim().to_owned())
             .map_err(io::Error::other)
     })
+}
+
+fn python_files(prefix: &[&str]) -> Vec<std::path::PathBuf> {
+    let root: std::path::PathBuf = prefix.iter().collect();
+    let directories: Vec<std::path::PathBuf> = if prefix.len() == 1 {
+        std::fs::read_dir(&root)
+            .expect("Lib/ exists?")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect()
+    } else {
+        vec![root]
+    };
+    let mut files = Vec::new();
+    for directory in directories {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "py") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
 }

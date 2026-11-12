@@ -1390,7 +1390,7 @@ pub(crate) mod _thread {
             use core::sync::atomic::Ordering;
             let current_ident = get_ident();
             vm.state.stop_the_world.stop_the_world(&vm.state);
-            scopeguard::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
+            rustpython_common::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
             let registry = vm.state.thread_frames.lock();
             registry
                 .iter()
@@ -1430,7 +1430,7 @@ pub(crate) mod _thread {
             use core::sync::atomic::Ordering;
             let current_ident = get_ident();
             vm.state.stop_the_world.stop_the_world(&vm.state);
-            scopeguard::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
+            rustpython_common::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
             let registry = vm.state.thread_frames.lock();
             registry
                 .iter()
@@ -2136,7 +2136,7 @@ pub(crate) mod _thread {
                 let inner_for_cleanup = inner_clone.clone();
                 let done_event_for_cleanup = done_event_clone.clone();
                 let vm_state = vm.state.clone();
-                scopeguard::defer! {
+                rustpython_common::defer! {
                     // Mark as done
                     inner_for_cleanup.lock().state = ThreadHandleState::Done;
 

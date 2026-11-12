@@ -12,7 +12,7 @@ mod _operator {
         recursion::ReprGuard,
         types::{Callable, Constructor, PyComparisonOp, Representable},
     };
-    use constant_time_eq::constant_time_eq;
+    use rustpython_common::constant_time::constant_time_eq;
 
     #[pyfunction]
     fn lt(a: PyObjectRef, b: PyObjectRef, vm: &VirtualMachine) -> PyResult {

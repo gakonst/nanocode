@@ -261,7 +261,7 @@ mod decl {
             let current_tid = rustpython_vm::stdlib::_thread::get_ident();
             {
                 vm.state.stop_the_world.stop_the_world(&vm.state);
-                scopeguard::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
+                rustpython_common::defer! { vm.state.stop_the_world.start_the_world(&vm.state); }
                 let registry = vm.state.thread_frames.lock();
                 #[expect(
                     clippy::iter_over_hash_type,

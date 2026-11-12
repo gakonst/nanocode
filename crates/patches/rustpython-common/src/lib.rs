@@ -11,12 +11,14 @@ pub mod binascii;
 pub mod borrow;
 pub mod boxvec;
 pub mod cformat;
+pub mod constant_time;
 #[cfg(any(feature = "bz2", feature = "lzma", feature = "zlib"))]
 pub mod compression;
 pub mod encodings;
 pub mod float_ops;
 pub mod format;
 pub mod hash;
+pub mod hex;
 #[cfg(feature = "hashlib")]
 pub mod hashlib;
 #[cfg(feature = "inet")]
@@ -28,6 +30,7 @@ pub mod linked_list;
 pub mod lock;
 pub mod rand;
 pub mod rc;
+pub mod scope;
 pub mod refcount;
 pub mod static_cell;
 pub mod str;

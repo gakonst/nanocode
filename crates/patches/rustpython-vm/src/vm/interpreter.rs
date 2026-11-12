@@ -242,7 +242,7 @@ fn create_subinterpreter_from_parent(
     #[cfg(feature = "threading")]
     let _restore_parent = {
         let saved = thread::current_vm_is_set().then(thread::save_current_thread);
-        scopeguard::guard(saved, |saved| {
+        rustpython_common::scope::guard(saved, |saved| {
             if let Some(saved) = saved {
                 thread::restore_current_thread(saved);
             }

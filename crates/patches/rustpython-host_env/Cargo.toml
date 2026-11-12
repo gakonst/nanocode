@@ -78,9 +78,6 @@ version = "0.2"
 [dependencies.parking_lot]
 version = "0.12.3"
 
-[dependencies.paste]
-version = "1.0.15"
-
 [dependencies.pkcs8]
 version = "0.11"
 features = [

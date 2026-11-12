@@ -6,7 +6,6 @@ use crate::{
     vm::{MAX_MEMORY_SIZE, VirtualMachine},
 };
 use core::ops::{Deref, Range};
-use optional::Optioned;
 
 pub trait MutObjectSequenceOp {
     type Inner: ?Sized;
@@ -27,11 +26,11 @@ pub trait MutObjectSequenceOp {
         vm: &VirtualMachine,
         needle: &PyObject,
         range: Range<usize>,
-    ) -> PyResult<Optioned<usize>> {
+    ) -> PyResult<Option<usize>> {
         self._mut_iter_equal_skeleton::<_, true>(vm, needle, range, || {})
     }
 
-    fn mut_index(&self, vm: &VirtualMachine, needle: &PyObject) -> PyResult<Optioned<usize>> {
+    fn mut_index(&self, vm: &VirtualMachine, needle: &PyObject) -> PyResult<Option<usize>> {
         self.mut_index_range(vm, needle, 0..isize::MAX as usize)
     }
 
@@ -45,7 +44,7 @@ pub trait MutObjectSequenceOp {
         needle: &PyObject,
         range: Range<usize>,
         mut f: F,
-    ) -> PyResult<Optioned<usize>>
+    ) -> PyResult<Option<usize>>
     where
         F: FnMut(),
     {
@@ -54,7 +53,7 @@ pub trait MutObjectSequenceOp {
 
         let index = loop {
             if i >= range.end {
-                break Optioned::<usize>::none();
+                break None;
             }
             let guard = if let Some(x) = borrower.take() {
                 x
@@ -65,13 +64,13 @@ pub trait MutObjectSequenceOp {
             let elem = if let Some(x) = Self::do_get(i, &guard) {
                 x
             } else {
-                break Optioned::<usize>::none();
+                break None;
             };
 
             if elem.is(needle) {
                 f();
                 if SHORT {
-                    break Optioned::<usize>::some(i);
+                    break Some(i);
                 }
                 borrower = Some(guard);
             } else {
@@ -81,7 +80,7 @@ pub trait MutObjectSequenceOp {
                 if elem.rich_compare_bool(needle, PyComparisonOp::Eq, vm)? {
                     f();
                     if SHORT {
-                        break Optioned::<usize>::some(i);
+                        break Some(i);
                     }
                 }
             }

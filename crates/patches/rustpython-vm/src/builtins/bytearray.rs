@@ -519,7 +519,7 @@ impl Py<PyByteArray> {
         // Export before driving the iterable: resizing is forbidden, but
         // same-size mutations must be reflected in the joined result.
         self.exports.fetch_add(1, Ordering::Release);
-        scopeguard::defer! { self.exports.fetch_sub(1, Ordering::Release); }
+        rustpython_common::defer! { self.exports.fetch_sub(1, Ordering::Release); }
         let separator_len = self.__len__();
         let items = BytesJoin::new(iterable_of_bytes, vm)?;
         Ok(items

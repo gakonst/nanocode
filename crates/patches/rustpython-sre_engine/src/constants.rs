@@ -16,7 +16,7 @@ use bitflags::bitflags;
 pub const SRE_MAGIC: usize = 20230612;
 
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-#[derive(num_enum::TryFromPrimitive, Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SreOpcode {
     FAILURE = 0,
@@ -64,8 +64,61 @@ pub enum SreOpcode {
     RANGE_UNI_IGNORE = 42,
 }
 
+impl TryFrom<u32> for SreOpcode {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::FAILURE),
+            1 => Ok(Self::SUCCESS),
+            2 => Ok(Self::ANY),
+            3 => Ok(Self::ANY_ALL),
+            4 => Ok(Self::ASSERT),
+            5 => Ok(Self::ASSERT_NOT),
+            6 => Ok(Self::AT),
+            7 => Ok(Self::BRANCH),
+            8 => Ok(Self::CATEGORY),
+            9 => Ok(Self::CHARSET),
+            10 => Ok(Self::BIGCHARSET),
+            11 => Ok(Self::GROUPREF),
+            12 => Ok(Self::GROUPREF_EXISTS),
+            13 => Ok(Self::IN),
+            14 => Ok(Self::INFO),
+            15 => Ok(Self::JUMP),
+            16 => Ok(Self::LITERAL),
+            17 => Ok(Self::MARK),
+            18 => Ok(Self::MAX_UNTIL),
+            19 => Ok(Self::MIN_UNTIL),
+            20 => Ok(Self::NOT_LITERAL),
+            21 => Ok(Self::NEGATE),
+            22 => Ok(Self::RANGE),
+            23 => Ok(Self::REPEAT),
+            24 => Ok(Self::REPEAT_ONE),
+            25 => Ok(Self::SUBPATTERN),
+            26 => Ok(Self::MIN_REPEAT_ONE),
+            27 => Ok(Self::ATOMIC_GROUP),
+            28 => Ok(Self::POSSESSIVE_REPEAT),
+            29 => Ok(Self::POSSESSIVE_REPEAT_ONE),
+            30 => Ok(Self::GROUPREF_IGNORE),
+            31 => Ok(Self::IN_IGNORE),
+            32 => Ok(Self::LITERAL_IGNORE),
+            33 => Ok(Self::NOT_LITERAL_IGNORE),
+            34 => Ok(Self::GROUPREF_LOC_IGNORE),
+            35 => Ok(Self::IN_LOC_IGNORE),
+            36 => Ok(Self::LITERAL_LOC_IGNORE),
+            37 => Ok(Self::NOT_LITERAL_LOC_IGNORE),
+            38 => Ok(Self::GROUPREF_UNI_IGNORE),
+            39 => Ok(Self::IN_UNI_IGNORE),
+            40 => Ok(Self::LITERAL_UNI_IGNORE),
+            41 => Ok(Self::NOT_LITERAL_UNI_IGNORE),
+            42 => Ok(Self::RANGE_UNI_IGNORE),
+            _ => Err(value),
+        }
+    }
+}
+
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-#[derive(num_enum::TryFromPrimitive, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SreAtCode {
     BEGINNING = 0,
@@ -82,8 +135,30 @@ pub enum SreAtCode {
     UNI_NON_BOUNDARY = 11,
 }
 
+impl TryFrom<u32> for SreAtCode {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::BEGINNING),
+            1 => Ok(Self::BEGINNING_LINE),
+            2 => Ok(Self::BEGINNING_STRING),
+            3 => Ok(Self::BOUNDARY),
+            4 => Ok(Self::NON_BOUNDARY),
+            5 => Ok(Self::END),
+            6 => Ok(Self::END_LINE),
+            7 => Ok(Self::END_STRING),
+            8 => Ok(Self::LOC_BOUNDARY),
+            9 => Ok(Self::LOC_NON_BOUNDARY),
+            10 => Ok(Self::UNI_BOUNDARY),
+            11 => Ok(Self::UNI_NON_BOUNDARY),
+            _ => Err(value),
+        }
+    }
+}
+
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-#[derive(num_enum::TryFromPrimitive, Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug)]
 #[repr(u32)]
 pub enum SreCatCode {
     DIGIT = 0,
@@ -104,6 +179,34 @@ pub enum SreCatCode {
     UNI_NOT_WORD = 15,
     UNI_LINEBREAK = 16,
     UNI_NOT_LINEBREAK = 17,
+}
+
+impl TryFrom<u32> for SreCatCode {
+    type Error = u32;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::DIGIT),
+            1 => Ok(Self::NOT_DIGIT),
+            2 => Ok(Self::SPACE),
+            3 => Ok(Self::NOT_SPACE),
+            4 => Ok(Self::WORD),
+            5 => Ok(Self::NOT_WORD),
+            6 => Ok(Self::LINEBREAK),
+            7 => Ok(Self::NOT_LINEBREAK),
+            8 => Ok(Self::LOC_WORD),
+            9 => Ok(Self::LOC_NOT_WORD),
+            10 => Ok(Self::UNI_DIGIT),
+            11 => Ok(Self::UNI_NOT_DIGIT),
+            12 => Ok(Self::UNI_SPACE),
+            13 => Ok(Self::UNI_NOT_SPACE),
+            14 => Ok(Self::UNI_WORD),
+            15 => Ok(Self::UNI_NOT_WORD),
+            16 => Ok(Self::UNI_LINEBREAK),
+            17 => Ok(Self::UNI_NOT_LINEBREAK),
+            _ => Err(value),
+        }
+    }
 }
 
 bitflags! {

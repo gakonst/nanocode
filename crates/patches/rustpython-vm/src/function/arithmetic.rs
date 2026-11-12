@@ -4,11 +4,12 @@ use crate::{
     object::{AsObject, PyObjectRef, PyResult},
 };
 
-#[derive(result_like::OptionLike)]
 pub enum PyArithmeticValue<T> {
     Implemented(T),
     NotImplemented,
 }
+
+crate::like::option_like!(PyArithmeticValue, Implemented, NotImplemented);
 
 impl PyArithmeticValue<PyObjectRef> {
     pub fn from_object(vm: &VirtualMachine, obj: PyObjectRef) -> Self {

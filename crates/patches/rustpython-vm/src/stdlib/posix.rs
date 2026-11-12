@@ -42,8 +42,6 @@ pub mod module {
         fs, io,
         os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
     };
-    use strum::IntoEnumIterator;
-    use strum_macros::{EnumIter, EnumString};
 
     #[cfg(target_os = "linux")]
     #[pyattr]
@@ -1743,12 +1741,30 @@ pub mod module {
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))]
-    #[derive(num_enum::IntoPrimitive, num_enum::TryFromPrimitive)]
-    #[repr(i32)]
+            #[repr(i32)]
     enum PosixSpawnFileActionIdentifier {
         Open,
         Close,
         Dup2,
+    }
+
+    impl TryFrom<i32> for PosixSpawnFileActionIdentifier {
+        type Error = i32;
+
+        fn try_from(value: i32) -> Result<Self, Self::Error> {
+            match value {
+                0 => Ok(Self::Open),
+                1 => Ok(Self::Close),
+                2 => Ok(Self::Dup2),
+                _ => Err(value),
+            }
+        }
+    }
+
+    impl From<PosixSpawnFileActionIdentifier> for i32 {
+        fn from(value: PosixSpawnFileActionIdentifier) -> Self {
+            value as Self
+        }
     }
 
     #[cfg(all(
@@ -2293,7 +2309,7 @@ pub mod module {
     }
 
     // Mirror the libc pathconf constants as Python-facing names.
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, EnumIter, EnumString)]
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     #[repr(i32)]
     #[allow(non_camel_case_types)]
     pub enum PathconfVar {
@@ -2458,6 +2474,89 @@ pub mod module {
         PC_TIMESTAMP_RESOLUTION = host_posix::_PC_TIMESTAMP_RESOLUTION,
     }
 
+    impl PathconfVar {
+        fn iter() -> impl Iterator<Item = Self> {
+            let mut variants = Vec::new();
+            #[cfg(any( target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox" ))]
+            variants.push(Self::PC_FILESIZEBITS);
+            variants.push(Self::PC_LINK_MAX);
+            variants.push(Self::PC_MAX_CANON);
+            variants.push(Self::PC_MAX_INPUT);
+            variants.push(Self::PC_NAME_MAX);
+            variants.push(Self::PC_PATH_MAX);
+            variants.push(Self::PC_PIPE_BUF);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "illumos", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+            variants.push(Self::PC_2_SYMLINKS);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+            variants.push(Self::PC_ALLOC_SIZE_MIN);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd" ))]
+            variants.push(Self::PC_REC_INCR_XFER_SIZE);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+            variants.push(Self::PC_REC_MAX_XFER_SIZE);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+            variants.push(Self::PC_REC_MIN_XFER_SIZE);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+            variants.push(Self::PC_REC_XFER_ALIGN);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+            variants.push(Self::PC_SYMLINK_MAX);
+            variants.push(Self::PC_CHOWN_RESTRICTED);
+            variants.push(Self::PC_NO_TRUNC);
+            variants.push(Self::PC_VDISABLE);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+            variants.push(Self::PC_ASYNC_IO);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+            variants.push(Self::PC_PRIO_IO);
+            #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+            variants.push(Self::PC_SYNC_IO);
+            #[cfg(any(target_os = "dragonfly", target_os = "openbsd"))]
+            variants.push(Self::PC_TIMESTAMP_RESOLUTION);
+            variants.into_iter()
+        }
+    }
+
+    impl core::str::FromStr for PathconfVar {
+        type Err = ();
+
+        fn from_str(name: &str) -> Result<Self, Self::Err> {
+            match name {
+                #[cfg(any( target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox" ))]
+                "PC_FILESIZEBITS" => Ok(Self::PC_FILESIZEBITS),
+                "PC_LINK_MAX" => Ok(Self::PC_LINK_MAX),
+                "PC_MAX_CANON" => Ok(Self::PC_MAX_CANON),
+                "PC_MAX_INPUT" => Ok(Self::PC_MAX_INPUT),
+                "PC_NAME_MAX" => Ok(Self::PC_NAME_MAX),
+                "PC_PATH_MAX" => Ok(Self::PC_PATH_MAX),
+                "PC_PIPE_BUF" => Ok(Self::PC_PIPE_BUF),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "illumos", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+                "PC_2_SYMLINKS" => Ok(Self::PC_2_SYMLINKS),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+                "PC_ALLOC_SIZE_MIN" => Ok(Self::PC_ALLOC_SIZE_MIN),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd" ))]
+                "PC_REC_INCR_XFER_SIZE" => Ok(Self::PC_REC_INCR_XFER_SIZE),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+                "PC_REC_MAX_XFER_SIZE" => Ok(Self::PC_REC_MAX_XFER_SIZE),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+                "PC_REC_MIN_XFER_SIZE" => Ok(Self::PC_REC_MIN_XFER_SIZE),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "linux", target_os = "openbsd", target_os = "redox" ))]
+                "PC_REC_XFER_ALIGN" => Ok(Self::PC_REC_XFER_ALIGN),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+                "PC_SYMLINK_MAX" => Ok(Self::PC_SYMLINK_MAX),
+                "PC_CHOWN_RESTRICTED" => Ok(Self::PC_CHOWN_RESTRICTED),
+                "PC_NO_TRUNC" => Ok(Self::PC_NO_TRUNC),
+                "PC_VDISABLE" => Ok(Self::PC_VDISABLE),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+                "PC_ASYNC_IO" => Ok(Self::PC_ASYNC_IO),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+                "PC_PRIO_IO" => Ok(Self::PC_PRIO_IO),
+                #[cfg(any( target_os = "android", target_os = "dragonfly", target_os = "freebsd", target_os = "illumos", target_os = "linux", target_os = "netbsd", target_os = "openbsd", target_os = "redox", target_os = "solaris" ))]
+                "PC_SYNC_IO" => Ok(Self::PC_SYNC_IO),
+                #[cfg(any(target_os = "dragonfly", target_os = "openbsd"))]
+                "PC_TIMESTAMP_RESOLUTION" => Ok(Self::PC_TIMESTAMP_RESOLUTION),
+                _ => Err(()),
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[derive(FromArgs)]
     struct PathconfArgs {
@@ -2517,7 +2616,7 @@ pub mod module {
     }
 
     #[cfg(not(target_os = "redox"))]
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, EnumIter, EnumString)]
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     #[repr(i32)]
     #[allow(non_camel_case_types)]
     pub enum SysconfVar {
@@ -2639,6 +2738,209 @@ pub mod module {
             target_os = "fuchsia"
         ))]
         SC_XBS5_LPBIG_OFFBIG = host_posix::_SC_XBS5_LPBIG_OFFBIG,
+    }
+
+    impl SysconfVar {
+        fn iter() -> impl Iterator<Item = Self> {
+            let mut variants = Vec::new();
+            variants.push(Self::SC_2_CHAR_TERM);
+            variants.push(Self::SC_2_C_BIND);
+            variants.push(Self::SC_2_C_DEV);
+            variants.push(Self::SC_2_FORT_DEV);
+            variants.push(Self::SC_2_FORT_RUN);
+            variants.push(Self::SC_2_LOCALEDEF);
+            variants.push(Self::SC_2_SW_DEV);
+            variants.push(Self::SC_2_UPE);
+            variants.push(Self::SC_2_VERSION);
+            variants.push(Self::SC_AIO_LISTIO_MAX);
+            variants.push(Self::SC_AIO_MAX);
+            variants.push(Self::SC_AIO_PRIO_DELTA_MAX);
+            variants.push(Self::SC_ARG_MAX);
+            variants.push(Self::SC_ASYNCHRONOUS_IO);
+            variants.push(Self::SC_ATEXIT_MAX);
+            variants.push(Self::SC_BC_BASE_MAX);
+            variants.push(Self::SC_BC_DIM_MAX);
+            variants.push(Self::SC_BC_SCALE_MAX);
+            variants.push(Self::SC_BC_STRING_MAX);
+            variants.push(Self::SC_CHILD_MAX);
+            variants.push(Self::SC_CLK_TCK);
+            variants.push(Self::SC_COLL_WEIGHTS_MAX);
+            variants.push(Self::SC_DELAYTIMER_MAX);
+            variants.push(Self::SC_EXPR_NEST_MAX);
+            variants.push(Self::SC_FSYNC);
+            variants.push(Self::SC_GETGR_R_SIZE_MAX);
+            variants.push(Self::SC_GETPW_R_SIZE_MAX);
+            variants.push(Self::SC_IOV_MAX);
+            variants.push(Self::SC_JOB_CONTROL);
+            variants.push(Self::SC_LINE_MAX);
+            variants.push(Self::SC_LOGIN_NAME_MAX);
+            variants.push(Self::SC_MAPPED_FILES);
+            variants.push(Self::SC_MEMLOCK);
+            variants.push(Self::SC_MEMLOCK_RANGE);
+            variants.push(Self::SC_MEMORY_PROTECTION);
+            variants.push(Self::SC_MESSAGE_PASSING);
+            variants.push(Self::SC_MQ_OPEN_MAX);
+            variants.push(Self::SC_MQ_PRIO_MAX);
+            variants.push(Self::SC_NGROUPS_MAX);
+            variants.push(Self::SC_NPROCESSORS_CONF);
+            variants.push(Self::SC_NPROCESSORS_ONLN);
+            variants.push(Self::SC_OPEN_MAX);
+            variants.push(Self::SC_PAGE_SIZE);
+            #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+            variants.push(Self::SC_PASS_MAX);
+            variants.push(Self::SC_PHYS_PAGES);
+            variants.push(Self::SC_PRIORITIZED_IO);
+            variants.push(Self::SC_PRIORITY_SCHEDULING);
+            variants.push(Self::SC_REALTIME_SIGNALS);
+            variants.push(Self::SC_RE_DUP_MAX);
+            variants.push(Self::SC_RTSIG_MAX);
+            variants.push(Self::SC_SAVED_IDS);
+            variants.push(Self::SC_SEMAPHORES);
+            variants.push(Self::SC_SEM_NSEMS_MAX);
+            variants.push(Self::SC_SEM_VALUE_MAX);
+            variants.push(Self::SC_SHARED_MEMORY_OBJECTS);
+            variants.push(Self::SC_SIGQUEUE_MAX);
+            variants.push(Self::SC_STREAM_MAX);
+            variants.push(Self::SC_SYNCHRONIZED_IO);
+            variants.push(Self::SC_THREADS);
+            variants.push(Self::SC_THREAD_ATTR_STACKADDR);
+            variants.push(Self::SC_THREAD_ATTR_STACKSIZE);
+            variants.push(Self::SC_THREAD_DESTRUCTOR_ITERATIONS);
+            variants.push(Self::SC_THREAD_KEYS_MAX);
+            variants.push(Self::SC_THREAD_PRIORITY_SCHEDULING);
+            variants.push(Self::SC_THREAD_PRIO_INHERIT);
+            variants.push(Self::SC_THREAD_PRIO_PROTECT);
+            variants.push(Self::SC_THREAD_PROCESS_SHARED);
+            variants.push(Self::SC_THREAD_SAFE_FUNCTIONS);
+            variants.push(Self::SC_THREAD_STACK_MIN);
+            variants.push(Self::SC_THREAD_THREADS_MAX);
+            variants.push(Self::SC_TIMERS);
+            variants.push(Self::SC_TIMER_MAX);
+            variants.push(Self::SC_TTY_NAME_MAX);
+            variants.push(Self::SC_TZNAME_MAX);
+            variants.push(Self::SC_VERSION);
+            variants.push(Self::SC_XOPEN_CRYPT);
+            variants.push(Self::SC_XOPEN_ENH_I18N);
+            variants.push(Self::SC_XOPEN_LEGACY);
+            variants.push(Self::SC_XOPEN_REALTIME);
+            variants.push(Self::SC_XOPEN_REALTIME_THREADS);
+            variants.push(Self::SC_XOPEN_SHM);
+            variants.push(Self::SC_XOPEN_UNIX);
+            variants.push(Self::SC_XOPEN_VERSION);
+            variants.push(Self::SC_XOPEN_XCU_VERSION);
+            #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+            variants.push(Self::SC_XBS5_ILP32_OFF32);
+            #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+            variants.push(Self::SC_XBS5_ILP32_OFFBIG);
+            #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+            variants.push(Self::SC_XBS5_LP64_OFF64);
+            #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+            variants.push(Self::SC_XBS5_LPBIG_OFFBIG);
+            variants.into_iter()
+        }
+    }
+
+    impl core::str::FromStr for SysconfVar {
+        type Err = ();
+
+        fn from_str(name: &str) -> Result<Self, Self::Err> {
+            match name {
+                "SC_2_CHAR_TERM" => Ok(Self::SC_2_CHAR_TERM),
+                "SC_2_C_BIND" => Ok(Self::SC_2_C_BIND),
+                "SC_2_C_DEV" => Ok(Self::SC_2_C_DEV),
+                "SC_2_FORT_DEV" => Ok(Self::SC_2_FORT_DEV),
+                "SC_2_FORT_RUN" => Ok(Self::SC_2_FORT_RUN),
+                "SC_2_LOCALEDEF" => Ok(Self::SC_2_LOCALEDEF),
+                "SC_2_SW_DEV" => Ok(Self::SC_2_SW_DEV),
+                "SC_2_UPE" => Ok(Self::SC_2_UPE),
+                "SC_2_VERSION" => Ok(Self::SC_2_VERSION),
+                "SC_AIO_LISTIO_MAX" => Ok(Self::SC_AIO_LISTIO_MAX),
+                "SC_AIO_MAX" => Ok(Self::SC_AIO_MAX),
+                "SC_AIO_PRIO_DELTA_MAX" => Ok(Self::SC_AIO_PRIO_DELTA_MAX),
+                "SC_ARG_MAX" => Ok(Self::SC_ARG_MAX),
+                "SC_ASYNCHRONOUS_IO" => Ok(Self::SC_ASYNCHRONOUS_IO),
+                "SC_ATEXIT_MAX" => Ok(Self::SC_ATEXIT_MAX),
+                "SC_BC_BASE_MAX" => Ok(Self::SC_BC_BASE_MAX),
+                "SC_BC_DIM_MAX" => Ok(Self::SC_BC_DIM_MAX),
+                "SC_BC_SCALE_MAX" => Ok(Self::SC_BC_SCALE_MAX),
+                "SC_BC_STRING_MAX" => Ok(Self::SC_BC_STRING_MAX),
+                "SC_CHILD_MAX" => Ok(Self::SC_CHILD_MAX),
+                "SC_CLK_TCK" => Ok(Self::SC_CLK_TCK),
+                "SC_COLL_WEIGHTS_MAX" => Ok(Self::SC_COLL_WEIGHTS_MAX),
+                "SC_DELAYTIMER_MAX" => Ok(Self::SC_DELAYTIMER_MAX),
+                "SC_EXPR_NEST_MAX" => Ok(Self::SC_EXPR_NEST_MAX),
+                "SC_FSYNC" => Ok(Self::SC_FSYNC),
+                "SC_GETGR_R_SIZE_MAX" => Ok(Self::SC_GETGR_R_SIZE_MAX),
+                "SC_GETPW_R_SIZE_MAX" => Ok(Self::SC_GETPW_R_SIZE_MAX),
+                "SC_IOV_MAX" => Ok(Self::SC_IOV_MAX),
+                "SC_JOB_CONTROL" => Ok(Self::SC_JOB_CONTROL),
+                "SC_LINE_MAX" => Ok(Self::SC_LINE_MAX),
+                "SC_LOGIN_NAME_MAX" => Ok(Self::SC_LOGIN_NAME_MAX),
+                "SC_MAPPED_FILES" => Ok(Self::SC_MAPPED_FILES),
+                "SC_MEMLOCK" => Ok(Self::SC_MEMLOCK),
+                "SC_MEMLOCK_RANGE" => Ok(Self::SC_MEMLOCK_RANGE),
+                "SC_MEMORY_PROTECTION" => Ok(Self::SC_MEMORY_PROTECTION),
+                "SC_MESSAGE_PASSING" => Ok(Self::SC_MESSAGE_PASSING),
+                "SC_MQ_OPEN_MAX" => Ok(Self::SC_MQ_OPEN_MAX),
+                "SC_MQ_PRIO_MAX" => Ok(Self::SC_MQ_PRIO_MAX),
+                "SC_NGROUPS_MAX" => Ok(Self::SC_NGROUPS_MAX),
+                "SC_NPROCESSORS_CONF" => Ok(Self::SC_NPROCESSORS_CONF),
+                "SC_NPROCESSORS_ONLN" => Ok(Self::SC_NPROCESSORS_ONLN),
+                "SC_OPEN_MAX" => Ok(Self::SC_OPEN_MAX),
+                "SC_PAGE_SIZE" => Ok(Self::SC_PAGE_SIZE),
+                #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+                "SC_PASS_MAX" => Ok(Self::SC_PASS_MAX),
+                "SC_PHYS_PAGES" => Ok(Self::SC_PHYS_PAGES),
+                "SC_PRIORITIZED_IO" => Ok(Self::SC_PRIORITIZED_IO),
+                "SC_PRIORITY_SCHEDULING" => Ok(Self::SC_PRIORITY_SCHEDULING),
+                "SC_REALTIME_SIGNALS" => Ok(Self::SC_REALTIME_SIGNALS),
+                "SC_RE_DUP_MAX" => Ok(Self::SC_RE_DUP_MAX),
+                "SC_RTSIG_MAX" => Ok(Self::SC_RTSIG_MAX),
+                "SC_SAVED_IDS" => Ok(Self::SC_SAVED_IDS),
+                "SC_SEMAPHORES" => Ok(Self::SC_SEMAPHORES),
+                "SC_SEM_NSEMS_MAX" => Ok(Self::SC_SEM_NSEMS_MAX),
+                "SC_SEM_VALUE_MAX" => Ok(Self::SC_SEM_VALUE_MAX),
+                "SC_SHARED_MEMORY_OBJECTS" => Ok(Self::SC_SHARED_MEMORY_OBJECTS),
+                "SC_SIGQUEUE_MAX" => Ok(Self::SC_SIGQUEUE_MAX),
+                "SC_STREAM_MAX" => Ok(Self::SC_STREAM_MAX),
+                "SC_SYNCHRONIZED_IO" => Ok(Self::SC_SYNCHRONIZED_IO),
+                "SC_THREADS" => Ok(Self::SC_THREADS),
+                "SC_THREAD_ATTR_STACKADDR" => Ok(Self::SC_THREAD_ATTR_STACKADDR),
+                "SC_THREAD_ATTR_STACKSIZE" => Ok(Self::SC_THREAD_ATTR_STACKSIZE),
+                "SC_THREAD_DESTRUCTOR_ITERATIONS" => Ok(Self::SC_THREAD_DESTRUCTOR_ITERATIONS),
+                "SC_THREAD_KEYS_MAX" => Ok(Self::SC_THREAD_KEYS_MAX),
+                "SC_THREAD_PRIORITY_SCHEDULING" => Ok(Self::SC_THREAD_PRIORITY_SCHEDULING),
+                "SC_THREAD_PRIO_INHERIT" => Ok(Self::SC_THREAD_PRIO_INHERIT),
+                "SC_THREAD_PRIO_PROTECT" => Ok(Self::SC_THREAD_PRIO_PROTECT),
+                "SC_THREAD_PROCESS_SHARED" => Ok(Self::SC_THREAD_PROCESS_SHARED),
+                "SC_THREAD_SAFE_FUNCTIONS" => Ok(Self::SC_THREAD_SAFE_FUNCTIONS),
+                "SC_THREAD_STACK_MIN" => Ok(Self::SC_THREAD_STACK_MIN),
+                "SC_THREAD_THREADS_MAX" => Ok(Self::SC_THREAD_THREADS_MAX),
+                "SC_TIMERS" => Ok(Self::SC_TIMERS),
+                "SC_TIMER_MAX" => Ok(Self::SC_TIMER_MAX),
+                "SC_TTY_NAME_MAX" => Ok(Self::SC_TTY_NAME_MAX),
+                "SC_TZNAME_MAX" => Ok(Self::SC_TZNAME_MAX),
+                "SC_VERSION" => Ok(Self::SC_VERSION),
+                "SC_XOPEN_CRYPT" => Ok(Self::SC_XOPEN_CRYPT),
+                "SC_XOPEN_ENH_I18N" => Ok(Self::SC_XOPEN_ENH_I18N),
+                "SC_XOPEN_LEGACY" => Ok(Self::SC_XOPEN_LEGACY),
+                "SC_XOPEN_REALTIME" => Ok(Self::SC_XOPEN_REALTIME),
+                "SC_XOPEN_REALTIME_THREADS" => Ok(Self::SC_XOPEN_REALTIME_THREADS),
+                "SC_XOPEN_SHM" => Ok(Self::SC_XOPEN_SHM),
+                "SC_XOPEN_UNIX" => Ok(Self::SC_XOPEN_UNIX),
+                "SC_XOPEN_VERSION" => Ok(Self::SC_XOPEN_VERSION),
+                "SC_XOPEN_XCU_VERSION" => Ok(Self::SC_XOPEN_XCU_VERSION),
+                #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+                "SC_XBS5_ILP32_OFF32" => Ok(Self::SC_XBS5_ILP32_OFF32),
+                #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+                "SC_XBS5_ILP32_OFFBIG" => Ok(Self::SC_XBS5_ILP32_OFFBIG),
+                #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+                "SC_XBS5_LP64_OFF64" => Ok(Self::SC_XBS5_LP64_OFF64),
+                #[cfg(any( target_os = "linux", target_vendor = "apple", target_os = "netbsd", target_os = "fuchsia" ))]
+                "SC_XBS5_LPBIG_OFFBIG" => Ok(Self::SC_XBS5_LPBIG_OFFBIG),
+                _ => Err(()),
+            }
+        }
     }
 
     #[cfg(target_os = "redox")]

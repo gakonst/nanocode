@@ -33,13 +33,31 @@ fn main() {
     }
 }
 
-// remove *.pyc files and add *.py to watch list
 fn process_python_libs(pattern: &str) {
-    let glob = glob::glob(pattern).unwrap_or_else(|e| panic!("failed to glob {pattern:?}: {e}"));
-    for entry in glob.flatten() {
-        if entry.is_dir() {
+    let (root, recursive) = if let Some(root) = pattern.strip_suffix("/**/*") {
+        (root, true)
+    } else {
+        (pattern.strip_suffix("/*").expect("a directory pattern"), false)
+    };
+    let mut pending = vec![std::path::PathBuf::from(root)];
+    let mut entries = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(listing) = std::fs::read_dir(&directory) else {
             continue;
+        };
+        for entry in listing.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if recursive {
+                    pending.push(path);
+                }
+                continue;
+            }
+            entries.push(path);
         }
+    }
+    entries.sort();
+    for entry in entries {
         let display = entry.display();
         if display.to_string().ends_with(".pyc") {
             if std::fs::remove_file(&entry).is_err() {

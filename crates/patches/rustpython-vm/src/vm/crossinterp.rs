@@ -433,7 +433,7 @@ fn pickle_loads(data: &PickledData, vm: &VirtualMachine) -> PyResult {
             )?;
             // Resolve globals on this unpickler only: replacing sys.modules
             // would let concurrent consumers observe or restore the wrong module.
-            let _clear = scopeguard::guard((), |()| {
+            let _clear = rustpython_common::scope::guard((), |()| {
                 let _ = unpickler.del_attr("find_class", vm);
             });
             vm.call_method(&unpickler, "load", ())
@@ -489,7 +489,7 @@ fn isolated_main(mainfile: &str, vm: &VirtualMachine) -> PyResult {
         .get_attr("_ModuleLockManager", vm)?
         .call(("<RustPython isolated __main__>",), vm)?;
     vm.call_method(&manager, "__enter__", ())?;
-    let _unlock = scopeguard::guard((), |()| {
+    let _unlock = rustpython_common::scope::guard((), |()| {
         let _ = vm.call_method(
             &manager,
             "__exit__",

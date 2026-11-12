@@ -1028,8 +1028,6 @@ impl DecodeContext for PyDecodeContext<'_> {
     }
 }
 
-#[derive(strum_macros::EnumString)]
-#[strum(serialize_all = "lowercase")]
 enum StandardError {
     Strict,
     Ignore,
@@ -1038,6 +1036,23 @@ enum StandardError {
     BackslashReplace,
     SurrogatePass,
     SurrogateEscape,
+}
+
+impl core::str::FromStr for StandardError {
+    type Err = ();
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "strict" => Ok(Self::Strict),
+            "ignore" => Ok(Self::Ignore),
+            "replace" => Ok(Self::Replace),
+            "xmlcharrefreplace" => Ok(Self::XmlCharRefReplace),
+            "backslashreplace" => Ok(Self::BackslashReplace),
+            "surrogatepass" => Ok(Self::SurrogatePass),
+            "surrogateescape" => Ok(Self::SurrogateEscape),
+            _ => Err(()),
+        }
+    }
 }
 
 impl<'a> EncodeErrorHandler<PyEncodeContext<'a>> for StandardError {

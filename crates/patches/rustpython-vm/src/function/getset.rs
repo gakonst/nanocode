@@ -6,10 +6,32 @@ use crate::{
     object::PyThreadingConstraint,
 };
 
-#[derive(result_like::OptionLike, is_macro::Is, Debug)]
+#[derive(Debug)]
 pub enum PySetterValue<T = PyObjectRef> {
     Assign(T),
     Delete,
+}
+
+crate::like::option_like!(PySetterValue, Assign, Delete);
+
+impl<T> PySetterValue<T> {
+    #[inline]
+    pub const fn is_assign(&self) -> bool {
+        matches!(*self, Self::Assign { .. })
+    }
+
+    #[inline]
+    pub const fn is_delete(&self) -> bool {
+        matches!(*self, Self::Delete { .. })
+    }
+
+    #[inline]
+    pub fn assign(self) -> Option<T> {
+        match self {
+            Self::Assign(value) => Some(value),
+            Self::Delete => None,
+        }
+    }
 }
 
 impl PySetterValue {

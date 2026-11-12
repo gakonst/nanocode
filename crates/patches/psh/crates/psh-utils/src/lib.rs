@@ -115,7 +115,7 @@ macro_rules! registry {
     $($git,)?
     UtilEntry {
         names: &["tar"],
-        mode: Mode::PathFallback,
+        mode: Mode::SandboxOnly,
         destructive: false,
         run: util_fn!(tar::run),
     },
@@ -127,19 +127,19 @@ macro_rules! registry {
     },
     UtilEntry {
         names: &["zip"],
-        mode: Mode::PathFallback,
+        mode: Mode::SandboxOnly,
         destructive: false,
         run: util_fn!(zip::zip),
     },
     UtilEntry {
         names: &["unzip"],
-        mode: Mode::PathFallback,
+        mode: Mode::SandboxOnly,
         destructive: false,
         run: util_fn!(zip::unzip),
     },
     UtilEntry {
         names: &["patch"],
-        mode: Mode::PathFallback,
+        mode: Mode::SandboxOnly,
         destructive: false,
         run: util_fn!(patch::run),
     },
@@ -582,7 +582,7 @@ macro_rules! registry {
 
 const GIT: UtilEntry = UtilEntry {
     names: &["git"],
-    mode: Mode::PathFallback,
+    mode: Mode::SandboxOnly,
     destructive: false,
     run: util_fn!(git::run),
 };
@@ -684,7 +684,9 @@ pub static SPECS: &[opts::Spec] = &[
 ];
 
 /// The policy for a shell: every utility on. `sandbox`: no real programs exist (wasm),
-/// so `F` and `W` utilities always run.
+/// so `F`, `W` and `X` utilities always run. On a machine an `X` utility (git, tar, zip,
+/// unzip, patch: each does part of what its program does) never runs in the program's
+/// place: the name is the program `PATH` has or is not found.
 pub fn policy(sandbox: bool) -> UtilPolicy {
     UtilPolicy {
         entries: REGISTRY,

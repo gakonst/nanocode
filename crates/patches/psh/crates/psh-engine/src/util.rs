@@ -47,6 +47,12 @@ pub enum Mode {
     PathFallback,
     /// W: always on Windows, as `PathFallback` elsewhere.
     WindowsShadow,
+    /// X (nanocode): only in a sandbox, where no programs exist, or when forced. On a
+    /// machine the name is the program `PATH` has or is not found, as in bash: a
+    /// utility that does part of what its program does (a git without a network, a
+    /// Python without processes or sockets) never answers in its place, so whoever runs
+    /// the command installs the program.
+    SandboxOnly,
 }
 
 /// One utility of the registry.
@@ -70,11 +76,12 @@ pub struct UtilPolicy {
     pub off_destructive: bool,
     /// These names run the real program (or are not found).
     pub off_names: Vec<Vec<u8>>,
-    /// These names run the utility even in `PathFallback` and `WindowsShadow` mode,
-    /// when `PATH` has the program (D1192: the L4 cases test psh's utilities).
+    /// These names run the utility even in `PathFallback`, `WindowsShadow` and
+    /// `SandboxOnly` mode, when `PATH` has the program or the shell is on a machine
+    /// (D1192: the L4 cases test psh's utilities).
     pub force_names: Vec<Vec<u8>>,
-    /// There are no real programs (wasm, a sandbox host): `PathFallback` and
-    /// `WindowsShadow` utilities always run.
+    /// There are no real programs (wasm, a sandbox host): `PathFallback`,
+    /// `WindowsShadow` and `SandboxOnly` utilities always run.
     pub sandbox: bool,
     /// The host holds the files a script names and nothing of the machine's own setup
     /// (nanocode-shell standing in for a machine): utilities do not look there for
@@ -109,15 +116,16 @@ pub(crate) async fn lookup(vp: &Vp, name: &[u8]) -> Option<&'static UtilEntry> {
     }
     let fallback = match entry.mode {
         Mode::Always => false,
-        Mode::PathFallback => true,
+        Mode::PathFallback | Mode::SandboxOnly => true,
         Mode::WindowsShadow => !cfg!(windows),
     };
     if fallback
         && !policy.sandbox
         && !policy.force_names.iter().any(|n| n == name)
-        && crate::builtins::hash::search(vp, name, None)
-            .await
-            .is_some()
+        && (entry.mode == Mode::SandboxOnly
+            || crate::builtins::hash::search(vp, name, None)
+                .await
+                .is_some())
     {
         return None;
     }
@@ -1130,6 +1138,12 @@ mod tests {
             run: says,
         },
         UtilEntry {
+            names: &["stand", "argv"],
+            mode: Mode::SandboxOnly,
+            destructive: false,
+            run: says,
+        },
+        UtilEntry {
             names: &["wrap"],
             mode: Mode::Always,
             destructive: false,
@@ -1199,6 +1213,41 @@ mod tests {
         assert_eq!(run_with("upper() { echo fn; }; upper", on()).1, "fn\n");
         // Prefix assignments reach the utility's environment.
         assert_eq!(run_with("W=7 says", on()).1, "says 1 W=7\n");
+    }
+
+    #[test]
+    fn a_sandbox_only_utility_never_stands_in_on_a_machine() {
+        // Not on PATH: the name is not found, and type, command -v and hash agree.
+        let (st, out, err) = run_with(
+            "stand x; echo $?; type stand; echo $?; command -v stand; echo $?; \
+             hash stand; echo $?",
+            on(),
+        );
+        assert_eq!((st, out.as_str()), (0, "127\n1\n1\n1\n"));
+        assert_eq!(
+            err,
+            "psh: line 1: stand: command not found\n\
+             psh: line 1: type: stand: not found\n\
+             psh: line 1: hash: stand: not found\n"
+        );
+        // On PATH: the program runs.
+        assert_eq!(run_with("argv a", on()).1, "[a]\n");
+        assert_eq!(run_with("type argv", on()).1, "argv is /bin/argv\n");
+        // A sandbox has no programs, and a forced name is asked for: the utility runs.
+        let sandbox = UtilPolicy {
+            sandbox: true,
+            ..on()
+        };
+        assert_eq!(run_with("stand; argv", sandbox.clone()).1, "stand 1 W=\nargv 1 W=\n");
+        assert_eq!(
+            run_with("type stand", sandbox).1,
+            "stand is a psh utility\n"
+        );
+        let forced = UtilPolicy {
+            force_names: vec![b"stand".to_vec()],
+            ..on()
+        };
+        assert_eq!(run_with("stand", forced).1, "stand 1 W=\n");
     }
 
     #[test]

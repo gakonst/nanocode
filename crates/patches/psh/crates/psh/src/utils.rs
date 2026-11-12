@@ -56,6 +56,7 @@ fn mode_letter(m: Mode) -> &'static str {
         Mode::Always => "S",
         Mode::PathFallback => "F",
         Mode::WindowsShadow => "W",
+        Mode::SandboxOnly => "X",
     }
 }
 

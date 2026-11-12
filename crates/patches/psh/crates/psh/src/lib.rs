@@ -202,7 +202,8 @@ fn utilities() -> &'static [psh_engine::util::UtilEntry] {
 }
 
 /// [`run`] with `extra` utilities after psh's own (nanocode's addition): `python3`,
-/// which like any `PathFallback` utility runs only when `PATH` has no such program.
+/// which like any `SandboxOnly` utility runs only when forced by name: on a machine
+/// `python3` is the program `PATH` has or is not found.
 /// The first call decides the registry for the process.
 pub fn run_with(args: Vec<std::ffi::OsString>, extra: &[psh_engine::util::UtilEntry]) -> ExitCode {
     UTILITIES.get_or_init(|| psh_utils::REGISTRY.iter().chain(extra).copied().collect());

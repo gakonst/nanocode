@@ -12,7 +12,7 @@ use crate::{Ended, Files, Kind, Limit, Limits, Python, Ran, Remove, Run, Stat, W
 
 pub const UTILITY: UtilEntry = UtilEntry {
     names: &["python3", "python"],
-    mode: Mode::PathFallback,
+    mode: Mode::SandboxOnly,
     destructive: false,
     run: utility,
 };

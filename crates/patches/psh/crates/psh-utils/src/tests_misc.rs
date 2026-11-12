@@ -61,6 +61,33 @@ fn which() {
 }
 
 #[test]
+fn a_stand_in_is_not_found_on_a_machine() {
+    // git, tar, zip, unzip and patch do part of what their programs do: with none on
+    // PATH the command fails as in bash, and which, type, command -v and hash agree.
+    for name in ["git", "tar", "zip", "unzip", "patch"] {
+        check_all(
+            &format!("{name} --version; echo $?"),
+            "",
+            0,
+            "127\n",
+            &format!("psh: line 1: {name}: command not found\n"),
+        );
+        check_all(
+            &format!(
+                "which {name}; echo $?; command -v {name}; echo $?; type {name} 2>/dev/null; \
+                 echo $?; hash {name} 2>/dev/null; echo $?"
+            ),
+            "",
+            0,
+            "1\n1\n1\n1\n",
+            "",
+        );
+    }
+    // A utility that is the whole program still fills in for a missing one.
+    check("which xxd; printf A | xxd -p", "xxd: shell builtin\n41\n");
+}
+
+#[test]
 fn printenv() {
     check("export A=1; printenv A", "1\n");
     check_all("printenv NOPE; echo $?", "", 0, "1\n", "");

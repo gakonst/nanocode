@@ -4,13 +4,13 @@ use std::{
     error::Error,
 };
 
-use appendlist::AppendList;
 use serde_json::Value;
 use std::sync::LazyLock;
 use url::Url;
 
 use crate::{
     UrlPtr,
+    append_list::AppendList,
     compiler::CompileError,
     draft::{Draft, latest},
     util::split,

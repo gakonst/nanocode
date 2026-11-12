@@ -17,7 +17,6 @@ url.workspace = true
 base64.workspace = true
 idna = "1"
 percent-encoding = "2"
-appendlist = "1.4"
 
 [lints]
 workspace = true

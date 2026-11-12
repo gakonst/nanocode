@@ -1,6 +1,7 @@
 mod contract;
 pub use contract::{ValidationIssue, Validator, validator_for};
 
+mod append_list;
 mod compiler;
 mod content;
 mod draft;

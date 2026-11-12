@@ -95,12 +95,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "appendlist"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e149dc73cd30538307e7ffa2acd3d2221148eaeed4871f246657b1c3eaa1cbd2"
-
-[[package]]
 name = "ar_archive_writer"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3185,7 +3179,6 @@ dependencies = [
 name = "nanocode-schema"
 version = "0.7.0"
 dependencies = [
- "appendlist",
  "base64 0.22.1",
  "idna",
  "percent-encoding",

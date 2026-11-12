@@ -1798,7 +1798,7 @@ async fn observe_cell(
     carrier: Option<&str>,
     observer: &mut dyn CodeModeObserver,
 ) -> (CodeModeExecution, bool) {
-    let (execution, running) = observe_updates(
+    let (mut execution, running) = observe_updates(
         cell,
         &mut observation,
         started_at,
@@ -1807,6 +1807,11 @@ async fn observe_cell(
         observer,
     )
     .await;
+    for notice in cell.tools.session_notices(&cell.session_id) {
+        execution
+            .notifications
+            .push(CodeModeNotification::new(&cell.origin_call_id, notice));
+    }
     if let Some(record) = &cell.record {
         record.update(|status| status.content_returned = observation.content_seen);
     }

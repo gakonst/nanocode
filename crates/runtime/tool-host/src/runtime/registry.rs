@@ -896,4 +896,11 @@ impl nanocode_code_mode::CodeModeToolset for ToolRegistry {
             policy.append_observation_content(calls, content);
         }
     }
+
+    fn session_notices(&self, session_id: &str) -> Vec<String> {
+        self.policies
+            .iter()
+            .flat_map(|policy| policy.session_notices(session_id))
+            .collect()
+    }
 }

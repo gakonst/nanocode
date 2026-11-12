@@ -50,4 +50,8 @@ pub trait CodeModeToolset: Send + Sync {
         _content: &mut Vec<ToolOutputContent>,
     ) {
     }
+
+    fn session_notices(&self, _session_id: &str) -> Vec<String> {
+        Vec::new()
+    }
 }

@@ -35,7 +35,7 @@ const DEADLINE_NOTE: &str = "If the work in progress still needs it, start it ag
 const OUTPUT_CAP_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const OUTPUT_CAP_MARKER: &str = " [output truncated: exceeded 5GB disk cap] ";
 const ENDS_WITH_TURN: &str = "If it exits while you are still working you will be notified, but it is terminated when you give your final response and no notification can follow that \u{2014} so do not end your turn to wait for it; if you need its result, wait for it before giving your final response.";
-const UNWATCHED: &str = "Nothing notifies you when the command finishes: read the output file that the result names to check on it. The file gets no line when the command ends, so if you need to know that it has, end the command with an `echo` of your own.";
+const REPORTED: &str = "Its end is reported with the result of the first exec or wait call that returns after it finishes; nothing interrupts you before then.";
 
 type Outcome = Result<BashResult, String>;
 
@@ -83,6 +83,7 @@ struct Job {
     command: String,
     label: String,
     call_id: Option<String>,
+    owner: Option<String>,
     output: Option<PathBuf>,
 }
 impl Job {
@@ -345,7 +346,7 @@ fn whole_duration(milliseconds: u64) -> String {
 enum Watch {
     Notified,
     EndsWithTurn,
-    Unwatched,
+    Reported,
 }
 fn started(id: &str, output: Option<&Path>, timed_out: Option<Duration>, watch: Watch) -> String {
     let written = output.map_or_else(String::new, |path| {
@@ -362,15 +363,22 @@ fn started(id: &str, output: Option<&Path>, timed_out: Option<Duration>, watch: 
         match watch {
             Watch::Notified => "You will be notified when it completes.",
             Watch::EndsWithTurn => ENDS_WITH_TURN,
-            Watch::Unwatched => UNWATCHED,
+            Watch::Reported => REPORTED,
         }
         .to_owned(),
     );
-    if matches!(watch, Watch::Notified) && timed_out.is_some() {
-        parts.push(format!(
-            "If it is still running after {} in the background, it will be stopped and you will be notified.",
-            whole_duration(DEFAULT_BACKGROUND_TIMEOUT_MS)
-        ));
+    if timed_out.is_some() {
+        match watch {
+            Watch::Notified => parts.push(format!(
+                "If it is still running after {} in the background, it will be stopped and you will be notified.",
+                whole_duration(DEFAULT_BACKGROUND_TIMEOUT_MS)
+            )),
+            Watch::Reported => parts.push(format!(
+                "If it is still running after {} in the background, it will be stopped, which is reported the same way.",
+                whole_duration(DEFAULT_BACKGROUND_TIMEOUT_MS)
+            )),
+            Watch::EndsWithTurn => {}
+        }
     }
     if output.is_some() {
         parts.push("To check interim output, use Read on that file path.".to_owned());
@@ -393,6 +401,7 @@ pub(super) struct Jobs {
     next: AtomicU64,
     entries: Atom<Entries>,
     agent: Atom<Option<Binding>>,
+    owners: Atom<BTreeMap<String, String>>,
     subagents: Option<Subagents>,
 }
 struct Subagents {
@@ -434,7 +443,7 @@ impl Jobs {
     }
     fn watch(&self, job: Arc<Job>) -> Watch {
         let Some(binding) = self.agent.read(Clone::clone) else {
-            return Watch::Unwatched;
+            return Watch::Reported;
         };
         let watch = if binding.ends_with_turn {
             Watch::EndsWithTurn
@@ -465,6 +474,30 @@ impl Jobs {
             );
         }));
         watch
+    }
+    fn notices(&self, session_id: &str) -> Vec<String> {
+        if self.agent.read(Option::is_some) {
+            return Vec::new();
+        }
+        let jobs = self
+            .entries
+            .read(|entries| entries.jobs.values().cloned().collect::<Vec<_>>());
+        let mut notices = Vec::new();
+        for job in jobs {
+            if job.owner.as_deref() != Some(session_id)
+                || job.phase.get() != Phase::Background
+                || !job.written.is_fired()
+            {
+                continue;
+            }
+            let Some(outcome) = job.result.borrow().clone() else {
+                continue;
+            };
+            if job.phase.advance(Phase::Delivered) != Phase::Delivered {
+                notices.push(job.completion_notification(&outcome));
+            }
+        }
+        notices
     }
     fn forget(&self, id: &str) {
         self.entries.update(|entries| {
@@ -584,6 +617,9 @@ impl BashExecutor for LocalBash {
                 .clone()
                 .unwrap_or_else(|| command.clone());
             let call_id = request.call_id.clone();
+            let owner = call_id
+                .as_ref()
+                .and_then(|id| self.jobs.owners.read(|owners| owners.get(id).cloned()));
             let task = tokio::spawn(async move {
                 let _finished = guard;
                 start.wait().await;
@@ -623,6 +659,7 @@ impl BashExecutor for LocalBash {
                 command,
                 label,
                 call_id,
+                owner,
                 output,
             });
             self.jobs
@@ -748,6 +785,13 @@ impl Tool for BashTool {
     }
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let input = input.decode_json::<Value>()?;
+        let owned = Owned {
+            jobs: &self.jobs,
+            call_id: context.call_id(),
+        };
+        self.jobs.owners.update(|owners| {
+            owners.insert(owned.call_id.to_owned(), context.session_id().to_owned());
+        });
         Ok(
             match self
                 .bash
@@ -762,6 +806,23 @@ impl Tool for BashTool {
                 Err(error) => ToolOutput::error(error),
             },
         )
+    }
+}
+struct Owned<'a> {
+    jobs: &'a Jobs,
+    call_id: &'a str,
+}
+impl Drop for Owned<'_> {
+    fn drop(&mut self) {
+        self.jobs.owners.update(|owners| {
+            owners.remove(self.call_id);
+        });
+    }
+}
+pub(super) struct JobNotices(pub(super) Arc<Jobs>);
+impl nanocode_tool_host::CodeModeToolPolicy for JobNotices {
+    fn session_notices(&self, session_id: &str) -> Vec<String> {
+        self.0.notices(session_id)
     }
 }
 struct TaskStopTool {

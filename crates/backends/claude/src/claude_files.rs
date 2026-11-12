@@ -35,9 +35,14 @@ pub(super) fn selection(
             session: session.clone(),
         });
     }
+    let notices = Arc::new(super::claude_bash::JobNotices(Arc::clone(&jobs)));
     super::claude_bash::install(tools, workspace, session, jobs, executor)
         .build()
-        .map(|tools| tools.with_code_mode_policy(crate::code_mode_policy::claude_tool_policy()))
+        .map(|tools| {
+            tools
+                .with_code_mode_policy(crate::code_mode_policy::claude_tool_policy())
+                .with_code_mode_policy(notices)
+        })
 }
 
 struct ClaudeFileTool {

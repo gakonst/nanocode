@@ -11,7 +11,7 @@ use crate::{
     },
     types::{Constructor, Initializer, PyComparisonOp},
 };
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 
 #[pyclass(module = false, name = "object")]
 #[derive(Debug)]

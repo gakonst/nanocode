@@ -10,7 +10,7 @@ use crate::{
     function::PyComparisonValue,
     types::{Comparable, Constructor, Hashable, PyComparisonOp, Representable},
 };
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use rustpython_common::wtf8::Wtf8Buf;
 
 #[pyclass(module = "string.templatelib", name = "Interpolation")]

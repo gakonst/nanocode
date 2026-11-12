@@ -1855,15 +1855,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2135,7 +2126,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f368e032195e6f046f237a982cd541cac7d4e17d5c680cac5534dfa71cd8879e"
 dependencies = [
  "hashbrown 0.16.1",
- "itertools 0.14.0",
+ "itertools",
  "libm",
  "ryu",
 ]
@@ -2159,7 +2150,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0b3ad1a8d2a722fbfad2e1fc7c5044f7ab38e027240cfbcb086a62ca95c9c2"
 dependencies = [
- "itertools 0.14.0",
+ "itertools",
  "libm",
  "malachite-base",
  "wide 1.7.1",
@@ -2171,7 +2162,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7841d36b3f5d39f1c65d4bcc45cb104fde66cf7eafc10da3922483fa2847cb94"
 dependencies = [
- "itertools 0.14.0",
+ "itertools",
  "libm",
  "malachite-base",
  "malachite-nz",
@@ -2254,15 +2245,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mt19937"
-version = "3.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25b4ab1a6f4b7820876af86b84adf545d53a52f59c5374856225aad9562d903e"
-dependencies = [
- "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -3418,18 +3400,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
- "phf_shared 0.11.3",
-]
-
-[[package]]
-name = "phf"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
-dependencies = [
- "phf_macros",
- "phf_shared 0.14.0",
- "serde",
+ "phf_shared",
 ]
 
 [[package]]
@@ -3438,8 +3409,8 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aef8048c789fa5e851558d709946d6d79a8ff88c0440c587967f8e94bfb1216a"
 dependencies = [
- "phf_generator 0.11.3",
- "phf_shared 0.11.3",
+ "phf_generator",
+ "phf_shared",
 ]
 
 [[package]]
@@ -3448,31 +3419,8 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
- "phf_shared 0.11.3",
+ "phf_shared",
  "rand 0.8.8",
-]
-
-[[package]]
-name = "phf_generator"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeb62e0959d5a1bebc965f4d15d9e2b7cea002b6b0f5ba8cde6cc26738467100"
-dependencies = [
- "fastrand",
- "phf_shared 0.14.0",
-]
-
-[[package]]
-name = "phf_macros"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fa8d0ca26d424d27630da600c6624696e7dec8bf7b3b492b383c5dc49e5e085"
-dependencies = [
- "phf_generator 0.14.0",
- "phf_shared 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -3480,15 +3428,6 @@ name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
-dependencies = [
- "siphasher",
-]
-
-[[package]]
-name = "phf_shared"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
  "siphasher",
 ]
@@ -3817,15 +3756,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rapidhash"
-version = "4.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5da7e78a036ce858e8d55b7e7dc8ba3a88b78350fd2155d3591bbd966b58589e"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "rcgen"
 version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4087,13 +4017,12 @@ version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
  "indexmap",
- "itertools 0.15.0",
  "log",
  "malachite-bigint",
  "memchr",
  "num-complex",
  "num-traits",
- "rapidhash",
+ "rustpython-common",
  "rustpython-compiler-core",
  "rustpython-literal",
  "rustpython-ruff_python_ast",
@@ -4115,7 +4044,6 @@ dependencies = [
  "bzip2",
  "crc32fast",
  "getrandom 0.4.3",
- "itertools 0.15.0",
  "libc",
  "libz-rs-sys",
  "lock_api",
@@ -4127,7 +4055,6 @@ dependencies = [
  "num-complex",
  "num-traits",
  "parking_lot",
- "radium",
  "rustpython-literal",
  "rustpython-unicode",
  "rustpython-wtf8",
@@ -4161,7 +4088,6 @@ version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
  "bitflagset",
- "itertools 0.15.0",
  "lz4_flex",
  "malachite-bigint",
  "num-complex",
@@ -4183,14 +4109,12 @@ dependencies = [
 name = "rustpython-derive-impl"
 version = "0.6.0"
 dependencies = [
- "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "rustpython-compiler-core",
  "rustpython-doc",
  "syn 2.0.119",
  "syn-ext",
- "textwrap",
 ]
 
 [[package]]
@@ -4311,18 +4235,13 @@ dependencies = [
  "crossbeam-utils",
  "getrandom 0.4.3",
  "indexmap",
- "itertools 0.15.0",
  "libc",
  "malachite-bigint",
  "memchr",
- "mt19937",
  "num-complex",
  "num-traits",
  "parking_lot",
- "phf 0.14.0",
  "pymath",
- "rand 0.10.2",
- "rapidhash",
  "rustpython-common",
  "rustpython-derive",
  "rustpython-host_env",
@@ -4360,7 +4279,6 @@ dependencies = [
  "bstr",
  "crossbeam-utils",
  "indexmap",
- "itertools 0.15.0",
  "itoa",
  "jiff",
  "libc",
@@ -4372,7 +4290,6 @@ dependencies = [
  "num-traits",
  "parking_lot",
  "psm",
- "rapidhash",
  "rustpython-codegen",
  "rustpython-common",
  "rustpython-compiler",
@@ -4395,7 +4312,6 @@ version = "0.6.0"
 dependencies = [
  "ascii",
  "bstr",
- "itertools 0.15.0",
  "memchr",
 ]
 
@@ -4966,12 +4882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "textwrap"
-version = "0.16.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ecfad6c3abc80a577f2b91c1e412ee57e7a060d430b553c1b0c940974ebcd49"
-
-[[package]]
 name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5342,7 +5252,7 @@ version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1673eca9782c84de5f81b82e4109dcfb3611c8ba0d52930ec4a9478f547b2dd"
 dependencies = [
- "phf 0.11.3",
+ "phf",
  "unicode_names2_generator 1.3.0",
 ]
 
@@ -5352,7 +5262,7 @@ version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82c3e18d850bb6ebd57735e5654f0af65e572b05c2397e7b2b1a7c6a792cc29c"
 dependencies = [
- "phf 0.11.3",
+ "phf",
  "unicode_names2_generator 3.1.0",
 ]
 

@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
 use std::collections::{HashMap, HashSet};
@@ -142,7 +141,7 @@ impl ItemMetaInner {
                     Err(err_span!(
                         ident,
                         "#[{meta_ident}({name})] is not one of allowed attributes [{}]",
-                        allowed_names.iter().format(", ")
+                        allowed_names.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
                     ))
                 }
             } else {
@@ -639,10 +638,8 @@ pub(crate) fn pyclass_ident_and_attrs(item: &syn::Item) -> Result<(&Ident, &[Att
         syn::Item::Struct(syn::ItemStruct { ident, attrs, .. }) => (ident, attrs),
         syn::Item::Enum(syn::ItemEnum { ident, attrs, .. }) => (ident, attrs),
         syn::Item::Use(item_use) => (
-            iter_use_idents(item_use, |ident, _is_unique| Ok(ident))?
-                .into_iter()
-                .exactly_one()
-                .map_err(|_| {
+            single(iter_use_idents(item_use, |ident, _is_unique| Ok(ident))?)
+                .map_err(|()| {
                     err_span!(
                         item_use,
                         "#[pyclass] can only be on single name use statement",
@@ -1006,5 +1003,13 @@ pub(crate) fn infer_native_call_flags(sig: &Signature, drop_first_typed: usize) 
             1 => quote! { rustpython_vm::function::PyMethodFlags::O },
             _ => quote! { rustpython_vm::function::PyMethodFlags::FASTCALL },
         }
+    }
+}
+
+fn single<T>(items: Vec<T>) -> core::result::Result<T, ()> {
+    let mut items = items.into_iter();
+    match (items.next(), items.next()) {
+        (Some(item), None) => Ok(item),
+        _ => Err(()),
     }
 }

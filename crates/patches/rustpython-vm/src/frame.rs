@@ -42,7 +42,7 @@ use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed};
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use malachite_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 use rustpython_common::atomic::{PyAtomic, Radium};
@@ -8735,7 +8735,7 @@ impl ExecutingFrame<'_> {
     fn execute_build_map(&mut self, vm: &VirtualMachine, size: u32) -> FrameResult {
         let size = size as usize;
         let map_obj = vm.ctx.new_dict();
-        for (key, value) in self.pop_multiple(2 * size).tuples() {
+        for (key, value) in self.pop_multiple(2 * size).pairs() {
             map_obj.set_item(&*key, value, vm)?;
         }
 

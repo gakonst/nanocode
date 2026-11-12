@@ -37,7 +37,7 @@ mod unicodedata {
         builtins::{PyModule, PyStr, PyStrRef},
         function::OptionalArg,
     };
-    use itertools::Itertools;
+    use rustpython_common::wtf8::iteration::Itertools;
     use rustpython_common::wtf8::{CodePoint, Wtf8Buf};
 
     pub(crate) fn module_exec(vm: &VirtualMachine, module: &Py<PyModule>) -> PyResult<()> {

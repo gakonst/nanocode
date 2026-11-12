@@ -30,7 +30,7 @@ use crate::{
 };
 use core::{cmp::Ordering, fmt::Debug, ops::Range};
 use crossbeam_utils::atomic::AtomicCell;
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use rustpython_common::lock::PyMutex;
 
 /// The most dimensions a view can describe. PyBUF_MAX_NDIM

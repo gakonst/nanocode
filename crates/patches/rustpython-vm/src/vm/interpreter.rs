@@ -123,7 +123,7 @@ where
         let mut frozen: std::collections::HashMap<
             &'static str,
             FrozenModule,
-            rapidhash::quality::RandomState,
+            rustpython_common::random_state::RandomState,
         > = core_frozen_inits().collect();
         frozen.extend(frozen_modules);
 

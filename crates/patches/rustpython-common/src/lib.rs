@@ -29,6 +29,8 @@ pub mod json;
 pub mod linked_list;
 pub mod lock;
 pub mod rand;
+#[cfg(feature = "std")]
+pub mod random_state;
 pub mod rc;
 pub mod scope;
 pub mod refcount;

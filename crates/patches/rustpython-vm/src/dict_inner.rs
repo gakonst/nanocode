@@ -101,7 +101,7 @@ fn shape_stamp(shape: &[usize]) -> Option<u32> {
     use core::sync::atomic::AtomicPtr;
     // The hasher seed must be process-stable so equal shapes always probe
     // the same slots.
-    static SHAPE_HASHER: std::sync::LazyLock<rapidhash::quality::RandomState> =
+    static SHAPE_HASHER: std::sync::LazyLock<rustpython_common::random_state::RandomState> =
         std::sync::LazyLock::new(Default::default);
     let hash = SHAPE_HASHER.hash_one(shape) as usize;
     let mut candidate: *mut ShapeData = core::ptr::null_mut();

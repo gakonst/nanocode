@@ -44,11 +44,6 @@ features = [
 ]
 default-features = false
 
-[dependencies.itertools]
-version = "0.15.0"
-features = ["use_alloc"]
-default-features = false
-
 [dependencies.memchr]
 version = "2.8.1"
 features = ["alloc"]

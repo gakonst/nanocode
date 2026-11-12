@@ -1,7 +1,7 @@
 // spell-checker:ignore ddfe DTSF
 use core::ops::Deref;
 use core::{cmp, str::FromStr};
-use itertools::{Itertools, PeekingNext};
+use crate::wtf8::iteration::{Itertools, PeekingNext};
 use malachite_base::num::basic::floats::PrimitiveFloat;
 use malachite_bigint::{BigInt, Sign};
 use num_complex::Complex64;

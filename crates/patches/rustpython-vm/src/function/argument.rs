@@ -8,7 +8,7 @@ use crate::{
 };
 use core::ops::{Deref, DerefMut, RangeInclusive};
 use indexmap::IndexMap;
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use std::hash::DefaultHasher;
 
 pub trait IntoFuncArgs: Sized {

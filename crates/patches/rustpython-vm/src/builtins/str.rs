@@ -35,7 +35,7 @@ use ascii::{AsciiChar, AsciiStr, AsciiString};
 use bstr::ByteSlice;
 use core::ffi::CStr;
 use core::{char, mem, ops::Range};
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use memchr::memchr;
 use num_traits::ToPrimitive;
 use rustpython_common::{

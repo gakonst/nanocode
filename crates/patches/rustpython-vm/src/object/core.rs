@@ -19,7 +19,7 @@ use crate::object::traverse_object::PyObjVTable;
 use crate::{
     builtins::{PyDictRef, PyTuple, PyTupleRef, PyType, PyTypeRef, type_::PyTypeTupleRef},
     common::{
-        atomic::{Ordering, PyAtomic, Radium},
+        atomic::{Ordering, PyAtomic, Radium, RadiumBits},
         linked_list::{Link, Pointers},
         lock::PyRwLock,
         refcount::RefCount,

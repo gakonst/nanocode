@@ -7,7 +7,7 @@ use core::{
     iter::{Enumerate, Peekable},
     str::FromStr,
 };
-use itertools::Itertools;
+use crate::wtf8::iteration::Itertools;
 use malachite_bigint::{BigInt, Sign};
 use num_traits::Signed;
 use rustpython_literal::{float, format::Case};

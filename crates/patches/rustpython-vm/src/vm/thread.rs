@@ -22,7 +22,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 #[cfg(feature = "threading")]
 use std::collections::HashMap;
 use std::thread_local;

@@ -19,7 +19,7 @@ use crate::{
 };
 use core::fmt::{self, Display, Formatter};
 use core::sync::atomic::{AtomicBool, Ordering};
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 #[cfg(feature = "host_env")]
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
@@ -1715,7 +1715,7 @@ pub(super) mod types {
     };
     use core::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
     use crossbeam_utils::atomic::AtomicCell;
-    use itertools::Itertools;
+    use rustpython_common::wtf8::iteration::Itertools;
     use rustpython_common::{
         str::UnicodeEscapeCodepoint,
         wtf8::{Wtf8, Wtf8Buf, wtf8_concat},

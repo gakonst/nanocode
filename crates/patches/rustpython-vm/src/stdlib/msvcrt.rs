@@ -10,7 +10,7 @@ mod msvcrt {
         convert::IntoPyException,
         host_env::crt_fd,
     };
-    use itertools::Itertools;
+    use rustpython_common::wtf8::iteration::Itertools;
     use rustpython_host_env::msvcrt as host_msvcrt;
     use std::os::windows::io::AsRawHandle;
 

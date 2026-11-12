@@ -11,8 +11,8 @@ extern crate alloc;
 use alloc::{string::String, vec::Vec};
 use rustpython_compiler_core::bytecode::ConstantData;
 
-type IndexMap<K, V> = indexmap::IndexMap<K, V, rapidhash::quality::RandomState>;
-type IndexSet<T> = indexmap::IndexSet<T, rapidhash::quality::RandomState>;
+type IndexMap<K, V> = indexmap::IndexMap<K, V, rustpython_common::random_state::RandomState>;
+type IndexSet<T> = indexmap::IndexSet<T, rustpython_common::random_state::RandomState>;
 
 pub mod compile;
 pub mod error;

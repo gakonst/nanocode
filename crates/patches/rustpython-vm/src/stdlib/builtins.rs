@@ -31,7 +31,7 @@ mod builtins {
         types::PyComparisonOp,
         vm::compile_mode::{CompileStart, CompilerFlags, compile_future_features_from_flags},
     };
-    use itertools::Itertools;
+    use rustpython_common::wtf8::iteration::Itertools;
     use num_traits::{Signed, ToPrimitive};
     use rustpython_common::wtf8::CodePoint;
 

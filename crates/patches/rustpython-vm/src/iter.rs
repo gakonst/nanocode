@@ -1,5 +1,5 @@
 use crate::{PyObject, PyObjectRef, PyResult, types::PyComparisonOp, vm::VirtualMachine};
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 
 pub trait PyExactSizeIterator<'a>: ExactSizeIterator<Item = &'a PyObject> + Sized {
     fn eq(self, other: impl PyExactSizeIterator<'a>, vm: &VirtualMachine) -> PyResult<bool> {

@@ -31,11 +31,6 @@ resolver = "2"
 name = "rustpython_derive_impl"
 path = "src/lib.rs"
 
-[dependencies.itertools]
-version = "0.15.0"
-features = ["use_alloc"]
-default-features = false
-
 [dependencies.proc-macro2]
 version = "1.0.105"
 
@@ -60,10 +55,6 @@ features = [
 [dependencies.syn-ext]
 version = "0.5.0"
 features = ["full"]
-
-[dependencies.textwrap]
-version = "0.16.2"
-default-features = false
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

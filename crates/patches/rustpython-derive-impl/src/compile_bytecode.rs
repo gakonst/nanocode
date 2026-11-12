@@ -122,7 +122,7 @@ impl CompilationSource {
                 self.compile_string(&source, mode, module_name, compiler, || rel_path.display())
             }
             CompilationSourceKind::SourceCode(code) => self.compile_string(
-                &textwrap::dedent(code),
+                &dedent(code),
                 mode,
                 module_name,
                 compiler,
@@ -387,4 +387,40 @@ pub(crate) fn impl_py_freeze(
     };
 
     Ok(output)
+}
+
+fn dedent(text: &str) -> String {
+    let mut prefix = "";
+    let mut lines = text.lines();
+    for line in &mut lines {
+        let indentation = line
+            .char_indices()
+            .find(|(_, character)| !character.is_whitespace())
+            .map_or(line.len(), |(index, _)| index);
+        if indentation < line.len() {
+            prefix = &line[..indentation];
+            break;
+        }
+    }
+    for line in &mut lines {
+        let shared = line
+            .char_indices()
+            .zip(prefix.chars())
+            .find(|((_, left), right)| left != right)
+            .map_or(line.len(), |((index, _), _)| index);
+        if shared < line.len() && shared < prefix.len() {
+            prefix = &line[..shared];
+        }
+    }
+    let mut result = String::new();
+    for line in text.lines() {
+        if line.starts_with(prefix) && line.chars().any(|character| !character.is_whitespace()) {
+            result.push_str(&line[prefix.len()..]);
+        }
+        result.push('\n');
+    }
+    if result.ends_with('\n') && !text.ends_with('\n') {
+        result.pop();
+    }
+    result
 }

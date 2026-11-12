@@ -22,7 +22,7 @@ use crate::{
 pub(crate) type FromObject = fn(&VirtualMachine, &PyObject) -> PyResult<Vec<u8>>;
 
 use bstr::ByteSlice;
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use malachite_bigint::BigInt;
 use num_traits::ToPrimitive;
 

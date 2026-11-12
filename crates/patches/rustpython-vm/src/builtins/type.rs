@@ -40,7 +40,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering},
 };
 use indexmap::{IndexMap, map::Entry};
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use num_traits::ToPrimitive;
 use rustpython_common::wtf8::Wtf8;
 use std::collections::HashSet;
@@ -412,7 +412,7 @@ cfg_select! {
 /// that maintains order and is compatible with the standard HashMap  This is probably
 /// faster and only supports strings as keys.
 pub(crate) type PyAttributes =
-    IndexMap<&'static PyStrInterned, PyObjectRef, rapidhash::quality::RandomState>;
+    IndexMap<&'static PyStrInterned, PyObjectRef, rustpython_common::random_state::RandomState>;
 
 unsafe impl Traverse for PyAttributes {
     fn traverse(&self, tracer_fn: &mut TraverseFn<'_>) {

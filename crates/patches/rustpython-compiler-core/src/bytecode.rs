@@ -14,7 +14,7 @@ use core::{
     ops::{Deref, DerefMut, Index, IndexMut},
     sync::atomic::{AtomicU8, AtomicU16, AtomicUsize, Ordering},
 };
-use itertools::Itertools;
+use rustpython_wtf8::iteration::Itertools;
 use malachite_bigint::BigInt;
 use num_complex::Complex64;
 use num_traits::Zero;

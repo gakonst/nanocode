@@ -25,7 +25,7 @@ mod _contextvars {
     use indexmap::IndexMap;
 
     // TODO: Real hamt implementation
-    type Hamt = IndexMap<PyRef<ContextVar>, PyObjectRef, rapidhash::quality::RandomState>;
+    type Hamt = IndexMap<PyRef<ContextVar>, PyObjectRef, rustpython_common::random_state::RandomState>;
 
     #[pyclass(no_attr, name = "Hamt", module = "contextvars")]
     #[derive(Debug, PyPayload)]

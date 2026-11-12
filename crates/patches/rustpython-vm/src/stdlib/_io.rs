@@ -2881,9 +2881,9 @@ mod _io {
                 return b;
             }
             let writes_iter = match data {
-                PendingWritesData::None => itertools::Either::Left(vec![].into_iter()),
-                PendingWritesData::One(write) => itertools::Either::Right(core::iter::once(write)),
-                PendingWritesData::Many(writes) => itertools::Either::Left(writes.into_iter()),
+                PendingWritesData::None => rustpython_common::wtf8::iteration::Either::Left(vec![].into_iter()),
+                PendingWritesData::One(write) => rustpython_common::wtf8::iteration::Either::Right(core::iter::once(write)),
+                PendingWritesData::Many(writes) => rustpython_common::wtf8::iteration::Either::Left(writes.into_iter()),
             };
             let mut buf = Vec::with_capacity(num_bytes);
             writes_iter.for_each(|chunk| buf.extend_from_slice(chunk.as_bytes()));

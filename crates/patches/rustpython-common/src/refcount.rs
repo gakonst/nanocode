@@ -1,4 +1,4 @@
-use crate::atomic::{Ordering, PyAtomic, Radium};
+use crate::atomic::{Ordering, PyAtomic, Radium, RadiumBits, RadiumNumber};
 
 // State layout (usize):
 //   [1 bit: destructed] [1 bit: published] [1 bit: leaked] [1 bit: immortal]

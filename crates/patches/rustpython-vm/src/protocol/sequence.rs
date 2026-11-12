@@ -1,7 +1,7 @@
 //! [Sequence Protocol](https://docs.python.org/3/c-api/sequence.html)
 
 use crossbeam_utils::atomic::AtomicCell;
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 
 use crate::{
     AsObject, PyObject, PyObjectRef, PyPayload, PyResult, VirtualMachine,

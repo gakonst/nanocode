@@ -12,7 +12,7 @@ mod _csv {
         types::{Callable, Constructor, IterNext, Iterable, SelfIter},
     };
     use alloc::fmt;
-    use itertools::Itertools;
+    use rustpython_common::wtf8::iteration::Itertools;
     use parking_lot::Mutex;
     use rustpython_common::{lock::LazyLock, wtf8::Wtf8Buf};
     use rustpython_vm::match_class;

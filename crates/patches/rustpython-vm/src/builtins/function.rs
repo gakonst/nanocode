@@ -23,7 +23,7 @@ use crate::{
     },
 };
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 #[cfg(feature = "jit")]
 use rustpython_jit::CompiledCode;
 

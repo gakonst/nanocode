@@ -38,6 +38,8 @@
 
 extern crate alloc;
 
+pub mod iteration;
+
 use alloc::borrow::{Cow, ToOwned};
 use alloc::boxed::Box;
 use alloc::collections::TryReserveError;
@@ -54,7 +56,7 @@ use core::str;
 use core_char::MAX_LEN_UTF8;
 use core_char::{MAX_LEN_UTF16, encode_utf8_raw, encode_utf16_raw, len_utf8};
 use core_str::{next_code_point, next_code_point_reverse};
-use itertools::{Either, Itertools};
+use crate::iteration::{Either, Itertools};
 
 use bstr::{ByteSlice, ByteVec};
 

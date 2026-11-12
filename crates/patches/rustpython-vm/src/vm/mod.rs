@@ -826,7 +826,7 @@ pub struct PyGlobalState {
     pub is_main: bool,
     pub config: PyConfig,
     pub module_defs: BTreeMap<&'static str, &'static builtins::PyModuleDef>,
-    pub frozen: HashMap<&'static str, FrozenModule, rapidhash::quality::RandomState>,
+    pub frozen: HashMap<&'static str, FrozenModule, rustpython_common::random_state::RandomState>,
     pub stacksize: AtomicCell<usize>,
     pub thread_count: AtomicCell<usize>,
     /// Registered `atexit` callbacks, newest first. Shared ownership so

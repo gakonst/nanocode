@@ -3,7 +3,7 @@
 //! Implementation of Printf-Style string formatting
 //! as per the [Python Docs](https://docs.python.org/3/library/stdtypes.html#printf-style-string-formatting).
 
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use num_traits::cast::ToPrimitive;
 
 use crate::{

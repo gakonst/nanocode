@@ -61,6 +61,7 @@ mod _zoneinfo;
 mod pickle;
 mod pyexpat;
 mod pystruct;
+mod mersenne_twister;
 mod random;
 mod statistics;
 mod suggestions;

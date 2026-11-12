@@ -11,7 +11,7 @@ use rustpython_common::wtf8::Wtf8Buf;
 
 use core::{fmt, iter::Peekable, mem};
 use crate::half::Half;
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 use malachite_bigint::BigInt;
 use num_complex::Complex64;
 use num_traits::{PrimInt, ToPrimitive};

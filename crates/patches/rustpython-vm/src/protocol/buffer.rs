@@ -15,7 +15,7 @@ use alloc::borrow::Cow;
 use bitflags::bitflags;
 use core::{fmt::Debug, ops::Range};
 use crossbeam_utils::atomic::AtomicCell;
-use itertools::Itertools;
+use rustpython_common::wtf8::iteration::Itertools;
 
 bitflags! {
     /// Capabilities a consumer asks a buffer exporter for, the `flags` argument of

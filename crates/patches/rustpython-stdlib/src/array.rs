@@ -45,7 +45,7 @@ pub mod array {
     };
     use alloc::fmt;
     use core::cmp::Ordering;
-    use itertools::Itertools;
+    use rustpython_common::wtf8::iteration::Itertools;
     use num_traits::{Signed, ToPrimitive};
     use rustpython_common::wtf8::{CodePoint, Wtf8, Wtf8Buf};
     use std::os::raw;

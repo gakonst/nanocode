@@ -37,11 +37,6 @@ version = "2.11.0"
 [dependencies.bitflagset]
 version = "0.0.4"
 
-[dependencies.itertools]
-version = "0.15.0"
-features = ["use_alloc"]
-default-features = false
-
 [dependencies.lz4_flex]
 version = "0.14"
 

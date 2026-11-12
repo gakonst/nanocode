@@ -107,11 +107,6 @@ optional = true
 version = "0.4"
 features = ["std"]
 
-[dependencies.itertools]
-version = "0.15.0"
-features = ["use_alloc"]
-default-features = false
-
 [dependencies.libc]
 version = "0.2.186"
 
@@ -150,9 +145,6 @@ version = "0.2"
 [dependencies.parking_lot]
 version = "0.12.3"
 optional = true
-
-[dependencies.radium]
-version = "1.1.1"
 
 [dependencies.rustpython-literal]
 version = "0.6.0"

@@ -1130,7 +1130,7 @@ fn deserialize_value_typed<R: Read, Bag: MarshalBag>(
                 tuple
             } else {
                 let it = (0..len).map(|_| deserialize_value_depth(rdr, bag, d, refs));
-                itertools::process_results(it, |it| bag.make_tuple(it))?
+                rustpython_wtf8::iteration::process_results(it, |it| bag.make_tuple(it))?
             }
         }
         Type::Null => {
@@ -1154,7 +1154,7 @@ fn deserialize_value_typed<R: Read, Bag: MarshalBag>(
                 tuple
             } else {
                 let it = (0..len).map(|_| deserialize_value_depth(rdr, bag, d, refs));
-                itertools::process_results(it, |it| bag.make_tuple(it))?
+                rustpython_wtf8::iteration::process_results(it, |it| bag.make_tuple(it))?
             }
         }
         Type::List => {
@@ -1171,7 +1171,7 @@ fn deserialize_value_typed<R: Read, Bag: MarshalBag>(
                 list
             } else {
                 let it = (0..len).map(|_| deserialize_value_depth(rdr, bag, d, refs));
-                itertools::process_results(it, |it| bag.make_list(it))??
+                rustpython_wtf8::iteration::process_results(it, |it| bag.make_list(it))??
             }
         }
         Type::Set => {
@@ -1188,14 +1188,14 @@ fn deserialize_value_typed<R: Read, Bag: MarshalBag>(
                 set
             } else {
                 let it = (0..len).map(|_| deserialize_value_depth(rdr, bag, d, refs));
-                itertools::process_results(it, |it| bag.make_set(it))??
+                rustpython_wtf8::iteration::process_results(it, |it| bag.make_set(it))??
             }
         }
         Type::FrozenSet => {
             let len = rdr.read_len("set")?;
             let d = depth - 1;
             let it = (0..len).map(|_| deserialize_value_depth(rdr, bag, d, refs));
-            itertools::process_results(it, |it| bag.make_frozenset(it))??
+            rustpython_wtf8::iteration::process_results(it, |it| bag.make_frozenset(it))??
         }
         Type::Dict => {
             let d = depth - 1;

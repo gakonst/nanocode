@@ -38,6 +38,8 @@ pub const MAX_LEN: u32 = (1 << 30) - 1;
 /// Concatenations shorter than this are copied into a flat string instead of making a rope.
 pub const ROPE_MIN_LEN: u32 = 32;
 
+pub(crate) const CONCAT_FLAT_PARTS: usize = 16;
+
 /// Smallest append buffer, in code units.
 const APPEND_MIN_CAP: u32 = 64;
 
@@ -1178,6 +1180,33 @@ impl Heap {
         let s = self.resolve_str(s);
         let cell = self.append_rope_buffer(s).unwrap_or(s.0);
         self.leaf_data(cell)
+    }
+
+    pub fn concat_flat(&mut self, parts: &[Str]) -> Result<Option<Str>, HeapError> {
+        let mut leaves = [(0, 0); CONCAT_FLAT_PARTS];
+        if parts.len() > CONCAT_FLAT_PARTS {
+            return Ok(None);
+        }
+        let (mut len, mut two_byte) = (0u32, false);
+        for (leaf, &s) in leaves.iter_mut().zip(parts) {
+            let s = self.resolve_str(s);
+            if self.cell_kind(s.0) == CellKind::Rope {
+                return Ok(None);
+            }
+            let n = self.str_len(s);
+            len += n;
+            if len >= APPEND_START_LEN {
+                return Ok(None);
+            }
+            two_byte |= self.str_is_two_byte(s);
+            *leaf = (s.0, n);
+        }
+        if len == 0 {
+            return Ok(Some(self.atom_string(super::atoms::EMPTY)?));
+        }
+        let dst = self.alloc_flat(len, two_byte)?;
+        self.write_leaves(&leaves[..parts.len()], dst, 0);
+        Ok(Some(Str(dst)))
     }
 
     /// Concatenates two strings. Results shorter than [`ROPE_MIN_LEN`] are flat copies;

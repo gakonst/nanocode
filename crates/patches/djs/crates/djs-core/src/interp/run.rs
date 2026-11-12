@@ -2850,12 +2850,29 @@ impl<'h> Exec<'h> {
             }
             Op::Concat => {
                 let n = self.imm_u16(1);
-                let mut acc = self.heap.atom_string(crate::heap::atoms::EMPTY)?;
-                for i in 0..n {
-                    let v = self.get(self.sp - n + i);
-                    let s = conv::to_string(self.heap, v)?;
-                    acc = self.heap.concat(acc, s)?;
-                }
+                let empty = self.heap.atom_string(crate::heap::atoms::EMPTY)?;
+                let mut parts = [empty; crate::heap::string::CONCAT_FLAT_PARTS];
+                let flat = if n as usize <= parts.len() {
+                    for i in 0..n {
+                        let v = self.get(self.sp - n + i);
+                        parts[i as usize] = conv::to_string(self.heap, v)?;
+                    }
+                    self.heap.concat_flat(&parts[..n as usize])?
+                } else {
+                    None
+                };
+                let acc = match flat {
+                    Some(s) => s,
+                    None => {
+                        let mut acc = empty;
+                        for i in 0..n {
+                            let v = self.get(self.sp - n + i);
+                            let s = conv::to_string(self.heap, v)?;
+                            acc = self.heap.concat(acc, s)?;
+                        }
+                        acc
+                    }
+                };
                 self.sp -= n;
                 self.push(Value::string(acc));
             }

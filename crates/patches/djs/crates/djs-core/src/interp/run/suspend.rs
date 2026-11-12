@@ -265,8 +265,24 @@ impl Exec<'_> {
             self.push(v);
             return false;
         }
-        let r = self.do_return(v);
-        debug_assert!(matches!(r, Ok(None)));
+        // `do_return` into `gen_step_return`, which finds `g` suspended.
+        self.pop_frame();
+        let at = self.pc;
+        let loc = self.byte(at) == Op::IterNextLoc as u8;
+        let (op, imm) = if loc {
+            (Op::IterNextLoc, 3)
+        } else {
+            (Op::IterNext, 1)
+        };
+        let next = at + OPS[op as usize].size as u32;
+        self.pc = (next as i64 + self.imm_i32(imm) as i64) as u32;
+        if loc {
+            self.push(v);
+        } else {
+            self.sp -= 1;
+            self.set(self.sp - 1, v);
+        }
+        self.safepoint();
         true
     }
 

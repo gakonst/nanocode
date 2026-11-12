@@ -503,12 +503,14 @@ impl Exec<'_> {
             } else {
                 let at = self.lp + self.imm_u16(1);
                 let (it, f) = (self.get(at), self.get(at + 1));
-                if let Some(r) = self.iter_done_hit(it, f) {
+                if self.resume_hit(it, f) {
+                    true
+                } else if let Some(r) = self.iter_done_hit(it, f) {
                     self.push(r);
                     self.pc += info.size as u32;
                     true
                 } else {
-                    self.resume_hit(it, f)
+                    false
                 }
             };
             if done {

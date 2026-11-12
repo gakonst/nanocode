@@ -1424,6 +1424,12 @@ impl Heap {
     /// debugging and host output.
     pub fn str_to_string(&self, s: Str) -> String {
         let mut out = String::with_capacity(self.str_len(s) as usize);
+        self.push_str_to(s, &mut out);
+        out
+    }
+
+    /// Appends `s` to `out` as [`Heap::str_to_string`] converts it.
+    pub fn push_str_to(&self, s: Str, out: &mut String) {
         // A high surrogate waits for its low one, which may start the next piece.
         let mut high: Option<u16> = None;
         for chunk in self.str_chunks(s) {
@@ -1464,7 +1470,6 @@ impl Heap {
         if high.is_some() {
             out.push(char::REPLACEMENT_CHARACTER);
         }
-        out
     }
 
     /// The code units as a vector (tests and debugging).

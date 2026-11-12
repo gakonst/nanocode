@@ -18,20 +18,58 @@ use super::*;
 use crate::heap::atoms;
 use crate::heap::cells::Script;
 use crate::heap::cells::flags::OBJ_BUILTIN;
+use crate::value::Str;
+
+/// A name or file of a trace frame, kept where it is until it is written out.
+enum Text {
+    Str(Str),
+    Atom(Atom),
+    Lit(&'static str),
+}
 
 /// One frame of a trace.
 struct TraceFrame {
     /// The function; `None` for the position of a parse error (`<input>`).
     func: Option<Obj>,
     /// The name shown; `None` for an anonymous function.
-    name: Option<String>,
+    name: Option<Text>,
     /// The file; `None` for a native frame.
-    file: Option<String>,
+    file: Option<Text>,
     /// Line and column.
     pos: Option<(u32, u32)>,
     native: bool,
     construct: bool,
 }
+
+impl Text {
+    /// Appends the text to `out`.
+    fn put(&self, heap: &Heap, out: &mut String) {
+        match *self {
+            Text::Str(s) => heap.push_str_to(s, out),
+            Text::Atom(a) => match heap.atom_str_value(a) {
+                Some(s) => heap.push_str_to(s, out),
+                None => out.push_str(&heap.atom_name(a)),
+            },
+            Text::Lit(t) => out.push_str(t),
+        }
+    }
+
+    /// The text as a JS string.
+    fn value(&self, heap: &mut Heap) -> Result<Value, HeapError> {
+        let s = match *self {
+            Text::Str(s) => s,
+            Text::Atom(a) => match heap.atom_str_value(a) {
+                Some(s) => s,
+                None => heap.alloc_str(&heap.atom_name(a))?,
+            },
+            Text::Lit(t) => heap.alloc_str(t)?,
+        };
+        Ok(Value::string(s))
+    }
+}
+
+/// The bytes a trace line usually takes, reserved per frame for the default `stack` string.
+const TRACE_LINE: usize = 64;
 
 /// Slots of a pending stack record.
 const PENDING_SITES: u32 = 0;
@@ -78,7 +116,7 @@ impl Exec<'_> {
             out.push_out(TraceFrame {
                 func: None,
                 name: None,
-                file: Some(String::from("<input>")),
+                file: Some(Text::Lit("<input>")),
                 pos: Some(pos),
                 native: false,
                 construct: false,
@@ -115,8 +153,8 @@ impl Exec<'_> {
                     .get_own_property(f, crate::heap::atoms::NAME)
                     .and_then(|p| p.value())
                     .and_then(|v| v.as_string())
-                    .map(|s| self.heap.str_to_string(s))
-                    .filter(|s| !s.is_empty());
+                    .filter(|&s| self.heap.str_len(s) > 0)
+                    .map(Text::Str);
                 out.push_out(TraceFrame {
                     func: Some(f),
                     name,
@@ -137,18 +175,15 @@ impl Exec<'_> {
                 let name = if module {
                     None
                 } else if matches!(kind, func_flags::KIND_SCRIPT | func_flags::KIND_ASYNC_BODY) {
-                    Some(String::from("<eval>"))
+                    Some(Text::Lit("<eval>"))
                 } else {
                     let name = Atom::from_id(a.get(t, FuncTemplate::NAME));
-                    (!name.is_null())
-                        .then(|| self.heap.atom_name(name))
-                        .filter(|s| !s.is_empty())
+                    (!name.is_null() && name != atoms::EMPTY).then_some(Text::Atom(name))
                 };
                 let file = script
                     .get()
                     .and_then(|s| a.get(s, Script::NAME).get())
-                    .map(|n| self.heap.str_to_string(crate::value::Str(n)))
-                    .unwrap_or_default();
+                    .map_or(Text::Lit(""), |n| Text::Str(Str(n)));
                 out.push_out(TraceFrame {
                     func: Some(f),
                     name,
@@ -183,37 +218,31 @@ impl Exec<'_> {
     }
 
     /// The default `stack` string: one `    at name (file:line:col)` line per frame.
-    fn format_trace(frames: &[TraceFrame]) -> String {
-        let mut out = String::new();
+    fn format_trace(&self, frames: &[TraceFrame]) -> String {
+        let heap = &*self.heap;
+        let put = |t: &Option<Text>, missing: &'static str, out: &mut String| match t {
+            Some(t) => t.put(heap, out),
+            None => out.push_str(missing),
+        };
+        let mut out = String::with_capacity(frames.len() * TRACE_LINE);
         for fr in frames {
+            out.push_str("    at ");
             match (&fr.func, &fr.file, fr.pos) {
                 (None, file, Some((l, c))) => {
-                    crate::text::cat_to!(
-                        &mut out,
-                        "    at ",
-                        file.as_deref().unwrap_or(""),
-                        ":",
-                        l,
-                        ":",
-                        c,
-                        "\n"
-                    )
+                    put(file, "", &mut out);
+                    crate::text::cat_to!(&mut out, ":", l, ":", c, "\n")
                 }
                 (_, None, _) => {
-                    crate::text::cat_to!(
-                        &mut out,
-                        "    at ",
-                        fr.name.as_deref().unwrap_or(""),
-                        " (native)\n"
-                    )
+                    put(&fr.name, "", &mut out);
+                    out.push_str(" (native)\n");
                 }
-                (_, Some(file), pos) => {
-                    let name = fr.name.as_deref().unwrap_or("<anonymous>");
+                (_, file, pos) => {
+                    put(&fr.name, "<anonymous>", &mut out);
+                    out.push_str(" (");
+                    put(file, "", &mut out);
                     match pos {
-                        Some((l, c)) => crate::text::cat_to!(
-                            &mut out, "    at ", name, " (", file, ":", l, ":", c, ")\n"
-                        ),
-                        None => crate::text::cat_to!(&mut out, "    at ", name, " (", file, ")\n"),
+                        Some((l, c)) => crate::text::cat_to!(&mut out, ":", l, ":", c, ")\n"),
+                        None => out.push_str(")\n"),
                     }
                 }
             }
@@ -226,7 +255,7 @@ impl Exec<'_> {
     /// Callers are positioned at their call (`ret_pc - 1`). Prelude frames are hidden,
     /// except installed builtin methods, which show as `at name (native)`.
     pub(crate) fn stack_trace(&self, pc: u32, limit: u32) -> String {
-        Self::format_trace(&self.trace_frames(pc, false, None, limit, None))
+        self.format_trace(&self.trace_frames(pc, false, None, limit, None))
     }
 
     /// The `Error.prepareStackTrace` function and the Error constructor to call it with,
@@ -285,7 +314,7 @@ impl Exec<'_> {
         let limit = realm::stack_trace_limit(self.heap);
         let prepare = self.prepare_stack_trace();
         let frames = self.trace_frames(pc, skip_prelude, below, limit, input);
-        let default = Value::string(self.heap.alloc_str(&Self::format_trace(&frames))?);
+        let default = Value::string(self.heap.alloc_str(&self.format_trace(&frames))?);
         let Some((f, ctor)) = prepare else {
             return Ok(default);
         };
@@ -297,11 +326,11 @@ impl Exec<'_> {
                 Some(proto),
                 ObjectClass::CallSite.slots(),
             )?;
-            let str_or_null = |heap: &mut Heap, s: &Option<String>| -> Result<Value, HeapError> {
-                Ok(match s {
-                    Some(s) => Value::string(heap.alloc_str(s)?),
-                    None => Value::NULL,
-                })
+            let str_or_null = |heap: &mut Heap, s: &Option<Text>| -> Result<Value, HeapError> {
+                match s {
+                    Some(s) => s.value(heap),
+                    None => Ok(Value::NULL),
+                }
             };
             let name = str_or_null(self.heap, &fr.name)?;
             let file = str_or_null(self.heap, &fr.file)?;

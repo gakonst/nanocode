@@ -2,6 +2,7 @@
 
 - Keep code simple and changes small. Match the surrounding code and preserve unrelated work.
 - No code comments, doc comments, README edits, tests, test-only dependencies or Cargo features (`local-cells` on `nanocode-code-mode` is the one exception).
+- `bin/nanocode-sim` is the deterministic simulator and the one exception to "no tests": checks live there and are run by hand by seed (`bin/nanocode-sim/sweep.sh`), and a new invariant there comes with a mutation the simulator catches, as tempoxyz/zempo requires.
 - No magic constants or arbitrary caps: a limit comes from a protocol, a measurement or caller policy. Surface invalid states; never hide them with silent truncation, clamping or fallbacks.
 - Make invalid states unrepresentable: model a lifecycle as one enum whose variants carry only what that phase has.
 - Lock-free: no Mutex, RwLock or Condvar. Use nanocode-sync (an owning task, Actor or Mailbox; Atom changed copy-on-write with side effects after the commit; Slot, Signal, atomics). Blocking I/O runs on an owning worker behind channels, never on Tokio workers.

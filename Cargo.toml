@@ -55,6 +55,7 @@ members = [
     "bin/nanocode",
     "bin/cua-driver",
     "bin/nc-lite",
+    "bin/nanocode-sim",
 ]
 default-members = ["crates/nanocode"]
 exclude = ["crates/patches"]

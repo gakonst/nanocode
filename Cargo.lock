@@ -6391,6 +6391,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-sim"
+version = "0.7.0"
+dependencies = [
+ "nanocode-durability",
+ "nanocode-durability-core",
+ "nanocode-sync",
+]
+
+[[package]]
 name = "nanocode-store-jsonl"
 version = "0.7.0"
 dependencies = [

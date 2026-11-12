@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 
-use num_cmp::NumCmp;
 use serde_json::Number;
 
 pub(crate) fn compare(left: &Number, right: &Number) -> Ordering {
@@ -11,7 +10,7 @@ pub(crate) fn compare(left: &Number, right: &Number) -> Ordering {
         if let Some(right) = right.as_u64() {
             return i128::from(left).cmp(&i128::from(right));
         }
-        return left.num_cmp(right.as_f64().unwrap()).unwrap();
+        return compare_integer_float(i128::from(left), right.as_f64().unwrap());
     }
     if let Some(left) = left.as_u64() {
         if let Some(right) = right.as_i64() {
@@ -20,7 +19,7 @@ pub(crate) fn compare(left: &Number, right: &Number) -> Ordering {
         if let Some(right) = right.as_u64() {
             return left.cmp(&right);
         }
-        return left.num_cmp(right.as_f64().unwrap()).unwrap();
+        return compare_integer_float(i128::from(left), right.as_f64().unwrap());
     }
     if right.is_i64() || right.is_u64() {
         return compare(right, left).reverse();
@@ -29,6 +28,23 @@ pub(crate) fn compare(left: &Number, right: &Number) -> Ordering {
         .unwrap()
         .partial_cmp(&right.as_f64().unwrap())
         .unwrap()
+}
+
+const I128_EXCLUSIVE_BOUND: f64 = 170_141_183_460_469_231_731_687_303_715_884_105_728.0;
+
+fn compare_integer_float(integer: i128, float: f64) -> Ordering {
+    assert!(!float.is_nan());
+    if float >= I128_EXCLUSIVE_BOUND {
+        return Ordering::Less;
+    }
+    if float < -I128_EXCLUSIVE_BOUND {
+        return Ordering::Greater;
+    }
+    let whole = float.trunc();
+    match integer.cmp(&(whole as i128)) {
+        Ordering::Equal => whole.partial_cmp(&float).expect("a number"),
+        unequal => unequal,
+    }
 }
 
 pub(crate) fn multiple_of(value: &Number, divisor: &Number) -> bool {

@@ -93,6 +93,7 @@ const CELL_COMPLETION_CLAIMED: u8 = 2;
 const CELL_CLOSED: u8 = 3;
 const LOGGED_NESTED_CALLS_PER_TOOL: u64 = 100;
 const CALL_LIMIT: &str = "call_limit";
+const CALL_INTERRUPTED: &str = "CODE_MODE_CALL_INTERRUPTED";
 const STREAM_OUTPUT_AFTER: Duration = Duration::from_millis(500);
 const STREAMED_OUTPUT_BYTES: usize = 64 * 1024;
 const TERMINATED_OUTPUT_BYTES: usize = 16 * 1024;
@@ -245,6 +246,7 @@ struct ObservationBuffer {
     returned: u64,
     failed: u64,
     latest: Option<(String, String)>,
+    abandoned: Vec<String>,
 }
 
 struct CellLifecycle {
@@ -474,7 +476,7 @@ impl Drop for PendingCallReceipts {
                 input: Arc::unwrap_or_clone(pending.input),
                 output: ToolOutputBody::Text(message.to_owned()),
                 structured_result: serde_json::json!({
-                    "error": message, "code": "CODE_MODE_CALL_INTERRUPTED", "outcome": "unknown",
+                    "error": message, "code": CALL_INTERRUPTED, "outcome": "unknown",
                 }),
                 success: false,
                 started_after_ns: pending.started_after_ns,
@@ -1929,6 +1931,15 @@ async fn observe_updates(
                 observation
                     .running
                     .retain(|(call_id, _)| *call_id != call.call.call_id);
+                if call
+                    .call
+                    .structured_result
+                    .get("code")
+                    .and_then(Value::as_str)
+                    == Some(CALL_INTERRUPTED)
+                {
+                    observation.buffered.abandoned.push(call.call.name.clone());
+                }
                 observation.buffered.returned += 1;
                 observation.buffered.failed += u64::from(!call.call.success);
                 observation.buffered.latest = Some((
@@ -1991,6 +2002,19 @@ async fn observe_updates(
                 );
             }
             Some(CellUpdate::Completed) => {
+                let abandoned = abandoned_calls(
+                    observation,
+                    "the script ended without awaiting them",
+                    "Await every call whose result or effect matters.",
+                );
+                if !abandoned.is_empty() {
+                    observation
+                        .buffered
+                        .content
+                        .push(ToolOutputContent::InputText {
+                            text: abandoned.trim_start().to_owned(),
+                        });
+                }
                 let buffered = take_buffered(observation);
                 return (
                     observed_execution(
@@ -2030,11 +2054,16 @@ async fn observe_updates(
                 );
             }
             Some(CellUpdate::ScriptFailed { message }) => {
+                let abandoned = abandoned_calls(
+                    observation,
+                    "the script failed",
+                    "A rejected call fails the script as soon as it is awaited, also through Promise.all; use Promise.allSettled, or try/catch around each call, so the other calls finish.",
+                );
                 observation
                     .buffered
                     .content
                     .push(ToolOutputContent::InputText {
-                        text: format!("Script error:\n{message}"),
+                        text: format!("Script error:\n{message}{abandoned}"),
                     });
                 let buffered = take_buffered(observation);
                 return (
@@ -2161,6 +2190,31 @@ fn stream_output(
     observer.update(CodeModeUpdate::Notification(&CodeModeNotification::new(
         call_id, text,
     )));
+}
+
+fn abandoned_calls(observation: &mut CellObservationState, when: &str, advice: &str) -> String {
+    let mut names = BTreeMap::<String, usize>::new();
+    for name in std::mem::take(&mut observation.buffered.abandoned)
+        .into_iter()
+        .chain(
+            std::mem::take(&mut observation.running)
+                .into_iter()
+                .map(|(_, name)| name),
+        )
+    {
+        *names.entry(name).or_default() += 1;
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    let names = names
+        .iter()
+        .map(|(name, count)| format!("{count} {name}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "\n\nNested calls that had not returned when {when} were abandoned: {names}. Whether each took effect is unknown. {advice}"
+    )
 }
 
 fn yielded_observation(

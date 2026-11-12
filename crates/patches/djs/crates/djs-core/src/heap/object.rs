@@ -1450,7 +1450,7 @@ impl Heap {
         let nv = if v != 0 && len < PropValues::LAYOUT.tail_capacity(self.cell_size(v)) {
             v
         } else {
-            let nv = self.alloc_values((2 * len).max(4))?;
+            let nv = self.alloc_values(self.values_capacity(child, len))?;
             if len > 0 {
                 let src = PropValues::VALUES.at(v, 0);
                 let dst = PropValues::VALUES.at(nv, 0);
@@ -1480,6 +1480,29 @@ impl Heap {
                 Value::internal(pair)
             }
         })
+    }
+
+    /// The capacity of a new values block for an object that grows from `len` slots to
+    /// shape `child`: the count at the end of the single chain of transitions below
+    /// `child`, which objects built the same way (a literal, a constructor) went on to
+    /// fill; without one, twice `len` (at least 4).
+    fn values_capacity(&self, child: u32, len: u32) -> u32 {
+        use crate::heap::cells::{RefArray, Shape};
+        let a = self.arena();
+        let mut s = child;
+        for _ in 0..SHAPE_MAX {
+            let Some(t) = a.get::<Ref>(s, Shape::TRANSITIONS).get() else {
+                break;
+            };
+            if a.get(t, RefArray::LEN) != 1 {
+                break;
+            }
+            s = a.read::<Ref>(RefArray::REFS.at(t, 0)).0;
+        }
+        if s == child {
+            return (2 * len).max(4);
+        }
+        self.shape_count(s).max(len + 1)
     }
 
     fn alloc_values(&mut self, cap: u32) -> Result<u32, HeapError> {
@@ -1787,7 +1810,7 @@ impl Heap {
         let nv = if p != 0 && len < PropValues::LAYOUT.tail_capacity(self.cell_size(p)) {
             p
         } else {
-            let Ok(nv) = self.alloc_values((2 * len).max(4)) else {
+            let Ok(nv) = self.alloc_values(self.values_capacity(new, len)) else {
                 return false;
             };
             if len > 0 {

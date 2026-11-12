@@ -58,6 +58,8 @@ use crate::value::Value;
 /// The smallest growth between collections.
 pub const MIN_GROWTH: u32 = 256 * 1024;
 
+pub const LIVE_GROWTH: u32 = 2;
+
 /// Every this many collections, [`Heap::collect_auto`] makes a full one (D2041): it
 /// bounds how long dead old cells are retained.
 pub const FULL_EVERY: u32 = 16;
@@ -82,11 +84,11 @@ pub struct GcStats {
 pub const BASE_ALLOWANCE: u32 = 288_160;
 
 /// The arena size at which the next collection is requested, for `live` bytes after a
-/// collection, `base` of them the builtin prefix (`Roots::BASE_END`, 0 without one): as
-/// much growth as live data (at least [`MIN_GROWTH`]), the prefix counted as
-/// [`BASE_ALLOWANCE`], but never more than half of the remaining headroom below `limit`.
-/// Close to the cap, collections get more frequent instead of running into
-/// `OutOfMemory`.
+/// collection, `base` of them the builtin prefix (`Roots::BASE_END`, 0 without one):
+/// growth of [`LIVE_GROWTH`] times the live data (at least [`MIN_GROWTH`]), the prefix
+/// counted as [`BASE_ALLOWANCE`], but never more than half of the remaining headroom
+/// below `limit`. Close to the cap, collections get more frequent instead of running
+/// into `OutOfMemory`.
 pub fn next_threshold(live: u32, base: u32, limit: u32) -> u32 {
     next_threshold_cheap(live, base, limit, 0)
 }
@@ -111,7 +113,7 @@ pub fn next_threshold_cheap(live: u32, base: u32, limit: u32, cheap: u32) -> u32
     } else {
         live.saturating_sub(discount)
     };
-    let growth = counted.max(MIN_GROWTH);
+    let growth = counted.saturating_mul(LIVE_GROWTH).max(MIN_GROWTH);
     if growth > headroom / 2 {
         return live + headroom / 2;
     }

@@ -358,7 +358,7 @@ fn validate_uri(v: &Value) -> Result<(), Box<dyn Error>> {
     let Value::String(s) = v else {
         return Ok(());
     };
-    if fluent_uri::UriRef::parse(s.as_str())?.scheme().is_none() {
+    if !crate::uri::parse(s.as_str(), crate::uri::Syntax::UriReference)?.has_scheme {
         Err("relative url")?;
     };
     Ok(())
@@ -368,7 +368,7 @@ fn validate_iri(v: &Value) -> Result<(), Box<dyn Error>> {
     let Value::String(s) = v else {
         return Ok(());
     };
-    fluent_uri::Iri::parse(s.as_str())?;
+    crate::uri::parse(s.as_str(), crate::uri::Syntax::Iri)?;
     Ok(())
 }
 
@@ -376,7 +376,7 @@ fn validate_uri_reference(v: &Value) -> Result<(), Box<dyn Error>> {
     let Value::String(s) = v else {
         return Ok(());
     };
-    fluent_uri::UriRef::parse(s.as_str())?;
+    crate::uri::parse(s.as_str(), crate::uri::Syntax::UriReference)?;
     Ok(())
 }
 
@@ -384,7 +384,7 @@ fn validate_iri_reference(v: &Value) -> Result<(), Box<dyn Error>> {
     let Value::String(s) = v else {
         return Ok(());
     };
-    fluent_uri::IriRef::parse(s.as_str())?;
+    crate::uri::parse(s.as_str(), crate::uri::Syntax::IriReference)?;
     Ok(())
 }
 

@@ -14,6 +14,7 @@ mod regex;
 mod root;
 mod roots;
 mod unicode;
+mod uri;
 mod util;
 mod validator;
 

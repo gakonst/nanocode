@@ -35,7 +35,13 @@ impl LineReader {
     ) -> io::Result<Option<bool>> {
         line.clear();
         loop {
-            if let Some(i) = self.buf[self.pos..].iter().position(|&b| b == self.delim) {
+            let rest = &self.buf[self.pos..];
+            let short = rest.len().min(16);
+            let found = match rest[..short].iter().position(|&b| b == self.delim) {
+                None => memchr::memchr(self.delim, &rest[short..]).map(|i| i + short),
+                found => found,
+            };
+            if let Some(i) = found {
                 line.extend_from_slice(&self.buf[self.pos..self.pos + i]);
                 self.pos += i + 1;
                 return Ok(Some(true));

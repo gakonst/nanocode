@@ -357,7 +357,7 @@ impl Heap {
         self.mega_ic.fill(0);
         self.iterator_ic = Default::default();
         self.return_ic = Default::default();
-        self.atom_memo = [[0; 2]; super::atom::ATOM_MEMO_LEN];
+        self.atom_memo.fill([0; 2]);
         self.refresh_frozen();
         let t = next_threshold_cheap(after, self.base_end(), self.arena.limit(), cheap);
         self.set_gc_threshold(t);

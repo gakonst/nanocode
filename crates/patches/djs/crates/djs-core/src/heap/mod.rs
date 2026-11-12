@@ -205,7 +205,7 @@ pub struct Heap {
     pub(crate) mega_ic: alloc::vec::Vec<u32>,
     pub(crate) iterator_ic: [u32; cells::IC_WORDS as usize],
     pub(crate) return_ic: [u32; 2],
-    pub(crate) atom_memo: [[u32; 2]; atom::ATOM_MEMO_LEN],
+    pub(crate) atom_memo: alloc::vec::Vec<[u32; 2]>,
     /// The compiler's buffers, kept between compiles so that each one starts with their
     /// capacity (`resolve::finish`). Not part of the image.
     pub(crate) compile_scratch: crate::compiler::CompileScratch,
@@ -355,7 +355,7 @@ impl Heap {
             mega_ic: Default::default(),
             iterator_ic: Default::default(),
             return_ic: Default::default(),
-            atom_memo: [[0; 2]; atom::ATOM_MEMO_LEN],
+            atom_memo: Default::default(),
             compile_scratch: Default::default(),
             #[cfg(debug_assertions)]
             prefix_copy: None,
@@ -497,7 +497,7 @@ impl Heap {
     pub(crate) fn release_top(&mut self, start: u32, end: u32) {
         if self.arena.len() == end && start <= end {
             self.arena.truncate(start);
-            self.atom_memo = [[0; 2]; atom::ATOM_MEMO_LEN];
+            self.atom_memo.fill([0; 2]);
             // A full collection between the two runs made the record old: the old region
             // must not end past the arena.
             for f in [Roots::OLD_END, Roots::BASE_END] {

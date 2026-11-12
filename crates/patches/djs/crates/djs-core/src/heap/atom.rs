@@ -42,8 +42,8 @@ pub const MAX_INT_ATOM: u32 = INT_BIT - 1;
 /// The largest array index (2^32 - 2).
 pub const MAX_ARRAY_INDEX: u32 = u32::MAX - 1;
 
-const ATOM_MEMO_BITS: u32 = 8;
-pub(crate) const ATOM_MEMO_LEN: usize = 1 << ATOM_MEMO_BITS;
+const ATOM_MEMO_BITS: u32 = 11;
+const ATOM_MEMO_LEN: usize = 1 << ATOM_MEMO_BITS;
 const FIB_HASH: u32 = 0x9E37_79B1;
 
 #[inline]
@@ -750,10 +750,15 @@ impl Heap {
     #[inline(always)]
     fn intern_inner(&mut self, s: Str) -> Result<Atom, HeapError> {
         let slot = atom_memo_slot(s);
-        if self.atom_memo[slot][0] == s.0 {
-            return Ok(Atom(self.atom_memo[slot][1]));
+        if let Some(&[k, a]) = self.atom_memo.get(slot)
+            && k == s.0
+        {
+            return Ok(Atom(a));
         }
         let a = self.intern_uncached(s)?;
+        if self.atom_memo.is_empty() {
+            self.atom_memo.resize(ATOM_MEMO_LEN, [0; 2]);
+        }
         self.atom_memo[slot] = [s.0, a.0];
         Ok(a)
     }
@@ -789,9 +794,11 @@ impl Heap {
 
     /// The string atom of `s` if it is interned already (never an integer atom).
     pub(crate) fn find_string_atom_of(&mut self, s: Str) -> Option<Atom> {
-        let memo = self.atom_memo[atom_memo_slot(s)];
-        if memo[0] == s.0 && !Atom(memo[1]).is_int() {
-            return Some(Atom(memo[1]));
+        if let Some(&[k, a]) = self.atom_memo.get(atom_memo_slot(s))
+            && k == s.0
+            && !Atom(a).is_int()
+        {
+            return Some(Atom(a));
         }
         if self.str_array_index(s).is_some() {
             return None;

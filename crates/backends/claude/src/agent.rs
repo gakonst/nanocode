@@ -638,12 +638,24 @@ fn model_max_tokens(model: &str) -> Option<u32> {
 
 pub const DEFAULT_COMPACTION_RESERVED_TOKENS: u64 = 20_000 + 13_000;
 
+const STANDARD_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
+const STANDARD_CONTEXT_REQUEST_IMAGES: usize = 100;
+const REQUEST_IMAGES: usize = 600;
+
+const fn request_images(context_window_tokens: u64) -> usize {
+    if context_window_tokens > STANDARD_CONTEXT_WINDOW_TOKENS {
+        REQUEST_IMAGES
+    } else {
+        STANDARD_CONTEXT_REQUEST_IMAGES
+    }
+}
+
 pub fn default_context_window_tokens(model: &str) -> u64 {
     match model {
         "claude-opus-5-5" | "claude-fable-5-5" | "claude-fable-5-2" | "claude-mythos-5-2"
         | "claude-fable-5-1" | "claude-mythos-5-1" | "claude-sonnet-5-5" | "claude-haiku-5-5"
         | "claude-sonnet-5" => 1_000_000,
-        _ => 200_000,
+        _ => STANDARD_CONTEXT_WINDOW_TOKENS,
     }
 }
 
@@ -741,7 +753,7 @@ impl ClaudeBuilder {
             message_threads: false,
             context_window_tokens,
             auto_compact_window_tokens: None,
-            images: ImageHistory::default(),
+            images: ImageHistory::new(request_images(context_window_tokens)),
             system: String::new(),
             system_blocks: None,
             model_systems: Vec::new(),

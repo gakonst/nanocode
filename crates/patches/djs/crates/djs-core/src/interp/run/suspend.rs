@@ -256,7 +256,10 @@ impl Exec<'_> {
     /// Saves the frame `stack[bp..sp)` into `g`, to resume at `pc`.
     fn suspend_frame(&mut self, g: Obj, state: i32, pc: u32) -> Result<(), Fault> {
         let len = self.sp - self.bp;
-        let arr = self.heap.alloc_value_array(len)?;
+        let arr = match self.heap.object_slot(g, FRAME).as_internal() {
+            Some(a) if self.heap.value_array_capacity(a) >= len => a,
+            _ => self.heap.alloc_value_array(len)?,
+        };
         for i in 0..len {
             let v = self.get(self.bp + i);
             self.heap.value_array_set(arr, i, v);
@@ -502,7 +505,6 @@ impl Exec<'_> {
             self.set(hp + k, v);
         }
         self.heap.set_object_slot(g, STATE, Value::int(EXECUTING));
-        self.heap.set_object_slot(g, FRAME, Value::UNDEFINED);
         self.bp = base;
         self.hp = hp;
         self.sp = base + len;

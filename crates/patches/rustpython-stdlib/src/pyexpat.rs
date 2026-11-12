@@ -5,7 +5,7 @@
 //! `xml.etree.ElementTree`, `xml.sax`, and similar callers feed a document to
 //! `Parse()`/`ParseFile()` in many small chunks (e.g. 64KB at a time) rather
 //! than all at once, and expect the parser to retain state across those
-//! calls the way libexpat's `XML_Parse` does. `xml-rs`'s `EventReader` has no
+//! calls the way libexpat's `XML_Parse` does. The reader's `EventReader` has no
 //! API to pause and resume across separate `Read` sources, so two backends
 //! are provided (`Backend::Threaded`/`Backend::Sync`), selected per-parser
 //! the first time it is fed (`PyExpatLikeXmlParser::feed_inner`):
@@ -26,7 +26,7 @@
 //!   far) per call, so it is only used where the threaded backend is
 //!   unavailable.
 //!
-//! Both backends share `LineTracker` to convert `xml-rs`'s row/column
+//! Both backends share `LineTracker` to convert the reader's row/column
 //! `TextPosition` into `CurrentLineNumber`/`CurrentColumnNumber`/
 //! `CurrentByteIndex`, so the two backends report identical positions and
 //! identical handler/error semantics.
@@ -115,6 +115,8 @@
 
 // spell-checker: ignore libexpat
 
+mod reader;
+
 pub(crate) use _pyexpat::module_def;
 
 macro_rules! create_property {
@@ -165,6 +167,7 @@ macro_rules! create_bool_property {
 
 #[pymodule(name = "pyexpat")]
 mod _pyexpat {
+    use super::reader::{EventReader, QualifiedName, TextPosition, XmlEvent};
     use crate::vm::{
         AsObject, Context, Py, PyObjectRef, PyPayload, PyRef, PyResult, TryFromObject,
         VirtualMachine,
@@ -179,8 +182,6 @@ mod _pyexpat {
     use core::sync::atomic::{AtomicBool, Ordering};
     use rustpython_common::lock::PyRwLock;
     use std::io::Read;
-    use xml::common::Position;
-    use xml::reader::XmlEvent;
 
     pub(crate) fn module_exec(vm: &VirtualMachine, module: &Py<PyModule>) -> PyResult<()> {
         __module_exec(vm, module);
@@ -386,7 +387,7 @@ mod _pyexpat {
             (bytes, chars)
         }
 
-        fn byte_index_for(&mut self, pos: xml::common::TextPosition) -> i64 {
+        fn byte_index_for(&mut self, pos: TextPosition) -> i64 {
             let row = pos.row() as usize;
             let line_start = self
                 .line_starts
@@ -547,7 +548,7 @@ mod _pyexpat {
         Event(PreparedEvent),
         /// `EndDocument` was reached; the parser thread has exited.
         Finished,
-        /// xml-rs reported a parse error. Mirrors the previous
+        /// The reader reported a parse error. Mirrors the previous
         /// whole-buffer implementation, which silently stopped dispatching
         /// on the first parse error rather than raising `ExpatError`.
         Error,
@@ -628,7 +629,7 @@ mod _pyexpat {
         /// brand new parser thread there has been observed to reliably
         /// crash the process, so `Backend::new` falls back to `Backend::Sync`
         /// in that case too, exactly as if threads were unavailable.
-        fn try_spawn(config: xml::ParserConfig) -> Option<Self> {
+        fn try_spawn() -> Option<Self> {
             ensure_atfork_hook_registered();
             if post_fork_child() {
                 return None;
@@ -638,7 +639,7 @@ mod _pyexpat {
             let thread_buf = alloc::sync::Arc::clone(&buf);
             let thread = std::thread::Builder::new()
                 .name("pyexpat-parser".into())
-                .spawn(move || run_parser_thread(config, thread_buf, tx))
+                .spawn(move || run_parser_thread(thread_buf, tx))
                 .ok()?;
             Some(Self {
                 buf: core::mem::ManuallyDrop::new(buf),
@@ -693,7 +694,6 @@ mod _pyexpat {
     /// comment requires.
     #[cfg(not(target_arch = "wasm32"))]
     fn run_parser_thread(
-        config: xml::ParserConfig,
         buf: alloc::sync::Arc<FeedBuffer>,
         tx: std::sync::mpsc::Sender<ParserMsg>,
     ) {
@@ -703,7 +703,7 @@ mod _pyexpat {
             tracker: Rc::clone(&tracker),
             events_tx: tx.clone(),
         };
-        let mut parser = config.create_reader(std::io::BufReader::new(reader));
+        let mut parser = EventReader::new(std::io::BufReader::new(reader));
         loop {
             match parser.next() {
                 Ok(XmlEvent::EndDocument) => {
@@ -758,7 +758,6 @@ mod _pyexpat {
     /// its O(total bytes fed so far) per-`Parse()` cost.
     #[derive(Debug)]
     struct SyncParser {
-        config: xml::ParserConfig,
         buffer: Vec<u8>,
         /// Number of events (including the trailing `EndDocument`, once
         /// reached) already dispatched by a previous call, so a re-parse of
@@ -767,16 +766,15 @@ mod _pyexpat {
     }
 
     impl SyncParser {
-        fn new(config: xml::ParserConfig) -> Self {
+        fn new() -> Self {
             Self {
-                config,
                 buffer: Vec::new(),
                 dispatched_events: 0,
             }
         }
     }
 
-    /// The two ways a parser can drive `xml-rs`: a background thread when
+    /// The two ways a parser can drive the reader: a background thread when
     /// one can be spawned (`Threaded`), or an in-place accumulate-and-reparse
     /// fallback when it can't (`Sync`). See the module doc comment.
     #[derive(Debug)]
@@ -791,14 +789,14 @@ mod _pyexpat {
         /// fall back to the synchronous backend on targets that can't spawn
         /// threads (`wasm32`) or if spawning fails at runtime, so `Parse()`
         /// never panics for lack of threads.
-        fn new(config: xml::ParserConfig) -> Self {
+        fn new() -> Self {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                if let Some(stream) = ParserStream::try_spawn(config.clone()) {
+                if let Some(stream) = ParserStream::try_spawn() {
                     return Self::Threaded(stream);
                 }
             }
-            Self::Sync(SyncParser::new(config))
+            Self::Sync(SyncParser::new())
         }
     }
 
@@ -1005,17 +1003,9 @@ mod _pyexpat {
             );
         }
 
-        fn create_config(&self) -> xml::ParserConfig {
-            xml::ParserConfig::new()
-                .cdata_to_characters(false)
-                .coalesce_characters(false)
-                .ignore_comments(false)
-                .whitespace_to_characters(true)
-        }
-
         #[pymethod(name = "SetParamEntityParsing")]
         fn set_param_entity_parsing(_zelf: &Py<Self>, _flag: i32) -> i32 {
-            // Compatibility shim: xml.sax requires this setup API, but xml-rs
+            // Compatibility shim: xml.sax requires this setup API, but the reader
             // does not expose Expat parameter entity parsing configuration.
             1
         }
@@ -1025,7 +1015,7 @@ mod _pyexpat {
             // Compatibility shim: CPython's implementation forwards the flag to
             // libexpat's XML_UseForeignDTD, which lets a DTD handler splice in an
             // external subset for documents that only declare one (e.g. via
-            // NotStandaloneHandler). The xml-rs backend used here has no such hook
+            // NotStandaloneHandler). The reader used here has no such hook
             // and always parses documents standalone, so the flag is accepted and
             // ignored purely so callers that toggle this setting (e.g. genshi) don't
             // fail with AttributeError.
@@ -1034,7 +1024,7 @@ mod _pyexpat {
         #[pymethod(name = "SetBase")]
         fn set_base(zelf: &Py<Self>, base: PyStrRef) {
             // Store-only compatibility state for xml.sax locator APIs. The
-            // xml-rs backend still does not perform Expat-style base URI
+            // reader still does not perform Expat-style base URI
             // resolution for external entities.
             *zelf.base.write() = Some(AsRef::<str>::as_ref(&base).to_owned());
         }
@@ -1048,7 +1038,7 @@ mod _pyexpat {
         }
 
         /// Construct element name with namespace if separator is set
-        fn make_name(&self, name: &xml::name::OwnedName) -> String {
+        fn make_name(&self, name: &QualifiedName) -> String {
             match (&self.namespace_separator, &name.namespace) {
                 (Some(sep), Some(ns)) => format!("{}{}{}", ns, sep, name.local_name),
                 _ => name.local_name.clone(),
@@ -1234,7 +1224,7 @@ mod _pyexpat {
         /// buffer via `isfinal`, so it never reaches `EndDocument`
         /// prematurely).
         fn feed_sync(&self, vm: &VirtualMachine, chunk: &[u8], isfinal: bool) -> PyResult<()> {
-            let (config, buffer, skip) = {
+            let (buffer, skip) = {
                 let mut guard = self.backend.write();
                 let Some(Backend::Sync(sync)) = guard.as_mut() else {
                     // feed_inner only calls feed_sync once the backend has
@@ -1242,11 +1232,7 @@ mod _pyexpat {
                     return Ok(());
                 };
                 sync.buffer.extend_from_slice(chunk);
-                (
-                    sync.config.clone(),
-                    sync.buffer.clone(),
-                    sync.dispatched_events,
-                )
+                (sync.buffer.clone(), sync.dispatched_events)
             };
 
             let tracker = Rc::new(RefCell::new(LineTracker::new()));
@@ -1254,7 +1240,7 @@ mod _pyexpat {
                 inner: buffer.as_slice(),
                 tracker: Rc::clone(&tracker),
             };
-            let mut parser = config.create_reader(reader);
+            let mut parser = EventReader::new(reader);
 
             let mut index = 0usize;
             let result = loop {
@@ -1296,7 +1282,7 @@ mod _pyexpat {
                             break Err(e);
                         }
                     }
-                    // xml-rs is stricter than libexpat about a document
+                    // The reader is stricter than libexpat about a document
                     // prefix that is only well-formed once more bytes
                     // arrive (or never, if this chunk really is malformed);
                     // mirrors `ParserMsg::Error`, which is silently
@@ -1352,7 +1338,7 @@ mod _pyexpat {
             {
                 let mut guard = self.backend.write();
                 if guard.is_none() {
-                    *guard = Some(Backend::new(self.create_config()));
+                    *guard = Some(Backend::new());
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -1451,7 +1437,7 @@ mod _pyexpat {
             None => None,
         };
 
-        // encoding parameter is currently not used (xml-rs handles encoding from XML declaration)
+        // encoding parameter is currently not used (the reader handles encoding from XML declaration)
         let _ = args.encoding;
 
         Ok(PyExpatLikeXmlParser::new(ns_sep, args.intern, vm))

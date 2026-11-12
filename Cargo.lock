@@ -3196,7 +3196,6 @@ dependencies = [
  "rustpython-unicode",
  "rustpython-vm",
  "widestring",
- "xml",
 ]
 
 [[package]]
@@ -4313,12 +4312,6 @@ dependencies = [
  "thiserror",
  "time",
 ]
-
-[[package]]
-name = "xml"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "636f85e5ca6488e96401b61eb7de54f4e44755c988af0f52cf90230c312a1a89"
 
 [[package]]
 name = "yasna"

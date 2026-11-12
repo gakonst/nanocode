@@ -158,9 +158,6 @@ version = "0.6.0"
 features = ["compiler"]
 default-features = false
 
-[dependencies.xml]
-version = "1.3"
-
 [dev-dependencies.insta]
 version = "1.47"
 

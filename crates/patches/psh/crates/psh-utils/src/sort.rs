@@ -930,15 +930,27 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         && whole(k)
         && plain(&k.order)
     {
-        let mut keyed: Vec<(u64, &[u8])> = lines
-            .iter()
-            .map(|l| ((prefix(l) >> 64) as u64, *l))
-            .collect();
-        keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
-        if k.order.reverse {
-            keyed.reverse();
+        if lines.iter().all(|l| l.len() < 8) {
+            let mut keyed: Vec<(u64, &[u8])> = lines
+                .iter()
+                .map(|l| (((prefix(l) >> 64) as u64) | l.len() as u64, *l))
+                .collect();
+            keyed.sort_unstable_by_key(|a| a.0);
+            if k.order.reverse {
+                keyed.reverse();
+            }
+            lines = keyed.into_iter().map(|(_, l)| l).collect();
+        } else {
+            let mut keyed: Vec<(u64, &[u8])> = lines
+                .iter()
+                .map(|l| ((prefix(l) >> 64) as u64, *l))
+                .collect();
+            keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+            if k.order.reverse {
+                keyed.reverse();
+            }
+            lines = keyed.into_iter().map(|(_, l)| l).collect();
         }
-        lines = keyed.into_iter().map(|(_, l)| l).collect();
     } else if sorter.keys.iter().all(whole) {
         lines.sort_by(|a, b| sorter.cmp(a, b));
     } else {

@@ -29,6 +29,7 @@ pub struct Reader<R> {
     pub lines_read: usize,
     /// A parse error ended the input.
     failed: bool,
+    keys: Vec<Option<Rc<str>>>,
 }
 
 const CHUNK: usize = 64 * 1024;
@@ -44,6 +45,7 @@ impl<R: Read> Reader<R> {
             col: 0,
             lines_read: 0,
             failed: false,
+            keys: vec![None; 256],
         }
     }
 
@@ -108,6 +110,20 @@ impl<R: Read> Reader<R> {
     }
 
     fn skip_ws(&mut self) -> io::Result<()> {
+        let rest = &self.buf[self.pos..];
+        let n = rest
+            .iter()
+            .position(|&b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+            .unwrap_or(rest.len());
+        let blanks = &rest[..n];
+        match blanks.iter().rposition(|&b| b == b'\n') {
+            Some(last) => {
+                self.line += blanks.iter().filter(|&&b| b == b'\n').count();
+                self.col = n - last - 1;
+            }
+            None => self.col += n,
+        }
+        self.pos += n;
         while let Some(b) = self.peek()? {
             if matches!(b, b' ' | b'\t' | b'\n' | b'\r') {
                 self.bump()?;
@@ -265,7 +281,7 @@ impl<R: Read> Reader<R> {
                             return self.error("Object keys must be strings");
                         }
                     }
-                    let k = self.string()?;
+                    let k = self.key()?;
                     let r = self.skip_ws();
                     self.io(r)?;
                     let p = self.bump();
@@ -378,6 +394,19 @@ impl<R: Read> Reader<R> {
 
     /// A bare token: `true`, `false`, `null`, `nan`, a number.
     fn literal(&mut self) -> Result<Val, ParseError> {
+        let rest = &self.buf[self.pos..];
+        if let Some(n) = rest.iter().position(|&b| {
+            matches!(
+                b,
+                b' ' | b'\t' | b'\n' | b'\r' | b'[' | b']' | b'{' | b'}' | b',' | b':' | b'"'
+            )
+        }) && rest[..n].is_ascii()
+            && let Ok(v) = self.check_literal(&rest[..n])
+        {
+            self.pos += n;
+            self.col += n;
+            return Ok(v);
+        }
         let mut tok = Vec::new();
         loop {
             let p = self.peek();
@@ -434,7 +463,7 @@ impl<R: Read> Reader<R> {
         }
     }
 
-    fn check_literal(&mut self, tok: &[u8]) -> Result<Val, ParseError> {
+    fn check_literal(&self, tok: &[u8]) -> Result<Val, ParseError> {
         let t = String::from_utf8_lossy(tok);
         match &*t {
             "true" => return Ok(Val::Bool(true)),
@@ -471,6 +500,34 @@ impl<R: Read> Reader<R> {
         Ok(Some(n))
     }
 
+    fn key(&mut self) -> Result<Rc<str>, ParseError> {
+        let rest = &self.buf[self.pos..];
+        if let Some(n) = rest
+            .get(1..)
+            .and_then(|r| r.iter().position(|&c| c == b'"' || c == b'\\' || c < 0x20))
+            && rest[1 + n] == b'"'
+            && let raw = &rest[1..1 + n]
+            && let Ok(text) = std::str::from_utf8(raw)
+        {
+            let slot = (raw.len()
+                ^ raw.first().map_or(0, |&b| usize::from(b) << 3)
+                ^ raw.last().map_or(0, |&b| usize::from(b) << 5))
+                & 255;
+            let k = match &self.keys[slot] {
+                Some(k) if k.as_bytes() == raw => k.clone(),
+                _ => {
+                    let k: Rc<str> = Rc::from(text);
+                    self.keys[slot] = Some(k.clone());
+                    k
+                }
+            };
+            self.col += 2 + raw.iter().filter(|&&c| c & 0xC0 != 0x80).count();
+            self.pos += n + 2;
+            return Ok(k);
+        }
+        self.string()
+    }
+
     fn string(&mut self) -> Result<Rc<str>, ParseError> {
         self.bump().ok(); // the quote
         let mut out: Vec<u8> = Vec::new();
@@ -478,6 +535,16 @@ impl<R: Read> Reader<R> {
         // complete, at its closing quote.
         let mut bad: Option<&'static str> = None;
         loop {
+            let rest = &self.buf[self.pos..];
+            let n = rest
+                .iter()
+                .position(|&c| c == b'"' || c == b'\\' || c < 0x20)
+                .unwrap_or(rest.len());
+            if n > 0 {
+                out.extend_from_slice(&rest[..n]);
+                self.col += rest[..n].iter().filter(|&&c| c & 0xC0 != 0x80).count();
+                self.pos += n;
+            }
             let p = self.bump();
             let Some(b) = self.io(p)? else {
                 return self.eof_error("Unfinished string");

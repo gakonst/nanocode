@@ -5,6 +5,7 @@ use crate::{
     class::PyClassImpl,
     common::hash::PyHash,
     convert::{ToPyObject, ToPyResult},
+    object::{Traverse, TraverseFn},
     function::{
         Callee, FuncArgs, ItemDoc, PyMethodDef, PyMethodFlags, PySetterValue, PySsize, plain_doc,
     },
@@ -736,7 +737,7 @@ impl PyMemberSpec {
 }
 
 // = PyMemberDescrObject
-#[pyclass(name = "member_descriptor", module = false)]
+#[pyclass(name = "member_descriptor", module = false, traverse = "manual")]
 #[derive(Debug)]
 pub struct PyMemberDescriptor {
     #[pymember(name = "__objclass__", path = "typ")]
@@ -808,6 +809,12 @@ impl PyMemberDescriptor {
             }
             MemberAccess::TupleItem => Err(vm.new_attribute_error("readonly attribute")),
         }
+    }
+}
+
+unsafe impl Traverse for PyMemberDescriptor {
+    fn traverse(&self, tracer_fn: &mut TraverseFn<'_>) {
+        self.common.typ.traverse(tracer_fn);
     }
 }
 

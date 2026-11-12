@@ -11,7 +11,6 @@ autotests = false
 autobenches = false
 
 [dependencies]
-smallvec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

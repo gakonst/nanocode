@@ -1,7 +1,6 @@
 use std::{fmt, ops::Deref};
 
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 
 use super::FunctionOutputContent;
 use super::{
@@ -106,7 +105,7 @@ pub enum ResponseItem {
         id: Option<ResponseItemId>,
         author: Box<str>,
         recipient: Box<str>,
-        content: SmallVec<[AgentMessageContent; 1]>,
+        content: Vec<AgentMessageContent>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         internal_chat_message_metadata_passthrough: Option<InternalMessageMetadata>,
     },

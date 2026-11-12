@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::{
         Arc, LazyLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1004,7 +1004,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
                     .states
                     .get(state.as_str())
                     .map_or_else(Vec::new, |held| {
-                        let keys: HashSet<&Arc<str>> =
+                        let keys: BTreeSet<&Arc<str>> =
                             held.values.keys().chain(held.sealed.keys()).collect();
                         keys.into_iter().map(|key| key.to_string()).collect()
                     })

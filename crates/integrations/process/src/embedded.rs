@@ -82,6 +82,10 @@ impl process::Ready for Reader {
         self.read = end;
         Ok(Some(read))
     }
+
+    fn open(&self) -> super::output::Open {
+        super::output::Open::none()
+    }
 }
 
 fn sink(written: mpsc::Sender<Vec<u8>>) -> Sink {

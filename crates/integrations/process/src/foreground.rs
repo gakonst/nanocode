@@ -194,7 +194,10 @@ impl<P: Pipe> Capture<P> {
         let mut buffer = [0_u8; crate::output::READ_BUFFER_LENGTH];
         while let Some(mut pipe) = self.pipe.take() {
             match pipe.ready(&mut buffer)? {
-                None => drop(tokio::spawn(crate::output::discard(pipe))),
+                None => {
+                    let open = pipe.open();
+                    drop(tokio::spawn(crate::output::discard(pipe, open)));
+                }
                 Some(0) => {}
                 Some(read) => {
                     self.keep(&buffer[..read], output, secrets);

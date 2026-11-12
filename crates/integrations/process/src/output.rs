@@ -51,7 +51,50 @@ impl Sender {
     }
 }
 
-pub(super) async fn discard(mut pipe: impl AsyncRead + Unpin) {
+#[cfg(unix)]
+static OPEN: std::sync::LazyLock<nanocode_sync::Atom<Vec<Arc<std::os::fd::OwnedFd>>>> =
+    std::sync::LazyLock::new(nanocode_sync::Atom::default);
+
+pub(super) struct Open(#[cfg(unix)] Option<Arc<std::os::fd::OwnedFd>>);
+
+impl Open {
+    #[cfg(unix)]
+    pub(super) fn new(pipe: &impl std::os::fd::AsFd) -> Self {
+        let output = pipe.as_fd().try_clone_to_owned().ok().map(Arc::new);
+        if let Some(output) = &output {
+            OPEN.update(|open| open.push(Arc::clone(output)));
+        }
+        Self(output)
+    }
+
+    #[cfg(not(unix))]
+    pub(super) const fn new<P>(_: &P) -> Self {
+        Self()
+    }
+
+    pub(super) const fn none() -> Self {
+        Self(
+            #[cfg(unix)]
+            None,
+        )
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Open {
+    fn drop(&mut self) {
+        if let Some(output) = self.0.take() {
+            OPEN.update(|open| open.retain(|other| !Arc::ptr_eq(other, &output)));
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn open() -> Vec<Arc<std::os::fd::OwnedFd>> {
+    OPEN.read(Vec::clone)
+}
+
+pub(super) async fn discard(mut pipe: impl AsyncRead + Unpin, _open: Open) {
     let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
 }
 
@@ -64,6 +107,7 @@ pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
     let Some(mut pipe) = pipe.take() else {
         return;
     };
+    let open = pipe.open();
     let mut buffer = [0_u8; READ_BUFFER_LENGTH];
     loop {
         let read = tokio::select! {
@@ -96,7 +140,7 @@ pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
                 }
             }
             Ok(None) => {
-                drop(tokio::spawn(discard(pipe)));
+                drop(tokio::spawn(discard(pipe, open)));
                 return;
             }
         }
@@ -104,12 +148,13 @@ pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
 }
 
 pub(super) fn drain_blocking(
-    mut pipe: Box<dyn Read + Send>,
+    mut pipe: std::fs::File,
     chunks: Sender,
     activity: Arc<LastActivity>,
 ) -> tokio::task::JoinHandle<()> {
     let runtime = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
+        let _open = Open::new(&pipe);
         let mut buffer = [0_u8; READ_BUFFER_LENGTH];
         loop {
             match pipe.read(&mut buffer) {

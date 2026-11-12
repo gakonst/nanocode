@@ -9,6 +9,10 @@ pub use bounded::{Bounded, Input, bounded};
 mod foreground;
 pub use foreground::{ForegroundOutput, run_bash};
 #[cfg(unix)]
+mod handover;
+#[cfg(unix)]
+pub use handover::{TERMINATED, hand_over, read_outputs_if_requested};
+#[cfg(unix)]
 mod marked;
 #[cfg(unix)]
 pub use marked::terminate_marked;

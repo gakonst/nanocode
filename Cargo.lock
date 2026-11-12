@@ -3080,6 +3080,7 @@ dependencies = [
  "nanocode-computer-repl",
  "nanocode-home",
  "nanocode-observability",
+ "nanocode-process",
  "nanocode-psh",
  "nanocode-psh-embedded",
  "nanocode-python",

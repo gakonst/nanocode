@@ -55,6 +55,7 @@ tracing-opentelemetry.workspace = true
 uuid = { workspace = true, features = ["v7"] }
 
 [target.'cfg(unix)'.dependencies]
+nanocode-process.workspace = true
 nanocode-psh.workspace = true
 nanocode-psh-embedded.workspace = true
 nanocode-python.workspace = true

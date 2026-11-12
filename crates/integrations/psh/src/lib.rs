@@ -12,18 +12,18 @@ pub fn serve_if_requested(
 
 #[cfg(unix)]
 pub fn shell() -> std::io::Result<nanocode_home::shell::Shell> {
-    let (program, mut arguments) = started()?;
+    let (program, mut arguments) = program()?;
     arguments.push(ARGUMENT.to_owned());
     Ok(nanocode_home::shell::Shell::psh(program, arguments))
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn started() -> std::io::Result<(std::path::PathBuf, Vec<String>)> {
+pub fn program() -> std::io::Result<(std::path::PathBuf, Vec<String>)> {
     Ok((std::env::current_exe()?, Vec::new()))
 }
 
 #[cfg(target_os = "linux")]
-fn started() -> std::io::Result<(std::path::PathBuf, Vec<String>)> {
+pub fn program() -> std::io::Result<(std::path::PathBuf, Vec<String>)> {
     use std::os::unix::ffi::OsStrExt;
 
     let executable = std::env::current_exe()?;

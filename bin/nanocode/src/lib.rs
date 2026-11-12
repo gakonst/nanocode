@@ -115,6 +115,10 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     }) {
         return code;
     }
+    #[cfg(unix)]
+    if let Some(code) = nanocode_process::read_outputs_if_requested() {
+        return code;
+    }
     let entered = std::time::Instant::now();
     let cli = Cli::parse();
     #[cfg(unix)]
@@ -727,9 +731,41 @@ async fn hand(args: HandArgs) -> Result<()> {
         HandEvent::Replaced => eprintln!("hand: another hand attached under this name; stopping"),
         other => eprintln!("hand: {other:?}"),
     });
+    tokio::pin!(run);
     tokio::select! {
-        result = run => result?,
+        result = &mut run => result?,
         signal = tokio::signal::ctrl_c() => signal?,
+        signal = terminated() => {
+            signal?;
+            eprintln!("hand: stopped; what its commands left running is read until it ends");
+            hand_over()?;
+        }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn terminated() -> std::io::Result<()> {
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?
+        .recv()
+        .await;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn terminated() -> std::io::Result<()> {
+    std::future::pending().await
+}
+
+#[cfg(unix)]
+fn hand_over() -> std::io::Result<()> {
+    let (program, arguments) = nanocode_psh::program()?;
+    let mut command = std::process::Command::new(program);
+    command.args(arguments);
+    std::process::exit(nanocode_process::hand_over(command)?.into())
+}
+
+#[cfg(not(unix))]
+const fn hand_over() -> std::io::Result<()> {
     Ok(())
 }

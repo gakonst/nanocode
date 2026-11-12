@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
-    io::{self, Read, Write},
+    io::{self, Write},
     path::Path,
     process::Stdio,
     sync::{
@@ -340,7 +340,7 @@ pub(super) enum ProcessOutput {
         stdout: Option<ChildStdout>,
         stderr: Option<ChildStderr>,
     },
-    Pty(Box<dyn Read + Send>),
+    Pty(std::fs::File),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     Streams {
         stdout: super::embedded::Reader,
@@ -352,6 +352,8 @@ pub(super) enum ProcessOutput {
 
 pub(super) trait Ready {
     fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>>;
+
+    fn open(&self) -> super::output::Open;
 }
 
 #[cfg(unix)]
@@ -375,11 +377,19 @@ impl Ready for ChildStdout {
     fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
         ready(&*self, buffer)
     }
+
+    fn open(&self) -> super::output::Open {
+        super::output::Open::new(self)
+    }
 }
 
 impl Ready for ChildStderr {
     fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
         ready(&*self, buffer)
+    }
+
+    fn open(&self) -> super::output::Open {
+        super::output::Open::new(self)
     }
 }
 
@@ -491,7 +501,7 @@ fn spawn_pty(
         process_group: child.process_group.clone(),
         child,
         stdin: Some(ProcessStdin::pty(controller)),
-        output: ProcessOutput::Pty(Box::new(reader)),
+        output: ProcessOutput::Pty(reader),
     })
 }
 

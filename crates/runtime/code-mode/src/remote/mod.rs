@@ -670,10 +670,51 @@ impl CodeModeHost for RemoteCodeModeHost {
     }
 }
 
+fn serialize_catalog_definitions<S: serde::Serializer>(
+    definitions: &[ToolDefinition],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(definitions.iter().map(CatalogDefinition))
+}
+
+struct CatalogDefinition<'a>(&'a ToolDefinition);
+
+impl Serialize for CatalogDefinition<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value = serde_json::to_value(self.0).map_err(serde::ser::Error::custom)?;
+        attach_output_schemas(&mut value, self.0);
+        value.serialize(serializer)
+    }
+}
+
+fn attach_output_schemas(value: &mut Value, definition: &ToolDefinition) {
+    match definition {
+        ToolDefinition::Function {
+            output_schema: Some(schema),
+            ..
+        } => {
+            if let Value::Object(fields) = value {
+                fields.insert("output_schema".into(), schema.as_value().clone());
+            }
+        }
+        ToolDefinition::Namespace { tools, .. } => {
+            if let Some(Value::Array(values)) = value.get_mut("tools") {
+                for (value, tool) in values.iter_mut().zip(tools) {
+                    attach_output_schemas(value, tool);
+                }
+            }
+        }
+        ToolDefinition::Function { .. }
+        | ToolDefinition::Custom { .. }
+        | ToolDefinition::ToolSearch { .. } => {}
+    }
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RemoteFrame {
     Catalog {
+        #[serde(serialize_with = "serialize_catalog_definitions")]
         definitions: Vec<ToolDefinition>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,

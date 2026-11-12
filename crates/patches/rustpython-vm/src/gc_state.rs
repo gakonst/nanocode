@@ -222,7 +222,7 @@ struct CollectStopTheWorld {
     /// restart. One registered in that window would be missing from `stopped`,
     /// so its bootstrap would keep running — and mutating the shared generation
     /// lists — while this collection reads them.
-    admission: Option<parking_lot::MutexGuard<'static, ()>>,
+    admission: Option<std::sync::MutexGuard<'static, ()>>,
     restarted: bool,
 }
 

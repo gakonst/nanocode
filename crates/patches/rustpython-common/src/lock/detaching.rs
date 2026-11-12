@@ -15,7 +15,7 @@
 use super::RawRwLock;
 #[cfg(feature = "threading")]
 use core::cell::Cell;
-use lock_api::{
+use super::api::{
     RawRwLock as RawRwLockTrait, RawRwLockDowngrade, RawRwLockUpgrade as RawRwLockUpgradeTrait,
     RawRwLockUpgradeDowngrade,
 };

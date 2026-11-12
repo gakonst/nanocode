@@ -19,7 +19,7 @@ pub(crate) mod _interpqueues {
     use alloc::{collections::BTreeMap, collections::VecDeque, sync::Arc};
     use core::cell::Cell;
     use nanocode_numeric::{Signed, ToPrimitive};
-    use parking_lot::Mutex;
+    use crate::common::lock::BlockingMutex as Mutex;
     use std::sync::OnceLock;
 
     #[pyattr]

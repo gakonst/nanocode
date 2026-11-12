@@ -8,7 +8,7 @@ use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use lock_api::{GetThreadId, GuardNoSend, RawMutex};
+use super::api::{GetThreadId, GuardNoSend, RawMutex};
 
 // based off ReentrantMutex from lock_api
 

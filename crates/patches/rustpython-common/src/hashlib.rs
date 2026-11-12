@@ -22,7 +22,7 @@ use blake2b::Blake2b;
 use blake2s::Blake2s;
 use keccak::{Keccak, SHAKE_SUFFIX};
 use md5::Md5;
-use parking_lot::Mutex;
+use crate::lock::PyMutex as Mutex;
 use sha1::Sha1;
 use sha256::{SHA224_INITIAL_STATE, SHA224_OUTPUT_BYTES, SHA256_INITIAL_STATE, Sha256};
 use sha512::{SHA384_INITIAL_STATE, SHA384_OUTPUT_BYTES, SHA512_INITIAL_STATE, Sha512};

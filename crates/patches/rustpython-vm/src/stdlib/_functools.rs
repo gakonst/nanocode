@@ -18,14 +18,34 @@ mod _functools {
         types::{Callable, Constructor, GetDescriptor, PyComparisonOp, Representable},
     };
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use parking_lot::lock_api::RawReentrantMutex as GenericRawReentrantMutex;
     use rustpython_common::wtf8::Wtf8Buf;
 
-    /// Reentrant raw mutex used to guard the LRU cache's lookup/insert critical
-    /// sections. Defined locally (rather than reusing `stdlib::_thread::RawRMutex`)
-    /// because that type is only available when the `threading` feature is enabled,
-    /// while `parking_lot` itself is always a dependency.
-    type RawRMutex = GenericRawReentrantMutex<parking_lot::RawMutex, parking_lot::RawThreadId>;
+    #[cfg(feature = "threading")]
+    type RawRMutex = parking_lot::lock_api::RawReentrantMutex<parking_lot::RawMutex, parking_lot::RawThreadId>;
+
+    #[cfg(not(feature = "threading"))]
+    struct RawRMutex {
+        depth: core::cell::Cell<usize>,
+    }
+
+    #[cfg(not(feature = "threading"))]
+    impl RawRMutex {
+        #[allow(clippy::declare_interior_mutable_const)]
+        const INIT: Self = Self {
+            depth: core::cell::Cell::new(0),
+        };
+
+        fn lock(&self) {
+            let depth = self.depth.get().checked_add(1).expect("lru_cache lock depth overflowed");
+            self.depth.set(depth);
+        }
+
+        fn unlock(&self) {
+            let depth = self.depth.get();
+            assert!(depth > 0, "lru_cache lock released while not held");
+            self.depth.set(depth - 1);
+        }
+    }
 
     #[derive(FromArgs)]
     struct ReduceArgs {
@@ -680,10 +700,12 @@ mod _functools {
 
     impl Drop for RMutexGuard<'_> {
         fn drop(&mut self) {
-            // SAFETY: this guard is only constructed right after a matching `lock()`
-            // call on the same mutex, so the current thread holds (at least one level
-            // of) the lock.
-            unsafe { self.0.unlock() };
+            #[cfg(feature = "threading")]
+            unsafe {
+                self.0.unlock()
+            };
+            #[cfg(not(feature = "threading"))]
+            self.0.unlock();
         }
     }
 

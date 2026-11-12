@@ -22,7 +22,8 @@ pub(crate) mod _interpchannels {
     use alloc::{collections::VecDeque, sync::Arc};
     use core::time::Duration;
     use nanocode_numeric::ToPrimitive;
-    use parking_lot::{Condvar, Mutex};
+    use crate::common::lock::BlockingMutex as Mutex;
+    use std::sync::{Condvar, PoisonError};
     use std::{sync::OnceLock, time::Instant};
 
     #[repr(i32)]
@@ -969,11 +970,22 @@ pub(crate) mod _interpchannels {
                     return false;
                 }
                 let Some(deadline) = deadline else {
-                    waiting.cond.wait(&mut state);
+                    state = waiting
+                        .cond
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
                     continue;
                 };
                 let now = Instant::now();
-                if now >= deadline || waiting.cond.wait_until(&mut state, deadline).timed_out() {
+                if now >= deadline {
+                    return !state.released;
+                }
+                let (next, waited) = waiting
+                    .cond
+                    .wait_timeout(state, deadline - now)
+                    .unwrap_or_else(PoisonError::into_inner);
+                state = next;
+                if waited.timed_out() {
                     return !state.released;
                 }
             }

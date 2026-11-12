@@ -37,10 +37,7 @@ bz2 = [
 ]
 cjk-codecs = []
 default = ["std"]
-hashlib = [
-    "std",
-    "parking_lot",
-]
+hashlib = ["std"]
 inet = ["std"]
 json = [
     "dep:memchr",
@@ -78,9 +75,6 @@ features = ["std"]
 
 [dependencies.libc]
 version = "0.2.186"
-
-[dependencies.lock_api]
-version = "0.4"
 
 [dependencies.nanocode-numeric]
 path = "../../core/numeric"

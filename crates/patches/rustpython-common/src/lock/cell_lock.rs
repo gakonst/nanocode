@@ -1,6 +1,6 @@
 // spell-checker:ignore upgradably sharedly
 use core::{cell::Cell, num::NonZero};
-use lock_api::{
+use super::api::{
     GetThreadId, RawMutex, RawRwLock, RawRwLockDowngrade, RawRwLockRecursive, RawRwLockUpgrade,
     RawRwLockUpgradeDowngrade,
 };
@@ -18,7 +18,7 @@ unsafe impl RawMutex for RawCellMutex {
         locked: Cell::new(false),
     };
 
-    type GuardMarker = lock_api::GuardNoSend;
+    type GuardMarker = super::api::GuardNoSend;
 
     #[inline]
     fn lock(&self) {

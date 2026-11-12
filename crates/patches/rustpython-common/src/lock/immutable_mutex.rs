@@ -2,7 +2,7 @@
 
 use alloc::fmt;
 use core::{marker::PhantomData, ops::Deref};
-use lock_api::{MutexGuard, RawMutex};
+use super::api::{MutexGuard, RawMutex};
 
 /// A mutex guard that has an exclusive lock, but only an immutable reference; useful if you
 /// need to map a mutex guard with a function that returns an `&T`. Construct using the

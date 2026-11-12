@@ -73,7 +73,10 @@ opcode-histogram = []
 parser = ["ast"]
 serde = ["dep:serde"]
 stdio = []
-threading = ["rustpython-common/threading"]
+threading = [
+    "rustpython-common/threading",
+    "dep:parking_lot",
+]
 vm-tracing-logging = []
 wasmbind = [
     "rustpython-common/wasm_js",
@@ -138,6 +141,7 @@ optional = true
 
 [dependencies.parking_lot]
 version = "0.12.3"
+optional = true
 
 [dependencies.psm]
 version = "0.1"

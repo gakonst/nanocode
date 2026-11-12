@@ -13,7 +13,7 @@ mod _csv {
     };
     use alloc::fmt;
     use rustpython_common::wtf8::iteration::Itertools;
-    use parking_lot::Mutex;
+    use crate::common::lock::BlockingMutex as Mutex;
     use rustpython_common::{lock::LazyLock, wtf8::Wtf8Buf};
     use rustpython_vm::match_class;
     use std::collections::HashMap;

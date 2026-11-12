@@ -12,7 +12,7 @@
 use crate::common::rc::PyRc;
 use crate::vm::PyGlobalState;
 use core::sync::atomic::{AtomicI64, Ordering};
-use parking_lot::Mutex;
+use crate::common::lock::BlockingMutex as Mutex;
 use std::collections::HashMap;
 
 /// Where an interpreter state came from (mirrors CPython `_PyInterpreterState_GetWhence`).
@@ -312,7 +312,7 @@ fn admission() -> &'static Mutex<()> {
 
 /// Take the admission gate for the duration of a stop-the-world.
 #[cfg(feature = "threading")]
-pub(crate) fn lock_admission_for_stop() -> parking_lot::MutexGuard<'static, ()> {
+pub(crate) fn lock_admission_for_stop() -> std::sync::MutexGuard<'static, ()> {
     admission().lock()
 }
 

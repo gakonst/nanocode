@@ -1,7 +1,9 @@
 //! A module containing [`lock_api`]-based lock types that are or are not `Send + Sync`
 //! depending on whether the `threading` feature of this module is enabled.
 
-use lock_api::{
+pub mod api;
+
+use api::{
     MappedMutexGuard, MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, MutexGuard, RwLock,
     RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard,
 };
@@ -9,7 +11,8 @@ use lock_api::{
 cfg_select! {
     feature = "threading" => {
         pub use detaching::{BlockingWaitHook, set_blocking_wait_hook, set_world_stopped};
-        pub use parking_lot::{RawMutex, RawRwLock, RawThreadId};
+        mod parking;
+        pub use parking::{RawMutex, RawRwLock, RawThreadId};
         pub use std::sync::OnceLock as OnceCell;
         pub use core::cell::LazyCell;
     }
@@ -45,6 +48,23 @@ cfg_select! {
             type Target = T;
             fn deref(&self) -> &T { &self.0 }
         }
+    }
+}
+
+#[cfg(feature = "std")]
+pub struct BlockingMutex<T: ?Sized>(std::sync::Mutex<T>);
+
+#[cfg(feature = "std")]
+impl<T> BlockingMutex<T> {
+    pub const fn new(value: T) -> Self {
+        Self(std::sync::Mutex::new(value))
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T: ?Sized> BlockingMutex<T> {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

@@ -1,6 +1,4 @@
-use aho_corasick::{AhoCorasick, AhoCorasickKind, Anchored, Input, MatchKind, StartKind};
 use std::fmt;
-use std::sync::LazyLock;
 
 use ruff_text_size::{TextLen, TextRange};
 
@@ -291,28 +289,24 @@ fn raw_contents_range(contents: &str) -> Option<TextRange> {
     ))
 }
 
-/// An [`AhoCorasick`] matcher for string, template, and bytes literal prefixes.
-static PREFIX_MATCHER: LazyLock<AhoCorasick> = LazyLock::new(|| {
-    AhoCorasick::builder()
-        .start_kind(StartKind::Anchored)
-        .match_kind(MatchKind::LeftmostLongest)
-        .kind(Some(AhoCorasickKind::DFA))
-        .build(
-            TRIPLE_QUOTE_STR_PREFIXES
-                .iter()
-                .chain(TRIPLE_QUOTE_BYTE_PREFIXES)
-                .chain(TRIPLE_QUOTE_TEMPLATE_PREFIXES)
-                .chain(SINGLE_QUOTE_STR_PREFIXES)
-                .chain(SINGLE_QUOTE_BYTE_PREFIXES)
-                .chain(SINGLE_QUOTE_TEMPLATE_PREFIXES),
-        )
-        .unwrap()
-});
+const PREFIX_GROUPS: [&[&str]; 6] = [
+    TRIPLE_QUOTE_STR_PREFIXES,
+    TRIPLE_QUOTE_BYTE_PREFIXES,
+    TRIPLE_QUOTE_TEMPLATE_PREFIXES,
+    SINGLE_QUOTE_STR_PREFIXES,
+    SINGLE_QUOTE_BYTE_PREFIXES,
+    SINGLE_QUOTE_TEMPLATE_PREFIXES,
+];
 
 /// Return the leading quote for a string, template, or bytes literal (e.g., `"""`).
 pub fn leading_quote(content: &str) -> Option<&str> {
-    let mat = PREFIX_MATCHER.find(Input::new(content).anchored(Anchored::Yes))?;
-    Some(&content[mat.start()..mat.end()])
+    let length = PREFIX_GROUPS
+        .iter()
+        .flat_map(|group| group.iter())
+        .filter(|prefix| content.starts_with(**prefix))
+        .map(|prefix| prefix.len())
+        .max()?;
+    Some(&content[..length])
 }
 
 /// Return the trailing quote string for a string, template, or bytes literal (e.g., `"""`).

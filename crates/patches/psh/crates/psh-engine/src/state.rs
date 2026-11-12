@@ -305,6 +305,7 @@ pub(crate) struct Vp {
     /// The names of the functions `export -f` marked: a `bash` psh runs itself starts
     /// with them, and a program gets them as bash passes them (`BASH_FUNC_name%%`).
     pub exported_funcs: Rc<Vec<String>>,
+    pub traced_funcs: Rc<Vec<String>>,
     /// `$BASHPID`: the shell's pid; `None` in a subshell or a nested `bash`, which are
     /// no processes: reading it there is an error (D1413).
     pub bashpid: Option<u32>,
@@ -505,6 +506,7 @@ impl Vp {
         let file = !self.opts.dash_c && !self.opts.stdin;
         let calls = self.calls.iter().rev();
         let mut out: Vec<Vec<u8>> = match d {
+            Dynamic::FuncName if self.calls.iter().all(|c| c.sourced) => Vec::new(),
             Dynamic::FuncName => calls.map(|c| c.func.clone().into_bytes()).collect(),
             Dynamic::BashSource => calls.map(|c| c.source.clone().into_bytes()).collect(),
             Dynamic::BashLineno => calls.map(|c| c.line.to_string().into_bytes()).collect(),
@@ -538,7 +540,7 @@ impl Vp {
         };
         if file {
             match d {
-                Dynamic::FuncName if !self.calls.is_empty() => out.push(b"main".to_vec()),
+                Dynamic::FuncName if !out.is_empty() => out.push(b"main".to_vec()),
                 Dynamic::BashSource => out.push(self.arg0.clone()),
                 Dynamic::BashLineno => out.push(b"0".to_vec()),
                 _ => {}

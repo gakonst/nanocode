@@ -36,15 +36,27 @@ impl DeclArg {
         if w.first().is_some_and(|&b| b == b'-' || b == b'+') {
             return DeclArg::Word(w);
         }
-        let Some(eq) = w.iter().position(|&b| b == b'=') else {
+        let Some(mut eq) = w.iter().position(|&b| b == b'=') else {
             return DeclArg::Word(w);
         };
+        if let Some(open) = w.iter().position(|&b| b == b'[')
+            && open < eq
+            && is_name(&w[..open])
+            && let Some(close) = w[open..].iter().position(|&b| b == b']').map(|c| c + open)
+            && close > eq
+        {
+            match &w[close + 1..] {
+                [b'=', ..] => eq = close + 1,
+                [b'+', b'=', ..] => eq = close + 2,
+                _ => {}
+            }
+        }
         let (lhs, append) = match w[..eq].strip_suffix(b"+") {
             Some(l) => (l, true),
             None => (&w[..eq], false),
         };
         let (name, index) = match lhs.iter().position(|&b| b == b'[') {
-            Some(i) if lhs.ends_with(b"]") => {
+            Some(i) if lhs.ends_with(b"]") && !lhs[i + 1..lhs.len() - 1].contains(&b']') => {
                 (lhs[..i].to_vec(), Some(lhs[i + 1..lhs.len() - 1].to_vec()))
             }
             _ => (lhs.to_vec(), None),
@@ -144,6 +156,7 @@ struct Opts {
     global: bool,
     /// `-I`: a new local starts as a copy of the variable it shadows.
     inherit: bool,
+    unexport: bool,
     print: bool,
     funcs: bool,
     func_names: bool,
@@ -215,6 +228,7 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
                 }
                 b'n' if which == Which::Export => {
                     o.export = Some(!on);
+                    o.unexport = on;
                     true
                 }
                 b'f' if export_like => {
@@ -275,16 +289,16 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
                 }
                 b'f' | b'F' if which == Which::Local => false,
                 b'g' => {
-                    o.global = true;
+                    o.global = on;
                     true
                 }
                 b'f' => {
-                    o.funcs = true;
+                    o.funcs = on;
                     true
                 }
                 b'F' => {
-                    o.funcs = true;
-                    o.func_names = true;
+                    o.funcs = on;
+                    o.func_names = on;
                     true
                 }
                 b'I' => {
@@ -307,20 +321,56 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
     }
     if Opts::on(o.indexed) && Opts::on(o.assoc) {
         vp.error(&format!("{bname}: -a: invalid option")).await;
-        vp.error_raw(usage(which).as_bytes()).await;
-        return Ok(2);
+        o.indexed = None;
     }
     let rest = &args[i..];
     if o.funcs && which != Which::Export && which != Which::Readonly {
-        let attrs = o.filter.iter().any(|c| *c != b'p');
+        let attrs = o.filter.iter().any(|c| *c != b'p') || o.export.is_some() || o.trace.is_some();
         // With attributes to set (`declare -fx f`), nothing is printed.
         if attrs && !o.print && !rest.is_empty() {
-            let missing = rest
-                .iter()
-                .any(|a| !vp.funcs.contains_key(&*String::from_utf8_lossy(a.name())));
+            let mut missing = false;
+            for a in rest {
+                let name = String::from_utf8_lossy(a.name()).into_owned();
+                if !vp.funcs.contains_key(&name) {
+                    missing = true;
+                    continue;
+                }
+                for (flag, list) in [
+                    (o.export, &mut vp.exported_funcs),
+                    (o.trace, &mut vp.traced_funcs),
+                ] {
+                    if let Some(on) = flag {
+                        let l = std::rc::Rc::make_mut(list);
+                        l.retain(|n| *n != name);
+                        if on {
+                            l.push(name.clone());
+                        }
+                    }
+                }
+            }
             return Ok(i32::from(missing));
         }
-        return functions(vp, bname, rest, o.func_names, o.print).await;
+        return functions(vp, bname, rest, o.func_names, o.print, &o.filter).await;
+    }
+    if rest.is_empty() && o.funcs && which == Which::Export {
+        let mut names = vp.exported_funcs.to_vec();
+        names.sort();
+        let mut buf = Vec::new();
+        for n in names {
+            if let Some(f) = vp.funcs.get(&n) {
+                let text = psh_syntax::print_function_bash(&f.code.ast, f.def);
+                buf.extend_from_slice(&f.code.ast.restore_bytes(&text));
+                buf.extend_from_slice(
+                    format!(
+                        "
+declare -fx {n}
+"
+                    )
+                    .as_bytes(),
+                );
+            }
+        }
+        return out(vp, bname, &buf).await;
     }
     if rest.is_empty() {
         return print_all(vp, which, &o).await;
@@ -422,7 +472,7 @@ async fn reparse_compound(
     let Ok(ast) = psh_syntax::parse_bytes(&src, psh_syntax::Options::default()) else {
         return Ok(None);
     };
-    let Some(id) = ast.cmd_ids().next() else {
+    let Some(id) = ast.cmd_ids().find(|&id| ast.cmd(id).span.start == 0) else {
         return Ok(None);
     };
     let psh_syntax::CommandKind::Simple(sc) = &ast.cmd(id).kind else {
@@ -484,6 +534,9 @@ async fn declare_one(
     };
     let has_value = !matches!(a, DeclArg::Word(_));
     let existed = vp.vars.get(&target).is_some();
+    if o.unexport && !has_value && !existed {
+        return Ok(());
+    }
     {
         let var = vp.vars.entry(&target);
         let changes_attrs = o.indexed.is_some()
@@ -603,7 +656,19 @@ async fn declare_one(
             value,
             ..
         } => {
-            vp.assign_elem(&target, i, value.clone(), *append)?;
+            let is_array = vp.vars.get(&target).is_some_and(|v| v.is_array());
+            if is_array
+                && value.first() == Some(&b'(')
+                && value.last() == Some(&b')')
+                && let Some(items) = reparse_compound(vp, value).await?
+            {
+                vp.assign_array(&target, items, *append)?;
+            } else {
+                let i = crate::expand::expand_sub_text(vp, i)
+                    .await
+                    .map_err(DeclError::Unwind)?;
+                vp.assign_elem(&target, &i, value.clone(), *append)?;
+            }
         }
         DeclArg::Array { append, items, .. } => {
             vp.assign_array(&target, items.clone(), *append)?;
@@ -611,7 +676,7 @@ async fn declare_one(
     }
     // `set -a`: a declaration that gives a value exports it, as an assignment does.
     if !matches!(a, DeclArg::Word(_))
-        && o.export != Some(false)
+        && !o.unexport
         && vp.opts.get(crate::options::SetOpt::Allexport)
     {
         vp.vars.entry(&target).exported = true;
@@ -629,6 +694,7 @@ async fn functions(
     names: &[DeclArg],
     names_only: bool,
     print_flag: bool,
+    filter: &[u8],
 ) -> R {
     let mut buf = Vec::new();
     let mut status = 0;
@@ -637,7 +703,14 @@ async fn functions(
             return false;
         };
         if names_only && print_flag {
-            buf.extend_from_slice(b"declare -f ");
+            buf.extend_from_slice(b"declare -f");
+            if vp.traced_funcs.iter().any(|n| n == name) {
+                buf.push(b't');
+            }
+            if vp.exported_funcs.iter().any(|n| n == name) {
+                buf.push(b'x');
+            }
+            buf.push(b' ');
             buf.extend_from_slice(name.as_bytes());
         } else if names_only {
             buf.extend_from_slice(name.as_bytes());
@@ -656,8 +729,20 @@ async fn functions(
         let mut all: Vec<&String> = vp.funcs.keys().collect();
         all.sort();
         for n in all {
+            let traced = vp.traced_funcs.contains(n);
+            let exported = vp.exported_funcs.contains(n);
+            if (filter.contains(&b't') && !traced) || (filter.contains(&b'x') && !exported) {
+                continue;
+            }
             if names_only {
-                buf.extend_from_slice(b"declare -f ");
+                buf.extend_from_slice(b"declare -f");
+                if traced {
+                    buf.push(b't');
+                }
+                if exported {
+                    buf.push(b'x');
+                }
+                buf.push(b' ');
                 buf.extend_from_slice(n.as_bytes());
                 buf.push(b'\n');
             } else {
@@ -759,6 +844,9 @@ async fn print_all(vp: &mut Vp, which: Which, o: &Opts) -> R {
 pub(crate) fn set_quote(v: &[u8], utf8: bool) -> Vec<u8> {
     if super::set::needs_ansi(v, utf8) {
         return super::set::ansi_c_quote(v, utf8);
+    }
+    if v == b"'" {
+        return b"\\'".to_vec();
     }
     // An empty value is listed as nothing after the `=`.
     let safe = v
@@ -863,7 +951,7 @@ fn key_quote(k: &[u8], utf8: bool) -> Vec<u8> {
                         | b'#'
                         | b'~'
                         | b'!'
-                        | b'='
+                        | b'@'
                 )
         });
     if plain && !super::set::needs_ansi(k, utf8) {

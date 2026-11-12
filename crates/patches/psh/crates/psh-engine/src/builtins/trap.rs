@@ -208,11 +208,12 @@ pub(crate) async fn run_trap(vp: &mut Vp, key: TrapKey) -> Result<(), Unwind> {
 /// unless errtrace. Hidden on entry, restored on return unless the function set its own.
 pub(crate) type Hidden = Vec<(TrapKey, Trap)>;
 
-pub(crate) fn enter_function(vp: &mut Vp) -> Option<Hidden> {
+pub(crate) fn enter_function(vp: &mut Vp, traced: bool) -> Option<Hidden> {
     if vp.traps.map.is_empty() {
         return None;
     }
-    let functrace = vp.opts.get(crate::options::SetOpt::Functrace)
+    let functrace = traced
+        || vp.opts.get(crate::options::SetOpt::Functrace)
         || vp.opts.shopt(crate::options::Shopt::Extdebug);
     let errtrace = vp.opts.get(crate::options::SetOpt::Errtrace);
     let hide = |k: &TrapKey| match k {

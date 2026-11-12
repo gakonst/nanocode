@@ -1243,7 +1243,7 @@ pub(crate) async fn expand_sub_text(vp: &mut Vp, sub: &[u8]) -> Result<Vec<u8>, 
     let Ok(ast) = psh_syntax::parse_bytes(&src, psh_syntax::Options::default()) else {
         return Ok(sub.to_vec());
     };
-    let Some(id) = ast.cmd_ids().next() else {
+    let Some(id) = ast.cmd_ids().find(|&id| ast.cmd(id).span.start == 0) else {
         return Ok(sub.to_vec());
     };
     let psh_syntax::CommandKind::Simple(sc) = &ast.cmd(id).kind else {

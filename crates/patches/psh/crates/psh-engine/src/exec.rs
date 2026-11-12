@@ -1373,7 +1373,11 @@ async fn call_function(
         var.exported = true;
         vp.assigned_dynamic(&n);
     }
-    let hidden = trap::enter_function(vp);
+    let traced = vp
+        .traced_funcs
+        .iter()
+        .any(|n| n.as_bytes() == argv0.as_slice());
+    let hidden = trap::enter_function(vp, traced);
     let entered = match vp.traps.action(TrapKey::Debug) {
         Some(a) if !a.is_empty() && vp.in_trap.is_none() => {
             let line = vp.line;

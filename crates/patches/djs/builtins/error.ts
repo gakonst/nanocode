@@ -65,8 +65,7 @@ function FinishErrorStack(o: Obj): Value {
 
 /** Records the stack of a new error object made by a builtin (D1282, D2050). */
 function RecordStack(o: Obj): void {
-  CaptureStack(o);
-  if (IsPendingStack(ErrorStack(o))) {
+  if (CaptureStack(o)) {
     FinishErrorStack(o);
   }
 }

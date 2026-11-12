@@ -103,8 +103,8 @@ impl Exec<'_> {
     fn trace_frames(
         &self,
         pc: u32,
-        mut skip_prelude: bool,
-        mut below: Option<Obj>,
+        skip_prelude: bool,
+        below: Option<Obj>,
         limit: u32,
         input: Option<(u32, u32)>,
     ) -> Vec<TraceFrame> {
@@ -122,79 +122,42 @@ impl Exec<'_> {
                 construct: false,
             });
         }
-        if !self.has_frame() || out.len() as u32 >= limit {
-            return out;
+        let rest = limit - out.len() as u32;
+        for r in self.raw_frames(pc, skip_prelude, below, rest) {
+            out.push_out(describe_frame(self.heap, r));
         }
+        out
+    }
+
+    /// The frames a trace shows (`trace_frames` without a parse error's position), before
+    /// they are described.
+    fn raw_frames(
+        &self,
+        pc: u32,
+        mut skip_prelude: bool,
+        mut below: Option<Obj>,
+        limit: u32,
+    ) -> Vec<RawFrame> {
+        if limit == 0 || !self.has_frame() {
+            return Vec::new();
+        }
+        let mut out = crate::buf::vec_with_capacity(limit.min(RAW_RESERVE) as usize);
         let prelude = intrinsic(self.heap, Intrinsic::PreludeScript).as_internal();
         let (mut bp, mut hp, mut pc) = (self.bp, self.hp, pc);
         loop {
             let f = self.get(bp).as_object().expect("frame callee");
-            let t = self.heap.closure_template(f);
-            let a = self.heap.arena();
-            let debug = crate::bytecode::template::debug_info(self.heap, t);
-            let script = debug.script;
-            let builtin = self.heap.cell_flags(f.offset()) & OBJ_BUILTIN != 0;
             let flags = self.get(hp + frame::FLAGS).as_int().unwrap_or(0);
-            let construct = flags & frame::FLAG_CONSTRUCT != 0;
-            // Prelude frames: privileged templates (D1980), or the prelude's script.
-            let in_prelude =
-                u32::from(a.get::<u16>(t, FuncTemplate::FLAGS)) & func_flags::PRIVILEGED != 0
-                    || (prelude.is_some() && prelude == script.get());
+            let in_prelude = in_prelude(self.heap, f, prelude);
             skip_prelude &= in_prelude;
             let skipping = below.is_some();
             if below == Some(f) {
                 below = None;
             }
-            if skip_prelude || skipping {
-            } else if builtin {
-                // The installed name, not the prelude's internal function name.
-                let name = self
-                    .heap
-                    .get_own_property(f, crate::heap::atoms::NAME)
-                    .and_then(|p| p.value())
-                    .and_then(|v| v.as_string())
-                    .filter(|&s| self.heap.str_len(s) > 0)
-                    .map(Text::Str);
-                out.push_out(TraceFrame {
-                    func: Some(f),
-                    name,
-                    file: None,
-                    pos: None,
-                    native: true,
-                    construct,
-                });
-            } else if !in_prelude {
-                let kind = func_flags::kind(u32::from(a.get::<u16>(t, FuncTemplate::FLAGS)));
-                // A module body has no name (`<anonymous>`, as qjs prints it); a Script's
-                // top level and a codemode body are `<eval>`.
-                let module = crate::MODULES
-                    && kind == func_flags::KIND_SCRIPT
-                    && script
-                        .get()
-                        .is_some_and(|s| a.get::<u32>(s, Script::OPTIONS) & 3 == 3);
-                let name = if module {
-                    None
-                } else if matches!(kind, func_flags::KIND_SCRIPT | func_flags::KIND_ASYNC_BODY) {
-                    Some(Text::Lit("<eval>"))
-                } else {
-                    let name = Atom::from_id(a.get(t, FuncTemplate::NAME));
-                    (!name.is_null() && name != atoms::EMPTY).then_some(Text::Atom(name))
-                };
-                let file = script
-                    .get()
-                    .and_then(|s| a.get(s, Script::NAME).get())
-                    .map_or(Text::Lit(""), |n| Text::Str(Str(n)));
-                out.push_out(TraceFrame {
-                    func: Some(f),
-                    name,
-                    file: Some(file),
-                    pos: crate::bytecode::lookup_line(
-                        crate::bytecode::template::bytes_of(self.heap, debug.lines),
-                        pc,
-                    ),
-                    native: false,
-                    construct,
-                });
+            if !skip_prelude
+                && !skipping
+                && (!in_prelude || self.heap.cell_flags(f.offset()) & OBJ_BUILTIN != 0)
+            {
+                out.push_out((f, pc, flags & frame::FLAG_CONSTRUCT != 0));
             }
             let cont = Continuation::from_flags(flags);
             if cont.is_bottom() || out.len() as u32 >= limit {
@@ -219,35 +182,7 @@ impl Exec<'_> {
 
     /// The default `stack` string: one `    at name (file:line:col)` line per frame.
     fn format_trace(&self, frames: &[TraceFrame]) -> String {
-        let heap = &*self.heap;
-        let put = |t: &Option<Text>, missing: &'static str, out: &mut String| match t {
-            Some(t) => t.put(heap, out),
-            None => out.push_str(missing),
-        };
-        let mut out = String::with_capacity(frames.len() * TRACE_LINE);
-        for fr in frames {
-            out.push_str("    at ");
-            match (&fr.func, &fr.file, fr.pos) {
-                (None, file, Some((l, c))) => {
-                    put(file, "", &mut out);
-                    crate::text::cat_to!(&mut out, ":", l, ":", c, "\n")
-                }
-                (_, None, _) => {
-                    put(&fr.name, "", &mut out);
-                    out.push_str(" (native)\n");
-                }
-                (_, file, pos) => {
-                    put(&fr.name, "<anonymous>", &mut out);
-                    out.push_str(" (");
-                    put(file, "", &mut out);
-                    match pos {
-                        Some((l, c)) => crate::text::cat_to!(&mut out, ":", l, ":", c, ")\n"),
-                        None => out.push_str(")\n"),
-                    }
-                }
-            }
-        }
-        out
+        format_trace(self.heap, frames)
     }
 
     /// The stack trace in QuickJS's format: one `    at name (file:line:col)` line per
@@ -359,6 +294,38 @@ impl Exec<'_> {
         Ok(Value::object(r))
     }
 
+    /// The `stack` of a new error from the current frames, recorded lazily (D1282): the
+    /// frames' functions and pcs, formatted when the stack is first read
+    /// (`lazy_stack_text`). With `Error.prepareStackTrace`, as `new_stack`.
+    pub(crate) fn capture_stack(
+        &mut self,
+        pc: u32,
+        skip_prelude: bool,
+    ) -> Result<Value, HeapError> {
+        let ctor = realm::error_constructor(self.heap);
+        if self.prepare_stack_trace(ctor).is_some() {
+            return self.new_stack(pc, skip_prelude, None, None);
+        }
+        let limit = realm::stack_trace_limit(self.heap, ctor);
+        let frames = self.raw_frames(pc, skip_prelude, None, limit);
+        let arr = self.heap.alloc_value_array(2 * frames.len() as u32)?;
+        for (i, &(f, pc, construct)) in frames.iter().enumerate() {
+            let i = 2 * i as u32;
+            self.heap.value_array_set(arr, i, Value::object(f));
+            self.heap.value_array_set(
+                arr,
+                i + 1,
+                Value::int((pc * 2 + u32::from(construct)) as i32),
+            );
+        }
+        self.heap.arena_mut().set(
+            arr,
+            crate::heap::cells::ValueArray::LEN,
+            2 * frames.len() as u32,
+        );
+        Ok(Value::internal(arr))
+    }
+
     /// Records the stack of the error `e` from the current frames, the innermost at `pc`.
     pub(crate) fn set_stack(&mut self, e: Value, pc: u32) -> Result<(), HeapError> {
         self.set_stack_at(e, pc, None)
@@ -374,7 +341,10 @@ impl Exec<'_> {
         let Some(o) = e.as_object() else {
             return Ok(());
         };
-        let v = self.new_stack(pc, false, None, input)?;
+        let v = match input {
+            Some(_) => self.new_stack(pc, false, None, input)?,
+            None => self.capture_stack(pc, false)?,
+        };
         realm::set_error_stack(self.heap, o, v)
     }
 
@@ -409,6 +379,125 @@ impl Exec<'_> {
         }
         self.throw_value(exc, pc)
     }
+}
+
+/// The default `stack` string of `frames`: one `    at name (file:line:col)` line per frame.
+fn format_trace(heap: &Heap, frames: &[TraceFrame]) -> String {
+    let put = |t: &Option<Text>, missing: &'static str, out: &mut String| match t {
+        Some(t) => t.put(heap, out),
+        None => out.push_str(missing),
+    };
+    let mut out = String::with_capacity(frames.len() * TRACE_LINE);
+    for fr in frames {
+        out.push_str("    at ");
+        match (&fr.func, &fr.file, fr.pos) {
+            (None, file, Some((l, c))) => {
+                put(file, "", &mut out);
+                crate::text::cat_to!(&mut out, ":", l, ":", c, "\n")
+            }
+            (_, None, _) => {
+                put(&fr.name, "", &mut out);
+                out.push_str(" (native)\n");
+            }
+            (_, file, pos) => {
+                put(&fr.name, "<anonymous>", &mut out);
+                out.push_str(" (");
+                put(file, "", &mut out);
+                match pos {
+                    Some((l, c)) => crate::text::cat_to!(&mut out, ":", l, ":", c, ")\n"),
+                    None => out.push_str(")\n"),
+                }
+            }
+        }
+    }
+    out
+}
+/// The frames [`Exec::raw_frames`] reserves room for: the default `Error.stackTraceLimit`.
+const RAW_RESERVE: u32 = 10;
+
+/// A frame a trace shows: the function, the pc and whether it was called with `new`.
+type RawFrame = (Obj, u32, bool);
+
+/// Whether `f` is a prelude function: a privileged template (D1980), or the prelude's
+/// script (`prelude`).
+fn in_prelude(heap: &Heap, f: Obj, prelude: Option<u32>) -> bool {
+    let t = heap.closure_template(f);
+    let script = crate::bytecode::template::debug_info(heap, t).script;
+    u32::from(heap.arena().get::<u16>(t, FuncTemplate::FLAGS)) & func_flags::PRIVILEGED != 0
+        || (prelude.is_some() && prelude == script.get())
+}
+
+/// What a trace shows for a frame of `raw_frames`.
+fn describe_frame(heap: &Heap, (f, pc, construct): RawFrame) -> TraceFrame {
+    let t = heap.closure_template(f);
+    let a = heap.arena();
+    if heap.cell_flags(f.offset()) & OBJ_BUILTIN != 0 {
+        // The installed name, not the prelude's internal function name.
+        let name = heap
+            .get_own_property(f, crate::heap::atoms::NAME)
+            .and_then(|p| p.value())
+            .and_then(|v| v.as_string())
+            .filter(|&s| heap.str_len(s) > 0)
+            .map(Text::Str);
+        return TraceFrame {
+            func: Some(f),
+            name,
+            file: None,
+            pos: None,
+            native: true,
+            construct,
+        };
+    }
+    let debug = crate::bytecode::template::debug_info(heap, t);
+    let script = debug.script;
+    let kind = func_flags::kind(u32::from(a.get::<u16>(t, FuncTemplate::FLAGS)));
+    // A module body has no name (`<anonymous>`, as qjs prints it); a Script's top level
+    // and a codemode body are `<eval>`.
+    let module = crate::MODULES
+        && kind == func_flags::KIND_SCRIPT
+        && script
+            .get()
+            .is_some_and(|s| a.get::<u32>(s, Script::OPTIONS) & 3 == 3);
+    let name = if module {
+        None
+    } else if matches!(kind, func_flags::KIND_SCRIPT | func_flags::KIND_ASYNC_BODY) {
+        Some(Text::Lit("<eval>"))
+    } else {
+        let name = Atom::from_id(a.get(t, FuncTemplate::NAME));
+        (!name.is_null() && name != atoms::EMPTY).then_some(Text::Atom(name))
+    };
+    let file = script
+        .get()
+        .and_then(|s| a.get(s, Script::NAME).get())
+        .map_or(Text::Lit(""), |n| Text::Str(Str(n)));
+    TraceFrame {
+        func: Some(f),
+        name,
+        file: Some(file),
+        pos: crate::bytecode::lookup_line(
+            crate::bytecode::template::bytes_of(heap, debug.lines),
+            pc,
+        ),
+        native: false,
+        construct,
+    }
+}
+
+/// The text of a stack recorded lazily (`Exec::capture_stack`, an internal ValueArray of
+/// function and `pc * 2 + construct` pairs), or `None` for any other value.
+pub(crate) fn lazy_stack_text(heap: &Heap, v: Value) -> Option<String> {
+    let arr = v.as_internal()?;
+    let frames: Vec<TraceFrame> = (0..heap.value_array_len(arr) / 2)
+        .map(|i| {
+            let f = heap
+                .value_array_get(arr, 2 * i)
+                .as_object()
+                .expect("trace function");
+            let code = heap.value_array_get(arr, 2 * i + 1).as_int().unwrap_or(0) as u32;
+            describe_frame(heap, (f, code >> 1, code & 1 != 0))
+        })
+        .collect();
+    Some(format_trace(heap, &frames))
 }
 
 /// Reads slot `i` of a CallSite (`%CallSiteSlot`): TypeError for anything else.

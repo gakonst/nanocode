@@ -1296,7 +1296,13 @@ impl Vm {
         let o = v.as_object()?;
         let s = match self.heap.get_own_property(o, atoms::STACK) {
             Some(p) => p.value()?.as_string()?,
-            None => crate::interp::realm::error_stack_slot(&self.heap, v).as_string()?,
+            None => {
+                let raw = crate::interp::realm::error_stack_raw(&self.heap, v);
+                if let Some(text) = crate::interp::run::lazy_stack_text(&self.heap, raw) {
+                    return Some(text);
+                }
+                crate::interp::realm::error_stack_slot(&self.heap, v).as_string()?
+            }
         };
         Some(self.heap.str_to_string(s))
     }

@@ -1181,9 +1181,9 @@ impl Exec<'_> {
                 let Some(o) = a0.as_object() else {
                     return bad_argument(id);
                 };
-                let v = self.new_stack(self.pc, true, None, None)?;
+                let v = self.capture_stack(self.pc, true)?;
                 realm::set_error_stack(self.heap, o, v)?;
-                Value::UNDEFINED
+                Value::bool(super::stack::is_pending_stack(self.heap, v))
             }
             SET_ERROR_STACK => {
                 let Some(o) = a0.as_object() else {
@@ -2300,7 +2300,17 @@ impl Exec<'_> {
                 }
             }
             // RecordStack's reads (every new error).
-            ERROR_STACK => realm::error_stack_raw(self.heap, a0),
+            ERROR_STACK => {
+                let v = realm::error_stack_raw(self.heap, a0);
+                match (super::stack::lazy_stack_text(self.heap, v), a0.as_object()) {
+                    (Some(text), Some(o)) => {
+                        let s = Value::string(self.heap.alloc_str(&text)?);
+                        realm::set_error_stack(self.heap, o, s)?;
+                        s
+                    }
+                    _ => v,
+                }
+            }
             IS_PENDING_STACK => Value::bool(super::stack::is_pending_stack(self.heap, a0)),
             CONSTRUCTOR_PROTOTYPE => {
                 let proto = match a0.as_object() {

@@ -110,7 +110,7 @@ mod fastpath;
 mod hot;
 #[cfg(test)]
 pub(crate) use hot::HOT_BACKEDGES;
-pub(crate) use stack::settled_stack;
+pub(crate) use stack::{lazy_stack_text, settled_stack};
 mod ic;
 mod intrinsics;
 mod iter;

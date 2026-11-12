@@ -167,9 +167,9 @@ declare function Atob(s: Str): Value;
 /**
  * Records `o.stack` (D1282) from the current frames, without the prelude frames at the
  * top: an Error constructor does not show itself. With Error.prepareStackTrace it is
- * pending until FinishErrorStack (D2050). @leaf
+ * pending until FinishErrorStack (D2050), and the result is true. @leaf
  */
-declare function CaptureStack(o: Obj): void;
+declare function CaptureStack(o: Obj): boolean;
 /**
  * The stack an Error object recorded (D1971), a pending one too (D2050), or undefined
  * for any other value. @leaf

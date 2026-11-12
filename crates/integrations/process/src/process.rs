@@ -17,7 +17,6 @@ use nix::{
     sys::signal::{Signal, killpg},
     unistd::Pid,
 };
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -299,12 +298,15 @@ pub(super) enum ProcessStdin {
 }
 
 impl ProcessStdin {
-    fn pty(mut writer: Box<dyn Write + Send>) -> Self {
+    #[cfg(unix)]
+    fn pty(terminal: std::os::fd::OwnedFd) -> Self {
+        let mut writer = std::fs::File::from(terminal);
         let (sender, mut writes) = mpsc::unbounded_channel::<PtyWrite>();
         drop(tokio::task::spawn_blocking(move || {
             while let Some((bytes, reply)) = writes.blocking_recv() {
                 drop(reply.send(writer.write_all(&bytes).and_then(|()| writer.flush())));
             }
+            end_input(&mut writer);
         }));
         Self::Pty(sender)
     }
@@ -351,7 +353,13 @@ pub(super) fn spawn(
     environment: &[(OsString, OsString)],
 ) -> io::Result<SpawnedProcess> {
     if tty {
+        #[cfg(unix)]
         return spawn_pty(script, workspace, shell, login, environment);
+        #[cfg(not(unix))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a terminal session (tty) needs a Unix host",
+        ));
     }
 
     spawn_pipes(script, workspace, shell, login, environment)
@@ -398,6 +406,7 @@ fn spawn_pipes(
     })
 }
 
+#[cfg(unix)]
 fn spawn_pty(
     script: &str,
     workspace: &Path,
@@ -405,36 +414,35 @@ fn spawn_pty(
     login: bool,
     environment: &[(OsString, OsString)],
 ) -> io::Result<SpawnedProcess> {
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(pty_error)?;
-    let mut command = CommandBuilder::new(shell.path());
-    for argument in shell.args(script, login) {
-        command.arg(argument);
-    }
-    command.cwd(workspace);
-    command.env_clear();
-    for (name, value) in environment {
-        command.env(name, value);
-    }
-
-    let reader = pair.master.try_clone_reader().map_err(pty_error)?;
-    let writer = pair.master.take_writer().map_err(pty_error)?;
-    let mut child = pair.slave.spawn_command(command).map_err(pty_error)?;
-    let pid = child
-        .process_id()
-        .ok_or_else(|| io::Error::other("spawned PTY command without a process identifier"))?;
+    let (controller, terminal) = open_terminal()?;
+    rustix::termios::tcsetwinsize(
+        &terminal,
+        rustix::termios::Winsize {
+            ws_row: TERMINAL_ROWS,
+            ws_col: TERMINAL_COLUMNS,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        },
+    )?;
+    let mut command = std::process::Command::new(shell.path());
+    command
+        .args(shell.args(script, login))
+        .current_dir(workspace)
+        .env_clear()
+        .envs(environment.iter().cloned())
+        .stdin(Stdio::from(terminal.try_clone()?))
+        .stdout(Stdio::from(terminal.try_clone()?))
+        .stderr(Stdio::from(terminal));
+    lead_session(&mut command);
+    let mut child = command.spawn()?;
+    drop(command);
+    let pid = child.id();
+    let reader = std::fs::File::from(controller.try_clone()?);
     let child = ProcessChild::new(
         move || {
-            child.try_wait().map(|status| {
-                status.map(|status| i32::try_from(status.exit_code()).unwrap_or(i32::MAX))
-            })
+            child
+                .try_wait()
+                .map(|status| status.map(|status| status.code().unwrap_or(1)))
         },
         pid,
         false,
@@ -443,13 +451,70 @@ fn spawn_pty(
     Ok(SpawnedProcess {
         process_group: child.process_group.clone(),
         child,
-        stdin: Some(ProcessStdin::pty(writer)),
-        output: ProcessOutput::Pty(reader),
+        stdin: Some(ProcessStdin::pty(controller)),
+        output: ProcessOutput::Pty(Box::new(reader)),
     })
 }
 
-fn pty_error(error: impl std::fmt::Display) -> io::Error {
-    io::Error::other(error.to_string())
+#[cfg(unix)]
+const TERMINAL_ROWS: u16 = 24;
+#[cfg(unix)]
+const TERMINAL_COLUMNS: u16 = 80;
+
+#[cfg(unix)]
+const SESSION_DEFAULT_SIGNALS: [Signal; 6] = [
+    Signal::SIGCHLD,
+    Signal::SIGHUP,
+    Signal::SIGINT,
+    Signal::SIGQUIT,
+    Signal::SIGTERM,
+    Signal::SIGALRM,
+];
+
+#[cfg(unix)]
+fn open_terminal() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use rustix::fs::{Mode, OFlags, open};
+    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+    #[cfg(target_os = "linux")]
+    let controller = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
+    #[cfg(not(target_os = "linux"))]
+    let controller = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+    #[cfg(not(target_os = "linux"))]
+    rustix::io::fcntl_setfd(&controller, rustix::io::FdFlags::CLOEXEC)?;
+    grantpt(&controller)?;
+    unlockpt(&controller)?;
+    let terminal = open(
+        ptsname(&controller, Vec::new())?.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok((controller, terminal))
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn lead_session(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    let lead = || -> io::Result<()> {
+        for signal in SESSION_DEFAULT_SIGNALS {
+            unsafe { nix::sys::signal::signal(signal, nix::sys::signal::SigHandler::SigDfl) }?;
+        }
+        rustix::process::setsid()?;
+        rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())?;
+        Ok(())
+    };
+    unsafe { command.pre_exec(lead) };
+}
+
+#[cfg(unix)]
+fn end_input(writer: &mut std::fs::File) {
+    let Ok(settings) = rustix::termios::tcgetattr(&*writer) else {
+        return;
+    };
+    let end = settings.special_codes[rustix::termios::SpecialCodeIndex::VEOF];
+    if end != 0 {
+        drop(writer.write_all(&[b'\n', end]));
+    }
 }
 
 #[cfg(unix)]

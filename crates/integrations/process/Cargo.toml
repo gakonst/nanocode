@@ -17,7 +17,6 @@ nanocode-process-contracts.workspace = true
 nanocode-home.workspace = true
 nanocode-psh.workspace = true
 nanocode-sync.workspace = true
-portable-pty.workspace = true
 tracing.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
@@ -25,10 +24,19 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["event", "fs"] }
-rustix = { workspace = true, features = ["fs", "process", "pty"] }
+rustix = { workspace = true, features = ["fs", "process", "pty", "stdio", "termios"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing_const_for_fn = "warn"
+use_self = "warn"
+redundant_clone = "warn"
+large_enum_variant = "allow"
+result_large_err = "allow"
+double_must_use = "allow"
 
 [lib]
 test = false

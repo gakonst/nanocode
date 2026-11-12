@@ -80,14 +80,13 @@ pub use replay::{
     MovedCells,
 };
 use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan, Restored};
-pub use spec::{exec_spec, exec_spec_with, wait_spec};
+pub use spec::{exec_spec, exec_spec_with, source_with_options, wait_spec};
 
 const INITIAL_YIELD: Duration = Duration::from_secs(10);
 const DEFAULT_WAIT_YIELD: Duration = Duration::from_secs(10);
 const OBSERVER_YIELD_GRACE: Duration = Duration::from_secs(1);
 const MIN_YIELD_FOR_OBSERVER_GRACE: Duration = Duration::from_secs(10);
-const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
-const EXEC_PRAGMA_PREFIX: &str = "// @exec:";
+use spec::{EXEC_PRAGMA_PREFIX, MAX_JS_SAFE_INTEGER};
 const CELL_RUNNING: u8 = 0;
 const CELL_TERMINATING: u8 = 1;
 const CELL_COMPLETION_CLAIMED: u8 = 2;
@@ -1405,13 +1404,42 @@ fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
 
 #[derive(Deserialize)]
 struct WaitArguments {
+    #[serde(deserialize_with = "cell_id")]
     cell_id: String,
-    #[serde(default = "default_wait_yield_time_ms")]
+    #[serde(default = "default_wait_yield_time_ms", deserialize_with = "integer")]
     yield_time_ms: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_integer")]
     max_tokens: Option<usize>,
     #[serde(default)]
     terminate: bool,
+}
+
+fn cell_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::String(text) => Ok(text),
+        Value::Number(number) => Ok(number.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected an exec cell ID, got {other}"
+        ))),
+    }
+}
+
+fn integer<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    spec::integer_value(&Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+}
+
+fn optional_integer<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    match Value::deserialize(deserializer)? {
+        Value::Null => Ok(None),
+        value => spec::integer_value(&value)
+            .and_then(|integer| {
+                usize::try_from(integer).map_err(|_| format!("{integer} is out of range"))
+            })
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 const fn default_wait_yield_time_ms() -> u64 {

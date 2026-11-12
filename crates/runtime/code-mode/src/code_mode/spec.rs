@@ -1,6 +1,6 @@
 use nanocode_tool_contracts::ToolDefinition;
 use nanocode_types_core::responses::CustomToolFormat;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::code_mode_description as description;
 
@@ -116,4 +116,56 @@ pub fn wait_spec() -> ToolDefinition {
         )
     });
     SPEC.clone()
+}
+
+pub(crate) const EXEC_PRAGMA_PREFIX: &str = "// @exec:";
+pub(crate) const MAX_JS_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
+
+pub(crate) fn integer_value(value: &Value) -> Result<u64, String> {
+    let integer = match value {
+        Value::Number(number) => number.as_u64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|float| {
+                    float.fract() == 0.0 && (0.0..=MAX_JS_SAFE_INTEGER as f64).contains(float)
+                })
+                .map(|float| float as u64)
+        }),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    integer
+        .filter(|integer| *integer <= MAX_JS_SAFE_INTEGER)
+        .ok_or_else(|| format!("expected a non-negative safe integer, got {value}"))
+}
+
+pub fn source_with_options<'a>(
+    source: &'a str,
+    yield_time_ms: Option<&Value>,
+    max_output_tokens: Option<&Value>,
+) -> Result<std::borrow::Cow<'a, str>, String> {
+    let mut pragma = serde_json::Map::new();
+    for (name, value) in [
+        ("yield_time_ms", yield_time_ms),
+        ("max_output_tokens", max_output_tokens),
+    ] {
+        if let Some(value) = value.filter(|value| !value.is_null()) {
+            let integer =
+                integer_value(value).map_err(|error| format!("exec argument `{name}`: {error}"))?;
+            pragma.insert(name.into(), integer.into());
+        }
+    }
+    if pragma.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(source));
+    }
+    if source.trim_start().starts_with(EXEC_PRAGMA_PREFIX) {
+        return Err(
+            "exec got `yield_time_ms` or `max_output_tokens` as arguments and a `// @exec:` pragma in its source; give them one way"
+                .to_owned(),
+        );
+    }
+    Ok(std::borrow::Cow::Owned(format!(
+        "{EXEC_PRAGMA_PREFIX} {}\n{source}",
+        Value::Object(pragma)
+    )))
 }

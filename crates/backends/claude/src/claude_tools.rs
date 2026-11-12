@@ -20,7 +20,11 @@ const SURFACED_DOCUMENTS: usize = 4;
 static EXEC_SCHEMA: std::sync::LazyLock<Arc<Value>> = std::sync::LazyLock::new(|| {
     Arc::new(json!({
         "type": "object",
-        "properties": {"code": {"type": "string", "description": "JavaScript source to evaluate."}},
+        "properties": {
+            "code": {"type": "string", "description": "JavaScript source to evaluate."},
+            "yield_time_ms": {"type": "number", "description": "Same as the pragma's `yield_time_ms`: how long to wait before a script that is still running yields. Defaults to 10000 ms."},
+            "max_output_tokens": {"type": "number", "description": "Same as the pragma's `max_output_tokens`: the token budget for this call's direct results. Omit for unlimited output."}
+        },
         "required": ["code"],
         "additionalProperties": false,
     }))
@@ -63,7 +67,9 @@ fn exec_description(description: &Arc<str>) -> Arc<str> {
     }
     let shared = shared_description(
         "exec",
-        format!("{description}\n\nPass the complete JavaScript source as the `code` string."),
+        format!(
+            "{description}\n\nPass the complete JavaScript source as the `code` string. `yield_time_ms` and `max_output_tokens` may be given as arguments beside `code` instead of in the pragma."
+        ),
     );
     LATEST.set(Some(ExecDescription {
         source: Arc::clone(description),
@@ -262,9 +268,14 @@ impl Call {
                     .get("code")
                     .and_then(Value::as_str)
                     .ok_or("exec requires a `code` string")?;
+                let code = nanocode_tool_host::code_mode::source_with_options(
+                    code,
+                    input.get("yield_time_ms"),
+                    input.get("max_output_tokens"),
+                )?;
                 runtime
                     .execute_code_owned_with_updates(
-                        code,
+                        &code,
                         OwnedToolContext::from_context(context),
                         &mut progress,
                     )

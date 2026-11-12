@@ -36,7 +36,7 @@ pub use contract::{
 #[cfg(all(target_family = "wasm", not(feature = "local-cells")))]
 pub mod code_mode {
     pub use crate::code_mode_description::ExecLayout;
-    pub use crate::code_mode_spec::{exec_spec, exec_spec_with, wait_spec};
+    pub use crate::code_mode_spec::{exec_spec, exec_spec_with, source_with_options, wait_spec};
     pub use crate::embedded::{
         CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
         NestedToolCall,

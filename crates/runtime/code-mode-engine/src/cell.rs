@@ -2,13 +2,13 @@ use std::{
     borrow::Cow,
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     sync::{
-        Arc, OnceLock, Weak,
+        Arc, LazyLock, OnceLock, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use djs_embed::{Data, HostCall, HostFn, Instance, Limits, Snapshot, Source, Throw};
+use djs_embed::{Builder, Data, HostCall, HostFn, Instance, Limits, Snapshot, Source, Throw};
 use nanocode_platform::Instant;
 use nanocode_sync::{Atom, Slot};
 use serde::{Deserialize, Serialize, Serializer};
@@ -165,8 +165,26 @@ fn build(
         "{CODE_TOOLS}\n{values}\nexport const {RUN_CELL} = {}(createCodeTools, createValueHelpers());\n",
         BOOTSTRAP.trim_end()
     );
+    let builder = builder.source(Source::module(BOOTSTRAP_MODULE, bootstrap));
+    let Some(store) = SNAPSHOT_STORE.read(Clone::clone) else {
+        return compile(builder);
+    };
+    let setup = builder.setup_hash();
+    if let Some(bytes) = store.load(setup) {
+        match Snapshot::from_bytes(builder.clone(), &bytes) {
+            Ok(snapshot) => return Ok(snapshot),
+            Err(error) => {
+                tracing::warn!(%error, setup, "a stored Code Mode snapshot did not load; building it");
+            }
+        }
+    }
+    let snapshot = compile(builder)?;
+    store.save(setup, snapshot.to_bytes());
+    Ok(snapshot)
+}
+
+fn compile(builder: Builder) -> Result<Snapshot, Unprepared> {
     builder
-        .source(Source::module(BOOTSTRAP_MODULE, bootstrap))
         .build()
         .map_err(|error| match error {
             djs_embed::Error::Syntax { source, message } if source == PRELUDE_SCRIPT => {
@@ -188,6 +206,18 @@ pub(crate) struct Prepared {
 }
 
 static CELL_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub trait SnapshotStore: Send + Sync {
+    fn load(&self, setup: u64) -> Option<Vec<u8>>;
+    fn save(&self, setup: u64, bytes: Vec<u8>);
+}
+
+static SNAPSHOT_STORE: LazyLock<Atom<Option<Arc<dyn SnapshotStore>>>> =
+    LazyLock::new(Atom::default);
+
+pub fn set_snapshot_store(store: Option<Arc<dyn SnapshotStore>>) {
+    SNAPSHOT_STORE.set(store);
+}
 
 pub fn set_cell_memory(bytes: usize) {
     CELL_MEMORY.store(bytes, Ordering::Relaxed);

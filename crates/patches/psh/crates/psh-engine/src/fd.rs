@@ -147,6 +147,12 @@ impl FdTable {
         self.fds.remove(&n);
     }
 
+    /// Whether every descriptor is a file of the host: a forked copy of the process
+    /// shares those with it, but not a pipe between two vprocs of this engine.
+    pub(crate) fn all_files(&self) -> bool {
+        self.fds.values().all(|f| matches!(**f, FdObj::File(_)))
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, &Fd)> {
         self.fds.iter().map(|(n, f)| (*n, f))
     }

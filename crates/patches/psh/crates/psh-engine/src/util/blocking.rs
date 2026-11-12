@@ -889,9 +889,10 @@ impl UtilCtx<'_> {
             ..
         } = sync;
         let thread_pipe = pipe.clone();
-        let spawned = std::thread::Builder::new()
-            .name(format!("psh-{name}"))
-            .spawn(move || {
+        let worker = format!("psh-{name}");
+        let spawned = self.vp.host().thread(
+            worker,
+            Box::new(move || {
                 let mut ctx = SyncCtx {
                     name,
                     cwd,
@@ -909,7 +910,8 @@ impl UtilCtx<'_> {
                 let status = run_guarded(&mut ctx, arg, f);
                 let _ = ctx.flush();
                 thread_pipe.finish(Some(status));
-            });
+            }),
+        );
         if let Err(e) = spawned {
             self.error(&format!("cannot start a thread: {e}")).await;
             return 2;

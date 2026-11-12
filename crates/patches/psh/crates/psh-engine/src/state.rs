@@ -41,6 +41,10 @@ pub(crate) struct Core {
     /// `$SECONDS` counts from this time: nanoseconds since the epoch; may be before it (`SECONDS=100` on a host whose
     /// clock reads the epoch).
     pub seconds_base: Cell<i128>,
+    /// This process is a forked copy of the shell that runs one background job
+    /// (`Host::prepare_fork`): `None` in the shell itself, `Some(None)` while the job
+    /// runs, `Some(Some(status))` once it ended, which ends the run.
+    pub forked: Cell<Option<Option<i32>>>,
 }
 
 /// Where a vproc's pending signals are (D1411): the shell's mask, which the embedder's
@@ -339,6 +343,9 @@ pub(crate) struct Vp {
     pub in_trap: Option<i32>,
     /// This is the shell itself, not a subshell: it takes the shell's signals.
     pub top: bool,
+    /// This vproc is a background job of one simple command that has not run it yet:
+    /// if the command turns out to be no program, the job forks first (D1900).
+    pub fork_job: bool,
     /// Where the shell's pending signals are (D1411).
     pub sigs: Sigs,
     /// Levels of command substitution and `eval`: `set -x` repeats PS4's first char.
@@ -392,6 +399,7 @@ impl Vp {
         sub.depth += 1;
         sub.loops = 0;
         sub.top = false;
+        sub.fork_job = false;
         sub.traps = self.traps.for_subshell(
             self.opts.get(crate::options::SetOpt::Errtrace),
             self.opts.get(crate::options::SetOpt::Functrace),

@@ -28,6 +28,55 @@ static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 static WATCHER: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> = std::sync::Mutex::new(None);
 /// Whether [`watch`] has nothing left to start.
 static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// What [`catch`] calls for each delivery.
+static CALLBACK: std::sync::OnceLock<Box<dyn Fn(Signal) + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// The watcher thread's work: hands each signal the handler noted to the callback.
+fn watcher(mut r: io::PipeReader) -> Box<dyn FnOnce() + Send> {
+    Box::new(move || {
+        let mut buf = [0u8; 64];
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) => return,
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return,
+            }
+            let bits = PENDING.swap(0, Ordering::SeqCst);
+            for sig in 1..64 {
+                if bits & (1 << sig) != 0
+                    && let Some(callback) = CALLBACK.get()
+                {
+                    callback(super::signum::from_os(sig));
+                }
+            }
+        }
+    })
+}
+
+/// In a forked copy of a process that catches signals: the self-pipe and the watcher
+/// thread are the parent's, so the copy gets a pipe of its own and starts its thread
+/// when it first parks ([`watch`]). Called with every signal blocked.
+pub(crate) fn forked() {
+    let old = WAKE_FD.load(Ordering::SeqCst);
+    if old < 0 {
+        return;
+    }
+    let Ok((r, w)) = super::pipe() else {
+        return;
+    };
+    if super::ready::set_nonblocking(w.as_raw_fd()).is_err() {
+        return;
+    }
+    WAKE_FD.store(w.into_raw_fd(), Ordering::SeqCst);
+    // SAFETY: `old` is this copy's descriptor of the parent's pipe, used by nothing
+    // else here (the handler reads `WAKE_FD`, and signals are blocked).
+    unsafe { libc::close(old) };
+    PENDING.store(0, Ordering::SeqCst);
+    *WATCHER.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher(r));
+    WATCHING.store(false, Ordering::SeqCst);
+}
 
 extern "C" fn on_signal(sig: libc::c_int) {
     let saved = io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -163,7 +212,7 @@ pub fn watch() {
         return;
     }
     if let Some(run) = WATCHER.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        let _ = crate::spawn_helper("psh-signals", 64 << 10, run);
+        let _ = crate::spawn_helper("psh-signals", Some(64 << 10), run);
     }
 }
 
@@ -181,8 +230,11 @@ pub fn is_ignored(sig: Signal) -> bool {
 
 /// Catches `sigs` (except those ignored now) and calls `callback` for each delivery,
 /// on a watcher thread that [`watch`] starts. Once per process.
-pub fn catch(sigs: &[Signal], callback: impl Fn(Signal) + Send + 'static) -> io::Result<()> {
-    let (mut r, w) = super::pipe()?;
+pub fn catch(
+    sigs: &[Signal],
+    callback: impl Fn(Signal) + Send + Sync + 'static,
+) -> io::Result<()> {
+    let (r, w) = super::pipe()?;
     super::ready::set_nonblocking(w.as_raw_fd())?;
     let wfd = w.into_raw_fd();
     if WAKE_FD
@@ -193,23 +245,8 @@ pub fn catch(sigs: &[Signal], callback: impl Fn(Signal) + Send + 'static) -> io:
         unsafe { libc::close(wfd) };
         return Err(io::Error::other("signals are caught already"));
     }
-    *WATCHER.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(move || {
-        let mut buf = [0u8; 64];
-        loop {
-            match r.read(&mut buf) {
-                Ok(0) => return,
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => return,
-            }
-            let bits = PENDING.swap(0, Ordering::SeqCst);
-            for sig in 1..64 {
-                if bits & (1 << sig) != 0 {
-                    callback(super::signum::from_os(sig));
-                }
-            }
-        }
-    }));
+    let _ = CALLBACK.set(Box::new(callback));
+    *WATCHER.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher(r));
     WATCHING.store(false, Ordering::SeqCst);
     for &sig in sigs {
         if is_ignored(sig) {

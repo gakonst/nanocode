@@ -48,6 +48,8 @@ fn os_host() -> (Rc<dyn Host>, Stdio) {
         leftovers: Leftovers::Keep,
         // bash's rule: what was ignored when the shell started stays ignored.
         inherit_ignored: true,
+        // Measured on Linux only (D1900).
+        fork_jobs: cfg!(target_os = "linux"),
         ..UnixConfig::default()
     });
     let stdio = |n| {
@@ -378,7 +380,7 @@ fn script(args: &[Vec<u8>]) -> Result<Script, ExitCode> {
 fn run_script(
     cfg: ShellConfig,
     script: Script,
-    control: &std::sync::Mutex<Option<psh_engine::ControlHandle>>,
+    control: &std::sync::OnceLock<psh_engine::ControlHandle>,
 ) -> (i32, Option<i32>) {
     let mut shell = Shell::new(cfg);
     Signals::attach(control, shell.control());
@@ -387,6 +389,17 @@ fn run_script(
     let status = psh_engine::std_host::drive_parking(&mut shell, psh_os::unix::signals::watch);
     #[cfg(not(unix))]
     let status = psh_engine::std_host::drive(&mut shell);
+    // A forked copy that ran a background job: this thread is all of it.
+    #[cfg(unix)]
+    if shell.forked() {
+        if let Some(sig) = shell.killed_by() {
+            psh_os::unix::settle(
+                psh_os::unix::UnixConfig::DEFAULT_GRACE + std::time::Duration::from_secs(1),
+            );
+            psh_os::unix::signals::die_by(sig);
+        }
+        psh_os::unix::exit_now(status);
+    }
     (status, shell.killed_by())
 }
 
@@ -420,7 +433,7 @@ struct Signals {
 #[cfg(unix)]
 const CAUGHT: [psh_engine::host::Signal; 12] = [1, 2, 10, 12, 14, 15, 24, 25, 26, 27, 29, 30];
 
-type Control = std::sync::Arc<std::sync::Mutex<Option<psh_engine::ControlHandle>>>;
+type Control = std::sync::Arc<std::sync::OnceLock<psh_engine::ControlHandle>>;
 
 impl Signals {
     #[cfg(unix)]
@@ -430,7 +443,7 @@ impl Signals {
             // The handler set the signal's bit already (once the shell exists): this
             // only wakes the shell. Setting the bit again would deliver it twice when
             // the shell took the first already.
-            if let Some(ctl) = &*c.lock().unwrap_or_else(|e| e.into_inner()) {
+            if let Some(ctl) = c.get() {
                 ctl.wake();
             }
         });
@@ -444,7 +457,7 @@ impl Signals {
     fn catch(control: Control) -> Signals {
         let c = control.clone();
         let _ = psh_os::windows::signals::catch(move |sig| {
-            if let Some(ctl) = &*c.lock().unwrap_or_else(|e| e.into_inner()) {
+            if let Some(ctl) = c.get() {
                 ctl.signal(sig);
             }
         });
@@ -454,7 +467,7 @@ impl Signals {
     /// The shell exists, on the engine thread: it takes the signals from now on (the
     /// handler cancels it directly), and a signal caught before cancels it now.
     fn attach(
-        control: &std::sync::Mutex<Option<psh_engine::ControlHandle>>,
+        control: &std::sync::OnceLock<psh_engine::ControlHandle>,
         ctl: psh_engine::ControlHandle,
     ) {
         #[cfg(unix)]
@@ -469,7 +482,7 @@ impl Signals {
         if let Some(sig) = psh_os::windows::signals::first_caught() {
             ctl.signal(sig);
         }
-        *control.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctl);
+        let _ = control.set(ctl);
     }
 
     /// The run is over: if a signal's default action ended it, wait until the

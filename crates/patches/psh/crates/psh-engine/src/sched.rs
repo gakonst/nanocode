@@ -55,6 +55,15 @@ impl Shared {
         }
     }
 
+    /// Holds the wake queue and the embedder's waker across a fork: no host thread is
+    /// inside either then, so the copy can use both.
+    pub(crate) fn hold(&self) -> impl Sized + '_ {
+        (
+            self.woken.lock().unwrap_or_else(|e| e.into_inner()),
+            self.outer.lock().unwrap_or_else(|e| e.into_inner()),
+        )
+    }
+
     fn push(&self, id: usize) {
         self.woken
             .lock()
@@ -291,6 +300,26 @@ impl Sched {
         self.free.borrow_mut().clear();
         self.ready.borrow_mut().clear();
         drop(futs);
+        let mut ignored = Vec::new();
+        self.shared.take(&mut ignored);
+    }
+
+    /// Forgets every task but the one being polled, without dropping it: in a forked
+    /// copy of the shell the others are the parent's (a dropped task would signal the
+    /// parent's externals and close what it holds in an order the parent chose).
+    pub(crate) fn forget_others(&self) {
+        let mut slots = self.slots.borrow_mut();
+        let mut free = self.free.borrow_mut();
+        free.clear();
+        for (id, slot) in slots.iter_mut().enumerate() {
+            if slot.as_ref().is_some_and(|s| s.busy) {
+                continue;
+            }
+            std::mem::forget(slot.take());
+            free.push(id);
+        }
+        self.ready.borrow_mut().clear();
+        std::mem::forget(std::mem::take(&mut *self.signal_waiters.borrow_mut()));
         let mut ignored = Vec::new();
         self.shared.take(&mut ignored);
     }

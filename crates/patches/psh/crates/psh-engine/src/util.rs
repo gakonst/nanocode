@@ -124,6 +124,18 @@ pub(crate) async fn lookup(vp: &Vp, name: &[u8]) -> Option<&'static UtilEntry> {
     Some(entry)
 }
 
+/// Whether a background job that is the one command `name` is a program, as bash runs
+/// it: no utility answers to the name, or `PATH` has the program a utility stands in
+/// for, which then runs instead (its pid is `$!`, and it outlives the shell). A shell
+/// psh runs itself is never one.
+pub(crate) async fn job_is_program(vp: &Vp, name: &[u8]) -> bool {
+    match lookup(vp, name).await {
+        None => true,
+        Some(e) if std::ptr::eq(e, &nested::ENTRY) => false,
+        Some(_) => crate::builtins::hash::search(vp, name, None).await.is_some(),
+    }
+}
+
 pub(crate) use nested::start as start_nested;
 
 /// Whether `entry` is the shell psh runs for `bash` and `sh` (D1410).

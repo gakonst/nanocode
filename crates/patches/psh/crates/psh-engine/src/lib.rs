@@ -277,6 +277,7 @@ impl Shell {
             own_program: cfg.own_program.clone(),
             rng: Cell::new(0),
             seconds_base: Cell::new(cfg.host.now().as_nanos() as i128),
+            forked: Cell::new(None),
         });
         let (vars, foreign) = initial_vars(&*cfg.host, &cfg.env, &cfg.cwd);
         let opts = options::inherited(&vars);
@@ -327,6 +328,7 @@ impl Shell {
             traps: Rc::new(Default::default()),
             in_trap: None,
             top: true,
+            fork_job: false,
             sigs: state::Sigs::Shell,
             xtrace_level: 1,
             umask: None,
@@ -441,6 +443,39 @@ impl Shell {
                     RunEnd::Control => continue,
                 }
             }
+            // A forked copy of the shell (D1900): the run is the background job it was
+            // made for, and ends with it. What the job left running outlives the copy,
+            // as a subshell's children do.
+            if self.core.forked.get().is_some() {
+                let ctl = self.shared.control.load(Ordering::SeqCst);
+                if ctl & CANCEL != 0 {
+                    return self.finish_cancelled();
+                }
+                if ctl & PAUSE != 0 {
+                    return Step::Blocked;
+                }
+                let forked = &self.core.forked;
+                let ended = || matches!(forked.get(), Some(Some(_)));
+                let end = if ended() {
+                    RunEnd::Done
+                } else {
+                    self.core.sched.run(budget, &ended)
+                };
+                match end {
+                    RunEnd::Done => {
+                        let status = forked.get().flatten().unwrap_or(0);
+                        self.main = None;
+                        self.core.sched.run(budget, &|| false);
+                        self.core.release_on_drop.set(true);
+                        self.core.sched.drop_all();
+                        self.core.release_on_drop.set(false);
+                        return Step::Done(status);
+                    }
+                    RunEnd::Yield => return Step::Yield,
+                    RunEnd::Blocked => return Step::Blocked,
+                    RunEnd::Control => continue,
+                }
+            }
             let Some(main) = &self.main else {
                 return Step::Idle;
             };
@@ -451,7 +486,15 @@ impl Shell {
             if ctl & PAUSE != 0 {
                 return Step::Blocked;
             }
-            let end = self.core.sched.run(budget, &|| main.is_done());
+            let forked = &self.core.forked;
+            let end = self
+                .core
+                .sched
+                .run(budget, &|| main.is_done() || forked.get().is_some());
+            // A task forked: this is the copy, and its job the run.
+            if forked.get().is_some() {
+                continue;
+            }
             match end {
                 RunEnd::Done => {
                     let (status, vp) = self
@@ -462,6 +505,10 @@ impl Shell {
                     self.vp = Some(vp);
                     // Give detached vprocs (`cmd &`) what is ready.
                     self.core.sched.run(budget, &|| false);
+                    // One of them forked: this is the copy, and its job the run.
+                    if self.core.forked.get().is_some() {
+                        continue;
+                    }
                     if let Some(grace) = self.exit_grace
                         && self.core.sched.task_count() > 0
                     {
@@ -497,6 +544,13 @@ impl Shell {
     /// (D1903): a standalone shell dies by it, so its parent sees what bash shows.
     pub fn killed_by(&self) -> Option<i32> {
         self.core.died_of.get()
+    }
+
+    /// Whether this process is a forked copy of the shell that ran one background job
+    /// (`Host::prepare_fork`): the embedder's process ends with the run, since no
+    /// thread but this one exists in it.
+    pub fn forked(&self) -> bool {
+        self.core.forked.get().is_some()
     }
 
     /// The commands and loop iterations this shell has run in all its steps (a utility's

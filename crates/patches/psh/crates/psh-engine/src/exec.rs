@@ -96,14 +96,35 @@ async fn run_background(vp: &mut Vp, code: &Rc<Code>, list: ListId, item: usize)
             code.ast.cmd(ao.first.stages[0].cmd).kind,
             CommandKind::Simple(_)
         );
+    // A shell that is its own process forks for a job that is no program, as bash
+    // does: the copy is the job's process, with a pid, and outlives the shell (D1900).
+    let forks = sub.fds.all_files() && vp.core.host.forks();
+    sub.fork_job = forks && direct;
+    // The job's vproc is the subshell of a job that is one `( … )`, as bash forks once
+    // for it: its commands are the job's own, and a signal sent to the job ends them.
+    sub.stage_subshell = ao.rest.is_empty()
+        && ao.first.stages.len() == 1
+        && !ao.first.negated()
+        && ao.first.time.is_none()
+        && matches!(
+            code.ast.cmd(ao.first.stages[0].cmd).kind,
+            CommandKind::Subshell(_)
+        );
     let job = vp
         .jobs
         .borrow_mut()
-        .add(text, vp.core.next_job_id(), direct);
+        .add(text, vp.core.next_job_id(), direct || forks);
     sub.job = Some(job.clone());
     vp.last_bg = Some(job.clone());
     let j = job.clone();
     let id = vp.core.sched.spawn_task(Box::pin(async move {
+        if forks
+            && !direct
+            && let Some(status) = fork_job(&mut sub).await
+        {
+            j.finish(status);
+            return;
+        }
         let ao = &code.ast.list(list).items[item];
         // The job's own status is not errexit's or the ERR trap's to judge (only the
         // commands inside it are).
@@ -116,9 +137,89 @@ async fn run_background(vp: &mut Vp, code: &Rc<Code>, list: ListId, item: usize)
         let status = r.unwrap_or_else(|u| u.status(sub.status));
         Box::pin(trap::exit_trap(&mut sub, status)).await;
         j.finish(status);
+        if sub.core.forked.get().is_some() {
+            sub.core.forked.set(Some(Some(status)));
+        }
     }));
     job.set_task(id);
     Ok(0)
+}
+
+/// Forks the shell's process for the background job `vp` runs in (D1900). `Some`: this
+/// is still the shell, the job ran in the copy and ended with that status. `None`: this
+/// process is to run the job: the copy, where `vp` is the shell now (it takes the
+/// signals, ignoring INT and QUIT as a job of bash without job control does, and the
+/// parent's tasks are forgotten), or the shell itself when it could not fork.
+async fn fork_job(vp: &mut Vp) -> Option<i32> {
+    let prepared = vp.core.host.prepare_fork()?;
+    let forked = {
+        let _held = vp.core.sched.shared.hold();
+        prepared.fork()
+    };
+    match forked {
+        Err(e) => {
+            vp.error(&format!("fork: {}", error_text(&e))).await;
+            None
+        }
+        Ok(crate::host::Forked::Child) => {
+            vp.core.sched.forget_others();
+            vp.core.forked.set(Some(None));
+            vp.top = true;
+            vp.sigs = crate::state::Sigs::Shell;
+            vp.bashpid = Some(vp.core.host.pid());
+            let mut traps = (*vp.traps).clone();
+            for sig in [crate::host::SIGINT, crate::host::SIGQUIT] {
+                traps
+                    .map
+                    .entry(trap::TrapKey::Signal(sig))
+                    .or_insert_with(|| trap::Trap {
+                        action: Rc::from(&b""[..]),
+                        active: true,
+                    });
+            }
+            vp.traps = Rc::new(traps);
+            None
+        }
+        Ok(crate::host::Forked::Parent(proc)) => {
+            let mut proc = ProcGuard {
+                proc: Rc::new(std::cell::RefCell::new(Some(proc))),
+                core: vp.core.clone(),
+                job: vp.job.clone(),
+            };
+            if let Some(job) = &vp.job {
+                job.started(&proc.proc);
+            }
+            // The copy has the job's descriptors: a pipe it closes is closed.
+            vp.fds = Default::default();
+            let st = poll_fn(|cx| proc.poll_wait(cx)).await;
+            if let Some(job) = &vp.job {
+                job.ended(match st {
+                    crate::host::ExitStatus::Signaled(sig) => Some(sig),
+                    crate::host::ExitStatus::Exited(_) => None,
+                });
+            }
+            Some(st.code())
+        }
+    }
+}
+
+/// The command of a background job that is one simple command, expanded (D1900): a
+/// program runs as the job's process, also where a utility of psh has its name; a
+/// function, a builtin, a shell psh runs itself or a utility without a program runs
+/// in a forked copy of the shell, where the host forks.
+async fn run_job_argv(vp: &mut Vp, argv: Vec<Vec<u8>>, assigns: Vec<(String, Vec<u8>)>) -> R {
+    let name = &argv[0];
+    let inside = std::str::from_utf8(name)
+        .ok()
+        .is_some_and(|n| vp.funcs.contains_key(n))
+        || builtins::get(vp, name).is_some();
+    if !inside && crate::util::job_is_program(vp, name).await {
+        return run_external(vp, argv, assigns).await;
+    }
+    match fork_job(vp).await {
+        Some(status) => Ok(status),
+        None => run_argv(vp, argv, assigns).await,
+    }
 }
 
 async fn run_andor(vp: &mut Vp, code: &Rc<Code>, ao: &AndOr) -> R {
@@ -1483,6 +1584,9 @@ fn run_argv(
     argv: Vec<Vec<u8>>,
     assigns: Vec<(String, Vec<u8>)>,
 ) -> LocalBoxFuture<'_, R> {
+    if std::mem::take(&mut vp.fork_job) {
+        return Box::pin(run_job_argv(vp, argv, assigns));
+    }
     let name = &argv[0];
     // Functions come first, even before special builtins (bash outside POSIX mode).
     if let Some(f) = std::str::from_utf8(name)

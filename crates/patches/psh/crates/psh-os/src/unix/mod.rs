@@ -37,6 +37,14 @@ pub use crate::Leftovers;
 pub use file::UnixFile;
 pub use spawn::{Placement, settle};
 
+/// Ends the process now with `status`, running nothing registered for its exit: how a
+/// forked copy of the shell ends (`UnixConfig::fork_jobs`), where only this thread
+/// exists and what the others held at the fork is never released.
+pub fn exit_now(status: i32) -> ! {
+    // SAFETY: plain call; the process ends here.
+    unsafe { libc::_exit(status & 0xff) }
+}
+
 /// Held shared while psh-os makes a descriptor that is not close-on-exec from the
 /// start (std on macOS creates pipes with `pipe` + `fcntl`: no `pipe2` there); an
 /// embedder that starts processes inheriting its descriptors (std's `Command`) holds it
@@ -95,6 +103,12 @@ pub struct UnixConfig {
     /// where nothing a case started may survive it: they are killed with the run's
     /// leftovers then (0030).
     pub detached_survive: bool,
+    /// A background job that is not one program runs in a forked copy of the process
+    /// and outlives the shell, as a job of bash does (D1900). Only for a shell that is
+    /// its process (the standalone `psh`): the copy has this thread alone, so an
+    /// embedder's other threads and what they hold would be gone in it. Off by
+    /// default.
+    pub fork_jobs: bool,
 }
 
 impl UnixConfig {
@@ -110,6 +124,7 @@ impl Default for UnixConfig {
             leftovers: Leftovers::Kill,
             inherit_ignored: false,
             detached_survive: true,
+            fork_jobs: false,
         }
     }
 }
@@ -120,6 +135,7 @@ pub struct UnixHost {
     shared: Arc<Shared>,
     pid: Option<u32>,
     leftovers: Leftovers,
+    fork_jobs: bool,
 }
 
 /// Kills a run's leftovers from any thread ([`UnixHost::killer`]).
@@ -172,6 +188,7 @@ impl UnixHost {
             }),
             pid: cfg.pid,
             leftovers: cfg.leftovers,
+            fork_jobs: cfg.fork_jobs,
         }
     }
 
@@ -326,7 +343,7 @@ fn open_fifo(p: Vec<u8>, opts: OpenOptions) -> HostFuture<io::Result<Rc<dyn Host
     let slot = Arc::new(Mutex::new(Slot::default()));
     let s = slot.clone();
     let tp = p.clone();
-    let started = crate::spawn_helper("psh-fifo", 64 << 10, move || {
+    let started = crate::spawn_helper("psh-fifo", Some(64 << 10), move || {
         let r = std_open_options(opts).open(path(&tp));
         let mut st = s.lock().unwrap_or_else(|e| e.into_inner());
         if st.cancelled {
@@ -544,6 +561,19 @@ impl Host for UnixHost {
 
     fn spawn(&self, spec: SpawnSpec) -> io::Result<Spawned> {
         spawn::spawn(&self.shared, spec)
+    }
+
+    fn prepare_fork(&self) -> Option<Box<dyn psh_engine::host::PreparedFork>> {
+        self.fork_jobs
+            .then(|| Box::new(spawn::prepare(&self.shared)) as Box<dyn psh_engine::host::PreparedFork>)
+    }
+
+    fn forks(&self) -> bool {
+        self.fork_jobs
+    }
+
+    fn thread(&self, name: String, body: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+        crate::spawn_helper(&name, None, body)
     }
 
     fn pipe(&self) -> io::Result<(Rc<dyn HostFile>, Rc<dyn HostFile>)> {

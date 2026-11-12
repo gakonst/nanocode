@@ -235,7 +235,7 @@ impl Shared {
         let grace = self.grace;
         let fallback = groups.clone();
         *lock(&ESCALATING) += 1;
-        let started = crate::spawn_helper("psh-kill", SMALL_STACK, move || {
+        let started = crate::spawn_helper("psh-kill", Some(SMALL_STACK), move || {
             let deadline = Instant::now() + grace;
             while Instant::now() < deadline && groups.iter().any(|&g| Scope::Group(g).alive()) {
                 std::thread::sleep(Duration::from_millis(10));
@@ -885,6 +885,70 @@ mod posix {
     }
 }
 
+/// What the host's threads share, held for a fork (`Host::prepare_fork`): the waiter
+/// pool, the escalations, the readiness thread's registrations and the timers. Their
+/// threads do not exist in the copy, which starts with all four empty.
+pub(crate) struct Prepared {
+    shared: Arc<Shared>,
+    idle: std::sync::MutexGuard<'static, Vec<Arc<Mailbox>>>,
+    escalating: std::sync::MutexGuard<'static, usize>,
+    ready: super::ready::Held,
+    timers: crate::timer::Held,
+}
+
+pub(crate) fn prepare(shared: &Arc<Shared>) -> Prepared {
+    Prepared {
+        shared: shared.clone(),
+        idle: lock(&IDLE),
+        escalating: lock(&ESCALATING),
+        ready: super::ready::hold(),
+        timers: crate::timer::hold(),
+    }
+}
+
+impl psh_engine::host::PreparedFork for Prepared {
+    fn fork(mut self: Box<Self>) -> io::Result<psh_engine::host::Forked> {
+        let old = super::signals::block_all_in_thread();
+        // SAFETY: fork has no arguments. The copy runs on with this thread alone; what
+        // the other threads share is held here and reset there before it is used.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            self.idle.clear();
+            *self.escalating = 0;
+            self.ready.restart();
+            self.timers.restart();
+            super::signals::forked();
+            lock(&self.shared.scopes).clear();
+            drop(self);
+            super::signals::restore_mask(old);
+            return Ok(psh_engine::host::Forked::Child);
+        }
+        let failed = (pid < 0).then(io::Error::last_os_error);
+        let shared = self.shared.clone();
+        drop(self);
+        super::signals::restore_mask(old);
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        let scope = Scope::Process(pid);
+        shared.record(scope);
+        let tracker = Arc::new(Tracker::new());
+        if let Err(e) = watch(pid, tracker.clone()) {
+            let _ = scope.signal(libc::SIGKILL);
+            reap(pid);
+            shared.unrecord(scope);
+            return Err(e);
+        }
+        Ok(psh_engine::host::Forked::Parent(Box::new(UnixProc {
+            pid,
+            scope,
+            tracker,
+            shared,
+            detached: false,
+        })))
+    }
+}
+
 /// One waiter thread's slot for its next external.
 struct Mailbox {
     job: Mutex<Option<(i32, Arc<Tracker>)>>,
@@ -909,7 +973,7 @@ fn watch(pid: i32, tracker: Arc<Tracker>) -> io::Result<()> {
         job: Mutex::new(Some((pid, tracker))),
         ready: Condvar::new(),
     });
-    crate::spawn_helper("psh-wait", SMALL_STACK, move || waiter(&mb)).map(drop)
+    crate::spawn_helper("psh-wait", Some(SMALL_STACK), move || waiter(&mb))
 }
 
 fn waiter(mb: &Arc<Mailbox>) {
@@ -1096,7 +1160,7 @@ impl Drop for UnixProc {
                 let deadline = Instant::now() + self.shared.grace;
                 let (tracker, scope, pid) = (self.tracker.clone(), self.scope, self.pid);
                 *lock(&ESCALATING) += 1;
-                let started = crate::spawn_helper("psh-kill", SMALL_STACK, move || {
+                let started = crate::spawn_helper("psh-kill", Some(SMALL_STACK), move || {
                     escalate(&tracker, scope, pid, deadline);
                     *lock(&ESCALATING) -= 1;
                     SETTLED.notify_all();

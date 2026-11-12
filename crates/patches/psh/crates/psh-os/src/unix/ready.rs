@@ -72,28 +72,52 @@ struct Entry {
 
 struct Poller {
     entries: Mutex<Vec<Entry>>,
-    /// The write end of the wake pipe; `None` when the thread could not start.
-    wake: Option<std::io::PipeWriter>,
+    /// The write end of the wake pipe; `None` when the thread could not start. Locked
+    /// before `entries`.
+    wake: Mutex<Option<std::io::PipeWriter>>,
 }
 
-static POLLER: LazyLock<Poller> = LazyLock::new(Poller::start);
+static POLLER: LazyLock<Poller> = LazyLock::new(|| Poller {
+    entries: Mutex::new(Vec::new()),
+    wake: Mutex::new(Poller::start()),
+});
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Poller {
-    fn start() -> Poller {
-        let started = super::pipe().and_then(|(r, w)| {
-            set_nonblocking(w.as_raw_fd())?;
-            set_nonblocking(r.as_raw_fd())?;
-            crate::spawn_helper("psh-ready", 128 << 10, move || run(r))?;
-            Ok(w)
-        });
-        Poller {
-            entries: Mutex::new(Vec::new()),
-            wake: started.ok(),
-        }
+    /// Starts the thread; the write end of its wake pipe.
+    fn start() -> Option<std::io::PipeWriter> {
+        super::pipe()
+            .and_then(|(r, w)| {
+                set_nonblocking(w.as_raw_fd())?;
+                set_nonblocking(r.as_raw_fd())?;
+                crate::spawn_helper("psh-ready", Some(128 << 10), move || run(r))?;
+                Ok(w)
+            })
+            .ok()
+    }
+}
+
+/// The poller, held across a fork: its thread is inside neither lock then.
+pub(crate) struct Held {
+    wake: std::sync::MutexGuard<'static, Option<std::io::PipeWriter>>,
+    entries: std::sync::MutexGuard<'static, Vec<Entry>>,
+}
+
+pub(crate) fn hold() -> Held {
+    let wake = lock(&POLLER.wake);
+    let entries = lock(&POLLER.entries);
+    Held { wake, entries }
+}
+
+impl Held {
+    /// In the forked copy, where the thread does not exist: the registrations are the
+    /// parent's, and a new thread waits on a pipe of its own.
+    pub(crate) fn restart(&mut self) {
+        self.entries.clear();
+        *self.wake = Poller::start();
     }
 }
 
@@ -113,7 +137,8 @@ pub(crate) fn set_nonblocking(fd: RawFd) -> io::Result<()> {
 /// when it fires). Several tasks may wait on one descriptor.
 pub fn watch(fd: RawFd, events: i16, waker: &Waker) -> io::Result<()> {
     let p = &*POLLER;
-    let Some(wake) = &p.wake else {
+    let wake = lock(&p.wake);
+    let Some(wake) = &*wake else {
         return Err(io::Error::other("the readiness thread is not running"));
     };
     {

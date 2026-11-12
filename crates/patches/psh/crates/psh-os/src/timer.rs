@@ -81,6 +81,25 @@ fn run() {
     }
 }
 
+/// The timers, held across a fork: their thread waits outside the lock then.
+#[cfg(unix)]
+pub(crate) struct Held(std::sync::MutexGuard<'static, (BinaryHeap<Reverse<Due>>, u64, bool)>);
+
+#[cfg(unix)]
+pub(crate) fn hold() -> Held {
+    Held(lock(&TIMERS.heap))
+}
+
+#[cfg(unix)]
+impl Held {
+    /// In the forked copy, where the thread does not exist: the pending timers are the
+    /// parent's, and the next sleep starts a thread.
+    pub(crate) fn restart(&mut self) {
+        self.0.0.clear();
+        self.0.2 = false;
+    }
+}
+
 /// A future ready `duration` from now.
 pub fn sleep(duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
     let slot = Arc::new(Mutex::new(Slot::default()));
@@ -89,7 +108,7 @@ pub fn sleep(duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         let t = &*TIMERS;
         let mut g = lock(&t.heap);
         if !g.2 {
-            let started = crate::spawn_helper("psh-timer", 64 << 10, run);
+            let started = crate::spawn_helper("psh-timer", Some(64 << 10), run);
             if started.is_err() {
                 // No thread: the timer is due at once rather than never.
                 lock(&slot).fired = true;

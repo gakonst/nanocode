@@ -345,6 +345,22 @@ impl std::fmt::Display for RunInShell {
 
 impl std::error::Error for RunInShell {}
 
+/// What [`PreparedFork::fork`] made of the process that called it.
+pub enum Forked {
+    /// This is the process that forked: the child, to wait for like any external.
+    Parent(Box<dyn ExtProc>),
+    /// This is the copy: only the calling thread runs in it, and nothing the parent
+    /// started is its own.
+    Child,
+}
+
+/// A host ready to fork ([`Host::prepare_fork`]): it holds what its other threads
+/// share, so the copy finds it consistent. The engine takes its own shared state
+/// after this and calls `fork` at once.
+pub trait PreparedFork {
+    fn fork(self: Box<Self>) -> io::Result<Forked>;
+}
+
 pub struct Spawned {
     pub proc: Box<dyn ExtProc>,
     /// The engine's ends of the `ChildFd::Pipe` descriptors, by child fd.
@@ -431,6 +447,23 @@ pub trait Host {
     /// [`ChildFd::File`]. Hosts without OS pipes keep the default.
     fn pipe(&self) -> io::Result<(Rc<dyn HostFile>, Rc<dyn HostFile>)> {
         Err(io::ErrorKind::Unsupported.into())
+    }
+    /// A host whose shell is its own process, like bash, and may fork it: a background
+    /// job that is not one program then runs in a copy of the process and outlives
+    /// the shell, as a job of bash does (D1900). `None`, the default, keeps such a job
+    /// a task of this process, which ends with the script.
+    fn prepare_fork(&self) -> Option<Box<dyn PreparedFork>> {
+        None
+    }
+    /// Whether [`Host::prepare_fork`] answers.
+    fn forks(&self) -> bool {
+        false
+    }
+    /// Starts a thread of the host's process that runs `body`: a blocking utility's
+    /// worker (D1130). A host that forks starts it so that a fork meanwhile leaves the
+    /// copy able to start threads of its own.
+    fn thread(&self, name: String, body: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+        std::thread::Builder::new().name(name).spawn(body).map(drop)
     }
     /// Sends `sig` to process `pid` (negative: a process group), as `kill(2)`: the
     /// `kill` builtin's numeric pids.

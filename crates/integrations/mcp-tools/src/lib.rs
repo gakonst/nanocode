@@ -33,7 +33,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use catalog::{ConnectedCatalog, ProviderState, ToolEntry};
 use nanocode_mcp::{
     CallToolParams, CallToolResult, ContentBlock, ContentKind, Resumption,

@@ -169,11 +169,15 @@ async fn copy(
                     left -= t as u64;
                     t
                 };
+                if take < n && matches!(input, Input::Stdin) {
+                    let _ = ctx.seek_stdin(std::io::SeekFrom::Current(take as i64 - n as i64));
+                }
                 ctx.write(&buf[..take]).await.map_err(Failure::Write)?;
                 ctx.check().await;
             }
             // Stop here: the rest of the input is not read, so a writer into a pipe gets
-            // EPIPE once the command ends, as with GNU head.
+            // EPIPE once the command ends, as with GNU head; standard input from a file is
+            // left just after what was printed.
         }
         Amount::AllButLastLines(n) | Amount::AllButLastBytes(n) => {
             let mut all = Vec::new();
@@ -186,6 +190,9 @@ async fn copy(
             } else {
                 cut_last_lines(&all, n, delim)
             };
+            if end < all.len() && matches!(input, Input::Stdin) {
+                let _ = ctx.seek_stdin(std::io::SeekFrom::Current(end as i64 - all.len() as i64));
+            }
             ctx.write(&all[..end]).await.map_err(Failure::Write)?;
         }
     }

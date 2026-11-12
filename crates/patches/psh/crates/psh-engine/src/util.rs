@@ -457,6 +457,13 @@ impl UtilCtx<'_> {
         self.vp.fd(n)
     }
 
+    pub fn seek_stdin(&self, pos: io::SeekFrom) -> Option<io::Result<u64>> {
+        match self.fd(0).as_deref() {
+            Some(FdObj::File(f)) => f.seek(pos),
+            _ => None,
+        }
+    }
+
     /// Whether descriptor `n` is a terminal.
     pub fn is_terminal(&self, n: u32) -> bool {
         matches!(self.fd(n).as_deref(), Some(FdObj::File(f)) if f.is_terminal())

@@ -36,14 +36,21 @@ pub fn hide() -> io::Result<()> {
         .ok_or_else(|| io::Error::other("the argument area was already rewritten"))?
         .split(|byte| *byte == 0)
         .collect();
-    if read_word(&mut memory, stack)? != arguments.len() {
-        return Err(io::Error::other(
-            "the argument area does not hold the arguments exec gave",
-        ));
-    }
+    let skipped = match arguments.len().checked_sub(read_word(&mut memory, stack)?) {
+        Some(skipped) if skipped < arguments.len() => skipped,
+        _ => {
+            return Err(io::Error::other(
+                "the argument area does not hold the arguments exec gave",
+            ));
+        }
+    };
     let mut offset = start;
     for (index, argument) in arguments.iter().enumerate() {
-        let slot = stack + ((index + 1) * WORD) as u64;
+        let Some(shifted) = index.checked_sub(skipped) else {
+            offset += argument.len() as u64 + 1;
+            continue;
+        };
+        let slot = stack + ((shifted + 1) * WORD) as u64;
         if read_word(&mut memory, slot)? as u64 != offset {
             return Err(io::Error::other("argv does not point at the argument area"));
         }

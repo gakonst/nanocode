@@ -115,7 +115,6 @@ imbl = { version = "7.0.2", features = ["serde"] }
 crossbeam-utils = { version = "0.8.22", default-features = false, features = ["std"] }
 foldhash = "0.2.0"
 async-trait = "=0.1.89"
-chrono = { version = "0.4.43", default-features = false, features = ["std"] }
 clap = { version = "4.5.54", features = ["derive", "env"] }
 futures-channel = "0.3.31"
 futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }
@@ -154,7 +153,6 @@ nanocode-mcp-tools = { version = "0.7.0", path = "crates/integrations/mcp-tools"
 nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mode-engine" }
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 image = { version = "=0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "webp"] }
-iana-time-zone = "0.1.64"
 nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "trace"] }
@@ -206,7 +204,6 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 [patch.crates-io]
 arc-swap = { path = "crates/patches/arc-swap" }
 grep-printer = { path = "crates/patches/psh/third_party/grep-printer" }
-iana-time-zone = { path = "crates/patches/iana-time-zone" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 rustpython-pylib = { path = "crates/patches/rustpython-pylib" }
 rustpython-sre_engine = { path = "crates/patches/rustpython-sre_engine" }

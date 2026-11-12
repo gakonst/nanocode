@@ -3,6 +3,9 @@ mod host;
 #[cfg(target_family = "wasm")]
 pub use host::{Host, Instant, LocalFuture, install, spawn_local};
 
+mod zone;
+pub use zone::{local_date, time_zone_name, utc_date, utc_offset_seconds};
+
 #[cfg(not(target_family = "wasm"))]
 mod native;
 #[cfg(not(target_family = "wasm"))]

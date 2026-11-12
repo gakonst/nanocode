@@ -26,7 +26,6 @@ nanocode-tools.workspace = true
 nanocode-image.workspace = true
 nanocode-home = { workspace = true  }
 base64.workspace = true
-chrono.workspace = true
 url.workspace = true
 futures-util.workspace = true
 image.workspace = true
@@ -43,7 +42,6 @@ libc.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-trait.workspace = true
-chrono = { workspace = true, features = ["clock"] }
 nanocode-process.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread"] }
 

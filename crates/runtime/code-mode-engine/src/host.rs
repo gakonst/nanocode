@@ -58,6 +58,8 @@ fn random_seed() -> Result<u64, String> {
     Ok(mixed ^ (mixed >> 31))
 }
 
+#[cfg(not(target_family = "wasm"))]
+const SECONDS_PER_MINUTE: i32 = 60;
 const PARK_AFTER: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy)]
@@ -377,7 +379,7 @@ impl EmbeddedHost {
         instance.seed_random(seed).map_err(failure)?;
         #[cfg(not(target_family = "wasm"))]
         instance
-            .set_time_zone_offset(chrono::Local::now().offset().local_minus_utc() / 60)
+            .set_time_zone_offset(nanocode_platform::utc_offset_seconds(nanocode_platform::system_time()) / SECONDS_PER_MINUTE)
             .map_err(failure)?;
         instance
             .start_export(BOOTSTRAP_MODULE, RUN_CELL, &[Value::Str(source)])

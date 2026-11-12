@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use crate::client::responses::{ContentItem, MessageRole, ResponseItem};
-#[cfg(not(target_family = "wasm"))]
-use chrono::{Local, Utc};
 
 use crate::agent::ExecutionEnvironment;
 pub(crate) use crate::session::{
@@ -426,16 +424,18 @@ impl ExecutionEnvironment {
     #[must_use]
     pub fn local() -> Self {
         match system_timezone() {
-            Ok(timezone) => Self::dated(timezone, || Local::now().format("%Y-%m-%d").to_string()),
-            Err(_) => Self::dated(Arc::<str>::from("Etc/UTC"), || {
-                Utc::now().format("%Y-%m-%d").to_string()
+            Some(timezone) => Self::dated(timezone, || {
+                nanocode_platform::local_date(nanocode_platform::system_time())
+            }),
+            None => Self::dated(Arc::<str>::from("Etc/UTC"), || {
+                nanocode_platform::utc_date(nanocode_platform::system_time())
             }),
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn system_timezone() -> Result<String, iana_time_zone::GetTimezoneError> {
+fn system_timezone() -> Option<String> {
     const TZDIR: &str = "/var/db/timezone/zoneinfo/";
     static KNOWN: nanocode_sync::SwapOption<(std::path::PathBuf, String)> =
         nanocode_sync::SwapOption::const_empty();
@@ -446,14 +446,14 @@ fn system_timezone() -> Result<String, iana_time_zone::GetTimezoneError> {
         if let Some(known) = KNOWN.load().as_deref()
             && known.0 == link
         {
-            return Ok(known.1.clone());
+            return Some(known.1.clone());
         }
         if let Some(name) = indexed_timezone(&link, TZDIR) {
             KNOWN.store(Some(Arc::new((link, name.clone()))));
-            return Ok(name);
+            return Some(name);
         }
     }
-    iana_time_zone::get_timezone()
+    nanocode_platform::time_zone_name()
 }
 
 #[cfg(target_os = "macos")]
@@ -477,14 +477,12 @@ fn indexed_timezone(link: &std::path::Path, tzdir: &str) -> Option<String> {
 }
 
 #[cfg(all(not(target_family = "wasm"), not(target_os = "macos")))]
-use iana_time_zone::get_timezone as system_timezone;
+use nanocode_platform::time_zone_name as system_timezone;
 
 #[cfg(target_family = "wasm")]
 fn detected_execution_environment() -> ExecutionEnvironment {
-    use chrono::Datelike;
-    let date = chrono::DateTime::<chrono::Utc>::from(nanocode_platform::system_time()).date_naive();
     ExecutionEnvironment::new(
-        format!("{:04}-{:02}-{:02}", date.year(), date.month(), date.day()),
+        nanocode_platform::utc_date(nanocode_platform::system_time()),
         Arc::from("Etc/UTC"),
     )
 }

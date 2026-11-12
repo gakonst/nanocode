@@ -24,7 +24,6 @@ sha2.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-chrono = { workspace = true, features = ["clock"] }
 tokio = { workspace = true, features = ["rt"] }
 
 [lints]

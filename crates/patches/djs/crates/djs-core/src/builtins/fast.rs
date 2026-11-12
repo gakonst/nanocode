@@ -1393,16 +1393,22 @@ pub(crate) fn plain_species(heap: &Heap, o: Obj) -> bool {
     {
         return true;
     }
-    match heap.get_own_property(array_proto, atoms::CONSTRUCTOR) {
-        Some(Property::Data { value, .. }) if value == array => {}
-        _ => return false,
+    let ctor = atoms::CONSTRUCTOR;
+    if heap
+        .own_entry_index(array_proto, ctor)
+        .and_then(|i| heap.data_at(array_proto, i, ctor))
+        != Some(array)
+    {
+        return false;
     }
     let Some(array) = array.as_object() else {
         return false;
     };
     let species = realm::installed_intrinsic(heap, ARRAY_SPECIES);
-    matches!(heap.get_own_property(array, atoms::SYM_SPECIES),
-        Some(Property::Accessor { getter, .. }) if getter == species)
+    let key = atoms::SYM_SPECIES;
+    heap.own_entry_index(array, key)
+        .and_then(|i| heap.getter_at(array, i, key))
+        == Some(species)
 }
 
 // ---- Array element loops (0091) ------------------------------------------------------

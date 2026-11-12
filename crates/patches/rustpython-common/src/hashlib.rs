@@ -6,6 +6,9 @@
 //! plain Rust results so interpreter and embedding layers can provide their
 //! own object and exception adapters.
 
+mod blake2;
+mod blake2b;
+mod blake2s;
 mod block;
 mod keccak;
 mod md5;
@@ -13,6 +16,9 @@ mod sha1;
 mod sha256;
 mod sha512;
 
+use blake2::Parameters;
+use blake2b::Blake2b;
+use blake2s::Blake2s;
 use keccak::{Keccak, SHAKE_SUFFIX};
 use md5::Md5;
 use parking_lot::Mutex;
@@ -37,8 +43,8 @@ enum HashState {
     Sha512(Sha512),
     Sha3 { state: Keccak, output_bytes: usize },
     Shake(Keccak),
-    Blake2b(blake2b_simd::State),
-    Blake2s(blake2s_simd::State),
+    Blake2b(Blake2b),
+    Blake2s(Blake2s),
 }
 
 impl HashState {
@@ -56,8 +62,12 @@ impl HashState {
             "sha3_512" => Self::sha3(SHA3_512_OUTPUT_BYTES),
             "shake_128" => Self::Shake(Keccak::new(SHAKE_128_RATE_BYTES, SHAKE_SUFFIX)),
             "shake_256" => Self::Shake(Keccak::new(SHAKE_256_RATE_BYTES, SHAKE_SUFFIX)),
-            "blake2b" => Self::Blake2b(blake2b_simd::Params::new().to_state()),
-            "blake2s" => Self::Blake2s(blake2s_simd::Params::new().to_state()),
+            "blake2b" => Self::Blake2b(Blake2b::new(&Parameters::default_for(
+                blake2b::OUTPUT_BYTES,
+            ))),
+            "blake2s" => Self::Blake2s(Blake2s::new(&Parameters::default_for(
+                blake2s::OUTPUT_BYTES,
+            ))),
             _ => return None,
         })
     }
@@ -76,12 +86,8 @@ impl HashState {
             Self::Sha224(state) | Self::Sha256(state) => state.update(data),
             Self::Sha384(state) | Self::Sha512(state) => state.update(data),
             Self::Sha3 { state, .. } | Self::Shake(state) => state.update(data),
-            Self::Blake2b(state) => {
-                state.update(data);
-            }
-            Self::Blake2s(state) => {
-                state.update(data);
-            }
+            Self::Blake2b(state) => state.update(data),
+            Self::Blake2s(state) => state.update(data),
         }
     }
 
@@ -98,8 +104,8 @@ impl HashState {
                 output_bytes,
             } => squeeze(state, *output_bytes),
             Self::Shake(state) => squeeze(state, length),
-            Self::Blake2b(state) => state.finalize().as_bytes().to_vec(),
-            Self::Blake2s(state) => state.finalize().as_bytes().to_vec(),
+            Self::Blake2b(state) => state.clone().finalize(),
+            Self::Blake2s(state) => state.clone().finalize(),
         }
     }
 }
@@ -181,39 +187,22 @@ pub unsafe fn state_init_blake2(
     last_node: bool,
 ) -> bool {
     check_storage(storage, words);
+    let parameters = Parameters {
+        digest_size,
+        key,
+        salt,
+        person,
+        fanout,
+        depth,
+        leaf_size,
+        node_offset,
+        node_depth,
+        inner_size,
+        last_node,
+    };
     let state = match name {
-        "blake2b" => {
-            let mut params = blake2b_simd::Params::new();
-            params
-                .hash_length(digest_size)
-                .key(key)
-                .salt(salt)
-                .personal(person)
-                .fanout(fanout)
-                .max_depth(depth)
-                .max_leaf_length(leaf_size)
-                .node_offset(node_offset)
-                .node_depth(node_depth)
-                .inner_hash_length(inner_size)
-                .last_node(last_node);
-            HashState::Blake2b(params.to_state())
-        }
-        "blake2s" => {
-            let mut params = blake2s_simd::Params::new();
-            params
-                .hash_length(digest_size)
-                .key(key)
-                .salt(salt)
-                .personal(person)
-                .fanout(fanout)
-                .max_depth(depth)
-                .max_leaf_length(leaf_size)
-                .node_offset(node_offset)
-                .node_depth(node_depth)
-                .inner_hash_length(inner_size)
-                .last_node(last_node);
-            HashState::Blake2s(params.to_state())
-        }
+        "blake2b" => HashState::Blake2b(Blake2b::new(&parameters)),
+        "blake2s" => HashState::Blake2s(Blake2s::new(&parameters)),
         _ => return false,
     };
     unsafe { storage.cast::<LockedHashState>().write(Mutex::new(state)) };
@@ -383,8 +372,8 @@ pub fn digest_block_size(name: &str) -> Option<usize> {
         "sha1" => sha1::BLOCK_BYTES,
         "sha224" | "sha256" => sha256::BLOCK_BYTES,
         "sha384" | "sha512" => sha512::BLOCK_BYTES,
-        "blake2s" => 64,
-        "blake2b" => 128,
+        "blake2s" => blake2s::BLOCK_BYTES,
+        "blake2b" => blake2b::BLOCK_BYTES,
         "sha3_224" => 144,
         "sha3_256" => 136,
         "sha3_384" => 104,
@@ -408,8 +397,8 @@ pub fn digest_output_size(name: &str) -> Option<usize> {
         "sha3_256" => SHA3_256_OUTPUT_BYTES,
         "sha3_384" => SHA3_384_OUTPUT_BYTES,
         "sha3_512" => SHA3_512_OUTPUT_BYTES,
-        "blake2s" => 32,
-        "blake2b" => 64,
+        "blake2s" => blake2s::OUTPUT_BYTES,
+        "blake2b" => blake2b::OUTPUT_BYTES,
         "shake_128" | "shake_256" => return None,
         _ => return None,
     })

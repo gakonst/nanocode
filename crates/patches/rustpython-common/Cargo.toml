@@ -41,8 +41,6 @@ default = ["std"]
 hashlib = [
     "std",
     "parking_lot",
-    "dep:blake2b_simd",
-    "dep:blake2s_simd",
     "dep:scrypt",
 ]
 inet = ["std"]
@@ -79,14 +77,6 @@ optional = true
 
 [dependencies.bitflags]
 version = "2.11.0"
-
-[dependencies.blake2b_simd]
-version = "1.0.4"
-optional = true
-
-[dependencies.blake2s_simd]
-version = "1.0.4"
-optional = true
 
 [dependencies.getrandom]
 version = "0.4"

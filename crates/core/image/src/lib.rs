@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{
     ColorType, DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat,
     ImageReader, codecs::jpeg::JpegEncoder,
@@ -34,6 +35,7 @@ const REMOTE_IMAGE_URL_PLACEHOLDER: &str =
     "image content omitted because remote image URLs are not supported";
 
 const DATA_URL_PREFIX: &str = "data:";
+const BASE64_ERROR: &str = "Base64Error";
 const PROMPT_IMAGE_PATCH_SIZE: u32 = 32;
 const MAX_PROMPT_IMAGE_INPUT_BYTES: usize = 1024 * 1024 * 1024;
 
@@ -72,14 +74,17 @@ impl EncodedImage {
 }
 
 fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
-    let mut url = String::with_capacity(
-        "data:;base64,".len() + mime.len() + base64_simd::STANDARD.encoded_length(bytes.len()),
-    );
+    let mut url =
+        String::with_capacity("data:;base64,".len() + mime.len() + encoded_length(bytes.len()));
     url.push_str("data:");
     url.push_str(mime);
     url.push_str(";base64,");
-    base64_simd::STANDARD.encode_append(bytes, &mut url);
+    STANDARD.encode_string(bytes, &mut url);
     url
+}
+
+const fn encoded_length(bytes: usize) -> usize {
+    base64::encoded_len(bytes, true).expect("base64 length of an in-memory buffer fits in usize")
 }
 
 struct ImageMetadata {
@@ -568,12 +573,7 @@ fn prepare_base64_image(
     };
     decode_base64(data, MAX_PROMPT_IMAGE_INPUT_BYTES)
         .and_then(|bytes| load_for_prompt_bytes(Path::new("<base64-image>"), bytes, limits))
-        .map(|image| {
-            (
-                base64_simd::STANDARD.encode_to_string(image.bytes),
-                image.mime,
-            )
-        })
+        .map(|image| (STANDARD.encode(image.bytes), image.mime))
         .map_err(|error| {
             tracing::warn!(%error, "failed to prepare base64 image");
             error.placeholder()
@@ -623,11 +623,9 @@ fn decode_base64(encoded: &str, max_input_bytes: usize) -> Result<Vec<u8>, Image
             max: max_input_bytes,
         });
     }
-    let bytes = base64_simd::STANDARD
-        .decode_to_vec(encoded)
-        .map_err(|error| {
-            ImagePreparationError::Processing(format!("invalid base64 payload: {error}"))
-        })?;
+    let bytes = STANDARD.decode(encoded).map_err(|_| {
+        ImagePreparationError::Processing(format!("invalid base64 payload: {BASE64_ERROR}"))
+    })?;
     if bytes.len() > max_input_bytes {
         return Err(ImagePreparationError::ImageTooLarge {
             representation: "decoded input",

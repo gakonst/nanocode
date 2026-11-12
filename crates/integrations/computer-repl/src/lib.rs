@@ -3,6 +3,7 @@
 #[cfg(unix)]
 pub mod browser;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolOutputContent,
     ToolResult,
@@ -25,6 +26,8 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
+const BASE64_ERROR: &str = "Base64Error";
+const IMAGE_SIGNATURE_BYTES: usize = 12;
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const INTERRUPTED: &str = "CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
 const PINNED_CATALOG: &str = include_str!("catalog.json");
@@ -1085,11 +1088,8 @@ pub fn output(value: Value) -> ToolResult {
                     return Err("Unsupported CUA image type".into());
                 }
                 let data = item["data"].as_str().ok_or("Invalid CUA image")?;
-                base64_simd::STANDARD.check(data.as_bytes())?;
-                let header = &data.as_bytes()[..data.len().min(16)];
-                let mut bytes = [0; 12];
-                let bytes = base64_simd::STANDARD
-                    .decode(header, base64_simd::Out::from_slice(&mut bytes))?;
+                let decoded = STANDARD.decode(data.as_bytes()).map_err(|_| BASE64_ERROR)?;
+                let bytes = &decoded[..decoded.len().min(IMAGE_SIGNATURE_BYTES)];
                 let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
                     "image/png"
                 } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
@@ -1110,7 +1110,7 @@ pub fn output(value: Value) -> ToolResult {
                     return Err("Unsupported CUA audio type".into());
                 }
                 let data = item["data"].as_str().ok_or("Invalid CUA audio")?;
-                base64_simd::STANDARD.check(data.as_bytes())?;
+                STANDARD.decode(data.as_bytes()).map_err(|_| BASE64_ERROR)?;
                 content.push(ToolOutputContent::InputAudio {
                     audio_url: format!("data:{mime};base64,{data}"),
                 });

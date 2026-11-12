@@ -1,3 +1,5 @@
+use base64::Engine as _;
+
 const MAX_PROMPT_AUDIO_INPUT_BYTES: usize = 50 * 1024 * 1024;
 
 pub(super) fn wav_duration_seconds(audio_url: &str) -> Option<f64> {
@@ -10,7 +12,9 @@ pub(super) fn wav_duration_seconds(audio_url: &str) -> Option<f64> {
     {
         return None;
     }
-    let bytes = base64_simd::STANDARD.decode_to_vec(payload).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .ok()?;
     if bytes.get(..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
         return None;
     }

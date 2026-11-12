@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use std::{
     cmp::Reverse,
     collections::BTreeMap,
@@ -316,8 +317,9 @@ fn credential_forms(name: &str, url: &str, forms: &mut Vec<(String, String)>) {
     for form in [
         password.to_owned(),
         decoded_password.clone(),
-        base64_simd::STANDARD.encode_to_string(format!("{user}:{password}")),
-        base64_simd::STANDARD.encode_to_string(format!("{decoded_user}:{decoded_password}")),
+        base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}")),
+        base64::engine::general_purpose::STANDARD
+            .encode(format!("{decoded_user}:{decoded_password}")),
     ] {
         forms.push((form, placeholder.clone()));
     }
@@ -533,7 +535,7 @@ impl Tool for ReadFile {
                             "size": size,
                             "modified_ns": modified_ns,
                             "offset": args.offset,
-                            "data": base64_simd::STANDARD.encode_to_string(&data),
+                            "data": base64::engine::general_purpose::STANDARD.encode(&data),
                         })),
                     Err(message) => ToolOutput::error(message),
                 })

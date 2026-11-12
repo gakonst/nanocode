@@ -278,16 +278,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
-name = "base64-simd"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "339abbe78e73178762e23bea9dfd08e697eb3f3301cd4be981c0f78ba5859195"
-dependencies = [
- "outref",
- "vsimd",
-]
-
-[[package]]
 name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1599,7 +1589,7 @@ version = "0.7.0"
 name = "nanocode-audio"
 version = "0.7.0"
 dependencies = [
- "base64-simd",
+ "base64 0.22.1",
  "nanocode-digest",
  "nanocode-sync",
  "tracing",
@@ -1685,7 +1675,7 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "base64-simd",
+ "base64 0.22.1",
  "futures-util",
  "http",
  "image",
@@ -1821,7 +1811,7 @@ dependencies = [
 name = "nanocode-code-mode-engine"
 version = "0.7.0"
 dependencies = [
- "base64-simd",
+ "base64 0.22.1",
  "djs-embed",
  "nanocode-digest",
  "nanocode-platform",
@@ -1864,7 +1854,7 @@ dependencies = [
 name = "nanocode-computer-repl"
 version = "0.7.0"
 dependencies = [
- "base64-simd",
+ "base64 0.22.1",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-types",
@@ -1941,7 +1931,7 @@ dependencies = [
 name = "nanocode-image"
 version = "0.7.0"
 dependencies = [
- "base64-simd",
+ "base64 0.22.1",
  "crc32fast",
  "image",
  "image-webp",
@@ -2512,12 +2502,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
 ]
-
-[[package]]
-name = "outref"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
 name = "parking"
@@ -3943,12 +3927,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vsimd"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "walkdir"

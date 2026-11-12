@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use std::{
     fmt::Display,
     future::Future,
@@ -22,6 +23,7 @@ pub use host::{image_generation_tool, image_generation_tool_with_images};
 #[cfg(not(target_family = "wasm"))]
 pub use native::ImageGenerationHandler;
 
+const BASE64_ERROR: &str = "Base64Error";
 const DESCRIPTION: &str = include_str!("imagegen_description.md");
 const IMAGE_MODEL: &str = "gpt-image-2";
 const MAX_EDIT_IMAGES: usize = 5;
@@ -434,9 +436,9 @@ where
     F: FnOnce(PathBuf, Vec<u8>) -> Fut,
     Fut: Future<Output = Result<PathBuf, String>>,
 {
-    let bytes = base64_simd::STANDARD
-        .decode_to_vec(result.trim().as_bytes())
-        .map_err(|error| format!("generated image was not valid base64: {error}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(result.trim().as_bytes())
+        .map_err(|_| format!("generated image was not valid base64: {BASE64_ERROR}"))?;
     write(artifact_path(save_root, session_id, call_id), bytes).await
 }
 

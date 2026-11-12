@@ -10,6 +10,10 @@ use std::{
 
 use nanocode_sync::{Atom, Slot};
 
+use base64::{
+    Engine as _, alphabet,
+    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+};
 use djs_embed::{ErrorKind, HostCall, Throw};
 use nanocode_platform::Instant;
 
@@ -21,6 +25,13 @@ struct Buffer {
 }
 
 static BUFFERS: OnceLock<Atom<BTreeMap<u64, Arc<Buffer>>>> = OnceLock::new();
+const BASE64_ERROR: &str = "Base64Error";
+const FORGIVING: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new()
+        .with_decode_allow_trailing_bits(true)
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 const UNCLAIMED: Duration = Duration::from_secs(600);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -148,7 +159,7 @@ pub(crate) fn host_call(
         ),
         ENCODE => Ok(Reply::Bytes(source(call, 0, 1, 2)?.into_owned())),
         TO_BASE64 => Ok(Reply::Text(Cow::Owned(
-            base64_simd::STANDARD.encode_to_string(view(call, 0, 1, 2)?),
+            base64::engine::general_purpose::STANDARD.encode(view(call, 0, 1, 2)?),
         ))),
         FROM_BASE64 => {
             let mut clean = crate::cell::text(call, 0)?
@@ -163,9 +174,10 @@ pub(crate) fn host_call(
             if clean.len() % 4 == 1 {
                 clean.pop();
             }
-            base64_simd::forgiving_decode_to_vec(&clean)
+            FORGIVING
+                .decode(&clean)
                 .map(Reply::Bytes)
-                .map_err(|error| Throw::type_error(format!("invalid base64: {error}")))
+                .map_err(|_| Throw::type_error(format!("invalid base64: {BASE64_ERROR}")))
         }
         DIGEST => {
             let bytes = view(call, 1, 2, 3)?;

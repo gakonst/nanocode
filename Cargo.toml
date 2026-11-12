@@ -115,7 +115,6 @@ log = { version = "0.4.33", default-features = false }
 x11rb = { version = "0.13.2", features = ["xtest"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 base64 = "0.22.1"
-base64-simd = "0.8.0"
 memchr = "2.8.3"
 brotli-decompressor = "5.0.3"
 flate2 = "1.1.9"

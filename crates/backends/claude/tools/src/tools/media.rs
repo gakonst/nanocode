@@ -12,6 +12,10 @@ use std::{
 const MAX_SOURCE: usize = 16 * 1024 * 1024;
 const MAX_IMAGE: usize = 5 * 1024 * 1024;
 const MAX_MEDIA: usize = 20 * 1024 * 1024;
+const MAX_PDF: u64 = 20 * 1024 * 1024;
+const PDF_PAGES_AT_ONCE: u32 = 10;
+const PDF_PAGES_PER_READ: u32 = 20;
+const PDFINFO_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_BLOCKS: usize = 256;
 
@@ -62,6 +66,9 @@ pub(crate) fn read(
             "offset and limit apply to text lines or notebook cells; use pages for PDF files"
                 .into(),
         );
+    }
+    if pdf && input.get("pages").is_none() {
+        return read_whole_pdf(path, options, session).map(Some);
     }
     let bytes = read_bytes(path, MAX_SOURCE)?;
     if pdf {
@@ -198,6 +205,63 @@ fn page_range(input: &Value, total: u32) -> Result<(u32, u32), String> {
         return Err("PDF reads are limited to 20 pages per request".into());
     }
     Ok((start, end))
+}
+
+fn read_whole_pdf(
+    path: &Path,
+    options: &MediaReadOptions,
+    session: Option<&SessionEnvironment>,
+) -> Result<ToolOutput, String> {
+    let mut info = Command::new(&options.pdfinfo);
+    info.arg(path).env("LC_ALL", "C");
+    SessionEnvironment::apply_or_clear(session, &mut info);
+    let pages = helper(&mut info, 16 * 1024, Instant::now() + PDFINFO_TIMEOUT)
+        .ok()
+        .and_then(|info| {
+            String::from_utf8(info).ok()?.lines().find_map(|l| {
+                l.strip_prefix("Pages:")
+                    .and_then(|n| n.trim().parse::<u32>().ok())
+            })
+        });
+    if let Some(pages) = pages.filter(|&n| n > PDF_PAGES_AT_ONCE) {
+        return Err(format!(
+            "This PDF has {pages} pages, which is too many to read at once. Use the pages parameter to read specific page ranges (e.g., pages: \"1-5\"). Maximum {PDF_PAGES_PER_READ} pages per request."
+        ));
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|e| format!("read: {e}"))?
+        .take(MAX_PDF + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read: {e}"))?;
+    if bytes.is_empty() {
+        return Err(format!("PDF file is empty: {}", path.display()));
+    }
+    if bytes.len() as u64 > MAX_PDF {
+        return Err(format!(
+            "PDF file exceeds maximum allowed size of {}.",
+            super::text_files::size_text(MAX_PDF)
+        ));
+    }
+    if !bytes.starts_with(b"%PDF-") {
+        return Err(format!(
+            "File is not a valid PDF (missing %PDF- header): {}",
+            path.display()
+        ));
+    }
+    Ok(ToolOutput::content(vec![
+        ToolResultBlock::Text {
+            text: format!(
+                "PDF file read: {} ({})",
+                path.display(),
+                super::text_files::size_text(bytes.len() as u64)
+            ),
+        },
+        ToolResultBlock::Document {
+            file_data: format!("data:application/pdf;base64,{}", STANDARD.encode(&bytes)),
+        },
+    ])
+    .with_metadata(json!({"kind":"pdf","bytes":bytes.len()})))
 }
 
 fn read_pdf(

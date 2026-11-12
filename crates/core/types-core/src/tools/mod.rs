@@ -85,6 +85,10 @@ pub enum ToolOutputContent {
         audio_url: String,
     },
 
+    InputFile {
+        file_data: String,
+    },
+
     EncryptedContent {
         encrypted_content: String,
     },
@@ -339,6 +343,10 @@ enum ToolOutputContentFields {
 
     InputAudio {
         audio_url: String,
+    },
+
+    InputFile {
+        file_data: String,
     },
 
     EncryptedContent {

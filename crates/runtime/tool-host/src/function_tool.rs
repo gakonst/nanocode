@@ -247,6 +247,9 @@ fn call_tool_result(content: &[ToolOutputContent], structured: Option<Value>) ->
             ToolOutputContent::InputImageFile { file_id, detail } => {
                 Some(json!({"type": "input_image", "file_id": file_id, "detail": detail}))
             }
+            ToolOutputContent::InputFile { .. } => Some(
+                json!({"type": "text", "text": "[document omitted: function tool results carry text, images and audio]"}),
+            ),
             ToolOutputContent::EncryptedContent { .. } => None,
         })
         .collect::<Vec<_>>();

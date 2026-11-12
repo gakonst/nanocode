@@ -30,6 +30,7 @@ fn truncate_text_only(
             ToolOutputContent::InputImage { .. }
             | ToolOutputContent::InputImageFile { .. }
             | ToolOutputContent::InputAudio { .. }
+            | ToolOutputContent::InputFile { .. }
             | ToolOutputContent::EncryptedContent { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -87,8 +88,9 @@ fn truncate_mixed(
                     remaining = 0;
                 }
             }
-            image @ (ToolOutputContent::InputImage { .. }
-            | ToolOutputContent::InputImageFile { .. }) => output.push(image),
+            media @ (ToolOutputContent::InputImage { .. }
+            | ToolOutputContent::InputImageFile { .. }
+            | ToolOutputContent::InputFile { .. }) => output.push(media),
             encrypted @ ToolOutputContent::EncryptedContent { .. } => output.push(encrypted),
             ToolOutputContent::InputAudio { audio_url } => {
                 let cost = super::audio::estimate_audio_token_count(&audio_url);

@@ -184,6 +184,11 @@ fn function_output(output: ToolOutputBody) -> FunctionOutputBody {
                             audio_url: audio_url.into_boxed_str(),
                         }
                     }
+                    ToolOutputContent::InputFile { .. } => FunctionOutputContent::InputText {
+                        text:
+                            "[document omitted: Codex function call outputs carry text and images]"
+                                .into(),
+                    },
                     ToolOutputContent::EncryptedContent { encrypted_content } => {
                         FunctionOutputContent::EncryptedContent {
                             encrypted_content: encrypted_content.into_boxed_str(),

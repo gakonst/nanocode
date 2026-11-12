@@ -95,9 +95,7 @@ fn item(block: ToolResultBlock) -> ToolOutputContent {
             image_url: url,
             detail: ImageDetail::Auto,
         },
-        ToolResultBlock::Document { .. } => ToolOutputContent::InputText {
-            text: "[document content is available to direct Claude tools, not Code Mode]".into(),
-        },
+        ToolResultBlock::Document { file_data } => ToolOutputContent::InputFile { file_data },
         ToolResultBlock::UnsupportedMedia { media_type } => ToolOutputContent::InputText {
             text: format!("[unsupported media omitted: {media_type}]"),
         },

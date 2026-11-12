@@ -17,7 +17,7 @@ struct ReadLimits {
     tokens: usize,
 }
 
-fn size_text(bytes: u64) -> String {
+pub(crate) fn size_text(bytes: u64) -> String {
     let trimmed = |value: f64| format!("{value:.1}").trim_end_matches(".0").to_owned();
     let kilobytes = bytes as f64 / 1024.0;
     if kilobytes < 1.0 {

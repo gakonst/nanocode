@@ -12,7 +12,10 @@ pub(super) fn schema(name: &str) -> Value {
             {"type": "object", "properties": {
                 "type": {"const": "input_text"}, "text": {"type": "string"}
             }, "required": ["type", "text"], "additionalProperties": false},
-            image()
+            image(),
+            {"type": "object", "description": "a whole PDF, which the exec result shows you as a document", "properties": {
+                "type": {"const": "input_file"}, "file_data": {"type": "string"}
+            }, "required": ["type", "file_data"], "additionalProperties": false}
         ]}})),
         "Write" => json!({"type": "string", "description": "Wrote {shown_path}"}),
         "Edit" => {

@@ -15,6 +15,8 @@ use nanocode_tool_host::{
 };
 use serde_json::{Value, json};
 
+const SURFACED_DOCUMENTS: usize = 4;
+
 static EXEC_SCHEMA: std::sync::LazyLock<Arc<Value>> = std::sync::LazyLock::new(|| {
     Arc::new(json!({
         "type": "object",
@@ -388,6 +390,18 @@ fn nested_call(call: &NestedToolCall, input: Value, structured_result: Value) ->
 }
 
 fn code_reply(mut execution: CodeModeExecution, call_id: &str) -> ClaudeToolReply {
+    let documents = execution
+        .nested_calls
+        .iter()
+        .filter(|call| call.name == "Read")
+        .filter_map(|call| match &call.output {
+            ToolOutputBody::Content(items) => Some(items),
+            ToolOutputBody::Text(_) => None,
+        })
+        .flatten()
+        .filter(|item| matches!(item, ToolOutputContent::InputFile { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
     let calls = execution
         .nested_calls
         .iter_mut()
@@ -431,6 +445,22 @@ fn code_reply(mut execution: CodeModeExecution, call_id: &str) -> ClaudeToolRepl
             }
             ToolResultContent::Blocks(blocks) => {
                 blocks.push(json!({"type": "text", "text": notification.text}));
+            }
+        }
+    }
+    if !documents.is_empty() {
+        if let ToolResultContent::Text(text) = &mut reply.content {
+            let text = match std::mem::take(text) {
+                text if text.is_empty() => "(no text output)".to_owned(),
+                text => text,
+            };
+            reply.content = ToolResultContent::Blocks(vec![json!({"type": "text", "text": text})]);
+        }
+        if let ToolResultContent::Blocks(blocks) = &mut reply.content {
+            let omitted = documents.len().saturating_sub(SURFACED_DOCUMENTS);
+            blocks.extend(documents.into_iter().take(SURFACED_DOCUMENTS).map(block));
+            if omitted > 0 {
+                blocks.push(json!({"type": "text", "text": format!("[{omitted} more PDF document(s) from inner Read calls not shown \u{2014} an exec result surfaces at most {SURFACED_DOCUMENTS} documents; read fewer PDFs per call]")}));
             }
         }
     }
@@ -496,6 +526,18 @@ fn block(item: ToolOutputContent) -> Value {
                     "source": {"type": "base64", "media_type": media_type, "data": data},
                 }),
                 None => json!({"type": "image", "source": {"type": "url", "url": image_url}}),
+            }
+        }
+        ToolOutputContent::InputFile { file_data } => {
+            match file_data
+                .strip_prefix("data:")
+                .and_then(|rest| rest.split_once(";base64,"))
+            {
+                Some((media_type, data)) => json!({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                }),
+                None => json!({"type": "document", "source": {"type": "url", "url": file_data}}),
             }
         }
         other => json!({

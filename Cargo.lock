@@ -2664,7 +2664,6 @@ dependencies = [
  "nanocode-types-core",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -2733,7 +2732,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "thiserror",
  "tokio",
  "tracing",
  "unicode-normalization",
@@ -2792,7 +2790,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "thiserror",
  "tokio",
  "tower",
  "tracing",
@@ -2823,7 +2820,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "thiserror",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
@@ -3002,7 +2998,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "thiserror",
 ]
 
 [[package]]
@@ -3013,7 +3008,6 @@ dependencies = [
  "nix 0.31.3",
  "serde",
  "sha2 0.11.0",
- "thiserror",
 ]
 
 [[package]]
@@ -3042,7 +3036,6 @@ dependencies = [
  "nanocode-types-core",
  "png",
  "sha1",
- "thiserror",
  "tokio",
  "tracing",
 ]
@@ -3113,7 +3106,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
- "thiserror",
  "tokio",
  "tracing",
 ]
@@ -3130,7 +3122,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -3366,7 +3357,6 @@ dependencies = [
  "nanocode-types-core",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -3389,7 +3379,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "thiserror",
  "tracing",
 ]
 
@@ -3425,7 +3414,6 @@ dependencies = [
  "nix 0.31.3",
  "serde",
  "serde_json",
- "thiserror",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
@@ -3492,7 +3480,6 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
- "thiserror",
 ]
 
 [[package]]

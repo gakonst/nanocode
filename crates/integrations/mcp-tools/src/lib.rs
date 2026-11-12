@@ -119,44 +119,74 @@ pub struct McpLogin {
     completion: tokio::task::JoinHandle<Result<usize, McpControlError>>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum McpControlError {
-    #[error("unknown MCP server `{0}`")]
     UnknownServer(String),
 
-    #[error("MCP server `{0}` does not use Streamable HTTP")]
     NotHttp(String),
 
-    #[error("MCP server `{0}` has explicit bearer authentication")]
     ExplicitBearer(String),
 
-    #[error("no MCP OAuth credential store is configured")]
     NoOAuthStore,
 
-    #[error("MCP OAuth login failed: {0}")]
     OAuth(String),
 
-    #[error("MCP server `{server}` failed to reload: {error}")]
     Reload { server: String, error: String },
 
-    #[error("MCP OAuth login task stopped: {0}")]
     LoginTask(String),
 }
 
-#[derive(Debug, thiserror::Error)]
+impl std::fmt::Display for McpControlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownServer(value) => write!(formatter, "unknown MCP server `{value}`"),
+            Self::NotHttp(value) => write!(
+                formatter,
+                "MCP server `{value}` does not use Streamable HTTP"
+            ),
+            Self::ExplicitBearer(value) => write!(
+                formatter,
+                "MCP server `{value}` has explicit bearer authentication"
+            ),
+            Self::NoOAuthStore => {
+                formatter.write_str("no MCP OAuth credential store is configured")
+            }
+            Self::OAuth(value) => write!(formatter, "MCP OAuth login failed: {value}"),
+            Self::Reload { server, error } => {
+                write!(formatter, "MCP server `{server}` failed to reload: {error}")
+            }
+            Self::LoginTask(value) => write!(formatter, "MCP OAuth login task stopped: {value}"),
+        }
+    }
+}
+
+impl std::error::Error for McpControlError {}
+
+#[derive(Debug)]
 pub enum McpCallError {
-    #[error("{0}")]
     Session(nanocode_mcp::Error),
 
-    #[error("{0}")]
     Payment(String),
 
-    #[error("{0}")]
     Auth(String),
 
-    #[error("exceeded {:.1} seconds", .0.as_secs_f64())]
     Timeout(Duration),
 }
+
+impl std::fmt::Display for McpCallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Session(value) => write!(formatter, "{value}"),
+            Self::Payment(value) => write!(formatter, "{value}"),
+            Self::Auth(value) => write!(formatter, "{value}"),
+            Self::Timeout(value) => {
+                write!(formatter, "exceeded {:.1} seconds", value.as_secs_f64())
+            }
+        }
+    }
+}
+
+impl std::error::Error for McpCallError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum McpCallEffect {
@@ -206,12 +236,20 @@ impl McpCallError {
     }
 }
 
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("{message}")]
+#[derive(Clone, Debug)]
 pub struct McpServerError {
     pub message: String,
     pub refused: bool,
 }
+
+impl std::fmt::Display for McpServerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { message, .. } = self;
+        write!(formatter, "{message}")
+    }
+}
+
+impl std::error::Error for McpServerError {}
 
 impl From<String> for McpServerError {
     fn from(message: String) -> Self {
@@ -222,30 +260,55 @@ impl From<String> for McpServerError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum McpBuildError {
-    #[error("at least one MCP server is required")]
     Empty,
 
-    #[error("MCP server name must not be empty")]
     EmptyName,
 
-    #[error("MCP server `{0}` is configured more than once")]
     DuplicateServer(String),
 
-    #[error("MCP server `{server}` has an empty {field}")]
-    EmptyField { server: String, field: &'static str },
+    EmptyField {
+        server: String,
+        field: &'static str,
+    },
 
-    #[error("MCP server `{server}` has a zero {field}")]
-    ZeroTimeout { server: String, field: &'static str },
+    ZeroTimeout {
+        server: String,
+        field: &'static str,
+    },
 
-    #[error("MCP server `{server}` does not support option `{option}` for its transport")]
     UnsupportedOption {
         server: String,
 
         option: &'static str,
     },
 }
+
+impl std::fmt::Display for McpBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("at least one MCP server is required"),
+            Self::EmptyName => formatter.write_str("MCP server name must not be empty"),
+            Self::DuplicateServer(value) => write!(
+                formatter,
+                "MCP server `{value}` is configured more than once"
+            ),
+            Self::EmptyField { server, field } => {
+                write!(formatter, "MCP server `{server}` has an empty {field}")
+            }
+            Self::ZeroTimeout { server, field } => {
+                write!(formatter, "MCP server `{server}` has a zero {field}")
+            }
+            Self::UnsupportedOption { server, option } => write!(
+                formatter,
+                "MCP server `{server}` does not support option `{option}` for its transport"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for McpBuildError {}
 
 impl Mcp {
     #[must_use]

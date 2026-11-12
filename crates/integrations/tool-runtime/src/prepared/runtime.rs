@@ -437,30 +437,61 @@ fn input_for_definition(
 }
 
 #[doc(hidden)]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum PreparedToolError {
-    #[error("tool selection is not attachable: {0}")]
     NonAttachable(Box<str>),
 
-    #[error("attached tool name `{0}` is present more than once after discovery")]
     DuplicateTool(Box<str>),
 
-    #[error("failed to initialize attached MCP: {0}")]
     McpInitialization(String),
 
-    #[error("unknown attached tool `{0}`")]
     UnknownTool(Box<str>),
 
-    #[error("attached tool `{name}` requires {expected} input")]
     InvalidInput {
         name: Box<str>,
 
         expected: &'static str,
     },
 
-    #[error("attached tool `{0}` has a non-executable definition")]
     UnsupportedDefinition(Box<str>),
 
-    #[error("failed to encode attached tool output: {0}")]
-    InvalidOutput(#[source] serde_json::Error),
+    InvalidOutput(serde_json::Error),
+}
+
+impl std::fmt::Display for PreparedToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonAttachable(value) => {
+                write!(formatter, "tool selection is not attachable: {value}")
+            }
+            Self::DuplicateTool(value) => write!(
+                formatter,
+                "attached tool name `{value}` is present more than once after discovery"
+            ),
+            Self::McpInitialization(value) => {
+                write!(formatter, "failed to initialize attached MCP: {value}")
+            }
+            Self::UnknownTool(value) => write!(formatter, "unknown attached tool `{value}`"),
+            Self::InvalidInput { name, expected } => write!(
+                formatter,
+                "attached tool `{name}` requires {expected} input"
+            ),
+            Self::UnsupportedDefinition(value) => write!(
+                formatter,
+                "attached tool `{value}` has a non-executable definition"
+            ),
+            Self::InvalidOutput(value) => {
+                write!(formatter, "failed to encode attached tool output: {value}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PreparedToolError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidOutput(value) => Some(value),
+            _ => None,
+        }
+    }
 }

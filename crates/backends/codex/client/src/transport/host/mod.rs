@@ -387,12 +387,13 @@ pub enum HostMessage {
     Binary,
 }
 
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug)]
 pub enum HostError {
-    #[error("{detail}")]
-    Transport { detail: String, reconnectable: bool },
+    Transport {
+        detail: String,
+        reconnectable: bool,
+    },
 
-    #[error("WebSocket handshake was rejected with HTTP {status}: {body}")]
     HandshakeRejected {
         status: u16,
 
@@ -403,6 +404,20 @@ pub enum HostError {
         should_retry: Option<bool>,
     },
 }
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport { detail, .. } => write!(formatter, "{detail}"),
+            Self::HandshakeRejected { status, body, .. } => write!(
+                formatter,
+                "WebSocket handshake was rejected with HTTP {status}: {body}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HostError {}
 
 impl HostError {
     #[must_use]

@@ -102,16 +102,39 @@ where
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum SessionBuildError {
-    #[error("OpenAI session instructions must not be empty")]
     EmptyInstructions,
 
-    #[error("OpenAI prompt cache key must not be empty")]
     EmptyPromptCacheKey,
 
-    #[error("failed to fingerprint the immutable prompt prefix: {0}")]
-    SerializePromptPrefix(#[source] serde_json::Error),
+    SerializePromptPrefix(serde_json::Error),
+}
+
+impl std::fmt::Display for SessionBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyInstructions => {
+                formatter.write_str("OpenAI session instructions must not be empty")
+            }
+            Self::EmptyPromptCacheKey => {
+                formatter.write_str("OpenAI prompt cache key must not be empty")
+            }
+            Self::SerializePromptPrefix(value) => write!(
+                formatter,
+                "failed to fingerprint the immutable prompt prefix: {value}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SessionBuildError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SerializePromptPrefix(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 pub struct Session<S> {

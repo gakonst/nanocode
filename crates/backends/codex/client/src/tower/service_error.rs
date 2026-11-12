@@ -214,16 +214,50 @@ impl From<EventError> for ResponsesServiceError {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(crate) enum ResponsesServiceErrorSource {
-    #[error(transparent)]
-    Responses(#[from] ResponsesError),
-    #[error(transparent)]
-    Event(#[from] EventError),
-    #[error("invalid Responses attempt state: {detail}")]
+    Responses(ResponsesError),
+    Event(EventError),
     InvalidAttemptState { detail: &'static str },
-    #[error("remote compaction returned {count} compaction items; expected exactly one")]
     InvalidCompactionOutput { count: usize },
+}
+
+impl std::fmt::Display for ResponsesServiceErrorSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Responses(value) => std::fmt::Display::fmt(value, formatter),
+            Self::Event(value) => std::fmt::Display::fmt(value, formatter),
+            Self::InvalidAttemptState { detail } => {
+                write!(formatter, "invalid Responses attempt state: {detail}")
+            }
+            Self::InvalidCompactionOutput { count } => write!(
+                formatter,
+                "remote compaction returned {count} compaction items; expected exactly one"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResponsesServiceErrorSource {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Responses(value) => std::error::Error::source(value),
+            Self::Event(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<ResponsesError> for ResponsesServiceErrorSource {
+    fn from(source: ResponsesError) -> Self {
+        Self::Responses(source)
+    }
+}
+
+impl From<EventError> for ResponsesServiceErrorSource {
+    fn from(source: EventError) -> Self {
+        Self::Event(source)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]

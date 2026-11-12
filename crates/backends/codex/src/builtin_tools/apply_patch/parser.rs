@@ -9,8 +9,6 @@ use super::ApplyPatchArgs;
 use super::streaming_parser::StreamingPatchParser;
 use std::path::PathBuf;
 
-use thiserror::Error;
-
 pub(crate) const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
 pub(crate) const END_PATCH_MARKER: &str = "*** End Patch";
 pub(crate) const ADD_FILE_MARKER: &str = "*** Add File: ";
@@ -23,13 +21,25 @@ pub(crate) const EMPTY_CHANGE_CONTEXT_MARKER: &str = "@@";
 
 const PARSE_IN_STRICT_MODE: bool = false;
 
-#[derive(Debug, PartialEq, Error, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ParseError {
-    #[error("invalid patch: {0}")]
     InvalidPatchError(String),
-    #[error("invalid hunk at line {line_number}, {message}")]
     InvalidHunkError { message: String, line_number: usize },
 }
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPatchError(value) => write!(formatter, "invalid patch: {value}"),
+            Self::InvalidHunkError {
+                message,
+                line_number,
+            } => write!(formatter, "invalid hunk at line {line_number}, {message}"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
 use ParseError::*;
 
 #[derive(Debug, PartialEq, Clone)]

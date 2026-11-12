@@ -15,7 +15,6 @@ nanocode-types-core.workspace = true
 nanocode-tool-contracts.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 
 [lints]
 workspace = true

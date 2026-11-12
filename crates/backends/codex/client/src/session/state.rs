@@ -71,13 +71,37 @@ impl From<SessionId> for uuid::Uuid {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum SessionIdError {
-    #[error("invalid session UUID")]
-    InvalidUuid(#[from] uuid::Error),
+    InvalidUuid(uuid::Error),
 
-    #[error("session IDs must be UUIDv7, got UUIDv{version}")]
     WrongVersion { version: usize },
+}
+
+impl std::fmt::Display for SessionIdError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUuid(..) => formatter.write_str("invalid session UUID"),
+            Self::WrongVersion { version } => {
+                write!(formatter, "session IDs must be UUIDv7, got UUIDv{version}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SessionIdError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidUuid(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<uuid::Error> for SessionIdError {
+    fn from(source: uuid::Error) -> Self {
+        Self::InvalidUuid(source)
+    }
 }
 
 #[doc(hidden)]
@@ -453,17 +477,31 @@ impl<'a> RejectedRequestRepair<'a> {
 }
 
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagedSessionStateError {
-    #[error("conversation history must not be empty")]
     EmptyHistory,
 
-    #[error("conversation history contains an unsupported item")]
     UnsupportedHistoryItem,
 
-    #[error("conversation history contains an unmatched or misordered tool call")]
     MalformedToolCalls,
 
-    #[error("completed response did not have a response ID")]
     MissingResponseId,
 }
+
+impl std::fmt::Display for ManagedSessionStateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyHistory => formatter.write_str("conversation history must not be empty"),
+            Self::UnsupportedHistoryItem => {
+                formatter.write_str("conversation history contains an unsupported item")
+            }
+            Self::MalformedToolCalls => formatter
+                .write_str("conversation history contains an unmatched or misordered tool call"),
+            Self::MissingResponseId => {
+                formatter.write_str("completed response did not have a response ID")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ManagedSessionStateError {}

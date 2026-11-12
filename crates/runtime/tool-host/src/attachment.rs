@@ -45,33 +45,49 @@ impl AttachmentCallOutcome {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum AttachmentError {
-    #[error("attachment authentication failed: {0}")]
     Authentication(Box<str>),
 
-    #[error("attached catalog failed: {0}")]
     Catalog(Box<str>),
 
-    #[error("attachment was fenced: {0}")]
     Fenced(Box<str>),
 
-    #[error("attachment transport failed: {0}")]
     Transport(Box<str>),
 
-    #[error(
-        "attachment call `{call_id}` timed out on runner `{runner}` (outcome: {outcome:?}); a dispatched call may have executed"
-    )]
     Timeout {
         runner: Box<str>,
         call_id: Box<str>,
         outcome: AttachmentCallOutcome,
     },
 
-    #[error("attachment is closed")]
     Closed,
 }
+
+impl std::fmt::Display for AttachmentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Authentication(value) => {
+                write!(formatter, "attachment authentication failed: {value}")
+            }
+            Self::Catalog(value) => write!(formatter, "attached catalog failed: {value}"),
+            Self::Fenced(value) => write!(formatter, "attachment was fenced: {value}"),
+            Self::Transport(value) => write!(formatter, "attachment transport failed: {value}"),
+            Self::Timeout {
+                runner,
+                call_id,
+                outcome,
+            } => write!(
+                formatter,
+                "attachment call `{call_id}` timed out on runner `{runner}` (outcome: {outcome:?}); a dispatched call may have executed"
+            ),
+            Self::Closed => formatter.write_str("attachment is closed"),
+        }
+    }
+}
+
+impl std::error::Error for AttachmentError {}
 
 impl AttachmentError {
     #[must_use]

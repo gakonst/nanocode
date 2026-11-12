@@ -52,17 +52,39 @@ impl HttpClient {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum HttpError {
-    #[error("{detail}")]
     Transport {
         detail: String,
         retryable: bool,
         timeout: bool,
         unsent: bool,
     },
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport { detail, .. } => write!(formatter, "{detail}"),
+            Self::Json(value) => std::fmt::Display::fmt(value, formatter),
+        }
+    }
+}
+
+impl std::error::Error for HttpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Json(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<serde_json::Error> for HttpError {
+    fn from(source: serde_json::Error) -> Self {
+        Self::Json(source)
+    }
 }
 
 impl HttpError {

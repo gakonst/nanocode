@@ -2,14 +2,30 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use std::future::Future;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ReadError<E> {
-    #[error("{0}")]
     Unreadable(String),
-    #[error("{0}")]
     Changed(&'static str),
-    #[error(transparent)]
     Call(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for ReadError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreadable(value) => write!(formatter, "{value}"),
+            Self::Changed(value) => write!(formatter, "{value}"),
+            Self::Call(value) => std::fmt::Display::fmt(value, formatter),
+        }
+    }
+}
+
+impl<E: std::error::Error> std::error::Error for ReadError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Call(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
 }
 
 pub async fn read_whole<E, F, Fut>(

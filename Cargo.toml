@@ -177,7 +177,6 @@ subtle = "2.6.1"
 blake3 = { version = "1.8.7", default-features = false }
 smallvec = { version = "1.15.1", features = ["serde"] }
 syn = { version = "2.0.119", features = ["full"] }
-thiserror = "2.0.17"
 tempfile = "3.27.0"
 tokio = "1.48.0"
 tokio-util = { version = "0.7", features = ["codec"] }

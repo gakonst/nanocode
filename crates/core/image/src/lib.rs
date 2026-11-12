@@ -186,21 +186,41 @@ pub fn remember(bytes: &[u8], width: u32, height: u32) {
     remember_size(Sha1::digest(bytes).into(), (width, height));
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 enum ImagePreparationError {
-    #[error("remote image URLs are not supported")]
     RemoteUrlUnsupported,
-    #[error("image detail `low` is not supported")]
     UnsupportedLowDetail,
-    #[error("image {representation} is too large ({size} bytes; max {max} bytes)")]
     ImageTooLarge {
         representation: &'static str,
         size: usize,
         max: usize,
     },
-    #[error("{0}")]
     Processing(String),
 }
+
+impl std::fmt::Display for ImagePreparationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RemoteUrlUnsupported => {
+                formatter.write_str("remote image URLs are not supported")
+            }
+            Self::UnsupportedLowDetail => {
+                formatter.write_str("image detail `low` is not supported")
+            }
+            Self::ImageTooLarge {
+                representation,
+                size,
+                max,
+            } => write!(
+                formatter,
+                "image {representation} is too large ({size} bytes; max {max} bytes)"
+            ),
+            Self::Processing(value) => write!(formatter, "{value}"),
+        }
+    }
+}
+
+impl std::error::Error for ImagePreparationError {}
 
 impl ImagePreparationError {
     const fn placeholder(&self) -> &'static str {

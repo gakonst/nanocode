@@ -9,7 +9,6 @@ use futures_util::{Stream, StreamExt, stream};
 use nanocode_agent_types::{ClaudeTokens, EstimatedUsdCost, UsdAmount};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use thiserror::Error;
 
 mod auth;
 #[cfg(not(target_family = "wasm"))]
@@ -59,9 +58,8 @@ const INVALID_JSON_MESSAGES: [&str; 2] = [
     "Failed to parse request: could not parse request body as JSON",
 ];
 
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum ClaudeError {
-    #[error("Messages HTTP {status}: {body}")]
     Http {
         status: u16,
         body: String,
@@ -70,18 +68,62 @@ pub enum ClaudeError {
 
         should_retry: Option<bool>,
     },
-    #[error("Messages transport: {0}")]
-    Transport(#[from] HttpError),
-    #[error("Messages JSON: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("Messages stream error {kind}: {message}")]
-    StreamError { kind: String, message: String },
-    #[error("Messages protocol: {0}")]
+    Transport(HttpError),
+    Json(serde_json::Error),
+    StreamError {
+        kind: String,
+        message: String,
+    },
     Protocol(String),
-    #[error("Messages stream ended before message_stop")]
     IncompleteStream,
-    #[error(transparent)]
-    AuthUnavailable(#[from] ClaudeAuthUnavailable),
+    AuthUnavailable(ClaudeAuthUnavailable),
+}
+
+impl std::fmt::Display for ClaudeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Http { status, body, .. } => write!(formatter, "Messages HTTP {status}: {body}"),
+            Self::Transport(value) => write!(formatter, "Messages transport: {value}"),
+            Self::Json(value) => write!(formatter, "Messages JSON: {value}"),
+            Self::StreamError { kind, message } => {
+                write!(formatter, "Messages stream error {kind}: {message}")
+            }
+            Self::Protocol(value) => write!(formatter, "Messages protocol: {value}"),
+            Self::IncompleteStream => {
+                formatter.write_str("Messages stream ended before message_stop")
+            }
+            Self::AuthUnavailable(value) => std::fmt::Display::fmt(value, formatter),
+        }
+    }
+}
+
+impl std::error::Error for ClaudeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Transport(value) => Some(value),
+            Self::Json(value) => Some(value),
+            Self::AuthUnavailable(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<HttpError> for ClaudeError {
+    fn from(source: HttpError) -> Self {
+        Self::Transport(source)
+    }
+}
+
+impl From<serde_json::Error> for ClaudeError {
+    fn from(source: serde_json::Error) -> Self {
+        Self::Json(source)
+    }
+}
+
+impl From<ClaudeAuthUnavailable> for ClaudeError {
+    fn from(source: ClaudeAuthUnavailable) -> Self {
+        Self::AuthUnavailable(source)
+    }
 }
 
 impl ClaudeError {
@@ -1483,11 +1525,19 @@ pub trait ClaudeAuthProvider: Send + Sync {
     }
 }
 
-#[derive(Debug, Error)]
-#[error("Claude authentication unavailable: {reason}")]
+#[derive(Debug)]
 pub struct ClaudeAuthUnavailable {
     reason: std::borrow::Cow<'static, str>,
 }
+
+impl std::fmt::Display for ClaudeAuthUnavailable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { reason } = self;
+        write!(formatter, "Claude authentication unavailable: {reason}")
+    }
+}
+
+impl std::error::Error for ClaudeAuthUnavailable {}
 
 impl ClaudeAuthUnavailable {
     pub fn new(reason: impl Into<std::borrow::Cow<'static, str>>) -> Self {

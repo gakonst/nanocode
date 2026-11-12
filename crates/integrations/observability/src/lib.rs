@@ -96,22 +96,70 @@ pub struct ObservabilityGuard {
     _writer: Option<writer::WriterGuard>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ObservabilityError {
-    #[error("invalid tracing filter: {0}")]
-    Filter(#[from] tracing_subscriber::filter::ParseError),
+    Filter(tracing_subscriber::filter::ParseError),
 
-    #[error("failed to open tracing output: {0}")]
-    Output(#[from] io::Error),
+    Output(io::Error),
 
-    #[error("failed to configure OTLP exporter: {0}")]
-    Otlp(#[from] OtlpError),
+    Otlp(OtlpError),
 
-    #[error("failed to flush or shut down the OpenTelemetry exporter: {0}")]
-    OTelSdk(#[from] opentelemetry_sdk::error::OTelSdkError),
+    OTelSdk(opentelemetry_sdk::error::OTelSdkError),
 
-    #[error("a global tracing subscriber is already installed")]
     Subscriber,
+}
+
+impl std::fmt::Display for ObservabilityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Filter(value) => write!(formatter, "invalid tracing filter: {value}"),
+            Self::Output(value) => write!(formatter, "failed to open tracing output: {value}"),
+            Self::Otlp(value) => write!(formatter, "failed to configure OTLP exporter: {value}"),
+            Self::OTelSdk(value) => write!(
+                formatter,
+                "failed to flush or shut down the OpenTelemetry exporter: {value}"
+            ),
+            Self::Subscriber => {
+                formatter.write_str("a global tracing subscriber is already installed")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ObservabilityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Filter(value) => Some(value),
+            Self::Output(value) => Some(value),
+            Self::Otlp(value) => Some(value),
+            Self::OTelSdk(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<tracing_subscriber::filter::ParseError> for ObservabilityError {
+    fn from(source: tracing_subscriber::filter::ParseError) -> Self {
+        Self::Filter(source)
+    }
+}
+
+impl From<io::Error> for ObservabilityError {
+    fn from(source: io::Error) -> Self {
+        Self::Output(source)
+    }
+}
+
+impl From<OtlpError> for ObservabilityError {
+    fn from(source: OtlpError) -> Self {
+        Self::Otlp(source)
+    }
+}
+
+impl From<opentelemetry_sdk::error::OTelSdkError> for ObservabilityError {
+    fn from(source: opentelemetry_sdk::error::OTelSdkError) -> Self {
+        Self::OTelSdk(source)
+    }
 }
 
 impl ObservabilityBuilder {

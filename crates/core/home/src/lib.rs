@@ -38,11 +38,23 @@ pub const NANOCODE_HOME_ENV: &str = "NANOCODE_HOME";
 
 pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum HomeError {
-    #[error("home directory is unavailable; set HOME (or {0})")]
     Unavailable(&'static str),
 }
+
+impl std::fmt::Display for HomeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(value) => write!(
+                formatter,
+                "home directory is unavailable; set HOME (or {value})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HomeError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]

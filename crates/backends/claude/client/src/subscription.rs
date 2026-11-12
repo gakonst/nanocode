@@ -16,31 +16,45 @@ const MAX_BYTES: usize = 64 * 1024;
 const LOGIN_TTL: u64 = 15 * 60 * 1000;
 const RETRIES: usize = 8;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClaudeSubscriptionError {
-    #[error("Claude subscription host capability failed")]
     Host,
-    #[error("invalid Claude OAuth configuration, state, or response")]
     Invalid,
-    #[error("Claude subscription login is required")]
     LoginRequired,
-    #[error(
-        "Claude OAuth token exchange is in progress or uncertain; start a new login to recover"
-    )]
     ExchangeUncertain,
-    #[error("Claude OAuth provider rejected the exchange")]
     ProviderRejected,
-    #[error("Claude account is on hold")]
     AccountOnHold,
-    #[error("Claude subscription state changed concurrently")]
     Conflict,
 }
 
+impl std::fmt::Display for ClaudeSubscriptionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host => formatter.write_str("Claude subscription host capability failed"),
+            Self::Invalid => formatter.write_str("invalid Claude OAuth configuration, state, or response"),
+            Self::LoginRequired => formatter.write_str("Claude subscription login is required"),
+            Self::ExchangeUncertain => formatter.write_str("Claude OAuth token exchange is in progress or uncertain; start a new login to recover"),
+            Self::ProviderRejected => formatter.write_str("Claude OAuth provider rejected the exchange"),
+            Self::AccountOnHold => formatter.write_str("Claude account is on hold"),
+            Self::Conflict => formatter.write_str("Claude subscription state changed concurrently"),
+        }
+    }
+}
+
+impl std::error::Error for ClaudeSubscriptionError {}
+
 type Result<T> = std::result::Result<T, ClaudeSubscriptionError>;
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-#[error("Claude subscription host failed")]
+#[derive(Clone, Copy, Debug)]
 pub struct ClaudeSubscriptionHostError;
+
+impl std::fmt::Display for ClaudeSubscriptionHostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Claude subscription host failed")
+    }
+}
+
+impl std::error::Error for ClaudeSubscriptionHostError {}
 
 #[derive(Clone, Default)]
 pub struct ClaudeSubscriptionStoreValue {

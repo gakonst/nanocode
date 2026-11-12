@@ -10,30 +10,35 @@ use super::api_error::{
     retryable_api_error_received,
 };
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ResponsesError {
-    #[error("failed to resolve OpenAI authorization: {detail}")]
-    Authorization { detail: String },
+    Authorization {
+        detail: String,
+    },
 
-    #[error("the Responses host transport is not configured")]
     HostUnavailable,
 
-    #[error("invalid Responses WebSocket URL: {detail}")]
-    InvalidUrl { detail: String },
+    InvalidUrl {
+        detail: String,
+    },
 
-    #[error("invalid OpenAI authorization header: {detail}")]
-    InvalidAuthorization { detail: String },
+    InvalidAuthorization {
+        detail: String,
+    },
 
-    #[error("invalid Responses session identifier header: {detail}")]
-    InvalidSessionId { detail: String },
+    InvalidSessionId {
+        detail: String,
+    },
 
-    #[error("Responses WebSocket handshake exceeded {seconds} seconds")]
-    HandshakeTimeout { seconds: u64 },
+    HandshakeTimeout {
+        seconds: u64,
+    },
 
-    #[error("Responses WebSocket handshake failed: {detail}")]
-    Handshake { detail: String, reconnectable: bool },
+    Handshake {
+        detail: String,
+        reconnectable: bool,
+    },
 
-    #[error("Responses WebSocket handshake was rejected with HTTP {status}: {body}")]
     HandshakeRejected {
         status: u16,
 
@@ -44,60 +49,58 @@ pub enum ResponsesError {
         should_retry: Option<bool>,
     },
 
-    #[error("failed to send a Responses WebSocket frame: {detail}")]
-    Send { detail: String, reconnectable: bool },
+    Send {
+        detail: String,
+        reconnectable: bool,
+    },
 
-    #[error("sending a Responses WebSocket frame exceeded {seconds} seconds")]
-    SendTimeout { seconds: u64 },
+    SendTimeout {
+        seconds: u64,
+    },
 
-    #[error("Responses WebSocket closed without a close frame")]
     UnexpectedEnd,
 
-    #[error("failed to receive a Responses WebSocket frame: {detail}")]
-    Receive { detail: String, reconnectable: bool },
+    Receive {
+        detail: String,
+        reconnectable: bool,
+    },
 
-    #[error("Responses WebSocket event was not valid JSON")]
-    InvalidJson(#[source] serde_json::Error),
+    InvalidJson(serde_json::Error),
 
-    #[error("Responses WebSocket returned a binary data frame; expected JSON text")]
     UnexpectedBinary,
 
-    #[error("failed to encode a Responses WebSocket request")]
-    EncodeRequest(#[source] serde_json::Error),
+    EncodeRequest(serde_json::Error),
 
-    #[error("Responses API event did not match its declared type: {event}")]
     InvalidPayload {
-        #[source]
         source: serde_json::Error,
 
         event: String,
     },
 
-    #[error("Responses WebSocket closed {detail}")]
-    Closed { detail: String },
+    Closed {
+        detail: String,
+    },
 
-    #[error("Responses API returned an error event: {event}")]
     Api {
         event: String,
 
         retry_after: Option<RetryAfter>,
     },
 
-    #[error("Responses input exceeded the model context window")]
-    ContextWindowExceeded { event: String },
+    ContextWindowExceeded {
+        event: String,
+    },
 
-    #[error("Responses API rejected invalid image data: {event}")]
-    InvalidImageRequest { event: String },
+    InvalidImageRequest {
+        event: String,
+    },
 
-    #[error("{source}")]
     InvalidToolSchema {
-        #[source]
         source: Box<Self>,
 
         definition: Box<serde_json::Value>,
     },
 
-    #[error("Responses HTTPS request failed: {detail}")]
     HttpRequest {
         detail: String,
 
@@ -106,7 +109,6 @@ pub enum ResponsesError {
         timeout: bool,
     },
 
-    #[error("Responses HTTPS request was rejected with HTTP {status}: {body}")]
     HttpRejected {
         status: u16,
 
@@ -117,15 +119,116 @@ pub enum ResponsesError {
         should_retry: Option<bool>,
     },
 
-    #[error("Responses HTTPS stream contained invalid UTF-8: {detail}")]
-    InvalidSseUtf8 { detail: String },
+    InvalidSseUtf8 {
+        detail: String,
+    },
 
-    #[error("the {gateway} Responses gateway does not document {operation}")]
     GatewayUnsupported {
         gateway: &'static str,
 
         operation: &'static str,
     },
+}
+
+impl std::fmt::Display for ResponsesError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Authorization { detail } => write!(
+                formatter,
+                "failed to resolve OpenAI authorization: {detail}"
+            ),
+            Self::HostUnavailable => {
+                formatter.write_str("the Responses host transport is not configured")
+            }
+            Self::InvalidUrl { detail } => {
+                write!(formatter, "invalid Responses WebSocket URL: {detail}")
+            }
+            Self::InvalidAuthorization { detail } => {
+                write!(formatter, "invalid OpenAI authorization header: {detail}")
+            }
+            Self::InvalidSessionId { detail } => write!(
+                formatter,
+                "invalid Responses session identifier header: {detail}"
+            ),
+            Self::HandshakeTimeout { seconds } => write!(
+                formatter,
+                "Responses WebSocket handshake exceeded {seconds} seconds"
+            ),
+            Self::Handshake { detail, .. } => {
+                write!(formatter, "Responses WebSocket handshake failed: {detail}")
+            }
+            Self::HandshakeRejected { status, body, .. } => write!(
+                formatter,
+                "Responses WebSocket handshake was rejected with HTTP {status}: {body}"
+            ),
+            Self::Send { detail, .. } => write!(
+                formatter,
+                "failed to send a Responses WebSocket frame: {detail}"
+            ),
+            Self::SendTimeout { seconds } => write!(
+                formatter,
+                "sending a Responses WebSocket frame exceeded {seconds} seconds"
+            ),
+            Self::UnexpectedEnd => {
+                formatter.write_str("Responses WebSocket closed without a close frame")
+            }
+            Self::Receive { detail, .. } => write!(
+                formatter,
+                "failed to receive a Responses WebSocket frame: {detail}"
+            ),
+            Self::InvalidJson(..) => {
+                formatter.write_str("Responses WebSocket event was not valid JSON")
+            }
+            Self::UnexpectedBinary => formatter
+                .write_str("Responses WebSocket returned a binary data frame; expected JSON text"),
+            Self::EncodeRequest(..) => {
+                formatter.write_str("failed to encode a Responses WebSocket request")
+            }
+            Self::InvalidPayload { event, .. } => write!(
+                formatter,
+                "Responses API event did not match its declared type: {event}"
+            ),
+            Self::Closed { detail } => write!(formatter, "Responses WebSocket closed {detail}"),
+            Self::Api { event, .. } => {
+                write!(formatter, "Responses API returned an error event: {event}")
+            }
+            Self::ContextWindowExceeded { .. } => {
+                formatter.write_str("Responses input exceeded the model context window")
+            }
+            Self::InvalidImageRequest { event } => write!(
+                formatter,
+                "Responses API rejected invalid image data: {event}"
+            ),
+            Self::InvalidToolSchema { source, .. } => write!(formatter, "{source}"),
+            Self::HttpRequest { detail, .. } => {
+                write!(formatter, "Responses HTTPS request failed: {detail}")
+            }
+            Self::HttpRejected { status, body, .. } => write!(
+                formatter,
+                "Responses HTTPS request was rejected with HTTP {status}: {body}"
+            ),
+            Self::InvalidSseUtf8 { detail } => write!(
+                formatter,
+                "Responses HTTPS stream contained invalid UTF-8: {detail}"
+            ),
+            Self::GatewayUnsupported { gateway, operation } => write!(
+                formatter,
+                "the {gateway} Responses gateway does not document {operation}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResponsesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidJson(value) => Some(value),
+            Self::EncodeRequest(value) => Some(value),
+            Self::InvalidPayload { source, .. } => Some(source),
+            Self::InvalidToolSchema { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 const INVALID_IMAGE_ERROR: &str = "The image data you provided does not represent a valid image";

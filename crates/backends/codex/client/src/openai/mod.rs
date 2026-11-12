@@ -130,13 +130,37 @@ where
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum OpenAiError {
-    #[error(transparent)]
-    Authorization(#[from] OpenAiAuthError),
+    Authorization(OpenAiAuthError),
 
-    #[error("invalid OpenAI client configuration: {detail}")]
     InvalidConfiguration { detail: &'static str },
+}
+
+impl std::fmt::Display for OpenAiError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Authorization(value) => std::fmt::Display::fmt(value, formatter),
+            Self::InvalidConfiguration { detail } => {
+                write!(formatter, "invalid OpenAI client configuration: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OpenAiError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Authorization(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<OpenAiAuthError> for OpenAiError {
+    fn from(source: OpenAiAuthError) -> Self {
+        Self::Authorization(source)
+    }
 }
 
 #[doc(hidden)]

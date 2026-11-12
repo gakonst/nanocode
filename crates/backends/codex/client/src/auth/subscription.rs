@@ -28,11 +28,19 @@ pub type SubscriptionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>
 #[cfg(target_family = "wasm")]
 pub type SubscriptionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("{detail}")]
+#[derive(Clone, Debug)]
 pub struct SubscriptionHostError {
     detail: Arc<str>,
 }
+
+impl std::fmt::Display for SubscriptionHostError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { detail } = self;
+        write!(formatter, "{detail}")
+    }
+}
+
+impl std::error::Error for SubscriptionHostError {}
 
 impl SubscriptionHostError {
     #[must_use]
@@ -247,23 +255,36 @@ pub enum ChatGptLoginStatus {
     },
 }
 
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug)]
 pub enum ChatGptSubscriptionError {
-    #[error("ChatGPT subscription host failed: {0}")]
     Host(Arc<str>),
 
-    #[error("invalid ChatGPT subscription state: {0}")]
     Invalid(Arc<str>),
 
-    #[error("ChatGPT subscription is not authenticated")]
     NotAuthenticated,
 
-    #[error("ChatGPT login is required: {0}")]
     LoginRequired(Arc<str>),
 
-    #[error("ChatGPT subscription state remained contended")]
     Contended,
 }
+
+impl std::fmt::Display for ChatGptSubscriptionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host(value) => write!(formatter, "ChatGPT subscription host failed: {value}"),
+            Self::Invalid(value) => {
+                write!(formatter, "invalid ChatGPT subscription state: {value}")
+            }
+            Self::NotAuthenticated => {
+                formatter.write_str("ChatGPT subscription is not authenticated")
+            }
+            Self::LoginRequired(value) => write!(formatter, "ChatGPT login is required: {value}"),
+            Self::Contended => formatter.write_str("ChatGPT subscription state remained contended"),
+        }
+    }
+}
+
+impl std::error::Error for ChatGptSubscriptionError {}
 
 #[derive(Clone)]
 pub struct ChatGptSubscription {

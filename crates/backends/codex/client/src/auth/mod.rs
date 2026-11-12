@@ -129,23 +129,42 @@ impl fmt::Debug for OpenAiAuthSnapshot {
     }
 }
 
-#[derive(Clone, Debug, thiserror::Error)]
+#[derive(Clone, Debug)]
 pub enum OpenAiAuthError {
-    #[error("OpenAI credentials are empty")]
     Empty,
 
-    #[error("OpenAI credentials are unavailable: {0}")]
     Unavailable(Arc<str>),
 
-    #[error("the stored ChatGPT account changed while the agent was active")]
     AccountChanged,
 
-    #[error("ChatGPT authorization must be refreshed by logging in again: {0}")]
     LoginRequired(Arc<str>),
 
-    #[error("failed to refresh ChatGPT authorization: {0}")]
     Refresh(Arc<str>),
 }
+
+impl std::fmt::Display for OpenAiAuthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("OpenAI credentials are empty"),
+            Self::Unavailable(value) => {
+                write!(formatter, "OpenAI credentials are unavailable: {value}")
+            }
+            Self::AccountChanged => {
+                formatter.write_str("the stored ChatGPT account changed while the agent was active")
+            }
+            Self::LoginRequired(value) => write!(
+                formatter,
+                "ChatGPT authorization must be refreshed by logging in again: {value}"
+            ),
+            Self::Refresh(value) => write!(
+                formatter,
+                "failed to refresh ChatGPT authorization: {value}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OpenAiAuthError {}
 
 #[cfg(not(target_family = "wasm"))]
 pub type OpenAiAuthFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

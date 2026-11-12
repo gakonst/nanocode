@@ -49,39 +49,75 @@ pub struct ChatGptAuthStatus {
     pub fedramp: bool,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ChatGptAuthError {
-    #[error("failed to access ChatGPT authorization file {path}: {source}")]
-    Storage {
-        path: PathBuf,
+    Storage { path: PathBuf, source: io::Error },
 
-        #[source]
-        source: io::Error,
-    },
-
-    #[error("ChatGPT authorization file {path} is invalid: {detail}")]
     InvalidStore { path: PathBuf, detail: String },
 
-    #[error("ChatGPT OAuth response was invalid: {0}")]
     InvalidToken(String),
 
-    #[error("could not listen for the OAuth callback on localhost ports 1455 or 1457")]
     CallbackUnavailable,
 
-    #[error("timed out waiting for the ChatGPT OAuth callback")]
     CallbackTimeout,
 
-    #[error("the OAuth callback did not match this login attempt")]
     StateMismatch,
 
-    #[error("ChatGPT login was rejected: {0}")]
     LoginRejected(String),
 
-    #[error("ChatGPT token exchange failed: {0}")]
     TokenExchange(String),
 
-    #[error("ChatGPT access-token metadata request failed: {0}")]
     AccessTokenMetadata(String),
+}
+
+impl std::fmt::Display for ChatGptAuthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Storage { path, source } => {
+                let displayed_path = path.display();
+                write!(
+                    formatter,
+                    "failed to access ChatGPT authorization file {displayed_path}: {source}"
+                )
+            }
+            Self::InvalidStore { path, detail } => {
+                let displayed_path = path.display();
+                write!(
+                    formatter,
+                    "ChatGPT authorization file {displayed_path} is invalid: {detail}"
+                )
+            }
+            Self::InvalidToken(value) => {
+                write!(formatter, "ChatGPT OAuth response was invalid: {value}")
+            }
+            Self::CallbackUnavailable => formatter.write_str(
+                "could not listen for the OAuth callback on localhost ports 1455 or 1457",
+            ),
+            Self::CallbackTimeout => {
+                formatter.write_str("timed out waiting for the ChatGPT OAuth callback")
+            }
+            Self::StateMismatch => {
+                formatter.write_str("the OAuth callback did not match this login attempt")
+            }
+            Self::LoginRejected(value) => write!(formatter, "ChatGPT login was rejected: {value}"),
+            Self::TokenExchange(value) => {
+                write!(formatter, "ChatGPT token exchange failed: {value}")
+            }
+            Self::AccessTokenMetadata(value) => write!(
+                formatter,
+                "ChatGPT access-token metadata request failed: {value}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChatGptAuthError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Storage { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
 
 pub struct ChatGptLogin {

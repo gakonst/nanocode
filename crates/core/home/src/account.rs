@@ -1,13 +1,22 @@
 use nix::unistd::{User, getuid};
 use std::{env, path::PathBuf};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum AccountError {
-    #[error("cannot determine your OS user name")]
     Name,
-    #[error("cannot determine your home directory")]
     Home,
 }
+
+impl std::fmt::Display for AccountError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Name => formatter.write_str("cannot determine your OS user name"),
+            Self::Home => formatter.write_str("cannot determine your home directory"),
+        }
+    }
+}
+
+impl std::error::Error for AccountError {}
 
 #[derive(Clone, Debug)]
 pub struct Account {

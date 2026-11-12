@@ -11,20 +11,52 @@ use std::{
     process,
 };
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PrivateError {
-    #[error("{} must be a directory", .0.display())]
     NotDirectory(PathBuf),
-    #[error("{} must be owned by you and owner-private (chmod 700)", .0.display())]
     OpenDirectory(PathBuf),
-    #[error("{} must be a regular file", .0.display())]
     NotFile(PathBuf),
-    #[error("{} must be owned by you and private (0600)", .0.display())]
     OpenFile(PathBuf),
-    #[error("{}: {error}", .path.display())]
     At { path: PathBuf, error: io::Error },
-    #[error(transparent)]
-    Io(#[from] io::Error),
+    Io(io::Error),
+}
+
+impl std::fmt::Display for PrivateError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotDirectory(value) => {
+                write!(formatter, "{} must be a directory", value.display())
+            }
+            Self::OpenDirectory(value) => write!(
+                formatter,
+                "{} must be owned by you and owner-private (chmod 700)",
+                value.display()
+            ),
+            Self::NotFile(value) => write!(formatter, "{} must be a regular file", value.display()),
+            Self::OpenFile(value) => write!(
+                formatter,
+                "{} must be owned by you and private (0600)",
+                value.display()
+            ),
+            Self::At { path, error } => write!(formatter, "{}: {error}", path.display()),
+            Self::Io(value) => std::fmt::Display::fmt(value, formatter),
+        }
+    }
+}
+
+impl std::error::Error for PrivateError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for PrivateError {
+    fn from(source: io::Error) -> Self {
+        Self::Io(source)
+    }
 }
 
 pub fn ensure_dir(dir: &Path) -> Result<(), PrivateError> {

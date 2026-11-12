@@ -1214,19 +1214,35 @@ impl ToolsBuilder {
 }
 
 #[cfg(not(target_family = "wasm"))]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PublicToolCatalogError {
-    #[error("invalid public tool name `{0}`")]
     InvalidName(Box<str>),
-    #[error(
-        "public tool names `{first}` and `{second}` both normalize to Code Mode name `{normalized}`"
-    )]
     NormalizedNameCollision {
         first: Box<str>,
         second: Box<str>,
         normalized: Box<str>,
     },
 }
+
+#[cfg(not(target_family = "wasm"))]
+impl std::fmt::Display for PublicToolCatalogError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidName(value) => write!(formatter, "invalid public tool name `{value}`"),
+            Self::NormalizedNameCollision {
+                first,
+                second,
+                normalized,
+            } => write!(
+                formatter,
+                "public tool names `{first}` and `{second}` both normalize to Code Mode name `{normalized}`"
+            ),
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl std::error::Error for PublicToolCatalogError {}
 
 #[cfg(not(target_family = "wasm"))]
 pub fn validate_public_tool_catalog_names<'a>(

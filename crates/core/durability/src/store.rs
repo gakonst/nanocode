@@ -62,29 +62,52 @@ pub struct OwnedState {
     pub state: StoredState,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StoreError {
-    #[error("durability state owner was fenced")]
     Fenced,
 
-    #[error("durability state revision conflict: expected {expected}, found {actual}")]
-    Conflict { expected: u64, actual: u64 },
+    Conflict {
+        expected: u64,
+        actual: u64,
+    },
 
-    #[error("durability store operation was not committed: {0}")]
     NotCommitted(String),
 
-    #[error(
-        "{component} storage format {stored} is newer than this release supports (format {known}); upgrade before opening it"
-    )]
     UnsupportedFormat {
         component: &'static str,
         stored: u64,
         known: u32,
     },
 
-    #[error("durability store failed: {0}")]
     Backend(String),
 }
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fenced => formatter.write_str("durability state owner was fenced"),
+            Self::Conflict { expected, actual } => write!(
+                formatter,
+                "durability state revision conflict: expected {expected}, found {actual}"
+            ),
+            Self::NotCommitted(value) => write!(
+                formatter,
+                "durability store operation was not committed: {value}"
+            ),
+            Self::UnsupportedFormat {
+                component,
+                stored,
+                known,
+            } => write!(
+                formatter,
+                "{component} storage format {stored} is newer than this release supports (format {known}); upgrade before opening it"
+            ),
+            Self::Backend(value) => write!(formatter, "durability store failed: {value}"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
 
 #[cfg(not(target_family = "wasm"))]
 pub type StoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

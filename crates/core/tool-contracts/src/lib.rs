@@ -196,16 +196,32 @@ impl ToolInput {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ToolInputError {
-    #[error("expected JSON function arguments")]
     ExpectedFunction,
 
-    #[error("expected freeform tool input")]
     ExpectedFreeform,
 
-    #[error("failed to parse function arguments: {0}")]
-    Decode(#[source] serde_json::Error),
+    Decode(serde_json::Error),
+}
+
+impl std::fmt::Display for ToolInputError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExpectedFunction => formatter.write_str("expected JSON function arguments"),
+            Self::ExpectedFreeform => formatter.write_str("expected freeform tool input"),
+            Self::Decode(value) => write!(formatter, "failed to parse function arguments: {value}"),
+        }
+    }
+}
+
+impl std::error::Error for ToolInputError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Decode(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -328,38 +344,26 @@ pub trait ToolCollection: Sized {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum ToolsBuildError {
-    #[error("host tool initialization failed: {0}")]
     HostInitialization(String),
 
-    #[error("tool name must not be empty")]
     EmptyName,
 
-    #[error("working directory override must not be empty")]
     EmptyWorkingDirectory,
 
-    #[error("default shell override must not be empty")]
     EmptyDefaultShell,
 
-    #[error("tool name `{0}` is registered more than once")]
     DuplicateName(Box<str>),
 
-    #[error("tool source `{0}` is configured more than once")]
     DuplicateSource(&'static str),
 
-    #[error("tool name `{0}` conflicts with an enabled built-in tool")]
     BuiltInName(Box<str>),
 
-    #[error("tool name `{0}` is reserved by the Code Mode host")]
     ReservedName(Box<str>),
 
-    #[error(
-        "invalid public tool name `{0}`; expected 1-128 ASCII bytes beginning with an alphanumeric and containing only alphanumerics, `.`, `_`, `:`, or `-`"
-    )]
     InvalidPublicName(Box<str>),
 
-    #[error("tool names `{first}` and `{second}` both normalize to Code Mode name `{normalized}`")]
     NormalizedNameCollision {
         first: Box<str>,
 
@@ -368,3 +372,50 @@ pub enum ToolsBuildError {
         normalized: Box<str>,
     },
 }
+
+impl std::fmt::Display for ToolsBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HostInitialization(value) => {
+                write!(formatter, "host tool initialization failed: {value}")
+            }
+            Self::EmptyName => formatter.write_str("tool name must not be empty"),
+            Self::EmptyWorkingDirectory => {
+                formatter.write_str("working directory override must not be empty")
+            }
+            Self::EmptyDefaultShell => {
+                formatter.write_str("default shell override must not be empty")
+            }
+            Self::DuplicateName(value) => write!(
+                formatter,
+                "tool name `{value}` is registered more than once"
+            ),
+            Self::DuplicateSource(value) => write!(
+                formatter,
+                "tool source `{value}` is configured more than once"
+            ),
+            Self::BuiltInName(value) => write!(
+                formatter,
+                "tool name `{value}` conflicts with an enabled built-in tool"
+            ),
+            Self::ReservedName(value) => write!(
+                formatter,
+                "tool name `{value}` is reserved by the Code Mode host"
+            ),
+            Self::InvalidPublicName(value) => write!(
+                formatter,
+                "invalid public tool name `{value}`; expected 1-128 ASCII bytes beginning with an alphanumeric and containing only alphanumerics, `.`, `_`, `:`, or `-`"
+            ),
+            Self::NormalizedNameCollision {
+                first,
+                second,
+                normalized,
+            } => write!(
+                formatter,
+                "tool names `{first}` and `{second}` both normalize to Code Mode name `{normalized}`"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ToolsBuildError {}

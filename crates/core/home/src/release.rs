@@ -51,26 +51,52 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum InstallError<E: Display> {
-    #[error("the executable has no directory")]
     NoDirectory,
-    #[error("cannot write next to the executable: {0}")]
     Write(io::Error),
-    #[error("{0}")]
     Download(E),
-    #[error("the download is larger than its release allows")]
     TooLarge,
-    #[error("the download doesn't match its release's SHA-256")]
     Mismatch,
-    #[error("the download doesn't run: {0}")]
     Run(io::Error),
-    #[error("the download doesn't report its release's version")]
     Version,
-    #[error("cannot replace the executable: {0}")]
     Replace(io::Error),
-    #[error(transparent)]
-    Io(#[from] io::Error),
+    Io(io::Error),
+}
+
+impl<E: Display> std::fmt::Display for InstallError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoDirectory => formatter.write_str("the executable has no directory"),
+            Self::Write(value) => write!(formatter, "cannot write next to the executable: {value}"),
+            Self::Download(value) => write!(formatter, "{value}"),
+            Self::TooLarge => formatter.write_str("the download is larger than its release allows"),
+            Self::Mismatch => {
+                formatter.write_str("the download doesn't match its release's SHA-256")
+            }
+            Self::Run(value) => write!(formatter, "the download doesn't run: {value}"),
+            Self::Version => {
+                formatter.write_str("the download doesn't report its release's version")
+            }
+            Self::Replace(value) => write!(formatter, "cannot replace the executable: {value}"),
+            Self::Io(value) => std::fmt::Display::fmt(value, formatter),
+        }
+    }
+}
+
+impl<E: Display + std::fmt::Debug> std::error::Error for InstallError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(value) => std::error::Error::source(value),
+            _ => None,
+        }
+    }
+}
+
+impl<E: Display> From<io::Error> for InstallError<E> {
+    fn from(source: io::Error) -> Self {
+        Self::Io(source)
+    }
 }
 
 struct Hashing<'a> {

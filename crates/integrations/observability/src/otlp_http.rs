@@ -46,23 +46,43 @@ const METRICS: Signal = Signal {
     compression: "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
 };
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum OtlpError {
-    #[error("invalid URI {endpoint}. Reason {reason}")]
-    Endpoint { endpoint: String, reason: String },
+    Endpoint {
+        endpoint: String,
+        reason: String,
+    },
 
-    #[error("unsupported compression algorithm '{value}' in {variable}: OTLP is sent uncompressed")]
     Compression {
         variable: &'static str,
         value: String,
     },
 
-    #[error("{variable}: Invalid value '{value}'. Expected: cumulative, delta, or lowmemory")]
     Temporality {
         variable: &'static str,
         value: String,
     },
 }
+
+impl std::fmt::Display for OtlpError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Endpoint { endpoint, reason } => {
+                write!(formatter, "invalid URI {endpoint}. Reason {reason}")
+            }
+            Self::Compression { variable, value } => write!(
+                formatter,
+                "unsupported compression algorithm '{value}' in {variable}: OTLP is sent uncompressed"
+            ),
+            Self::Temporality { variable, value } => write!(
+                formatter,
+                "{variable}: Invalid value '{value}'. Expected: cumulative, delta, or lowmemory"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OtlpError {}
 
 #[derive(Debug)]
 struct Http {

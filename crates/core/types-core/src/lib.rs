@@ -321,17 +321,26 @@ impl Prompt {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptValidationError {
-    #[error("prompt instruction must not be empty")]
     EmptyInstruction,
 
-    #[error("prompt transcript messages must not be empty")]
     EmptyTranscriptMessage,
 
-    #[error("prompt transcript must start with a user message and end with an assistant message")]
     InvalidTranscriptEndpoints,
 }
+
+impl std::fmt::Display for PromptValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyInstruction => formatter.write_str("prompt instruction must not be empty"),
+            Self::EmptyTranscriptMessage => formatter.write_str("prompt transcript messages must not be empty"),
+            Self::InvalidTranscriptEndpoints => formatter.write_str("prompt transcript must start with a user message and end with an assistant message"),
+        }
+    }
+}
+
+impl std::error::Error for PromptValidationError {}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

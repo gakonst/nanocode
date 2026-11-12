@@ -18,35 +18,37 @@ pub enum CompactionRecovery {
     ReplaceRejectedImages,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum NanocodeError {
-    #[error("invalid task request: {0}")]
     InvalidRequest(String),
 
-    #[error("failed to resolve task workspace {path}: {source}")]
     ResolveWorkspace {
         path: PathBuf,
 
-        #[source]
         source: io::Error,
     },
 
-    #[error("task workspace is not a directory: {path}")]
-    WorkspaceNotDirectory { path: PathBuf },
+    WorkspaceNotDirectory {
+        path: PathBuf,
+    },
 
-    #[error("task workspace path is not valid UTF-8: {path}")]
-    WorkspaceNotUtf8 { path: PathBuf },
+    WorkspaceNotUtf8 {
+        path: PathBuf,
+    },
 
-    #[error("an active agent session cannot change workspace from {current} to {requested}")]
-    WorkspaceChanged { current: String, requested: String },
+    WorkspaceChanged {
+        current: String,
+        requested: String,
+    },
 
-    #[error("malformed Responses API event: {detail}")]
-    MalformedResponse { detail: &'static str },
+    MalformedResponse {
+        detail: &'static str,
+    },
 
-    #[error("invalid Responses attempt state: {detail}")]
-    InvalidAttemptState { detail: &'static str },
+    InvalidAttemptState {
+        detail: &'static str,
+    },
 
-    #[error("compaction failed: {detail}")]
     CompactionFailed {
         detail: String,
 
@@ -55,110 +57,236 @@ pub enum NanocodeError {
         recovery: CompactionRecovery,
     },
 
-    #[error("failed to fingerprint the immutable prompt prefix: {0}")]
-    SerializePromptPrefix(#[source] serde_json::Error),
+    SerializePromptPrefix(serde_json::Error),
 
-    #[error("the agent stopped before accepting the command")]
     AgentStopped,
 
-    #[error("the execution-policy-owned agent stopped and must be reopened")]
     ExecutionPolicyOwnerStopped,
 
-    #[error("the agent stopped before the turn completed")]
     TurnStopped,
 
-    #[error(transparent)]
     Shutdown(Arc<Self>),
 
-    #[error("the targeted turn is queued, completed, or otherwise not active for steering")]
     TurnNotSteerable,
 
-    #[error("the active turn's steering queue is full")]
     SteerQueueFull,
 
-    #[error("the targeted turn has already completed or been cancelled")]
     TurnNotCancellable,
 
-    #[error("the turn was cancelled")]
     TurnCancelled,
 
-    #[error("the agent has no safe conversation boundary to fork")]
     ForkBeforeCompletedTurn,
 
-    #[error("the completed turn belongs to a different conversation lineage")]
     CheckpointLineageMismatch,
 
-    #[error("invalid session checkpoint: {0}")]
     InvalidCheckpoint(String),
 
-    #[error("{layer} execution policy failed: {source}")]
     ExecutionPolicy {
         layer: &'static str,
 
         disposition: ExecutionPolicyDisposition,
 
-        #[source]
         source: Arc<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("identified prompt submission requires a configured execution policy")]
     ExecutionPolicyNotConfigured,
 
-    #[error("invalid execution policy state: {0}")]
     InvalidExecutionPolicy(String),
 
-    #[error("pre-compaction preservation failed: {0}")]
     BeforeCompactionFailed(String),
 
-    #[error("execution policy does not implement required capability `{capability}`")]
-    ExecutionPolicyCapabilityUnsupported { capability: &'static str },
+    ExecutionPolicyCapabilityUnsupported {
+        capability: &'static str,
+    },
 
-    #[error(
-        "cannot {operation} from an agent with an attached execution policy; build the branch with its own execution policy"
-    )]
-    ExecutionPolicyBranchUnsupported { operation: &'static str },
+    ExecutionPolicyBranchUnsupported {
+        operation: &'static str,
+    },
 
-    #[error("execution policy payload is invalid: {0}")]
-    ExecutionPayload(#[source] serde_json::Error),
+    ExecutionPayload(serde_json::Error),
 
-    #[error("a policy-replayed result cannot be used as an in-process fork checkpoint")]
     ReplayedCheckpointUnavailable,
 
-    #[error("checkpoint belongs to the {found:?} harness, not {expected:?}")]
     CheckpointFamilyMismatch {
         expected: crate::HarnessFamily,
 
         found: crate::HarnessFamily,
     },
 
-    #[error("the selected agent backend does not support {capability}")]
-    UnsupportedCapability { capability: &'static str },
+    UnsupportedCapability {
+        capability: &'static str,
+    },
 
-    #[error("agent backend violated the lifecycle contract: {detail}")]
-    BackendContract { detail: &'static str },
+    BackendContract {
+        detail: &'static str,
+    },
 
-    #[error("{backend} backend failed: {source}")]
     Backend {
         backend: &'static str,
 
-        #[source]
         source: Arc<dyn std::error::Error + Send + Sync>,
     },
 
-    #[error("durable operation previously failed: {0}")]
     ReplayedExecutionFailed(String),
 
-    #[error("building an agent requires an active Tokio runtime")]
     TokioRuntimeUnavailable,
 
-    #[error(transparent)]
-    Event(#[from] nanocode_types_core::events::EventError),
+    Event(nanocode_types_core::events::EventError),
 
-    #[error(transparent)]
     Response(BackendError),
 
-    #[error("failed to build tools for an agent driver: {0}")]
-    Tools(#[from] nanocode_tool_contracts::ToolsBuildError),
+    Tools(nanocode_tool_contracts::ToolsBuildError),
+}
+
+impl std::fmt::Display for NanocodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest(value) => write!(formatter, "invalid task request: {value}"),
+            Self::ResolveWorkspace { path, source } => {
+                let displayed_path = path.display();
+                write!(
+                    formatter,
+                    "failed to resolve task workspace {displayed_path}: {source}"
+                )
+            }
+            Self::WorkspaceNotDirectory { path } => {
+                let displayed_path = path.display();
+                write!(
+                    formatter,
+                    "task workspace is not a directory: {displayed_path}"
+                )
+            }
+            Self::WorkspaceNotUtf8 { path } => {
+                let displayed_path = path.display();
+                write!(
+                    formatter,
+                    "task workspace path is not valid UTF-8: {displayed_path}"
+                )
+            }
+            Self::WorkspaceChanged { current, requested } => write!(
+                formatter,
+                "an active agent session cannot change workspace from {current} to {requested}"
+            ),
+            Self::MalformedResponse { detail } => {
+                write!(formatter, "malformed Responses API event: {detail}")
+            }
+            Self::InvalidAttemptState { detail } => {
+                write!(formatter, "invalid Responses attempt state: {detail}")
+            }
+            Self::CompactionFailed { detail, .. } => {
+                write!(formatter, "compaction failed: {detail}")
+            }
+            Self::SerializePromptPrefix(value) => write!(
+                formatter,
+                "failed to fingerprint the immutable prompt prefix: {value}"
+            ),
+            Self::AgentStopped => {
+                formatter.write_str("the agent stopped before accepting the command")
+            }
+            Self::ExecutionPolicyOwnerStopped => {
+                formatter.write_str("the execution-policy-owned agent stopped and must be reopened")
+            }
+            Self::TurnStopped => formatter.write_str("the agent stopped before the turn completed"),
+            Self::Shutdown(value) => std::fmt::Display::fmt(value, formatter),
+            Self::TurnNotSteerable => formatter.write_str(
+                "the targeted turn is queued, completed, or otherwise not active for steering",
+            ),
+            Self::SteerQueueFull => formatter.write_str("the active turn's steering queue is full"),
+            Self::TurnNotCancellable => {
+                formatter.write_str("the targeted turn has already completed or been cancelled")
+            }
+            Self::TurnCancelled => formatter.write_str("the turn was cancelled"),
+            Self::ForkBeforeCompletedTurn => {
+                formatter.write_str("the agent has no safe conversation boundary to fork")
+            }
+            Self::CheckpointLineageMismatch => formatter
+                .write_str("the completed turn belongs to a different conversation lineage"),
+            Self::InvalidCheckpoint(value) => {
+                write!(formatter, "invalid session checkpoint: {value}")
+            }
+            Self::ExecutionPolicy { layer, source, .. } => {
+                write!(formatter, "{layer} execution policy failed: {source}")
+            }
+            Self::ExecutionPolicyNotConfigured => formatter
+                .write_str("identified prompt submission requires a configured execution policy"),
+            Self::InvalidExecutionPolicy(value) => {
+                write!(formatter, "invalid execution policy state: {value}")
+            }
+            Self::BeforeCompactionFailed(value) => {
+                write!(formatter, "pre-compaction preservation failed: {value}")
+            }
+            Self::ExecutionPolicyCapabilityUnsupported { capability } => write!(
+                formatter,
+                "execution policy does not implement required capability `{capability}`"
+            ),
+            Self::ExecutionPolicyBranchUnsupported { operation } => write!(
+                formatter,
+                "cannot {operation} from an agent with an attached execution policy; build the branch with its own execution policy"
+            ),
+            Self::ExecutionPayload(value) => {
+                write!(formatter, "execution policy payload is invalid: {value}")
+            }
+            Self::ReplayedCheckpointUnavailable => formatter.write_str(
+                "a policy-replayed result cannot be used as an in-process fork checkpoint",
+            ),
+            Self::CheckpointFamilyMismatch { expected, found } => write!(
+                formatter,
+                "checkpoint belongs to the {found:?} harness, not {expected:?}"
+            ),
+            Self::UnsupportedCapability { capability } => write!(
+                formatter,
+                "the selected agent backend does not support {capability}"
+            ),
+            Self::BackendContract { detail } => write!(
+                formatter,
+                "agent backend violated the lifecycle contract: {detail}"
+            ),
+            Self::Backend { backend, source } => {
+                write!(formatter, "{backend} backend failed: {source}")
+            }
+            Self::ReplayedExecutionFailed(value) => {
+                write!(formatter, "durable operation previously failed: {value}")
+            }
+            Self::TokioRuntimeUnavailable => {
+                formatter.write_str("building an agent requires an active Tokio runtime")
+            }
+            Self::Event(value) => std::fmt::Display::fmt(value, formatter),
+            Self::Response(value) => std::fmt::Display::fmt(value, formatter),
+            Self::Tools(value) => write!(
+                formatter,
+                "failed to build tools for an agent driver: {value}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NanocodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ResolveWorkspace { source, .. } => Some(source),
+            Self::SerializePromptPrefix(value) => Some(value),
+            Self::Shutdown(value) => std::error::Error::source(value),
+            Self::ExecutionPolicy { source, .. } => Some(source),
+            Self::ExecutionPayload(value) => Some(value),
+            Self::Backend { source, .. } => Some(source),
+            Self::Event(value) => std::error::Error::source(value),
+            Self::Response(value) => std::error::Error::source(value),
+            Self::Tools(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+impl From<nanocode_types_core::events::EventError> for NanocodeError {
+    fn from(source: nanocode_types_core::events::EventError) -> Self {
+        Self::Event(source)
+    }
+}
+
+impl From<nanocode_tool_contracts::ToolsBuildError> for NanocodeError {
+    fn from(source: nanocode_tool_contracts::ToolsBuildError) -> Self {
+        Self::Tools(source)
+    }
 }
 
 impl NanocodeError {

@@ -20,7 +20,6 @@ png = "0.17.16"
 crc32fast = "1.5.0"
 image-webp = "0.2.4"
 sha1 = { workspace = true  }
-thiserror = { workspace = true  }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt"]  }

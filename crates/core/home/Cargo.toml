@@ -15,7 +15,6 @@ categories = ["development-tools", "filesystem"]
 
 [dependencies]
 serde.workspace = true
-thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

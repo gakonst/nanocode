@@ -156,13 +156,11 @@ async fn copy(
                 }
                 let take = if lines {
                     let mut end = n;
-                    for (i, &b) in buf[..n].iter().enumerate() {
-                        if b == delim {
-                            left -= 1;
-                            if left == 0 {
-                                end = i + 1;
-                                break;
-                            }
+                    for i in memchr::memchr_iter(delim, &buf[..n]) {
+                        left -= 1;
+                        if left == 0 {
+                            end = i + 1;
+                            break;
                         }
                     }
                     end

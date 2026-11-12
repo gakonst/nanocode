@@ -291,6 +291,7 @@ fn word(b: &[u8], e: u8, start: usize, end: usize) -> Option<Tok> {
 }
 
 /// Scans a string body starting after the opening quote at `quote`.
+#[inline(always)]
 fn scan_string<const E: u8>(b: &[u8], mut p: usize, quote: usize) -> Result<(StrTok, usize), Fail> {
     // (Two-byte input is rare: its strings take the one general loop, a smaller module.)
     if E == UTF16 {

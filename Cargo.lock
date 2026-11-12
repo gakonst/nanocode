@@ -2996,7 +2996,6 @@ dependencies = [
  "nanocode-sync",
  "serde",
  "serde_json",
- "subtle",
  "tracing",
  "url",
 ]

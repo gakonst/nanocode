@@ -11,7 +11,6 @@ use base64::{
 use nanocode_digest::Sha256;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use subtle::ConstantTimeEq as _;
 use url::{Url, form_urlencoded};
 
 pub const DISCOVERY_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -580,8 +579,18 @@ impl Pkce {
     #[must_use]
     pub fn verifies(verifier: &str, challenge: &str) -> bool {
         let digest = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        bool::from(digest.as_bytes().ct_eq(challenge.as_bytes()))
+        constant_time_equal(digest.as_bytes(), challenge.as_bytes())
     }
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let difference = left.iter().zip(right).fold(0_u8, |difference, (a, b)| {
+        std::hint::black_box(difference | (a ^ b))
+    });
+    std::hint::black_box(difference) == 0
 }
 
 #[must_use]

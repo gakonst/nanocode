@@ -679,7 +679,13 @@ async fn print_named(vp: &mut Vp, bname: &str, names: &[DeclArg]) -> R {
     for a in names {
         // Only plain names: `a[0]` or `x=1` are reported as not found, as written.
         let found = match a {
-            DeclArg::Word(w) if is_name(w) => {
+            DeclArg::Word(w)
+                if is_name(w)
+                    && (bname != "local"
+                        || vp.frames.last().is_some_and(|f| {
+                            f.saved.iter().any(|(n, _)| n.as_bytes() == w.as_slice())
+                        })) =>
+            {
                 let n = String::from_utf8_lossy(w).into_owned();
                 vp.refresh_dynamic(&n);
                 vp.vars.get(&n).map(|v| declaration(&n, v, vp.utf8()))
@@ -701,19 +707,30 @@ async fn print_named(vp: &mut Vp, bname: &str, names: &[DeclArg]) -> R {
 
 /// Without names: every variable (with the attributes asked for), as declarations.
 async fn print_all(vp: &mut Vp, which: Which, o: &Opts) -> R {
+    let locals: Vec<String> = match (which, vp.frames.last()) {
+        (Which::Local, Some(f)) => f
+            .saved
+            .iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| !f.temps.contains(n))
+            .collect(),
+        _ => Vec::new(),
+    };
     let mut vars: Vec<(&String, &Var)> = vp
         .vars
         .iter()
-        .filter(|(_, v)| match which {
+        .filter(|(n, v)| match which {
             Which::Export => v.exported,
             Which::Readonly => v.readonly,
+            Which::Local => locals.contains(n) && (o.filter.is_empty() || o.matches(v)),
             _ => o.filter.is_empty() || o.matches(v),
         })
         .collect();
     vars.sort_by(|a, b| a.0.cmp(b.0));
     let mut buf = Vec::new();
-    let plain =
-        !o.print && o.filter.is_empty() && !matches!(which, Which::Export | Which::Readonly);
+    let plain = !o.print
+        && o.filter.is_empty()
+        && !matches!(which, Which::Export | Which::Readonly | Which::Local);
     for (n, v) in vars {
         if plain {
             // `declare` alone prints `name=value` lines, like `set`.

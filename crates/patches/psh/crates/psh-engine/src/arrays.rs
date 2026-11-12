@@ -236,11 +236,18 @@ impl Vp {
         if self.vars.get(&name).is_some_and(|v| v.readonly) {
             return Err(format!("{name}: cannot unset: readonly variable"));
         }
-        if sub == b"@" || sub == b"*" {
-            self.vars.remove(&name);
-            return Ok(());
+        let assoc = self.vars.get(&name).is_some_and(|v| v.is_assoc());
+        if (sub == b"@" || sub == b"*") && !assoc {
+            return match self.vars.get_mut(&name).map(|v| &mut v.value) {
+                Some(Value::Indexed(m)) => {
+                    m.clear();
+                    Ok(())
+                }
+                Some(_) => Err(format!("{name}: not an array variable")),
+                None => Ok(()),
+            };
         }
-        if self.vars.get(&name).is_some_and(|v| v.is_assoc()) {
+        if assoc {
             if let Some(Value::Assoc(a)) = self.vars.get_mut(&name).map(|v| &mut v.value) {
                 a.remove(sub);
             }
@@ -257,6 +264,12 @@ impl Vp {
                 m.remove(&i);
             }
             Some(v @ Value::Str(_)) if i == 0 => *v = Value::Unset,
+            Some(Value::Unset) if i == 0 => {
+                self.vars.remove(&name);
+            }
+            Some(Value::Str(_) | Value::Unset) => {
+                return Err(format!("{name}: not an array variable"));
+            }
             _ => {}
         }
         Ok(())

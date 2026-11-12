@@ -479,6 +479,11 @@ async fn unset(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         nameref |= args[i].contains(&b'n');
         i += 1;
     }
+    if funcs && vars_only {
+        vp.error("unset: cannot simultaneously unset a function and a variable")
+            .await;
+        return Ok(1);
+    }
     let mut status = 0;
     for a in &args[i..] {
         let n = std::str::from_utf8(a).unwrap_or_default();
@@ -504,6 +509,9 @@ async fn unset(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             continue;
         }
         if !is_name(a) {
+            if !vars_only && !nameref {
+                continue;
+            }
             vp.error(&format!("unset: `{}': not a valid identifier", s(a)))
                 .await;
             status = 1;
@@ -549,14 +557,16 @@ async fn unset(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         }
         // Unsetting an assignment in front of the running function brings back the
         // value under it; that variable is then the one later assignments change (bash).
-        if let Some(frame) = vp
+        let top = vp.frames.len();
+        if let Some((k, frame)) = vp
             .frames
             .iter_mut()
+            .enumerate()
             .rev()
-            .find(|f| f.saved.iter().any(|(s, _)| *s == n))
-            && let Some(t) = frame.temps.iter().position(|t| *t == n)
+            .find(|(_, f)| f.saved.iter().any(|(s, _)| *s == n))
+            && (k + 1 < top || frame.temps.contains(&n))
         {
-            frame.temps.remove(t);
+            frame.temps.retain(|t| *t != n);
             let i = frame.saved.iter().position(|(s, _)| *s == n).unwrap_or(0);
             let (_, old) = frame.saved.remove(i);
             match old {

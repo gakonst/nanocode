@@ -30,6 +30,7 @@ pub(crate) fn run_sync(ctx: &mut SyncCtx, (cfg, m): (Config, Matchers)) -> i32 {
         matched: false,
         error: false,
         stop: false,
+        head: Vec::new(),
     };
     if cfg.nothing {
         let mut out = out.borrow_mut();
@@ -108,6 +109,7 @@ struct Run<'a> {
     error: bool,
     /// `-q` found a line, or stdout failed.
     stop: bool,
+    head: Vec<u8>,
 }
 
 impl Run<'_> {
@@ -265,22 +267,25 @@ impl Run<'_> {
         // GNU decides on binary data per buffer it reads, the first one before any
         // output; the searcher's decoder hands its first bytes over in pieces, so the
         // first buffer is read here.
-        let mut head = vec![0; HEAD];
+        let mut head = std::mem::take(&mut self.head);
+        head.resize(HEAD, 0);
         let n = loop {
             match rdr.read(&mut head) {
                 Ok(n) => break n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => return self.file_error(name, &e),
+                Err(e) => {
+                    self.head = head;
+                    return self.file_error(name, &e);
+                }
             }
         };
-        head.truncate(n);
-        let binary = cfg.binary != BinaryFiles::Text && !cfg.null_data && head.contains(&0);
+        let binary = cfg.binary != BinaryFiles::Text && !cfg.null_data && head[..n].contains(&0);
         let (count, suppressed) = if binary && cfg.binary == BinaryFiles::WithoutMatch {
             (0, false)
         } else {
             let mut sink = GrepSink::new(cfg, self.spans, self.out, name, show);
             sink.binary_seen = binary;
-            let r = s.search_reader(m, io::Cursor::new(head).chain(rdr), &mut sink);
+            let r = s.search_reader(m, io::Cursor::new(&head[..n]).chain(rdr), &mut sink);
             if let Err(e) = r {
                 if self.out.borrow().failed().is_some() {
                     self.stop = true;
@@ -294,6 +299,7 @@ impl Run<'_> {
                 (sink.count, sink.suppressed)
             }
         };
+        self.head = head;
         if count > 0 {
             self.matched = true;
             if cfg.quiet {

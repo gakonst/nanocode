@@ -200,6 +200,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     // input is not a regular file, and no padding for one count of one input.
     let mut total_size: u64 = 0;
     let mut irregular = false;
+    let mut buf = vec![0u8; 64 * 1024];
     for name in &files {
         let regular = if name == b"-" {
             false
@@ -225,7 +226,6 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             irregular = true;
         }
         let mut counter = Counter::default();
-        let mut buf = vec![0u8; 64 * 1024];
         let mut failed = false;
         loop {
             match input.read(ctx, &mut buf).await {

@@ -7,6 +7,7 @@ members = [
     "crates/core/agent-types",
     "crates/core/durability",
     "crates/core/types-core",
+    "crates/core/unicode-normalization",
     "crates/core/process",
     "crates/integrations/agent-host",
     "crates/runtime/tool-host",
@@ -184,6 +185,7 @@ tower = { version = "0.5.2", features = ["retry", "util"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-opentelemetry = { version = "0.33", default-features = false, features = ["metrics"] }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
+unicode-normalization = { path = "crates/core/unicode-normalization" }
 url = "2.5.7"
 uuid = { version = "1", features = ["serde", "v5"] }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
@@ -202,6 +204,7 @@ rustpython-sre_engine = { path = "crates/patches/rustpython-sre_engine" }
 rustpython-vm = { path = "crates/patches/rustpython-vm" }
 sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
 sqlx-postgres = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
+unicode-normalization = { path = "crates/core/unicode-normalization" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -7,16 +7,9 @@ use std::{
 };
 
 use nanocode_sync::Slot;
-use rustix::{
-    event::{PollFd, PollFlags, Timespec, poll},
-    termios::{OptionalActions, Termios, tcgetattr, tcgetwinsize, tcsetattr},
-};
+use nanocode_sys::unix::{Termios, set_terminal_attributes, terminal_attributes, window_size};
 
 const DECIMAL_RADIX: u32 = 10;
-const NOW: Timespec = Timespec {
-    tv_sec: 0,
-    tv_nsec: 0,
-};
 
 static ORIGINAL_MODE: LazyLock<Slot<Termios>> = LazyLock::new(Slot::default);
 
@@ -65,10 +58,10 @@ pub fn enable_raw_mode() -> io::Result<()> {
         return Ok(());
     }
     let tty = tty()?;
-    let original = tcgetattr(&tty)?;
+    let original = terminal_attributes(&tty)?;
     let mut raw = original.clone();
     raw.make_raw();
-    tcsetattr(&tty, OptionalActions::Now, &raw)?;
+    set_terminal_attributes(&tty, &raw)?;
     assert!(
         ORIGINAL_MODE.put(original).is_none(),
         "raw mode is entered once before it is left"
@@ -80,7 +73,7 @@ pub fn disable_raw_mode() -> io::Result<()> {
     let Some(original) = ORIGINAL_MODE.take() else {
         return Ok(());
     };
-    let restored = tty().and_then(|tty| Ok(tcsetattr(&tty, OptionalActions::Now, &original)?));
+    let restored = tty().and_then(|tty| set_terminal_attributes(&tty, &original));
     if restored.is_err() {
         ORIGINAL_MODE.put(original);
     }
@@ -89,11 +82,11 @@ pub fn disable_raw_mode() -> io::Result<()> {
 
 pub fn size() -> io::Result<(u16, u16)> {
     let window = match File::open("/dev/tty") {
-        Ok(device) => tcgetwinsize(&device),
-        Err(_) => tcgetwinsize(io::stdout()),
+        Ok(device) => window_size(&device),
+        Err(_) => window_size(io::stdout()),
     };
     if let Ok(window) = window {
-        return Ok((window.ws_col, window.ws_row));
+        return Ok((window.columns, window.rows));
     }
     match (tput("cols"), tput("lines")) {
         (Some(columns), Some(rows)) => Ok((columns, rows)),
@@ -117,12 +110,10 @@ fn tput(capability: &str) -> Option<u16> {
 }
 
 pub(crate) fn readable_now(fd: BorrowedFd<'_>) -> io::Result<bool> {
-    let mut descriptors = [PollFd::new(&fd, PollFlags::IN)];
     loop {
-        match poll(&mut descriptors, Some(&NOW)) {
-            Ok(ready) => return Ok(ready > 0),
-            Err(rustix::io::Errno::INTR) => {}
-            Err(error) => return Err(error.into()),
+        match nanocode_sys::unix::readable_now(fd) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            ready => return ready,
         }
     }
 }

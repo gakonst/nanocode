@@ -58,7 +58,7 @@ impl EventStream {
                         }
                         Err(error) => return Poll::Ready(Some(Err(error))),
                     }
-                    match rustix::io::read(fd, &mut self.bytes[..]) {
+                    match nanocode_sys::unix::read(fd, &mut self.bytes[..]) {
                         Ok(0) => return Poll::Ready(None),
                         Ok(count) => {
                             let more = count == TTY_BUFFER_BYTES;
@@ -67,9 +67,11 @@ impl EventStream {
                                 guard.clear_ready();
                             }
                         }
-                        Err(rustix::io::Errno::INTR) => {}
-                        Err(rustix::io::Errno::AGAIN) => guard.clear_ready(),
-                        Err(error) => return Poll::Ready(Some(Err(error.into()))),
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            guard.clear_ready();
+                        }
+                        Err(error) => return Poll::Ready(Some(Err(error))),
                     }
                     continue;
                 }

@@ -526,9 +526,9 @@ fn kill(tree: &[u32]) {
     for process in tree {
         if let Some(process) = i32::try_from(*process)
             .ok()
-            .and_then(rustix::process::Pid::from_raw)
+            .filter(|process| *process != 0)
         {
-            rustix::process::kill_process(process, rustix::process::Signal::KILL).ok();
+            nanocode_platform::unix::signal_process(process, libc::SIGKILL).ok();
         }
     }
 }

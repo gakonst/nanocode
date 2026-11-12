@@ -1,7 +1,7 @@
 use std::{
     io,
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+        fd::{AsRawFd, RawFd},
         unix::process::CommandExt,
     },
     process::{Command, ExitCode, Stdio},
@@ -18,7 +18,7 @@ fn reads(command: &mut Command) -> io::Result<bool> {
     }
     command.arg(ARGUMENT);
     for output in &outputs {
-        rustix::io::fcntl_setfd(output, rustix::io::FdFlags::empty())?;
+        nanocode_sys::unix::set_close_on_exec(output, false)?;
         command.arg(output.as_raw_fd().to_string());
     }
     Ok(true)
@@ -49,21 +49,15 @@ pub fn read_outputs_if_requested() -> Option<ExitCode> {
     (arguments.next()? == ARGUMENT).then(|| read(arguments))
 }
 
-#[allow(unsafe_code)]
 fn read(descriptors: impl Iterator<Item = String>) -> ExitCode {
-    std::thread::spawn(|| {
-        while !matches!(
-            rustix::process::wait(rustix::process::WaitOptions::empty()),
-            Err(rustix::io::Errno::CHILD)
-        ) {}
-    });
+    std::thread::spawn(nanocode_sys::unix::reap_children);
     let readers: Vec<_> = descriptors
         .filter_map(|descriptor| descriptor.parse::<RawFd>().ok())
-        .map(|descriptor| unsafe { OwnedFd::from_raw_fd(descriptor) })
+        .filter_map(|descriptor| nanocode_sys::unix::inherited_descriptor(descriptor).ok())
         .map(|output| {
             std::thread::spawn(move || {
-                if let Ok(flags) = rustix::fs::fcntl_getfl(&output) {
-                    let _ = rustix::fs::fcntl_setfl(&output, flags - rustix::fs::OFlags::NONBLOCK);
+                if let Ok(flags) = nanocode_sys::unix::status_flags(&output) {
+                    let _ = nanocode_sys::unix::set_status_flags(&output, flags & !libc::O_NONBLOCK);
                 }
                 let _ = io::copy(&mut std::fs::File::from(output), &mut io::sink());
             })

@@ -367,9 +367,9 @@ impl Bridge {
             .write(true)
             .create(true)
             .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(self.state.join("chatgpt.lock"))?;
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
+        file.lock()?;
         Ok(Guard {
             bridge: self,
             _file: file,

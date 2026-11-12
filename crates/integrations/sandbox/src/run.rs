@@ -272,7 +272,7 @@ impl Runner {
             cleanup.group = child
                 .id()
                 .and_then(|id| i32::try_from(id).ok())
-                .and_then(rustix::process::Pid::from_raw);
+                .filter(|id| *id != 0);
         }
         let stdin: Box<dyn AsyncWrite + Send + Unpin> = match input {
             Some(input) => Box::new(input),
@@ -339,13 +339,13 @@ fn missing(what: &'static str) -> io::Error {
 
 struct Cleanup {
     work: PathBuf,
-    group: Option<rustix::process::Pid>,
+    group: Option<i32>,
 }
 
 impl Cleanup {
     fn kill(&mut self) {
         if let Some(group) = self.group.take() {
-            rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();
+            nanocode_platform::unix::signal_group(group, libc::SIGKILL).ok();
         }
     }
 }

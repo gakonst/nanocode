@@ -353,11 +353,11 @@ pub(super) trait Ready {
 #[cfg(unix)]
 fn ready(pipe: impl std::os::fd::AsFd, buffer: &mut [u8]) -> io::Result<Option<usize>> {
     loop {
-        match rustix::io::read(&pipe, &mut *buffer) {
+        match nanocode_sys::unix::read(&pipe, &mut *buffer) {
             Ok(read) => return Ok(Some(read)),
-            Err(rustix::io::Errno::AGAIN) => return Ok(None),
-            Err(rustix::io::Errno::INTR) => {}
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
         }
     }
 }
@@ -458,13 +458,11 @@ fn spawn_pty(
     environment: &[(OsString, OsString)],
 ) -> io::Result<SpawnedProcess> {
     let (controller, terminal) = open_terminal()?;
-    rustix::termios::tcsetwinsize(
+    nanocode_sys::unix::set_window_size(
         &terminal,
-        rustix::termios::Winsize {
-            ws_row: TERMINAL_ROWS,
-            ws_col: TERMINAL_COLUMNS,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
+        nanocode_sys::unix::WindowSize {
+            rows: TERMINAL_ROWS,
+            columns: TERMINAL_COLUMNS,
         },
     )?;
     let mut command = std::process::Command::new(shell.path());
@@ -516,47 +514,20 @@ const SESSION_DEFAULT_SIGNALS: [libc::c_int; 6] = [
 
 #[cfg(unix)]
 fn open_terminal() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
-    use rustix::fs::{Mode, OFlags, open};
-    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-    #[cfg(target_os = "linux")]
-    let controller = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)?;
-    #[cfg(not(target_os = "linux"))]
-    let controller = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
-    #[cfg(not(target_os = "linux"))]
-    rustix::io::fcntl_setfd(&controller, rustix::io::FdFlags::CLOEXEC)?;
-    grantpt(&controller)?;
-    unlockpt(&controller)?;
-    let terminal = open(
-        ptsname(&controller, Vec::new())?.as_c_str(),
-        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
-    Ok((controller, terminal))
+    nanocode_sys::unix::open_pseudoterminal()
 }
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
 fn lead_session(command: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    let lead = || -> io::Result<()> {
-        for signal in SESSION_DEFAULT_SIGNALS {
-            if unsafe { libc::signal(signal, libc::SIG_DFL) } == libc::SIG_ERR {
-                return Err(io::Error::last_os_error());
-            }
-        }
-        rustix::process::setsid()?;
-        rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())?;
-        Ok(())
-    };
-    unsafe { command.pre_exec(lead) };
+    nanocode_sys::unix::lead_session(command, &SESSION_DEFAULT_SIGNALS);
 }
 
 #[cfg(unix)]
 fn end_input(writer: &mut std::fs::File) {
-    let Ok(settings) = rustix::termios::tcgetattr(&*writer) else {
+    let Ok(settings) = nanocode_sys::unix::terminal_attributes(&*writer) else {
         return;
     };
-    let end = settings.special_codes[rustix::termios::SpecialCodeIndex::VEOF];
+    let end = settings.end_of_file();
     if end != 0 {
         drop(writer.write_all(&[b'\n', end]));
     }

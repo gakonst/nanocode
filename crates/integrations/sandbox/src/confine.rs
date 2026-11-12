@@ -3,10 +3,6 @@ use landlock::{
     ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, Ruleset,
     RulesetAttr, RulesetCreated, RulesetCreatedAttr, Scope, path_beneath_rules,
 };
-use rustix::net::{
-    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
-    SendAncillaryMessage, SendFlags, recvmsg, sendmsg,
-};
 use seccompiler::{
     BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
     SeccompRule, sock_filter,
@@ -16,8 +12,7 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fs::File,
-    io::{self, IoSlice, IoSliceMut, PipeWriter},
-    mem::MaybeUninit,
+    io::{self, PipeWriter},
     os::{
         fd::{AsFd, AsRawFd, IntoRawFd, OwnedFd, RawFd},
         unix::{net::UnixStream, process::CommandExt},
@@ -43,18 +38,7 @@ pub struct Channel {
 pub fn channel() -> io::Result<Channel> {
     let (host, program) = UnixStream::pair()?;
     let (reader, input) = io::pipe()?;
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-    let mut passed = SendAncillaryBuffer::new(&mut space);
-    let descriptors = [reader.as_fd()];
-    if !passed.push(SendAncillaryMessage::ScmRights(&descriptors)) {
-        return Err(other("no room to pass a descriptor"));
-    }
-    sendmsg(
-        &host,
-        &[IoSlice::new(&[0])],
-        &mut passed,
-        SendFlags::empty(),
-    )?;
+    nanocode_sys::unix::send_descriptor(&host, reader.as_fd())?;
     Ok(Channel {
         host,
         program: program.into(),
@@ -63,28 +47,14 @@ pub fn channel() -> io::Result<Channel> {
 }
 
 fn take_channel() -> io::Result<()> {
-    let channel = rustix::io::fcntl_dupfd_cloexec(rustix::stdio::stdin(), CHANNEL_DESCRIPTOR)?;
+    let channel = nanocode_sys::unix::duplicate_close_on_exec(io::stdin(), CHANNEL_DESCRIPTOR)?;
     if channel.as_raw_fd() != CHANNEL_DESCRIPTOR {
         return Err(other("the channel's descriptor is taken"));
     }
-    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
-    let mut passed = RecvAncillaryBuffer::new(&mut space);
-    let mut byte = [0];
-    recvmsg(
-        &channel,
-        &mut [IoSliceMut::new(&mut byte)],
-        &mut passed,
-        RecvFlags::CMSG_CLOEXEC,
-    )?;
-    let input = passed
-        .drain()
-        .find_map(|message| match message {
-            RecvAncillaryMessage::ScmRights(mut descriptors) => descriptors.next(),
-            _ => None,
-        })
+    let input = nanocode_sys::unix::receive_descriptor(&channel)?
         .ok_or_else(|| other("no input came with the channel"))?;
-    rustix::stdio::dup2_stdin(&input)?;
-    rustix::io::fcntl_setfd(&channel, rustix::io::FdFlags::empty())?;
+    nanocode_sys::unix::redirect_input(&input)?;
+    nanocode_sys::unix::set_close_on_exec(&channel, false)?;
     let _ = channel.into_raw_fd();
     Ok(())
 }
@@ -268,7 +238,7 @@ pub fn launch_if_requested() {
                 .ok_or_else(|| other("policy is not UTF-8"))?;
             let policy: Policy = serde_json::from_str(policy)?;
             let own = File::open(format!("/proc/{}", std::process::id()))?;
-            rustix::io::fcntl_setfd(&own, rustix::io::FdFlags::empty())?;
+            nanocode_sys::unix::set_close_on_exec(&own, false)?;
             confine(&policy, &own).map_err(|error| other(format!("confining: {error}")))?;
         }
         let program = arguments.next().ok_or_else(|| other("no program"))?;

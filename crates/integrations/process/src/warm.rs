@@ -83,12 +83,12 @@ impl Idle {
             return matches!(self.child.try_wait(), Ok(None));
         }
         let mut byte = [0_u8; 1];
-        match rustix::io::read(&self.stdout, &mut byte) {
+        match nanocode_sys::unix::read(&self.stdout, &mut byte) {
             Ok(1) => {
                 self.ready = byte[0] == 0;
                 self.ready
             }
-            Err(rustix::io::Errno::AGAIN) => true,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => true,
             _ => false,
         }
     }
@@ -238,9 +238,9 @@ impl Lane {
             ready: false,
             workdir,
         };
-        if let Err(error) = rustix::io::ioctl_fionbio(&idle.stdout, true) {
+        if let Err(error) = nanocode_sys::unix::set_nonblocking(&idle.stdout, true) {
             idle.kill();
-            return Err(error.into());
+            return Err(error);
         }
         Ok(idle)
     }

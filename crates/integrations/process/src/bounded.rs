@@ -36,7 +36,7 @@ pub async fn bounded(
     let group = child
         .id()
         .and_then(|id| i32::try_from(id).ok())
-        .and_then(rustix::process::Pid::from_raw);
+        .filter(|id| *id != 0);
     let pipe = child.stdin.take();
     let mut output = child.stdout.take();
     let work = async {
@@ -75,7 +75,7 @@ pub async fn bounded(
     if finished.is_err()
         && let Some(group) = group
     {
-        rustix::process::kill_process_group(group, rustix::process::Signal::KILL).ok();
+        nanocode_platform::unix::signal_group(group, libc::SIGKILL).ok();
     }
     finished.map_or(Ok(None), |bounded| bounded.map(Some))
 }

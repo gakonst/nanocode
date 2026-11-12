@@ -26,7 +26,8 @@ rcgen.workspace = true
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }
 rustls-native-certs.workspace = true
 rustls-platform-verifier = "0.7.0"
-rustix = { workspace = true, features = ["fs", "net", "process", "std", "stdio"] }
+libc.workspace = true
+nanocode-sys.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
@@ -35,7 +36,6 @@ nanocode-platform.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock.workspace = true
-libc.workspace = true
 serde_json.workspace = true
 seccompiler.workspace = true
 

@@ -15,7 +15,7 @@ description = "Terminal UI components for Nanocode hosts, derived from clabby/ta
 serde.workspace = true
 memchr.workspace = true
 nanocode-sync.workspace = true
-rustix = { workspace = true, features = ["event", "termios"] }
+nanocode-sys.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
 tracing.workspace = true
 

@@ -162,7 +162,6 @@ proc-macro2 = "1.0.106"
 quote = "1.0.46"
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
-rustix = { version = "1.1.4", features = ["thread"] }
 rustls-native-certs = "0.8.4"
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }

@@ -24,19 +24,10 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 nanocode-platform.workspace = true
-rustix = { workspace = true, features = ["fs", "process", "pty", "stdio", "termios"] }
+nanocode-sys.workspace = true
 
-[lints.rust]
-unsafe_code = "deny"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-missing_const_for_fn = "warn"
-use_self = "warn"
-redundant_clone = "warn"
-large_enum_variant = "allow"
-result_large_err = "allow"
-double_must_use = "allow"
+[lints]
+workspace = true
 
 [lib]
 test = false

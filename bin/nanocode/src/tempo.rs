@@ -1404,9 +1404,10 @@ impl Tempo {
             },
             ..terms
         };
+        let base = boundless_url(args);
         let boundless = Mpp::new(
-            payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &unsponsored),
-            (format!("{BOUNDLESS}/responses"), None),
+            payments.wallet(&reqwest::Url::parse(&base)?, &unsponsored),
+            (format!("{base}/responses"), None),
         )
         .identified(identity);
         let client = payments.client()?;
@@ -1432,7 +1433,7 @@ impl Tempo {
             }),
             boundless: Arc::new(move || {
                 nanocode::OpenAi::builder(nanocode::codex::OpenAiAuth::gateway_managed())
-                    .api_base_url(BOUNDLESS)
+                    .api_base_url(base.clone())
                     .transport(nanocode::codex::transport::ResponsesTransport::Https)
                     .http_client(client.clone())
                     .http_layer(boundless.clone())
@@ -1442,7 +1443,7 @@ impl Tempo {
                 format!("{TEMPO_GATEWAY}/api/auction/models"),
                 gateway_offers,
             ),
-            catalog: Listing::remote(format!("{BOUNDLESS}/models"), boundless_offers),
+            catalog: Listing::remote(format!("{}/models", boundless_url(args)), boundless_offers),
         })
     }
 
@@ -1760,6 +1761,14 @@ fn asker(args: &GatewayArgs, exec: bool) -> Asker {
     }
 }
 
+fn boundless_url(args: &GatewayArgs) -> String {
+    args.tempo_boundless_url
+        .as_deref()
+        .unwrap_or(BOUNDLESS)
+        .trim_end_matches('/')
+        .to_owned()
+}
+
 fn tool_deposit(args: &GatewayArgs) -> u128 {
     args.tempo_tool_deposit.unwrap_or(MACH / 10)
 }
@@ -1823,7 +1832,7 @@ pub(crate) fn apply(
         true => vec![
             format!("{TEMPO_GATEWAY}/v1/responses"),
             format!("{TEMPO_GATEWAY}/v1/messages"),
-            format!("{BOUNDLESS}/responses"),
+            format!("{}/responses", boundless_url(args)),
         ],
         false => Vec::new(),
     };

@@ -499,6 +499,13 @@ pub struct HandArgs {
 
     #[arg(
         long,
+        value_name = "MS",
+        help = "How long a cell runs before it yields when its call names no yield_time_ms (defaults to 10000)"
+    )]
+    pub cell_yield_ms: Option<u64>,
+
+    #[arg(
+        long,
         value_name = "FILE",
         help = "Charge for operations by the rules in this JSON file, matched first to last: {\"payee\": \"0x…\", \"describe\": \"…\", \"currency\": \"OUSD\" (default) or \"USDC.e\", \"rules\": [{\"paths\": [\"data/**\"], \"ops\": [\"read\"], \"usd\": 0.01}]}"
     )]

@@ -80,10 +80,13 @@ pub use replay::{
     MovedCells,
 };
 use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan, Restored};
-pub use spec::{exec_spec, exec_spec_with, source_with_options, wait_spec};
+pub use spec::{
+    exec_spec, exec_spec_with, exec_spec_yielding, source_with_options, wait_spec,
+    wait_spec_yielding,
+};
 
-const INITIAL_YIELD: Duration = Duration::from_secs(10);
-const DEFAULT_WAIT_YIELD: Duration = Duration::from_secs(10);
+const INITIAL_YIELD: Duration = spec::DEFAULT_YIELD;
+const DEFAULT_WAIT_YIELD: Duration = spec::DEFAULT_YIELD;
 const OBSERVER_YIELD_GRACE: Duration = Duration::from_secs(1);
 const MIN_YIELD_FOR_OBSERVER_GRACE: Duration = Duration::from_secs(10);
 use spec::{EXEC_PRAGMA_PREFIX, MAX_JS_SAFE_INTEGER};
@@ -112,6 +115,21 @@ struct Limits {
     guard: Option<CellGuard>,
 }
 
+#[derive(Clone, Copy)]
+struct Yields {
+    exec: Duration,
+    wait: Duration,
+}
+
+impl Default for Yields {
+    fn default() -> Self {
+        Self {
+            exec: INITIAL_YIELD,
+            wait: DEFAULT_WAIT_YIELD,
+        }
+    }
+}
+
 pub struct CodeModeRuntime {
     admission: Sequencer,
     admission_epoch: Arc<AtomicU64>,
@@ -125,6 +143,7 @@ pub struct CodeModeRuntime {
     prelude: Option<Arc<str>>,
     journals: Option<CellJournals>,
     limits: Limits,
+    yields: Yields,
     catalog: Atom<Option<Arc<NestedCatalog>>>,
 }
 
@@ -540,6 +559,7 @@ impl CodeModeRuntime {
                 nested: usize::MAX,
                 guard: None,
             },
+            yields: Yields::default(),
             catalog: Atom::new(None),
         }
     }
@@ -587,6 +607,13 @@ impl CodeModeRuntime {
 
     pub const fn set_cell_guard(&mut self, guard: CellGuard) {
         self.limits.guard = Some(guard);
+    }
+
+    pub const fn set_default_yield(&mut self, after: Duration) {
+        self.yields = Yields {
+            exec: after,
+            wait: after,
+        };
     }
 
     #[must_use]
@@ -950,7 +977,7 @@ impl CodeModeRuntime {
                     tools: metadata,
                     stored: stored.clone(),
                     prelude: self.prelude.is_some(),
-                    yield_time_ms: source.yield_time_ms.unwrap_or(default_wait_yield_time_ms()),
+                    yield_time_ms: source.yield_time_ms.unwrap_or(millis(self.yields.wait)),
                     max_output_tokens: Some(output_token_budget),
                     journal: nanocode_code_mode_engine::SharedJournal::new(),
                     status: nanocode_sync::Atom::new(CellStatus {
@@ -989,7 +1016,7 @@ impl CodeModeRuntime {
         let observation = Arc::clone(&cell.observation).acquire_owned().await;
         let yield_after = source
             .yield_time_ms
-            .map_or(INITIAL_YIELD, Duration::from_millis);
+            .map_or(self.yields.exec, Duration::from_millis);
         let yield_after = observer_yield_timeout(yield_after);
         let (mut execution, running) = observe_cell(
             &cell,
@@ -1091,7 +1118,10 @@ impl CodeModeRuntime {
         let span = tracing::Span::current();
         span.record("cell.id", cell_id);
         span.record("wait.terminate", arguments.terminate);
-        span.record("wait.yield_time_ms", arguments.yield_time_ms);
+        let yield_time_ms = arguments
+            .yield_time_ms
+            .unwrap_or(millis(self.yields.wait));
+        span.record("wait.yield_time_ms", yield_time_ms);
         let Some(cell) = self
             .cells
             .read(|registry| registry.live_cells.get(&cell_id).cloned())
@@ -1120,7 +1150,7 @@ impl CodeModeRuntime {
         if let Some(record) = &cell.record {
             record.update(|status| {
                 status.observer_call_id = Some(call_id.to_owned());
-                status.observer_yield_ms = Some(arguments.yield_time_ms);
+                status.observer_yield_ms = Some(yield_time_ms);
                 status.observer_since_ms = Some(replay::wall_ms());
             });
             record.persist(Vec::new()).await;
@@ -1147,7 +1177,7 @@ impl CodeModeRuntime {
             });
             return execution;
         }
-        let yield_time = Duration::from_millis(arguments.yield_time_ms);
+        let yield_time = Duration::from_millis(yield_time_ms);
         let yield_time = observer_yield_timeout(yield_time);
         let (mut execution, running) = observe_cell(
             &cell,
@@ -1417,8 +1447,8 @@ fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
 struct WaitArguments {
     #[serde(deserialize_with = "cell_id")]
     cell_id: String,
-    #[serde(default = "default_wait_yield_time_ms", deserialize_with = "integer")]
-    yield_time_ms: u64,
+    #[serde(default, deserialize_with = "requested_yield")]
+    yield_time_ms: Option<u64>,
     #[serde(default, deserialize_with = "optional_integer")]
     max_tokens: Option<usize>,
     #[serde(default)]
@@ -1453,8 +1483,14 @@ fn optional_integer<'de, D: serde::Deserializer<'de>>(
     }
 }
 
-const fn default_wait_yield_time_ms() -> u64 {
-    DEFAULT_WAIT_YIELD.as_millis() as u64
+fn requested_yield<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    integer(deserializer).map(Some)
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 impl CellRegistry {

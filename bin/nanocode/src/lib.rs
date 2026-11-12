@@ -696,6 +696,9 @@ async fn hand(args: HandArgs) -> Result<()> {
         .await?;
         tools = tools.tool(computer.js()).tool(computer.reset());
     }
+    if let Some(after) = args.cell_yield_ms {
+        tools = tools.cell_yield(std::time::Duration::from_millis(after));
+    }
     let tools = tools.build()?;
     let name = match args.name {
         Some(name) => name,

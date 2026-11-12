@@ -426,6 +426,7 @@ struct NativeToolRuntime {
     sessions: Arc<Atom<HashSet<Arc<str>>>>,
     text_pins: Option<Arc<dyn crate::TextPins>>,
     layout: crate::code_mode_description::ExecLayout,
+    cell_yield: Option<std::time::Duration>,
 }
 
 #[doc(hidden)]
@@ -488,6 +489,7 @@ impl NativeToolRuntime {
             sessions: Arc::default(),
             text_pins: None,
             layout: crate::code_mode_description::ExecLayout::default(),
+            cell_yield: None,
         }
     }
 
@@ -557,6 +559,10 @@ impl NativeToolRuntime {
         }
         if let Some(guard) = tools.cell_guard {
             self.code_mode.set_cell_guard(guard);
+        }
+        if let Some(after) = tools.cell_yield {
+            self.code_mode.set_default_yield(after);
+            self.cell_yield = Some(after);
         }
         registry.hand_calls = tools
             .hand_calls
@@ -681,17 +687,21 @@ impl NativeToolRuntime {
         let catalog = self.registry.catalog();
         let nested = &catalog.ordered;
         let provider_summaries = self.registry.code_mode_tool_summaries();
-        let mut native = vec![
-            code_mode::exec_spec_with(
-                nested,
-                &provider_summaries,
-                self.deferred_tools_guidance_enabled,
-                self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
-                false,
-                &self.layout,
-            ),
-            code_mode::wait_spec(),
-        ];
+        let exec = code_mode::exec_spec_with(
+            nested,
+            &provider_summaries,
+            self.deferred_tools_guidance_enabled,
+            self.exposure.unwrap_or_default() == ToolExposure::CodeModeOnly,
+            false,
+            &self.layout,
+        );
+        let mut native = match self.cell_yield {
+            Some(after) => vec![
+                code_mode::exec_spec_yielding(exec, after),
+                code_mode::wait_spec_yielding(after),
+            ],
+            None => vec![exec, code_mode::wait_spec()],
+        };
         if let Some(pins) = &self.text_pins {
             crate::pins::pin_code_mode(
                 pins.as_ref(),

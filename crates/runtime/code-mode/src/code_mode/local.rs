@@ -28,6 +28,7 @@ pub struct LocalCells {
     host_tools: Vec<Arc<dyn Tool>>,
     hands: Atom<Option<Hands>>,
     journals: Option<CellJournals>,
+    default_yield: Option<std::time::Duration>,
 }
 
 type Hands = (Arc<str>, Arc<dyn HandCalls>);
@@ -61,6 +62,12 @@ impl LocalCells {
         self
     }
 
+    #[must_use]
+    pub const fn default_yield(mut self, after: std::time::Duration) -> Self {
+        self.default_yield = Some(after);
+        self
+    }
+
     fn toolset(&self, tools: Vec<Arc<dyn Tool>>) -> Arc<dyn CodeModeToolset> {
         Arc::new(LocalTools::new(
             tools,
@@ -81,10 +88,13 @@ impl LocalCells {
                     Some(prelude) => runtime.with_prelude(Arc::clone(prelude)),
                     None => runtime,
                 };
-                let runtime = match &self.journals {
+                let mut runtime = match &self.journals {
                     Some(journals) => runtime.with_journals(journals.clone()),
                     None => runtime,
                 };
+                if let Some(after) = self.default_yield {
+                    runtime.set_default_yield(after);
+                }
                 Arc::new(LocalSession { runtime, turn })
             }))
         })

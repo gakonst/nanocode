@@ -85,11 +85,19 @@ pub fn exec_spec_with(
     spec
 }
 
+pub const DEFAULT_YIELD: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn wait_spec() -> ToolDefinition {
-    static SPEC: std::sync::LazyLock<ToolDefinition> = std::sync::LazyLock::new(|| {
-        ToolDefinition::function(
+    static SPEC: std::sync::LazyLock<ToolDefinition> =
+        std::sync::LazyLock::new(|| wait_spec_yielding(DEFAULT_YIELD));
+    SPEC.clone()
+}
+
+pub fn wait_spec_yielding(after: std::time::Duration) -> ToolDefinition {
+    let after = after.as_millis();
+    ToolDefinition::function(
             "wait",
-            "Waits on a yielded `exec` cell and returns new output or completion.\n- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n- `cell_id` identifies the running `exec` cell to resume.\n- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to 10000 ms.\n- `max_tokens` limits how much new output this wait call returns. Omit for unlimited output.\n- `terminate: true` stops the running cell; false or omitted waits for output.\n- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n- If the cell is still running, `wait` may yield again with the same `cell_id`.\n- If the cell has already finished, `wait` returns the completed result and closes the cell.",
+            format!("Waits on a yielded `exec` cell and returns new output or completion.\n- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n- `cell_id` identifies the running `exec` cell to resume.\n- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to {after} ms.\n- `max_tokens` limits how much new output this wait call returns. Omit for unlimited output.\n- `terminate: true` stops the running cell; false or omitted waits for output.\n- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n- If the cell is still running, `wait` may yield again with the same `cell_id`.\n- If the cell has already finished, `wait` returns the completed result and closes the cell."),
             json!({
                 "type": "object",
                 "properties": {
@@ -99,7 +107,7 @@ pub fn wait_spec() -> ToolDefinition {
                     },
                     "yield_time_ms": {
                         "type": "number",
-                        "description": "Wait before yielding more output. Defaults to 10000 ms."
+                        "description": format!("Wait before yielding more output. Defaults to {after} ms.")
                     },
                     "max_tokens": {
                         "type": "number",
@@ -114,8 +122,21 @@ pub fn wait_spec() -> ToolDefinition {
                 "additionalProperties": false
             }),
         )
-    });
-    SPEC.clone()
+}
+
+pub fn exec_spec_yielding(spec: ToolDefinition, after: std::time::Duration) -> ToolDefinition {
+    let (default, after) = (DEFAULT_YIELD.as_millis(), after.as_millis());
+    let description = spec
+        .description()
+        .replace(
+            &format!("Defaults to {default} ms"),
+            &format!("Defaults to {after} ms"),
+        )
+        .replace(
+            &format!("default {default} ms"),
+            &format!("default {after} ms"),
+        );
+    spec.with_description(description)
 }
 
 pub(crate) const EXEC_PRAGMA_PREFIX: &str = "// @exec:";

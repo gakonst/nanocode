@@ -6,7 +6,7 @@ use super::{
 use crate::{
     AsObject, Context, Py, PyExact, PyObject, PyObjectRef, PyPayload, PyRef, PyRefExact, PyResult,
     TryFromBorrowedObject, TryFromObject, VirtualMachine,
-    anystr::{self, AnyStr, AnyStrContainer, AnyStrWrapper, StringRange, adjust_indices},
+    anystr::{self, AnyStr, AnyStrContainer, AnyStrWrapper, StringRange, adjust_indices, piece},
     atomic_func,
     bytes_inner::{swapcase_ascii, title_ascii},
     cformat::cformat_string,
@@ -950,18 +950,31 @@ impl Py<PyStr> {
                 |v, s, vm| {
                     v.as_bytes()
                         .split_str(s)
-                        .map(|s| unsafe { AsciiStr::from_ascii_unchecked(s) }.to_pyobject(vm))
+                        .map(|s| {
+                            piece(
+                                unsafe { AsciiStr::from_ascii_unchecked(s) }.to_pyobject(vm),
+                                vm,
+                            )
+                        })
                         .collect()
                 },
                 |v, s, n, vm| {
                     v.as_bytes()
                         .splitn_str(n, s)
-                        .map(|s| unsafe { AsciiStr::from_ascii_unchecked(s) }.to_pyobject(vm))
+                        .map(|s| {
+                            piece(
+                                unsafe { AsciiStr::from_ascii_unchecked(s) }.to_pyobject(vm),
+                                vm,
+                            )
+                        })
                         .collect()
                 },
                 |v, n, vm| {
                     v.as_str().py_split_whitespace(n, |s| {
-                        unsafe { AsciiStr::from_ascii_unchecked(s.as_bytes()) }.to_pyobject(vm)
+                        piece(
+                            unsafe { AsciiStr::from_ascii_unchecked(s.as_bytes()) }.to_pyobject(vm),
+                            vm,
+                        )
                     })
                 },
             ),
@@ -969,17 +982,25 @@ impl Py<PyStr> {
                 args,
                 vm,
                 || zelf.as_object().to_owned(),
-                |v, s, vm| v.split(s).map(|s| vm.ctx.new_str(s).into()).collect(),
-                |v, s, n, vm| v.splitn(n, s).map(|s| vm.ctx.new_str(s).into()).collect(),
-                |v, n, vm| v.py_split_whitespace(n, |s| vm.ctx.new_str(s).into()),
+                |v, s, vm| v.split(s).map(|s| piece(vm.ctx.new_str(s), vm)).collect(),
+                |v, s, n, vm| {
+                    v.splitn(n, s)
+                        .map(|s| piece(vm.ctx.new_str(s), vm))
+                        .collect()
+                },
+                |v, n, vm| v.py_split_whitespace(n, |s| piece(vm.ctx.new_str(s), vm)),
             ),
             PyKindStr::Wtf8(w) => w.py_split(
                 args,
                 vm,
                 || zelf.as_object().to_owned(),
-                |v, s, vm| v.split(s).map(|s| vm.ctx.new_str(s).into()).collect(),
-                |v, s, n, vm| v.splitn(n, s).map(|s| vm.ctx.new_str(s).into()).collect(),
-                |v, n, vm| v.py_split_whitespace(n, |s| vm.ctx.new_str(s).into()),
+                |v, s, vm| v.split(s).map(|s| piece(vm.ctx.new_str(s), vm)).collect(),
+                |v, s, n, vm| {
+                    v.splitn(n, s)
+                        .map(|s| piece(vm.ctx.new_str(s), vm))
+                        .collect()
+                },
+                |v, n, vm| v.py_split_whitespace(n, |s| piece(vm.ctx.new_str(s), vm)),
             ),
         }?;
         Ok(elements)
@@ -991,9 +1012,13 @@ impl Py<PyStr> {
             args,
             vm,
             || zelf.as_object().to_owned(),
-            |v, s, vm| v.rsplit(s).map(|s| vm.ctx.new_str(s).into()).collect(),
-            |v, s, n, vm| v.rsplitn(n, s).map(|s| vm.ctx.new_str(s).into()).collect(),
-            |v, n, vm| v.py_rsplit_whitespace(n, |s| vm.ctx.new_str(s).into()),
+            |v, s, vm| v.rsplit(s).map(|s| piece(vm.ctx.new_str(s), vm)).collect(),
+            |v, s, n, vm| {
+                v.rsplitn(n, s)
+                    .map(|s| piece(vm.ctx.new_str(s), vm))
+                    .collect()
+            },
+            |v, n, vm| v.py_rsplit_whitespace(n, |s| piece(vm.ctx.new_str(s), vm)),
         )?;
         // Unlike Python rsplit, Rust rsplitn returns an iterator that
         // starts from the end of the string.
@@ -1470,7 +1495,10 @@ impl Py<PyStr> {
         // nanocode: the embedder's memory bound (vm/limit.rs).
         let tabs = memchr::memchr_iter(b'\t', self.as_bytes()).count();
         vm.reserve(tabs.saturating_mul(args.tabsize()))?;
-        Ok(rustpython_common::str::expandtabs(self.as_wtf8(), args.tabsize()))
+        Ok(rustpython_common::str::expandtabs(
+            self.as_wtf8(),
+            args.tabsize(),
+        ))
     }
 
     #[pymethod]
@@ -2367,9 +2395,9 @@ impl AnyStr for str {
         Self::len(self)
     }
 
-    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         // CPython split_whitespace
         let mut splits = Vec::new();
@@ -2383,19 +2411,19 @@ impl AnyStr for str {
             if count == 0 {
                 break;
             }
-            splits.push(convert(&self[last_offset..offset]));
+            splits.push(convert(&self[last_offset..offset])?);
             last_offset = offset + separator.len();
             count -= 1;
         }
         if last_offset != self.len() {
-            splits.push(convert(&self[last_offset..]));
+            splits.push(convert(&self[last_offset..])?);
         }
-        splits
+        Ok(splits)
     }
 
-    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         // CPython rsplit_whitespace
         let mut splits = Vec::new();
@@ -2409,14 +2437,14 @@ impl AnyStr for str {
             if count == 0 {
                 break;
             }
-            splits.push(convert(&self[offset + separator.len()..last_offset]));
+            splits.push(convert(&self[offset + separator.len()..last_offset])?);
             last_offset = offset;
             count -= 1;
         }
         if last_offset != 0 {
-            splits.push(convert(&self[..last_offset]));
+            splits.push(convert(&self[..last_offset])?);
         }
-        splits
+        Ok(splits)
     }
 
     fn py_islower(&self) -> bool {
@@ -2486,9 +2514,9 @@ impl AnyStr for Wtf8 {
         self.is_empty()
     }
 
-    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         // CPython split_whitespace
         let mut splits = Vec::new();
@@ -2505,19 +2533,19 @@ impl AnyStr for Wtf8 {
             if count == 0 {
                 break;
             }
-            splits.push(convert(&self[last_offset..offset]));
+            splits.push(convert(&self[last_offset..offset])?);
             last_offset = offset + separator.len_wtf8();
             count -= 1;
         }
         if last_offset != self.len() {
-            splits.push(convert(&self[last_offset..]));
+            splits.push(convert(&self[last_offset..])?);
         }
-        splits
+        Ok(splits)
     }
 
-    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         // CPython rsplit_whitespace
         let mut splits = Vec::new();
@@ -2535,14 +2563,14 @@ impl AnyStr for Wtf8 {
             if count == 0 {
                 break;
             }
-            splits.push(convert(&self[offset + separator.len_wtf8()..last_offset]));
+            splits.push(convert(&self[offset + separator.len_wtf8()..last_offset])?);
             last_offset = offset;
             count -= 1;
         }
         if last_offset != 0 {
-            splits.push(convert(&self[..last_offset]));
+            splits.push(convert(&self[..last_offset])?);
         }
-        splits
+        Ok(splits)
     }
 
     fn py_islower(&self) -> bool {
@@ -2614,9 +2642,9 @@ impl AnyStr for AsciiStr {
         self.is_empty()
     }
 
-    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         let mut splits = Vec::new();
         let mut count = maxsplit;
@@ -2626,20 +2654,20 @@ impl AnyStr for AsciiStr {
                 if count == 0 {
                     break;
                 }
-                splits.push(convert(&haystack[..offset]));
+                splits.push(convert(&haystack[..offset])?);
                 count -= 1;
             }
             haystack = &haystack[offset + 1..];
         }
         if !haystack.is_empty() {
-            splits.push(convert(haystack));
+            splits.push(convert(haystack)?);
         }
-        splits
+        Ok(splits)
     }
 
-    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         // CPython rsplit_whitespace
         let mut splits = Vec::new();
@@ -2650,15 +2678,15 @@ impl AnyStr for AsciiStr {
                 if count == 0 {
                     break;
                 }
-                splits.push(convert(&haystack[offset + 1..]));
+                splits.push(convert(&haystack[offset + 1..])?);
                 count -= 1;
             }
             haystack = &haystack[..offset];
         }
         if !haystack.is_empty() {
-            splits.push(convert(haystack));
+            splits.push(convert(haystack)?);
         }
-        splits
+        Ok(splits)
     }
 }
 

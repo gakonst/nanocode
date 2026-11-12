@@ -2,7 +2,7 @@
 use crate::{
     AsObject, Py, PyObject, PyObjectRef, PyResult, TryFromBorrowedObject, TryFromObject,
     VirtualMachine,
-    anystr::{self, AnyStr, AnyStrContainer, AnyStrWrapper},
+    anystr::{self, AnyStr, AnyStrContainer, AnyStrWrapper, piece},
     builtins::{
         PyBaseExceptionRef, PyByteArray, PyBytes, PyBytesRef, PyInt, PyIntRef, PyList, PyListRef,
         PyStr, PyStrRef, PyTuple, PyTupleRef, pystr, pystr::PyUtf8StrRef,
@@ -854,9 +854,13 @@ impl PyBytesInner {
             options,
             vm,
             || convert(&self.elements, vm),
-            |v, s, vm| v.split_str(s).map(|v| convert(v, vm)).collect(),
-            |v, s, n, vm| v.splitn_str(n, s).map(|v| convert(v, vm)).collect(),
-            |v, n, vm| v.py_split_whitespace(n, |v| convert(v, vm)),
+            |v, s, vm| v.split_str(s).map(|v| piece(convert(v, vm), vm)).collect(),
+            |v, s, n, vm| {
+                v.splitn_str(n, s)
+                    .map(|v| piece(convert(v, vm), vm))
+                    .collect()
+            },
+            |v, n, vm| v.py_split_whitespace(n, |v| piece(convert(v, vm), vm)),
         )?;
         Ok(elements)
     }
@@ -874,9 +878,13 @@ impl PyBytesInner {
             options,
             vm,
             || convert(&self.elements, vm),
-            |v, s, vm| v.rsplit_str(s).map(|v| convert(v, vm)).collect(),
-            |v, s, n, vm| v.rsplitn_str(n, s).map(|v| convert(v, vm)).collect(),
-            |v, n, vm| v.py_rsplit_whitespace(n, |v| convert(v, vm)),
+            |v, s, vm| v.rsplit_str(s).map(|v| piece(convert(v, vm), vm)).collect(),
+            |v, s, n, vm| {
+                v.rsplitn_str(n, s)
+                    .map(|v| piece(convert(v, vm), vm))
+                    .collect()
+            },
+            |v, n, vm| v.py_rsplit_whitespace(n, |v| piece(convert(v, vm), vm)),
         )?;
         elements.reverse();
         Ok(elements)
@@ -1269,9 +1277,9 @@ impl AnyStr for [u8] {
         Self::len(self)
     }
 
-    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         let mut splits = Vec::new();
         let mut count = maxsplit;
@@ -1281,20 +1289,20 @@ impl AnyStr for [u8] {
                 if count == 0 {
                     break;
                 }
-                splits.push(convert(&haystack[..offset]));
+                splits.push(convert(&haystack[..offset])?);
                 count -= 1;
             }
             haystack = &haystack[offset + 1..];
         }
         if !haystack.is_empty() {
-            splits.push(convert(haystack));
+            splits.push(convert(haystack)?);
         }
-        splits
+        Ok(splits)
     }
 
-    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef,
+        F: Fn(&Self) -> PyResult<PyObjectRef>,
     {
         let mut splits = Vec::new();
         let mut count = maxsplit;
@@ -1304,15 +1312,15 @@ impl AnyStr for [u8] {
                 if count == 0 {
                     break;
                 }
-                splits.push(convert(&haystack[offset + 1..]));
+                splits.push(convert(&haystack[offset + 1..])?);
                 count -= 1;
             }
             haystack = &haystack[..offset];
         }
         if !haystack.is_empty() {
-            splits.push(convert(haystack));
+            splits.push(convert(haystack)?);
         }
-        splits
+        Ok(splits)
     }
 }
 

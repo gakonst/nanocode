@@ -148,6 +148,11 @@ pub(crate) trait AnyChar: Copy {
     fn bytes_len(self) -> usize;
 }
 
+pub(crate) fn piece(made: impl Into<PyObjectRef>, vm: &VirtualMachine) -> PyResult<PyObjectRef> {
+    vm.step()?;
+    Ok(made.into())
+}
+
 pub(crate) trait AnyStr {
     type Char: AnyChar;
     type Container: AnyStrContainer<Self> + Extend<Self::Char>;
@@ -186,9 +191,9 @@ pub(crate) trait AnyStr {
     ) -> PyResult<Vec<PyObjectRef>>
     where
         T: TryFromObject + AnyStrWrapper<Self>,
-        SP: Fn(&Self, &Self, &VirtualMachine) -> Vec<PyObjectRef>,
-        SN: Fn(&Self, &Self, usize, &VirtualMachine) -> Vec<PyObjectRef>,
-        SW: Fn(&Self, isize, &VirtualMachine) -> Vec<PyObjectRef>,
+        SP: Fn(&Self, &Self, &VirtualMachine) -> PyResult<Vec<PyObjectRef>>,
+        SN: Fn(&Self, &Self, usize, &VirtualMachine) -> PyResult<Vec<PyObjectRef>>,
+        SW: Fn(&Self, isize, &VirtualMachine) -> PyResult<Vec<PyObjectRef>>,
     {
         if args.sep.as_ref().is_some_and(|sep| sep.is_empty()) {
             return Err(vm.new_value_error("empty separator"));
@@ -207,14 +212,14 @@ pub(crate) trait AnyStr {
         } else {
             split_whitespace(self, args.maxsplit, vm)
         };
-        Ok(splits)
+        splits
     }
-    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+    fn py_split_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef;
-    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> Vec<PyObjectRef>
+        F: Fn(&Self) -> PyResult<PyObjectRef>;
+    fn py_rsplit_whitespace<F>(&self, maxsplit: isize, convert: F) -> PyResult<Vec<PyObjectRef>>
     where
-        F: Fn(&Self) -> PyObjectRef;
+        F: Fn(&Self) -> PyResult<PyObjectRef>;
 
     #[inline]
     fn py_starts_ends_with<'a, T, F>(

@@ -2609,6 +2609,7 @@ impl VirtualMachine {
     /// frame limit `sys.setrecursionlimit()` sets, so nesting counted here does
     /// not come out of what Python code has left to call with.
     pub fn with_recursion<R, F: FnOnce() -> PyResult<R>>(&self, _where: &str, f: F) -> PyResult<R> {
+        self.step()?;
         // `check_c_stack_overflow()` answers no unconditionally where the stack
         // pointer cannot be read, which would leave this guard with nothing to
         // stop. A count of the nesting stands in for the measurement there.

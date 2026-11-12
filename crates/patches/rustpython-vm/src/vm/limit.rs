@@ -55,6 +55,14 @@ impl VirtualMachine {
         false
     }
 
+    #[inline]
+    pub fn step(&self) -> PyResult<()> {
+        if self.spend() {
+            return self.refuel();
+        }
+        Ok(())
+    }
+
     /// Asks the limiter for more fuel. Fails with what it refused with, now and on
     /// every later call until [`Self::set_limiter`].
     #[cold]

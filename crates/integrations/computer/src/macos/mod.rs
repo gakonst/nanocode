@@ -1,7 +1,8 @@
 mod ax;
 
 use crate::{
-    App, Backend, Capabilities, Chord, Direction, Node, Press, Read, Selection, keys::mac,
+    App, Backend, Capabilities, Chord, Direction, Node, Pointer, Press, Read, Selection, Target,
+    keys::{Key, Modifiers, mac},
 };
 use ax::{
     AX_ACTION_UNSUPPORTED, AX_API_DISABLED, AX_ATTRIBUTE_UNSUPPORTED, AX_CANNOT_COMPLETE,
@@ -11,6 +12,7 @@ use core_foundation::base::CFType;
 use std::{
     env, fs,
     process::Command,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -21,6 +23,10 @@ const READ_BUDGET: Duration = Duration::from_secs(5);
 const INTERACTIVE: &str = "AXButton AXCheckBox AXRadioButton AXPopUpButton AXMenuButton AXComboBox AXTextField AXTextArea AXSlider AXIncrementor AXLink AXMenuItem AXMenuBarItem AXDisclosureTriangle AXRow AXCell AXScrollArea AXColorWell AXDateField AXTimeField AXSegmentedControl AXTab";
 const ACTIVATING: &str = "AXPress AXShowMenu AXConfirm AXPick AXIncrement AXOpen";
 const SECURE: &str = "AXSecureTextField";
+const UNMAPPED_KEY: u16 = 0;
+const KEYS_PER_PAUSE: usize = 16;
+const TYPING_PAUSE: Duration = Duration::from_millis(8);
+const TEXT_ENTRY: &str = "AXTextField AXTextArea AXComboBox";
 const LOCKED: &str = "The screen is locked, and macOS hides every app's windows from accessibility until it is unlocked, so nothing ran. Try again once the Mac is unlocked, or continue without computer use.";
 const NODE: [&str; 9] = [
     "AXRole",
@@ -38,9 +44,17 @@ const NODE: [&str; 9] = [
 pub struct Ax {
     host: String,
     watching: Option<ax::Observer>,
+    shown: bool,
 }
 
 impl Ax {
+    pub(crate) fn shown() -> Self {
+        Self {
+            shown: true,
+            ..Self::default()
+        }
+    }
+
     fn no_permission(&self) -> String {
         format!(
             "Computer use needs Accessibility permission for {} (System Settings › Privacy & Security › Accessibility), so nothing ran. Ask the user to grant it, or continue without it.",
@@ -65,7 +79,7 @@ impl Backend for Ax {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            pointer: false,
+            pointer: true,
             screenshots: true,
             diffs: false,
             policy: false,
@@ -140,8 +154,11 @@ impl Backend for Ax {
         } else {
             ("-a", &app.path)
         };
+        let hidden = if self.shown { None } else { Some("-j") };
         let launched = Command::new("/usr/bin/open")
-            .args(["-g", "-j", flag, target])
+            .arg("-g")
+            .args(hidden)
+            .args([flag, target])
             .output()
             .map_err(|error| {
                 format!(
@@ -162,14 +179,7 @@ impl Backend for Ax {
     fn read(&mut self, app: &App) -> Result<Read<Element>, String> {
         let ax = Element::application(app.pid as i32)
             .ok_or_else(|| format!("{} could not be reached, so nothing ran.", app.name))?;
-        let window = ["AXFocusedWindow", "AXMainWindow"]
-            .into_iter()
-            .find_map(|attribute| ax.element(attribute).filter(Element::is_window))
-            .or_else(|| {
-                ax.elements("AXWindows", MAX_CHILDREN)
-                    .into_iter()
-                    .find(Element::is_window)
-            });
+        let window = window_of(&ax);
         let focused = ax.element("AXFocusedUIElement");
         let mut budget = Budget {
             nodes: 0,
@@ -331,7 +341,10 @@ impl Backend for Ax {
     }
 
     fn type_text(&mut self, app: &App, focused: &Element, text: &str) -> Result<String, String> {
-        if focused.text("AXSubrole").as_deref() != Some(SECURE) {
+        let entry = focused
+            .text("AXRole")
+            .is_some_and(|role| TEXT_ENTRY.split(' ').any(|known| known == role));
+        if entry && focused.text("AXSubrole").as_deref() != Some(SECURE) {
             match focused.set_text("AXSelectedText", text) {
                 AX_SUCCESS => return Ok("Typed text.".into()),
                 AX_ATTRIBUTE_UNSUPPORTED | AX_NOT_IMPLEMENTED => {}
@@ -343,7 +356,7 @@ impl Backend for Ax {
                 }
             }
         }
-        ax::type_keys(app.pid as i32, text);
+        type_keys(app.pid, text);
         Ok("Typed text as keys.".into())
     }
 
@@ -369,6 +382,136 @@ impl Backend for Ax {
         }
         ax::screenshot(window, max)
     }
+
+    fn pointer(
+        &mut self,
+        app: &App,
+        window: Option<&Element>,
+        pointer: Pointer<'_, Element>,
+    ) -> Result<String, String> {
+        let pid = app.pid as i32;
+        let id = window.and_then(Element::window_id);
+        match pointer {
+            Pointer::Click { at, button, count } => {
+                ax::click(pid, id, place(window, at)?, button, count);
+                Ok("Clicked.".into())
+            }
+            Pointer::Drag { from, to } => {
+                let from = place(window, Target::Point(from.0, from.1))?;
+                let to = place(window, Target::Point(to.0, to.1))?;
+                ax::drag(pid, id, from, to);
+                Ok("Dragged.".into())
+            }
+        }
+    }
+}
+
+fn place(window: Option<&Element>, at: Target<'_, Element>) -> Result<(f64, f64), String> {
+    match at {
+        Target::Point(x, y) => window
+            .and_then(Element::frame)
+            .map(|(left, top, _, _)| (left + x, top + y))
+            .ok_or_else(|| "The app's window has no place on screen, so nothing ran.".into()),
+        Target::Element(element) => element
+            .frame()
+            .map(|(left, top, width, height)| (left + width / 2.0, top + height / 2.0))
+            .ok_or_else(|| "That element has no place on screen, so nothing ran.".into()),
+    }
+}
+
+fn window_of(ax: &Element) -> Option<Element> {
+    ["AXFocusedWindow", "AXMainWindow"]
+        .into_iter()
+        .find_map(|attribute| ax.element(attribute).filter(Element::is_window))
+        .or_else(|| {
+            ax.elements("AXWindows", MAX_CHILDREN)
+                .into_iter()
+                .find(Element::is_window)
+        })
+}
+
+pub(crate) use ax::{request_screen_recording, request_trust, screen_recording, trusted};
+
+pub(crate) fn window(pid: i64) -> Option<Element> {
+    window_of(&Element::application(pid as i32)?)
+}
+
+pub(crate) fn focused(pid: i64) -> Option<Element> {
+    Element::application(pid as i32)?.element("AXFocusedUIElement")
+}
+
+pub(crate) fn title(window: &Element) -> Option<String> {
+    window.text("AXTitle")
+}
+
+pub(crate) fn window_id(window: &Element) -> Option<u32> {
+    window.window_id()
+}
+
+pub(crate) fn type_keys(pid: i64, text: &str) {
+    let mut units = [0u16; 2];
+    for (typed, c) in text.chars().enumerate() {
+        let chord = Chord {
+            key: Key::Char(c),
+            modifiers: Modifiers::default(),
+        };
+        let (code, flags) = mac::code(&chord).unwrap_or((UNMAPPED_KEY, 0));
+        let unit = c.encode_utf16(&mut units);
+        for down in [true, false] {
+            ax::post_key(pid as i32, code, flags, down, Some(unit));
+        }
+        if typed % KEYS_PER_PAUSE == KEYS_PER_PAUSE - 1 {
+            thread::sleep(TYPING_PAUSE);
+        }
+    }
+}
+
+pub(crate) fn scroll(
+    pid: i64,
+    window: Option<&Element>,
+    at: Target<'_, Element>,
+    horizontal: f64,
+    vertical: f64,
+) -> Result<String, String> {
+    let at = place(window, at)?;
+    let id = window.and_then(Element::window_id);
+    ax::scroll(
+        pid as i32,
+        id,
+        at,
+        horizontal.round() as i32,
+        vertical.round() as i32,
+    );
+    Ok("Scrolled.".into())
+}
+
+pub(crate) fn page(window: Option<&Element>) -> Option<(f64, f64)> {
+    window
+        .and_then(Element::frame)
+        .map(|(_, _, width, height)| (width, height))
+}
+
+pub(crate) fn catalog() -> Vec<App> {
+    app_dirs()
+        .iter()
+        .filter_map(|dir| fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name.ends_with(".app")
+                .then(|| entry.path().to_string_lossy().into_owned())
+        })
+        .map(|path| {
+            let (id, name, background) = ax::bundle_info(&path);
+            App {
+                name,
+                id,
+                path,
+                background,
+                ..App::default()
+            }
+        })
+        .collect()
 }
 
 struct Budget {
@@ -483,15 +626,7 @@ fn app_bundle(path: &str) -> Option<&str> {
 
 fn installed(name: &str) -> Option<String> {
     let file = format!("{}.app", name.trim_end_matches(".app"));
-    let home = env::var("HOME").unwrap_or_default();
-    let dirs = [
-        "/Applications".to_owned(),
-        "/Applications/Utilities".to_owned(),
-        "/System/Applications".to_owned(),
-        "/System/Applications/Utilities".to_owned(),
-        format!("{home}/Applications"),
-    ];
-    dirs.iter().find_map(|dir| {
+    app_dirs().iter().find_map(|dir| {
         fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
             let entry_name = entry.file_name().into_string().ok()?;
             entry_name
@@ -499,4 +634,15 @@ fn installed(name: &str) -> Option<String> {
                 .then(|| format!("{dir}/{entry_name}"))
         })
     })
+}
+
+fn app_dirs() -> [String; 5] {
+    let home = env::var("HOME").unwrap_or_default();
+    [
+        "/Applications".to_owned(),
+        "/Applications/Utilities".to_owned(),
+        "/System/Applications".to_owned(),
+        "/System/Applications/Utilities".to_owned(),
+        format!("{home}/Applications"),
+    ]
 }

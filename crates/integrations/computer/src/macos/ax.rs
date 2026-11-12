@@ -1,6 +1,6 @@
 #![allow(unsafe_code, non_upper_case_globals)]
 
-use crate::state::shown_units;
+use crate::{Button, state::shown_units};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core_foundation::{
     array::CFArray,
@@ -30,7 +30,7 @@ use std::{
     ffi::c_void,
     hash::{Hash, Hasher},
     ptr, slice,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicI64, AtomicUsize, Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -44,6 +44,8 @@ pub const AX_ACTION_UNSUPPORTED: AXError = -25206;
 pub const AX_NOT_IMPLEMENTED: AXError = -25208;
 pub const AX_API_DISABLED: AXError = -25211;
 const AX_NO_VALUE: AXError = -25212;
+const AX_POINT: u32 = 1;
+const AX_SIZE: u32 = 2;
 const AX_RANGE: u32 = 4;
 const AX_ERROR_VALUE: u32 = 5;
 const MESSAGING_TIMEOUT: f32 = 1.0;
@@ -63,6 +65,20 @@ const CHANGES: [&str; 10] = [
 ];
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct CGRect {
     x: f64,
@@ -73,7 +89,10 @@ struct CGRect {
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
+    static kAXTrustedCheckOptionPrompt: CFStringRef;
     fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+    fn AXValueGetValue(value: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
     fn AXUIElementGetTypeID() -> CFTypeID;
     fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
     fn AXUIElementCopyAttributeValue(
@@ -127,6 +146,19 @@ unsafe extern "C" {
         image_option: u32,
     ) -> CFTypeRef;
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+    fn CGEventCreateMouseEvent(source: CFTypeRef, kind: u32, at: CGPoint, button: u32)
+    -> CFTypeRef;
+    fn CGEventCreateScrollWheelEvent(
+        source: CFTypeRef,
+        units: u32,
+        count: u32,
+        wheel: i32,
+        ...
+    ) -> CFTypeRef;
+    fn CGEventSetLocation(event: CFTypeRef, at: CGPoint);
+    fn CGEventSourceCreate(state: i32) -> CFTypeRef;
+    fn CGEventSetIntegerValueField(event: CFTypeRef, field: u32, value: i64);
     fn CGSessionCopyCurrentDictionary() -> CFDictionaryRef;
 }
 
@@ -162,6 +194,23 @@ unsafe extern "C" {
 
 pub fn trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
+}
+
+pub fn request_trust() -> bool {
+    let prompt = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let options = CFDictionary::from_CFType_pairs(&[(
+        prompt.as_CFType(),
+        CFBoolean::true_value().as_CFType(),
+    )]);
+    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
+}
+
+pub fn screen_recording() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+pub fn request_screen_recording() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
 }
 
 pub fn locked() -> bool {
@@ -395,10 +444,26 @@ impl Element {
         !matches!(self.copy("AXRole"), Err(AX_INVALID))
     }
 
+    pub fn frame(&self) -> Option<(f64, f64, f64, f64)> {
+        let [position, size] = self.many(&["AXPosition", "AXSize"]);
+        let position: CGPoint = geometry(&position?, AX_POINT)?;
+        let size: CGSize = geometry(&size?, AX_SIZE)?;
+        Some((position.x, position.y, size.width, size.height))
+    }
+
     pub fn window_id(&self) -> Option<u32> {
         let mut id = 0u32;
         (unsafe { _AXUIElementGetWindow(self.0, &mut id) } == AX_SUCCESS && id != 0).then_some(id)
     }
+}
+
+fn geometry<T: Default>(value: &CFType, kind: u32) -> Option<T> {
+    let mut out = T::default();
+    let read = unsafe {
+        CFGetTypeID(value.as_CFTypeRef()) == AXValueGetTypeID()
+            && AXValueGetValue(value.as_CFTypeRef(), kind, (&raw mut out).cast())
+    };
+    read.then_some(out)
 }
 
 impl Clone for Element {
@@ -552,12 +617,140 @@ pub fn post_key(pid: i32, code: u16, flags: u64, down: bool, text: Option<&[u16]
     }
 }
 
-pub fn type_keys(pid: i32, text: &str) {
-    let units: Vec<u16> = text.encode_utf16().collect();
-    for chunk in units.chunks(16) {
-        post_key(pid, 0, 0, true, Some(chunk));
-        post_key(pid, 0, 0, false, Some(chunk));
-        thread::sleep(Duration::from_millis(8));
+const HID_SYSTEM_STATE: i32 = 1;
+const MOUSE_MOVED: u32 = 5;
+const LEFT_MOUSE_DOWN: u32 = 1;
+const LEFT_MOUSE_UP: u32 = 2;
+const RIGHT_MOUSE_DOWN: u32 = 3;
+const RIGHT_MOUSE_UP: u32 = 4;
+const LEFT_MOUSE_DRAGGED: u32 = 6;
+const OTHER_MOUSE_DOWN: u32 = 25;
+const OTHER_MOUSE_UP: u32 = 26;
+const MOUSE_BUTTON_LEFT: u32 = 0;
+const MOUSE_BUTTON_RIGHT: u32 = 1;
+const MOUSE_BUTTON_CENTER: u32 = 2;
+const FIELD_CLICK_STATE: u32 = 1;
+const FIELD_BUTTON_NUMBER: u32 = 3;
+const FIELD_SUBTYPE: u32 = 7;
+const FIELD_TARGET_PID: u32 = 40;
+const FIELD_WINDOW_NUMBER: u32 = 51;
+const FIELD_CLICK_GROUP: u32 = 58;
+const FIELD_WINDOW_UNDER_POINTER: u32 = 91;
+const FIELD_WINDOW_THAT_CAN_HANDLE: u32 = 92;
+const SUBTYPE_TOUCH: i64 = 3;
+const SCROLL_PIXELS: u32 = 0;
+const SCROLL_AXES: u32 = 2;
+const PRIMER_SETTLE: Duration = Duration::from_millis(12);
+const PRESS_HOLD: Duration = Duration::from_millis(28);
+const CLICK_GAP: Duration = Duration::from_millis(80);
+
+static GESTURES: AtomicI64 = AtomicI64::new(0);
+
+const fn mouse_kinds(button: Button) -> (u32, u32, u32) {
+    match button {
+        Button::Left => (LEFT_MOUSE_DOWN, LEFT_MOUSE_UP, MOUSE_BUTTON_LEFT),
+        Button::Right => (RIGHT_MOUSE_DOWN, RIGHT_MOUSE_UP, MOUSE_BUTTON_RIGHT),
+        Button::Middle => (OTHER_MOUSE_DOWN, OTHER_MOUSE_UP, MOUSE_BUTTON_CENTER),
+    }
+}
+
+struct Gesture {
+    pid: i32,
+    window: Option<u32>,
+    group: i64,
+}
+
+impl Gesture {
+    fn new(pid: i32, window: Option<u32>) -> Self {
+        Self {
+            pid,
+            window,
+            group: GESTURES.fetch_add(1, Ordering::Relaxed) + 1,
+        }
+    }
+
+    fn stamp(&self, event: CFTypeRef) {
+        unsafe {
+            CGEventSetIntegerValueField(event, FIELD_TARGET_PID, self.pid.into());
+            if let Some(window) = self.window {
+                CGEventSetIntegerValueField(event, FIELD_WINDOW_NUMBER, window.into());
+                CGEventSetIntegerValueField(event, FIELD_CLICK_GROUP, self.group);
+                CGEventSetIntegerValueField(event, FIELD_WINDOW_UNDER_POINTER, window.into());
+                CGEventSetIntegerValueField(event, FIELD_WINDOW_THAT_CAN_HANDLE, window.into());
+            }
+        }
+    }
+
+    fn post(&self, event: CFTypeRef) {
+        if event.is_null() {
+            return;
+        }
+        self.stamp(event);
+        unsafe {
+            CGEventPostToPid(self.pid, event);
+            CFRelease(event);
+        }
+    }
+
+    fn mouse(&self, kind: u32, at: (f64, f64), button: u32, clicks: u32) {
+        unsafe {
+            let source = CGEventSourceCreate(HID_SYSTEM_STATE);
+            let event = CGEventCreateMouseEvent(source, kind, CGPoint { x: at.0, y: at.1 }, button);
+            if !source.is_null() {
+                CFRelease(source);
+            }
+            if !event.is_null() {
+                CGEventSetIntegerValueField(event, FIELD_CLICK_STATE, clicks.into());
+                CGEventSetIntegerValueField(event, FIELD_BUTTON_NUMBER, button.into());
+                CGEventSetIntegerValueField(event, FIELD_SUBTYPE, SUBTYPE_TOUCH);
+            }
+            self.post(event);
+        }
+    }
+
+    fn prime(&self, at: (f64, f64), button: u32) {
+        self.mouse(MOUSE_MOVED, at, button, 0);
+        thread::sleep(PRIMER_SETTLE);
+    }
+}
+
+pub fn click(pid: i32, window: Option<u32>, at: (f64, f64), button: Button, count: u32) {
+    let (down, up, number) = mouse_kinds(button);
+    let gesture = Gesture::new(pid, window);
+    gesture.prime(at, number);
+    for clicks in 1..=count {
+        gesture.mouse(down, at, number, clicks);
+        thread::sleep(PRESS_HOLD);
+        gesture.mouse(up, at, number, clicks);
+        thread::sleep(CLICK_GAP);
+    }
+}
+
+pub fn drag(pid: i32, window: Option<u32>, from: (f64, f64), to: (f64, f64)) {
+    let (down, up, number) = mouse_kinds(Button::Left);
+    let gesture = Gesture::new(pid, window);
+    gesture.prime(from, number);
+    gesture.mouse(down, from, number, 1);
+    thread::sleep(PRESS_HOLD);
+    gesture.mouse(LEFT_MOUSE_DRAGGED, to, number, 1);
+    thread::sleep(PRESS_HOLD);
+    gesture.mouse(up, to, number, 1);
+}
+
+pub fn scroll(pid: i32, window: Option<u32>, at: (f64, f64), horizontal: i32, vertical: i32) {
+    let gesture = Gesture::new(pid, window);
+    gesture.prime(at, MOUSE_BUTTON_LEFT);
+    unsafe {
+        let source = CGEventSourceCreate(HID_SYSTEM_STATE);
+        let event =
+            CGEventCreateScrollWheelEvent(source, SCROLL_PIXELS, SCROLL_AXES, vertical, horizontal);
+        if !source.is_null() {
+            CFRelease(source);
+        }
+        if !event.is_null() {
+            CGEventSetLocation(event, CGPoint { x: at.0, y: at.1 });
+        }
+        gesture.post(event);
     }
 }
 

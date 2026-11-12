@@ -20,14 +20,11 @@ nanocode-mcp-tools.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt", "sync", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation.workspace = true
 core-foundation-sys.workspace = true
-cua-driver-core.workspace = true
-cua-driver-sdk.workspace = true
-cursor-overlay.workspace = true
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

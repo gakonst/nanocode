@@ -39,8 +39,33 @@ struct Snapshot<E> {
     typing: Option<E>,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Change {
+    Whole,
+    Diff,
+    Same,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct View<E> {
+    pub heading: Vec<String>,
+    pub body: Vec<String>,
+    pub title: Option<String>,
+    pub change: Change,
+    pub window: Option<E>,
+}
+
+impl<E> View<E> {
+    pub(crate) fn text(&self) -> String {
+        [self.heading.as_slice(), self.body.as_slice()]
+            .concat()
+            .join("\n")
+    }
+}
+
 struct Seen<E> {
-    text: String,
+    view: View<E>,
     snapshot: Snapshot<E>,
 }
 
@@ -284,6 +309,11 @@ impl<B: Backend> Engine<B> {
         diff: bool,
         watching: bool,
     ) -> Result<(String, Option<B::Element>), String> {
+        self.look(app, diff, watching)
+            .map(|view| (view.text(), view.window))
+    }
+
+    fn look(&mut self, app: &App, diff: bool, watching: bool) -> Result<View<B::Element>, String> {
         let before = self.apps.remove(&app.pid);
         let since = before.as_ref().filter(|_| diff);
         let mut seen = self.seen(app, since);
@@ -291,11 +321,10 @@ impl<B: Backend> Engine<B> {
             seen = self.seen(app, since);
         }
         match seen {
-            Ok(Seen { text, mut snapshot }) => {
+            Ok(Seen { view, mut snapshot }) => {
                 snapshot.typing = before.and_then(|before| before.typing);
-                let window = snapshot.window.clone();
                 self.apps.insert(app.pid, snapshot);
-                Ok((text, window))
+                Ok(view)
             }
             Err(why) => {
                 if let Some(before) = before {
@@ -312,15 +341,22 @@ impl<B: Backend> Engine<B> {
         since: Option<&Snapshot<B::Element>>,
     ) -> Result<Seen<B::Element>, String> {
         let read = self.backend.read(app)?;
-        let title = match &read.title {
-            Some(title) => format!("{} — window \"{title}\"", app.name),
-            None => app.name.clone(),
-        };
-        let mut text = heading(&title, read.complete);
+        let heading = heading(
+            &match &read.title {
+                Some(title) => format!("{} — window \"{title}\"", app.name),
+                None => app.name.clone(),
+            },
+            read.complete,
+        );
         let Some(root) = read.root else {
-            text.push(read.note.unwrap_or_else(|| NO_WINDOW.into()));
             return Ok(Seen {
-                text: text.join("\n"),
+                view: View {
+                    heading,
+                    body: vec![read.note.unwrap_or_else(|| NO_WINDOW.into())],
+                    title: read.title,
+                    change: Change::Whole,
+                    window: read.window.clone(),
+                },
                 snapshot: Snapshot {
                     shown: Vec::new(),
                     next: 0,
@@ -337,23 +373,26 @@ impl<B: Backend> Engine<B> {
             .filter(|since| since.window.is_some() && since.window == read.window)
             .map(|since| numbered(&lines, Some(since)))
             .filter(|(_, _, changes)| size(changes) < size(&shown));
-        let (indexes, next) = match changed {
-            Some((indexes, next, changes)) => {
-                if changes.is_empty() {
-                    text.push(UNCHANGED.into());
-                } else {
-                    text.push(SINCE.into());
-                    text.extend(changes);
-                }
-                (indexes, next)
+        let (indexes, next, body, change) = match changed {
+            Some((indexes, next, changes)) if changes.is_empty() => {
+                (indexes, next, vec![UNCHANGED.into()], Change::Same)
             }
-            None => {
-                text.extend(shown);
-                (fresh, count)
-            }
+            Some((indexes, next, changes)) => (
+                indexes,
+                next,
+                std::iter::once(SINCE.into()).chain(changes).collect(),
+                Change::Diff,
+            ),
+            None => (fresh, count, shown, Change::Whole),
         };
         Ok(Seen {
-            text: text.join("\n"),
+            view: View {
+                heading,
+                body,
+                title: read.title,
+                change,
+                window: read.window.clone(),
+            },
             snapshot: Snapshot {
                 shown: lines
                     .into_iter()
@@ -567,6 +606,75 @@ impl<B: Backend> Engine<B> {
         let done = self.backend.press(&element, Press::Primary)?;
         self.typing(app, Some(&element));
         Ok(done)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<B: Backend> Engine<B> {
+    pub(crate) fn running(&mut self, pid: i64) -> Result<App, String> {
+        self.backend.ready(&self.host)?;
+        let app = self
+            .backend
+            .apps()
+            .into_iter()
+            .find(|app| app.pid == pid)
+            .ok_or_else(|| {
+                format!(
+                    "No running app has pid {pid}, so nothing ran; it may have quit. List apps with list_apps."
+                )
+            })?;
+        self.permitted(&app)
+            .map_err(|why| format!("{}: {why}", app.name))?;
+        Ok(app)
+    }
+
+    pub(crate) fn open(&mut self, wanted: &str) -> Result<App, String> {
+        let app = self.resolve(wanted, true)?;
+        self.permitted(&app)
+            .map_err(|why| format!("{}: {why}", app.name))?;
+        Ok(app)
+    }
+
+    pub(crate) fn observe(&mut self, app: &App, diff: bool) -> Result<View<B::Element>, String> {
+        self.look(app, diff, false)
+    }
+
+    pub(crate) fn perform(
+        &mut self,
+        action: &str,
+        input: &Value,
+        app: &App,
+    ) -> Result<String, String> {
+        let watching = self.backend.watch(app);
+        let done = self.act(action, input, app);
+        match &done {
+            Ok(_) if watching => {
+                self.backend.settle(self.settle, QUIET);
+            }
+            Ok(_) => thread::sleep(self.settle),
+            Err(_) => {}
+        }
+        if watching {
+            self.backend.unwatch();
+        }
+        done
+    }
+
+    pub(crate) fn element(&mut self, app: &App, index: u64) -> Result<B::Element, String> {
+        self.target(app, &serde_json::json!({"element_index": index}))
+    }
+
+    pub(crate) fn refocus(&mut self, app: &App, focused: Option<B::Element>) {
+        self.apps
+            .entry(app.pid)
+            .or_insert_with(|| Snapshot {
+                shown: Vec::new(),
+                next: 0,
+                focused: None,
+                window: None,
+                typing: None,
+            })
+            .focused = focused;
     }
 }
 

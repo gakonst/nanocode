@@ -1895,8 +1895,8 @@ name = "nanocode-platform"
 version = "0.7.0"
 dependencies = [
  "getrandom 0.4.3",
- "libc",
  "nanocode-digest",
+ "nanocode-sys",
  "serde",
  "tokio",
 ]

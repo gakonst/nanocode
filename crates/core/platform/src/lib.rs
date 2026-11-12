@@ -4,8 +4,17 @@ mod host;
 pub use host::{Host, Instant, LocalFuture, install, spawn_local};
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
-pub mod unix;
+pub mod unix {
+    #[cfg(target_vendor = "apple")]
+    pub use nanocode_sys::unix::barrier_sync_file;
+    #[cfg(target_os = "linux")]
+    pub use nanocode_sys::unix::forbid_core_dumps;
+    pub use nanocode_sys::unix::{
+        SystemRelease, UserEntry, available_bytes, host_name, probe_process, process_group,
+        redirect_output, signal_group, signal_process, sync_file, system_release, thread_cpu_time,
+        user_entry, user_id,
+    };
+}
 
 mod http_date;
 pub use http_date::{HttpDateError, parse_http_date};

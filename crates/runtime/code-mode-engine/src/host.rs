@@ -379,7 +379,10 @@ impl EmbeddedHost {
         instance.seed_random(seed).map_err(failure)?;
         #[cfg(not(target_family = "wasm"))]
         instance
-            .set_time_zone_offset(nanocode_platform::utc_offset_seconds(nanocode_platform::system_time()) / SECONDS_PER_MINUTE)
+            .set_time_zone_offset(
+                nanocode_platform::utc_offset_seconds(nanocode_platform::system_time())
+                    / SECONDS_PER_MINUTE,
+            )
             .map_err(failure)?;
         instance
             .start_export(BOOTSTRAP_MODULE, RUN_CELL, &[Value::Str(source)])

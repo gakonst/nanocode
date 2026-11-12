@@ -184,18 +184,16 @@ fn build(
 }
 
 fn compile(builder: Builder) -> Result<Snapshot, Unprepared> {
-    builder
-        .build()
-        .map_err(|error| match error {
-            djs_embed::Error::Syntax { source, message } if source == PRELUDE_SCRIPT => {
-                Unprepared::Prelude(format!(
-                    "failed to compile the Code Mode prelude: {message}"
-                ))
-            }
-            error => Unprepared::Bootstrap(format!(
-                "failed to compile the embedded Code Mode bootstrap: {error}"
-            )),
-        })
+    builder.build().map_err(|error| match error {
+        djs_embed::Error::Syntax { source, message } if source == PRELUDE_SCRIPT => {
+            Unprepared::Prelude(format!(
+                "failed to compile the Code Mode prelude: {message}"
+            ))
+        }
+        error => Unprepared::Bootstrap(format!(
+            "failed to compile the embedded Code Mode bootstrap: {error}"
+        )),
+    })
 }
 
 pub(crate) struct Prepared {
@@ -548,6 +546,7 @@ impl ExecutionState {
     }
 
     fn push_text(&mut self, text: String) {
+        let text = without_data_urls(text);
         match self.pending_text.as_mut() {
             Some(buffered) => {
                 buffered.push('\n');
@@ -864,6 +863,69 @@ impl ExecutionState {
 struct PendingTimeout {
     deadline: Option<Instant>,
     planned: Option<(u64, u64)>,
+}
+
+const DATA_SCHEME: &str = "data:";
+const BASE64_MARK: &str = ";base64,";
+const MEDIA_NAME_BYTES: usize = 127;
+
+fn media_type(text: &str) -> bool {
+    let name = |part: &str| {
+        !part.is_empty()
+            && part.len() <= MEDIA_NAME_BYTES
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'+' | b'-'))
+    };
+    text.split_once('/')
+        .is_some_and(|(kind, subtype)| name(kind) && name(subtype))
+}
+
+fn without_data_urls(text: String) -> String {
+    let mut out = String::new();
+    let mut from = 0;
+    let mut search = 0;
+    while let Some(found) = text[search..].find(DATA_SCHEME) {
+        let media = search + found + DATA_SCHEME.len();
+        let window_end = text.floor_char_boundary(
+            (media + MEDIA_NAME_BYTES + 1 + MEDIA_NAME_BYTES + BASE64_MARK.len()).min(text.len()),
+        );
+        let window = &text[media..window_end];
+        let Some(mark) = window
+            .find(BASE64_MARK)
+            .filter(|mark| media_type(&window[..*mark]))
+        else {
+            search = media;
+            continue;
+        };
+        let kind = window[..mark].to_ascii_lowercase();
+        let start = media + mark + BASE64_MARK.len();
+        let length = text.as_bytes()[start..]
+            .iter()
+            .take_while(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
+            })
+            .count();
+        let advice = if kind.starts_with("image/") {
+            "pass the value to image() to see it"
+        } else if kind.starts_with("audio/") {
+            "pass the value to audio() to hear it"
+        } else {
+            "write it to a file to use it"
+        };
+        let note = format!("[{length} base64 characters not printed as text; {advice}]");
+        if length > note.len() {
+            out.push_str(&text[from..start]);
+            out.push_str(&note);
+            from = start + length;
+        }
+        search = start + length;
+    }
+    if from == 0 {
+        return text;
+    }
+    out.push_str(&text[from..]);
+    out
 }
 
 pub(crate) fn text(call: &HostCall<'_>, index: usize) -> Result<String, Throw> {

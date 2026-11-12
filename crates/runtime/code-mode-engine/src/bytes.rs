@@ -10,14 +10,6 @@ use std::{
 
 use nanocode_sync::{Atom, Slot};
 
-use base64::{
-    Engine,
-    alphabet::STANDARD,
-    engine::{
-        DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig,
-        general_purpose::STANDARD as STANDARD_ENGINE,
-    },
-};
 use djs_embed::{ErrorKind, HostCall, Throw};
 use nanocode_platform::Instant;
 
@@ -31,13 +23,6 @@ struct Buffer {
 static BUFFERS: OnceLock<Atom<BTreeMap<u64, Arc<Buffer>>>> = OnceLock::new();
 const UNCLAIMED: Duration = Duration::from_secs(600);
 static NEXT: AtomicU64 = AtomicU64::new(1);
-
-const LENIENT: GeneralPurpose = GeneralPurpose::new(
-    &STANDARD,
-    GeneralPurposeConfig::new()
-        .with_decode_allow_trailing_bits(true)
-        .with_decode_padding_mode(DecodePaddingMode::RequireNone),
-);
 
 fn buffers() -> &'static Atom<BTreeMap<u64, Arc<Buffer>>> {
     BUFFERS.get_or_init(Atom::default)
@@ -167,7 +152,7 @@ pub(crate) fn host_call(
         ),
         ENCODE => Ok(Reply::Bytes(source(call, 0, 1, 2)?.into_owned())),
         TO_BASE64 => Ok(Reply::Text(Cow::Owned(
-            STANDARD_ENGINE.encode(view(call, 0, 1, 2)?),
+            base64_simd::STANDARD.encode_to_string(view(call, 0, 1, 2)?),
         ))),
         FROM_BASE64 => {
             let mut clean = crate::cell::text(call, 0)?
@@ -182,8 +167,7 @@ pub(crate) fn host_call(
             if clean.len() % 4 == 1 {
                 clean.pop();
             }
-            LENIENT
-                .decode(&clean)
+            base64_simd::forgiving_decode_to_vec(&clean)
                 .map(Reply::Bytes)
                 .map_err(|error| Throw::type_error(format!("invalid base64: {error}")))
         }

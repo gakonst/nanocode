@@ -4,7 +4,6 @@
 pub mod browser;
 
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolOutputContent,
     ToolResult,
@@ -1026,9 +1025,7 @@ pub fn output(value: Value) -> ToolResult {
                     return Err("Unsupported CUA image type".into());
                 }
                 let data = item["data"].as_str().ok_or("Invalid CUA image")?;
-                base64_simd::STANDARD
-                    .check(data.as_bytes())
-                    .or_else(|_| STANDARD.decode(data).map(|_| ()))?;
+                base64_simd::STANDARD.check(data.as_bytes())?;
                 let header = &data.as_bytes()[..data.len().min(16)];
                 let mut bytes = [0; 12];
                 let bytes = base64_simd::STANDARD
@@ -1053,9 +1050,7 @@ pub fn output(value: Value) -> ToolResult {
                     return Err("Unsupported CUA audio type".into());
                 }
                 let data = item["data"].as_str().ok_or("Invalid CUA audio")?;
-                base64_simd::STANDARD
-                    .check(data.as_bytes())
-                    .or_else(|_| STANDARD.decode(data).map(|_| ()))?;
+                base64_simd::STANDARD.check(data.as_bytes())?;
                 content.push(ToolOutputContent::InputAudio {
                     audio_url: format!("data:{mime};base64,{data}"),
                 });

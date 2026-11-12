@@ -14,7 +14,6 @@ autobenches = false
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 nanocode-tool-contracts.workspace = true
-base64.workspace = true
 base64-simd.workspace = true
 djs-embed.workspace = true
 serde.workspace = true

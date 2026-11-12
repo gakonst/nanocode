@@ -5,8 +5,6 @@ mod mpeg;
 mod ogg;
 mod wav;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -88,10 +86,7 @@ fn audio_duration_seconds(audio_url: &str) -> Option<f64> {
         return None;
     }
 
-    let bytes = match base64_simd::STANDARD
-        .decode_to_vec(payload)
-        .or_else(|_| BASE64_STANDARD.decode(payload))
-    {
+    let bytes = match base64_simd::STANDARD.decode_to_vec(payload) {
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::trace!(%error, "failed to decode audio payload for token estimation");

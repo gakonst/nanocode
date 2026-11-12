@@ -6,7 +6,6 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use image::{
     ColorType, DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat,
     ImageReader, codecs::jpeg::JpegEncoder,
@@ -606,7 +605,6 @@ fn decode_base64(encoded: &str, max_input_bytes: usize) -> Result<Vec<u8>, Image
     }
     let bytes = base64_simd::STANDARD
         .decode_to_vec(encoded)
-        .or_else(|_| BASE64_STANDARD.decode(encoded))
         .map_err(|error| {
             ImagePreparationError::Processing(format!("invalid base64 payload: {error}"))
         })?;

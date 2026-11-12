@@ -13,7 +13,6 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use nanocode_sync::Atom;
 use nanocode_tools::ToolDefinition;
 use serde::Deserialize;
@@ -304,8 +303,8 @@ fn credential_forms(name: &str, url: &str, forms: &mut Vec<(String, String)>) {
     for form in [
         password.to_owned(),
         decoded_password.clone(),
-        BASE64.encode(format!("{user}:{password}")),
-        BASE64.encode(format!("{decoded_user}:{decoded_password}")),
+        base64_simd::STANDARD.encode_to_string(format!("{user}:{password}")),
+        base64_simd::STANDARD.encode_to_string(format!("{decoded_user}:{decoded_password}")),
     ] {
         forms.push((form, placeholder.clone()));
     }
@@ -512,7 +511,7 @@ impl Tool for ReadFile {
                     "size": size,
                     "modified_ns": modified_ns,
                     "offset": args.offset,
-                    "data": BASE64.encode(&data),
+                    "data": base64_simd::STANDARD.encode_to_string(&data),
                 })),
             Err(message) => ToolOutput::error(message),
         })

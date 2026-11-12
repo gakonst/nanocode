@@ -8,7 +8,6 @@ use crate::client::responses::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, ImageReference, ResponseItem,
     valid_image_file_id,
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use nanocode_tools::ToolDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -435,8 +434,8 @@ where
     F: FnOnce(PathBuf, Vec<u8>) -> Fut,
     Fut: Future<Output = Result<PathBuf, String>>,
 {
-    let bytes = BASE64_STANDARD
-        .decode(result.trim().as_bytes())
+    let bytes = base64_simd::STANDARD
+        .decode_to_vec(result.trim().as_bytes())
         .map_err(|error| format!("generated image was not valid base64: {error}"))?;
     write(artifact_path(save_root, session_id, call_id), bytes).await
 }

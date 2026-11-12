@@ -2958,7 +2958,6 @@ dependencies = [
 name = "nanocode-audio"
 version = "0.7.0"
 dependencies = [
- "base64 0.22.1",
  "base64-simd",
  "nanocode-sync",
  "sha1",
@@ -3054,7 +3053,6 @@ name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "base64-simd",
  "futures-util",
  "http",
@@ -3202,7 +3200,6 @@ dependencies = [
 name = "nanocode-code-mode-engine"
 version = "0.7.0"
 dependencies = [
- "base64 0.22.1",
  "base64-simd",
  "djs-embed",
  "nanocode-platform",
@@ -3245,7 +3242,6 @@ name = "nanocode-computer-repl"
 version = "0.7.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
  "base64-simd",
  "nanocode-sync",
  "nanocode-tool-contracts",
@@ -3322,7 +3318,6 @@ dependencies = [
 name = "nanocode-image"
 version = "0.7.0"
 dependencies = [
- "base64 0.22.1",
  "base64-simd",
  "crc32fast",
  "image",

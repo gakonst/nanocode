@@ -218,6 +218,19 @@ async fn run_job_argv(vp: &mut Vp, argv: Vec<Vec<u8>>, assigns: Vec<(String, Vec
     }
     match fork_job(vp).await {
         Some(status) => Ok(status),
+        None if !inside
+            && vp.core.forked.get().is_some()
+            && crate::util::lookup(vp, name)
+                .await
+                .is_some_and(crate::util::is_nested_shell) =>
+        {
+            let opts = ExtOpts {
+                shell: true,
+                process: true,
+                ..Default::default()
+            };
+            run_external_with(vp, argv, assigns, opts).await
+        }
         None => run_argv(vp, argv, assigns).await,
     }
 }
@@ -1669,6 +1682,7 @@ pub(crate) struct ExtOpts {
     pub exec: bool,
     /// `bash`/`sh` run in psh: a virtual process instead of a program (D1411).
     pub shell: bool,
+    pub process: bool,
 }
 
 /// Starts an external command and waits for it, pumping its pipes to engine objects.
@@ -1733,7 +1747,7 @@ pub(crate) async fn run_external_with(
         })
         .collect();
     let spawned = if opts.shell {
-        crate::util::start_nested(vp, argv, &assigns, sig_ignore, opts.exec).await?
+        crate::util::start_nested(vp, argv, &assigns, sig_ignore, opts.exec, opts.process).await?
     } else {
         match spawn_program(vp, program, argv, env, sig_ignore, &name, &shown).await {
             Ok(s) => s,
@@ -1790,9 +1804,13 @@ pub(crate) async fn run_external_with(
         }
     });
     // A signal that ends the shell ends the wait; the external is abandoned (D1903).
-    let st = match crate::signals::or_signal(vp, crate::signals::Gives::Fatal, waited).await {
-        Ok(st) => st,
-        Err(sig) => return Ok(128 + sig),
+    let st = if opts.shell && (opts.exec || opts.process) {
+        waited.await
+    } else {
+        match crate::signals::or_signal(vp, crate::signals::Gives::Fatal, waited).await {
+            Ok(st) => st,
+            Err(sig) => return Ok(128 + sig),
+        }
     };
     // For the report of a signal death (D1303).
     vp.core.fg_signal.set(match st {
@@ -2003,7 +2021,9 @@ impl Drop for ProcGuard {
         };
         if self.job.as_ref().is_some_and(|j| j.disowned.get()) {
             p.disown();
-        } else if self.core.release_on_drop.get() || self.job.as_ref().is_some_and(|j| j.releases())
+        } else if self.core.release_on_drop.get()
+            || self.core.forked.get().is_some()
+            || self.job.as_ref().is_some_and(|j| j.releases())
         {
             p.release();
         }

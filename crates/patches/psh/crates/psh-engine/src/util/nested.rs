@@ -77,6 +77,7 @@ pub(crate) async fn start(
     assigns: &[(String, Vec<u8>)],
     ignore: Vec<Signal>,
     in_place: bool,
+    process: bool,
 ) -> Result<Spawned, Unwind> {
     let mut sub = crate::exec::enter(vp).await?;
     for (name, value) in assigns {
@@ -92,7 +93,11 @@ pub(crate) async fn start(
     sub.exec_now = false;
     sub.top = true;
     let sigs = Rc::new(NestedSigs::default());
-    sub.sigs = Sigs::Nested(sigs.clone());
+    let own = (in_place || process) && vp.top && matches!(vp.sigs, Sigs::Shell);
+    sub.sigs = match own {
+        true => Sigs::Shell,
+        false => Sigs::Nested(sigs.clone()),
+    };
     let caller = Caller {
         shell_pid: vp.shell_pid,
         bashpid: vp.bashpid,
@@ -102,9 +107,14 @@ pub(crate) async fn start(
     // Its job id for `$!`, `kill` and `wait`; never its `$$` (D1413).
     let pid = vp.core.next_job_id();
     let watch = sigs.clone();
+    let core = vp.core.clone();
     let (id, join) = vp.core.sched.spawn_with_id(async move {
         let status = shell(sub, argv, ignore, caller).await;
-        match watch.died_of.get() {
+        let died = match own {
+            true => core.died_of.get(),
+            false => watch.died_of.get(),
+        };
+        match died {
             Some(sig) if status == 128 + sig => ExitStatus::Signaled(sig),
             _ => ExitStatus::Exited(status),
         }

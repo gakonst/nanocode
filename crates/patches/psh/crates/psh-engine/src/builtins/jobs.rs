@@ -271,7 +271,7 @@ pub(super) async fn kill(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         // shell's pending mask, so traps run (D1284); with 0 the host signals the
         // rest of the group too, where it may.
         // A shell psh runs for `bash`/`sh` has a `$$` and a mask of its own (D1411).
-        let me = vp.shell_pid;
+        let me = vp.shell_pid.filter(|_| vp.core.forked.get().is_none());
         if pid == 0
             || u32::try_from(pid).ok() == me
             || (me.is_some() && pid.checked_neg().and_then(|g| u32::try_from(g).ok()) == me)

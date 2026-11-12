@@ -468,6 +468,7 @@ pub(crate) enum Ctx {
     /// `"…"` inside the operand of a double-quoted `"${x:+"…"}"`: a backslash quotes
     /// any char there (bash).
     OperandDouble,
+    Arith,
 }
 
 fn expand_pieces<'a>(
@@ -1044,7 +1045,7 @@ async fn expand_part(
             let value = match crate::arith::literal(code, w) {
                 Some(lit) => crate::arith::eval_literal(vp, &lit),
                 None => {
-                    let (text, st) = expand_single(vp, code, w, Ctx::Word).await?;
+                    let (text, st) = expand_single(vp, code, w, Ctx::Arith).await?;
                     if st.is_some() {
                         f.subst_status = st;
                     }
@@ -1156,6 +1157,7 @@ fn expand_text(
         }
         // `"${x-'b'}"`: the quotes stay.
         Part::Single if quoted && ctx == Ctx::Operand => f.quoted(text),
+        Part::Single if !quoted && ctx == Ctx::Arith => f.quoted(text),
         Part::Single => f.quoted(&text[1..text.len() - 1]),
         Part::AnsiC => {
             let inner = &text[2..text.len() - 1];
@@ -1628,7 +1630,8 @@ async fn param(
                     let name = code.ast.text(p.name_span);
                     let r = match &p.index {
                         Some(Subscript::Expr(w)) => {
-                            let (sub, _) = expand_single(vp, code, w, Ctx::Word).await?;
+                            let ctx = subscript_ctx(vp, name);
+                            let (sub, _) = expand_single(vp, code, w, ctx).await?;
                             vp.assign_elem(name, &sub, v.clone(), false)
                         }
                         _ => vp.assign(name, v.clone()),
@@ -1942,9 +1945,17 @@ async fn lookup_var(
             Ok(Val::List(values, matches!(index, Some(Subscript::Star))))
         }
         Some(Subscript::Expr(w)) => {
-            let (sub, _) = expand_single(vp, code, w, Ctx::Word).await?;
+            let ctx = subscript_ctx(vp, name);
+            let (sub, _) = expand_single(vp, code, w, ctx).await?;
             element(vp, name, &sub).await
         }
+    }
+}
+
+pub(crate) fn subscript_ctx(vp: &Vp, name: &str) -> Ctx {
+    match vp.vars.get(&vp.resolve(name)) {
+        Some(v) if v.is_assoc() => Ctx::Word,
+        _ => Ctx::Arith,
     }
 }
 
@@ -2027,7 +2038,7 @@ async fn indirect(vp: &mut Vp, code: &Rc<Code>, target: &[u8]) -> Result<Option<
 
 /// An arithmetic word (offsets, lengths): expanded, then evaluated.
 async fn arith_word(vp: &mut Vp, code: &Rc<Code>, w: &Word) -> Result<i64, Unwind> {
-    let (text, _) = expand_single(vp, code, w, Ctx::Word).await?;
+    let (text, _) = expand_single(vp, code, w, Ctx::Arith).await?;
     match crate::arith::eval(vp, &text) {
         Ok(v) => Ok(v),
         Err(msg) => {

@@ -31,6 +31,20 @@ impl Env<'_> {
     }
 }
 
+impl Env<'_> {
+    fn unset_base(&mut self, name: &str, v: Option<Vec<u8>>) -> Result<Option<Vec<u8>>, String> {
+        if v.is_none()
+            && self.vp.var_ref(name).is_none_or(|var| {
+                matches!(var.value, Value::Unset)
+                    || (var.declared_only && var.get().is_none() && var.values().is_empty())
+            })
+        {
+            self.unbound(name.as_bytes())?;
+        }
+        Ok(v)
+    }
+}
+
 impl ArithEnv for Env<'_> {
     type Error = String;
 
@@ -59,12 +73,18 @@ impl ArithEnv for Env<'_> {
                     }
                 }
             },
-            Some(ArithIndex::Key(k)) => self.vp.get_elem(&name, k),
+            Some(ArithIndex::Key(k)) => {
+                let v = self.vp.get_elem(&name, &unquote(k))?;
+                self.unset_base(&name, v)
+            }
             // Out of range below the start: 0, without an error (bash).
-            Some(ArithIndex::Num(i)) => Ok(self
-                .vp
-                .get_elem(&name, i.to_string().as_bytes())
-                .unwrap_or(None)),
+            Some(ArithIndex::Num(i)) => {
+                let v = self
+                    .vp
+                    .get_elem(&name, i.to_string().as_bytes())
+                    .unwrap_or(None);
+                self.unset_base(&name, v)
+            }
         }
     }
 
@@ -125,13 +145,36 @@ impl ArithEnv for Env<'_> {
         let v = value.to_string().into_bytes();
         match index {
             None => self.vp.assign(&name, v),
-            Some(ArithIndex::Key(k)) => self.vp.assign_elem(&name, k, v, false),
+            Some(ArithIndex::Key(k)) => self.vp.assign_elem(&name, &unquote(k), v, false),
             Some(ArithIndex::Num(i)) => {
                 self.vp
                     .assign_elem(&name, i.to_string().as_bytes(), v, false)
             }
         }
     }
+}
+
+fn unquote(k: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if !k.iter().any(|&b| matches!(b, b'\'' | b'"' | b'\\')) {
+        return std::borrow::Cow::Borrowed(k);
+    }
+    let mut out = Vec::with_capacity(k.len());
+    let (mut single, mut double) = (false, false);
+    let mut i = 0;
+    while i < k.len() {
+        let b = k[i];
+        match b {
+            b'\'' if !double => single = !single,
+            b'"' if !single => double = !double,
+            b'\\' if !single && i + 1 < k.len() => {
+                i += 1;
+                out.push(k[i]);
+            }
+            _ => out.push(b),
+        }
+        i += 1;
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// Evaluates `text`; the error is bash's message without the `line N:` prefix.

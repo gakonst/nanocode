@@ -1195,7 +1195,7 @@ async fn arith_command(
     let text: &[u8] = match &lit {
         Some(lit) => &lit.text,
         None => {
-            expanded = Box::pin(expand::expand_single(vp, code, w, Ctx::Word))
+            expanded = Box::pin(expand::expand_single(vp, code, w, Ctx::Arith))
                 .await?
                 .0;
             &expanded
@@ -1405,7 +1405,8 @@ async fn prefix_assigns(
                 }
             }
             (Some(idx), AssignValue::Scalar(w)) => {
-                let (sub, st1) = Box::pin(expand::expand_single(vp, code, idx, Ctx::Word)).await?;
+                let ctx = expand::subscript_ctx(vp, name);
+                let (sub, st1) = Box::pin(expand::expand_single(vp, code, idx, ctx)).await?;
                 let (v, st2) = Box::pin(expand::assign_value(vp, code, w)).await?;
                 *subst_status = st2.or(st1).or(*subst_status);
                 vp.assign_elem(name, &sub, v, a.append)

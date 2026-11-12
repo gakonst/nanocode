@@ -698,6 +698,10 @@ async fn let_(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     for a in &args[1..] {
         match crate::arith::eval(vp, a) {
             Ok(v) => last = v,
+            Err(msg) if vp.arith_unbound => {
+                vp.error(&msg).await;
+                return Err(Unwind::Exit(crate::expand::expansion_exit_status(vp)));
+            }
             Err(msg) => {
                 vp.error(&format!("let: {msg}")).await;
                 return Ok(1);
@@ -729,18 +733,8 @@ async fn getopts(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         return Ok(2);
     }
     let spec = args[1].clone();
-    let Some(name) = std::str::from_utf8(&args[2])
-        .ok()
-        .filter(|n| is_name(n.as_bytes()))
-        .map(str::to_string)
-    else {
-        vp.error(&format!(
-            "getopts: `{}': not a valid identifier",
-            s(&args[2])
-        ))
-        .await;
-        return Ok(1);
-    };
+    let valid = is_name(&args[2]);
+    let name = s(&args[2]).into_owned();
     let (silent, spec) = match spec.strip_prefix(b":") {
         Some(rest) => (true, rest.to_vec()),
         None => (false, spec),
@@ -757,14 +751,16 @@ async fn getopts(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         0
     };
     let end = |vp: &mut Vp, optind: i64| {
-        vp.set_var(&name, b"?".to_vec());
+        if valid {
+            vp.set_var(&name, b"?".to_vec());
+        }
         vp.vars.remove("OPTARG");
         vp.set_var("OPTIND", optind.to_string().into_bytes());
         vp.getopts = (optind, 0);
         Ok(1)
     };
     let Some(arg) = params.get(optind as usize - 1).cloned() else {
-        return end(vp, optind);
+        return end(vp, optind.min(params.len() as i64 + 1));
     };
     if pos >= arg.len() {
         pos = 0;
@@ -833,7 +829,9 @@ async fn getopts(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             value = b"?".to_vec();
         }
     }
-    vp.set_var(&name, value);
+    if valid {
+        vp.set_var(&name, value);
+    }
     match optarg {
         Some(v) => vp.set_var("OPTARG", v),
         None => {
@@ -842,6 +840,11 @@ async fn getopts(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     }
     vp.set_var("OPTIND", optind.to_string().into_bytes());
     vp.getopts = (optind, pos);
+    if !valid {
+        vp.error(&format!("getopts: `{name}': not a valid identifier"))
+            .await;
+        return Ok(1);
+    }
     Ok(0)
 }
 

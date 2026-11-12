@@ -21,7 +21,7 @@ use crate::{
 
 const ACKED_WRITES_DROPPED_MAX: u64 = 3;
 const CAS_IGNORES_EXPECTED_PPM: u64 = 500_000;
-const PUT_DROPS_LAST_PPM: u64 = 250_000;
+const RECORD_INSERT_DROPS_PPM: u64 = 250_000;
 const RECORD_INSERT_OVERWRITES_PPM: u64 = 500_000;
 const RECORD_PREFIX: &str = "record/";
 
@@ -29,7 +29,7 @@ const RECORD_PREFIX: &str = "record/";
 pub enum Mutation {
     None,
     CasIgnoresExpected,
-    PutDropsLast,
+    RecordInsertDrops,
     PowerLossDropsAcked,
     RecordInsertOverwrites,
 }
@@ -38,7 +38,7 @@ impl Mutation {
     const ALL: [Self; 5] = [
         Self::None,
         Self::CasIgnoresExpected,
-        Self::PutDropsLast,
+        Self::RecordInsertDrops,
         Self::PowerLossDropsAcked,
         Self::RecordInsertOverwrites,
     ];
@@ -53,7 +53,7 @@ impl Mutation {
         match self {
             Self::None => "none",
             Self::CasIgnoresExpected => "cas_ignores_expected",
-            Self::PutDropsLast => "put_drops_last",
+            Self::RecordInsertDrops => "record_insert_drops",
             Self::PowerLossDropsAcked => "power_loss_drops_acked",
             Self::RecordInsertOverwrites => "record_insert_overwrites",
         }
@@ -282,12 +282,6 @@ impl Kv {
             let prefix = usize::try_from(self.rng.below(more)).expect("a prefix fits in usize");
             return (1 + prefix, true);
         }
-        if self.mutation == Mutation::PutDropsLast
-            && count > 0
-            && self.rng.chance(PUT_DROPS_LAST_PPM)
-        {
-            return (count - 1, false);
-        }
         (count, false)
     }
 
@@ -326,7 +320,7 @@ impl Kv {
         let swapped =
             prev.as_deref() == expected_version || self.mutated_swap(key, expected_version);
         let (new, value) = (entry.version.clone(), entry.value.clone());
-        if swapped {
+        if swapped && !self.drops_insert(key, expected_version) {
             self.write(key, entry);
         }
         let after_fault = self.fault(op, self.profile.after_ppm, "cas after apply");
@@ -344,6 +338,13 @@ impl Kv {
             return Err(injected("compare_and_swap", "after apply"));
         }
         Ok(swapped)
+    }
+
+    fn drops_insert(&mut self, key: &str, expected_version: Option<&str>) -> bool {
+        self.mutation == Mutation::RecordInsertDrops
+            && expected_version.is_none()
+            && key.starts_with(RECORD_PREFIX)
+            && self.rng.chance(RECORD_INSERT_DROPS_PPM)
     }
 
     fn mutated_swap(&mut self, key: &str, expected_version: Option<&str>) -> bool {

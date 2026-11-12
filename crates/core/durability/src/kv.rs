@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use futures_util::future::try_join_all;
 use nanocode_platform::{MaybeSend, MaybeSync};
 
 use crate::{
@@ -107,6 +108,16 @@ impl<'a> Head<'a> {
     }
 }
 
+const RECORD_VERSION: &str = "record";
+
+fn records_not_stored(error: StoreError) -> StoreError {
+    StoreError::NotCommitted(format!("durability records were not stored: {error}"))
+}
+
+fn conflicting_record(key: &str) -> StoreError {
+    StoreError::NotCommitted(format!("durability record `{key}` has conflicting content"))
+}
+
 fn version(fence: u64, revision: u64, owner: &str) -> String {
     format!("{fence}.{revision}.{owner}")
 }
@@ -204,15 +215,13 @@ impl<B: KeyValue + ?Sized> KeyValueStore<B> {
         let revision = expected_revision.checked_add(1).ok_or_else(|| {
             StoreError::NotCommitted("key-value durability revision overflow".to_owned())
         })?;
-        if !records.is_empty() {
-            let entries: Vec<_> = records
+        try_join_all(
+            records
                 .iter()
-                .map(|record| (self.record_key(state_id, &record.key), record.value.clone()))
-                .collect();
-            self.backend.put_values(&entries).await.map_err(|error| {
-                StoreError::NotCommitted(format!("durability records were not stored: {error}"))
-            })?;
-        }
+                .filter(|record| !record.value.is_empty())
+                .map(|record| self.insert_record(state_id, record)),
+        )
+        .await?;
         let owner_id = owner.owner_id().as_str();
         let key = self.head_key(state_id);
         let expected = version(owner.fence(), expected_revision, owner_id);
@@ -240,6 +249,54 @@ impl<B: KeyValue + ?Sized> KeyValueStore<B> {
         Err(StoreError::Backend(format!(
             "key-value store refused to replace version `{expected}` of state {state_id} while reporting it as current"
         )))
+    }
+
+    async fn insert_record(&self, state_id: &str, record: &StoreRecord) -> Result<(), StoreError> {
+        let key = self.record_key(state_id, &record.key);
+        if self.swap_record(&key, None, record).await? {
+            return Ok(());
+        }
+        let current = self.stored_record(&key).await?;
+        if current.value == record.value {
+            return Ok(());
+        }
+        if !current.value.is_empty() {
+            return Err(conflicting_record(&record.key));
+        }
+        if self
+            .swap_record(&key, Some(&current.version), record)
+            .await?
+        {
+            return Ok(());
+        }
+        if self.stored_record(&key).await?.value == record.value {
+            return Ok(());
+        }
+        Err(conflicting_record(&record.key))
+    }
+
+    async fn swap_record(
+        &self,
+        key: &str,
+        expected_version: Option<&str>,
+        record: &StoreRecord,
+    ) -> Result<bool, StoreError> {
+        self.backend
+            .compare_and_swap(key, expected_version, RECORD_VERSION, &record.value)
+            .await
+            .map_err(records_not_stored)
+    }
+
+    async fn stored_record(&self, key: &str) -> Result<Versioned, StoreError> {
+        self.backend
+            .get(key)
+            .await
+            .map_err(records_not_stored)?
+            .ok_or_else(|| {
+                StoreError::NotCommitted(format!(
+                    "key-value store refused to insert record `{key}` while reporting it absent"
+                ))
+            })
     }
 
     async fn peek_state(&self, state_id: &str) -> Result<StoredState, StoreError> {

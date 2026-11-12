@@ -447,6 +447,51 @@ impl Exec<'_> {
     }
 
     #[inline(never)]
+    fn decline_operator(&mut self, op: u8) -> bool {
+        let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));
+        let (v, o) = match op {
+            fast::BAND | fast::BOR | fast::BXOR | fast::SHL | fast::SAR => {
+                let (Some(x), Some(y)) = (a.as_number(), c.as_number()) else {
+                    return false;
+                };
+                let (x, y) = (conv::to_int32(x), conv::to_int32(y));
+                match op {
+                    fast::BAND => (x & y, Op::BAnd),
+                    fast::BOR => (x | y, Op::BOr),
+                    fast::BXOR => (x ^ y, Op::BXor),
+                    fast::SHL => (x.wrapping_shl(y as u32 & 31), Op::Shl),
+                    _ => (x >> (y as u32 & 31), Op::Sar),
+                }
+            }
+            _ => {
+                let (Some(x), Some(y)) = (a.as_string(), c.as_string()) else {
+                    return false;
+                };
+                let (swap, invert, o) = match op {
+                    fast::LT => (false, false, Op::Lt),
+                    fast::GT => (true, false, Op::Gt),
+                    fast::LE => (true, true, Op::Le),
+                    _ => (false, true, Op::Ge),
+                };
+                let (x, y) = if swap { (y, x) } else { (x, y) };
+                let less = self.heap.str_cmp(x, y) == core::cmp::Ordering::Less;
+                self.sp -= 1;
+                self.set(self.sp - 1, Value::bool(less != invert));
+                let info = &OPS[o as usize];
+                self.fuel -= info.cost.fuel() as i64;
+                self.pc += info.size as u32;
+                return true;
+            }
+        };
+        self.sp -= 1;
+        self.set(self.sp - 1, Value::int(v));
+        let info = &OPS[o as usize];
+        self.fuel -= info.cost.fuel() as i64;
+        self.pc += info.size as u32;
+        true
+    }
+
+    #[inline(never)]
     fn decline_branch(&mut self, op: u8) -> bool {
         let v = self.pop();
         let t = conv::to_boolean(self.heap, v);
@@ -499,6 +544,20 @@ impl Exec<'_> {
             fast::JUMP_IF_FALSE | fast::JUMP_IF_TRUE | fast::JUMP_IF_FALSE8 | fast::JUMP_IF_TRUE8
         ) {
             return self.decline_branch(op);
+        }
+        if matches!(
+            op,
+            fast::BAND
+                | fast::BOR
+                | fast::BXOR
+                | fast::SHL
+                | fast::SAR
+                | fast::LT
+                | fast::LE
+                | fast::GT
+                | fast::GE
+        ) {
+            return self.decline_operator(op);
         }
         if op == fast::MOD {
             let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));

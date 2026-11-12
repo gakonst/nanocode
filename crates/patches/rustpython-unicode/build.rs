@@ -889,6 +889,7 @@ fn drive_parsers() {
         combining_class_3_2,
         generate_name_lookups,
         generate_names,
+        generate_case_tables,
     ];
 
     let mut handles = Vec::with_capacity(parsers.len() + 2);
@@ -1234,4 +1235,86 @@ fn generate_names() {
     writeln!(writer, "pub(crate) static NAME_ALIAS_TEXTS: &[&str] = &{:?};", aliases.iter().map(|a| a.0.as_str()).collect::<Vec<_>>()).unwrap();
     writeln!(writer, "pub(crate) static NAME_ALIAS_CODES: &[u32] = &{:?};", aliases.iter().map(|a| a.1).collect::<Vec<_>>()).unwrap();
     writeln!(writer, "pub(crate) static NAME_ALIAS_SINCE_UNICODE_17: &[bool] = &{:?};", aliases.iter().map(|a| ALIASES_SINCE_UNICODE_17.contains(&a.0.as_str())).collect::<Vec<_>>()).unwrap();
+}
+
+fn parse_code_points(field: &str) -> Vec<u32> {
+    field
+        .split_whitespace()
+        .map(|code| u32::from_str_radix(code, 16).unwrap())
+        .collect()
+}
+
+fn generate_case_tables() {
+    let mut simple: BTreeMap<u32, [u32; 4]> = BTreeMap::new();
+    let mut lines = UnicodeLineReader::from_file_name("UnicodeData.txt", true).reader;
+    while let Some(Ok(line)) = lines.next() {
+        let fields: Vec<&str> = line.split(';').collect();
+        let code = u32::from_str_radix(fields[0], 16).unwrap();
+        let mapping = |index: usize| {
+            (!fields[index].is_empty()).then(|| u32::from_str_radix(fields[index], 16).unwrap())
+        };
+        let upper = mapping(12);
+        let lower = mapping(13);
+        let title = mapping(14).or(upper);
+        if upper.is_some() || lower.is_some() || title.is_some() {
+            simple.insert(
+                code,
+                [
+                    lower.unwrap_or(code),
+                    upper.unwrap_or(code),
+                    title.unwrap_or(code),
+                    code,
+                ],
+            );
+        }
+    }
+    let mut full_fold: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut folding = UnicodeLineReader::from_file_name("CaseFolding.txt", true);
+    for line in folding.raw_iter() {
+        let fields: Vec<&str> = line.split(';').map(str::trim).collect();
+        let code = u32::from_str_radix(fields[0], 16).unwrap();
+        let mapping = parse_code_points(fields[2]);
+        match fields[1] {
+            "C" | "S" => {
+                assert_eq!(mapping.len(), 1, "{line}");
+                simple.entry(code).or_insert([code; 4])[3] = mapping[0];
+                if fields[1] == "C" {
+                    full_fold.entry(code).or_insert(mapping);
+                }
+            }
+            "F" => {
+                full_fold.insert(code, mapping);
+            }
+            "T" => {}
+            status => panic!("unknown CaseFolding status {status}: {line}"),
+        }
+    }
+    let mut full_title: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let mut special = UnicodeLineReader::from_file_name("SpecialCasing.txt", true);
+    for line in special.raw_iter() {
+        let line = line.split('#').next().unwrap();
+        let fields: Vec<&str> = line.split(';').map(str::trim).collect();
+        if fields.len() > 5 || fields.get(4).is_some_and(|condition| !condition.is_empty()) {
+            continue;
+        }
+        let code = u32::from_str_radix(fields[0], 16).unwrap();
+        full_title.insert(code, parse_code_points(fields[2]));
+    }
+
+    let mut writer = open_writer("case.rs");
+    writeln!(writer, "pub(crate) static CASE_SIMPLE: &[(u32, [u32; 4])] = &[").unwrap();
+    for (code, mappings) in &simple {
+        writeln!(writer, "({code}, {mappings:?}),").unwrap();
+    }
+    writeln!(writer, "];").unwrap();
+    let write_full = |writer: &mut BufWriter<File>, name: &str, table: &BTreeMap<u32, Vec<u32>>| {
+        writeln!(writer, "pub(crate) static {name}: &[(u32, &str)] = &[").unwrap();
+        for (code, mapping) in table {
+            let text: String = mapping.iter().map(|&code| char::from_u32(code).unwrap()).collect();
+            writeln!(writer, "({code}, {text:?}),").unwrap();
+        }
+        writeln!(writer, "];").unwrap();
+    };
+    write_full(&mut writer, "CASE_FULL_FOLD", &full_fold);
+    write_full(&mut writer, "CASE_FULL_TITLE", &full_title);
 }

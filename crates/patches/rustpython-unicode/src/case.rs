@@ -15,18 +15,45 @@
 // spell-checker:ignore ΟΔΟΣ Οδος
 
 use alloc::{
-    string::{String, ToString},
+    string::String,
     vec::Vec,
 };
 
-use icu_casemap::options::{LeadingAdjustment, TitlecaseOptions};
-use icu_casemap::{CaseMapper, TitlecaseMapper};
-use icu_locale::LanguageIdentifier;
 use icu_properties::props::{
     BinaryProperty, CaseIgnorable, Cased, EnumeratedProperty, GeneralCategory, Lowercase, Uppercase,
 };
 use rustpython_wtf8::{CodePoint, Wtf8, Wtf8Buf, Wtf8Chunk};
-use writeable::Writeable;
+
+include!(concat!(env!("OUT_DIR"), "/generated/case.rs"));
+
+const SIMPLE_LOWER: usize = 0;
+const SIMPLE_UPPER: usize = 1;
+const SIMPLE_TITLE: usize = 2;
+const SIMPLE_FOLD: usize = 3;
+
+fn simple_mapping(c: char, which: usize) -> char {
+    match CASE_SIMPLE.binary_search_by_key(&(c as u32), |&(code, _)| code) {
+        Ok(index) => char::from_u32(CASE_SIMPLE[index].1[which])
+            .expect("case mappings map scalars to scalars"),
+        Err(_) => c,
+    }
+}
+
+fn full_mapping(c: char, table: &'static [(u32, &'static str)]) -> Option<&'static str> {
+    table
+        .binary_search_by_key(&(c as u32), |&(code, _)| code)
+        .ok()
+        .map(|index| table[index].1)
+}
+
+fn push_folded(s: &str, out: &mut FmtWriter<'_>) {
+    for ch in s.chars() {
+        match full_mapping(ch, CASE_FULL_FOLD) {
+            Some(folded) => out.0.extend_from_slice(folded.as_bytes()),
+            None => push_char(ch, out),
+        }
+    }
+}
 
 // Code-point mappings
 
@@ -36,7 +63,7 @@ pub fn simple_lowercase(c: char) -> char {
     if c.is_ascii() {
         return c.to_ascii_lowercase();
     }
-    CaseMapper::new().simple_lowercase(c)
+    simple_mapping(c, SIMPLE_LOWER)
 }
 
 /// Simple (one-to-one) uppercase mapping of `c` (`Py_UNICODE_TOUPPER`).
@@ -45,19 +72,19 @@ pub fn simple_uppercase(c: char) -> char {
     if c.is_ascii() {
         return c.to_ascii_uppercase();
     }
-    CaseMapper::new().simple_uppercase(c)
+    simple_mapping(c, SIMPLE_UPPER)
 }
 
 /// Simple (one-to-one) titlecase mapping of `c` (`Py_UNICODE_TOTITLE`).
 #[must_use]
 pub fn simple_titlecase(c: char) -> char {
-    CaseMapper::new().simple_titlecase(c)
+    simple_mapping(c, SIMPLE_TITLE)
 }
 
 /// Simple (one-to-one) case fold of `c`.
 #[must_use]
 pub fn simple_fold(c: char) -> char {
-    CaseMapper::new().simple_fold(c)
+    simple_mapping(c, SIMPLE_FOLD)
 }
 
 // Casing predicates
@@ -97,18 +124,15 @@ pub fn is_case_ignorable(c: char) -> bool {
 /// Full Unicode case fold of `text` (`str.casefold`).
 #[must_use]
 pub fn casefold_str(text: &str) -> String {
-    CaseMapper::new().fold_string(text).to_string()
+    let mut out = Vec::with_capacity(text.len());
+    push_folded(text, &mut FmtWriter(&mut out));
+    String::from_utf8(out).expect("folding valid UTF-8 gives valid UTF-8")
 }
 
 /// Full Unicode case fold of `text`, passing lone surrogates through unchanged.
 #[must_use]
 pub fn casefold_wtf8(text: &Wtf8) -> Wtf8Buf {
-    map_wtf8(text, |s, out| {
-        CaseMapper::new()
-            .fold(s)
-            .write_to(out)
-            .expect("writing to an in-memory buffer cannot fail");
-    })
+    map_wtf8(text, push_folded)
 }
 
 /// Capitalize `text` (`str.capitalize`): titlecase the first cased character,
@@ -243,18 +267,13 @@ fn titlecase_string(s: &str, out: &mut FmtWriter<'_>) {
 }
 
 fn titlecase_segment(s: &str, out: &mut FmtWriter<'_>) {
-    // Callers pass a single first-of-word code point, which Python titlecases
-    // unconditionally (applying its titlecase mapping). The default `Auto`
-    // leading adjustment looks for a head in Letter/Number/Symbol/Private_Use
-    // and skips anything else, dropping the titlecase mapping of cased marks
-    // such as U+0345 (`ͅ`, general category Mn) -> U+0399 (`Ι`). `None`
-    // titlecases the code point as given.
-    let mut options = TitlecaseOptions::default();
-    options.leading_adjustment = Some(LeadingAdjustment::None);
-    TitlecaseMapper::new()
-        .titlecase_segment(s, &LanguageIdentifier::UNKNOWN, options)
-        .write_to(out)
-        .expect("writing to an in-memory buffer cannot fail");
+    let mut chars = s.chars();
+    let first = chars.next().expect("a titlecase segment holds one character");
+    assert!(chars.next().is_none());
+    match full_mapping(first, CASE_FULL_TITLE) {
+        Some(titled) => out.0.extend_from_slice(titled.as_bytes()),
+        None => push_char(simple_mapping(first, SIMPLE_TITLE), out),
+    }
 }
 
 fn lowercase_or_sigma(ch: char, s: &str, i: usize, out: &mut FmtWriter<'_>) {
@@ -309,7 +328,6 @@ fn push_char(ch: char, out: &mut FmtWriter<'_>) {
     out.0.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
 }
 
-/// Adapter so `icu`'s `Writeable` output can be appended to a byte buffer.
 struct FmtWriter<'a>(&'a mut Vec<u8>);
 
 impl core::fmt::Write for FmtWriter<'_> {
@@ -383,15 +401,6 @@ mod tests {
         assert_eq!(title_str("ﬁNNISH"), "Finnish");
         assert_eq!(capitalize_str("ǳungla"), "ǲungla");
         assert_eq!(capitalize_str("ßhello"), "Sshello");
-    }
-
-    #[test]
-    fn ascii_fast_path_matches_icu() {
-        let mapper = icu_casemap::CaseMapper::new();
-        for c in (0u8..0x80).map(char::from) {
-            assert_eq!(simple_lowercase(c), mapper.simple_lowercase(c));
-            assert_eq!(simple_uppercase(c), mapper.simple_uppercase(c));
-        }
     }
 
     #[test]

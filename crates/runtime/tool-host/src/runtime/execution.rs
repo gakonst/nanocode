@@ -568,6 +568,7 @@ impl NativeToolRuntime {
             .hand_calls
             .clone()
             .or_else(|| self.executors.as_ref().map(CodeModeExecutors::calls));
+        registry.hand_authorizer = tools.hand_authorizer.clone();
         self
     }
 

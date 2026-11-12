@@ -22,11 +22,13 @@ pub use compact::{
     output_to_wire,
 };
 pub use executors::{
-    CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
+    CodeModeExecutors, ExecutorSelection, HandAuthorizer, HandCallDecision, HandRequestDecision,
+    HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
 };
 pub use hand::{
     BRAIN_DISCONNECTED, BusyItem, BusyKind, CALL_CANCELLED, DetachedObservers, ExecutorOptions,
     HandActivity, HandBrain, HandCapabilities, HandConnection, HandCore, HandHost, HandSession,
+    HostInfoSource,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use message::websocket;
@@ -141,6 +143,179 @@ pub struct HandEnvironment {
     pub shell: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandList<T> {
+    #[serde(default)]
+    pub items: Vec<T>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted: u64,
+}
+
+impl<T> Default for HandList<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            omitted: 0,
+        }
+    }
+}
+
+impl<T> HandList<T> {
+    #[must_use]
+    pub const fn new(items: Vec<T>) -> Self {
+        Self { items, omitted: 0 }
+    }
+
+    #[must_use]
+    pub fn limited(mut self, limit: usize) -> Self {
+        if self.items.len() > limit {
+            let cut = self.items.len() - limit;
+            self.items.truncate(limit);
+            self.omitted = self.omitted.saturating_add(cut as u64);
+        }
+        self
+    }
+}
+
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandProgram {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_line: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub command_line_omitted_bytes: u64,
+}
+
+impl HandProgram {
+    #[must_use]
+    pub fn limited(mut self, command_line_bytes: usize) -> Self {
+        if let Some(line) = &mut self.command_line
+            && line.len() > command_line_bytes
+        {
+            let mut end = command_line_bytes;
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            let cut = line.len() - end;
+            line.truncate(end);
+            self.command_line_omitted_bytes =
+                self.command_line_omitted_bytes.saturating_add(cut as u64);
+        }
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandListener {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandTailscalePeer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandTailscale {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peers: Option<HandList<HandTailscalePeer>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandHostInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub architecture: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_cores: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_available_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub programs: Option<HandList<HandProgram>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listeners: Option<HandList<HandListener>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale: Option<HandTailscale>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostInfoLimits {
+    pub items: usize,
+    pub command_line_bytes: usize,
+}
+
+impl Default for HostInfoLimits {
+    fn default() -> Self {
+        Self {
+            items: 500,
+            command_line_bytes: 4096,
+        }
+    }
+}
+
+impl HandHostInfo {
+    #[must_use]
+    pub fn limited(mut self, limits: HostInfoLimits) -> Self {
+        self.programs = self.programs.map(|programs| {
+            let mut programs = programs.limited(limits.items);
+            programs.items = programs
+                .items
+                .into_iter()
+                .map(|program| program.limited(limits.command_line_bytes))
+                .collect();
+            programs
+        });
+        self.listeners = self
+            .listeners
+            .map(|listeners| listeners.limited(limits.items));
+        if let Some(tailscale) = &mut self.tailscale {
+            tailscale.peers = tailscale
+                .peers
+                .take()
+                .map(|peers| peers.limited(limits.items));
+        }
+        self
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandPermission {
@@ -181,6 +356,10 @@ pub struct HandDescription {
     pub capabilities: Vec<HandCapability>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tools_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip)]
+    pub host: Option<HandHostInfo>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -241,6 +420,7 @@ pub enum RemoteOperation {
         name: String,
         reason: String,
     },
+    HostInfo,
 }
 
 pub trait RemoteTransport: Send + Sync + 'static {
@@ -312,6 +492,8 @@ impl RemoteCodeModeHost {
                 .cloned()
                 .collect(),
             tools_only: catalog.tools_only,
+            version: catalog.version.clone(),
+            host: catalog.host.clone(),
         });
         self
     }
@@ -407,6 +589,21 @@ impl CodeModeHost for RemoteCodeModeHost {
             let reply = self.transport.call(RemoteOperation::Capabilities).await?;
             serde_json::from_value(reply["capabilities"].clone())
                 .map_err(|issue| CodeModeHostError::new(format!("hand capabilities: {issue}")))
+        })
+    }
+    fn host_info(&self) -> HostFuture<'_, Result<Option<HandHostInfo>, CodeModeHostError>> {
+        Box::pin(async move {
+            if self
+                .description
+                .as_ref()
+                .is_none_or(|description| description.host.is_none())
+            {
+                return Ok(None);
+            }
+            let reply = self.transport.call(RemoteOperation::HostInfo).await?;
+            serde_json::from_value(reply["host"].clone())
+                .map(Some)
+                .map_err(|issue| CodeModeHostError::new(format!("hand host info: {issue}")))
         })
     }
     fn request_capability<'a>(
@@ -738,6 +935,10 @@ pub enum RemoteFrame {
         capabilities: Vec<HandCapability>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tools_only: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<HandHostInfo>,
     },
     Request {
         id: u64,
@@ -875,6 +1076,8 @@ pub struct RemoteCatalog {
     pub environment: Option<HandEnvironment>,
     pub capabilities: Vec<HandCapability>,
     pub tools_only: bool,
+    pub version: Option<String>,
+    pub host: Option<HandHostInfo>,
 }
 
 impl RemoteCatalog {
@@ -918,6 +1121,8 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 environment,
                 capabilities,
                 tools_only,
+                version,
+                host,
             } => Ok(Self {
                 definitions,
                 name,
@@ -931,6 +1136,8 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 environment,
                 capabilities,
                 tools_only,
+                version,
+                host,
             }),
             _ => Err(CodeModeHostError::new(NO_CATALOG)),
         }

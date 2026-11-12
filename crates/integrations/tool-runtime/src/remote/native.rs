@@ -75,6 +75,8 @@ pub struct SocketTransport {
     environment: Option<HandEnvironment>,
     capabilities: Vec<HandCapability>,
     tools_only: bool,
+    version: Option<String>,
+    host: Option<HandHostInfo>,
     shutdown: SocketShutdown,
     _shutdown: DropGuard,
 }
@@ -98,6 +100,21 @@ pub fn local_environment() -> HandEnvironment {
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
             }),
+    }
+}
+
+#[must_use]
+pub fn local_host_info() -> HandHostInfo {
+    HandHostInfo {
+        os_name: Some(std::env::consts::OS.to_owned()),
+        kernel: nanocode_home::shell::os_version()
+            .filter(|version| !version.is_empty())
+            .map(str::to_owned),
+        architecture: Some(std::env::consts::ARCH.to_owned()),
+        cpu_cores: std::thread::available_parallelism()
+            .ok()
+            .and_then(|cores| u32::try_from(cores.get()).ok()),
+        ..HandHostInfo::default()
     }
 }
 
@@ -655,6 +672,8 @@ impl SocketTransport {
             environment: self.environment.clone(),
             capabilities: self.capabilities.clone(),
             tools_only: self.tools_only,
+            version: self.version.clone(),
+            host: self.host.clone(),
         };
         RemoteCodeModeHost::new(self, catalog.definitions.clone()).described(&catalog)
     }
@@ -679,6 +698,8 @@ impl SocketTransport {
             environment,
             capabilities,
             tools_only,
+            version,
+            host,
         } = match catalog {
             Some(text) => RemoteCatalog::decode(&text, policy.max_frame_bytes)?,
             None => tokio::time::timeout(policy.request_timeout, read(&mut socket, &liveness))
@@ -740,6 +761,8 @@ impl SocketTransport {
             environment,
             capabilities,
             tools_only,
+            version,
+            host,
             _shutdown: shutdown.token.clone().drop_guard(),
             shutdown,
         })
@@ -1091,6 +1114,8 @@ const fn policy_options(policy: SocketPolicy) -> ExecutorOptions {
         tools_only: false,
         environment: None,
         moves: false,
+        version: None,
+        host_info: None,
     }
 }
 pub async fn serve_connect(

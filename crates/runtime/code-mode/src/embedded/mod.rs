@@ -282,6 +282,12 @@ pub trait CodeModeHost: Send + Sync + 'static {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    fn host_info(
+        &self,
+    ) -> HostFuture<'_, Result<Option<crate::remote::HandHostInfo>, CodeModeHostError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn request_capability<'a>(
         &'a self,
         name: &'a str,
@@ -434,6 +440,11 @@ impl<T: CodeModeHost + ?Sized> CodeModeHost for std::sync::Arc<T> {
         &self,
     ) -> HostFuture<'_, Result<Vec<crate::remote::HandCapability>, CodeModeHostError>> {
         (**self).capabilities()
+    }
+    fn host_info(
+        &self,
+    ) -> HostFuture<'_, Result<Option<crate::remote::HandHostInfo>, CodeModeHostError>> {
+        (**self).host_info()
     }
     fn request_capability<'a>(
         &'a self,

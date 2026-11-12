@@ -393,8 +393,27 @@ pub(super) struct Jobs {
     next: AtomicU64,
     entries: Atom<Entries>,
     agent: Atom<Option<Binding>>,
+    subagents: Option<Subagents>,
+}
+struct Subagents {
+    list: Arc<dyn Tool>,
+    close: Arc<dyn Tool>,
 }
 impl Jobs {
+    pub(super) fn with_subagents(tools: &[Arc<dyn Tool>]) -> Self {
+        let named = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool.definition().name() == name)
+                .cloned()
+        };
+        Self {
+            subagents: named("list_agents")
+                .zip(named("close_agent"))
+                .map(|(list, close)| Subagents { list, close }),
+            ..Self::default()
+        }
+    }
     pub(super) fn bind(&self, agent: &Agent, steer: &Steer, ends_with_turn: bool) {
         let binding = Binding {
             agent: agent.downgrade(),
@@ -758,16 +777,16 @@ impl Tool for TaskStopTool {
         )
         .with_output_schema(super::claude_output::schema("TaskStop"))
     }
-    async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let input = input.decode_json::<Value>()?;
-        Ok(match self.invoke(input).await {
+        Ok(match self.invoke(input, context).await {
             Ok(value) => ToolOutput::text(value.to_string()).with_structured_result(value),
             Err(error) => ToolOutput::error(error),
         })
     }
 }
 impl TaskStopTool {
-    async fn invoke(&self, input: Value) -> Result<Value, String> {
+    async fn invoke(&self, input: Value, context: ToolContext<'_>) -> Result<Value, String> {
         let fields = input.as_object().ok_or("task input must be an object")?;
         if let Some(key) = fields
             .keys()
@@ -781,11 +800,13 @@ impl TaskStopTool {
             .or_else(|| fields.get("shell_id"))
             .and_then(Value::as_str)
             .ok_or("task_id or its deprecated shell_id alias must be a string")?;
-        let job = self
+        let Some(job) = self
             .jobs
             .entries
             .read(|entries| entries.jobs.get(id).cloned())
-            .ok_or("unknown task_id in this session")?;
+        else {
+            return self.stop_agent(id, context).await;
+        };
         let status = job.status();
         if status != "running" {
             return Err(format!("Task {id} is not running (status: {status})"));
@@ -799,4 +820,59 @@ impl TaskStopTool {
             "command": job.command,
         }))
     }
+    async fn stop_agent(&self, id: &str, context: ToolContext<'_>) -> Result<Value, String> {
+        let unknown = || "unknown task_id in this session".to_owned();
+        let (Some(subagents), Some(after)) = (
+            &self.jobs.subagents,
+            id.parse::<u64>()
+                .ok()
+                .and_then(|agent| agent.checked_sub(1)),
+        ) else {
+            return Err(unknown());
+        };
+        let listed = delegate(
+            &subagents.list,
+            json!({"include_completed": true, "after_agent_id": after, "limit": 1}),
+            context,
+        )
+        .await?;
+        let agent = listed["agents"]
+            .as_array()
+            .and_then(|agents| agents.iter().find(|agent| agent["agent_id"] == after + 1))
+            .ok_or_else(unknown)?;
+        let status = agent["status"]["state"]
+            .as_str()
+            .ok_or("list_agents returned an agent without a status")?;
+        if !matches!(status, "pending" | "running") {
+            return Err(format!("Task {id} is not running (status: {status})"));
+        }
+        let role = agent["role"]
+            .as_str()
+            .ok_or("list_agents returned an agent without a role")?;
+        delegate(&subagents.close, json!({"agent_id": after + 1}), context).await?;
+        Ok(json!({
+            "message": format!("Successfully stopped task: {id} ({role})"),
+            "task_id": id,
+            "task_type": "local_agent",
+            "command": role,
+        }))
+    }
+}
+async fn delegate(
+    tool: &Arc<dyn Tool>,
+    input: Value,
+    context: ToolContext<'_>,
+) -> Result<Value, String> {
+    let input = serde_json::value::to_raw_value(&input).map_err(|error| error.to_string())?;
+    let mut output = tool
+        .execute(ToolInput::Function(input), context)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.success {
+        return Err(match output.output {
+            nanocode_tool_host::contract::ToolOutputBody::Text(text) => text,
+            body => body.structured_result().to_string(),
+        });
+    }
+    Ok(output.take_structured_result())
 }

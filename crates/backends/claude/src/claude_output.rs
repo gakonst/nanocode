@@ -24,7 +24,7 @@ pub(super) fn schema(name: &str) -> Value {
         "Bash" => bash(json!({"type": ["string", "null"]})),
         "TaskStop" => json!({"type": "object", "properties": {
             "message": {"type": "string"}, "task_id": {"type": "string"},
-            "task_type": {"const": "local_bash"}, "command": {"type": "string"}
+            "task_type": {"enum": ["local_bash", "local_agent"]}, "command": {"type": "string"}
         }, "required": ["message", "task_id", "task_type", "command"], "additionalProperties": false}),
         _ => unreachable!("no Claude output schema for {name}"),
     }

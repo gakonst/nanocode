@@ -123,7 +123,7 @@ pub(crate) fn install_default_tools_with_providers(
     providers: &[Arc<dyn nanocode_tool_host::runtime::DynamicToolProvider>],
     headless: bool,
 ) -> Result<crate::ClaudeTools> {
-    let jobs = Arc::new(crate::claude_bash::Jobs::default());
+    let jobs = Arc::new(crate::claude_bash::Jobs::with_subagents(&additive));
     let selected = match selected {
         Some(tools) => tools,
         None => {

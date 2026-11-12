@@ -586,6 +586,9 @@ fn reply_text(
         Ok(text) => return Ok(text),
         Err(next) => issue = next,
     }
+    if let Some(text) = cut_output(outgoing, &mut frame) {
+        return Ok(text);
+    }
     if let Frame::Reply {
         result: Ok(Some(Value::Object(execution))),
         ..
@@ -602,6 +605,59 @@ fn reply_text(
         execution.insert("notifications".into(), json!([]));
     }
     outgoing.encode(&frame)
+}
+
+fn cut_output(outgoing: &Outgoing, frame: &mut Frame) -> Option<String> {
+    let limit = outgoing.limit.load(Ordering::Relaxed);
+    let (whole, media) = match frame {
+        Frame::Reply {
+            result: Ok(Some(Value::Object(execution))),
+            ..
+        } => match execution.get("output")? {
+            Value::String(text) => (text.clone(), 0),
+            Value::Array(items) => {
+                let texts = items
+                    .iter()
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>();
+                (texts.join("\n"), items.len() - texts.len())
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut keep = whole.len();
+    loop {
+        let size = serde_json::to_string(frame).ok()?.len();
+        if size <= limit {
+            return outgoing.encode(frame).ok();
+        }
+        if keep == 0 {
+            return None;
+        }
+        keep = keep.saturating_sub(size - limit);
+        let head = whole.floor_char_boundary(keep / 2);
+        let tail = whole.ceil_char_boundary(whole.len() - (keep - keep / 2));
+        let omitted = if media == 0 {
+            String::new()
+        } else {
+            format!(" and {media} image, audio or file item(s)")
+        };
+        let cut = format!(
+            "{}\n…[{} of this output's {} bytes{omitted} were cut here: the result exceeded the connection's max_frame_bytes policy of {limit} bytes. Print less, or write large results to a file and read the part you need.]…\n{}",
+            &whole[..head],
+            tail - head,
+            whole.len(),
+            &whole[tail..]
+        );
+        if let Frame::Reply {
+            result: Ok(Some(Value::Object(execution))),
+            ..
+        } = frame
+        {
+            execution.insert("output".into(), Value::String(cut));
+        }
+    }
 }
 
 fn origin(call_id: &str) -> &str {

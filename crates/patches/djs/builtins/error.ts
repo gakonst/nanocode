@@ -1,12 +1,9 @@
 // Error objects (ECMA-262 20.5).
 
 /** InstallErrorCause ( O, options ), 20.5.8.1. */
-function InstallErrorCause(o: Obj, options: Value): void {
-  if (IsObject(options)) {
-    const opts: Obj = AsObj(options);
-    if (HasProperty(opts, "cause")) {
-      DefineDataPropertyOrThrow(o, "cause", Get(opts, "cause"), 5);
-    }
+function InstallErrorCause(o: Obj, opts: Obj): void {
+  if (HasProperty(opts, "cause")) {
+    DefineDataPropertyOrThrow(o, "cause", Get(opts, "cause"), 5);
   }
 }
 
@@ -69,7 +66,9 @@ function FinishErrorStack(o: Obj): Value {
 /** Records the stack of a new error object made by a builtin (D1282, D2050). */
 function RecordStack(o: Obj): void {
   CaptureStack(o);
-  FinishErrorStack(o);
+  if (IsPendingStack(ErrorStack(o))) {
+    FinishErrorStack(o);
+  }
 }
 
 /**
@@ -157,7 +156,9 @@ function ErrorConstruct(newTarget: Value, fallback: Str, message: Value, options
   if (message !== undefined) {
     DefineDataPropertyOrThrow(o, "message", ToString(message), 5);
   }
-  InstallErrorCause(o, options);
+  if (IsObject(options)) {
+    InstallErrorCause(o, AsObj(options));
+  }
   RecordStack(o);
   return o;
 }

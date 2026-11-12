@@ -6,6 +6,10 @@ pub use host::{Host, Instant, LocalFuture, install, spawn_local};
 #[cfg(unix)]
 #[allow(unsafe_code)]
 pub mod unix;
+
+mod uuid;
+pub use uuid::{Simple, Uuid, UuidError, Variant};
+
 mod zone;
 pub use zone::{local_date, time_zone_name, utc_date, utc_offset_seconds};
 
@@ -140,14 +144,14 @@ pub fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
     host::current().fill_random(bytes)
 }
 
-pub fn uuid_v4() -> uuid::Uuid {
+pub fn uuid_v4() -> Uuid {
     let mut bytes = [0; 16];
     fill_random(&mut bytes).expect("the host could not provide UUID randomness");
-    uuid::Builder::from_random_bytes(bytes).into_uuid()
+    Uuid::from_random_bytes(bytes)
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn uuid_v7() -> uuid::Uuid {
+pub fn uuid_v7() -> Uuid {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
     let millis = system_time()
@@ -171,11 +175,11 @@ pub fn uuid_v7() -> uuid::Uuid {
     bytes[0] = high & 0x0f;
     bytes[1] = low;
     fill_random(&mut bytes[2..]).expect("the system could not provide UUID randomness");
-    uuid::Builder::from_unix_timestamp_millis(stamp >> 12, &bytes).into_uuid()
+    Uuid::from_unix_millis(stamp >> 12, &bytes)
 }
 
 #[cfg(target_family = "wasm")]
-pub fn uuid_v7() -> uuid::Uuid {
+pub fn uuid_v7() -> Uuid {
     let millis = system_time()
         .duration_since(UNIX_EPOCH)
         .expect("the host clock predates the Unix epoch")
@@ -186,7 +190,7 @@ pub fn uuid_v7() -> uuid::Uuid {
     );
     let mut bytes = [0; 10];
     fill_random(&mut bytes).expect("the host could not provide UUID randomness");
-    uuid::Builder::from_unix_timestamp_millis(millis as u64, &bytes).into_uuid()
+    Uuid::from_unix_millis(millis as u64, &bytes)
 }
 
 #[cfg(not(target_family = "wasm"))]

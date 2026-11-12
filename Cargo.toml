@@ -183,7 +183,6 @@ tracing-opentelemetry = { version = "0.33", default-features = false, features =
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 url = "2.5.7"
-uuid = { version = "1", features = ["serde", "v5"] }
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 nanocode-digest = { version = "0.7.0", path = "crates/core/digest" }
 ruff_python_ast = { package = "rustpython-ruff_python_ast", version = "=0.16.5" }

@@ -15,7 +15,7 @@ pub(crate) fn is_legacy_user_id(value: &str) -> bool {
 }
 
 fn is_lowercase_uuid(value: &str) -> bool {
-    value.len() == uuid::fmt::Hyphenated::LENGTH
+    value.len() == nanocode_platform::Uuid::HYPHENATED_BYTES
         && !value.bytes().any(|byte| byte.is_ascii_uppercase())
-        && uuid::Uuid::parse_str(value).is_ok()
+        && nanocode_platform::Uuid::parse_str(value).is_ok()
 }

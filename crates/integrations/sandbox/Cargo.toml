@@ -31,7 +31,7 @@ serde.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["ring", "tls12"] }
 tracing.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+nanocode-platform.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock.workspace = true

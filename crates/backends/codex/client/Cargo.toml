@@ -32,7 +32,6 @@ serde_json.workspace = true
 nanocode-digest.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 tracing.workspace = true
-uuid.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 getrandom.workspace = true

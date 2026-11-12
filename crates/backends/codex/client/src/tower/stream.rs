@@ -809,7 +809,7 @@ where
                     .or_insert_with(|| AssistantStreamItem {
                         item_id: Some(ResponseItemId::with_suffix(
                             "msg",
-                            uuid::Uuid::new_v5(&item_namespace, &index.to_be_bytes()),
+                            nanocode_platform::Uuid::new_v5(&item_namespace, &index.to_be_bytes()),
                         )),
                         phase: None,
                     });
@@ -1081,7 +1081,7 @@ fn flush_display_deltas(
 fn normalize_stream_item(
     item: &mut ResponseItem,
     index: u32,
-    namespace: &uuid::Uuid,
+    namespace: &nanocode_platform::Uuid,
     known: &mut HashMap<u32, AssistantStreamItem>,
 ) {
     if let ResponseItem::Message {
@@ -1095,7 +1095,7 @@ fn normalize_stream_item(
             item_id: id.clone().or_else(|| {
                 Some(ResponseItemId::with_suffix(
                     "msg",
-                    uuid::Uuid::new_v5(namespace, &index.to_be_bytes()),
+                    nanocode_platform::Uuid::new_v5(namespace, &index.to_be_bytes()),
                 ))
             }),
             phase: *phase,

@@ -8,11 +8,11 @@ use crate::client::{
 use super::compaction;
 
 pub const TOOL_OUTPUT_TOKEN_LIMIT: usize = 12_000;
-const REQUEST_PREFIX_ID_NAMESPACE: uuid::Uuid =
-    uuid::Uuid::from_u128(0x3e203f80_1cd8_4938_9588_0990bb023db5);
+const REQUEST_PREFIX_ID_NAMESPACE: nanocode_platform::Uuid =
+    nanocode_platform::Uuid::from_u128(0x3e203f80_1cd8_4938_9588_0990bb023db5);
 
-const SYNTHETIC_OUTPUT_ID_NAMESPACE: uuid::Uuid =
-    uuid::Uuid::from_u128(0x90d38d3e_6a5b_4d52_bfe2_2f1e634bfac4);
+const SYNTHETIC_OUTPUT_ID_NAMESPACE: nanocode_platform::Uuid =
+    nanocode_platform::Uuid::from_u128(0x90d38d3e_6a5b_4d52_bfe2_2f1e634bfac4);
 
 #[derive(Clone)]
 pub struct ContextManager {
@@ -522,14 +522,14 @@ fn build_request_prefix(
     instructions: &str,
 ) -> Result<[ResponseItem; 2], serde_json::Error> {
     let prefix_namespace =
-        uuid::Uuid::new_v5(&REQUEST_PREFIX_ID_NAMESPACE, cache_lineage.as_bytes());
+        nanocode_platform::Uuid::new_v5(&REQUEST_PREFIX_ID_NAMESPACE, cache_lineage.as_bytes());
     let tools_id = crate::client::ResponseItemId::with_suffix(
         "at",
-        uuid::Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&tools)?),
+        nanocode_platform::Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&tools)?),
     );
     let instructions_id = crate::client::ResponseItemId::with_suffix(
         "msg",
-        uuid::Uuid::new_v5(&prefix_namespace, instructions.as_bytes()),
+        nanocode_platform::Uuid::new_v5(&prefix_namespace, instructions.as_bytes()),
     );
     let mut tools_item = ResponseItem::additional_tools(tools);
     tools_item.set_id(Some(tools_id));
@@ -575,7 +575,7 @@ fn synthetic_output_id(prefix: &str, source_id: Option<&ResponseItemId>) -> Opti
     let name = format!("{prefix}:{}", source_id.as_str());
     Some(ResponseItemId::with_suffix(
         prefix,
-        uuid::Uuid::new_v5(&SYNTHETIC_OUTPUT_ID_NAMESPACE, name.as_bytes()),
+        nanocode_platform::Uuid::new_v5(&SYNTHETIC_OUTPUT_ID_NAMESPACE, name.as_bytes()),
     ))
 }
 

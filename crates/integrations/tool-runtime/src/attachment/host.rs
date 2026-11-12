@@ -658,7 +658,7 @@ impl Inner {
             }
             budget
         };
-        let call_id: Box<str> = uuid::Uuid::new_v4().to_string().into();
+        let call_id: Box<str> = nanocode_platform::uuid_v4().to_string().into();
         let now = now_ms();
         let timeout_ms = self
             .state

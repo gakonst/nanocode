@@ -22,7 +22,6 @@ futures-util.workspace = true
 httpdate = "1.0.3"
 nanocode-http.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
-uuid.workspace = true
 http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

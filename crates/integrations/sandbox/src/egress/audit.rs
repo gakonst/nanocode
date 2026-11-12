@@ -205,7 +205,7 @@ async fn report<A: Authority>(
                 }),
             }
         }
-        let id = uuid::Uuid::new_v4().simple().to_string();
+        let id = nanocode_platform::uuid_v4().simple().to_string();
         pending.push_back((now, Report { id, callers }));
     }
     let kept = i64::try_from(reporting.kept.as_secs()).unwrap_or(i64::MAX);

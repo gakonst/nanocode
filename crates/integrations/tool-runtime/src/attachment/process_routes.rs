@@ -87,7 +87,7 @@ impl ProcessRoutes {
 
     pub fn runtime_id(&self) -> &str {
         self.runtime_id
-            .get_or_init(|| uuid::Uuid::new_v4().to_string().into())
+            .get_or_init(|| nanocode_platform::uuid_v4().to_string().into())
     }
 
     fn session(&self, session_id: &str) -> Result<Actor<RouteOwner>, ToolError> {

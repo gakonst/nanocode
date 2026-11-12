@@ -74,7 +74,7 @@ pub(crate) async fn run(
     status: watch::Sender<AttachmentStatus>,
     closed: watch::Sender<Option<Result<(), AttachmentError>>>,
 ) {
-    let runtime_id = uuid::Uuid::new_v4().to_string();
+    let runtime_id = nanocode_platform::uuid_v4().to_string();
     let mut active = Vec::<InFlight>::new();
     let mut journal = HashMap::<Box<str>, RetainedCall>::new();
     let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();
@@ -85,7 +85,7 @@ pub(crate) async fn run(
     let mut service_outage: Option<Instant> = None;
     let terminal = loop {
         attempt = attempt.saturating_add(1);
-        let connection_id = uuid::Uuid::new_v4().to_string();
+        let connection_id = nanocode_platform::uuid_v4().to_string();
         let connection_span = tracing::info_span!(target: "nanocode_code_mode::attachment", "attachment.connection",
             runtime_id = runtime_id.as_str(), client_connection_id = connection_id.as_str(),
             attempt, reconnect_delay_ms = previous_delay.as_millis() as u64);
@@ -358,9 +358,11 @@ fn request(
 }
 
 fn safe_uuid(value: &str) -> Option<String> {
-    uuid::Uuid::parse_str(value)
+    nanocode_platform::Uuid::parse_str(value)
         .ok()
-        .filter(|id| id.get_version_num() == 4 && id.get_variant() == uuid::Variant::RFC4122)
+        .filter(|id| {
+            id.get_version_num() == 4 && id.get_variant() == nanocode_platform::Variant::Rfc9562
+        })
         .map(|id| id.to_string())
 }
 
@@ -1018,7 +1020,7 @@ where
             },
             _ = heartbeat.tick() => {
                 if ping.is_some() { break ConnectionEnd::HeartbeatTimeout; }
-                let nonce = uuid::Uuid::new_v4().as_bytes().to_vec();
+                let nonce = nanocode_platform::uuid_v4().as_bytes().to_vec();
                 let started = Instant::now();
                 if let Err(error) = socket.send(Message::Ping(nonce.clone())).await.map_err(|error| AttachmentError::Transport(error.to_string().into())) {
                     break if drain.detaching() { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };

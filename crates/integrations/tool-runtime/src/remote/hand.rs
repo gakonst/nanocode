@@ -244,7 +244,7 @@ impl Hand {
                 name: Some(name),
                 runtime_id: Some(
                     self.runtime
-                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                        .unwrap_or_else(|| nanocode_platform::uuid_v4().to_string()),
                 ),
                 callback_timeout: None,
                 callback_hold: self.callback_hold,
@@ -351,7 +351,8 @@ impl Hand {
                                     });
                                 if retired {
                                     core.reset().await;
-                                    options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+                                    options.runtime_id =
+                                        Some(nanocode_platform::uuid_v4().to_string());
                                     core = renew(&options);
                                     events(HandEvent::Disconnected {
                                         reason: "the brain retired the resumed runtime; reconnecting as a new runtime".into(),
@@ -389,7 +390,8 @@ impl Hand {
                                     (status, &self.confirm)
                                     && !confirm(status).await
                                 {
-                                    options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+                                    options.runtime_id =
+                                        Some(nanocode_platform::uuid_v4().to_string());
                                     core = renew(&options);
                                     events(HandEvent::Unconfirmed {
                                         status,
@@ -560,7 +562,7 @@ async fn settle<F: FnMut(HandEvent)>(
         }
         result if served.close_code == Some(POLICY_CLOSE) => {
             core.reset().await;
-            options.runtime_id = Some(uuid::Uuid::new_v4().to_string());
+            options.runtime_id = Some(nanocode_platform::uuid_v4().to_string());
             *core = renew(options);
             let reason = result.err().map_or_else(
                 || "no reason".to_owned(),

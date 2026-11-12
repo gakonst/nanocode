@@ -218,8 +218,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
 fn token() -> Result<String, Fault> {
     let mut random = [0u8; TOKEN_BYTES];
     getrandom::fill(&mut random).map_err(|error| Fault::Internal(error.to_string()))?;
-    Ok(uuid::Builder::from_random_bytes(random)
-        .into_uuid()
+    Ok(nanocode::platform::Uuid::from_random_bytes(random)
         .simple()
         .to_string())
 }

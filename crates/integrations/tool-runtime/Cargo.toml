@@ -35,7 +35,7 @@ tokio-util.workspace = true
 tokio-rustls.workspace = true
 nanocode-websocket.workspace = true
 url.workspace = true
-uuid = { workspace = true, features = ["v4"] }
+nanocode-platform.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nanocode-platform.workspace = true

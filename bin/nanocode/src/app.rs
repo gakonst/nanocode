@@ -1589,7 +1589,7 @@ impl App {
             self.attachments_by_id.insert(id, attachments);
             return;
         };
-        let id = uuid::Uuid::now_v7().to_string();
+        let id = nanocode::platform::uuid_v7().to_string();
         let sent = crate::extras::prompt_for(&text, &attachments);
         self.launch_turn(agent, id, text, sent, false);
     }

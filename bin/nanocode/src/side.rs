@@ -508,7 +508,7 @@ impl App {
         };
         side.exchanges.push((true, question.clone()));
         self.side_launch(PendingTurn {
-            id: uuid::Uuid::now_v7().to_string(),
+            id: nanocode::platform::uuid_v7().to_string(),
             text: question,
             prompt: sent.into(),
             shown: false,

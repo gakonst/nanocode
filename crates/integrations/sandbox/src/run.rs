@@ -168,7 +168,7 @@ impl Runner {
         call: Call<'_>,
         compose: impl FnOnce(&Seen<'_>, &mut Command),
     ) -> io::Result<Ran> {
-        let id = uuid::Uuid::new_v4().simple().to_string();
+        let id = nanocode_platform::uuid_v4().simple().to_string();
         let mut cleanup = Cleanup {
             work: self.scratch.join(&id),
             group: None,

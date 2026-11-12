@@ -305,7 +305,7 @@ impl App {
     pub(crate) fn paste_image(&mut self) {
         let _span = tracing::info_span!(target: "nanocode", "nc.action", action.name = "paste_image", session.id = self.agent.as_ref().map(|agent| agent.session_id())).entered();
         let directory = self.home.join("images");
-        let path = directory.join(format!("{}.png", uuid::Uuid::now_v7()));
+        let path = directory.join(format!("{}.png", nanocode::platform::uuid_v7()));
         let tx = self.tx.clone();
         self.flash("reading the clipboard…");
         tokio::task::spawn_blocking(move || {

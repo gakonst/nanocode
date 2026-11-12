@@ -51,7 +51,6 @@ tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", 
 tokio-rustls = { workspace = true, features = ["tls12"] }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
-uuid = { workspace = true, features = ["v7"] }
 
 [target.'cfg(unix)'.dependencies]
 nanocode-process.workspace = true

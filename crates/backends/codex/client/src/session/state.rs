@@ -11,8 +11,8 @@ use super::{
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[repr(transparent)]
-#[serde(try_from = "uuid::Uuid", into = "uuid::Uuid")]
-pub struct SessionId(uuid::Uuid);
+#[serde(try_from = "nanocode_platform::Uuid", into = "nanocode_platform::Uuid")]
+pub struct SessionId(nanocode_platform::Uuid);
 
 impl SessionId {
     #[must_use]
@@ -21,7 +21,7 @@ impl SessionId {
     }
 
     #[must_use]
-    pub const fn as_uuid(self) -> uuid::Uuid {
+    pub const fn as_uuid(self) -> nanocode_platform::Uuid {
         self.0
     }
 }
@@ -48,14 +48,14 @@ impl std::str::FromStr for SessionId {
     type Err = SessionIdError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::try_from(uuid::Uuid::parse_str(value)?)
+        Self::try_from(nanocode_platform::Uuid::parse_str(value)?)
     }
 }
 
-impl TryFrom<uuid::Uuid> for SessionId {
+impl TryFrom<nanocode_platform::Uuid> for SessionId {
     type Error = SessionIdError;
 
-    fn try_from(value: uuid::Uuid) -> Result<Self, Self::Error> {
+    fn try_from(value: nanocode_platform::Uuid) -> Result<Self, Self::Error> {
         if value.get_version_num() != 7 {
             return Err(SessionIdError::WrongVersion {
                 version: value.get_version_num(),
@@ -65,7 +65,7 @@ impl TryFrom<uuid::Uuid> for SessionId {
     }
 }
 
-impl From<SessionId> for uuid::Uuid {
+impl From<SessionId> for nanocode_platform::Uuid {
     fn from(value: SessionId) -> Self {
         value.0
     }
@@ -73,7 +73,7 @@ impl From<SessionId> for uuid::Uuid {
 
 #[derive(Debug)]
 pub enum SessionIdError {
-    InvalidUuid(uuid::Error),
+    InvalidUuid(nanocode_platform::UuidError),
 
     WrongVersion { version: usize },
 }
@@ -98,8 +98,8 @@ impl std::error::Error for SessionIdError {
     }
 }
 
-impl From<uuid::Error> for SessionIdError {
-    fn from(source: uuid::Error) -> Self {
+impl From<nanocode_platform::UuidError> for SessionIdError {
+    fn from(source: nanocode_platform::UuidError) -> Self {
         Self::InvalidUuid(source)
     }
 }

@@ -80,6 +80,17 @@ fn to_primitive_unsupported<T>() -> Result<T, Fault> {
     type_error("not supported yet: conversion of an object to a primitive")
 }
 
+const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
+pub(crate) fn rem(x: f64, y: f64) -> f64 {
+    let (i, j) = (x as i64, y as i64);
+    if i as f64 == x && j as f64 == y && j != 0 && i.unsigned_abs() <= MAX_SAFE_INTEGER {
+        let r = i % j;
+        return if r == 0 && x.is_sign_negative() { -0.0 } else { r as f64 };
+    }
+    djs_libm::fmod(x, y)
+}
+
 /// A Number in the int32 form when it is an integer in range (and not -0).
 #[inline]
 pub(crate) fn number(n: f64) -> Value {

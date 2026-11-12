@@ -2789,7 +2789,7 @@ impl<'h> Exec<'h> {
             Op::Div => self.binary_num(|_, _| None, |x, y| x / y)?,
             // x % y for int32: the sign of x, and 0 % y or a zero result from a negative x
             // is -0 for x < 0, so only non-negative x with nonzero y stays int32.
-            Op::Mod => self.binary_num(|x, y| (x >= 0 && y != 0).then(|| x % y), |x, y| x % y)?,
+            Op::Mod => self.binary_num(|x, y| (x >= 0 && y != 0).then(|| x % y), conv::rem)?,
             Op::Pow => self.binary_num(|_, _| None, conv::pow)?,
             Op::Shl => self.binary_int(|x, y| Value::int(x.wrapping_shl(y as u32 & 31)))?,
             Op::Sar => self.binary_int(|x, y| Value::int(x >> (y as u32 & 31)))?,

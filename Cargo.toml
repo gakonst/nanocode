@@ -119,7 +119,6 @@ x11rb = { version = "0.13.2", features = ["xtest"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 base64 = "0.22.1"
 memchr = "2.8.3"
-flate2 = "1.1.9"
 mimalloc = { version = "0.1.52", default-features = false }
 imbl = { version = "7.0.2", features = ["serde"] }
 futures-channel = "0.3.31"

@@ -1684,7 +1684,6 @@ name = "nanocode-backend-codex-client"
 version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
- "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "http",
@@ -1692,6 +1691,7 @@ dependencies = [
  "memchr",
  "nanocode-agent-types",
  "nanocode-audio",
+ "nanocode-compression",
  "nanocode-digest",
  "nanocode-home",
  "nanocode-http",

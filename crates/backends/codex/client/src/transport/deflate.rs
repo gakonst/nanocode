@@ -1,17 +1,25 @@
 use std::{
-    io::{self, Write},
+    io,
     pin::Pin,
     task::{Context, Poll},
 };
 
-use flate2::{Compression, Decompress, FlushDecompress, Status, write::DeflateEncoder};
 use http::{HeaderMap, header};
+use nanocode_compression::{
+    inflate::{Inflate, InflateFlush, InflateStatus},
+    miniz::{self, Format, Level},
+};
 use nanocode_websocket::WebSocketConfig;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 const EXTENSION: &str = "permessage-deflate";
 pub(crate) const OFFER: &str = "permessage-deflate; client_no_context_takeover";
-const LEVEL: u32 = 2;
+const LEVEL: Level = match Level::new(2) {
+    Ok(level) => level,
+    Err(_) => panic!("level 2 is a miniz level"),
+};
+const RAW_WINDOW_BITS: i32 = -15;
+const DECOMPRESSION_ERROR: &str = "deflate decompression error";
 const MESSAGE_TAIL: [u8; 4] = [0x00, 0x00, 0xff, 0xff];
 const HEADER_END: &[u8] = b"\r\n\r\n";
 const OPCODE_CONTINUATION: u8 = 0x0;
@@ -28,10 +36,7 @@ pub(crate) fn negotiated(headers: &HeaderMap) -> bool {
 }
 
 pub(crate) fn deflate(message: &[u8]) -> io::Result<Vec<u8>> {
-    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::new(LEVEL));
-    encoder.write_all(message)?;
-    encoder.flush()?;
-    let mut compressed = std::mem::take(encoder.get_mut());
+    let mut compressed = miniz::compress_sync_flush(message, LEVEL, Format::Raw);
     if !compressed.ends_with(&MESSAGE_TAIL) {
         return Err(io::Error::other(
             "deflate sync flush did not end with an empty stored block",
@@ -65,7 +70,7 @@ pub(crate) struct InflateStream<S> {
     output: Vec<u8>,
     output_start: usize,
     message: Option<(u8, Vec<u8>)>,
-    inflater: Decompress,
+    inflater: Inflate,
     eof: bool,
 }
 
@@ -79,7 +84,7 @@ impl<S> InflateStream<S> {
             output: Vec::new(),
             output_start: 0,
             message: None,
-            inflater: Decompress::new(false),
+            inflater: raw_inflater(),
             eof: false,
         }
     }
@@ -180,17 +185,26 @@ impl<S> InflateStream<S> {
             if message.len() == message.capacity() {
                 message.reserve(message.capacity());
             }
-            let (read, written) = (self.inflater.total_in(), message.len());
-            let status = self
-                .inflater
-                .decompress_vec(&input[offset..], &mut message, FlushDecompress::Sync)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let written = message.len();
+            let (read, produced) = (self.inflater.total_in(), self.inflater.total_out());
+            message.resize(message.capacity(), 0);
+            let status = self.inflater.inflate(
+                &input[offset..],
+                &mut message[written..],
+                InflateFlush::SyncFlush,
+            );
+            let produced = usize::try_from(self.inflater.total_out() - produced).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "inflated output overflow")
+            })?;
+            message.truncate(written + produced);
+            let status = status
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, DECOMPRESSION_ERROR))?;
             let consumed = usize::try_from(self.inflater.total_in() - read).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "inflated input overflow")
             })?;
             offset += consumed;
-            if status == Status::StreamEnd {
-                self.inflater.reset(false);
+            if status == InflateStatus::StreamEnd {
+                self.inflater = raw_inflater();
                 return Ok(message);
             }
             if offset == input.len()
@@ -206,6 +220,11 @@ impl<S> InflateStream<S> {
             }
         }
     }
+}
+
+fn raw_inflater() -> Inflate {
+    Inflate::new(RAW_WINDOW_BITS)
+        .expect("raw deflate with a 32 KiB window is a valid inflate configuration")
 }
 
 fn parse(bytes: &[u8]) -> io::Result<Option<Header>> {

@@ -40,7 +40,7 @@ tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "proce
 tokio-rustls.workspace = true
 nanocode-websocket.workspace = true
 url.workspace = true
-flate2.workspace = true
+nanocode-compression.workspace = true
 nanocode-zstd.workspace = true
 
 [lints]

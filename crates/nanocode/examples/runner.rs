@@ -272,21 +272,16 @@ a second signal during multi-session shutdown aborts the remaining sessions.
     fn retry_accept(issue: &std::io::Error) -> bool {
         #[cfg(target_os = "linux")]
         {
-            use nix::errno::Errno;
-            if issue
-                .raw_os_error()
-                .map(Errno::from_raw)
-                .is_some_and(|errno| {
-                    [
-                        Errno::EPROTO,
-                        Errno::ENOPROTOOPT,
-                        Errno::EHOSTDOWN,
-                        Errno::ENONET,
-                        Errno::EOPNOTSUPP,
-                    ]
-                    .contains(&errno)
-                })
-            {
+            if issue.raw_os_error().is_some_and(|errno| {
+                [
+                    libc::EPROTO,
+                    libc::ENOPROTOOPT,
+                    libc::EHOSTDOWN,
+                    libc::ENONET,
+                    libc::EOPNOTSUPP,
+                ]
+                .contains(&errno)
+            }) {
                 return true;
             }
         }
@@ -417,7 +412,7 @@ a second signal during multi-session shutdown aborts the remaining sessions.
         };
         #[cfg(target_os = "linux")]
         if args.multi_session {
-            nix::sys::prctl::set_dumpable(false)
+            nanocode_platform::unix::forbid_core_dumps()
                 .map_err(|issue| format!("failed to mark the runner non-dumpable: {issue}"))?;
         }
         let token = read_token(&args.token)?;

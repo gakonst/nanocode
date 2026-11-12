@@ -24,7 +24,8 @@ nanocode-zstd.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["fs"] }
+libc.workspace = true
+nanocode-platform.workspace = true
 
 [lints]
 workspace = true

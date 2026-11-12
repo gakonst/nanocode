@@ -18,6 +18,9 @@ getrandom.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 uuid = { workspace = true, features = ["v4", "v7"] }
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [lints.rust]
 unsafe_code = "deny"
 

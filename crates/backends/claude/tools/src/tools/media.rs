@@ -417,11 +417,7 @@ fn helper(command: &mut Command, max: usize, deadline: Instant) -> Result<Vec<u8
     })();
     #[cfg(unix)]
     {
-        use nix::{
-            sys::signal::{Signal, killpg},
-            unistd::Pid,
-        };
-        let _ = killpg(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
+        let _ = nanocode_platform::unix::signal_group(child.id() as i32, libc::SIGKILL);
     }
     if result.is_err() {
         let _ = child.kill();

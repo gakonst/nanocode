@@ -596,7 +596,7 @@ const FRESH_CONNECTION: Duration = Duration::from_secs(10);
 
 #[cfg(unix)]
 fn host_name() -> Result<String, CodeModeHostError> {
-    nix::unistd::gethostname()
+    nanocode_platform::unix::host_name()
         .map_err(error)?
         .into_string()
         .map_err(|_| error("the host name is not valid UTF-8"))

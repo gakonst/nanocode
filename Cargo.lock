@@ -2566,6 +2566,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 name = "nanocode"
 version = "0.7.0"
 dependencies = [
+ "libc",
  "nanocode-agent",
  "nanocode-agent-host",
  "nanocode-backend-claude",
@@ -2580,7 +2581,6 @@ dependencies = [
  "nanocode-subagents",
  "nanocode-tool-runtime",
  "nanocode-tools",
- "nix 0.31.3",
  "serde_json",
  "tokio",
 ]
@@ -2744,12 +2744,12 @@ version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "image",
+ "libc",
  "nanocode-home",
  "nanocode-image",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tools",
- "nix 0.31.3",
  "schemars",
  "serde",
  "serde_json",
@@ -2858,6 +2858,7 @@ dependencies = [
  "nanocode-computer-repl",
  "nanocode-home",
  "nanocode-observability",
+ "nanocode-platform",
  "nanocode-process",
  "nanocode-psh",
  "nanocode-psh-embedded",
@@ -2866,7 +2867,6 @@ dependencies = [
  "nanocode-sync",
  "nanocode-tempo",
  "nanocode-tui",
- "nix 0.31.3",
  "opentelemetry",
  "psh",
  "reqwest",
@@ -2998,7 +2998,7 @@ name = "nanocode-home"
 version = "0.7.0"
 dependencies = [
  "libc",
- "nix 0.31.3",
+ "nanocode-platform",
  "serde",
  "sha2 0.11.0",
 ]
@@ -3124,6 +3124,7 @@ name = "nanocode-platform"
 version = "0.7.0"
 dependencies = [
  "getrandom 0.4.3",
+ "libc",
  "tokio",
  "uuid",
 ]
@@ -3133,10 +3134,11 @@ name = "nanocode-process"
 version = "0.7.0"
 dependencies = [
  "getrandom 0.4.3",
+ "libc",
  "nanocode-home",
+ "nanocode-platform",
  "nanocode-process-contracts",
  "nanocode-sync",
- "nix 0.31.3",
  "rustix",
  "serde_json",
  "tokio",
@@ -3256,9 +3258,10 @@ dependencies = [
 name = "nanocode-store-jsonl"
 version = "0.7.0"
 dependencies = [
+ "libc",
  "nanocode-durability-core",
+ "nanocode-platform",
  "nanocode-zstd",
- "nix 0.31.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3392,13 +3395,13 @@ dependencies = [
  "nanocode-code-mode",
  "nanocode-home",
  "nanocode-mcp-tools",
+ "nanocode-platform",
  "nanocode-process",
  "nanocode-sync",
  "nanocode-tls",
  "nanocode-tool-host",
  "nanocode-tool-provider",
  "nanocode-tools",
- "nix 0.31.3",
  "serde",
  "serde_json",
  "tokio",

@@ -79,11 +79,8 @@ fn write_marker(directory: &Path, marker: &Marker) -> Result<(), StoreError> {
 }
 
 #[cfg(unix)]
-#[allow(clippy::unnecessary_cast)]
 fn available(directory: &Path) -> Option<u64> {
-    nix::sys::statvfs::statvfs(directory)
-        .ok()
-        .map(|stat| (stat.blocks_available() as u64).saturating_mul(stat.fragment_size()))
+    nanocode_platform::unix::available_bytes(directory).ok()
 }
 
 #[cfg(not(unix))]

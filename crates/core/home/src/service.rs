@@ -308,7 +308,7 @@ fn comment(note: &str) -> io::Result<&str> {
 
 #[cfg(target_os = "macos")]
 fn domain() -> String {
-    format!("gui/{}", nix::unistd::getuid())
+    format!("gui/{}", nanocode_platform::unix::user_id())
 }
 
 fn run(command: &mut Command) -> io::Result<()> {

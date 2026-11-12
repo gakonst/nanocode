@@ -38,7 +38,7 @@ url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["hostname"] }
+nanocode-platform.workspace = true
 
 [lints]
 workspace = true

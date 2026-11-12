@@ -1,13 +1,11 @@
 use std::{collections::HashSet, time::Duration};
 
-use nix::{
-    sys::signal::{Signal, kill},
-    unistd::{Pid, getpgrp},
-};
-
 pub fn terminate_marked(variable: &str, value: &str, grace: Duration) -> usize {
     let needle = format!("{variable}={value}");
-    let (me, group) = (Pid::this().as_raw(), getpgrp().as_raw());
+    let (me, group) = (
+        std::process::id().cast_signed(),
+        nanocode_platform::unix::process_group(),
+    );
     let escaped = || -> Vec<i32> {
         marked(&needle)
             .into_iter()
@@ -20,7 +18,7 @@ pub fn terminate_marked(variable: &str, value: &str, grace: Duration) -> usize {
         return 0;
     }
     for &pid in &ended {
-        let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+        let _ = nanocode_platform::unix::signal_process(pid, libc::SIGTERM);
     }
     let until = std::time::Instant::now() + grace;
     while std::time::Instant::now() < until && !escaped().is_empty() {
@@ -29,7 +27,7 @@ pub fn terminate_marked(variable: &str, value: &str, grace: Duration) -> usize {
     for _ in 0..5 {
         let found = escaped();
         for &pid in &found {
-            let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+            let _ = nanocode_platform::unix::signal_process(pid, libc::SIGKILL);
         }
         if found.is_empty() {
             break;

@@ -58,7 +58,7 @@ nanocode-process.workspace = true
 nanocode-psh.workspace = true
 nanocode-psh-embedded.workspace = true
 nanocode-python.workspace = true
-nix = { workspace = true, features = ["time"] }
+nanocode-platform.workspace = true
 psh.workspace = true
 
 [lints]

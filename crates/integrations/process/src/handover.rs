@@ -9,7 +9,7 @@ use std::{
 
 pub const ARGUMENT: &str = "read-outputs";
 
-pub const TERMINATED: u8 = 128 + nix::libc::SIGTERM as u8;
+pub const TERMINATED: u8 = 128 + libc::SIGTERM as u8;
 
 pub fn hand_over(mut command: Command) -> io::Result<u8> {
     let outputs = super::output::open();

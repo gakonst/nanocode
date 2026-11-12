@@ -1,8 +1,3 @@
-use nix::{
-    errno::Errno,
-    sys::signal::kill,
-    unistd::{Pid, getuid},
-};
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, Write},
@@ -72,7 +67,7 @@ pub fn check_dir(dir: &Path) -> Result<(), PrivateError> {
     if !meta.is_dir() {
         return Err(PrivateError::NotDirectory(dir.into()));
     }
-    if meta.uid() != getuid().as_raw() || meta.mode() & 0o077 != 0 {
+    if meta.uid() != nanocode_platform::unix::user_id() || meta.mode() & 0o077 != 0 {
         return Err(PrivateError::OpenDirectory(dir.into()));
     }
     Ok(())
@@ -86,7 +81,7 @@ pub fn open(path: &Path) -> Result<File, PrivateError> {
     if !meta.is_file() {
         return Err(PrivateError::NotFile(path.into()));
     }
-    if meta.uid() != getuid().as_raw() || meta.permissions().mode() & 0o077 != 0 {
+    if meta.uid() != nanocode_platform::unix::user_id() || meta.permissions().mode() & 0o077 != 0 {
         return Err(PrivateError::OpenFile(path.into()));
     }
     Ok(File::open(path)?)
@@ -178,7 +173,10 @@ fn alive(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
-    matches!(kill(Pid::from_raw(pid), None), Ok(()) | Err(Errno::EPERM))
+    match nanocode_platform::unix::probe_process(pid) {
+        Ok(()) => true,
+        Err(error) => error.raw_os_error() == Some(libc::EPERM),
+    }
 }
 
 const fn libc_nofollow() -> i32 {
@@ -198,8 +196,7 @@ pub fn append_output(path: &Path) -> Result<(), PrivateError> {
             path: path.into(),
             error,
         })?;
-    nix::unistd::dup2_stdout(&file).map_err(io::Error::from)?;
-    nix::unistd::dup2_stderr(&file).map_err(io::Error::from)?;
+    nanocode_platform::unix::redirect_output(&file)?;
     Ok(())
 }
 
@@ -229,9 +226,7 @@ impl Lock {
     pub fn try_lock(&self) -> io::Result<()> {
         match self.file.try_lock() {
             Ok(()) => Ok(()),
-            Err(TryLockError::WouldBlock) => {
-                Err(io::Error::from_raw_os_error(Errno::EWOULDBLOCK as i32))
-            }
+            Err(TryLockError::WouldBlock) => Err(io::Error::from_raw_os_error(libc::EWOULDBLOCK)),
             Err(TryLockError::Error(error)) => Err(error),
         }
     }

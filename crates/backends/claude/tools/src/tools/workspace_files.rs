@@ -277,7 +277,7 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
 
 #[cfg(unix)]
 fn flush_to_disk(file: &fs::File) -> std::io::Result<()> {
-    nix::unistd::fsync(file).map_err(std::io::Error::from)
+    nanocode_platform::unix::sync_file(file)
 }
 
 #[cfg(not(unix))]

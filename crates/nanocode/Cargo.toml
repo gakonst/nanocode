@@ -37,7 +37,7 @@ nanocode-computer = { workspace = true, optional = true }
 nanocode-store-jsonl.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix.workspace = true
+libc.workspace = true
 
 [features]
 default = ["local-cells", "cua"]

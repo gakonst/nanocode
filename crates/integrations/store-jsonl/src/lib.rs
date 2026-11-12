@@ -687,9 +687,7 @@ fn claim<'a>(entry: &'a Indexed<'_>) -> Result<Claim<'a>, StoreError> {
 
 #[cfg(target_vendor = "apple")]
 fn sync_journal(file: &File) -> std::io::Result<()> {
-    nix::fcntl::fcntl(file, nix::fcntl::FcntlArg::F_BARRIERFSYNC)
-        .map(drop)
-        .or_else(|_| file.sync_all())
+    nanocode_platform::unix::barrier_sync_file(file).or_else(|_| file.sync_all())
 }
 
 #[cfg(not(target_vendor = "apple"))]
@@ -699,11 +697,13 @@ fn sync_journal(file: &File) -> std::io::Result<()> {
 
 #[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
-    use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
     let Ok(pid) = i32::try_from(pid) else {
         return true;
     };
-    !matches!(kill(Pid::from_raw(pid), None), Err(Errno::ESRCH))
+    nanocode_platform::unix::probe_process(pid)
+        .err()
+        .and_then(|error| error.raw_os_error())
+        != Some(libc::ESRCH)
 }
 
 #[cfg(not(unix))]

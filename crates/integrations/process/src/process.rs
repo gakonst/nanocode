@@ -11,12 +11,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(unix)]
-use nix::{
-    errno::Errno,
-    sys::signal::{Signal, killpg},
-    unistd::Pid,
-};
 use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -511,13 +505,13 @@ const TERMINAL_ROWS: u16 = 24;
 const TERMINAL_COLUMNS: u16 = 80;
 
 #[cfg(unix)]
-const SESSION_DEFAULT_SIGNALS: [Signal; 6] = [
-    Signal::SIGCHLD,
-    Signal::SIGHUP,
-    Signal::SIGINT,
-    Signal::SIGQUIT,
-    Signal::SIGTERM,
-    Signal::SIGALRM,
+const SESSION_DEFAULT_SIGNALS: [libc::c_int; 6] = [
+    libc::SIGCHLD,
+    libc::SIGHUP,
+    libc::SIGINT,
+    libc::SIGQUIT,
+    libc::SIGTERM,
+    libc::SIGALRM,
 ];
 
 #[cfg(unix)]
@@ -546,7 +540,9 @@ fn lead_session(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     let lead = || -> io::Result<()> {
         for signal in SESSION_DEFAULT_SIGNALS {
-            unsafe { nix::sys::signal::signal(signal, nix::sys::signal::SigHandler::SigDfl) }?;
+            if unsafe { libc::signal(signal, libc::SIG_DFL) } == libc::SIG_ERR {
+                return Err(io::Error::last_os_error());
+            }
         }
         rustix::process::setsid()?;
         rustix::process::ioctl_tiocsctty(rustix::stdio::stdin())?;
@@ -583,7 +579,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 
 enum Guarded {
     #[cfg(unix)]
-    Group(Pid),
+    Group(i32),
     #[cfg(not(unix))]
     Group(u32),
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -597,9 +593,7 @@ pub struct ProcessGroupGuard {
 impl ProcessGroupGuard {
     pub fn new(pid: u32) -> Self {
         #[cfg(unix)]
-        let guarded = i32::try_from(pid)
-            .ok()
-            .map(|pid| Guarded::Group(Pid::from_raw(pid)));
+        let guarded = i32::try_from(pid).ok().map(Guarded::Group);
         #[cfg(not(unix))]
         let guarded = Some(Guarded::Group(pid));
         Self { guarded }
@@ -616,10 +610,12 @@ impl ProcessGroupGuard {
     pub(super) fn interrupt(&self) -> io::Result<()> {
         match &self.guarded {
             None => Ok(()),
-            Some(Guarded::Group(process_group)) => match killpg(*process_group, Signal::SIGINT) {
-                Ok(()) | Err(Errno::ESRCH) => Ok(()),
-                Err(error) => Err(io::Error::from_raw_os_error(error as i32)),
-            },
+            Some(Guarded::Group(process_group)) => {
+                match nanocode_platform::unix::signal_group(*process_group, libc::SIGINT) {
+                    Err(error) if error.raw_os_error() != Some(libc::ESRCH) => Err(error),
+                    Ok(()) | Err(_) => Ok(()),
+                }
+            }
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             Some(Guarded::Running(running)) => {
                 running.interrupt();
@@ -644,11 +640,11 @@ impl ProcessGroupGuard {
                 return Ok(());
             }
         };
-        for signal in [Signal::SIGSTOP, Signal::SIGKILL] {
-            match killpg(process_group, signal) {
+        for signal in [libc::SIGSTOP, libc::SIGKILL] {
+            match nanocode_platform::unix::signal_group(process_group, signal) {
                 Ok(()) => {}
-                Err(Errno::ESRCH) => return Ok(()),
-                Err(error) => return Err(io::Error::from_raw_os_error(error as i32)),
+                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
+                Err(error) => return Err(error),
             }
         }
         Ok(())

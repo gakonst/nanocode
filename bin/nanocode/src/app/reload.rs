@@ -311,7 +311,8 @@ pub(super) struct Instance {
 impl Instance {
     pub(super) async fn start(tx: tokio::sync::mpsc::UnboundedSender<AppEvent>) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
-        let directory = std::env::temp_dir().join(format!("nanocode-{}", nix::unistd::getuid()));
+        let directory =
+            std::env::temp_dir().join(format!("nanocode-{}", nanocode_platform::unix::user_id()));
         tokio::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)

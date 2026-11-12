@@ -1,8 +1,5 @@
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
-use nix::unistd::{Uid, User};
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shell {
     program: PathBuf,
@@ -59,7 +56,7 @@ fn user_shell_path() -> Option<PathBuf> {
     static SHELL: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     SHELL
         .get_or_init(|| {
-            User::from_uid(Uid::current())
+            nanocode_platform::unix::user_entry(nanocode_platform::unix::user_id())
                 .ok()
                 .flatten()
                 .map(|user| user.shell)
@@ -95,11 +92,11 @@ pub fn os_version() -> Option<&'static str> {
     static VERSION: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     VERSION
         .get_or_init(|| {
-            let system = nix::sys::utsname::uname().ok()?;
+            let system = nanocode_platform::unix::system_release().ok()?;
             Some(format!(
                 "{} {}",
-                system.sysname().to_string_lossy(),
-                system.release().to_string_lossy()
+                system.name.to_string_lossy(),
+                system.release.to_string_lossy()
             ))
         })
         .as_deref()

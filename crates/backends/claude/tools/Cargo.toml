@@ -27,7 +27,7 @@ tokio = { workspace = true, features = ["rt"] }
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["fs"] }
+libc.workspace = true
 
 [lints]
 workspace = true

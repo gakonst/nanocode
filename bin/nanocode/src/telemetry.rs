@@ -323,11 +323,8 @@ pub fn record_frame_cpu(span: &Span, started: Option<u64>) {
 
 #[cfg(unix)]
 fn thread_cpu_ns() -> Option<u64> {
-    let time = nix::time::clock_gettime(nix::time::ClockId::CLOCK_THREAD_CPUTIME_ID).ok()?;
-    u64::try_from(time.tv_sec())
-        .ok()?
-        .checked_mul(1_000_000_000)?
-        .checked_add(u64::try_from(time.tv_nsec()).ok()?)
+    let time = nanocode_platform::unix::thread_cpu_time().ok()?;
+    u64::try_from(time.as_nanos()).ok()
 }
 
 #[cfg(not(unix))]

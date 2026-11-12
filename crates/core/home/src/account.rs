@@ -1,4 +1,3 @@
-use nix::unistd::{User, getuid};
 use std::{env, path::PathBuf};
 
 #[derive(Debug)]
@@ -27,7 +26,9 @@ pub struct Account {
 
 impl Account {
     pub fn current() -> Result<Self, AccountError> {
-        let user = User::from_uid(getuid()).ok().flatten();
+        let user = nanocode_platform::unix::user_entry(nanocode_platform::unix::user_id())
+            .ok()
+            .flatten();
         let name = user
             .as_ref()
             .map(|user| user.name.clone())
@@ -37,7 +38,7 @@ impl Account {
         let home = env::var_os("HOME")
             .filter(|home| !home.is_empty())
             .map(PathBuf::from)
-            .or_else(|| user.as_ref().map(|user| user.dir.clone()))
+            .or_else(|| user.as_ref().map(|user| user.home.clone()))
             .filter(|home| home.is_absolute())
             .ok_or(AccountError::Home)?;
         let shell = user

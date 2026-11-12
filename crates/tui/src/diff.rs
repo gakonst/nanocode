@@ -4,8 +4,8 @@ use crate::ui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use crate::unicode;
 use syntect::{easy::HighlightLines, highlighting::Theme as SyntaxTheme, parsing::SyntaxSet};
-use unicode_width::UnicodeWidthStr;
 
 pub fn render(source: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     render_rows(source, width, theme, usize::MAX).0
@@ -467,7 +467,7 @@ fn change_counts<'a>(lines: impl Iterator<Item = &'a DiffLine>) -> (usize, usize
 
 pub fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static> {
     let label = truncate_graphemes(label, width.saturating_sub(5));
-    let label_width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
+    let label_width = u16::try_from(unicode::width(&label)).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(label_width.saturating_add(5));
     Line::from(vec![
         Span::styled("╭─ ", Style::default().fg(theme.border())),
@@ -486,7 +486,7 @@ pub fn component_header(label: &str, width: u16, theme: &Theme) -> Line<'static>
 
 pub fn hunk_divider(label: &str, width: u16, theme: &Theme) -> Line<'static> {
     let label = truncate_graphemes(label, width.saturating_sub(5));
-    let label_width = u16::try_from(UnicodeWidthStr::width(label.as_str())).unwrap_or(u16::MAX);
+    let label_width = u16::try_from(unicode::width(&label)).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(label_width.saturating_add(5));
     Line::from(vec![
         Span::styled("├─ ", Style::default().fg(theme.border())),

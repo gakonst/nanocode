@@ -1,8 +1,5 @@
 use std::borrow::Cow;
 
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
-
 use super::{
     buffer::{Buffer, render_symbol, symbol_width},
     layout::{Alignment, Position, Rect},
@@ -45,13 +42,12 @@ impl<'a> Span<'a> {
 
     #[must_use]
     pub fn width(&self) -> usize {
-        UnicodeWidthStr::width(self.content.as_ref())
+        crate::unicode::width(&self.content)
     }
 
     pub(crate) fn styled_graphemes(&self, base: Style) -> impl Iterator<Item = (&str, Style)> {
         let style = base.patch(self.style);
-        self.content
-            .graphemes(true)
+        crate::unicode::graphemes(&self.content)
             .filter(|grapheme| !grapheme.contains(char::is_control))
             .map(move |grapheme| (grapheme, style))
     }
@@ -231,8 +227,8 @@ fn render_spans(spans: &[Span<'_>], mut area: Rect, buffer: &mut Buffer, mut ski
 fn truncate_start(text: &str, width_max: usize) -> (&str, usize) {
     let mut start = text.len();
     let mut width = 0_usize;
-    for (offset, grapheme) in text.grapheme_indices(true).rev() {
-        let Some(next) = width.checked_add(UnicodeWidthStr::width(grapheme)) else {
+    for (offset, grapheme) in crate::unicode::grapheme_indices(text).rev() {
+        let Some(next) = width.checked_add(crate::unicode::width(grapheme)) else {
             break;
         };
         if next > width_max {

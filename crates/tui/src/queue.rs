@@ -2,10 +2,8 @@ use crate::ui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
-use crate::{format::sanitize_terminal_text_inline, theme::Theme};
+use crate::{format::sanitize_terminal_text_inline, theme::Theme, unicode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueueKind {
@@ -156,7 +154,7 @@ impl Queue {
                 let marker = if selected { "› " } else { "↳ " };
                 let prefix = format!("{marker}{label}: ");
                 let text = sanitize_terminal_text_inline(&item.text).into_owned();
-                let available = usize::from(width).saturating_sub(prefix.width());
+                let available = usize::from(width).saturating_sub(unicode::width(&prefix));
                 let text = truncate(&text, available);
                 let mut text_style = Style::default().fg(theme.muted());
                 if selected {
@@ -172,13 +170,13 @@ impl Queue {
 }
 
 fn truncate(text: &str, width: usize) -> String {
-    if text.width() <= width {
+    if unicode::width(text) <= width {
         return text.to_owned();
     }
     let mut result = String::new();
     let mut used = 0;
-    for grapheme in text.graphemes(true) {
-        let grapheme_width = grapheme.width();
+    for grapheme in unicode::graphemes(text) {
+        let grapheme_width = unicode::width(grapheme);
         if used + grapheme_width + 1 > width {
             break;
         }

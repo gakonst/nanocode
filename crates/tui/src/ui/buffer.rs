@@ -1,8 +1,5 @@
 use std::ops::{Index, IndexMut};
 
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
-
 use super::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
@@ -158,7 +155,7 @@ pub fn symbol_width(symbol: &str) -> u16 {
             )
         })
         .count();
-    (UnicodeWidthStr::width(symbol) as u16).saturating_add(sound_marks as u16)
+    (crate::unicode::width(symbol) as u16).saturating_add(sound_marks as u16)
 }
 
 pub(crate) fn next_grapheme(text: &str) -> &str {
@@ -166,7 +163,7 @@ pub(crate) fn next_grapheme(text: &str) -> &str {
     if bytes.len() == 1 || (bytes[0].is_ascii() && bytes[1].is_ascii() && bytes[..2] != *b"\r\n") {
         return &text[..1];
     }
-    text.graphemes(true)
+    crate::unicode::graphemes(text)
         .next()
         .expect("a non-empty string has a first grapheme")
 }

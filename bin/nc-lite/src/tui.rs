@@ -6,9 +6,9 @@ use nanocode_agent::events::AgentEvent;
 use nanocode_agent::{Agent, AgentEvents, TurnControl, TurnResult};
 use nanocode_tui::input::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nanocode_tui::terminal::{self, ansi};
+use nanocode_tui::unicode;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use unicode_width::UnicodeWidthChar;
 
 use crate::markdown::{BOLD, DIM, Markdown, RED, RESET};
 use crate::{Config, Lite, Result, Shown, shown, workspace_sessions};
@@ -138,7 +138,7 @@ const fn glyph(ch: char) -> char {
 }
 
 fn width(ch: char) -> usize {
-    ch.width().unwrap_or_default()
+    unicode::char_width(ch).unwrap_or_default()
 }
 
 fn layout(text: impl Iterator<Item = char>, start: usize, cols: usize) -> (usize, usize) {

@@ -20,8 +20,6 @@ rustix = { workspace = true, features = ["event", "termios"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-onig"] }
 tokio = { workspace = true, features = ["net", "signal"] }
 tracing.workspace = true
-unicode-segmentation = "1.13"
-unicode-width = "0.2"
 
 [lints]
 workspace = true

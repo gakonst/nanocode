@@ -3,11 +3,9 @@ use crate::ui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
-use crate::{format::sanitize_terminal_text, theme::Theme};
+use crate::{format::sanitize_terminal_text, theme::Theme, unicode};
 use std::{borrow::Cow, ops::Range, sync::Arc};
 use syntect::{easy::HighlightLines, highlighting::HighlightState, parsing::ParseState};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 pub struct Layout {
     pub lines: Vec<Line<'static>>,
@@ -1235,7 +1233,7 @@ fn styled_graphemes<'a>(
                 width: if matches!(text.as_bytes(), [b' '..=b'~']) {
                     1
                 } else {
-                    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
+                    u16::try_from(unicode::width(text)).unwrap_or(u16::MAX)
                 },
                 whitespace: text.chars().all(char::is_whitespace),
                 offset,
@@ -1297,7 +1295,7 @@ fn cut(spans: &[TaggedSpan], rows: &[WrappedRow]) -> Option<(usize, usize)> {
 fn graphemes(text: &str) -> impl Iterator<Item = &str> {
     let mut offset = 0;
     let mut ascii_end = 0;
-    let mut segmented = None::<unicode_segmentation::Graphemes<'_>>;
+    let mut segmented = None::<unicode::Graphemes<'_>>;
     std::iter::from_fn(move || {
         if segmented.is_none() {
             if offset >= ascii_end {
@@ -1310,7 +1308,7 @@ fn graphemes(text: &str) -> impl Iterator<Item = &str> {
                 offset += 1;
                 return Some(&text[offset - 1..offset]);
             }
-            segmented = Some(text[offset..].graphemes(true));
+            segmented = Some(unicode::graphemes(&text[offset..]));
         }
         let grapheme = segmented.as_mut()?.next()?;
         offset += grapheme.len();
@@ -1578,8 +1576,8 @@ fn hard_wrap(text: &str, width: u16) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     let mut used = 0_u16;
-    for grapheme in text.graphemes(true) {
-        let grapheme_width = u16::try_from(UnicodeWidthStr::width(grapheme)).unwrap_or(u16::MAX);
+    for grapheme in unicode::graphemes(text) {
+        let grapheme_width = u16::try_from(unicode::width(grapheme)).unwrap_or(u16::MAX);
         if used.saturating_add(grapheme_width) > width && !line.is_empty() {
             lines.push(std::mem::take(&mut line));
             used = 0;
@@ -1601,8 +1599,7 @@ fn code_block_header(language: Option<&str>, width: u16, theme: &Theme) -> Line<
     };
     let available = width.saturating_sub(5);
     let language = truncate_graphemes(language, available);
-    let language_width =
-        u16::try_from(UnicodeWidthStr::width(language.as_str())).unwrap_or(u16::MAX);
+    let language_width = u16::try_from(unicode::width(&language)).unwrap_or(u16::MAX);
     let fill = width.saturating_sub(language_width.saturating_add(5));
     Line::from(vec![
         Span::styled("╭─ ", border),
@@ -1622,8 +1619,8 @@ pub(crate) fn truncate_graphemes(text: &str, width: u16) -> String {
     }
     let mut rendered = String::new();
     let mut used = 0_u16;
-    for grapheme in text.graphemes(true) {
-        let grapheme_width = u16::try_from(UnicodeWidthStr::width(grapheme)).unwrap_or(u16::MAX);
+    for grapheme in unicode::graphemes(text) {
+        let grapheme_width = u16::try_from(unicode::width(grapheme)).unwrap_or(u16::MAX);
         if used.saturating_add(grapheme_width) > width {
             break;
         }
@@ -1651,8 +1648,8 @@ fn render_table(
     let mut widths = vec![3_u16; columns];
     for row in rows {
         for (column, cell) in row.iter().enumerate() {
-            widths[column] = widths[column]
-                .max(u16::try_from(UnicodeWidthStr::width(cell.as_str())).unwrap_or(u16::MAX));
+            widths[column] =
+                widths[column].max(u16::try_from(unicode::width(cell)).unwrap_or(u16::MAX));
         }
     }
     while widths.iter().copied().sum::<u16>() > available {
@@ -1680,7 +1677,7 @@ fn render_table(
             let mut spans = vec![Span::styled("│", Style::default().fg(theme.border()))];
             for (column, &cell_width) in widths.iter().enumerate() {
                 let text = wrapped[column].get(line_index).map_or("", String::as_str);
-                let padding = usize::from(cell_width).saturating_sub(UnicodeWidthStr::width(text));
+                let padding = usize::from(cell_width).saturating_sub(unicode::width(text));
                 let style = if row_index < header_rows {
                     Style::default()
                         .fg(theme.accent())
@@ -1741,8 +1738,8 @@ fn render_stacked_table(
             let header = headers.get(column).map_or("Value", String::as_str);
             let content = format!("{header}: {value}");
             for line in hard_wrap(&content, width.saturating_sub(4).max(1)) {
-                let padding = usize::from(width.saturating_sub(4))
-                    .saturating_sub(UnicodeWidthStr::width(line.as_str()));
+                let padding =
+                    usize::from(width.saturating_sub(4)).saturating_sub(unicode::width(&line));
                 lines.push(Line::from(vec![
                     Span::styled("│ ", Style::default().fg(theme.border())),
                     Span::styled(line, Style::default().fg(theme.text())),

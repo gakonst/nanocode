@@ -1,6 +1,5 @@
+use crate::unicode;
 use std::{borrow::Cow, env, path::Path};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 pub fn normalize_line_endings(text: &str) -> Cow<'_, str> {
     if !text.contains('\r') {
@@ -131,11 +130,11 @@ pub fn terminal_text_width(text: &str) -> usize {
     if crate::text::ascii_prefix(text, false) == text.len() {
         return text.len();
     }
-    text.graphemes(true)
+    unicode::graphemes(text)
         .map(|grapheme| match grapheme {
             "\t" => 4,
             grapheme if grapheme.contains(char::is_control) => 1,
-            grapheme => grapheme.width(),
+            grapheme => unicode::width(grapheme),
         })
         .sum()
 }

@@ -3484,8 +3484,6 @@ dependencies = [
  "syntect",
  "tokio",
  "tracing",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]
@@ -3535,7 +3533,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "unicode-width",
 ]
 
 [[package]]

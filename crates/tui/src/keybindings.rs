@@ -5,9 +5,8 @@ use crate::ui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
 
-use crate::{overlay, theme::Theme};
+use crate::{overlay, theme::Theme, unicode};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
@@ -25,12 +24,12 @@ pub fn render(bindings: &[Binding], area: Rect, buffer: &mut Buffer, theme: &The
     .entered();
     let keys_width = bindings
         .iter()
-        .map(|binding| binding.keys.width())
+        .map(|binding| unicode::width(binding.keys))
         .max()
         .unwrap_or(0);
     let action_width = bindings
         .iter()
-        .map(|binding| binding.action.width())
+        .map(|binding| unicode::width(binding.action))
         .max()
         .unwrap_or(0);
     let width = u16::try_from(keys_width + action_width + 7).unwrap_or(u16::MAX);

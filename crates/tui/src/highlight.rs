@@ -2,6 +2,7 @@ use crate::ui::{
     style::{Color, Modifier, Style},
     text::Span,
 };
+use crate::unicode;
 use std::{path::Path, str::FromStr, sync::OnceLock};
 use syntect::{
     easy::HighlightLines,
@@ -11,8 +12,6 @@ use syntect::{
     },
     parsing::{SyntaxReference, SyntaxSet},
 };
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 pub struct Assets {
     pub syntaxes: SyntaxSet,
@@ -197,9 +196,8 @@ pub(crate) fn wrap_spans(spans: &[Span<'_>], width: u16) -> Vec<Vec<Span<'static
             }
             continue;
         }
-        for grapheme in span.content.graphemes(true) {
-            let grapheme_width =
-                u16::try_from(UnicodeWidthStr::width(grapheme)).unwrap_or(u16::MAX);
+        for grapheme in unicode::graphemes(&span.content) {
+            let grapheme_width = u16::try_from(unicode::width(grapheme)).unwrap_or(u16::MAX);
             if grapheme_width > width {
                 if used > 0 {
                     lines.push(Vec::new());

@@ -8,10 +8,8 @@ use crate::ui::{
 };
 use arc_swap::ArcSwapOption;
 use std::sync::Arc;
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
-use crate::{format::normalize_line_endings, history::History, theme::Theme};
+use crate::{format::normalize_line_endings, history::History, theme::Theme, unicode};
 
 const PROMPT: &str = "› ";
 const CONTINUATION: &str = "  ";
@@ -242,7 +240,7 @@ impl Composer {
         }
         let column = self
             .preferred_column
-            .unwrap_or_else(|| self.text[line_start..self.cursor].graphemes(true).count());
+            .unwrap_or_else(|| unicode::graphemes(&self.text[line_start..self.cursor]).count());
         let (target_start, target_end) = if up {
             let end = line_start - 1;
             (
@@ -258,8 +256,7 @@ impl Composer {
                     .map_or(self.text.len(), |index| start + index),
             )
         };
-        self.cursor = self.text[target_start..target_end]
-            .grapheme_indices(true)
+        self.cursor = unicode::grapheme_indices(&self.text[target_start..target_end])
             .nth(column)
             .map_or(target_end, |(index, _)| target_start + index);
         self.preferred_column = Some(column);
@@ -314,15 +311,13 @@ impl Composer {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.text[..offset]
-            .grapheme_indices(true)
+        unicode::grapheme_indices(&self.text[..offset])
             .next_back()
             .map_or(0, |(index, _)| index)
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.text[offset..]
-            .graphemes(true)
+        unicode::graphemes(&self.text[offset..])
             .next()
             .map_or(self.text.len(), |grapheme| offset + grapheme.len())
     }
@@ -392,7 +387,7 @@ impl Composer {
         {
             return Arc::clone(&cached.1);
         }
-        let content = width.saturating_sub(PROMPT.width()).max(1);
+        let content = width.saturating_sub(unicode::width(PROMPT)).max(1);
         let mut rows = Vec::new();
         let mut line_start = 0;
         for line in self.text.split('\n') {
@@ -414,8 +409,8 @@ impl Composer {
             }
             let mut row_start = line_start;
             let mut row_width = 0;
-            for (index, grapheme) in line.grapheme_indices(true) {
-                let grapheme_width = grapheme.width();
+            for (index, grapheme) in unicode::grapheme_indices(line) {
+                let grapheme_width = unicode::width(grapheme);
                 if row_width + grapheme_width > content && row_width > 0 {
                     rows.push(Row {
                         start: row_start,
@@ -448,8 +443,11 @@ impl Composer {
                         || cursor == row.end
                             && rows.get(index + 1).is_none_or(|next| next.start != cursor))
             })
-            .map_or((0, PROMPT.width()), |(index, row)| {
-                (index, PROMPT.width() + self.text[row.start..cursor].width())
+            .map_or((0, unicode::width(PROMPT)), |(index, row)| {
+                (
+                    index,
+                    unicode::width(PROMPT) + unicode::width(&self.text[row.start..cursor]),
+                )
             })
     }
 
@@ -491,7 +489,7 @@ impl Composer {
                 Span::styled(self.placeholder.clone(), Style::default().fg(theme.muted())),
             ]))
             .render(area, buffer);
-            return active.then(|| Position::new(area.x + PROMPT.width() as u16, area.y));
+            return active.then(|| Position::new(area.x + unicode::width(PROMPT) as u16, area.y));
         }
         let rows = self.rows(usize::from(area.width));
         let (cursor_row, cursor_column) = self.cursor_cell(&rows);

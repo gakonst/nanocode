@@ -14,7 +14,6 @@ use crate::ui::{
 };
 
 use syntect::easy::HighlightLines;
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
     beautify::beautify,
@@ -26,6 +25,7 @@ use crate::{
     highlight, markdown,
     spinner::{SPINNER_SLOT, elapsed_label, elapsed_label_deadline},
     theme::Theme,
+    unicode,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1814,9 +1814,8 @@ fn render_line(line: &Line<'_>, area: Rect, buffer: &mut Buffer, mut at: impl Fn
             }
             continue;
         }
-        for grapheme in content
-            .graphemes(true)
-            .filter(|grapheme| !grapheme.contains(char::is_control))
+        for grapheme in
+            unicode::graphemes(content).filter(|grapheme| !grapheme.contains(char::is_control))
         {
             let width = usize::from(symbol_width(grapheme));
             if width > cells.len() {
@@ -1963,7 +1962,7 @@ fn url_at(rows: &Rows, row: usize, column: u16, width: u16) -> Option<String> {
     let cells = line
         .spans
         .iter()
-        .flat_map(|span| span.content.graphemes(true))
+        .flat_map(|span| unicode::graphemes(&span.content))
         .map(|grapheme| {
             let cell = (at, grapheme);
             at += symbol_width(grapheme);

@@ -24,3 +24,4 @@ pub mod theme;
 pub mod transcript;
 pub mod tree;
 pub mod ui;
+pub mod unicode;

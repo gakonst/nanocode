@@ -6,9 +6,8 @@ use crate::ui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
 
-use crate::{overlay, theme::Theme};
+use crate::{overlay, theme::Theme, unicode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ItemKind {
@@ -88,11 +87,11 @@ fn columns(items: &[PickerItem], shown: &[usize]) -> Vec<(usize, usize)> {
             .filter(|item| item.kind == ItemKind::Choice);
         let label = choices
             .clone()
-            .map(|item| item.label.width())
+            .map(|item| unicode::width(&item.label))
             .max()
             .unwrap_or(0);
         let badge = choices
-            .map(|item| item.badge.as_ref().map_or(0, |badge| badge.width()))
+            .map(|item| item.badge.as_ref().map_or(0, |badge| unicode::width(badge)))
             .max()
             .unwrap_or(0);
         widths[start..end].fill((label, badge));
@@ -263,7 +262,7 @@ impl Picker {
             .iter()
             .zip(columns(&self.items, &all))
             .map(|(item, (label, badge))| match item.kind {
-                ItemKind::Header => item.label.width(),
+                ItemKind::Header => unicode::width(&item.label),
                 ItemKind::Choice => {
                     label
                         + 4
@@ -271,14 +270,18 @@ impl Picker {
                         + if item.detail.is_empty() {
                             0
                         } else {
-                            item.detail.width() + 2
+                            unicode::width(&item.detail) + 2
                         }
                 }
             })
             .max()
             .unwrap_or(0)
-            .max(self.title.width() + 4)
-            .max(self.footer.as_ref().map_or(0, |footer| footer.width() + 4));
+            .max(unicode::width(&self.title) + 4)
+            .max(
+                self.footer
+                    .as_ref()
+                    .map_or(0, |footer| unicode::width(footer) + 4),
+            );
         let width = u16::try_from(widest + 8)
             .unwrap_or(u16::MAX)
             .min(area.width.saturating_sub(4));
@@ -350,7 +353,7 @@ impl Picker {
                         label_style = label_style.fg(theme.accent()).add_modifier(Modifier::BOLD);
                     }
                     let (label_width, badge_width) = widths[position];
-                    let padding = " ".repeat(label_width - item.label.width());
+                    let padding = " ".repeat(label_width - unicode::width(&item.label));
                     let mut spans = vec![
                         Span::styled(marker, Style::default().fg(theme.accent())),
                         Span::styled(item.label.clone(), label_style),
@@ -362,7 +365,7 @@ impl Picker {
                     ];
                     if badge_width > 0 {
                         let badge = item.badge.clone().unwrap_or_default();
-                        let padding = " ".repeat(badge_width - badge.width());
+                        let padding = " ".repeat(badge_width - unicode::width(&badge));
                         spans.push(Span::styled(
                             format!("  {badge}{padding}"),
                             Style::default().fg(theme.thinking_high()),

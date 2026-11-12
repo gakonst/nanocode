@@ -8,9 +8,8 @@ use crate::ui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
 
-use crate::{overlay, theme::Theme};
+use crate::{overlay, theme::Theme, unicode};
 
 const DIAL_WIDTH: u16 = 17;
 const DIAL_HEIGHT: u16 = 9;
@@ -95,12 +94,17 @@ impl EffortDial {
         let scale_width = self
             .levels
             .iter()
-            .map(|level| level.label.width())
+            .map(|level| unicode::width(&level.label))
             .sum::<usize>()
             + 3 * self.levels.len().saturating_sub(1);
-        let width = u16::try_from(HINT.width().max(scale_width).max(self.title.width()) + 4)
-            .unwrap_or(u16::MAX)
-            .max(DIAL_WIDTH + 4);
+        let width = u16::try_from(
+            unicode::width(HINT)
+                .max(scale_width)
+                .max(unicode::width(&self.title))
+                + 4,
+        )
+        .unwrap_or(u16::MAX)
+        .max(DIAL_WIDTH + 4);
         let height = DIAL_HEIGHT + 5;
         let popup = overlay::centered(area, width, height);
         let inner = overlay::frame(popup, buffer, theme, &self.title, None);

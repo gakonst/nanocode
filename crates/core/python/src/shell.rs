@@ -112,6 +112,7 @@ impl Kept {
             }
         };
         let shell = call.shell.limits();
+        let fuel = call.shell.fuel();
         let run = Run {
             argv,
             stdin,
@@ -121,7 +122,7 @@ impl Kept {
                 output: shell.output,
                 file: shell.file,
                 sleep: self.budget.sleep,
-                steps: self.budget.steps,
+                steps: self.budget.steps.min(fuel),
                 time: self.budget.time,
                 memory: self.budget.memory,
                 depth: self.budget.depth,
@@ -141,6 +142,7 @@ impl Kept {
                 ran
             }
         };
+        call.shell.spend(ran.steps);
         self.report(call, ran).await
     }
 

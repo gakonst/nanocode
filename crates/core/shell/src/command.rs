@@ -101,6 +101,19 @@ impl Session {
         self.0.limits
     }
 
+    pub fn fuel(&self) -> u64 {
+        self.0.left.get()
+    }
+
+    pub fn spend(&self, fuel: u64) {
+        let left = self.0.left.get().saturating_sub(fuel);
+        self.0.children.set(self.0.children.get() + fuel);
+        self.0.left.set(left);
+        if left == 0 {
+            self.0.refuse(Limit::Fuel);
+        }
+    }
+
     pub fn lacks(&self, name: &[u8]) {
         self.0.lacks(name);
     }

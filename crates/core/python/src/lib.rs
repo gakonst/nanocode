@@ -167,6 +167,7 @@ pub struct Ran {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub changes: Changes,
+    pub steps: u64,
 }
 
 enum Program {
@@ -278,6 +279,7 @@ impl Python {
             stdout: Vec::new(),
             stderr: format!("python3: {message}\n").into_bytes(),
             changes: Changes::default(),
+            steps: 0,
         };
         if !run.cwd.starts_with(b"/") {
             return refused("the working directory is not an absolute path".to_owned());
@@ -293,7 +295,7 @@ impl Python {
         };
         let depth = run.limits.depth;
         let entered = host::enter(host::State::new(files, run));
-        let ended = self
+        let (ended, left) = self
             .interpreter
             .as_ref()
             .expect("the interpreter lives as long as its owner")
@@ -303,10 +305,12 @@ impl Python {
                 vm.set_limiter(Some(PyRc::new(host::Budget) as PyRc<dyn Limiter>));
                 let ended =
                     vm.with_memory_ceiling(host::memory(), || self.execute(vm, &invocation));
+                let left = vm.fuel.get();
                 vm.set_limiter(None);
-                ended
+                (ended, left)
             });
         let state = entered.leave();
+        let steps = state.spent(left);
         Ran {
             ended: match state.refused {
                 _ if state.cancelled => Ended::Cancelled,
@@ -316,6 +320,7 @@ impl Python {
             stdout: state.stdout,
             stderr: state.stderr,
             changes: state.changes,
+            steps,
         }
     }
 

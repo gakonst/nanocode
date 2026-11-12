@@ -54,6 +54,10 @@ impl State {
         }
     }
 
+    pub const fn spent(&self, left: u64) -> u64 {
+        self.steps.saturating_add(self.slice.saturating_sub(left))
+    }
+
     const fn stopped(&self) -> bool {
         self.refused.is_some() || self.cancelled
     }

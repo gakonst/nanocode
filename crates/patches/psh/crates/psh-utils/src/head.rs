@@ -200,21 +200,17 @@ pub fn cut_last_lines(data: &[u8], n: u64, delim: u8) -> usize {
     if data.is_empty() {
         return 0;
     }
-    // Where each line starts.
-    let mut starts = vec![0usize];
-    for (i, &b) in data.iter().enumerate() {
-        if b == delim && i + 1 < data.len() {
-            starts.push(i + 1);
+    if n == 0 {
+        return data.len();
+    }
+    let mut seen = 0;
+    for i in memchr::memrchr_iter(delim, &data[..data.len() - 1]) {
+        seen += 1;
+        if seen == n {
+            return i + 1;
         }
     }
-    let lines = starts.len() as u64;
-    if n >= lines {
-        0
-    } else if n == 0 {
-        data.len()
-    } else {
-        starts[(lines - n) as usize]
-    }
+    0
 }
 
 #[cfg(test)]

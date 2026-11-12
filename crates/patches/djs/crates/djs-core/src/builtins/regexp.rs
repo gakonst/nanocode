@@ -722,10 +722,27 @@ fn own_data(heap: &Heap, o: Obj, key: Atom) -> Option<Value> {
 
 /// Whether %RegExp.prototype%'s property `key` (`which` of `SLOTS`) is the data property
 /// holding the builtin installed for intrinsic `id`.
+fn proto_value(heap: &Heap, which: usize, key: Atom, getter: bool) -> Option<Value> {
+    let proto = realm::intrinsic_obj(heap, Intrinsic::RegExpProto);
+    let hint = SLOTS[which].load(Ordering::Relaxed);
+    let hit = if getter {
+        heap.getter_at(proto, hint, key)
+    } else {
+        heap.data_at(proto, hint, key)
+    };
+    if hit.is_some() {
+        return hit;
+    }
+    match proto_property(heap, which, key)? {
+        Property::Accessor { getter: g, .. } if getter => Some(g),
+        Property::Data { value, .. } if !getter => Some(value),
+        _ => None,
+    }
+}
+
 pub(crate) fn original_method(heap: &Heap, which: usize, key: Atom, id: u16) -> bool {
     let f = realm::installed_intrinsic(heap, id);
-    f.as_object().is_some()
-        && matches!(proto_property(heap, which, key), Some(Property::Data { value, .. }) if value == f)
+    f.as_object().is_some() && proto_value(heap, which, key, false) == Some(f)
 }
 
 /// Whether RegExpExec ( R, S ) is RegExpBuiltinExec ( R, S ) without a lookup that could
@@ -767,16 +784,14 @@ pub(crate) fn pristine(heap: &Heap, v: Value) -> Option<Obj> {
     }
     let installed = |id: u16| realm::installed_intrinsic(heap, id);
     for (i, (key, id)) in REGEXP_GETTERS.into_iter().enumerate() {
-        match proto_property(heap, GETTERS + i, key) {
-            Some(Property::Accessor { getter, .. }) if getter == installed(id) => {}
-            _ => return None,
+        if proto_value(heap, GETTERS + i, key, true) != Some(installed(id)) {
+            return None;
         }
     }
     let ctors = realm::intrinsic_obj(heap, Intrinsic::Constructors);
     let ctor = own_data(heap, ctors, atoms::REG_EXP)?;
-    match proto_property(heap, CONSTRUCTOR, atoms::CONSTRUCTOR) {
-        Some(Property::Data { value, .. }) if value == ctor => {}
-        _ => return None,
+    if proto_value(heap, CONSTRUCTOR, atoms::CONSTRUCTOR, false) != Some(ctor) {
+        return None;
     }
     match heap.get_own_property(ctor.as_object()?, atoms::SYM_SPECIES) {
         Some(Property::Accessor { getter, .. }) if getter == installed(REGEXP_SPECIES) => Some(r),

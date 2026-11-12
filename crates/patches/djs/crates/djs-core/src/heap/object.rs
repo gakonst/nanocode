@@ -1666,6 +1666,36 @@ impl Heap {
         Some(a.read(at))
     }
 
+    pub(crate) fn getter_at(&self, o: Obj, i: u32, key: Atom) -> Option<Value> {
+        let p = self.props(o);
+        if p == 0 {
+            return None;
+        }
+        let a = self.arena();
+        let (k, fl, at) = if self.is_dictionary(o) {
+            if i >= a.get(p, PropTable::COUNT) {
+                return None;
+            }
+            let e = PropTable::ENTRIES.at(p, i);
+            (
+                a.get(e, PropEntry::KEY),
+                a.get(e, PropEntry::FLAGS),
+                e + PropEntry::VALUE.offset,
+            )
+        } else {
+            if i >= a.get(p, PropValues::LEN) {
+                return None;
+            }
+            let (k, fl) = self.shape_desc(a.get(p, PropValues::SHAPE).0, i);
+            (k.id(), fl, PropValues::VALUES.at(p, i))
+        };
+        if k != key.id() || fl & STORE_ACCESSOR == 0 {
+            return None;
+        }
+        let pair = a.read::<Value>(at).as_internal()?;
+        Some(a.get(pair, AccessorPair::GETTER))
+    }
+
     /// Writes `v` to slot `i` of `o` if it is the writable data property `key` (an inline
     /// cache hit of a store, D1620); false with nothing changed otherwise.
     #[inline]

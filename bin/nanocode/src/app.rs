@@ -881,6 +881,9 @@ impl App {
     }
 
     pub fn connect(&mut self, resume: Option<String>) {
+        if resume.is_some() {
+            nanocode_tui::highlight::prewarm();
+        }
         let ready = self.connection(resume);
         let tx = self.tx.clone();
         tokio::spawn(async move {
@@ -1599,6 +1602,7 @@ impl App {
         sent: nanocode::agent::input::Prompt,
         durable: bool,
     ) {
+        nanocode_tui::highlight::prewarm();
         self.resuming = durable;
         self.resumes.insert(id.clone(), (sent.clone(), durable));
         self.queue.push(QueuedPrompt {

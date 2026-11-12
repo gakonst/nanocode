@@ -419,7 +419,6 @@ async fn interactive(mut args: SessionArgs, clients: ModelClients) -> Result<()>
             mouse_capture: !args.no_mouse,
             keyboard_enhancement: true,
         })?;
-    nanocode_tui::highlight::prewarm();
     let prepared = prepare(&args, clients, &mut |_| {}, false).await;
     let prepared = match prepared {
         Ok(prepared) => prepared,

@@ -1,26 +1,55 @@
 //! Bytes as text (nanocode's addition): xxd (as vim's), od (GNU), hexdump (-C and the
-//! default words), strings (binutils) and base32 (GNU). Inputs are read whole.
+//! default words), strings (binutils) and base32 (GNU). Inputs are read whole, or up to
+//! the end of the range a length option asks for.
 
 use psh_engine::host::{OpenOptions, error_text};
 use psh_engine::util::UtilCtx;
 
 use crate::common::{self, Input};
 
-async fn slurp(ctx: &mut UtilCtx<'_>, names: &[Vec<u8>]) -> Result<Vec<u8>, i32> {
+async fn slurp(
+    ctx: &mut UtilCtx<'_>,
+    names: &[Vec<u8>],
+    limit: Option<u64>,
+) -> Result<Vec<u8>, i32> {
     let mut data = Vec::new();
     let stdin = [b"-".to_vec()];
     let names = if names.is_empty() { &stdin[..] } else { names };
     for name in names {
         let read = match Input::open(ctx, name).await {
-            Ok(input) => input.read_to_end(ctx, &mut data).await,
+            Ok(input) => match limit {
+                None => input.read_to_end(ctx, &mut data).await,
+                Some(limit) => read_up_to(ctx, &input, &mut data, limit).await,
+            },
             Err(e) => Err(e),
         };
         if let Err(e) = read {
             common::file_error(ctx, name, &e).await;
             return Err(1);
         }
+        if limit.is_some_and(|l| data.len() as u64 >= l) {
+            break;
+        }
     }
     Ok(data)
+}
+
+async fn read_up_to(
+    ctx: &mut UtilCtx<'_>,
+    input: &Input,
+    data: &mut Vec<u8>,
+    limit: u64,
+) -> std::io::Result<()> {
+    let mut buf = vec![0u8; 64 * 1024];
+    while (data.len() as u64) < limit {
+        let want = (limit - data.len() as u64).min(buf.len() as u64) as usize;
+        let n = input.read(ctx, &mut buf[..want]).await?;
+        if n == 0 {
+            break;
+        }
+        data.extend_from_slice(&buf[..n]);
+    }
+    Ok(())
 }
 
 async fn emit(ctx: &mut UtilCtx<'_>, out: &[u8]) -> i32 {
@@ -102,7 +131,11 @@ pub async fn xxd(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         }
     }
     let input: Vec<Vec<u8>> = files.first().cloned().into_iter().collect();
-    let mut data = match slurp(ctx, &input).await {
+    let limit = match (reverse, len) {
+        (false, Some(len)) => Some(seek.saturating_add(len)),
+        _ => None,
+    };
+    let mut data = match slurp(ctx, &input, limit).await {
         Ok(data) => data,
         Err(status) => return status,
     };
@@ -483,7 +516,7 @@ pub async fn od(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     if types.is_empty() {
         types = od_types(b"o2").unwrap_or_default();
     }
-    let mut data = match slurp(ctx, &files).await {
+    let mut data = match slurp(ctx, &files, count.map(|c| skip.saturating_add(c))).await {
         Ok(data) => data,
         Err(status) => return status,
     };
@@ -633,7 +666,7 @@ pub async fn hexdump(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             }
         }
     }
-    let mut data = match slurp(ctx, &files).await {
+    let mut data = match slurp(ctx, &files, len.map(|l| skip.saturating_add(l))).await {
         Ok(data) => data,
         Err(status) => return status,
     };
@@ -770,7 +803,7 @@ pub async fn strings(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             return 2;
         }
     }
-    let data = match slurp(ctx, &files).await {
+    let data = match slurp(ctx, &files, None).await {
         Ok(data) => data,
         Err(status) => return status,
     };
@@ -835,7 +868,7 @@ pub async fn base32(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         let extra = common::quote(ctx, &files[1]);
         return common::usage(ctx, &format!("extra operand {extra}")).await;
     }
-    let data = match slurp(ctx, &files).await {
+    let data = match slurp(ctx, &files, None).await {
         Ok(data) => data,
         Err(status) => return status,
     };

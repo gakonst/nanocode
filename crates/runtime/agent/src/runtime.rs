@@ -1693,7 +1693,7 @@ impl AgentOwner for Ownership {
         });
         if let Some(services) = self.services() {
             #[cfg(not(target_family = "wasm"))]
-            tokio::spawn(async move {
+            nanocode_platform::spawn(async move {
                 let _ = services.register(&agent, false).await;
             });
             #[cfg(target_family = "wasm")]

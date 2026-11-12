@@ -778,6 +778,11 @@ impl<S: 'static> Actor<S> {
     where
         S: Send,
     {
+        if let Some(host) = nanocode_platform::host() {
+            let (jobs, received) = mpsc::unbounded_channel();
+            host.spawn(Box::pin(Self::serve(state, received)));
+            return Ok(Self { jobs });
+        }
         let runtime = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
         let (jobs, received) = mpsc::unbounded_channel();
         drop(runtime.spawn(Self::serve(state, received)));
@@ -999,6 +1004,11 @@ fn deliver<S>(room: &Arc<Mailroom<S>>, hand_off: HandOff<S>) {
 
 #[cfg(not(target_family = "wasm"))]
 fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
+    if let Some(host) = nanocode_platform::host() {
+        let room = Arc::clone(room);
+        host.spawn(Box::pin(async move { deliver(&room, hand_off::<S>) }));
+        return true;
+    }
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return false;
     };
@@ -1012,6 +1022,27 @@ fn hand_off<S: Send + 'static>(room: &Arc<Mailroom<S>>) -> bool {
     let room = Arc::clone(room);
     nanocode_platform::spawn_local(async move { deliver(&room, hand_off::<S>) });
     true
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn detached<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> T {
+    let Some(host) = nanocode_platform::host() else {
+        return match tokio::spawn(future).await {
+            Ok(output) => output,
+            Err(stopped) => match stopped.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(cancelled) => std::panic::resume_unwind(Box::new(cancelled.to_string())),
+            },
+        };
+    };
+    let (sent, received) = oneshot::channel();
+    host.spawn(Box::pin(async move {
+        drop(sent.send(future.await));
+    }));
+    match received.await {
+        Ok(output) => output,
+        Err(stopped) => std::panic::resume_unwind(Box::new(stopped.to_string())),
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -1087,17 +1118,8 @@ where
             Some(shared) => shared,
             None => {
                 let reading = read();
-                let started: RecentRead<V, E> = async move {
-                    match tokio::spawn(reading).await {
-                        Ok(read) => read.map_err(Arc::new),
-                        Err(stopped) => match stopped.try_into_panic() {
-                            Ok(panic) => std::panic::resume_unwind(panic),
-                            Err(cancelled) => {
-                                std::panic::resume_unwind(Box::new(cancelled.to_string()))
-                            }
-                        },
-                    }
-                }
+                let started: RecentRead<V, E> =
+                    async move { detached(reading).await.map_err(Arc::new) }
                 .boxed()
                 .shared();
                 let owned: Arc<str> = key.into();
@@ -1215,11 +1237,7 @@ where
             }
         });
         if lead && let Some(waiter) = waiter.take() {
-            drop(tokio::spawn(Arc::clone(self).serve(
-                key,
-                read,
-                vec![waiter],
-            )));
+            nanocode_platform::spawn(Arc::clone(self).serve(key, read, vec![waiter]));
         }
         answered.await.unwrap_or_else(|_| Err(E::from(Stopped)))
     }
@@ -1397,11 +1415,14 @@ impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
                 kept: self.kept,
             };
             let max_read = self.max_read;
-            drop(tokio::spawn(async move {
-                let value = tokio::time::timeout(max_read, read).await.ok().flatten();
+            nanocode_platform::spawn(async move {
+                let value = nanocode_platform::timeout(max_read, read)
+                    .await
+                    .ok()
+                    .flatten();
                 refreshing.value = value;
                 drop(refreshing);
-            }));
+            });
         }
         value
     }

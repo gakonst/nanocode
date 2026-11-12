@@ -145,13 +145,17 @@ fn tracked(
         drop(claim);
     };
     #[cfg(not(target_family = "wasm"))]
-    match tokio::runtime::Handle::try_current() {
-        Ok(runtime) => drop(runtime.spawn(forward)),
-        Err(_) => {
-            return Box::pin(async move {
-                forward.await;
-                receiver.await.unwrap_or(Err(NanocodeError::TurnStopped))
-            });
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(forward));
+    } else {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn(forward)),
+            Err(_) => {
+                return Box::pin(async move {
+                    forward.await;
+                    receiver.await.unwrap_or(Err(NanocodeError::TurnStopped))
+                });
+            }
         }
     }
     #[cfg(target_family = "wasm")]

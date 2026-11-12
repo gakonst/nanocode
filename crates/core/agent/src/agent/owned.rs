@@ -289,7 +289,9 @@ fn forward_events(
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_detached(future: impl Future<Output = ()> + Send + 'static) {
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(future));
+    } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         drop(runtime.spawn(future));
     }
 }

@@ -6,7 +6,9 @@ use serde::{
 };
 use serde_json::Value;
 
-use super::{HandCapability, HandEnvironment, RemoteContext, RemoteFrame, RemoteOperation};
+use super::{
+    HandCapability, HandEnvironment, HandHostInfo, RemoteContext, RemoteFrame, RemoteOperation,
+};
 use crate::ToolDefinition;
 
 #[derive(Deserialize)]
@@ -36,6 +38,8 @@ struct Catalog {
     tools_only: bool,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    host: Option<HandHostInfo>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +155,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 capabilities,
                 tools_only,
                 version,
+                host,
             } = Catalog::deserialize(body)?;
             RemoteFrame::Catalog {
                 definitions,
@@ -166,6 +171,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 capabilities,
                 tools_only,
                 version,
+                host,
             }
         }
         "request" => {

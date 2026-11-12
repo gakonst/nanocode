@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
-    Answers, HandCapability, HandEnvironment, HandPermission, LOCAL_TOOLS_UNKNOWN, NOT_RECEIVED,
-    REQUEST_IN_USE, RemoteContext, RemoteFrame as Frame, RemoteOperation, SentCalls, asked_key,
-    encode_output, output_from_wire, output_to_wire,
+    Answers, HandCapability, HandEnvironment, HandHostInfo, HandPermission, LOCAL_TOOLS_UNKNOWN,
+    NOT_RECEIVED, REQUEST_IN_USE, RemoteContext, RemoteFrame as Frame, RemoteOperation, SentCalls,
+    asked_key, encode_output, output_from_wire, output_to_wire,
 };
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput,
@@ -56,6 +56,8 @@ pub trait HandCapabilities: Send + Sync + 'static {
     ) -> HostFuture<'a, Result<HandPermission, String>>;
 }
 
+pub type HostInfoSource = Arc<dyn Fn() -> HostFuture<'static, HandHostInfo> + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct ExecutorOptions {
     pub name: Option<String>,
@@ -67,6 +69,7 @@ pub struct ExecutorOptions {
     pub environment: Option<HandEnvironment>,
     pub moves: bool,
     pub version: Option<String>,
+    pub host_info: Option<HostInfoSource>,
 }
 
 pub trait HandHost: Send + Sync + 'static {
@@ -1257,6 +1260,7 @@ impl Pending {
             RemoteOperation::EndTurn { session_id, .. } => request("end turn", session_id),
             RemoteOperation::Capabilities => request("capabilities", ""),
             RemoteOperation::RequestCapability { name, .. } => request(name, ""),
+            RemoteOperation::HostInfo => request("host info", ""),
         };
         Self {
             kind,
@@ -1707,6 +1711,10 @@ impl State {
             capabilities,
             tools_only: self.tools_only(),
             version: self.options.version.clone(),
+            host: match &self.options.host_info {
+                Some(source) => Some(source().await),
+                None => None,
+            },
         }
         .encode(max_frame_bytes)
     }
@@ -1980,6 +1988,7 @@ impl State {
     fn capability(&mut self, id: u64, operation: RemoteOperation) {
         let host = Arc::clone(&self.host);
         let device = self.options.device.clone();
+        let host_info = self.options.host_info.clone();
         let finished = self.finished.clone();
         self.spawn(
             id,
@@ -2000,6 +2009,10 @@ impl State {
                         }
                         .map(|permission| Some(json!({ "permission": permission })))
                     }
+                    RemoteOperation::HostInfo => match host_info {
+                        Some(source) => Ok(Some(json!({ "host": source().await }))),
+                        None => Err("this hand reports no host information".to_owned()),
+                    },
                     _ => Ok(Some(
                         json!({ "capabilities": listed(&host, device.as_ref()).await }),
                     )),
@@ -2148,7 +2161,9 @@ impl State {
         }
         if matches!(
             operation,
-            RemoteOperation::Capabilities | RemoteOperation::RequestCapability { .. }
+            RemoteOperation::Capabilities
+                | RemoteOperation::RequestCapability { .. }
+                | RemoteOperation::HostInfo
         ) {
             self.capability(id, operation);
             return Ok(());
@@ -2523,7 +2538,8 @@ async fn run(
         RemoteOperation::EndTurn { .. }
         | RemoteOperation::CancelCall { .. }
         | RemoteOperation::Capabilities
-        | RemoteOperation::RequestCapability { .. } => Ok(None),
+        | RemoteOperation::RequestCapability { .. }
+        | RemoteOperation::HostInfo => Ok(None),
     }
 }
 

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::{
     fs,
     io::{BufRead as _, BufReader, Write as _},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[derive(Clone, Debug)]
@@ -11,6 +11,7 @@ pub struct ClaudeWorkspaceFiles {
     root: PathBuf,
     base: PathBuf,
     relative_paths: bool,
+    confined: bool,
     media: MediaReadOptions,
     read_token_budget: usize,
 }
@@ -25,6 +26,7 @@ impl ClaudeWorkspaceFiles {
         Ok(Self {
             base: root.clone(),
             relative_paths: true,
+            confined: false,
             root,
             media: MediaReadOptions::default(),
             read_token_budget: usize::MAX,
@@ -45,9 +47,68 @@ impl ClaudeWorkspaceFiles {
             root,
             base,
             relative_paths: false,
+            confined: false,
             media: MediaReadOptions::default(),
             read_token_budget: usize::MAX,
         })
+    }
+
+    pub fn confined(directory: impl AsRef<Path>) -> Result<Self, String> {
+        let base = fs::canonicalize(directory.as_ref()).map_err(|e| format!("directory: {e}"))?;
+        if !base.is_dir() {
+            return Err("directory is not a directory".into());
+        }
+        Ok(Self {
+            root: base.clone(),
+            base,
+            relative_paths: false,
+            confined: true,
+            media: MediaReadOptions::default(),
+            read_token_budget: usize::MAX,
+        })
+    }
+
+    fn inside(&self, real: PathBuf) -> Result<PathBuf, String> {
+        if self.confined && !real.starts_with(&self.root) {
+            return Err(format!(
+                "{} is outside {}, the only directory these file tools may use",
+                real.display(),
+                self.root.display()
+            ));
+        }
+        Ok(real)
+    }
+
+    fn creatable(&self, parent: &Path) -> Result<(), String> {
+        if !self.confined {
+            return Ok(());
+        }
+        let mut existing = parent;
+        let real = loop {
+            match fs::canonicalize(existing) {
+                Ok(real) => break real,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    existing = existing.parent().ok_or("file has no parent")?;
+                }
+                Err(e) => return Err(format!("parent: {e}")),
+            }
+        };
+        self.inside(real)?;
+        let missing = parent
+            .strip_prefix(existing)
+            .map_err(|e| format!("parent: {e}"))?;
+        if missing
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} leaves {} through directories that do not exist yet",
+                parent.display(),
+                self.root.display()
+            ))
+        }
     }
 
     fn shown(&self, relative: &Path) -> String {
@@ -162,6 +223,7 @@ impl ClaudeWorkspaceFiles {
 
     fn existing(&self, text: &str) -> Result<(PathBuf, PathBuf), String> {
         let real = fs::canonicalize(self.resolve(text)?).map_err(|e| format!("path: {e}"))?;
+        let real = self.inside(real)?;
         Ok((self.relative_path(&real), real))
     }
 
@@ -197,6 +259,7 @@ impl ClaudeWorkspaceFiles {
         loop {
             match fs::canonicalize(&path) {
                 Ok(real) => {
+                    let real = self.inside(real)?;
                     if !real.is_file() {
                         return Err("target is not a regular file".into());
                     }
@@ -215,8 +278,10 @@ impl ClaudeWorkspaceFiles {
                         Err(e) => return Err(format!("check target: {e}")),
                     }
                     let parent = path.parent().ok_or("file has no parent")?;
+                    self.creatable(parent)?;
                     fs::create_dir_all(parent).map_err(|e| format!("create directory: {e}"))?;
                     let parent = fs::canonicalize(parent).map_err(|e| format!("parent: {e}"))?;
+                    let parent = self.inside(parent)?;
                     let path = parent.join(path.file_name().ok_or("file has no name")?);
                     return Ok((self.relative_path(&path), path));
                 }

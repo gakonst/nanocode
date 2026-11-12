@@ -78,7 +78,10 @@ async fn lookup(vp: &Vp, name: &[u8], o: Lookup) -> Vec<Kind> {
             found.push(Kind::Builtin);
         }
         if crate::util::lookup(vp, name).await.is_some() {
-            found.push(Kind::Utility);
+            match hash::search(vp, name, None).await {
+                Some(p) if !o.all => found.push(Kind::File(p, false)),
+                _ => found.push(Kind::Utility),
+            }
         }
         if !found.is_empty() && !o.all {
             return found;
@@ -92,9 +95,7 @@ async fn lookup(vp: &Vp, name: &[u8], o: Lookup) -> Vec<Kind> {
         return found;
     }
     if !o.all {
-        if !o.path_only
-            && let Some(p) = hash::hashed(vp, name)
-        {
+        if let Some(p) = hash::hashed(vp, name) {
             found.push(Kind::File(p, true));
         } else if let Some(p) = hash::search(vp, name, None).await {
             found.push(Kind::File(p, false));
@@ -106,9 +107,16 @@ async fn lookup(vp: &Vp, name: &[u8], o: Lookup) -> Vec<Kind> {
         .var("PATH")
         .map(<[u8]>::to_vec)
         .unwrap_or_else(|| exec::DEFAULT_PATH.to_vec());
+    if o.path_only
+        && let Some(p) = hash::hashed(vp, name)
+    {
+        found.push(Kind::File(p, false));
+    }
     for dir in vp.host().path_entries(&path) {
         let dir = &dir[..];
         if let Some(p) = hash::search(vp, name, Some(dir)).await
+            && (is_executable(vp, &vp.abs_path(&p)).await
+                || vp.host().stat(&vp.abs_path(&p), true).await.is_err())
             && !found
                 .iter()
                 .any(|k| matches!(k, Kind::File(q, _) if *q == p))

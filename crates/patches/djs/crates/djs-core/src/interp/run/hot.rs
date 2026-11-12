@@ -372,13 +372,21 @@ impl Exec<'_> {
     #[inline(always)]
     fn elem_hit(&mut self, put: bool, o: Value, key: Value, v: Value) -> Option<Value> {
         let obj = o.as_object()?;
-        let i = key.as_int().and_then(|i| u32::try_from(i).ok())?;
+        let Some(i) = key.as_int().and_then(|i| u32::try_from(i).ok()) else {
+            return if put { None } else { self.keyed_hit(o, key) };
+        };
         if put {
             // `set_element_fast` also appends and fills holes where unobservable (D1783).
             return matches!(self.heap.set_element_fast(obj, i, v), Ok(true))
                 .then_some(Value::UNDEFINED);
         }
         self.heap.get_element_fast(obj, i)
+    }
+
+    #[inline(never)]
+    fn keyed_hit(&self, o: Value, key: Value) -> Option<Value> {
+        let a = self.heap.memo_atom(key.as_string()?)?;
+        super::ic::mega_get(self.heap, o, a)
     }
 
     /// `fast_intrinsic`'s leaf cases (not `%Call`): the result, or `None`.

@@ -792,6 +792,14 @@ impl Heap {
         self.add_string_atom(flat, hash)
     }
 
+    #[inline(always)]
+    pub(crate) fn memo_atom(&self, s: Str) -> Option<Atom> {
+        match self.atom_memo.get(atom_memo_slot(s)) {
+            Some(&[k, a]) if k == s.0 => Some(Atom(a)),
+            _ => None,
+        }
+    }
+
     /// The string atom of `s` if it is interned already (never an integer atom).
     pub(crate) fn find_string_atom_of(&mut self, s: Str) -> Option<Atom> {
         if let Some(&[k, a]) = self.atom_memo.get(atom_memo_slot(s))

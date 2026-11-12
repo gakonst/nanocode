@@ -304,14 +304,32 @@ impl Exec<'_> {
             && word(self.heap, at, 0) != 0
             && let Some(i) = mega_at(self.heap, o, key)
         {
-            let mega = &mut self.heap.mega_ic;
-            if mega.is_empty() {
-                mega.resize((MEGA_SLOTS * WORDS) as usize, 0);
-            }
-            mega[i..i + WORDS as usize].copy_from_slice(&words);
-            mega[i + MEGA_KEY] = key.0;
+            self.mega_write(i, key, words);
         }
         self.ic_write(ic, words);
+    }
+
+    fn mega_write(&mut self, i: usize, key: Atom, words: Slot) {
+        let mega = &mut self.heap.mega_ic;
+        if mega.is_empty() {
+            mega.resize((MEGA_SLOTS * WORDS) as usize, 0);
+        }
+        mega[i..i + WORDS as usize].copy_from_slice(&words);
+        mega[i + MEGA_KEY] = key.0;
+    }
+
+    #[inline(never)]
+    pub(super) fn mega_fill(&mut self, o: Value, key: Atom, holder: Obj) {
+        let words = if Value::object(holder) == o {
+            self.own_words(holder, key)
+        } else {
+            self.proto_words(o, key, holder)
+        };
+        if let Some(words) = words
+            && let Some(i) = mega_at(self.heap, o, key)
+        {
+            self.mega_write(i, key, words);
+        }
     }
 
     fn lex_epoch(&self) -> u32 {
@@ -496,26 +514,22 @@ impl Exec<'_> {
     /// property of `obj` (and not an array index).
     #[inline(never)]
     pub(super) fn ic_own_fill(&mut self, obj: Obj, key: Atom, ic: u32) {
+        if let Some(words) = self.own_words(obj, key) {
+            self.ic_get_write(Value::object(obj), key, ic, words);
+        }
+    }
+
+    fn own_words(&self, obj: Obj, key: Atom) -> Option<Slot> {
         if key.as_int().is_some() {
-            return;
+            return None;
         }
         if let Some((shape, slot, writable)) = self.heap.shape_slot(obj, key) {
-            if slot < INDEX_MASK {
-                let w0 = IC_OFFSET_SLOT | (slot + 1);
-                self.ic_get_write(
-                    Value::object(obj),
-                    key,
-                    ic,
-                    [w0, shape, writable as u32, 0, 0],
-                );
-            }
-            return;
+            let w0 = IC_OFFSET_SLOT | (slot + 1);
+            return (slot < INDEX_MASK).then_some([w0, shape, writable as u32, 0, 0]);
         }
-        if let Some(i) = self.heap.own_entry_index(obj, key)
-            && self.heap.data_at(obj, i, key).is_some()
-        {
-            self.ic_get_write(Value::object(obj), key, ic, [i + 1, 0, 0, 0, 0]);
-        }
+        let i = self.heap.own_entry_index(obj, key)?;
+        self.heap.data_at(obj, i, key)?;
+        Some([i + 1, 0, 0, 0, 0])
     }
 
     /// Whether no object from `proto` up has `key`, a proxy or a typed array (which

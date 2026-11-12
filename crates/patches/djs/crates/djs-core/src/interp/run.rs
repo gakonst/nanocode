@@ -2404,7 +2404,8 @@ impl<'h> Exec<'h> {
                     let key = self.property_key(o, k)?;
                     self.sp -= 1;
                     self.pc = next;
-                    return self.get_property(o, key);
+                    let got = self.lookup_elem(o, k, key)?;
+                    return self.get_property_got(o, key, got);
                 }
             }
             // Object keys were converted by `primitive_operands`.
@@ -2414,7 +2415,8 @@ impl<'h> Exec<'h> {
                 let key = self.property_key(o, k)?;
                 self.push(Value::UNDEFINED);
                 self.pc = next;
-                return self.get_property(o, key);
+                let got = self.lookup_elem(o, k, key)?;
+                return self.get_property_got(o, key, got);
             }
             Op::GetElemMethod => {
                 let (o, k) = (self.top(1), self.top(0));
@@ -3350,6 +3352,19 @@ impl<'h> Exec<'h> {
         self.lookup_object(proto, key)
     }
 
+    fn lookup_elem(&mut self, o: Value, k: Value, key: Atom) -> Result<Got, Fault> {
+        let (Some(_), Some(obj)) = (k.as_string(), o.as_object()) else {
+            return self.lookup(o, key);
+        };
+        let l = self.heap.lookup_property(obj, key);
+        if let Lookup::Found(h, Property::Data { value, .. }) = l
+            && !value.is_hole()
+        {
+            self.mega_fill(o, key, h);
+        }
+        self.got_of(l, key)
+    }
+
     /// [`Exec::lookup`] on the chain of an object.
     #[inline]
     fn lookup_object(&mut self, o: Obj, key: Atom) -> Result<Got, Fault> {
@@ -3414,14 +3429,8 @@ impl<'h> Exec<'h> {
         self.call_prelude(proxy::PROXY_GET, &[Value::object(p), k, receiver], cont)
     }
 
-    /// Replaces the object at `sp - 1` with `o[key]`, calling a getter if needed. `pc` is
-    /// already the next instruction.
-    fn get_property(&mut self, o: Value, key: Atom) -> Step {
-        let got = self.lookup(o, key)?;
-        self.get_property_got(o, key, got)
-    }
-
-    /// [`Exec::get_property`] with the lookup done.
+    /// Replaces the object at `sp - 1` with `o[key]` as `got` found it, calling a getter if
+    /// needed. `pc` is already the next instruction.
     fn get_property_got(&mut self, o: Value, key: Atom, got: Got) -> Step {
         match got {
             Got::Value(v) => {

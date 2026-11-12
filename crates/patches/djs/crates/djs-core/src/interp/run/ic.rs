@@ -210,6 +210,21 @@ pub(crate) fn mega_get(heap: &Heap, o: Value, key: Atom) -> Option<Value> {
     get_hit(heap, [s[0], s[1], s[2]], |_| s[3], o, key)
 }
 
+#[inline(never)]
+pub(crate) fn mega_put(heap: &mut Heap, obj: Obj, key: Atom, v: Value) -> bool {
+    let Some(i) = mega_at(heap, Value::object(obj), key) else {
+        return false;
+    };
+    let Some(&[w0, w1, w2, ..]) = heap.mega_ic.get(i..i + WORDS as usize) else {
+        return false;
+    };
+    heap.mega_ic[i + MEGA_KEY] == key.0
+        && w0 & IC_OFFSET_SLOT != 0
+        && kind(w0) == 0
+        && w2 & 1 != 0
+        && heap.shaped_set(obj, w1, (w0 & INDEX_MASK) - 1, v)
+}
+
 /// A put or define site's cache hit: true if the slot at `at` (0: none) still applies to
 /// `obj[key] = v` and `v` was stored (an own writable data property, or a cached
 /// addition).

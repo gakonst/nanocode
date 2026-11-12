@@ -155,8 +155,6 @@ nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 image = { version = "=0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "pnm", "webp"] }
 nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "trace"] }
-opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics", "trace", "with-serde"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 proc-macro-crate = "3"
 proc-macro2 = "1.0.106"

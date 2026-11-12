@@ -6,15 +6,14 @@ extern crate self as nanocode_observability;
 mod cli;
 mod file;
 mod otlp;
+mod otlp_http;
+mod protobuf;
 mod typed;
 mod writer;
 
 use std::{fs::OpenOptions, io, path::PathBuf, time::Duration};
 
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{
-    MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
-};
 use opentelemetry_sdk::{
     Resource,
     metrics::{PeriodicReader, SdkMeterProvider},
@@ -31,6 +30,7 @@ use tracing_subscriber::{
 };
 
 pub use cli::ObservabilityOutputArgs;
+pub use otlp_http::OtlpError;
 
 pub const DEFAULT_FILTER: &str = "warn,nanocode=info,nanocode_backend_codex=info,nanocode_backend_claude=info,nanocode_claude=info,nanocode_agent=info,nanocode_code_mode=info,nanocode_subagents=info,nanocode_durability=info,nanocode_store_jsonl=info,nanocode=info";
 pub const METRICS_TARGET: &str = "nc_metrics";
@@ -105,7 +105,7 @@ pub enum ObservabilityError {
     Output(#[from] io::Error),
 
     #[error("failed to configure OTLP exporter: {0}")]
-    Otlp(#[from] opentelemetry_otlp::ExporterBuildError),
+    Otlp(#[from] OtlpError),
 
     #[error("failed to flush or shut down the OpenTelemetry exporter: {0}")]
     OTelSdk(#[from] opentelemetry_sdk::error::OTelSdkError),
@@ -351,12 +351,7 @@ fn tracer_provider(
         builder = builder.with_span_processor(file);
     }
     if let Some(endpoint) = endpoint {
-        let exporter = SpanExporter::builder()
-            .with_http()
-            .with_endpoint(signal_endpoint(endpoint, "traces"))
-            .with_protocol(Protocol::HttpBinary)
-            .with_http_client(reqwest::blocking::Client::new())
-            .build()?;
+        let exporter = otlp_http::SpanExporter::build(&signal_endpoint(endpoint, "traces"))?;
         builder = builder.with_span_processor(
             BatchSpanProcessor::builder(typed::IntegerAttributes(exporter)).build(),
         );
@@ -374,12 +369,7 @@ fn meter_provider(
         builder = builder.with_reader(PeriodicReader::builder(file).build());
     }
     if let Some(endpoint) = endpoint {
-        let exporter = MetricExporter::builder()
-            .with_http()
-            .with_endpoint(signal_endpoint(endpoint, "metrics"))
-            .with_protocol(Protocol::HttpBinary)
-            .with_http_client(reqwest::blocking::Client::new())
-            .build()?;
+        let exporter = otlp_http::MetricExporter::build(&signal_endpoint(endpoint, "metrics"))?;
         builder = builder.with_reader(PeriodicReader::builder(exporter).build());
     }
     Ok(builder.build())

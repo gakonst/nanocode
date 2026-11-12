@@ -18,9 +18,8 @@ rustdoc-args = ["-D", "warnings"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 clap = { workspace = true  }
+http.workspace = true
 opentelemetry.workspace = true
-opentelemetry-otlp.workspace = true
-opentelemetry-proto.workspace = true
 opentelemetry_sdk.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 nanocode-tls.workspace = true

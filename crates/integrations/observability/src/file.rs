@@ -11,14 +11,12 @@ use std::{
 };
 
 use opentelemetry::{Context, InstrumentationScope};
-use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_sdk::{
     Resource,
     error::{OTelSdkError, OTelSdkResult},
     metrics::{Temporality, data::ResourceMetrics, exporter::PushMetricExporter},
     trace::{Span, SpanData, SpanProcessor},
 };
-use serde::Serialize;
 use tokio::sync::mpsc::{
     UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
 };
@@ -53,6 +51,7 @@ impl Exporters {
             )?,
             metrics: MetricExporter {
                 output: Jsonl::create(&directory.join("metrics.jsonl"))?,
+                json_bytes: AtomicUsize::new(0),
             },
         })
     }
@@ -128,9 +127,8 @@ impl Jsonl {
         }
     }
 
-    fn write(&self, value: &impl Serialize) -> OTelSdkResult {
+    fn write(&self, mut encoded: Vec<u8>) -> OTelSdkResult {
         let result = (|| {
-            let mut encoded = serde_json::to_vec(value).map_err(io::Error::other)?;
             encoded.push(b'\n');
             let (reply, response) = mpsc::sync_channel(1);
             self.sender
@@ -419,14 +417,16 @@ fn reject_after_shutdown(mut receiver: UnboundedReceiver<TraceMessage>) {
 
 pub struct MetricExporter {
     output: Jsonl,
+    json_bytes: AtomicUsize,
 }
 
 impl PushMetricExporter for MetricExporter {
     async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
-        let mut request = serde_json::to_value(ExportMetricsServiceRequest::from(metrics))
+        let mut json = Vec::with_capacity(self.json_bytes.load(Ordering::Relaxed));
+        crate::otlp::metrics(metrics, &mut json)
             .map_err(|error| OTelSdkError::InternalFailure(error.to_string()))?;
-        metric_integers(&mut request);
-        self.output.write(&request)
+        self.json_bytes.store(json.len(), Ordering::Relaxed);
+        self.output.write(json)
     }
 
     fn force_flush(&self) -> OTelSdkResult {
@@ -439,21 +439,5 @@ impl PushMetricExporter for MetricExporter {
 
     fn temporality(&self) -> Temporality {
         Temporality::Cumulative
-    }
-}
-
-fn metric_integers(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(fields) => {
-            for (key, value) in fields {
-                if key == "asInt" && value.is_number() {
-                    *value = serde_json::Value::String(value.to_string());
-                } else {
-                    metric_integers(value);
-                }
-            }
-        }
-        serde_json::Value::Array(values) => values.iter_mut().for_each(metric_integers),
-        _ => {}
     }
 }

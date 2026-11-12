@@ -1,0 +1,6 @@
+2026-11-12T06:31:58Z waiting for load 1.00 < 0.5; busiest:
+2026-11-12T06:32:43Z start coldstart (load 0.47)
+06:32:44 coldstart done
+2026-11-12T06:32:44Z end rc=0
+2026-11-12T06:32:44Z report written
+2026-11-12T06:32:44Z done

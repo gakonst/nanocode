@@ -575,13 +575,11 @@ fn rank((sign, int, frac): Parts<'_>) -> Option<u128> {
     if sign == 0 {
         return Some(1u128 << 120);
     }
-    let int = int
-        .iter()
-        .fold(0u128, |v, &d| v * 10 + u128::from(d - b'0'));
-    let frac = (0..18).fold(0u128, |v, j| {
-        v * 10 + frac.get(j).map_or(0, |&d| u128::from(d - b'0'))
+    let int = int.iter().fold(0u64, |v, &d| v * 10 + u64::from(d - b'0'));
+    let frac = (0..18).fold(0u64, |v, j| {
+        v * 10 + frac.get(j).map_or(0, |&d| u64::from(d - b'0'))
     });
-    let m = int << 60 | frac;
+    let m = u128::from(int) << 60 | u128::from(frac);
     Some(if sign > 0 {
         (2u128 << 120) + m
     } else {
@@ -924,7 +922,20 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             && !k.order.blank_start
             && matches!(k.order.kind, Kind::Text)
     };
-    if sorter.keys.iter().all(whole) {
+    if let [k] = &sorter.keys[..]
+        && whole(k)
+        && plain(&k.order)
+    {
+        let mut keyed: Vec<(u64, &[u8])> = lines
+            .iter()
+            .map(|l| ((prefix(l) >> 64) as u64, *l))
+            .collect();
+        keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+        if k.order.reverse {
+            keyed.reverse();
+        }
+        lines = keyed.into_iter().map(|(_, l)| l).collect();
+    } else if sorter.keys.iter().all(whole) {
         lines.sort_by(|a, b| sorter.cmp(a, b));
     } else {
         let n = sorter.keys.len();

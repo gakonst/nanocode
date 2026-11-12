@@ -1451,10 +1451,10 @@ impl Exec<'_> {
                     if self.fuel <= 0 {
                         return None;
                     }
-                    // A call of a `@fast` builtin (D1850) or `%EachDense` (D2307), else the
+                    // A call of a `@fast` builtin (D1850) or an intrinsic (D2307), else the
                     // general path.
                     if (op == fast::CALL_INTRINSIC || op == fast::CALL_INTRINSIC8)
-                        && let Some(r) = self.each_dense_decline()
+                        && let Some(r) = self.intrinsic_decline()
                     {
                         if let Some(st) = r {
                             return Some(st);

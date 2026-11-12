@@ -60,12 +60,13 @@ impl Exec<'_> {
         Ok(None)
     }
 
-    /// The tier-0 loop's exit at a `call_intrinsic` (D2307): `%EachDense` runs here, as
+    /// The tier-0 loop's exit at a `call_intrinsic` (D2307): the intrinsic runs here, as
     /// `step` would run it (its fuel, its `next`, a fault thrown at its pc), without the
-    /// way through `step` and `call_intrinsic`. `None` for any other intrinsic (nothing
-    /// changed), else what `step_once` returns.
+    /// way through `step` (and `%EachDense` without `call_intrinsic`). `None` for one
+    /// that `step` retries after a collection (D1700, nothing changed), else what
+    /// `step_once` returns.
     #[inline(never)]
-    pub(super) fn each_dense_decline(&mut self) -> Option<Option<Status>> {
+    pub(super) fn intrinsic_decline(&mut self) -> Option<Option<Status>> {
         if self.pc >= self.code_len {
             return None;
         }
@@ -80,13 +81,21 @@ impl Exec<'_> {
         } else {
             (Op::CallIntrinsic, self.imm_u16(1) as u16, self.imm_u16(3))
         };
-        if id != EACH_DENSE {
+        if id != EACH_DENSE && super::retry::retries(id) {
             return None;
         }
         let info = &crate::bytecode::OPS[op as usize];
         self.fuel -= info.cost.fuel() as i64;
         let (pc0, next) = (self.pc, self.pc + info.size as u32);
-        Some(match self.each_dense(self.sp - argc, next) {
+        let r = if id == EACH_DENSE {
+            self.each_dense(self.sp - argc, next)
+        } else {
+            self.call_intrinsic(id, argc, next)
+        };
+        if self.retry_len == 0 {
+            self.retry_len = super::NO_RETRY;
+        }
+        Some(match r {
             Ok(st) => st,
             Err(f) => self.throw_fault(f, pc0),
         })

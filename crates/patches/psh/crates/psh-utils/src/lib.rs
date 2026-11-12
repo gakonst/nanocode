@@ -7,6 +7,7 @@
 
 mod common;
 mod fsutil;
+mod math;
 mod modes;
 pub mod opts;
 pub mod search;

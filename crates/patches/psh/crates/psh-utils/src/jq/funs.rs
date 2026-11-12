@@ -14,6 +14,7 @@ use super::json;
 use super::map::Map;
 use super::time;
 use super::val::{Error, Val, ValR, as_isize, err, split_str};
+use crate::math;
 
 /// The data kind of psh's jq programs.
 pub struct Kind;
@@ -954,19 +955,19 @@ fn natives() -> Natives {
         ),
         ("frexp", v(0), |cv| {
             bome(num_arg(&cv.1, "").map(|x| {
-                let (m, e) = libm::frexp(x);
+                let (m, e) = math::frexp(x);
                 [Val::num(m), Val::num(f64::from(e))].into_iter().collect()
             }))
         }),
         ("modf", v(0), |cv| {
             bome(num_arg(&cv.1, "").map(|x| {
-                let (f, i) = libm::modf(x);
+                let (f, i) = math::modf(x);
                 [Val::num(f), Val::num(i)].into_iter().collect()
             }))
         }),
         ("lgamma_r", v(0), |cv| {
             bome(num_arg(&cv.1, "").map(|x| {
-                let (g, s) = libm::lgamma_r(x);
+                let (g, s) = math::lgamma_r(x);
                 [Val::num(g), Val::num(f64::from(s))].into_iter().collect()
             }))
         }),
@@ -975,7 +976,7 @@ fn natives() -> Natives {
                 if x == 0.0 || !x.is_finite() {
                     Val::num(x)
                 } else {
-                    Val::num(libm::scalbn(x, -libm::ilogb(x)))
+                    Val::num(math::scalbn(x, -math::ilogb(x)))
                 }
             }))
         }),
@@ -988,66 +989,66 @@ fn natives() -> Natives {
                 } else if x.is_nan() {
                     x
                 } else {
-                    f64::from(libm::ilogb(x))
+                    f64::from(math::ilogb(x))
                 })
             }))
         }),
         math1!("floor", f64::floor),
         math1!("ceil", f64::ceil),
-        math1!("round", libm::round),
-        math1!("rint", libm::rint),
-        math1!("nearbyint", libm::rint),
+        math1!("round", math::round),
+        math1!("rint", math::rint),
+        math1!("nearbyint", math::rint),
         math1!("trunc", f64::trunc),
         math1!("fabs", f64::abs),
         math1!("sqrt", f64::sqrt),
-        math1!("cbrt", libm::cbrt),
-        math1!("exp", libm::exp),
-        math1!("exp2", libm::exp2),
-        math1!("exp10", libm::exp10),
-        math1!("pow10", libm::exp10),
-        math1!("expm1", libm::expm1),
-        math1!("log", libm::log),
-        math1!("log2", libm::log2),
-        math1!("log10", libm::log10),
-        math1!("log1p", libm::log1p),
-        math1!("sin", libm::sin),
-        math1!("cos", libm::cos),
-        math1!("tan", libm::tan),
-        math1!("asin", libm::asin),
-        math1!("acos", libm::acos),
-        math1!("atan", libm::atan),
-        math1!("sinh", libm::sinh),
-        math1!("cosh", libm::cosh),
-        math1!("tanh", libm::tanh),
-        math1!("asinh", libm::asinh),
-        math1!("acosh", libm::acosh),
-        math1!("atanh", libm::atanh),
-        math1!("erf", libm::erf),
-        math1!("erfc", libm::erfc),
-        math1!("gamma", libm::lgamma),
-        math1!("lgamma", libm::lgamma),
-        math1!("tgamma", libm::tgamma),
-        math1!("j0", libm::j0),
-        math1!("j1", libm::j1),
-        math1!("y0", libm::y0),
-        math1!("y1", libm::y1),
-        math2!("pow", libm::pow),
-        math2!("atan2", libm::atan2),
-        math2!("fmod", libm::fmod),
-        math2!("hypot", libm::hypot),
-        math2!("fdim", libm::fdim),
-        math2!("fmax", libm::fmax),
-        math2!("fmin", libm::fmin),
-        math2!("copysign", libm::copysign),
-        math2!("nextafter", libm::nextafter),
-        math2!("nexttoward", libm::nextafter),
-        math2!("remainder", libm::remainder),
-        math2!("drem", libm::remainder),
-        math2!("ldexp", |x, e| libm::ldexp(x, e as i32)),
-        math2!("scalb", |x, e| x * libm::exp2(e)),
-        math2!("scalbln", |x, e| libm::scalbn(x, e as i32)),
-        math2!("jn", |n, x| libm::jn(n as i32, x)),
-        math2!("yn", |n, x| libm::yn(n as i32, x)),
+        math1!("cbrt", math::cbrt),
+        math1!("exp", math::exp),
+        math1!("exp2", math::exp2),
+        math1!("exp10", math::exp10),
+        math1!("pow10", math::exp10),
+        math1!("expm1", math::expm1),
+        math1!("log", math::log),
+        math1!("log2", math::log2),
+        math1!("log10", math::log10),
+        math1!("log1p", math::log1p),
+        math1!("sin", math::sin),
+        math1!("cos", math::cos),
+        math1!("tan", math::tan),
+        math1!("asin", math::asin),
+        math1!("acos", math::acos),
+        math1!("atan", math::atan),
+        math1!("sinh", math::sinh),
+        math1!("cosh", math::cosh),
+        math1!("tanh", math::tanh),
+        math1!("asinh", math::asinh),
+        math1!("acosh", math::acosh),
+        math1!("atanh", math::atanh),
+        math1!("erf", math::erf),
+        math1!("erfc", math::erfc),
+        math1!("gamma", math::lgamma),
+        math1!("lgamma", math::lgamma),
+        math1!("tgamma", math::tgamma),
+        math1!("j0", math::j0),
+        math1!("j1", math::j1),
+        math1!("y0", math::y0),
+        math1!("y1", math::y1),
+        math2!("pow", math::pow),
+        math2!("atan2", math::atan2),
+        math2!("fmod", math::fmod),
+        math2!("hypot", math::hypot),
+        math2!("fdim", math::fdim),
+        math2!("fmax", math::fmax),
+        math2!("fmin", math::fmin),
+        math2!("copysign", f64::copysign),
+        math2!("nextafter", math::nextafter),
+        math2!("nexttoward", math::nextafter),
+        math2!("remainder", math::remainder),
+        math2!("drem", math::remainder),
+        math2!("ldexp", |x, e| math::ldexp(x, e as i32)),
+        math2!("scalb", |x, e| x * math::exp2(e)),
+        math2!("scalbln", |x, e| math::scalbn(x, e as i32)),
+        math2!("jn", |n, x| math::jn(n as i32, x)),
+        math2!("yn", |n, x| math::yn(n as i32, x)),
         (
             "fma",
             [Bind::Var(()), Bind::Var(()), Bind::Var(())].into(),
@@ -1056,7 +1057,7 @@ fn natives() -> Natives {
                 let b = cv.0.pop_var();
                 let a = cv.0.pop_var();
                 bome((|| {
-                    Ok(Val::num(libm::fma(
+                    Ok(Val::num(f64::mul_add(
                         num_arg(&a, "")?,
                         num_arg(&b, "")?,
                         num_arg(&c, "")?,

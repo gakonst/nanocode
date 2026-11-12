@@ -17,10 +17,15 @@ test = false
 bench = false
 
 [dependencies]
+futures-util.workspace = true
+nanocode-agent-core.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-durability.workspace = true
 nanocode-platform.workspace = true
+nanocode-subagents.workspace = true
 nanocode-sync.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
 
 [lints]
 workspace = true

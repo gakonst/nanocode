@@ -1,8 +1,10 @@
+mod agents;
 mod executor;
 mod faults;
 mod host;
 mod model;
 mod rng;
+mod scripted;
 mod simulate;
 mod store;
 mod tidy;
@@ -11,6 +13,7 @@ mod workload;
 use std::{ops::Range, process::ExitCode};
 
 use crate::{
+    agents::AgentStats,
     model::Stats,
     simulate::{Options, run_seed},
     store::Mutation,
@@ -19,15 +22,22 @@ use crate::{
 const DEFAULT_OPS: u64 = 1000;
 const CAUGHT_SHOWN_MAX: usize = 3;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scenario {
+    Store,
+    Agents,
+}
+
 struct Args {
     seeds: Range<u64>,
     options: Options,
     twice: bool,
+    scenario: Scenario,
 }
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]",
         Mutation::names()
     );
     ExitCode::from(2)
@@ -50,6 +60,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
         verbose: false,
     };
     let mut twice = false;
+    let mut scenario = Scenario::Store;
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         match flag.as_str() {
@@ -57,6 +68,13 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--verbose" => options.verbose = true,
             "--seed" | "--seeds" => seeds = Some(parse_seeds(rest.next()?)?),
             "--ops" => options.ops = rest.next()?.parse().ok()?,
+            "--scenario" => {
+                scenario = match rest.next()?.as_str() {
+                    "store" => Scenario::Store,
+                    "agents" => Scenario::Agents,
+                    _ => return None,
+                };
+            }
             "--mutation" => options.mutation = Mutation::parse(rest.next()?)?,
             "--records" => {
                 options.slots = match rest.next()?.as_str() {
@@ -68,14 +86,22 @@ fn parse_args(args: &[String]) -> Option<Args> {
             _ => return None,
         }
     }
+    if scenario == Scenario::Agents && options.mutation != Mutation::None {
+        return None;
+    }
     Some(Args {
         seeds: seeds?,
         options,
         twice,
+        scenario,
     })
 }
 
-fn replay(seed: u64, options: Options) -> String {
+fn replay(seed: u64, args: &Args) -> String {
+    let options = args.options;
+    if args.scenario == Scenario::Agents {
+        return format!("nanocode-sim --scenario agents --seed {seed}");
+    }
     let mut command = format!("nanocode-sim --seed {seed} --ops {}", options.ops);
     if options.mutation != Mutation::None {
         command.push_str(" --mutation ");
@@ -103,6 +129,26 @@ fn judge(seed: u64, args: &Args, totals: &mut Stats) -> Option<String> {
         ..args.options
     };
     let second = run_seed(seed, quiet);
+    (second.digest != first.digest || second.wrong.is_some()).then(|| {
+        format!(
+            "{} :: nondeterminism: trace digest {:016x} then {:016x}",
+            first.shape, first.digest, second.digest
+        )
+    })
+}
+
+fn judge_agents(seed: u64, args: &Args, totals: &mut AgentStats) -> Option<String> {
+    let first = agents::run_seed(seed);
+    totals.add(&first.stats);
+    if args.options.verbose {
+        println!("seed {seed} digest {:016x} {}", first.digest, first.shape);
+    }
+    if first.wrong.is_some() || !args.twice {
+        return first
+            .wrong
+            .map(|message| format!("{} :: {message}", first.shape));
+    }
+    let second = agents::run_seed(seed);
     (second.digest != first.digest || second.wrong.is_some()).then(|| {
         format!(
             "{} :: nondeterminism: trace digest {:016x} then {:016x}",
@@ -145,18 +191,34 @@ fn main() -> ExitCode {
     let mutation = args.options.mutation;
     let (mut passed, mut failed) = (0_u64, 0_u64);
     let mut totals = Stats::default();
+    let mut agent_totals = AgentStats::default();
     for seed in args.seeds.clone() {
-        let Some(message) = judge(seed, &args, &mut totals) else {
+        let verdict = match args.scenario {
+            Scenario::Store => judge(seed, &args, &mut totals),
+            Scenario::Agents => judge_agents(seed, &args, &mut agent_totals),
+        };
+        let Some(message) = verdict else {
             passed += 1;
             continue;
         };
         failed += 1;
-        let replay = replay(seed, args.options);
+        let replay = replay(seed, &args);
         if mutation == Mutation::None {
             println!("FAIL seed={seed} Wrong {message} :: replay: {replay}");
         } else if failed <= u64::try_from(CAUGHT_SHOWN_MAX).expect("a small count fits in u64") {
             println!("CAUGHT seed={seed} {message} :: replay: {replay}");
         }
+    }
+    if args.scenario == Scenario::Agents {
+        println!(
+            "RESULT seeds={}..{} scenario=agents passed={passed} failed={failed} twice={} stats={agent_totals:?}",
+            args.seeds.start, args.seeds.end, args.twice
+        );
+        return if failed == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
     println!(
         "RESULT seeds={}..{} mutation={} passed={passed} failed={failed} twice={} stats={totals:?}",

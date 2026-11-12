@@ -3490,10 +3490,15 @@ dependencies = [
 name = "nanocode-sim"
 version = "0.7.0"
 dependencies = [
+ "futures-util",
+ "nanocode-agent-core",
  "nanocode-durability",
  "nanocode-durability-core",
  "nanocode-platform",
+ "nanocode-subagents",
  "nanocode-sync",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

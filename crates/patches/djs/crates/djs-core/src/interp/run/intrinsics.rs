@@ -1009,11 +1009,7 @@ impl Exec<'_> {
                     return bad_argument(id);
                 };
                 let proto = realm::intrinsic_obj(self.heap, Intrinsic::ObjectProto);
-                let o = self.heap.new_object_from_entries(
-                    Some(proto),
-                    &[atoms::VALUE, atoms::DONE],
-                    &[a0, Value::bool(done)],
-                )?;
+                let o = self.heap.new_iter_result(Some(proto), a0, done)?;
                 Value::object(o)
             }
             CREATE_ARRAY_FROM_PAIR => {

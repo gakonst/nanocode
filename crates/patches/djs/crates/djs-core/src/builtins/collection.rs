@@ -1,6 +1,6 @@
 //! Map/Set/WeakMap/WeakSet leaf intrinsics over `heap/collection.rs`.
 
-use crate::heap::{Heap, ObjectClass, atoms};
+use crate::heap::{Heap, ObjectClass};
 use crate::interp::conv::{Fault, type_error};
 use crate::interp::{Intrinsic, realm};
 use crate::value::{Obj, Value};
@@ -81,10 +81,10 @@ pub(crate) fn iterator_next(heap: &mut Heap, it: Value, is_set: bool) -> Result<
         None => (Value::UNDEFINED, true),
     };
     let proto = realm::intrinsic_obj(heap, Intrinsic::ObjectProto);
-    Ok(Value::object(heap.new_object_from_entries(
+    Ok(Value::object(heap.new_iter_result(
         Some(proto),
-        &[atoms::VALUE, atoms::DONE],
-        &[value, Value::bool(done)],
+        value,
+        done,
     )?))
 }
 

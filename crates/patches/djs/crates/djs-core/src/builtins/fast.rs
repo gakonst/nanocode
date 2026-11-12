@@ -1092,11 +1092,7 @@ fn regexp_string_iterator_next(heap: &mut Heap, this: Value, _: &[Value], fuel: 
     };
     let flags = heap.object_slot(it, regexp::IT_FLAGS).as_int().unwrap_or(0);
     let proto = realm::intrinsic_obj(heap, Intrinsic::ObjectProto);
-    let result = heap.new_object_from_entries(
-        Some(proto),
-        &[atoms::VALUE, atoms::DONE],
-        &[Value::UNDEFINED, Value::TRUE],
-    )?;
+    let result = heap.new_iter_result(Some(proto), Value::UNDEFINED, true)?;
     if flags & regexp::IT_DONE != 0 {
         return Ok(Some(Value::object(result)));
     }

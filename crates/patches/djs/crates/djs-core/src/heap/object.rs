@@ -700,6 +700,24 @@ impl Heap {
         Ok(o)
     }
 
+    pub(crate) fn new_iter_result(
+        &mut self,
+        proto: Option<Obj>,
+        value: Value,
+        done: bool,
+    ) -> Result<Obj, HeapError> {
+        let mut last = self.iter_result_shape;
+        let keys = [atoms::VALUE, atoms::DONE];
+        let o = self.new_object_from_entries_like(
+            proto,
+            &keys,
+            &[value, Value::bool(done)],
+            &mut last,
+        )?;
+        self.iter_result_shape = last;
+        Ok(o)
+    }
+
     pub(crate) fn adopt_shape(
         &mut self,
         o: Obj,

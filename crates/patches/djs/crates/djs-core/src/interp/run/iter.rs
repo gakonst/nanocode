@@ -332,11 +332,9 @@ impl Exec<'_> {
 
     pub(super) fn done_result(&mut self) -> Result<Value, Fault> {
         let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
-        let o = self.heap.new_object_from_entries(
-            Some(proto),
-            &[atoms::VALUE, atoms::DONE],
-            &[Value::UNDEFINED, Value::TRUE],
-        )?;
+        let o = self
+            .heap
+            .new_iter_result(Some(proto), Value::UNDEFINED, true)?;
         Ok(Value::object(o))
     }
 

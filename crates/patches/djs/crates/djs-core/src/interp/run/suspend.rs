@@ -210,10 +210,7 @@ impl Exec<'_> {
             Some((g, EXECUTING)) => {
                 set_state(self.heap, g, COMPLETED);
                 let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
-                let keys = [crate::heap::atoms::VALUE, crate::heap::atoms::DONE];
-                let o = self
-                    .heap
-                    .new_object_from_entries(Some(proto), &keys, &[v, Value::TRUE])?;
+                let o = self.heap.new_iter_result(Some(proto), v, true)?;
                 (Value::object(o), false)
             }
             _ => (v, false),

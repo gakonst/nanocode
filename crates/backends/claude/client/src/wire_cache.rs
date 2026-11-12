@@ -12,7 +12,7 @@ use crate::{ClaudeError, ClaudeToolSpec, MessageDigests};
 pub(crate) struct Encoded<T> {
     value: T,
     pub(crate) raw: Box<RawValue>,
-    pub(crate) digest: blake3::Hash,
+    pub(crate) digest: nanocode_digest::Hash,
     pub(crate) fingerprint: String,
 }
 
@@ -21,8 +21,8 @@ type Entries<T> = Atom<Vec<Weak<Encoded<T>>>>;
 #[derive(Default)]
 pub(crate) struct Hashed {
     pub(crate) digests: Vec<MessageDigests>,
-    pub(crate) read: blake3::Hasher,
-    pub(crate) sent: blake3::Hasher,
+    pub(crate) read: nanocode_digest::Blake3,
+    pub(crate) sent: nanocode_digest::Blake3,
 }
 
 pub(crate) struct Assembled {
@@ -140,7 +140,7 @@ fn remembered<T, Q: Serialize + ?Sized>(
         None => {
             let raw = serde_json::value::to_raw_value(value)?;
             let entry = Arc::new(Encoded {
-                digest: blake3::hash(raw.get().as_bytes()),
+                digest: nanocode_digest::blake3(raw.get().as_bytes()),
                 fingerprint: crate::fingerprint_bytes(raw.get().as_bytes()),
                 raw,
                 value: owned(),

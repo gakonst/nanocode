@@ -78,8 +78,8 @@ pub struct ThreadTurn {
     mode: ThreadMode,
     held: usize,
     sent: usize,
-    digest: blake3::Hasher,
-    fixed: blake3::Hash,
+    digest: nanocode_digest::Blake3,
+    fixed: nanocode_digest::Hash,
     recreated: bool,
 }
 
@@ -186,8 +186,8 @@ impl Default for State {
 struct Anchor {
     response_id: String,
     messages: usize,
-    digest: blake3::Hash,
-    fixed: blake3::Hash,
+    digest: nanocode_digest::Hash,
+    fixed: nanocode_digest::Hash,
     stored_at: Instant,
     recreated: bool,
 }
@@ -215,7 +215,7 @@ impl MessageThread {
             mode: ThreadMode::Unthreaded,
             held: 0,
             sent: messages.len(),
-            digest: blake3::Hasher::new(),
+            digest: nanocode_digest::Blake3::new(),
             fixed,
             recreated: false,
         };
@@ -329,7 +329,7 @@ fn stored(response: &MessageResponse) -> bool {
     }
 }
 
-fn fingerprint(head: &MessagesRequest) -> Result<blake3::Hash, ClaudeError> {
+fn fingerprint(head: &MessagesRequest) -> Result<nanocode_digest::Hash, ClaudeError> {
     #[derive(Serialize)]
     struct Fixed<'a> {
         model: &'a str,
@@ -355,16 +355,19 @@ fn fingerprint(head: &MessagesRequest) -> Result<blake3::Hash, ClaudeError> {
         tools: &head.tools,
         effort_updates: head.effort_updates,
     })?;
-    Ok(blake3::hash(&fixed))
+    Ok(nanocode_digest::blake3(&fixed))
 }
 
-fn absorb<M: WireMessage>(digest: &mut blake3::Hasher, message: &M) -> Result<(), ClaudeError> {
+fn absorb<M: WireMessage>(
+    digest: &mut nanocode_digest::Blake3,
+    message: &M,
+) -> Result<(), ClaudeError> {
     let encode = |message: &Message| serde_json::to_string(message).map_err(ClaudeError::from);
     absorb_encoded(digest, &message.encoded(false, &encode)?);
     Ok(())
 }
 
-fn absorb_encoded(digest: &mut blake3::Hasher, encoded: &str) {
+fn absorb_encoded(digest: &mut nanocode_digest::Blake3, encoded: &str) {
     digest.update(&(encoded.len() as u64).to_le_bytes());
     digest.update(encoded.as_bytes());
 }

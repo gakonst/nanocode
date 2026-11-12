@@ -2,10 +2,10 @@ use std::{fmt, sync::Arc};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use nanocode_digest::Sha256;
 use nanocode_platform::UNIX_EPOCH;
 use nanocode_sync::SingleFlight;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::{ClaudeAuthFuture, ClaudeAuthProvider, ClaudeAuthUnavailable};
@@ -328,7 +328,7 @@ impl ClaudeSubscription {
             return Err(ClaudeSubscriptionError::Invalid);
         }
         let binding = URL_SAFE_NO_PAD.encode(Sha256::digest(
-            serde_json::to_vec(&config).map_err(|_| ClaudeSubscriptionError::Invalid)?,
+            &serde_json::to_vec(&config).map_err(|_| ClaudeSubscriptionError::Invalid)?,
         ));
         Ok(Self {
             inner: Arc::new(Inner {

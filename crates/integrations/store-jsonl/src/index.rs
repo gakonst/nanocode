@@ -5,9 +5,9 @@ use std::{
     path::PathBuf,
 };
 
+use nanocode_digest::Sha256;
 use nanocode_durability_core::{OwnerToken, StateSummary};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{Journal, Location, Record, State, identity, records::RecordMap, summaries::Anchor};
 
@@ -102,7 +102,7 @@ impl Index {
             holders: HashMap::new(),
             last: None,
             migrated: false,
-            anchor: Sha256::digest([]).into(),
+            anchor: Sha256::digest(&[]),
             deferred: HashMap::new(),
             summaries: None,
             deferred_summaries: None,
@@ -297,14 +297,14 @@ impl Journal {
         let metadata = file.metadata()?;
         let file_identity = identity(&metadata).map_err(io::Error::other)?;
         let length = metadata.len();
-        let trailer = Sha256::output_size() + size_of::<u64>();
+        let trailer = Sha256::OUTPUT_BYTES + size_of::<u64>();
         let mut magic = vec![0; MAGIC.len()];
         file.read_exact(&mut magic)?;
         if magic == LEGACY_MAGIC {
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
             let (checksum, payload) = bytes
-                .split_at_checked(Sha256::output_size())
+                .split_at_checked(Sha256::OUTPUT_BYTES)
                 .ok_or_else(invalid)?;
             if checksum != &Sha256::digest(payload)[..] {
                 return Err(invalid());
@@ -596,7 +596,7 @@ impl Journal {
             summaries,
         };
         let payload = serde_json::to_vec(&saved).map_err(io::Error::other)?;
-        let checksum: [u8; 32] = Sha256::digest(&payload).into();
+        let checksum: [u8; 32] = Sha256::digest(&payload);
         output.extend_from_slice(&payload);
         output.extend_from_slice(&checksum);
         output.extend_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -642,7 +642,7 @@ impl Journal {
                     position,
                     length: output.length,
                 },
-                digest: output.digest.finalize().into(),
+                digest: output.digest.finalize(),
                 format,
             };
             blocks.push((id.clone(), records));
@@ -687,7 +687,7 @@ impl Journal {
                     position,
                     length: output.length,
                 },
-                digest: output.digest.finalize().into(),
+                digest: output.digest.finalize(),
                 format: None,
             })
         } else {
@@ -730,7 +730,7 @@ fn appended_block(
             position: base + start as u64,
             length: output.len() - start,
         },
-        digest: Sha256::digest(&output[start..]).into(),
+        digest: Sha256::digest(&output[start..]),
         format,
     }
 }
@@ -741,7 +741,7 @@ fn same_block(saved: &RecordBlock, block: &RecordBlock) -> bool {
 
 fn trailer_checksum(file: &mut File) -> io::Result<[u8; 32]> {
     file.seek(SeekFrom::End(
-        -((Sha256::output_size() + size_of::<u64>()) as i64),
+        -((Sha256::OUTPUT_BYTES + size_of::<u64>()) as i64),
     ))?;
     let mut checksum = [0; 32];
     file.read_exact(&mut checksum)?;
@@ -828,7 +828,7 @@ fn decode_records(mut bytes: &[u8], hashes: &mut Vec<u64>) -> io::Result<RecordM
             ENTRY_RECORD => Record::Entry(location),
             VALUE_RECORD => Record::Value {
                 location,
-                digest: take(&mut bytes, Sha256::output_size())?
+                digest: take(&mut bytes, Sha256::OUTPUT_BYTES)?
                     .try_into()
                     .map_err(io::Error::other)?,
             },
@@ -975,5 +975,5 @@ pub(super) fn digest_anchor(file: &mut File, location: Option<Location>) -> io::
             ));
         }
     }
-    Ok(digest.finalize().into())
+    Ok(digest.finalize())
 }

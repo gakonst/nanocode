@@ -12,14 +12,13 @@ autobenches = false
 
 [dependencies]
 base64.workspace = true
-blake3.workspace = true
+nanocode-digest.workspace = true
 futures-util.workspace = true
 imbl.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 
 [lints]
 workspace = true

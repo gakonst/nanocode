@@ -1,7 +1,7 @@
 use crate::{ClaudeError, ContentBlock, Message, MessagesRequest, Role, WireMessage};
+use nanocode_digest::Sha256;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 pub const CLAUDE_CODE_VERSION: &str = "2.1.304";
 pub const CLAUDE_CODE_SDK_VERSION: &str = "0.112.1";
@@ -413,7 +413,7 @@ pub(crate) fn wire<M: WireMessage>(
         if let Some(offset) = memchr::memmem::find(window, PLACEHOLDER) {
             let checksum = format!(
                 "{:05x}",
-                xxhash_rust::xxh64::xxh64(&bytes, 0x4d65_9218_e32a_3268) & 0xfffff
+                nanocode_digest::xxh64(&bytes, 0x4d65_9218_e32a_3268) & 0xfffff
             );
             bytes[start + offset + 4..start + offset + 9].copy_from_slice(checksum.as_bytes());
         }

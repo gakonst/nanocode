@@ -8,9 +8,9 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
+use nanocode_digest::Sha256;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 use url::{Url, form_urlencoded};
 

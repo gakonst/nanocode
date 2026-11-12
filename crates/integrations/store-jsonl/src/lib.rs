@@ -12,13 +12,13 @@ mod summaries;
 pub use compact::CompactionStats;
 use sessions::Sessions;
 
+use nanocode_digest::Sha256;
 use nanocode_durability_core::{
     Colocation, Committed, KnownSummary, ListedState, OwnedCommit, OwnedState, OwnerId, OwnerToken,
     Settle, StateCommit, StateStore, StoreError, StoreFuture, StoreHandles, StoreRecord,
     StoreReplacement, StoreUpdate, StoredState,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser::SerializeStruct};
-use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
@@ -924,11 +924,11 @@ impl Record {
 fn value_digest(id: &str, key: &str, bytes: &[u8]) -> [u8; 32] {
     let mut digest = Sha256::new();
     for part in [id.as_bytes(), key.as_bytes()] {
-        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(&(part.len() as u64).to_le_bytes());
         digest.update(part);
     }
     digest.update(bytes);
-    digest.finalize().into()
+    digest.finalize()
 }
 
 struct State {

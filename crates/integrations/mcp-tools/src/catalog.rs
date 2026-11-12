@@ -4,12 +4,12 @@ use std::{
     time::Duration,
 };
 
+use nanocode_digest::Sha1;
 use nanocode_mcp::Tool as McpTool;
 use nanocode_sync::Atom;
 use nanocode_tools::ToolDefinition;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use sha1::{Digest, Sha1};
 use tokio::sync::watch;
 
 use super::{

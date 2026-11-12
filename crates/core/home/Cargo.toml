@@ -19,7 +19,7 @@ serde.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 nanocode-platform.workspace = true
-sha2.workspace = true
+nanocode-digest.workspace = true
 
 [lints]
 workspace = true

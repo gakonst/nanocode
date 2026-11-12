@@ -10,7 +10,7 @@ use crate::client::{
     ContentItem, FunctionOutputBody, FunctionOutputContent, ImageDetail, ResponseItem,
     responses::ResponseHistory,
 };
-use sha2::{Digest as _, Sha256};
+use nanocode_digest::Sha256;
 
 use super::context::is_contextual_user_message;
 use base64::Engine as _;
@@ -470,7 +470,7 @@ fn base64_image_payload(image_url: &str) -> Option<&str> {
 }
 
 fn original_image_bytes_estimate(image_url: &str) -> Option<usize> {
-    let key = Sha256::digest(image_url.as_bytes()).into();
+    let key = Sha256::digest(image_url.as_bytes());
     let estimate = || {
         let payload = base64_image_payload(image_url)?;
         let bytes = base64::engine::general_purpose::STANDARD

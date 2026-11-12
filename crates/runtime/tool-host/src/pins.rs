@@ -10,7 +10,7 @@ pub trait TextPins: Send + Sync + 'static {
 
 fn digest(value: &impl Serialize) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
-    blake3::hash(&bytes).to_hex().to_string()
+    nanocode_digest::blake3(&bytes).to_hex().to_string()
 }
 
 pub(crate) fn contract(definition: &ToolDefinition) -> String {

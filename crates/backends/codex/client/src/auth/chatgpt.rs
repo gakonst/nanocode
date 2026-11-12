@@ -13,9 +13,9 @@ use super::{
     OpenAiAuthSource,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use nanocode_digest::Sha256;
 use nanocode_sync::{SingleFlight, Swap};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,

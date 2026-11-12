@@ -15,7 +15,7 @@ pub struct BlobKey(Arc<str>);
 impl BlobKey {
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
-        Self(format!("{KEY_PREFIX}{}", blake3::hash(bytes).to_hex()).into())
+        Self(format!("{KEY_PREFIX}{}", nanocode_digest::blake3(bytes).to_hex()).into())
     }
 
     #[must_use]

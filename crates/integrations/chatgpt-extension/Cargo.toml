@@ -21,7 +21,7 @@ nanocode-tool-contracts.workspace = true
 rustix = { workspace = true, features = ["fs"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+nanocode-digest.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 url.workspace = true
 

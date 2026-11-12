@@ -9,8 +9,8 @@ use crate::client::{
     responses::{RequestProfile, ToolDefinition},
 };
 use crate::model::run::ModelCheckpoint;
+use nanocode_digest::Sha256;
 use nanocode_sync::{Swap, SwapOption};
-use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
 use crate::{NanocodeError, Result};
@@ -141,7 +141,7 @@ fn prefix_digest(model: Model, tools: &[ToolDefinition], instructions: &str) -> 
     }
     let encoded = serde_json::to_vec(&(model.as_str(), tools, instructions))
         .map_err(NanocodeError::SerializePromptPrefix)?;
-    let digest = Sha256::digest(encoded);
+    let digest = Sha256::digest(&encoded);
     let hex: Arc<str> = digest[..16]
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -159,5 +159,5 @@ fn prefix_digest(model: Model, tools: &[ToolDefinition], instructions: &str) -> 
 fn prefix_fingerprint(model: Model, profile: &RequestProfile) -> Result<PrefixFingerprint> {
     let encoded = serde_json::to_vec(&(model, profile.prompt_cache_key(), profile.prefix()))
         .map_err(NanocodeError::SerializePromptPrefix)?;
-    Ok(Sha256::digest(encoded).into())
+    Ok(Sha256::digest(&encoded))
 }

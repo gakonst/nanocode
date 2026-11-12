@@ -12,7 +12,7 @@ use nanocode_durability_core::{
     StoreRecord, StoreReplacement, StoreUpdate, StoredState,
 };
 
-use sha2::{Digest, Sha256};
+use nanocode_digest::Sha256;
 
 use super::{
     CompactionStats, Journal, Replacement, archive, backend, identity, process_alive,
@@ -315,7 +315,7 @@ impl Sessions {
             length: metadata.len(),
             anchor: Anchor {
                 position: 0,
-                digest: Sha256::digest(&stored).into(),
+                digest: Sha256::digest(&stored),
             },
         }))
     }

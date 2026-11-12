@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use nanocode_digest::Sha256;
 use std::{
     env,
     fmt::Display,

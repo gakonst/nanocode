@@ -128,10 +128,6 @@ fn stored(call: &HostCall<'_>, at: usize) -> Result<Vec<u8>, Throw> {
     })
 }
 
-fn digest<D: sha2::Digest>(bytes: &[u8]) -> Vec<u8> {
-    D::digest(bytes).to_vec()
-}
-
 pub(crate) fn host_call(
     state: &mut ExecutionState,
     call: &HostCall<'_>,
@@ -174,10 +170,10 @@ pub(crate) fn host_call(
         DIGEST => {
             let bytes = view(call, 1, 2, 3)?;
             let digest = match crate::cell::text(call, 0)?.as_str() {
-                "SHA-1" => digest::<sha1::Sha1>(bytes),
-                "SHA-256" => digest::<sha2::Sha256>(bytes),
-                "SHA-384" => digest::<sha2::Sha384>(bytes),
-                "SHA-512" => digest::<sha2::Sha512>(bytes),
+                "SHA-1" => nanocode_digest::Sha1::digest(bytes).to_vec(),
+                "SHA-256" => nanocode_digest::Sha256::digest(bytes).to_vec(),
+                "SHA-384" => nanocode_digest::Sha384::digest(bytes).to_vec(),
+                "SHA-512" => nanocode_digest::Sha512::digest(bytes).to_vec(),
                 other => return Err(Throw::type_error(format!("unsupported digest {other}"))),
             };
             Ok(Reply::Bytes(digest))

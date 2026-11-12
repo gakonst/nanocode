@@ -18,8 +18,7 @@ base64-simd.workspace = true
 djs-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha1.workspace = true
-sha2.workspace = true
+nanocode-digest.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]

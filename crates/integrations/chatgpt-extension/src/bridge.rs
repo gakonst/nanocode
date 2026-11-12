@@ -2,9 +2,9 @@ use crate::{
     EDGE_ORIGIN, Error, HOST_NAME, ORIGIN, browsers::browser_dirs, chatgpt_installed,
     host::manifest_path,
 };
+use nanocode_digest::Sha256;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},

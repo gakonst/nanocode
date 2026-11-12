@@ -6,9 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nanocode_digest::Sha256;
 use nanocode_durability_core::{StateSummary, StoreError};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{
     Documents, JOURNAL_READ_BUFFER_BYTES, Kind, Location, archive, backend, identity,
@@ -98,7 +98,7 @@ fn ending(path: &Path, length: u64, state_id: &str) -> Option<(u64, Anchor)> {
         let (revision, _) = replaced(&archive::decompress(&stored).ok()?, state_id)?;
         let anchor = Anchor {
             position: 0,
-            digest: Sha256::digest(&stored).into(),
+            digest: Sha256::digest(&stored),
         };
         return Some((revision, anchor));
     }
@@ -124,7 +124,7 @@ fn ending(path: &Path, length: u64, state_id: &str) -> Option<(u64, Anchor)> {
         {
             let anchor = Anchor {
                 position: start + (whole + last) as u64,
-                digest: Sha256::digest(&bytes[whole + last..]).into(),
+                digest: Sha256::digest(&bytes[whole + last..]),
             };
             return Some((revision, anchor));
         }

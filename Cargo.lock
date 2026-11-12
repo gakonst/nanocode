@@ -501,19 +501,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blake3"
-version = "1.8.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
-dependencies = [
- "arrayvec",
- "cc",
- "cfg-if",
- "constant_time_eq 0.4.2",
- "cpufeatures 0.3.0",
-]
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2557,10 +2544,10 @@ dependencies = [
 name = "nanocode-agent"
 version = "0.7.0"
 dependencies = [
- "blake3",
  "futures-util",
  "nanocode-agent-config",
  "nanocode-agent-core",
+ "nanocode-digest",
  "nanocode-durability",
  "nanocode-platform",
  "nanocode-subagents",
@@ -2638,8 +2625,8 @@ name = "nanocode-audio"
 version = "0.7.0"
 dependencies = [
  "base64-simd",
+ "nanocode-digest",
  "nanocode-sync",
- "sha1",
  "tracing",
 ]
 
@@ -2682,13 +2669,13 @@ name = "nanocode-backend-claude-client"
 version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
- "blake3",
  "bytes",
  "futures-util",
  "http",
  "httpdate",
  "memchr",
  "nanocode-agent-types",
+ "nanocode-digest",
  "nanocode-home",
  "nanocode-http",
  "nanocode-platform",
@@ -2697,13 +2684,11 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tokio",
  "tracing",
  "unicode-normalization",
  "url",
  "uuid",
- "xxhash-rust",
 ]
 
 [[package]]
@@ -2736,6 +2721,7 @@ dependencies = [
  "nanocode-agent-core",
  "nanocode-backend-codex-client",
  "nanocode-code-mode",
+ "nanocode-digest",
  "nanocode-durability",
  "nanocode-home",
  "nanocode-http",
@@ -2751,7 +2737,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tokio",
  "tracing",
 ]
@@ -2770,6 +2755,7 @@ dependencies = [
  "memchr",
  "nanocode-agent-types",
  "nanocode-audio",
+ "nanocode-digest",
  "nanocode-home",
  "nanocode-http",
  "nanocode-platform",
@@ -2781,7 +2767,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -2794,12 +2779,12 @@ name = "nanocode-chatgpt-extension"
 version = "0.7.0"
 dependencies = [
  "getrandom 0.4.3",
+ "nanocode-digest",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tokio",
  "url",
 ]
@@ -2847,11 +2832,11 @@ dependencies = [
 name = "nanocode-code-mode"
 version = "0.7.0"
 dependencies = [
- "blake3",
  "futures-util",
  "imbl",
  "nanocode-audio",
  "nanocode-code-mode-engine",
+ "nanocode-digest",
  "nanocode-image",
  "nanocode-platform",
  "nanocode-sync",
@@ -2870,13 +2855,12 @@ version = "0.7.0"
 dependencies = [
  "base64-simd",
  "djs-embed",
+ "nanocode-digest",
  "nanocode-platform",
  "nanocode-sync",
  "nanocode-tool-contracts",
  "serde",
  "serde_json",
- "sha1",
- "sha2 0.11.0",
  "tokio",
  "tracing",
 ]
@@ -2926,6 +2910,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-digest"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-durability"
 version = "0.7.0"
 dependencies = [
@@ -2946,14 +2934,13 @@ name = "nanocode-durability-core"
 version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
- "blake3",
  "futures-util",
  "imbl",
+ "nanocode-digest",
  "nanocode-platform",
  "nanocode-sync",
  "serde",
  "serde_json",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2961,9 +2948,9 @@ name = "nanocode-home"
 version = "0.7.0"
 dependencies = [
  "libc",
+ "nanocode-digest",
  "nanocode-platform",
  "serde",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -2987,11 +2974,11 @@ dependencies = [
  "image",
  "image-webp",
  "memchr",
+ "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-sync",
  "nanocode-types-core",
  "png",
- "sha1",
  "tokio",
  "tracing",
 ]
@@ -3010,10 +2997,10 @@ dependencies = [
  "base64 0.22.1",
  "futures-channel",
  "memchr",
+ "nanocode-digest",
  "nanocode-sync",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "subtle",
  "tracing",
  "url",
@@ -3045,6 +3032,7 @@ version = "0.7.0"
 dependencies = [
  "futures-util",
  "http",
+ "nanocode-digest",
  "nanocode-home",
  "nanocode-http",
  "nanocode-mcp",
@@ -3059,7 +3047,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha1",
  "tokio",
  "tracing",
 ]
@@ -3216,12 +3203,12 @@ name = "nanocode-store-jsonl"
 version = "0.7.0"
 dependencies = [
  "libc",
+ "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-platform",
  "nanocode-zstd",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tokio",
  "tracing",
 ]
@@ -3311,9 +3298,9 @@ dependencies = [
 name = "nanocode-tool-host"
 version = "0.7.0"
 dependencies = [
- "blake3",
  "futures-util",
  "nanocode-code-mode",
+ "nanocode-digest",
  "nanocode-home",
  "nanocode-image",
  "nanocode-platform",
@@ -6376,12 +6363,6 @@ name = "xml"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "636f85e5ca6488e96401b61eb7de54f4e44755c988af0f52cf90230c312a1a89"
-
-[[package]]
-name = "xxhash-rust"
-version = "0.8.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "xz"

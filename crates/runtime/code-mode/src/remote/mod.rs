@@ -859,7 +859,7 @@ pub const LOCAL_TOOLS_UNKNOWN: &str = "the hand holds no brain tool definitions 
 #[must_use]
 pub fn local_tools_key(definitions: &[ToolDefinition]) -> Option<String> {
     let encoded = serde_json::to_vec(definitions).ok()?;
-    Some(blake3::hash(&encoded).to_hex().to_string())
+    Some(nanocode_digest::blake3(&encoded).to_hex().to_string())
 }
 
 pub struct RemoteCatalog {

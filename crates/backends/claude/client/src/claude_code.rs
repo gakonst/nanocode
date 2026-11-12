@@ -33,7 +33,6 @@ fn nfc(path: &std::ffi::OsStr) -> String {
 }
 
 fn keychain_service() -> String {
-    use sha2::Digest as _;
     let scoped = match std::env::var_os(SECURE_STORAGE_DIR_ENV) {
         Some(directory) => Some(directory).filter(|directory| !directory.is_empty()),
         None => std::env::var_os(nanocode_home::CLAUDE_CONFIG_DIR_ENV)
@@ -41,7 +40,7 @@ fn keychain_service() -> String {
     };
     match scoped {
         Some(directory) => {
-            let digest = sha2::Sha256::digest(nfc(&directory).as_bytes());
+            let digest = nanocode_digest::Sha256::digest(nfc(&directory).as_bytes());
             let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
             format!("{KEYCHAIN_SERVICE}-{}", &hex[..8])
         }

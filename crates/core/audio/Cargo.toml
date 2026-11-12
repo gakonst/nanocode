@@ -12,7 +12,7 @@ description = "Shared audio duration and token accounting"
 nanocode-sync.workspace = true
 base64-simd.workspace = true
 tracing.workspace = true
-sha1.workspace = true
+nanocode-digest.workspace = true
 
 [lints]
 workspace = true

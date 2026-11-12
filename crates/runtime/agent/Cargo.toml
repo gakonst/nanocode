@@ -11,7 +11,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-blake3.workspace = true
+nanocode-digest.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
 nanocode-agent-config.workspace = true

@@ -4,8 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nanocode_digest::Sha256;
 use nanocode_zstd::{DecoderOptions, FrameHeader, StreamingDecoder, parse_frame_header};
-use sha2::{Digest, Sha256};
 
 use super::sync_journal;
 
@@ -74,7 +74,7 @@ pub(super) fn archive(path: &Path) -> io::Result<Option<[u8; 32]>> {
     }
     fs::remove_file(path)?;
     sync_directory(directory)?;
-    Ok(Some(Sha256::digest(&archive).into()))
+    Ok(Some(Sha256::digest(&archive)))
 }
 
 pub(super) fn restore(path: &Path) -> io::Result<()> {

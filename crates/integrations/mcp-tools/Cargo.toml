@@ -12,7 +12,7 @@ description = "MCP tool discovery, catalog, Streamable HTTP and native process a
 
 [dependencies]
 nanocode-types.workspace = true
-sha1.workspace = true
+nanocode-digest.workspace = true
 nanocode-tools.workspace = true
 nanocode-mcp.workspace = true
 nanocode-mcp-http.workspace = true

@@ -5,7 +5,7 @@ mod mpeg;
 mod ogg;
 mod wav;
 
-use sha1::{Digest, Sha1};
+use nanocode_digest::Sha1;
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 
@@ -32,7 +32,7 @@ fn remember(key: [u8; 20], tokens: usize) {
 
 #[must_use]
 pub fn estimate_audio_token_count(audio_url: &str) -> usize {
-    let key: [u8; 20] = Sha1::digest(audio_url.as_bytes()).into();
+    let key: [u8; 20] = Sha1::digest(audio_url.as_bytes());
     let cached = AUDIO_TOKEN_ESTIMATE_CACHE
         .load()
         .iter()

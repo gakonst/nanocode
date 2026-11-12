@@ -17,7 +17,7 @@ description = "Backend-generic Code Mode execution and host contracts"
 rustdoc-args = ["-D", "warnings"]
 
 [dependencies]
-blake3.workspace = true
+nanocode-digest.workspace = true
 nanocode-types-core.workspace = true
 nanocode-audio.workspace = true
 nanocode-image.workspace = true

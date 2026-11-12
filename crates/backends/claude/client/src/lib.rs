@@ -733,15 +733,15 @@ pub trait WireMessage {
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug)]
 pub struct MessageDigests {
-    sent: blake3::Hash,
-    read: blake3::Hash,
+    sent: nanocode_digest::Hash,
+    read: nanocode_digest::Hash,
 }
 
 impl MessageDigests {
     #[must_use]
     pub fn of(json: &str) -> Self {
-        let sent = blake3::hash(json.as_bytes());
-        let mut read = blake3::Hasher::new();
+        let sent = nanocode_digest::blake3(json.as_bytes());
+        let mut read = nanocode_digest::Blake3::new();
         let mut rest = json;
         let mut marked = false;
         while let Some((kept, after)) = cache_marker(rest) {
@@ -833,7 +833,7 @@ pub fn fingerprint(value: &impl Serialize) -> String {
 
 #[doc(hidden)]
 pub fn fingerprint_bytes(bytes: &[u8]) -> String {
-    format!("{:016x}", xxhash_rust::xxh64::xxh64(bytes, 0))
+    format!("{:016x}", nanocode_digest::xxh64(bytes, 0))
 }
 
 #[doc(hidden)]
@@ -2315,7 +2315,7 @@ pub struct PreparedWire {
     messages: std::ops::Range<usize>,
     system: Option<Encoding>,
     tools: Option<Encoding>,
-    digests: Option<(blake3::Hash, blake3::Hash)>,
+    digests: Option<(nanocode_digest::Hash, nanocode_digest::Hash)>,
     thread: Option<Arc<String>>,
     subscription: bool,
     streaming: bool,
@@ -2354,7 +2354,7 @@ impl PreparedWire {
         }
         let (conversation, sent) = self.digests.unwrap_or_else(|| self.stream_digests());
         let prefix = self.prefix_digest();
-        let mut whole = blake3::Hasher::new();
+        let mut whole = nanocode_digest::Blake3::new();
         whole
             .update(prefix.as_bytes())
             .update(conversation.as_bytes())
@@ -2368,7 +2368,7 @@ impl PreparedWire {
         })?)
     }
 
-    fn prefix_digest(&self) -> blake3::Hash {
+    fn prefix_digest(&self) -> nanocode_digest::Hash {
         let mut cuts = vec![(self.messages.clone(), None)];
         cuts.extend(
             [&self.system, &self.tools]
@@ -2378,8 +2378,8 @@ impl PreparedWire {
         );
         cuts.sort_by_key(|(range, _)| range.start);
         let bytes = self.body.as_bytes();
-        let mut literal = blake3::Hasher::new();
-        let mut parts = blake3::Hasher::new();
+        let mut literal = nanocode_digest::Blake3::new();
+        let mut parts = nanocode_digest::Blake3::new();
         let (mut from, mut at) = (0, 0_u64);
         for (range, span) in cuts {
             literal.update(&bytes[from..range.start]);
@@ -2392,7 +2392,7 @@ impl PreparedWire {
             from = range.end;
         }
         literal.update(&bytes[from..]);
-        let mut prefix = blake3::Hasher::new();
+        let mut prefix = nanocode_digest::Blake3::new();
         prefix
             .update(literal.finalize().as_bytes())
             .update(parts.finalize().as_bytes());
@@ -2410,7 +2410,7 @@ impl PreparedWire {
         }
         let (conversation, markers) = self.stream_digests();
         let prefix = self.prefix_digest();
-        let mut whole = blake3::Hasher::new();
+        let mut whole = nanocode_digest::Blake3::new();
         whole
             .update(prefix.as_bytes())
             .update(conversation.as_bytes())
@@ -2437,11 +2437,13 @@ impl PreparedWire {
             &self.body[..self.messages.start],
             &self.body[self.messages.end..],
         );
-        let mut prefix = blake3::Hasher::new();
+        let mut prefix = nanocode_digest::Blake3::new();
         prefix.update(before.as_bytes()).update(after.as_bytes());
         Ok(serde_json::value::to_raw_value(&Digest {
             wire: self.wire_name(),
-            blake3: blake3::hash(self.body.as_bytes()).to_hex().to_string(),
+            blake3: nanocode_digest::blake3(self.body.as_bytes())
+                .to_hex()
+                .to_string(),
             bytes: self.body.len(),
             conversation: self.stream_digests().0.to_hex().to_string(),
             prefix: prefix.finalize().to_hex().to_string(),
@@ -2457,7 +2459,9 @@ impl PreparedWire {
         }
         Ok(serde_json::value::to_raw_value(&Digest {
             wire: self.wire_name(),
-            blake3: blake3::hash(self.body.as_bytes()).to_hex().to_string(),
+            blake3: nanocode_digest::blake3(self.body.as_bytes())
+                .to_hex()
+                .to_string(),
             bytes: self.body.len(),
         })?)
     }
@@ -2479,9 +2483,9 @@ impl PreparedWire {
         })
     }
 
-    fn stream_digests(&self) -> (blake3::Hash, blake3::Hash) {
-        let mut hasher = blake3::Hasher::new();
-        let mut markers = blake3::Hasher::new();
+    fn stream_digests(&self) -> (nanocode_digest::Hash, nanocode_digest::Hash) {
+        let mut hasher = nanocode_digest::Blake3::new();
+        let mut markers = nanocode_digest::Blake3::new();
         let mut kept_bytes = 0_u64;
         let mut rest = &self.body[self.messages.clone()];
         while let Some((kept, after)) = cache_marker(rest) {
@@ -2550,19 +2554,19 @@ struct WireBody {
     messages: std::ops::Range<usize>,
     system: Option<Encoding>,
     tools: Option<Encoding>,
-    digests: Option<(blake3::Hash, blake3::Hash)>,
+    digests: Option<(nanocode_digest::Hash, nanocode_digest::Hash)>,
 }
 
 #[derive(Clone, Debug)]
 struct Encoding {
     range: std::ops::Range<usize>,
-    digest: Option<blake3::Hash>,
+    digest: Option<nanocode_digest::Hash>,
 }
 
 impl Encoding {
-    fn digest(&self, body: &str) -> blake3::Hash {
+    fn digest(&self, body: &str) -> nanocode_digest::Hash {
         self.digest
-            .unwrap_or_else(|| blake3::hash(&body.as_bytes()[self.range.clone()]))
+            .unwrap_or_else(|| nanocode_digest::blake3(&body.as_bytes()[self.range.clone()]))
     }
 }
 

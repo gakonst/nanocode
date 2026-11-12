@@ -914,7 +914,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         value: &str,
         parts: &mut Vec<(String, String)>,
     ) -> Result<Vec<String>, StoreError> {
-        let part_overhead = record_bytes(2, blake3::OUT_LEN * 2, 0);
+        let part_overhead = record_bytes(2, nanocode_digest::BLAKE3_OUTPUT_BYTES * 2, 0);
         let capacity = self
             .physical_limit
             .map_or(value.len(), |limit| limit.saturating_sub(part_overhead));
@@ -936,7 +936,9 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 ));
             }
             let (data, rest) = remaining.split_at(end);
-            let key = blake3::hash(data.as_bytes()).to_hex().to_string();
+            let key = nanocode_digest::blake3(data.as_bytes())
+                .to_hex()
+                .to_string();
             keys.push(key.clone());
             parts.push((key, data.to_owned()));
             remaining = rest;
@@ -1002,7 +1004,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 .await?;
             let row = single(&results[0])?.ok_or_else(|| invalid("missing session log part"))?;
             let data = text(row, 0)?;
-            if blake3::hash(data.as_bytes()).to_hex().as_str() != key {
+            if nanocode_digest::blake3(data.as_bytes()).to_hex().as_str() != key {
                 return Err(invalid("session log part digest mismatch"));
             }
             decoded.push_str(data);

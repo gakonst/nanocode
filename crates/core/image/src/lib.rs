@@ -19,9 +19,9 @@ mod resample;
 pub use history::{DEFAULT_INLINE_IMAGES, ImageHistory, SharedBlobStore};
 pub use resample::lanczos3;
 
+use nanocode_digest::Sha1;
 pub use nanocode_types_core::ImageDetail;
 use nanocode_types_core::{PromptInput, UserInput, responses::ContentItem};
-use sha1::{Digest as _, Sha1};
 
 use nanocode_types_core::tools::{ToolOutputBody, ToolOutputContent};
 
@@ -183,7 +183,7 @@ fn remember_size(digest: [u8; 20], size: (u32, u32)) {
 }
 
 pub fn remember(bytes: &[u8], width: u32, height: u32) {
-    remember_size(Sha1::digest(bytes).into(), (width, height));
+    remember_size(Sha1::digest(bytes), (width, height));
 }
 
 #[derive(Debug)]
@@ -644,7 +644,7 @@ fn load_for_prompt_bytes(
     limits: PromptImageResizeLimits,
 ) -> Result<EncodedImage, ImagePreparationError> {
     let key = ImageCacheKey {
-        digest: Sha1::digest(&file_bytes).into(),
+        digest: Sha1::digest(&file_bytes),
         limits,
     };
     if let Some(image) = cached_image(&key) {

@@ -997,7 +997,9 @@ impl RecordSource for dyn crate::StateReader + '_ {
 }
 
 fn content_hash(value: &str) -> String {
-    blake3::hash(value.as_bytes()).to_hex().to_string()
+    nanocode_digest::blake3(value.as_bytes())
+        .to_hex()
+        .to_string()
 }
 
 fn record_key(value: &str) -> String {
@@ -1012,7 +1014,7 @@ fn key_matches(key: &str, content: &str) -> bool {
 }
 
 fn sha256_key(value: &str) -> String {
-    use sha2::{Digest, Sha256};
+    use nanocode_digest::Sha256;
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(64);
     for byte in Sha256::digest(value.as_bytes()) {

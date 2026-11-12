@@ -10,12 +10,12 @@ pub(crate) use platform::{AgentFactory, AgentSend};
 pub(super) use platform::{ServiceFactory, spawn_driver};
 
 use crate::agent::execution::ExecutionFuture;
+use crate::client::tower::Service;
 use crate::client::{
     ResponseError,
     tower::{ResponsesAttempt, ResponsesClient, ResponsesServiceResponse},
 };
 use std::task::{Context, Poll, Waker};
-use tower::Service;
 
 pub(crate) type ResponsesClientBox = Box<dyn ResponsesExecutor>;
 

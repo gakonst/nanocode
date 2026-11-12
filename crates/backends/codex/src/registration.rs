@@ -1,9 +1,9 @@
 use crate::agent::AgentSend;
+use crate::client::tower::Service;
 use crate::client::tower::{ResponsesAttempt, ResponsesServiceResponse};
 use crate::client::{__private::ResponsesServiceFactory, Model, ResponseError};
 use crate::{Agent, AgentEvents, CodexBuilder, NanocodeError, OpenAi, Result};
 use nanocode_agent_core::{BackendId, BackendRegistration, BackendRequest};
-use tower::Service;
 
 impl<F> nanocode_agent_core::BackendKind for OpenAi<F> {
     type Model = Model;

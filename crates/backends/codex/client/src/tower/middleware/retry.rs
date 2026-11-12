@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::client::AgentEventKind;
-use ::tower::retry::{Policy, Retry};
+use crate::client::call::{Policy, Retry};
 use nanocode_platform::Instant;
 
 use crate::client::{

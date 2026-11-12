@@ -8,7 +8,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use ::tower::Service;
+use crate::client::call::Service;
 use futures_util::{Stream, future::poll_fn};
 use nanocode_platform::Instant;
 use tokio::sync::mpsc;
@@ -384,8 +384,8 @@ impl From<crate::client::ResponsesError> for ResponseError {
     }
 }
 
-impl From<::tower::BoxError> for ResponseError {
-    fn from(error: ::tower::BoxError) -> Self {
+impl From<crate::client::call::BoxError> for ResponseError {
+    fn from(error: crate::client::call::BoxError) -> Self {
         let kind = if error_chain_responses_error(error.as_ref())
             .is_some_and(crate::client::ResponsesError::is_context_window_exceeded)
         {

@@ -1,4 +1,4 @@
-use ::tower::{Service, ServiceExt};
+use crate::client::call::{Service, ready};
 
 use crate::client::attempt::ResponsesAttempt;
 
@@ -32,6 +32,6 @@ impl<S> ResponsesClient<S> {
     where
         S: Service<ResponsesAttempt>,
     {
-        self.service.ready().await?.call(request).await
+        ready(&mut self.service).await?.call(request).await
     }
 }

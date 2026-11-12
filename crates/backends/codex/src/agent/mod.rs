@@ -21,7 +21,7 @@ use tokio::sync::oneshot;
 
 use tokio::sync::{mpsc, watch};
 
-use tower::Service;
+use crate::client::tower::Service;
 
 use tracing::{Instrument, info, info_span};
 

@@ -1,4 +1,5 @@
 pub(crate) mod attempt;
+pub(crate) mod call;
 pub(crate) mod client;
 pub(crate) mod middleware;
 pub(crate) mod service;
@@ -15,6 +16,8 @@ pub use crate::client::openai::{
 pub use attempt::{
     ResponsesAttempt, ResponsesAttemptKind, ResponsesOutput, ResponsesServiceResponse,
 };
+#[doc(inline)]
+pub use call::{BoxError, Layer, Policy, Retry, Retrying, Service, ready};
 #[doc(inline)]
 pub use client::ResponsesClient;
 #[doc(inline)]

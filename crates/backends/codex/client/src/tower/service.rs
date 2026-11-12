@@ -8,11 +8,11 @@ use std::{
 };
 
 use crate::client::OpenAiAuthMode;
+use crate::client::call::{Retry, Service};
 use crate::client::{
     AgentEventKind, ModelConfig, OpenAiAuthSnapshot, ResponsesHistory, ResponsesTransport,
     responses::{CreatePolicy, ResponseCreate, WarmupResponse, WarmupServerEvent},
 };
-use ::tower::{Service, retry::Retry};
 use nanocode_platform::Instant;
 use nanocode_sync::Actor;
 use std::sync::OnceLock;

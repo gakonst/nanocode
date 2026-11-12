@@ -84,7 +84,7 @@ pub use transport::{
     ResponsesError, ResponsesHistory, ResponsesTransport, RetryAdvice, RetryAfter,
 };
 
-pub(crate) use tower::{attempt, middleware, service, service_error, stream};
+pub(crate) use tower::{attempt, call, middleware, service, service_error, stream};
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use transport::connector;
 

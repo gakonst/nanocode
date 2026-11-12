@@ -1,6 +1,6 @@
 use std::{num::NonZeroU32, sync::Arc};
 
-use ::tower::Layer;
+use crate::client::call::Layer;
 
 mod config;
 mod platform;

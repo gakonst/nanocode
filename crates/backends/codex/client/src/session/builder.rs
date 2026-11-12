@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ::tower::Service;
+use crate::client::call::Service;
 use nanocode_platform::MaybeSend;
 use tokio::sync::mpsc;
 

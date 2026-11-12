@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use crate::client::tower::Service;
 use nanocode_agent_core::{Agent, AgentEvents, BackendRequest, Result, backend::BackendFuture};
 use nanocode_durability::{
     CheckpointFormat, DurableAgentExt as _, DurableBackendRegistration, DurableSession,
 };
 use nanocode_platform::MaybeSend;
-use tower::Service;
 
 use crate::{
     CodexBuilder, OpenAi,

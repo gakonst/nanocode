@@ -3,12 +3,28 @@
     reason = "build scripts cannot use rustpython-host_env"
 )]
 
-use jiff::{Timestamp, Zoned, tz::TimeZone};
+use nanocode_platform::{civil_from_days, utc_offset_seconds};
 use std::{
     env, io,
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+const UNIX_SECONDS_MIN: i64 = -377_705_023_201;
+const UNIX_SECONDS_MAX: i64 = 253_402_207_200;
+const SECONDS_PER_MINUTE: i64 = 60;
+const SECONDS_PER_HOUR: i64 = 3_600;
+const SECONDS_PER_DAY: i64 = 86_400;
+const MONTH_ABBREVIATIONS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+struct LocalTime {
+    year: i64,
+    month: i64,
+    day: i64,
+    second_of_day: i64,
+}
 
 fn main() {
     let frozen_libs: &[&str] = if cfg!(feature = "freeze-stdlib") {
@@ -109,27 +125,68 @@ fn git_identifier() -> String {
     }
 }
 
-fn get_git_timestamp_raw() -> Option<Timestamp> {
+fn get_git_timestamp_raw() -> Option<i64> {
     let git_timestamp = git_timestamp().parse::<i64>().ok()?;
-    Timestamp::from_second(git_timestamp).ok()
+    (UNIX_SECONDS_MIN..=UNIX_SECONDS_MAX)
+        .contains(&git_timestamp)
+        .then_some(git_timestamp)
 }
 
-fn get_git_timestamp_datetime() -> Zoned {
-    get_git_timestamp_raw().map_or_else(Zoned::now, |timestamp| {
-        Zoned::new(timestamp, TimeZone::system())
-    })
+fn now_seconds() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_secs()).expect("the clock reads a year before 10000"),
+        Err(before) => {
+            let before = before.duration();
+            -i64::try_from(before.as_secs()).expect("the clock reads a year after -10000")
+                - i64::from(before.subsec_nanos() > 0)
+        }
+    }
+}
+
+fn local_time(seconds: i64) -> LocalTime {
+    let magnitude = Duration::from_secs(seconds.unsigned_abs());
+    let at = if seconds < 0 {
+        UNIX_EPOCH - magnitude
+    } else {
+        UNIX_EPOCH + magnitude
+    };
+    let local = seconds + i64::from(utc_offset_seconds(at));
+    let (year, month, day) = civil_from_days(local.div_euclid(SECONDS_PER_DAY));
+    LocalTime {
+        year,
+        month,
+        day,
+        second_of_day: local.rem_euclid(SECONDS_PER_DAY),
+    }
+}
+
+fn get_git_timestamp_datetime() -> LocalTime {
+    local_time(get_git_timestamp_raw().unwrap_or_else(now_seconds))
 }
 
 #[must_use]
 fn get_git_date() -> String {
     let datetime = get_git_timestamp_datetime();
-    datetime.strftime("%b %e %Y").to_string()
+    let month =
+        MONTH_ABBREVIATIONS[usize::try_from(datetime.month - 1).expect("a month from 1 to 12")];
+    let year = if datetime.year < 0 {
+        format!("-{:03}", datetime.year.unsigned_abs())
+    } else {
+        format!("{:04}", datetime.year)
+    };
+    format!("{month} {:>2} {year}", datetime.day)
 }
 
 #[must_use]
 fn get_git_time() -> String {
     let datetime = get_git_timestamp_datetime();
-    datetime.strftime("%H:%M:%S").to_string()
+    let second = datetime.second_of_day;
+    format!(
+        "{:02}:{:02}:{:02}",
+        second / SECONDS_PER_HOUR,
+        second % SECONDS_PER_HOUR / SECONDS_PER_MINUTE,
+        second % SECONDS_PER_MINUTE
+    )
 }
 
 fn rustc_version() -> String {

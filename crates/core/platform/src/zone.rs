@@ -25,7 +25,7 @@ fn unix_seconds(at: SystemTime) -> i128 {
     }
 }
 
-pub(crate) const fn civil(days: i64) -> (i64, i64, i64) {
+pub const fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let shifted = days + DAYS_BEFORE_EPOCH_SINCE_ERA;
     let era = shifted.div_euclid(DAYS_PER_ERA);
     let day_of_era = shifted.rem_euclid(DAYS_PER_ERA);
@@ -51,8 +51,7 @@ pub(crate) const fn civil(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-#[cfg(unix)]
-pub(crate) const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= MONTHS_BEFORE_MARCH {
         year - 1
     } else {
@@ -72,7 +71,7 @@ pub(crate) const fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 fn date(seconds: i128) -> String {
     let days = i64::try_from(seconds.div_euclid(SECONDS_PER_DAY))
         .expect("a SystemTime's day count fits in i64");
-    let (year, month, day) = civil(days);
+    let (year, month, day) = civil_from_days(days);
     format!("{year:04}-{month:02}-{day:02}")
 }
 

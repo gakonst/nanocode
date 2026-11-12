@@ -223,7 +223,7 @@ impl Rule {
         };
         let start_utc = start_time - i64::from(std.offset);
         let end_utc = end_time - i64::from(dst.offset);
-        let year = super::civil(unix.div_euclid(SECONDS_PER_DAY)).0;
+        let year = super::civil_from_days(unix.div_euclid(SECONDS_PER_DAY)).0;
         if !(i64::from(i32::MIN) + 2..=i64::from(i32::MAX) - 2).contains(&year) {
             return None;
         }
@@ -507,7 +507,7 @@ pub(crate) fn from_environment(value: &str, localtime: &str, directories: &[&str
         value
             .trim_matches(|character: char| character.is_ascii_whitespace())
             .as_bytes(),
-        false,
+        true,
     )?;
     let types = match rule {
         Rule::Fixed(kind) => vec![kind],

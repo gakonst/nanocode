@@ -14,7 +14,9 @@ mod uuid;
 pub use uuid::{Simple, Uuid, UuidError, Variant};
 
 mod zone;
-pub use zone::{local_date, time_zone_name, utc_date, utc_offset_seconds};
+pub use zone::{
+    civil_from_days, days_from_civil, local_date, time_zone_name, utc_date, utc_offset_seconds,
+};
 
 #[cfg(not(target_family = "wasm"))]
 mod native;

@@ -8,10 +8,15 @@ pub use decl::time;
 
 pub(crate) use decl::module_def;
 
+#[cfg(not(any(unix, windows)))]
+mod civil;
+
 #[pymodule(name = "time", with(#[cfg(any(unix, windows))] platform))]
 mod decl {
     #![allow(unreachable_pub)]
 
+    #[cfg(not(any(unix, windows)))]
+    use super::civil::DateTime;
     #[cfg(any(unix, windows))]
     use crate::builtins::PyBaseExceptionRef;
     use crate::{
@@ -32,8 +37,6 @@ mod decl {
         convert::{ToPyException, ToPyObject},
     };
     use core::time::Duration;
-    #[cfg(not(any(unix, windows)))]
-    use jiff::{Timestamp, Zoned, civil::DateTime, tz::TimeZone};
     #[cfg(target_os = "wasi")]
     use rustpython_host_env::time::ClockId;
     #[cfg(any(unix, windows))]
@@ -205,6 +208,16 @@ mod decl {
         not(any(target_os = "emscripten", target_os = "wasi"))
     ))]
     fn _time(_vm: &VirtualMachine) -> PyResult<f64> {
+        // Date.now returns unix time in milliseconds, we want it in seconds
+        Ok(date_now_milliseconds() / 1000.0)
+    }
+
+    #[cfg(all(
+        target_arch = "wasm32",
+        feature = "wasmbind",
+        not(any(target_os = "emscripten", target_os = "wasi"))
+    ))]
+    fn date_now_milliseconds() -> f64 {
         use wasm_bindgen::prelude::*;
         #[wasm_bindgen]
         extern "C" {
@@ -212,8 +225,67 @@ mod decl {
             #[wasm_bindgen(static_method_of = Date)]
             fn now() -> f64;
         }
-        // Date.now returns unix time in milliseconds, we want it in seconds
-        Ok(Date::now() / 1000.0)
+        Date::now()
+    }
+
+    #[cfg(all(
+        target_arch = "wasm32",
+        feature = "wasmbind",
+        not(any(target_os = "emscripten", target_os = "wasi"))
+    ))]
+    fn system_now() -> Option<(i64, i32)> {
+        const MILLISECONDS_PER_SECOND: i64 = 1_000;
+        const NANOSECONDS_PER_MILLISECOND: i64 = 1_000_000;
+        let milliseconds = date_now_milliseconds();
+        let magnitude = i64::try_from(milliseconds.abs() as u64).ok()?;
+        let milliseconds = if milliseconds.is_sign_positive() {
+            magnitude
+        } else {
+            -magnitude
+        };
+        let nanosecond =
+            milliseconds.rem_euclid(MILLISECONDS_PER_SECOND) * NANOSECONDS_PER_MILLISECOND;
+        Some((
+            milliseconds.div_euclid(MILLISECONDS_PER_SECOND),
+            i32::try_from(nanosecond).ok()?,
+        ))
+    }
+
+    #[cfg(not(any(
+        unix,
+        windows,
+        all(
+            target_arch = "wasm32",
+            feature = "wasmbind",
+            not(any(target_os = "emscripten", target_os = "wasi"))
+        )
+    )))]
+    fn system_now() -> Option<(i64, i32)> {
+        const NANOSECONDS_PER_SECOND: u32 = 1_000_000_000;
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => Some((
+                i64::try_from(after.as_secs()).ok()?,
+                i32::try_from(after.subsec_nanos()).ok()?,
+            )),
+            Err(before) => {
+                let before = before.duration();
+                let seconds = i64::try_from(before.as_secs()).ok()?;
+                Some(match before.subsec_nanos() {
+                    0 => (-seconds, 0),
+                    nanosecond => (
+                        -seconds - 1,
+                        i32::try_from(NANOSECONDS_PER_SECOND - nanosecond).ok()?,
+                    ),
+                })
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn now(vm: &VirtualMachine) -> PyResult<DateTime> {
+        system_now()
+            .and_then(|(seconds, nanosecond)| DateTime::from_unix(seconds, nanosecond).ok())
+            .ok_or_else(|| vm.new_overflow_error("timestamp out of range for platform time_t"))
     }
 
     #[cfg(all(
@@ -324,7 +396,7 @@ mod decl {
     }
 
     #[cfg(not(any(unix, windows)))]
-    fn pyobj_to_timestamp(value: Either<f64, i64>, vm: &VirtualMachine) -> PyResult<Timestamp> {
+    fn pyobj_to_date_time(value: Either<f64, i64>, vm: &VirtualMachine) -> PyResult<DateTime> {
         let secs = match value {
             Either::A(float) => {
                 if !float.is_finite() {
@@ -334,16 +406,16 @@ mod decl {
             }
             Either::B(int) => int,
         };
-        Timestamp::from_second(secs)
+        DateTime::from_unix(secs, 0)
             .map_err(|_| vm.new_overflow_error("timestamp out of range for platform time_t"))
     }
 
     #[cfg(not(any(unix, windows)))]
-    fn naive_or_local(secs: Option<Either<f64, i64>>, vm: &VirtualMachine) -> PyResult<Zoned> {
-        Ok(match secs {
-            Some(secs) => pyobj_to_timestamp(secs, vm)?.to_zoned(TimeZone::system()),
-            None => Zoned::now(),
-        })
+    fn naive_or_local(secs: Option<Either<f64, i64>>, vm: &VirtualMachine) -> PyResult<DateTime> {
+        match secs {
+            Some(secs) => pyobj_to_date_time(secs, vm),
+            None => now(vm),
+        }
     }
 
     #[cfg(any(unix, windows))]
@@ -460,10 +532,10 @@ mod decl {
     #[cfg(not(any(unix, windows)))]
     impl OptionalArg<StructTimeData> {
         fn naive_or_local(self, vm: &VirtualMachine) -> PyResult<DateTime> {
-            Ok(match self {
-                Self::Present(t) => t.to_date_time(vm)?,
-                Self::Missing => Zoned::now().datetime(),
-            })
+            match self {
+                Self::Present(t) => t.to_date_time(vm),
+                Self::Missing => now(vm),
+            }
         }
     }
 
@@ -485,8 +557,8 @@ mod decl {
             }
             _ => {
                 let instant = match secs {
-                    Some(secs) => pyobj_to_timestamp(secs, vm)?.to_zoned(TimeZone::UTC),
-                    None => Zoned::now().with_time_zone(TimeZone::UTC),
+                    Some(secs) => pyobj_to_date_time(secs, vm)?,
+                    None => now(vm)?,
                 };
                 Ok(StructTimeData::new_utc(vm, instant))
             }
@@ -510,7 +582,7 @@ mod decl {
             }
             _ => {
                 let instant = naive_or_local(secs, vm)?;
-                StructTimeData::new_local(vm, instant.into(), 0)
+                StructTimeData::new_local(vm, instant, 0)
             }
         }
     }
@@ -530,12 +602,10 @@ mod decl {
         #[cfg(not(any(unix, windows)))]
         {
             let datetime = object.to_date_time(vm)?;
-            // mktime interprets struct_time as local time
-            let local_dt = datetime
-                .to_zoned(TimeZone::system())
+            let seconds_since_epoch = datetime
+                .to_unix()
                 .map_err(|_| vm.new_overflow_error("mktime argument out of range"))?;
-            let seconds_since_epoch = local_dt.timestamp().as_second() as f64;
-            Ok(seconds_since_epoch)
+            Ok(seconds_since_epoch as f64)
         }
     }
 
@@ -562,8 +632,7 @@ mod decl {
         #[cfg(not(any(unix, windows)))]
         {
             let instant = t.naive_or_local(vm)?;
-            let formatted_time = instant.strftime(CFMT).to_string();
-            Ok(vm.ctx.new_str(formatted_time).into())
+            Ok(vm.ctx.new_str(instant.format(CFMT)).into())
         }
     }
 
@@ -585,7 +654,7 @@ mod decl {
         #[cfg(not(any(unix, windows)))]
         {
             let instant = naive_or_local(secs, vm)?;
-            Ok(instant.strftime(CFMT).to_string())
+            Ok(instant.format(CFMT))
         }
     }
 
@@ -663,8 +732,6 @@ mod decl {
 
         #[cfg(not(any(unix, windows)))]
         {
-            use core::fmt::Write;
-
             let fmt_lossy = format.to_string_lossy();
 
             // If the struct_time can't be represented as NaiveDateTime
@@ -675,10 +742,7 @@ mod decl {
                 Err(_) => return Ok(vm.ctx.new_str(fmt_lossy.into_owned()).into()),
             };
 
-            let mut formatted_time = String::new();
-            write!(&mut formatted_time, "{}", instant.strftime(&*fmt_lossy))
-                .unwrap_or_else(|_| formatted_time = format.to_string());
-            Ok(vm.ctx.new_str(formatted_time).into())
+            Ok(vm.ctx.new_str(instant.format(&fmt_lossy)).into())
         }
     }
 
@@ -788,7 +852,9 @@ mod decl {
 
     impl StructTimeData {
         #[cfg(not(any(unix, windows)))]
-        fn new_inner(vm: &VirtualMachine, tm: Zoned, isdst: i32) -> Self {
+        fn new_inner(vm: &VirtualMachine, tm: DateTime, isdst: i32) -> Self {
+            const UTC_ABBREVIATION: &str = "UTC";
+            const UTC_OFFSET_SECONDS: i32 = 0;
             Self {
                 tm_year: vm.ctx.new_int(tm.year()).into(),
                 tm_mon: vm.ctx.new_int(tm.month()).into(),
@@ -796,25 +862,25 @@ mod decl {
                 tm_hour: vm.ctx.new_int(tm.hour()).into(),
                 tm_min: vm.ctx.new_int(tm.minute()).into(),
                 tm_sec: vm.ctx.new_int(tm.second()).into(),
-                tm_wday: vm.ctx.new_int(tm.weekday().to_sunday_zero_offset()).into(),
+                tm_wday: vm.ctx.new_int(tm.weekday_from_sunday()).into(),
                 tm_yday: vm.ctx.new_int(tm.day_of_year()).into(),
                 tm_isdst: vm.ctx.new_int(isdst).into(),
-                tm_zone: vm.ctx.new_str(tm.strftime("%Z").to_string()).into(),
-                tm_gmtoff: vm.ctx.new_int(tm.offset().seconds()).into(),
+                tm_zone: vm.ctx.new_str(UTC_ABBREVIATION).into(),
+                tm_gmtoff: vm.ctx.new_int(UTC_OFFSET_SECONDS).into(),
             }
         }
 
         /// Create struct_time for UTC (gmtime)
         #[cfg(not(any(unix, windows)))]
-        fn new_utc(vm: &VirtualMachine, tm: Zoned) -> Self {
+        fn new_utc(vm: &VirtualMachine, tm: DateTime) -> Self {
             Self::new_inner(vm, tm, 0)
         }
 
         /// Create struct_time for local timezone (localtime)
         #[cfg(not(any(unix, windows)))]
         fn new_local(vm: &VirtualMachine, tm: DateTime, isdst: i32) -> PyResult<Self> {
-            tm.to_zoned(TimeZone::system())
-                .map(|tm| Self::new_inner(vm, tm, isdst))
+            tm.to_unix()
+                .map(|_| Self::new_inner(vm, tm, isdst))
                 .map_err(|_| {
                     vm.new_overflow_error("timestamp is ambiguous for the system timezone")
                 })
@@ -834,7 +900,6 @@ mod decl {
                 field!(tm_hour),
                 field!(tm_min),
                 field!(tm_sec),
-                0,
             )
             .map_err(|_| vm.new_overflow_error("mktime argument out of range"))
         }

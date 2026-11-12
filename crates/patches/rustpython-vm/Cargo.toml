@@ -80,7 +80,6 @@ threading = [
 vm-tracing-logging = []
 wasmbind = [
     "rustpython-common/wasm_js",
-    "jiff/js",
     "wasm-bindgen",
 ]
 
@@ -117,9 +116,6 @@ features = ["std"]
 
 [dependencies.itoa]
 version = "1"
-
-[dependencies.jiff]
-version = "0.2"
 
 [dependencies.libc]
 version = "0.2.186"
@@ -207,12 +203,15 @@ package = "serde_core"
 [dependencies.thiserror]
 version = "2.0"
 
-[build-dependencies.jiff]
-version = "0.2"
+[build-dependencies.nanocode-platform]
+path = "../../core/platform"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies.wasm-bindgen]
 version = "0.2.106"
 optional = true
+
+[target.'cfg(not(any(unix, windows)))'.dependencies.nanocode-platform]
+path = "../../core/platform"
 
 [target."cfg(windows)".dependencies.widestring]
 version = "1.2.0"

@@ -151,6 +151,22 @@ impl<T: 'static> AtomicStatic<T> {
     pub fn store(&self, value: Option<&'static T>) {
         self.pointer.store(static_into_raw(value), Ordering::Release);
     }
+
+    pub fn compare_exchange(
+        &self,
+        current: Option<&'static T>,
+        new: Option<&'static T>,
+    ) -> Result<Option<&'static T>, Option<&'static T>> {
+        self.pointer
+            .compare_exchange(
+                static_into_raw(current),
+                static_into_raw(new),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|raw| unsafe { raw.as_ref() })
+            .map_err(|raw| unsafe { raw.as_ref() })
+    }
 }
 
 fn static_into_raw<T>(value: Option<&'static T>) -> *mut T {

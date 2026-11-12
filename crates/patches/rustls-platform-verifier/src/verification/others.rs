@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use arc_swap::ArcSwapOption;
+use nanocode_sys::SwapOption;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::pki_types;
@@ -17,7 +17,7 @@ use super::log_server_cert;
 pub struct Verifier {
     extra_roots: rustls::RootCertStore,
     crypto_provider: Arc<CryptoProvider>,
-    inner: ArcSwapOption<WebPkiServerVerifier>,
+    inner: SwapOption<WebPkiServerVerifier>,
 }
 
 impl Verifier {
@@ -57,7 +57,7 @@ impl Verifier {
         Ok(Self {
             extra_roots: root_store,
             crypto_provider,
-            inner: ArcSwapOption::const_empty(),
+            inner: SwapOption::const_empty(),
         })
     }
 
@@ -180,7 +180,7 @@ fn map_webpki_errors(err: TlsError) -> TlsError {
     not(target_arch = "wasm32"),
 ))]
 pub mod system {
-    use arc_swap::ArcSwapOption;
+    use nanocode_sys::SwapOption;
     use std::{
         ffi::OsString,
         sync::Arc,
@@ -196,7 +196,7 @@ pub mod system {
         roots: Arc<rustls::RootCertStore>,
     }
 
-    static ROOTS: ArcSwapOption<Loaded> = ArcSwapOption::const_empty();
+    static ROOTS: SwapOption<Loaded> = SwapOption::const_empty();
 
     pub fn roots() -> Arc<rustls::RootCertStore> {
         let environment = (

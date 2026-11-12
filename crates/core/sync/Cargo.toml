@@ -18,7 +18,6 @@ nanocode-sys.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-arc-swap.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
 
 [lints]

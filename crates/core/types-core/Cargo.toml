@@ -16,7 +16,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-arc-swap.workspace = true
+nanocode-sys.workspace = true
 
 [lints]
 workspace = true

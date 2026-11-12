@@ -13,7 +13,6 @@ description = "Terminal UI components for Nanocode hosts, derived from clabby/ta
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 serde.workspace = true
-arc-swap.workspace = true
 memchr.workspace = true
 nanocode-sync.workspace = true
 rustix = { workspace = true, features = ["event", "termios"] }

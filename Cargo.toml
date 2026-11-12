@@ -115,7 +115,6 @@ base64-simd = "0.8.0"
 memchr = "2.8.3"
 brotli-decompressor = "5.0.3"
 flate2 = "1.1.9"
-arc-swap = "1.9.2"
 mimalloc = { version = "0.1.52", default-features = false }
 imbl = { version = "7.0.2", features = ["serde"] }
 clap = { version = "4.5.54", features = ["derive", "env"] }
@@ -192,7 +191,6 @@ rustpython-stdlib = { version = "=0.6.0", default-features = false, features = [
 rustpython-vm = { version = "=0.6.0", default-features = false, features = ["compiler", "gc", "freeze-stdlib"] }
 
 [patch.crates-io]
-arc-swap = { path = "crates/patches/arc-swap" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 pymath = { path = "crates/patches/pymath" }
 rustpython-codegen = { path = "crates/patches/rustpython-codegen" }

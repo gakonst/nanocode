@@ -98,13 +98,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc-swap"
-version = "1.9.2"
-dependencies = [
- "rustversion",
-]
-
-[[package]]
 name = "archery"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2509,7 +2502,6 @@ dependencies = [
 name = "nanocode-sync"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "futures-util",
  "imbl",
  "nanocode-platform",
@@ -2644,7 +2636,6 @@ dependencies = [
 name = "nanocode-tui"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "memchr",
  "nanocode-sync",
  "rustix",
@@ -2671,7 +2662,7 @@ dependencies = [
 name = "nanocode-types-core"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
+ "nanocode-sys",
  "serde",
  "serde_json",
  "smallvec",
@@ -3345,11 +3336,11 @@ dependencies = [
 name = "rustls-platform-verifier"
 version = "0.7.0"
 dependencies = [
- "arc-swap",
  "core-foundation",
  "core-foundation-sys",
  "jni",
  "log",
+ "nanocode-sys",
  "once_cell",
  "rustls",
  "rustls-native-certs",

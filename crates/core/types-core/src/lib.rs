@@ -59,7 +59,7 @@ impl CustomModel {
 #[cfg(not(target_family = "wasm"))]
 fn intern(id: &str) -> &'static str {
     static INTERNED: std::sync::OnceLock<
-        arc_swap::ArcSwap<std::collections::BTreeSet<&'static str>>,
+        nanocode_sys::Swap<std::collections::BTreeSet<&'static str>>,
     > = std::sync::OnceLock::new();
     let interned = INTERNED.get_or_init(Default::default);
     if let Some(existing) = interned.load().get(id).copied() {

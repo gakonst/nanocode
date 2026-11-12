@@ -6,7 +6,7 @@ use crate::ui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use arc_swap::ArcSwapOption;
+use nanocode_sync::SwapOption;
 use std::sync::Arc;
 
 use crate::{format::normalize_line_endings, history::History, theme::Theme, unicode};
@@ -29,7 +29,7 @@ pub struct Composer {
     history: History,
     placeholder: String,
     preferred_column: Option<usize>,
-    layout: ArcSwapOption<(usize, Arc<[Row]>)>,
+    layout: SwapOption<(usize, Arc<[Row]>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,7 +46,7 @@ impl Clone for Composer {
             history: self.history.clone(),
             placeholder: self.placeholder.clone(),
             preferred_column: self.preferred_column,
-            layout: ArcSwapOption::new(self.layout.load_full()),
+            layout: SwapOption::new(self.layout.load_full()),
         }
     }
 }

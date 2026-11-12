@@ -14,16 +14,10 @@ mod session;
 mod shared;
 #[cfg(not(target_family = "wasm"))]
 mod splice;
-#[cfg(target_family = "wasm")]
-mod swap;
 mod waits;
 mod wakes;
 mod weighed;
 
-#[cfg(not(target_family = "wasm"))]
-use arc_swap::Enclosed;
-#[cfg(not(target_family = "wasm"))]
-pub use arc_swap::{ArcSwap as Swap, ArcSwapOption as SwapOption, Guard};
 pub use armed::Armed;
 #[cfg(not(target_family = "wasm"))]
 pub use lanes::{Bounds, Lanes, together};
@@ -39,15 +33,13 @@ pub use session::{Locker, SessionLock, SessionLockError, SessionLocks};
 pub use shared::{Map, Set};
 #[cfg(not(target_family = "wasm"))]
 pub use splice::{Duplex, pipe, splice};
-#[cfg(target_family = "wasm")]
-use swap::Enclosed;
-#[cfg(target_family = "wasm")]
-pub use swap::{Guard, Swap, SwapOption};
 pub use waits::{SlowWait, slow_waits};
 pub use wakes::{Wake, WakeHub, WakeOutbox, Wakes, Wakeup, Wakeups, woken};
 pub use weighed::Weighed;
 
 use futures_util::future::{FutureExt, Shared};
+use nanocode_sys::Enclosed;
+pub use nanocode_sys::{Guard, Swap, SwapOption};
 use tokio::sync::{mpsc, oneshot};
 
 pub struct Signal {

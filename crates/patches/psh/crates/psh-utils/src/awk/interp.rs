@@ -15,7 +15,7 @@ use psh_engine::util::{ShellIo, ShellStdio, UtilCtx};
 use psh_regex::{ExecOptions, Regex};
 
 use super::array::{ArrRc, Array};
-use super::ast::GetlineSrc;
+use super::ast::{BinOp, GetlineSrc};
 use super::compile::{Arr, CodeId, Op, Program, Redir, SplitSep, Target, Var};
 use super::io::{OutKind, Output, RecordReader, Rs, Src, find_nonempty};
 use super::lexer::Builtin;
@@ -45,6 +45,27 @@ enum Step {
 
 fn fatal<T>(msg: impl Into<String>) -> R<T> {
     Err(Flow::Fatal(msg.into()))
+}
+
+fn arith(op: BinOp, l: f64, r: f64) -> R<f64> {
+    Ok(match op {
+        BinOp::Add => l + r,
+        BinOp::Sub => l - r,
+        BinOp::Mul => l * r,
+        BinOp::Div => {
+            if r == 0.0 {
+                return fatal("division by zero attempted");
+            }
+            l / r
+        }
+        BinOp::Mod => {
+            if r == 0.0 {
+                return fatal("division by zero attempted in `%'");
+            }
+            remainder(l, r)
+        }
+        _ => pow(l, r),
+    })
 }
 
 /// How FS splits a record.
@@ -1008,25 +1029,20 @@ impl<'c, 'v> Interp<'c, 'v> {
                 Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow => {
                     let r = self.pop().num();
                     let l = self.pop().num();
-                    let v = match op {
-                        Op::Add => l + r,
-                        Op::Sub => l - r,
-                        Op::Mul => l * r,
-                        Op::Div => {
-                            if r == 0.0 {
-                                return fatal("division by zero attempted");
-                            }
-                            l / r
-                        }
-                        Op::Mod => {
-                            if r == 0.0 {
-                                return fatal("division by zero attempted in `%'");
-                            }
-                            remainder(l, r)
-                        }
-                        _ => pow(l, r),
+                    let b = match op {
+                        Op::Add => BinOp::Add,
+                        Op::Sub => BinOp::Sub,
+                        Op::Mul => BinOp::Mul,
+                        Op::Div => BinOp::Div,
+                        Op::Mod => BinOp::Mod,
+                        _ => BinOp::Pow,
                     };
-                    self.push(Value::Num(v));
+                    self.push(Value::Num(arith(b, l, r)?));
+                }
+                Op::AugStore(v, b) => {
+                    let r = self.pop().num();
+                    let l = self.load(*v).num();
+                    self.store(*v, Value::Num(arith(*b, l, r)?))?;
                 }
                 Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
                     let r = self.pop();

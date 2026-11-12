@@ -79,6 +79,7 @@ pub enum Op {
     /// length($N), counted in the record.
     FieldLength(u32),
     Load(Var),
+    AugStore(Var, BinOp),
     /// index -> a[index] (created if missing)
     ArrayGet(Arr),
     /// index -> (index in a)
@@ -400,6 +401,14 @@ impl Compiler<'_> {
                         self.expr(r)?;
                         self.assign(l)?;
                     }
+                    Expr::Incr { expr, decr, .. } if matches!(**expr, Expr::Var(..)) => {
+                        let Expr::Var(name, _) = &**expr else {
+                            unreachable!()
+                        };
+                        self.add(Op::Num(1.0));
+                        let v = self.scalar(name);
+                        self.add(Op::AugStore(v, if *decr { BinOp::Sub } else { BinOp::Add }));
+                    }
                     Expr::Incr { expr, decr, .. } => {
                         self.dupe_index_lvalue(expr)?;
                         self.add(Op::Num(1.0));
@@ -697,6 +706,11 @@ impl Compiler<'_> {
             // The right side first, as gawk: `x += x++`, `$f() += g()` calls g first.
             // A right side that only reads cannot change the variable: the old value
             // is loaded first, and nothing is swapped.
+            Expr::Var(name, _) if !keep && reads_only(r) => {
+                self.operand(r)?;
+                let v = self.scalar(name);
+                self.add(Op::AugStore(v, op));
+            }
             Expr::Var(..) if reads_only(r) => {
                 self.expr(l)?;
                 self.operand(r)?;

@@ -117,6 +117,8 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     }
     let entered = std::time::Instant::now();
     let cli = Cli::parse();
+    #[cfg(unix)]
+    let shell = nanocode_psh::shell();
     #[cfg(target_os = "linux")]
     if (cli.session.prompt.is_some()
         || matches!(&cli.command, Some(cli::Command::Exec(args)) if args.prompt.is_some()))
@@ -127,7 +129,7 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     let parsed = entered.elapsed();
     #[cfg(unix)]
     {
-        let chosen = nanocode_psh::shell().map(nanocode_home::shell::choose);
+        let chosen = shell.map(nanocode_home::shell::choose);
         if !matches!(chosen, Ok(Ok(()))) || nanocode_psh_embedded::embed().is_err() {
             eprintln!("nanocode: failed to make psh the shell: {chosen:?}");
             return ExitCode::FAILURE;

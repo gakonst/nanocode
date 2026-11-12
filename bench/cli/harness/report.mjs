@@ -103,10 +103,10 @@ for (const mode of ["cli", "tui"]) {
   }
 }
 
-const audit = rowsOf(/^netaudit.*\.jsonl$/);
+const audit = rowsOf(/^netaudit.*\.jsonl$/).map((row) => ({ ...row, harness: row.harness ?? row.lane }));
 if (audit.length) {
   say("## Outbound connection attempts (network blocked)\n");
-  say(table(["lane", "attempts", "destinations", "names"], lanesOf(audit).map((lane) => { const r = audit.filter((row) => row.harness === lane); return [lane, String(r.reduce((s, x) => s + (x.attempts ?? 0), 0)), String(new Set(r.flatMap((x) => x.destinations ?? [])).size), [...new Set(r.flatMap((x) => x.names ?? []))].join(", ") || "none"]; })));
+  say(table(["lane", "attempts", "destinations", "names"], lanesOf(audit).map((lane) => { const r = audit.filter((row) => row.harness === lane); return [lane, String(r.reduce((s, x) => s + (x.attempts ?? 0), 0)), String(new Set(r.flatMap((x) => Object.keys(x.destinations ?? {}))).size), [...new Set(r.flatMap((x) => x.names ?? []))].join(", ") || "none"]; })));
   say("");
 }
 

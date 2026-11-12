@@ -525,9 +525,14 @@ fn expand_part_now(
             expand_text(vp, code, part, quoted, f, ctx, first);
             Now::Done
         }
+        Part::Param(p) if !matches!(p.op, ParamOp::None) || p.prefix != ParamPrefix::None => {
+            match param_op_now(vp, code, p, quoted, f) {
+                true => Now::Done,
+                false => Now::Later,
+            }
+        }
         Part::Param(p) => {
-            if !matches!(p.op, ParamOp::None) || p.prefix != ParamPrefix::None || p.index.is_some()
-            {
+            if p.index.is_some() {
                 return Now::Later;
             }
             let name = code.ast.text(p.name_span);
@@ -570,6 +575,137 @@ fn expand_part_now(
     }
 }
 
+fn op_value(vp: &Vp, code: &Code, p: &psh_syntax::Param) -> Option<Val> {
+    if p.index.is_some() {
+        return None;
+    }
+    let name = code.ast.text(p.name_span);
+    let val = match p.name {
+        ParamName::Var => match vp.vars.get(name) {
+            Some(v) if !v.nameref && v.dynamic.is_none() && name != "LINENO" => match &v.value {
+                crate::vars::Value::Str(s) => Val::Str(s.clone()),
+                crate::vars::Value::Unset => Val::Unset,
+                _ => return None,
+            },
+            None if name != "BASHPID" => Val::Unset,
+            _ => return None,
+        },
+        ParamName::Special(b'!' | b'$' | b'@' | b'*') => return None,
+        ParamName::Positional | ParamName::Special(_) => by_name(vp, name.as_bytes())?,
+    };
+    match val {
+        Val::Unset if !matches!(p.op, ParamOp::Default { .. }) && vp.opts.get(SetOpt::Nounset) => {
+            None
+        }
+        Val::List(..) => None,
+        val => Some(val),
+    }
+}
+
+fn plain_param(vp: &Vp, code: &Code, p: &WordPart) -> bool {
+    match &p.kind {
+        Part::Param(p) => {
+            matches!(p.op, ParamOp::None)
+                && p.prefix == ParamPrefix::None
+                && matches!(op_value(vp, code, p), Some(Val::Str(_)))
+        }
+        _ => false,
+    }
+}
+
+fn operand_now(vp: &Vp, code: &Code, word: &Word) -> bool {
+    word.parts.iter().all(|p| match &p.kind {
+        Part::Lit | Part::Escaped | Part::Single => true,
+        _ => plain_param(vp, code, p),
+    })
+}
+
+fn pattern_now(vp: &Vp, code: &Code, word: &Word) -> bool {
+    word.parts.iter().all(|p| match &p.kind {
+        Part::Lit | Part::Escaped | Part::Single => true,
+        Part::Double(inner) => inner.iter().all(|p| match &p.kind {
+            Part::Lit | Part::Escaped => true,
+            _ => plain_param(vp, code, p),
+        }),
+        _ => plain_param(vp, code, p),
+    })
+}
+
+fn param_op_now(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    p: &psh_syntax::Param,
+    quoted: bool,
+    f: &mut Fields,
+) -> bool {
+    let Some(val) = op_value(vp, code, p) else {
+        return false;
+    };
+    match (p.prefix, &p.op) {
+        (ParamPrefix::Length, ParamOp::None) => {
+            let n = match &val {
+                Val::Str(s) if s.is_ascii() => s.len(),
+                Val::Str(s) => pattern::units(s, vp.utf8()).0.len(),
+                _ => 0,
+            };
+            emit(f, n.to_string().as_bytes(), quoted);
+            true
+        }
+        (
+            ParamPrefix::None,
+            ParamOp::Default {
+                kind: kind @ (DefaultKind::Use | DefaultKind::Alternative),
+                colon,
+                word,
+            },
+        ) if operand_now(vp, code, word) => {
+            let is_set = match &val {
+                Val::Str(s) => !(*colon && s.is_empty()),
+                _ => false,
+            };
+            if is_set == (*kind == DefaultKind::Use) {
+                let _ = emit_val(vp, f, val, quoted);
+            } else if *kind == DefaultKind::Alternative && !is_set {
+                if quoted {
+                    f.quoted(b"");
+                }
+            } else if quoted && word.parts.is_empty() {
+                f.quoted(b"");
+            } else {
+                for (i, part) in word.parts.iter().enumerate() {
+                    let _ = part_sync(vp, code, part, quoted, f, Ctx::Operand, i == 0);
+                }
+            }
+            true
+        }
+        (
+            ParamPrefix::None,
+            ParamOp::RemovePrefix { longest, pattern } | ParamOp::RemoveSuffix { longest, pattern },
+        ) if pattern_now(vp, code, pattern) => {
+            let mut pf = Fields::new(vp, false);
+            for (i, part) in pattern.parts.iter().enumerate() {
+                let _ = part_sync(vp, code, part, false, &mut pf, Ctx::Word, i == 0);
+            }
+            pf.finish_word();
+            let mut pat = Vec::new();
+            for (i, field) in pf.out.iter().enumerate() {
+                if i > 0 {
+                    pat.push(b' ');
+                }
+                pat.extend_from_slice(&field.pat);
+            }
+            let suffix = matches!(p.op, ParamOp::RemoveSuffix { .. });
+            let mopts = vp.match_opts(false);
+            let val = map_val(val, |s| {
+                pattern::remove_affix_with(s, &pat, suffix, *longest, mopts)
+            });
+            let _ = emit_val(vp, f, val, quoted);
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(crate) async fn arith_failed(vp: &mut Vp, msg: &str) -> Unwind {
     vp.error(msg).await;
     match vp.arith_unbound {
@@ -603,10 +739,28 @@ fn part_static(code: &Code, p: &WordPart, words: bool, quoted: bool) -> bool {
         Part::Escaped | Part::Single | Part::AnsiC => true,
         Part::Double(inner) => inner.iter().all(|p| part_static(code, p, words, true)),
         Part::Param(p) => {
-            matches!(p.op, ParamOp::None)
-                && p.prefix == ParamPrefix::None
-                && p.index.is_none()
+            p.index.is_none()
                 && p.name != ParamName::Special(b'!')
+                && match (p.prefix, &p.op) {
+                    (ParamPrefix::None | ParamPrefix::Length, ParamOp::None) => true,
+                    (
+                        ParamPrefix::None,
+                        ParamOp::Default {
+                            kind: DefaultKind::Use | DefaultKind::Alternative,
+                            word,
+                            ..
+                        },
+                    ) => word.parts.iter().all(|p| match &p.kind {
+                        Part::Lit => part_static(code, p, words, quoted),
+                        Part::Escaped | Part::Single | Part::Param(_) => true,
+                        _ => false,
+                    }),
+                    (
+                        ParamPrefix::None,
+                        ParamOp::RemovePrefix { .. } | ParamOp::RemoveSuffix { .. },
+                    ) => true,
+                    _ => false,
+                }
         }
         Part::Arith(w) => crate::arith::literal(code, w).is_some_and(|l| !l.text.contains(&b'[')),
         _ => false,
@@ -629,6 +783,28 @@ fn param_now(vp: &Vp, code: &Code, part: &WordPart, words: bool, quoted: bool) -
     };
     let free = quoted || !words;
     let name = code.ast.text(p.name_span);
+    if !matches!(p.op, ParamOp::None) || p.prefix != ParamPrefix::None {
+        let val = match op_value(vp, code, p) {
+            Some(Val::Str(s)) => Some(s),
+            Some(_) => None,
+            None => return false,
+        };
+        return match &p.op {
+            ParamOp::None => true,
+            ParamOp::Default { word, .. } => {
+                operand_now(vp, code, word)
+                    && (free || val.is_none_or(|s| no_glob(&s)))
+                    && word
+                        .parts
+                        .iter()
+                        .all(|p| param_now(vp, code, p, words, quoted))
+            }
+            ParamOp::RemovePrefix { pattern, .. } | ParamOp::RemoveSuffix { pattern, .. } => {
+                pattern_now(vp, code, pattern) && (free || val.is_none_or(|s| no_glob(&s)))
+            }
+            _ => false,
+        };
+    }
     match p.name {
         ParamName::Var => match vp.vars.get(name) {
             Some(v) if !v.nameref && v.dynamic.is_none() && name != "LINENO" => match &v.value {

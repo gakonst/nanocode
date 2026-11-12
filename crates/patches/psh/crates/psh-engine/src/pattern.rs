@@ -484,8 +484,55 @@ pub(crate) fn remove_affix_with(
     longest: bool,
     opts: MatchOpts,
 ) -> Vec<u8> {
+    if !opts.nocase
+        && let Some(v) = affix_literal(text, pat, suffix, longest)
+    {
+        return v;
+    }
     let p = Pattern::with(pat, opts);
     affix(text, &p, suffix, longest, opts.utf8)
+}
+
+fn affix_literal(text: &[u8], pat: &[u8], suffix: bool, longest: bool) -> Option<Vec<u8>> {
+    let (front, rest) = match pat.strip_prefix(b"*") {
+        Some(r) => (true, r),
+        None => (false, pat),
+    };
+    let (back, lit) = match rest.strip_suffix(b"*") {
+        Some(r) => (true, r),
+        None => (false, rest),
+    };
+    if (front && back)
+        || lit.is_empty()
+        || !lit
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-:=, ".contains(b))
+    {
+        return None;
+    }
+    let n = lit.len();
+    let find = || text.windows(n).position(|w| w == lit);
+    let rfind = || text.windows(n).rposition(|w| w == lit);
+    let out = match (suffix, front, back) {
+        (false, false, false) => text.strip_prefix(lit).unwrap_or(text),
+        (false, false, true) if text.starts_with(lit) => {
+            &text[if longest { text.len() } else { n }..]
+        }
+        (false, true, false) => match if longest { rfind() } else { find() } {
+            Some(i) => &text[i + n..],
+            None => text,
+        },
+        (true, false, false) => text.strip_suffix(lit).unwrap_or(text),
+        (true, true, false) if text.ends_with(lit) => {
+            &text[..if longest { 0 } else { text.len() - n }]
+        }
+        (true, false, true) => match if longest { find() } else { rfind() } {
+            Some(i) => &text[..i],
+            None => text,
+        },
+        _ => text,
+    };
+    Some(out.to_vec())
 }
 
 #[cfg(test)]

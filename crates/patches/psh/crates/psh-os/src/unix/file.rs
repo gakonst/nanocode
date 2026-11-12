@@ -19,6 +19,7 @@ pub struct UnixFile {
     stream: bool,
     /// `O_NONBLOCK` is set: a private pipe end of our own, never shared.
     nonblocking: bool,
+    terminal: bool,
 }
 
 impl UnixFile {
@@ -35,10 +36,15 @@ impl UnixFile {
             }
             Err(_) => true,
         };
+        let terminal = stream && {
+            use std::io::IsTerminal;
+            file.is_terminal()
+        };
         UnixFile {
             file,
             stream,
             nonblocking: false,
+            terminal,
         }
     }
 
@@ -49,6 +55,7 @@ impl UnixFile {
             file: File::from(fd),
             stream: true,
             nonblocking: true,
+            terminal: false,
         })
     }
 
@@ -149,8 +156,7 @@ impl HostFile for UnixFile {
     }
 
     fn is_terminal(&self) -> bool {
-        use std::io::IsTerminal;
-        self.file.is_terminal()
+        self.terminal
     }
 }
 

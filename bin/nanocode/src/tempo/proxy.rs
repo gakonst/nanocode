@@ -64,8 +64,6 @@ pub(crate) struct ForwardProxy<P> {
     address: SocketAddr,
     token: String,
     certificates: PathBuf,
-    root: Vec<u8>,
-    authority: CertificateAuthority,
     providers: Providers<P>,
     events: Events,
     bypass: Vec<String>,
@@ -77,7 +75,6 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
     ) -> Result<Self, Fault> {
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
-        let (authority, root) = CertificateAuthority::generate()?;
         let certificates = std::env::temp_dir().join(format!(
             "{BUNDLE_PREFIX}{}.{BUNDLE_EXTENSION}",
             std::process::id()
@@ -87,8 +84,6 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
             address,
             token: token()?,
             certificates,
-            root,
-            authority,
             providers: Box::new(move |url| providers(url).map_err(|error| error.to_string())),
             events: Events::default(),
             bypass: Vec::new(),
@@ -156,7 +151,8 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
                 native.errors
             )));
         }
-        let bundle: String = std::iter::once(self.root.as_slice())
+        let (authority, root) = CertificateAuthority::generate()?;
+        let bundle: String = std::iter::once(root.as_slice())
             .chain(native.certs.iter().map(|certificate| certificate.as_ref()))
             .map(x509::pem)
             .collect();
@@ -183,7 +179,7 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
         let credentials = x509::base64(format!("{PROXY_USER}:{}", self.token).as_bytes());
         let authorization = HeaderValue::from_str(&format!("Basic {credentials}"))
             .map_err(|error| Fault::config(format!("invalid proxy credentials: {error}")))?;
-        let (authority, providers, events) = (self.authority, self.providers, self.events);
+        let (providers, events) = (self.providers, self.events);
         std::thread::Builder::new()
             .name(THREAD_NAME.into())
             .spawn(move || {

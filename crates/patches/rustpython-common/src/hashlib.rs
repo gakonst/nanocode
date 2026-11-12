@@ -7,21 +7,25 @@
 //! own object and exception adapters.
 
 mod block;
+mod keccak;
 mod md5;
 mod sha1;
 mod sha256;
 mod sha512;
 
+use keccak::{Keccak, SHAKE_SUFFIX};
 use md5::Md5;
 use parking_lot::Mutex;
 use sha1::Sha1;
-use sha3::{Digest, Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 use sha256::{SHA224_INITIAL_STATE, SHA224_OUTPUT_BYTES, SHA256_INITIAL_STATE, Sha256};
 use sha512::{SHA384_INITIAL_STATE, SHA384_OUTPUT_BYTES, SHA512_INITIAL_STATE, Sha512};
-use shake::{
-    Shake128, Shake256,
-    digest::{ExtendableOutput, Update, XofReader},
-};
+
+const SHA3_224_OUTPUT_BYTES: usize = 28;
+const SHA3_256_OUTPUT_BYTES: usize = 32;
+const SHA3_384_OUTPUT_BYTES: usize = 48;
+const SHA3_512_OUTPUT_BYTES: usize = 64;
+const SHAKE_128_RATE_BYTES: usize = 168;
+const SHAKE_256_RATE_BYTES: usize = 136;
 
 #[derive(Clone)]
 enum HashState {
@@ -31,12 +35,8 @@ enum HashState {
     Sha256(Sha256),
     Sha384(Sha512),
     Sha512(Sha512),
-    Sha3_224(Sha3_224),
-    Sha3_256(Sha3_256),
-    Sha3_384(Sha3_384),
-    Sha3_512(Sha3_512),
-    Shake128(Shake128),
-    Shake256(Shake256),
+    Sha3 { state: Keccak, output_bytes: usize },
+    Shake(Keccak),
     Blake2b(blake2b_simd::State),
     Blake2s(blake2s_simd::State),
 }
@@ -50,35 +50,32 @@ impl HashState {
             "sha256" => Self::Sha256(Sha256::new(SHA256_INITIAL_STATE)),
             "sha384" => Self::Sha384(Sha512::new(SHA384_INITIAL_STATE)),
             "sha512" => Self::Sha512(Sha512::new(SHA512_INITIAL_STATE)),
-            "sha3_224" => Self::Sha3_224(Sha3_224::default()),
-            "sha3_256" => Self::Sha3_256(Sha3_256::default()),
-            "sha3_384" => Self::Sha3_384(Sha3_384::default()),
-            "sha3_512" => Self::Sha3_512(Sha3_512::default()),
-            "shake_128" => Self::Shake128(Shake128::default()),
-            "shake_256" => Self::Shake256(Shake256::default()),
+            "sha3_224" => Self::sha3(SHA3_224_OUTPUT_BYTES),
+            "sha3_256" => Self::sha3(SHA3_256_OUTPUT_BYTES),
+            "sha3_384" => Self::sha3(SHA3_384_OUTPUT_BYTES),
+            "sha3_512" => Self::sha3(SHA3_512_OUTPUT_BYTES),
+            "shake_128" => Self::Shake(Keccak::new(SHAKE_128_RATE_BYTES, SHAKE_SUFFIX)),
+            "shake_256" => Self::Shake(Keccak::new(SHAKE_256_RATE_BYTES, SHAKE_SUFFIX)),
             "blake2b" => Self::Blake2b(blake2b_simd::Params::new().to_state()),
             "blake2s" => Self::Blake2s(blake2s_simd::Params::new().to_state()),
             _ => return None,
         })
     }
 
-    fn update(&mut self, data: &[u8]) {
-        macro_rules! update {
-            ($state:expr) => {
-                Update::update($state, data)
-            };
+    const fn sha3(output_bytes: usize) -> Self {
+        Self::Sha3 {
+            state: Keccak::sha3(output_bytes),
+            output_bytes,
         }
+    }
+
+    fn update(&mut self, data: &[u8]) {
         match self {
             Self::Md5(state) => state.update(data),
             Self::Sha1(state) => state.update(data),
             Self::Sha224(state) | Self::Sha256(state) => state.update(data),
             Self::Sha384(state) | Self::Sha512(state) => state.update(data),
-            Self::Sha3_224(state) => update!(state),
-            Self::Sha3_256(state) => update!(state),
-            Self::Sha3_384(state) => update!(state),
-            Self::Sha3_512(state) => update!(state),
-            Self::Shake128(state) => update!(state),
-            Self::Shake256(state) => update!(state),
+            Self::Sha3 { state, .. } | Self::Shake(state) => state.update(data),
             Self::Blake2b(state) => {
                 state.update(data);
             }
@@ -89,11 +86,6 @@ impl HashState {
     }
 
     fn digest(&self, length: usize) -> Vec<u8> {
-        macro_rules! fixed {
-            ($state:expr) => {
-                Digest::finalize($state.clone()).to_vec()
-            };
-        }
         match self {
             Self::Md5(state) => state.clone().finalize().to_vec(),
             Self::Sha1(state) => state.clone().finalize().to_vec(),
@@ -101,24 +93,21 @@ impl HashState {
             Self::Sha256(state) => state.clone().finalize().to_vec(),
             Self::Sha384(state) => state.clone().finalize()[..SHA384_OUTPUT_BYTES].to_vec(),
             Self::Sha512(state) => state.clone().finalize().to_vec(),
-            Self::Sha3_224(state) => fixed!(state),
-            Self::Sha3_256(state) => fixed!(state),
-            Self::Sha3_384(state) => fixed!(state),
-            Self::Sha3_512(state) => fixed!(state),
+            Self::Sha3 {
+                state,
+                output_bytes,
+            } => squeeze(state, *output_bytes),
+            Self::Shake(state) => squeeze(state, length),
             Self::Blake2b(state) => state.finalize().as_bytes().to_vec(),
             Self::Blake2s(state) => state.finalize().as_bytes().to_vec(),
-            Self::Shake128(state) => {
-                let mut out = vec![0; length];
-                state.clone().finalize_xof().read(&mut out);
-                out
-            }
-            Self::Shake256(state) => {
-                let mut out = vec![0; length];
-                state.clone().finalize_xof().read(&mut out);
-                out
-            }
         }
     }
+}
+
+fn squeeze(state: &Keccak, length: usize) -> Vec<u8> {
+    let mut output = vec![0; length];
+    state.clone().finalize(&mut output);
+    output
 }
 
 type LockedHashState = Mutex<HashState>;
@@ -415,10 +404,12 @@ pub fn digest_output_size(name: &str) -> Option<usize> {
         "sha256" => sha256::OUTPUT_BYTES,
         "sha384" => SHA384_OUTPUT_BYTES,
         "sha512" => sha512::OUTPUT_BYTES,
-        "sha3_224" => 28,
-        "sha3_256" | "blake2s" => 32,
-        "sha3_384" => 48,
-        "sha3_512" | "blake2b" => 64,
+        "sha3_224" => SHA3_224_OUTPUT_BYTES,
+        "sha3_256" => SHA3_256_OUTPUT_BYTES,
+        "sha3_384" => SHA3_384_OUTPUT_BYTES,
+        "sha3_512" => SHA3_512_OUTPUT_BYTES,
+        "blake2s" => 32,
+        "blake2b" => 64,
         "shake_128" | "shake_256" => return None,
         _ => return None,
     })

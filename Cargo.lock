@@ -700,12 +700,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-oid"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
-
-[[package]]
 name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -936,7 +930,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.1",
- "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
 ]
@@ -1916,16 +1909,6 @@ checksum = "160f2eade097f30263b548aae5deb12ad349c909baa710fa24b92c9090b2e006"
 dependencies = [
  "scopeguard",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "keccak"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8f198d1db720e4940b5a493201d199d9f24f568f8f746bd13706243a2f71598"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.3.0",
 ]
 
 [[package]]
@@ -3894,8 +3877,6 @@ dependencies = [
  "rustpython-unicode",
  "rustpython-wtf8",
  "scrypt",
- "sha3",
- "shake",
  "siphasher",
 ]
 
@@ -4340,28 +4321,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha3"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc9bad02c26382724b2d2692c6f179285e4b54eeecd7968f52a50059c3c11759"
-dependencies = [
- "digest 0.11.3",
- "keccak",
- "sponge-cursor",
-]
-
-[[package]]
-name = "shake"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09057cb2149ad4cbd2da1e26b351f9a4c354219421229c69c3063e6f61947c4a"
-dependencies = [
- "digest 0.11.3",
- "keccak",
- "sponge-cursor",
-]
-
-[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4438,12 +4397,6 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
-
-[[package]]
-name = "sponge-cursor"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "sqlx"

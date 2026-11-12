@@ -41,8 +41,6 @@ default = ["std"]
 hashlib = [
     "std",
     "parking_lot",
-    "dep:sha3",
-    "dep:shake",
     "dep:blake2b_simd",
     "dep:blake2s_simd",
     "dep:scrypt",
@@ -142,14 +140,6 @@ version = "0.6.0"
 version = "0.12"
 optional = true
 default-features = false
-
-[dependencies.sha3]
-version = "0.12"
-optional = true
-
-[dependencies.shake]
-version = "0.1"
-optional = true
 
 [dependencies.siphasher]
 version = "1"

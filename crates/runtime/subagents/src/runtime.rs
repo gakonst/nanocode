@@ -2500,11 +2500,12 @@ impl RegistryState {
 
     fn request_interrupt_all(&mut self, session_id: &str) -> InterruptRequest {
         let root_session_id = self.root_session_id(session_id).to_owned();
-        let ids = self
+        let mut ids = self
             .scopes
             .get(&root_session_id)
             .map(|scope| scope.sessions.keys().copied().collect::<Vec<_>>())
             .unwrap_or_default();
+        ids.sort_unstable();
         let held = self.hold_unstarted(&root_session_id, &ids);
         (root_session_id, ids, held)
     }

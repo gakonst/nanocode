@@ -715,16 +715,23 @@ impl<L: EventLog + ?Sized> LogSink<L> {
                 .delivery
                 .update(|delivery| delivery.mark(id, Delivered::Read))
         };
-        let published = self
-            .0
+        let recording = Recording {
+            session_id: &self.0.session_id,
+            annotation: &annotation,
+            events: &events,
+            request_ids: &request_ids,
+            read: &read,
+        };
+        let host = Arc::clone(&self.0.host);
+        self.0
             .log
-            .record(Recording {
-                session_id: &self.0.session_id,
-                annotation: &annotation,
-                events: &events,
-                request_ids: &request_ids,
-                read: &read,
-            })
+            .record_deferred(
+                recording,
+                Arc::new(move |events| {
+                    let host = Arc::clone(&host);
+                    Box::pin(async move { host.publish(events).await })
+                }),
+            )
             .await?;
         if boundary {
             self.0
@@ -733,7 +740,7 @@ impl<L: EventLog + ?Sized> LogSink<L> {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        self.0.host.publish(published).await
+        Ok(())
     }
 
     async fn publish_live(&self, events: Vec<SessionEvent>) -> Result<(), String> {

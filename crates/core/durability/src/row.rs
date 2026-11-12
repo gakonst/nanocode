@@ -9,12 +9,12 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nanocode_platform::{MaybeSend, MaybeSync};
-use nanocode_sync::{AtomMap, Mailbox, Sequencer};
+use nanocode_sync::{AtomMap, Mailbox, Owned, Sequencer};
 
 use crate::{
-    Collected, Committed, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, Sql,
-    SqlRow, SqlStatement, SqlStore, StateCommit, StateStore, StoreError, StoreFuture, StoreRecord,
-    StoredState, Unreachable,
+    Collected, Committed, Deferred, Migration, OwnedCommit, OwnedState, OwnerId, OwnerToken,
+    Prepare, Settle, Sql, SqlRow, SqlStatement, SqlStore, StateCommit, StateStore, StoreError,
+    StoreFuture, StoreRecord, StoredState, Unreachable,
     sql::{
         SqlAccess, counter, invalid, keys_json, limit_param, migrate_format, names, run_checked,
         single, text, unreachable_in, written,
@@ -520,8 +520,65 @@ fn page_keys(text: &str) -> Result<Vec<String>, StoreError> {
     serde_json::from_str(text).map_err(|error| invalid(format!("row store page keys: {error}")))
 }
 
+struct Unwritten {
+    sql: &'static str,
+    state: String,
+    owner: String,
+    fence: String,
+    expected: u64,
+    revision: u64,
+    payload: String,
+    tail: String,
+}
+
+impl Unwritten {
+    fn deferred(self) -> Deferred {
+        Deferred {
+            sql: self.sql,
+            params: vec![
+                self.state,
+                self.owner,
+                self.fence,
+                self.expected.to_string(),
+                self.revision.to_string(),
+                self.payload,
+                self.tail,
+            ],
+            changes: Some(1),
+        }
+    }
+}
+
+#[derive(Default)]
+struct Unflushed(Owned<Vec<Unwritten>>);
+
+impl Unflushed {
+    async fn flush(&self, held: &mut Vec<Unwritten>, ledger: &dyn Sql) -> Result<(), StoreError> {
+        if held.is_empty() {
+            return Ok(());
+        }
+        let writes = std::mem::take(held)
+            .into_iter()
+            .map(Unwritten::deferred)
+            .collect();
+        ledger.defer("replace", writes, None).await
+    }
+}
+
+impl Prepare for Unflushed {
+    fn prepare<'a>(&'a self, ledger: &'a dyn Sql) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            let Some(mut held) = self.0.try_acquire() else {
+                return Ok(());
+            };
+            self.flush(&mut held, ledger).await
+        })
+    }
+}
+
 pub struct RowStore<H: ?Sized> {
     host: Arc<H>,
+    unflushed: Arc<Unflushed>,
     ready: Arc<AtomicBool>,
     index: Mailbox<Index>,
     loading: Sequencer,
@@ -535,6 +592,7 @@ impl<H: ?Sized> Clone for RowStore<H> {
     fn clone(&self) -> Self {
         Self {
             host: Arc::clone(&self.host),
+            unflushed: Arc::clone(&self.unflushed),
             ready: Arc::clone(&self.ready),
             index: self.index.clone(),
             loading: self.loading.clone(),
@@ -590,8 +648,14 @@ impl<H: Sql + ?Sized> RowStore<H> {
     }
 
     pub fn shared(host: Arc<H>) -> Self {
+        let unflushed = Arc::new(Unflushed::default());
+        if host.defers() {
+            let prepare: Arc<dyn Prepare> = Arc::clone(&unflushed) as Arc<dyn Prepare>;
+            host.prepare_with(Arc::downgrade(&prepare));
+        }
         Self {
             host,
+            unflushed,
             ready: Arc::new(AtomicBool::new(false)),
             index: Mailbox::default(),
             loading: Sequencer::default(),
@@ -672,6 +736,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
     pub fn lent<L: Sql>(&self, host: L) -> RowStore<L> {
         RowStore {
             host: Arc::new(host),
+            unflushed: Arc::new(Unflushed::default()),
             ready: Arc::clone(&self.ready),
             index: Mailbox::default(),
             loading: Sequencer::default(),
@@ -750,6 +815,7 @@ impl<H: Sql + ?Sized> RowStore<H> {
         if !self.ready.load(Ordering::Acquire) {
             self.migrate().await?;
         }
+        self.flush_unwritten().await?;
         run_checked(&*self.host, access, operation, &statements).await
     }
 
@@ -762,7 +828,99 @@ impl<H: Sql + ?Sized> RowStore<H> {
         if !self.ready.load(Ordering::Acquire) {
             self.migrate().await?;
         }
+        self.flush_unwritten().await?;
         written(&*self.host, settle, operation, &statements).await
+    }
+
+    async fn flush_unwritten(&self) -> Result<(), StoreError> {
+        if !self.host.defers() {
+            return Ok(());
+        }
+        let mut held = self.unflushed.0.acquire().await;
+        if held.is_empty() {
+            return Ok(());
+        }
+        let writes = std::mem::take(&mut *held)
+            .into_iter()
+            .map(Unwritten::deferred)
+            .collect();
+        self.host.defer("replace", writes, None).await
+    }
+
+    async fn defer_state(
+        &mut self,
+        write: &Write<'_>,
+        planned: &Planned,
+    ) -> Result<u64, StoreError> {
+        if !self.ready.load(Ordering::Acquire) {
+            self.migrate().await?;
+        }
+        let sealing = planned.page.is_some();
+        let owner = write.owner.owner_id().as_str();
+        let fence = write.owner.fence().to_string();
+        {
+            let mut held = self.unflushed.0.acquire().await;
+            let at = held
+                .iter()
+                .position(|unwritten| unwritten.state == write.state_id);
+            match at {
+                Some(at)
+                    if !sealing
+                        && held[at].revision == write.expected
+                        && held[at].owner == owner
+                        && held[at].fence == fence =>
+                {
+                    let unwritten = &mut held[at];
+                    unwritten.revision = write.revision;
+                    write.payload.clone_into(&mut unwritten.payload);
+                    unwritten.tail.push_str(&planned.encoded);
+                }
+                _ => {
+                    let mut deferred = Vec::new();
+                    if let Some(at) = at {
+                        deferred.push(held.remove(at).deferred());
+                    }
+                    if sealing {
+                        let mut statements = Vec::with_capacity(2);
+                        self.statements(write, planned, &mut statements)?;
+                        deferred.extend(statements.iter().map(|statement| {
+                            Deferred {
+                                sql: statement.sql,
+                                params: statement
+                                    .params
+                                    .iter()
+                                    .map(|param| (*param).to_owned())
+                                    .collect(),
+                                changes: Some(1),
+                            }
+                        }));
+                    } else {
+                        held.push(Unwritten {
+                            sql: self.sql(&APPEND),
+                            state: write.state_id.to_owned(),
+                            owner: owner.to_owned(),
+                            fence,
+                            expected: write.expected,
+                            revision: write.revision,
+                            payload: write.payload.to_owned(),
+                            tail: planned.encoded.clone(),
+                        });
+                    }
+                    if !deferred.is_empty() {
+                        self.host.defer("replace", deferred, None).await?;
+                    }
+                }
+            }
+        }
+        let state: Arc<str> = write.state_id.into();
+        let pages = self
+            .index
+            .call(move |index| index.states.get(&state).map_or(0, |held| held.pages))
+            .await;
+        let pages = if sealing { pages + 1 } else { pages };
+        self.apply(vec![Self::applied(write, planned, write.revision, pages)])
+            .await?;
+        Ok(write.revision)
     }
 
     async fn query(
@@ -1291,6 +1449,9 @@ impl<H: Sql + ?Sized> RowStore<H> {
             .pop()
             .flatten()
             .ok_or_else(|| invalid("a row store write was not planned"))?;
+        if settle == Settle::Ordered && !self.lent && self.host.defers() {
+            return self.defer_state(&write, &planned).await;
+        }
         let mut statements = Vec::with_capacity(2);
         self.statements(&write, &planned, &mut statements)?;
         let results = self.settled(settle, "replace", statements).await?;
@@ -1338,6 +1499,22 @@ impl<H: Sql + ?Sized> RowStore<H> {
         } else {
             Settle::Durable
         };
+        if settle == Settle::Ordered && !self.lent && self.host.defers() {
+            let mut outcomes = Vec::with_capacity(writes.len());
+            for write in writes {
+                outcomes.push(match write {
+                    Ok(write) => self
+                        .replace_state(write, Settle::Ordered)
+                        .await
+                        .map(|revision| Committed {
+                            revision,
+                            first_event: None,
+                        }),
+                    Err(error) => Err(error),
+                });
+            }
+            return outcomes;
+        }
         let asked: Vec<Option<&Write<'_>>> =
             writes.iter().map(|write| write.as_ref().ok()).collect();
         let planned = match self.plan(&asked).await {
@@ -1854,6 +2031,7 @@ impl<H: Sql + ?Sized> StateStore for RowStore<H> {
         let host = Arc::clone(&self.host).concurrent()?;
         Some(Box::new(RowStore {
             host,
+            unflushed: Arc::new(Unflushed::default()),
             ready: Arc::clone(&self.ready),
             index: self.index.clone(),
             loading: self.loading.clone(),
@@ -1869,6 +2047,7 @@ impl<H: Sql + ?Sized> StateStore for RowStore<H> {
         let host = Arc::clone(&self.host).concurrent()?;
         Some(Arc::new(RowStore {
             host,
+            unflushed: Arc::new(Unflushed::default()),
             ready: Arc::clone(&self.ready),
             index: self.index.clone(),
             loading: self.loading.clone(),

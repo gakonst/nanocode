@@ -1,12 +1,15 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Weak},
+};
 
 use nanocode_platform::{MaybeSend, MaybeSync};
 
 use serde::ser::SerializeSeq;
 
 use crate::{
-    Committed, EncodedPayload, OwnedCommit, OwnedState, OwnerId, OwnerToken, Settle, StateCommit,
-    StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
+    After, Committed, Deferred, EncodedPayload, OwnedCommit, OwnedState, OwnerId, OwnerToken,
+    Prepare, Settle, StateCommit, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +81,36 @@ pub trait Sql: MaybeSend + MaybeSync {
 
     fn dialect(&self) -> SqlDialect {
         SqlDialect::Sqlite
+    }
+
+    fn defers(&self) -> bool {
+        false
+    }
+
+    fn defer<'a>(
+        &'a self,
+        operation: &'static str,
+        writes: Vec<Deferred>,
+        after: Option<After>,
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            let statements: Vec<SqlStatement<'_>> =
+                writes.iter().map(Deferred::statement).collect();
+            let results = written(self, Settle::Ordered, operation, &statements).await?;
+            crate::ledger::returned(operation, &writes, &results)?;
+            if let Some(after) = after {
+                after().await;
+            }
+            Ok(())
+        })
+    }
+
+    fn barrier(&self) -> StoreFuture<'_, Result<(), StoreError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn prepare_with(&self, prepare: Weak<dyn Prepare>) {
+        let _ = prepare;
     }
 
     fn concurrent(self: Arc<Self>) -> Option<Arc<dyn Sql>> {

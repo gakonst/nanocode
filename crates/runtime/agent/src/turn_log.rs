@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use nanocode_tool_host::embedded::HostFuture;
 use serde_json::{Map, Value};
@@ -10,6 +10,9 @@ use crate::{
 };
 
 pub type Logged<'a, T> = HostFuture<'a, Result<T, StoreError>>;
+
+pub type Publish =
+    Arc<dyn Fn(Vec<LoggedEvent>) -> HostFuture<'static, Result<(), String>> + Send + Sync>;
 
 pub struct Recording<'a> {
     pub session_id: &'a str,
@@ -44,6 +47,17 @@ pub trait EventLog: Send + Sync + 'static {
         &'a self,
         recording: Recording<'a>,
     ) -> HostFuture<'a, Result<Vec<LoggedEvent>, String>>;
+
+    fn record_deferred<'a>(
+        &'a self,
+        recording: Recording<'a>,
+        publish: Publish,
+    ) -> HostFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let events = self.record(recording).await?;
+            publish(events).await
+        })
+    }
 
     fn flush(&self) -> Logged<'_, ()>;
 

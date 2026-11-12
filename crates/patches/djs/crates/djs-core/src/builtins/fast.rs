@@ -1807,6 +1807,8 @@ fn assignable(heap: &Heap, to: Obj, from: Value) -> bool {
         })
 }
 
+const ASSIGN_INLINE: usize = 16;
+
 fn object_assign(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
     let Some((&target, sources)) = args.split_first() else {
         return Ok(None);
@@ -1821,6 +1823,16 @@ fn object_assign(heap: &mut Heap, _: Value, args: &[Value]) -> Fast {
     }
     for from in sources.iter().filter_map(|from| from.as_object()) {
         if heap.clone_plain_props(to, from)? {
+            continue;
+        }
+        let mut keys = [atoms::EMPTY; ASSIGN_INLINE];
+        let mut values = [Value::UNDEFINED; ASSIGN_INLINE];
+        if let Some(n) = heap.plain_entries_into(from, &mut keys, &mut values) {
+            for (&k, &value) in keys[..n].iter().zip(&values[..n]) {
+                if !heap.set_own_data_value(to, k, value) {
+                    heap.create_data_property(to, k, value)?;
+                }
+            }
             continue;
         }
         for k in heap.own_keys(from) {

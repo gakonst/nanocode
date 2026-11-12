@@ -458,6 +458,18 @@ impl Exec<'_> {
         if fast::is_call(op) {
             return self.pc < self.code_len && self.fast_leaf_call(op);
         }
+        if op == fast::MOD {
+            let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));
+            let (Some(x), Some(y)) = (a.as_number(), c.as_number()) else {
+                return false;
+            };
+            self.sp -= 1;
+            self.set(self.sp - 1, conv::number(conv::rem(x, y)));
+            let info = &OPS[Op::Mod as usize];
+            self.fuel -= info.cost.fuel() as i64;
+            self.pc += info.size as u32;
+            return true;
+        }
         if op != fast::ADD {
             return super::construct::takes(op) && self.decline_construct(op);
         }

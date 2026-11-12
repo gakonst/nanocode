@@ -381,6 +381,13 @@ impl UtilFile {
         self.file.read(buf).await
     }
 
+    pub fn seek(&self, pos: io::SeekFrom) -> Option<io::Result<u64>> {
+        match &*self.file {
+            FdObj::File(file) => file.seek(pos),
+            FdObj::PipeRead(_) | FdObj::PipeWrite(_) => None,
+        }
+    }
+
     pub async fn read_to_end(&self, out: &mut Vec<u8>) -> io::Result<()> {
         let mut buf = vec![0u8; 16 * 1024];
         loop {

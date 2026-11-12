@@ -118,6 +118,11 @@ impl HostFile for StdFile {
     fn kind(&self) -> Option<FileKind> {
         self.file.metadata().ok().map(|m| metadata(&m).kind)
     }
+
+    fn seek(&self, pos: io::SeekFrom) -> Option<io::Result<u64>> {
+        use std::io::Seek;
+        Some((&self.file).seek(pos))
+    }
 }
 
 /// The bound of a pump's buffer.

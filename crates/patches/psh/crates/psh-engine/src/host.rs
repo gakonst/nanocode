@@ -54,6 +54,9 @@ pub trait HostFile: Any {
     fn kind(&self) -> Option<FileKind> {
         None
     }
+    fn seek(&self, _pos: io::SeekFrom) -> Option<io::Result<u64>> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

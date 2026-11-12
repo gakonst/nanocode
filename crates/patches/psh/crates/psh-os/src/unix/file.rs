@@ -158,6 +158,11 @@ impl HostFile for UnixFile {
     fn is_terminal(&self) -> bool {
         self.terminal
     }
+
+    fn seek(&self, pos: io::SeekFrom) -> Option<io::Result<u64>> {
+        use std::io::Seek;
+        (!self.stream).then(|| (&self.file).seek(pos))
+    }
 }
 
 #[cfg(test)]

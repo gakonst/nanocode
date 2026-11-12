@@ -216,6 +216,14 @@ impl HostFile for WinFile {
         }
     }
 
+    fn seek(&self, pos: io::SeekFrom) -> Option<io::Result<u64>> {
+        use std::io::Seek;
+        match &self.kind {
+            Kind::Sync(f) => Some((&*f).seek(pos)),
+            _ => None,
+        }
+    }
+
     fn is_terminal(&self) -> bool {
         match &self.kind {
             Kind::Sync(f) => {

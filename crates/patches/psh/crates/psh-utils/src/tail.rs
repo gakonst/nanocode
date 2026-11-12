@@ -4,10 +4,11 @@
 //! ends only when the command is cancelled. Written for psh after GNU's and BSD's
 //! documented behavior.
 
+use std::io::{self, SeekFrom};
 use std::time::Duration;
 
 use psh_engine::host::FileKind;
-use psh_engine::util::UtilCtx;
+use psh_engine::util::{UtilCtx, UtilFile};
 
 use crate::common::{self, Input};
 use crate::opts::{Spec, both, flag, long};
@@ -142,12 +143,28 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 continue;
             }
         };
-        let mut data = Vec::new();
-        if let Err(e) = input.read_to_end(ctx, &mut data).await {
-            common::file_error(ctx, name, &e).await;
-            status = 1;
-            continue;
-        }
+        let last = match &input {
+            Input::File(file) => read_last(file, amount, delim).await,
+            Input::Stdin => None,
+        };
+        let (data, size) = match last {
+            Some(Ok(last)) => last,
+            Some(Err(e)) => {
+                common::file_error(ctx, name, &e).await;
+                status = 1;
+                continue;
+            }
+            None => {
+                let mut data = Vec::new();
+                if let Err(e) = input.read_to_end(ctx, &mut data).await {
+                    common::file_error(ctx, name, &e).await;
+                    status = 1;
+                    continue;
+                }
+                let size = data.len();
+                (data, size)
+            }
+        };
         if headers {
             let shown = if name == b"-" {
                 "standard input".to_string()
@@ -176,7 +193,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             && name != b"-"
             && matches!(ctx.stat(name, true).await, Ok(m) if m.kind == FileKind::File)
         {
-            followed.push((name.clone(), data.len()));
+            followed.push((name.clone(), size));
         }
     }
     if followed.is_empty() {
@@ -216,6 +233,58 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 }
             }
             entry.1 = data.len();
+        }
+    }
+}
+
+async fn read_last(
+    file: &UtilFile,
+    amount: Amount,
+    delim: u8,
+) -> Option<io::Result<(Vec<u8>, usize)>> {
+    let want = match amount {
+        Amount::LastLines(n) | Amount::LastBytes(n) => n,
+        Amount::FromLine(_) | Amount::FromByte(_) => return None,
+    };
+    if file.kind() != Some(FileKind::File) {
+        return None;
+    }
+    let Ok(len) = file.seek(SeekFrom::End(0))? else {
+        return None;
+    };
+    let mut from = len;
+    let mut data = Vec::new();
+    loop {
+        let next = match amount {
+            Amount::LastBytes(n) => len.saturating_sub(n),
+            _ => from.saturating_sub((len - from).max(64 * 1024)),
+        };
+        if let Err(e) = file.seek(SeekFrom::Start(next))? {
+            return Some(Err(e));
+        }
+        let mut chunk = vec![0u8; (from - next) as usize];
+        let mut got = 0;
+        while got < chunk.len() {
+            match file.read(&mut chunk[got..]).await {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        if got < chunk.len() {
+            return match file.seek(SeekFrom::Start(0))? {
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            };
+        }
+        chunk.extend_from_slice(&data);
+        data = chunk;
+        from = next;
+        if from == 0
+            || matches!(amount, Amount::LastBytes(_))
+            || memchr::memchr_iter(delim, &data).count() as u64 > want
+        {
+            return Some(Ok((data, len as usize)));
         }
     }
 }

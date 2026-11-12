@@ -38,6 +38,7 @@
 
 extern crate alloc;
 
+pub mod ascii;
 pub mod byte_slice;
 pub mod iteration;
 
@@ -673,7 +674,9 @@ impl From<&str> for Wtf8Buf {
 
 impl From<ascii::AsciiString> for Wtf8Buf {
     fn from(s: ascii::AsciiString) -> Self {
-        Self::from_string(s.into())
+        Self {
+            bytes: s.into_bytes(),
+        }
     }
 }
 
@@ -1679,12 +1682,6 @@ impl From<&str> for Box<Wtf8> {
 impl From<Box<str>> for Box<Wtf8> {
     fn from(s: Box<str>) -> Self {
         unsafe { from_boxed_wtf8_unchecked(s.into_boxed_bytes()) }
-    }
-}
-
-impl From<Box<ascii::AsciiStr>> for Box<Wtf8> {
-    fn from(s: Box<ascii::AsciiStr>) -> Self {
-        <Box<str>>::from(s).into()
     }
 }
 

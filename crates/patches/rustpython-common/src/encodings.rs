@@ -624,7 +624,7 @@ pub mod latin_1 {
 
 pub mod ascii {
     use super::*;
-    use ::ascii::AsciiStr;
+    use crate::wtf8::ascii::AsciiStr;
 
     pub const ENCODING_NAME: &str = "ascii";
 

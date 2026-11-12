@@ -31,7 +31,7 @@ use crate::{
     },
 };
 use alloc::{borrow::Cow, fmt};
-use ascii::{AsciiChar, AsciiStr, AsciiString};
+use rustpython_common::wtf8::ascii::{AsciiChar, AsciiStr, AsciiString};
 use rustpython_common::wtf8::byte_slice::ByteSlice;
 use core::ffi::CStr;
 use core::{char, mem, ops::Range};
@@ -150,12 +150,6 @@ impl<'a> From<&'a AsciiStr> for PyStr {
 
 impl From<AsciiString> for PyStr {
     fn from(s: AsciiString) -> Self {
-        s.into_boxed_ascii_str().into()
-    }
-}
-
-impl From<Box<AsciiStr>> for PyStr {
-    fn from(s: Box<AsciiStr>) -> Self {
         StrData::from(s).into()
     }
 }
@@ -928,12 +922,13 @@ impl Py<PyStr> {
     fn capitalize(&self) -> Wtf8Buf {
         match self.as_str_kind() {
             PyKindStr::Ascii(s) => {
-                let mut s = s.to_owned();
-                if let [first, rest @ ..] = s.as_mut_slice() {
-                    first.make_ascii_uppercase();
-                    ascii::AsciiStr::make_ascii_lowercase(rest.into());
+                let mut characters = s.chars();
+                let mut capitalized = AsciiString::with_capacity(s.len());
+                if let Some(first) = characters.next() {
+                    capitalized.push(first.to_ascii_uppercase());
                 }
-                s.into()
+                capitalized.extend(characters.map(AsciiChar::to_ascii_lowercase));
+                capitalized.into()
             }
             PyKindStr::Utf8(s) => case::capitalize_str(s).into(),
             PyKindStr::Wtf8(s) => case::capitalize_wtf8(s),
@@ -2034,7 +2029,7 @@ impl SliceableSequenceOp for PyStr {
     fn do_slice_reverse(&self, range: Range<usize>) -> Self::Sliced {
         if let PyKindStr::Ascii(s) = self.as_str_kind() {
             let mut out = s[range].to_owned();
-            out.as_mut_slice().reverse();
+            out.reverse();
             return out.into();
         }
         let char_len = range.len();
@@ -2048,9 +2043,7 @@ impl SliceableSequenceOp for PyStr {
     fn do_stepped_slice(&self, range: Range<usize>, step: usize) -> Self::Sliced {
         if let PyKindStr::Ascii(s) = self.as_str_kind() {
             return s[range]
-                .as_slice()
-                .iter()
-                .copied()
+                .chars()
                 .step_by(step)
                 .collect::<AsciiString>()
                 .into();
@@ -2187,12 +2180,6 @@ impl<'a> From<&'a AsciiStr> for PyUtf8Str {
 
 impl From<AsciiString> for PyUtf8Str {
     fn from(s: AsciiString) -> Self {
-        s.into_boxed_ascii_str().into()
-    }
-}
-
-impl From<Box<AsciiStr>> for PyUtf8Str {
-    fn from(s: Box<AsciiStr>) -> Self {
         let data = StrData::from(s);
         unsafe { Self::from_str_data_unchecked(data) }
     }
@@ -2592,9 +2579,7 @@ impl AnyStrContainer<AsciiStr> for AsciiString {
     }
 
     fn try_with_capacity(capacity: usize) -> Option<Self> {
-        let mut v = Vec::new();
-        v.try_reserve_exact(capacity).ok()?;
-        Some(Self::from(v))
+        Self::try_with_capacity(capacity)
     }
 
     fn push_str(&mut self, other: &AsciiStr) {
@@ -2602,7 +2587,7 @@ impl AnyStrContainer<AsciiStr> for AsciiString {
     }
 }
 
-impl anystr::AnyChar for ascii::AsciiChar {
+impl anystr::AnyChar for AsciiChar {
     fn bytes_len(self) -> usize {
         1
     }

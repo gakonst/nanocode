@@ -77,10 +77,6 @@ threading = [
 name = "rustpython_stdlib"
 path = "src/lib.rs"
 
-[dependencies.ascii]
-version = "1.1"
-default-features = false
-
 [dependencies.crossbeam-utils]
 version = "0.8.21"
 

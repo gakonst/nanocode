@@ -42,5 +42,5 @@ pub mod wtf8_index;
 pub use rustpython_wtf8 as wtf8;
 
 pub mod vendored {
-    pub use ascii;
+    pub use crate::wtf8::ascii;
 }

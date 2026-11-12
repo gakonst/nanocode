@@ -87,10 +87,6 @@ wasmbind = [
 name = "rustpython_vm"
 path = "src/lib.rs"
 
-[dependencies.ascii]
-version = "1.1"
-default-features = false
-
 [dependencies.bitflags]
 version = "2.11.0"
 

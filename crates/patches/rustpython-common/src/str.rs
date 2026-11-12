@@ -1,10 +1,10 @@
 // spell-checker:ignore uncomputed
 use crate::atomic::{OncePtr, PyAtomic, Radium};
 use crate::format::CharLen;
+use crate::wtf8::ascii::{AsciiChar, AsciiStr, AsciiString};
 use crate::wtf8::{CodePoint, Wtf8, Wtf8Buf};
 use crate::wtf8_index::Wtf8Index;
 use alloc::borrow::Cow;
-use ascii::{AsciiChar, AsciiStr, AsciiString};
 use core::fmt;
 use core::ops::{Bound, RangeBounds};
 use core::sync::atomic::Ordering::Relaxed;
@@ -248,12 +248,12 @@ impl From<Box<str>> for StrData {
     }
 }
 
-impl From<Box<AsciiStr>> for StrData {
+impl From<AsciiString> for StrData {
     #[inline]
-    fn from(value: Box<AsciiStr>) -> Self {
+    fn from(value: AsciiString) -> Self {
         Self {
             len: value.len().into(),
-            data: value.into(),
+            data: Wtf8Buf::from(value).into_box(),
             kind: StrKind::Ascii,
             index: Wtf8IndexSlot::new(),
         }
@@ -262,13 +262,13 @@ impl From<Box<AsciiStr>> for StrData {
 
 impl From<AsciiChar> for StrData {
     fn from(ch: AsciiChar) -> Self {
-        AsciiString::from(ch).into_boxed_ascii_str().into()
+        AsciiString::from(ch).into()
     }
 }
 
 impl From<char> for StrData {
     fn from(ch: char) -> Self {
-        if let Ok(ch) = ascii::AsciiChar::from_ascii(ch) {
+        if let Ok(ch) = AsciiChar::from_ascii(ch) {
             ch.into()
         } else {
             Self {
@@ -499,7 +499,7 @@ impl StrData {
 
     pub fn nth_char(&self, index: usize) -> CodePoint {
         match self.as_str_kind() {
-            PyKindStr::Ascii(s) => s[index].into(),
+            PyKindStr::Ascii(s) => s.char_at(index).into(),
             _ => self.data[self.char_index_to_byte_once(index)..]
                 .code_points()
                 .next()
@@ -795,7 +795,7 @@ macro_rules! ascii {
         unsafe { $crate::vendored::ascii::AsciiStr::from_ascii_unchecked(s.as_bytes()) }
     }};
 }
-pub use ascii;
+pub use crate::wtf8::ascii;
 
 /// The decimal digit value of `ch`, if it has one — CPython's `Py_UNICODE_TODECIMAL`.
 ///

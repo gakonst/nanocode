@@ -55,7 +55,7 @@ pub(crate) mod _struct {
                     s
                 }
                 b @ PyBytes => {
-                    let ascii_str = ascii::AsciiStr::from_ascii(&b)
+                    let ascii_str = rustpython_common::wtf8::ascii::AsciiStr::from_ascii(&b)
                         .map_err(|_| new_struct_error(vm, "bad char in struct format"))?;
                     vm.ctx.new_str(ascii_str)
                 }

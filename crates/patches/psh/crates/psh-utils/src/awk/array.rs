@@ -11,7 +11,7 @@ pub type ArrRc = Rc<RefCell<Array>>;
 
 #[derive(Default, Debug)]
 pub struct Array {
-    index: HashMap<S, usize>,
+    index: HashMap<S, usize, foldhash::fast::RandomState>,
     entries: Vec<Option<(S, Value)>>,
     live: usize,
 }

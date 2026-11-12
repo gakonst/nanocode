@@ -8243,6 +8243,7 @@ dependencies = [
  "bstr",
  "deser-core",
  "deser-json",
+ "foldhash 0.2.0",
  "gix-imara-diff",
  "globset",
  "grep-matcher",

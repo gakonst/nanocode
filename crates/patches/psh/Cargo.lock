@@ -621,6 +621,7 @@ dependencies = [
  "bstr",
  "deser-core",
  "deser-json",
+ "foldhash",
  "gix-imara-diff",
  "globset",
  "grep-matcher",

@@ -378,31 +378,46 @@ impl Issuer {
 pub(crate) fn base64(bytes: &[u8]) -> String {
     let mut text =
         String::with_capacity(bytes.len().div_ceil(BASE64_GROUP_BYTES) * BASE64_GROUP_CHARACTERS);
-    for group in bytes.chunks(BASE64_GROUP_BYTES) {
-        let mut word = 0u32;
-        for (index, byte) in group.iter().enumerate() {
-            word |= u32::from(*byte) << (u8::BITS as usize * (BASE64_GROUP_BYTES - 1 - index));
+    let (groups, tail) = bytes.as_chunks::<BASE64_GROUP_BYTES>();
+    for group in groups {
+        let word = group
+            .iter()
+            .fold(0u32, |word, byte| word << u8::BITS | u32::from(*byte));
+        for index in (0..BASE64_GROUP_CHARACTERS).rev() {
+            let sextet = (word >> (BASE64_SEXTET_BITS * index)) & BASE64_SEXTET_MASK;
+            text.push(char::from(BASE64_ALPHABET[sextet as usize]));
         }
-        for index in 0..BASE64_GROUP_CHARACTERS {
-            if index > group.len() {
-                text.push(BASE64_PAD);
-                continue;
-            }
-            let shift = BASE64_SEXTET_BITS * (BASE64_GROUP_CHARACTERS - 1 - index);
-            text.push(BASE64_ALPHABET[((word >> shift) & BASE64_SEXTET_MASK) as usize] as char);
+    }
+    if tail.is_empty() {
+        return text;
+    }
+    let mut word = 0u32;
+    for (index, byte) in tail.iter().enumerate() {
+        word |= u32::from(*byte) << (u8::BITS as usize * (BASE64_GROUP_BYTES - 1 - index));
+    }
+    for index in 0..BASE64_GROUP_CHARACTERS {
+        if index > tail.len() {
+            text.push(BASE64_PAD);
+            continue;
         }
+        let shift = BASE64_SEXTET_BITS * (BASE64_GROUP_CHARACTERS - 1 - index);
+        text.push(BASE64_ALPHABET[((word >> shift) & BASE64_SEXTET_MASK) as usize] as char);
     }
     text
 }
 
 pub(crate) fn pem(certificate: &[u8]) -> String {
     let encoded = base64(certificate);
-    let mut pem = String::from(PEM_BEGIN);
-    for (index, character) in encoded.chars().enumerate() {
-        if index % PEM_LINE == 0 {
-            pem.push('\n');
-        }
-        pem.push(character);
+    let mut pem = String::with_capacity(
+        PEM_BEGIN.len() + encoded.len() + encoded.len().div_ceil(PEM_LINE) + PEM_END.len(),
+    );
+    pem.push_str(PEM_BEGIN);
+    let mut rest = encoded.as_str();
+    while !rest.is_empty() {
+        let (line, tail) = rest.split_at(rest.len().min(PEM_LINE));
+        pem.push('\n');
+        pem.push_str(line);
+        rest = tail;
     }
     pem.push_str(PEM_END);
     pem

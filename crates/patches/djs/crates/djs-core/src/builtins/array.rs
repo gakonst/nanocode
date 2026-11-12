@@ -4,9 +4,13 @@ use crate::PushOut;
 
 use alloc::vec::Vec;
 
-use crate::builtins::string;
-use crate::heap::{Heap, ObjectClass, StrView};
+use crate::builtins::{fast, string};
+use crate::bytecode::Op;
+use crate::bytecode::decode::insns;
+use crate::heap::cells::FuncTemplate;
+use crate::heap::{Atom, Heap, ObjectClass, Property, StrView};
 use crate::interp::conv::{self, Fault};
+use crate::interp::{Intrinsic, realm};
 use crate::value::{Kind, Obj, Str, Value};
 
 /// `%SortPrimitives(list)`: sorts a dense array of non-symbol primitives by
@@ -53,6 +57,182 @@ pub(crate) fn sort_primitives(heap: &mut Heap, list: Obj) -> Result<bool, Fault>
         i += 1;
     }
     Ok(true)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Comparator {
+    Difference,
+    Order,
+    Locale(Atom),
+}
+
+pub(crate) fn sort_by_key(heap: &mut Heap, list: Obj, comparefn: Value) -> Result<bool, Fault> {
+    let Some(f) = comparefn.as_object() else {
+        return Ok(false);
+    };
+    if heap.object_class(f) != ObjectClass::Function
+        || heap.object_class(list) != ObjectClass::Array
+    {
+        return Ok(false);
+    }
+    let Some((comparator, key, descending)) = comparator_of(heap, heap.closure_template(f)) else {
+        return Ok(false);
+    };
+    if let Comparator::Locale(method) = comparator {
+        let proto = realm::intrinsic_obj(heap, Intrinsic::StringProto);
+        match heap.find_property(proto, method) {
+            Some((_, Property::Data { value, .. })) if fast::runs_locale_compare(heap, value) => {}
+            _ => return Ok(false),
+        }
+    }
+    let n = heap.array_length(list);
+    let mut keyed: Vec<(Value, Value)> = crate::buf::vec_with_capacity(n as usize);
+    for i in 0..n {
+        let Some(v) = heap.get_element_fast(list, i) else {
+            return Ok(false);
+        };
+        let k = match key {
+            None => v,
+            Some(atom) => match v.as_object() {
+                Some(o) if heap.object_class(o) == ObjectClass::Ordinary => {
+                    match heap.get_own_property(o, atom) {
+                        Some(Property::Data { value, .. }) => value,
+                        _ => return Ok(false),
+                    }
+                }
+                _ => return Ok(false),
+            },
+        };
+        keyed.push_out((k, v));
+    }
+    let numbers = keyed
+        .iter()
+        .all(|(k, _)| k.as_number().is_some_and(|x| !x.is_nan()));
+    let sorted: Vec<Value> = if numbers && !matches!(comparator, Comparator::Locale(_)) {
+        let mut numbered: Vec<(f64, Value)> = keyed
+            .into_iter()
+            .map(|(k, v)| (k.as_number().unwrap_or(0.0), v))
+            .collect();
+        if descending {
+            crate::sort::sort_by(&mut numbered, |a, b| b.0 - a.0 < 0.0);
+        } else {
+            crate::sort::sort_by(&mut numbered, |a, b| a.0 - b.0 < 0.0);
+        }
+        numbered.into_iter().map(|(_, v)| v).collect()
+    } else if comparator != Comparator::Difference
+        && keyed.iter().all(|(k, _)| k.as_string().is_some())
+    {
+        let mut strings: Vec<(Str, Value)> = crate::buf::vec_with_capacity(keyed.len());
+        for (k, v) in keyed {
+            strings.push_out((heap.contiguous(k.as_string().unwrap_or(Str(0)))?, v));
+        }
+        let mut views: Vec<(StrView, Value)> = crate::buf::vec_with_capacity(strings.len());
+        for &(s, v) in &strings {
+            match heap.str_view(s) {
+                Some(view @ StrView::Latin1(_)) => views.push_out((view, v)),
+                Some(view) if comparator == Comparator::Order => views.push_out((view, v)),
+                _ => return Ok(false),
+            }
+        }
+        if descending {
+            crate::sort::sort_by(&mut views, |a, b| string::view_cmp(b.0, a.0).is_lt());
+        } else {
+            crate::sort::sort_by(&mut views, |a, b| string::view_cmp(a.0, b.0).is_lt());
+        }
+        views.into_iter().map(|(_, v)| v).collect()
+    } else {
+        return Ok(false);
+    };
+    for (i, v) in (0..).zip(sorted) {
+        heap.set_element_fast(list, i, v)?;
+    }
+    Ok(true)
+}
+
+fn comparator_of(heap: &Heap, t: u32) -> Option<(Comparator, Option<Atom>, bool)> {
+    let a = heap.arena();
+    let start = FuncTemplate::DATA.at(t, 0) as usize;
+    let len = a.get::<u32>(t, FuncTemplate::CODE_LEN) as usize;
+    let code = a.bytes().get(start..start + len)?;
+    let mut ins = [None; 20];
+    let mut n = 0;
+    for insn in insns(code) {
+        *ins.get_mut(n)? = Some(insn.ok()?);
+        n += 1;
+    }
+    let ins = &ins[..n];
+    let op = |i: usize| ins.get(i).copied().flatten().map(|insn| insn.op);
+    let field = op(1) == Some(Op::GetField);
+    let step = if field { 2 } else { 1 };
+    let mut key = None;
+    let mut operand = |i: usize| -> Option<u8> {
+        let arg = match op(i)? {
+            Op::GetArg0 => 0,
+            Op::GetArg1 => 1,
+            _ => return None,
+        };
+        if field {
+            let insn = ins.get(i + 1).copied().flatten()?;
+            if insn.op != Op::GetField || *key.get_or_insert(insn.atom(0)) != insn.atom(0) {
+                return None;
+            }
+        }
+        Some(arg)
+    };
+    let pair = |x: u8, y: u8| match (x, y) {
+        (0, 1) => Some(false),
+        (1, 0) => Some(true),
+        _ => None,
+    };
+    if n == 2 * step + 2 && op(n - 2) == Some(Op::Sub) && op(n - 1) == Some(Op::Return) {
+        let swapped = pair(operand(0)?, operand(step)?)?;
+        return Some((Comparator::Difference, key, swapped));
+    }
+    if n == 2 * step + 3
+        && op(step) == Some(Op::GetMethod)
+        && op(n - 2) == Some(Op::Call1)
+        && op(n - 1) == Some(Op::Return)
+    {
+        let method = ins.get(step).copied().flatten()?.atom(0);
+        let receiver = operand(0)?;
+        let swapped = pair(receiver, operand(step + 1)?)?;
+        return Some((Comparator::Locale(method), key, swapped));
+    }
+    let b = 2 * step + 5;
+    if n != 4 * step + 11 {
+        return None;
+    }
+    let shape = [
+        (2 * step + 2, Op::Push1),
+        (2 * step + 3, Op::Neg),
+        (2 * step + 4, Op::Return),
+        (b + 2 * step + 2, Op::Push1),
+        (b + 2 * step + 3, Op::Return),
+        (b + 2 * step + 4, Op::Push0),
+        (b + 2 * step + 5, Op::Return),
+    ];
+    if shape.iter().any(|&(i, o)| op(i) != Some(o)) {
+        return None;
+    }
+    let jumps = [(2 * step + 1, b), (b + 2 * step + 1, b + 2 * step + 4)];
+    for (j, to) in jumps {
+        let insn = ins.get(j).copied().flatten()?;
+        if insn.op != Op::JumpIfFalse8 || insn.jump_target()? != ins.get(to).copied().flatten()?.pc
+        {
+            return None;
+        }
+    }
+    let first = pair(operand(0)?, operand(step)?)?;
+    let second = pair(operand(b)?, operand(b + step)?)?;
+    let (less, greater) = match (op(2 * step)?, op(b + 2 * step)?) {
+        (Op::Lt, Op::Gt) => (false, false),
+        (Op::Gt, Op::Lt) => (true, true),
+        _ => return None,
+    };
+    if first != second || less != greater {
+        return None;
+    }
+    Some((Comparator::Order, key, first != less))
 }
 
 /// The comparator sort's working state (D3125): an internal Array made by

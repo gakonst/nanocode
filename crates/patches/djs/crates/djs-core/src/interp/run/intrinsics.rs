@@ -228,6 +228,7 @@ const F64_TRUNC: u16 = id("F64Trunc");
 const COMPARE_STRINGS: u16 = id("CompareStrings");
 const STRING_CODE_POINTS: u16 = id("StringCodePoints");
 const SORT_PRIMITIVES: u16 = id("SortPrimitives");
+const SORT_BY_KEY: u16 = id("SortByKey");
 const SORT_START: u16 = id("SortStart");
 const SORT_STEP: u16 = id("SortStep");
 const SORT_OPERAND: u16 = id("SortOperand");
@@ -1153,6 +1154,10 @@ impl Exec<'_> {
             },
             SORT_PRIMITIVES => match a0.as_object() {
                 Some(o) => Value::bool(array::sort_primitives(self.heap, o)?),
+                None => return bad_argument(id),
+            },
+            SORT_BY_KEY => match a0.as_object() {
+                Some(o) => Value::bool(array::sort_by_key(self.heap, o, arg(self, 1))?),
                 None => return bad_argument(id),
             },
             SORT_START => match a0.as_object() {

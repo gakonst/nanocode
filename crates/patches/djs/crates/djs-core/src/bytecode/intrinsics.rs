@@ -190,6 +190,7 @@ pub const INTRINSICS: &[IntrinsicInfo] = &[
     i("CompareStrings", L, 2, false),
     i("StringCodePoints", L, 1, false),
     i("SortPrimitives", L, 1, false),
+    i("SortByKey", L, 2, false),
     i("SortStart", L, 1, false),
     i("SortStep", L, 2, false),
     i("SortOperand", L, 2, false),

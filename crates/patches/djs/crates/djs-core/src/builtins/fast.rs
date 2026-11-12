@@ -19,6 +19,8 @@ use alloc::vec::Vec;
 
 use crate::builtins::{collection, dense, number, regexp, string};
 use crate::bytecode::intrinsics::INTRINSICS;
+use crate::bytecode::template::func_flags;
+use crate::heap::cells::FuncTemplate;
 use crate::heap::{Heap, Lookup, ObjectClass, Property, StrView, atoms};
 use crate::interp::conv::{self, Fault};
 use crate::interp::run::promise;
@@ -779,6 +781,22 @@ fn code_point_at(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
 }
 
 /// String.prototype.localeCompare ( that ).
+pub(crate) fn runs_locale_compare(heap: &Heap, f: Value) -> bool {
+    let Some(o) = f.as_object() else {
+        return false;
+    };
+    if heap.object_class(o) != ObjectClass::Function {
+        return false;
+    }
+    let t = heap.closure_template(o);
+    let a = heap.arena();
+    let run = locale_compare as fn(&mut Heap, Value, &[Value]) -> Fast;
+    u32::from(a.get::<u16>(t, FuncTemplate::FLAGS)) & func_flags::FAST != 0
+        && FAST
+            .get(usize::from(a.get::<u8>(t, FuncTemplate::FAST)))
+            .is_some_and(|entry| entry.run as usize == run as usize)
+}
+
 fn locale_compare(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
     let Some((s, t)) = search(heap, this, arg(args, 0))? else {
         return Ok(None);

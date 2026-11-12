@@ -468,6 +468,14 @@ declare function StringCodePoints(s: Str): Obj;
  */
 declare function SortPrimitives(list: Obj): boolean;
 /**
+ * Sorts the dense array `list` by `comparefn` and returns true when `comparefn` is
+ * `(a, b) => a - b`, `(a, b) => a < b ? -1 : a > b ? 1 : 0` or
+ * `(a, b) => a.localeCompare(b)`, reversed or of one property of each, and the keys
+ * are Numbers other than NaN or strings (one-byte for localeCompare), own data
+ * properties of ordinary objects. Returns false, leaving it unchanged, otherwise. @leaf
+ */
+declare function SortByKey(list: Obj, comparefn: Value): boolean;
+/**
  * The state of a stable bottom-up merge sort of the dense array `list` (made by
  * SortList, never seen by user code) by SortCompare: its undefined elements move to the
  * end of the list (they sort last and are never compared), the others into the state.

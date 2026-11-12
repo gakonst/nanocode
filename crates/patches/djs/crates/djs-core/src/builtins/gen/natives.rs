@@ -27,6 +27,7 @@ const I_PRIMITIVE_VALUE: u16 = iid("PrimitiveValue");
 const I_SERIALIZE_J_S_O_N_ARRAY: u16 = iid("SerializeJSONArray");
 const I_SERIALIZE_J_S_O_N_OBJECT: u16 = iid("SerializeJSONObject");
 const I_SERIALIZE_J_S_O_N_PROPERTY: u16 = iid("SerializeJSONProperty");
+const I_SORT_BY_KEY: u16 = iid("SortByKey");
 const I_SORT_LIST: u16 = iid("SortList");
 const I_SORT_PRIMITIVES: u16 = iid("SortPrimitives");
 const I_SORT_START: u16 = iid("SortStart");
@@ -138,84 +139,90 @@ fn native_SortList(ex: &mut Exec<'_>) -> Step {
                 let v = Value::UNDEFINED; return ex.n_ret(v);
             }
             2 => {
-                let v = { let a0 = ex.n_arg(0); ex.n_leaf(I_SORT_START, &[a0])? }; ex.n_set_slot(0, v);
-                let v = Value::int(0); ex.n_set_slot(1, v);
-                st = 3; continue;
+                if (!ex.n_arg(1).is_undefined() && bool_of({ let a0 = ex.n_arg(0); let a1 = ex.n_arg(1); ex.n_leaf(I_SORT_BY_KEY, &[a0, a1])? })) { st = 3; continue; } else { st = 4; continue; }
             }
             3 => {
-                if { let a0 = ex.n_slot(0); let a1 = ex.n_slot(1); ex.n_sort_step(a0, a1)? } { st = 4; continue; } else { st = 5; continue; }
-            }
-            4 => {
-                if ex.n_arg(1).is_undefined() { st = 6; continue; } else { st = 7; continue; }
-            }
-            5 => {
                 let v = Value::UNDEFINED; return ex.n_ret(v);
             }
+            4 => {
+                let v = { let a0 = ex.n_arg(0); ex.n_leaf(I_SORT_START, &[a0])? }; ex.n_set_slot(0, v);
+                let v = Value::int(0); ex.n_set_slot(1, v);
+                st = 5; continue;
+            }
+            5 => {
+                if { let a0 = ex.n_slot(0); let a1 = ex.n_slot(1); ex.n_sort_step(a0, a1)? } { st = 6; continue; } else { st = 7; continue; }
+            }
             6 => {
-                // inlined: ToString
-                let v = { let a0 = ex.n_slot(0); let a1 = Value::int(0); ex.n_sort_operand(a0, a1)? }; ex.n_set_slot(3, v);
-                if { let a0 = ex.n_slot(3); a0.as_object().is_some() } { st = 9; continue; } else { st = 10; continue; }
+                if ex.n_arg(1).is_undefined() { st = 8; continue; } else { st = 9; continue; }
             }
             7 => {
-                // resume point: Call
-                match { let a0 = ex.n_arg(1); let a1 = Value::UNDEFINED; let a2 = { let a0 = ex.n_slot(0); let a1 = Value::int(0); ex.n_sort_operand(a0, a1)? }; let a3 = { let a0 = ex.n_slot(0); let a1 = Value::int(1); ex.n_sort_operand(a0, a1)? }; ex.n_call(I_CALL, &[a0, a1, a2, a3], 16) }? { Flow::Inline => { st = 16; continue } Flow::Leave(s) => return Ok(s) }
+                let v = Value::UNDEFINED; return ex.n_ret(v);
             }
             8 => {
                 // inlined: ToString
-                let v = { let a0 = ex.n_slot(0); let a1 = Value::int(1); ex.n_sort_operand(a0, a1)? }; ex.n_set_slot(4, v);
-                if { let a0 = ex.n_slot(4); a0.as_object().is_some() } { st = 13; continue; } else { st = 14; continue; }
+                let v = { let a0 = ex.n_slot(0); let a1 = Value::int(0); ex.n_sort_operand(a0, a1)? }; ex.n_set_slot(3, v);
+                if { let a0 = ex.n_slot(3); a0.as_object().is_some() } { st = 11; continue; } else { st = 12; continue; }
             }
             9 => {
-                // resume point: ToPrimitive
-                match { let a0 = ex.n_slot(3); let a1 = ex.n_str("string")?; ex.n_call(I_TO_PRIMITIVE, &[a0, a1], 11) }? { Flow::Inline => { st = 11; continue } Flow::Leave(s) => return Ok(s) }
+                // resume point: Call
+                match { let a0 = ex.n_arg(1); let a1 = Value::UNDEFINED; let a2 = { let a0 = ex.n_slot(0); let a1 = Value::int(0); ex.n_sort_operand(a0, a1)? }; let a3 = { let a0 = ex.n_slot(0); let a1 = Value::int(1); ex.n_sort_operand(a0, a1)? }; ex.n_call(I_CALL, &[a0, a1, a2, a3], 18) }? { Flow::Inline => { st = 18; continue } Flow::Leave(s) => return Ok(s) }
             }
             10 => {
-                let v = { let a0 = ex.n_slot(3); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(2, v);
-                st = 8; continue;
+                // inlined: ToString
+                let v = { let a0 = ex.n_slot(0); let a1 = Value::int(1); ex.n_sort_operand(a0, a1)? }; ex.n_set_slot(4, v);
+                if { let a0 = ex.n_slot(4); a0.as_object().is_some() } { st = 15; continue; } else { st = 16; continue; }
             }
             11 => {
-                let r = ex.n_result(); ex.n_set_slot(4, r);
-                let v = { let a0 = ex.n_slot(4); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(2, v);
-                st = 8; continue;
+                // resume point: ToPrimitive
+                match { let a0 = ex.n_slot(3); let a1 = ex.n_str("string")?; ex.n_call(I_TO_PRIMITIVE, &[a0, a1], 13) }? { Flow::Inline => { st = 13; continue } Flow::Leave(s) => return Ok(s) }
             }
             12 => {
-                let v = num(f64_of({ let a0 = ex.n_slot(2); let a1 = ex.n_slot(3); ex.n_leaf(I_COMPARE_STRINGS, &[a0, a1])? })); ex.n_set_slot(1, v);
-                if ex.n_backedge(3) { return Ok(None); } st = 3; continue;
+                let v = { let a0 = ex.n_slot(3); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(2, v);
+                st = 10; continue;
             }
             13 => {
-                // resume point: ToPrimitive
-                match { let a0 = ex.n_slot(4); let a1 = ex.n_str("string")?; ex.n_call(I_TO_PRIMITIVE, &[a0, a1], 15) }? { Flow::Inline => { st = 15; continue } Flow::Leave(s) => return Ok(s) }
+                let r = ex.n_result(); ex.n_set_slot(4, r);
+                let v = { let a0 = ex.n_slot(4); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(2, v);
+                st = 10; continue;
             }
             14 => {
-                let v = { let a0 = ex.n_slot(4); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(3, v);
-                st = 12; continue;
+                let v = num(f64_of({ let a0 = ex.n_slot(2); let a1 = ex.n_slot(3); ex.n_leaf(I_COMPARE_STRINGS, &[a0, a1])? })); ex.n_set_slot(1, v);
+                if ex.n_backedge(5) { return Ok(None); } st = 5; continue;
             }
             15 => {
-                let r = ex.n_result(); ex.n_set_slot(5, r);
-                let v = { let a0 = ex.n_slot(5); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(3, v);
-                st = 12; continue;
+                // resume point: ToPrimitive
+                match { let a0 = ex.n_slot(4); let a1 = ex.n_str("string")?; ex.n_call(I_TO_PRIMITIVE, &[a0, a1], 17) }? { Flow::Inline => { st = 17; continue } Flow::Leave(s) => return Ok(s) }
             }
             16 => {
-                let r = ex.n_result(); ex.n_set_slot(1, r);
-                if (!{ let a0 = ex.n_slot(1); a0.is_number() }) { st = 17; continue; } else { if ex.n_backedge(3) { return Ok(None); } st = 3; continue; }
+                let v = { let a0 = ex.n_slot(4); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(3, v);
+                st = 14; continue;
             }
             17 => {
-                // inlined: ToNumber
-                let v = ex.n_slot(1); ex.n_set_slot(3, v);
-                if { let a0 = ex.n_slot(3); a0.as_object().is_some() } { st = 18; continue; } else { st = 19; continue; }
+                let r = ex.n_result(); ex.n_set_slot(5, r);
+                let v = { let a0 = ex.n_slot(5); ex.n_leaf(I_TO_STRING_PRIMITIVE, &[a0])? }; ex.n_set_slot(3, v);
+                st = 14; continue;
             }
             18 => {
-                // resume point: ToPrimitive
-                match { let a0 = ex.n_slot(3); let a1 = ex.n_str("number")?; ex.n_call(I_TO_PRIMITIVE, &[a0, a1], 20) }? { Flow::Inline => { st = 20; continue } Flow::Leave(s) => return Ok(s) }
+                let r = ex.n_result(); ex.n_set_slot(1, r);
+                if (!{ let a0 = ex.n_slot(1); a0.is_number() }) { st = 19; continue; } else { if ex.n_backedge(5) { return Ok(None); } st = 5; continue; }
             }
             19 => {
-                let v = num(f64_of({ let a0 = ex.n_slot(3); ex.n_leaf(I_TO_NUMBER_PRIMITIVE, &[a0])? })); ex.n_set_slot(1, v);
-                if ex.n_backedge(3) { return Ok(None); } st = 3; continue;
+                // inlined: ToNumber
+                let v = ex.n_slot(1); ex.n_set_slot(3, v);
+                if { let a0 = ex.n_slot(3); a0.as_object().is_some() } { st = 20; continue; } else { st = 21; continue; }
             }
             20 => {
+                // resume point: ToPrimitive
+                match { let a0 = ex.n_slot(3); let a1 = ex.n_str("number")?; ex.n_call(I_TO_PRIMITIVE, &[a0, a1], 22) }? { Flow::Inline => { st = 22; continue } Flow::Leave(s) => return Ok(s) }
+            }
+            21 => {
+                let v = num(f64_of({ let a0 = ex.n_slot(3); ex.n_leaf(I_TO_NUMBER_PRIMITIVE, &[a0])? })); ex.n_set_slot(1, v);
+                if ex.n_backedge(5) { return Ok(None); } st = 5; continue;
+            }
+            22 => {
                 let r = ex.n_result(); ex.n_set_slot(4, r);
                 let v = num(f64_of({ let a0 = ex.n_slot(4); ex.n_leaf(I_TO_NUMBER_PRIMITIVE, &[a0])? })); ex.n_set_slot(1, v);
-                if ex.n_backedge(3) { return Ok(None); } st = 3; continue;
+                if ex.n_backedge(5) { return Ok(None); } st = 5; continue;
             }
             _ => return Err(bad_state()),
         }
@@ -227,7 +234,7 @@ fn handler_SortList(state: u32) -> Option<(u32, u32)> {
     None
 }
 
-// builtins/array.ts:1022 (Array.prototype.sort)
+// builtins/array.ts:1025 (Array.prototype.sort)
 #[allow(unused_assignments)]
 fn native_ArrayPrototypeSort(ex: &mut Exec<'_>) -> Step {
     let mut st = ex.n_state();

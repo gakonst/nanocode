@@ -978,6 +978,9 @@ function SortList(list: Obj, comparefn: Value): void {
   if (comparefn === undefined && SortPrimitives(list)) {
     return;
   }
+  if (comparefn !== undefined && SortByKey(list, comparefn)) {
+    return;
+  }
   const st: Obj = SortStart(list);
   // SortCompare's result, a Number (NaN counts as 0).
   let r: Value = 0;

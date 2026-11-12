@@ -2510,11 +2510,18 @@ name = "nanocode-sync"
 version = "0.7.0"
 dependencies = [
  "arc-swap",
- "crossbeam-utils",
  "futures-util",
  "imbl",
  "nanocode-platform",
+ "nanocode-sys",
  "tokio",
+]
+
+[[package]]
+name = "nanocode-sys"
+version = "0.7.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

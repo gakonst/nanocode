@@ -154,7 +154,7 @@ impl<T: Clone> Atom<T> {
 }
 
 pub struct Slot<T> {
-    value: crossbeam_utils::atomic::AtomicCell<Option<Box<T>>>,
+    value: nanocode_sys::AtomicBox<T>,
     occupied: std::sync::atomic::AtomicIsize,
 }
 
@@ -169,7 +169,7 @@ impl<T> Slot<T> {
     pub fn new(value: Option<T>) -> Self {
         Self {
             occupied: std::sync::atomic::AtomicIsize::new(isize::from(value.is_some())),
-            value: crossbeam_utils::atomic::AtomicCell::new(value.map(Box::new)),
+            value: nanocode_sys::AtomicBox::new(value.map(Box::new)),
         }
     }
 
@@ -893,7 +893,7 @@ struct Desk<S> {
 }
 
 struct Mailroom<S> {
-    desk: crossbeam_utils::atomic::AtomicCell<Option<Box<Desk<S>>>>,
+    desk: nanocode_sys::AtomicBox<Desk<S>>,
     letters: mpsc::UnboundedSender<Letter<S>>,
     queued: std::sync::atomic::AtomicUsize,
 }
@@ -917,7 +917,7 @@ impl<S> Mailbox<S> {
     pub fn new(state: S) -> Self {
         let (letters, received) = mpsc::unbounded_channel();
         Self(Arc::new(Mailroom {
-            desk: crossbeam_utils::atomic::AtomicCell::new(Some(Box::new(Desk {
+            desk: nanocode_sys::AtomicBox::new(Some(Box::new(Desk {
                 state,
                 letters: received,
             }))),

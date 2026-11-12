@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crossbeam_utils::atomic::AtomicCell;
+use nanocode_sys::AtomicArc;
 
 pub trait Pointer: Sized {
     type Base;
@@ -44,7 +44,7 @@ impl<T> Pointer for Option<Arc<T>> {
     }
 }
 
-pub struct Swapped<P: Pointer>(AtomicCell<Option<Arc<P::Base>>>);
+pub struct Swapped<P: Pointer>(AtomicArc<P::Base>);
 
 pub type Swap<T> = Swapped<Arc<T>>;
 
@@ -74,7 +74,7 @@ impl<P: std::fmt::Debug> std::fmt::Debug for Guard<P> {
 
 impl<P: Pointer> Swapped<P> {
     pub fn new(value: P) -> Self {
-        Self(AtomicCell::new(value.into_slot()))
+        Self(AtomicArc::new(value.into_slot()))
     }
 
     pub fn load(&self) -> Guard<P> {
@@ -151,7 +151,7 @@ impl<T> Enclosed<T> {
 
 impl<T> SwapOption<T> {
     pub const fn const_empty() -> Self {
-        Self(AtomicCell::new(None))
+        Self(AtomicArc::empty())
     }
 
     pub const fn empty() -> Self {

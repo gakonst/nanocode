@@ -1,5 +1,5 @@
 use crate::Atom;
-use crossbeam_utils::atomic::AtomicCell;
+use nanocode_sys::AtomicStatic;
 use std::{
     fmt,
     panic::Location,
@@ -28,9 +28,9 @@ fn holders() -> &'static Atom<imbl::Vector<Weak<Holder>>> {
 
 #[derive(Default)]
 pub(crate) struct Holder {
-    at: AtomicCell<Option<&'static Location<'static>>>,
+    at: AtomicStatic<Location<'static>>,
     waiters: AtomicUsize,
-    waiter: AtomicCell<Option<&'static Location<'static>>>,
+    waiter: AtomicStatic<Location<'static>>,
     since: AtomicU64,
 }
 

@@ -54,6 +54,7 @@ const PROMISE: u32 = 4;
 const KIND: u32 = 5;
 pub(crate) const QUEUE: u32 = 6;
 
+const GENERATOR_NEXT: u16 = intrinsics::id("GeneratorPrototypeNext");
 const ASYNC_AWAIT: u16 = intrinsics::id("AsyncAwait");
 const ASYNC_FUNCTION_RETURN: u16 = intrinsics::id("AsyncFunctionReturn");
 
@@ -183,7 +184,65 @@ pub(crate) fn read_activation(heap: &Heap, g: Obj) -> Suspended {
     }
 }
 
+pub(super) fn plain_generator(heap: &Heap, it: Value, f: Value) -> Option<Obj> {
+    let g = as_generator(heap, it, GENERATOR)?;
+    let ready = matches!(state_of(heap, g), START | SUSPENDED);
+    (ready && f == realm::installed_intrinsic(heap, GENERATOR_NEXT)).then_some(g)
+}
+
 impl Exec<'_> {
+    fn gen_step_iterator(&mut self, at: u32) -> (bool, Option<Obj>) {
+        self.pc = at;
+        let loc = self.heap.arena().read::<u8>(self.code + at) == Op::IterNextLoc as u8;
+        let it = if loc {
+            self.get(self.lp + self.imm_u16(1))
+        } else {
+            self.top(1)
+        };
+        (loc, as_generator(self.heap, it, GENERATOR))
+    }
+
+    pub(super) fn gen_step_return(&mut self, v: Value) -> Step {
+        let at = self.pc;
+        let (loc, g) = self.gen_step_iterator(at);
+        let (r, jump) = match g.map(|g| (g, state_of(self.heap, g))) {
+            Some((_, SUSPENDED)) => (v, true),
+            Some((g, EXECUTING)) => {
+                set_state(self.heap, g, COMPLETED);
+                let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
+                let keys = [crate::heap::atoms::VALUE, crate::heap::atoms::DONE];
+                let o = self
+                    .heap
+                    .new_object_from_entries(Some(proto), &keys, &[v, Value::TRUE])?;
+                (Value::object(o), false)
+            }
+            _ => (v, false),
+        };
+        let op = if loc { Op::IterNextLoc } else { Op::IterNext };
+        let next = at + OPS[op as usize].size as u32;
+        self.pc = if jump {
+            (next as i64 + self.imm_i32(if loc { 3 } else { 1 }) as i64) as u32
+        } else {
+            next
+        };
+        if loc {
+            self.push(r);
+        } else {
+            self.sp -= 1;
+            self.set(self.sp - 1, r);
+        }
+        self.safepoint();
+        Ok(None)
+    }
+
+    pub(super) fn gen_step_abort(&mut self, at: u32) {
+        if let (_, Some(g)) = self.gen_step_iterator(at)
+            && state_of(self.heap, g) == EXECUTING
+        {
+            set_state(self.heap, g, COMPLETED);
+        }
+    }
+
     /// The Generator object in local `loc` of the current frame.
     fn local_generator(&self, loc: u32, kinds: &[i32]) -> Result<Obj, Fault> {
         as_generator_of(self.heap, self.get(self.lp + loc), kinds).ok_or_else(|| {

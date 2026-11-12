@@ -439,6 +439,7 @@ pub const INTRINSICS: &[IntrinsicInfo] = &[
     i("ClassHeritage", B, 1, false),
     i("ThrowTypeError", B, 1, false),
     i("FunctionPrototypeBehavior", B, 0, false),
+    i("GeneratorPrototypeNext", B, 1, false),
     i("AsyncAwait", B, 2, false),
     i("AsyncFunctionReturn", B, 2, false),
     i("GeneratorFunctionConstructor", B, 0, true),

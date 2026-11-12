@@ -46,6 +46,7 @@ function GeneratorStep(g: Obj, value: Value, mode: i32): Obj {
 /**
  * %GeneratorPrototype%.next ( value ), 27.5.1.2.
  * @builtin %GeneratorPrototype%.next
+ * @intrinsic
  */
 function GeneratorPrototypeNext(this: Value, value: Value): Obj {
   const state: i32 = GeneratorValidate(this);

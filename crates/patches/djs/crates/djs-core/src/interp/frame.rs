@@ -62,6 +62,7 @@ pub enum Continuation {
     /// state is in the intrinsic's arguments right below the frame, then the frame is
     /// entered again for the next element, or the loop's k goes to the caller.
     Each,
+    GenStep,
 }
 
 /// Continuation kind bits of `flags` (bits 0-3); the `Replace` slot is in bits 8-30.
@@ -78,6 +79,7 @@ impl Continuation {
             5 => Continuation::Job,
             6 => Continuation::Retry((flags as u32 & 0x7FFF_FFFF) >> SLOT_SHIFT),
             7 => Continuation::Each,
+            8 => Continuation::GenStep,
             _ => Continuation::Entry,
         }
     }
@@ -94,6 +96,7 @@ impl Continuation {
             Continuation::Job => 5,
             Continuation::Retry(slot) => 6 | ((slot << SLOT_SHIFT) & 0x7FFF_FFFF) as i32,
             Continuation::Each => 7,
+            Continuation::GenStep => 8,
         }
     }
 
@@ -102,8 +105,9 @@ impl Continuation {
         matches!(self, Continuation::Entry | Continuation::Job)
     }
 
-    /// The caller re-executes the calling instruction (`Retry`).
+    /// The caller's try regions and line are those of the calling instruction itself
+    /// (`Retry`, `GenStep`).
     pub const fn is_retry(self) -> bool {
-        matches!(self, Continuation::Retry(_))
+        matches!(self, Continuation::Retry(_) | Continuation::GenStep)
     }
 }

@@ -2482,7 +2482,7 @@ function GeneratorStep(g, value, mode) {
   return %CreateIterResultObject(result, true);
 }
 
-// builtins/generator.ts:50 %GeneratorPrototype%.next
+// builtins/generator.ts:51 %GeneratorPrototype%.next %GeneratorPrototypeNext
 function GeneratorPrototypeNext(value) {
   const state = GeneratorValidate(this);
   if (state === 3) {
@@ -2491,7 +2491,7 @@ function GeneratorPrototypeNext(value) {
   return GeneratorStep(%AsObj(this), value, 0);
 }
 
-// builtins/generator.ts:62 %GeneratorPrototype%.return
+// builtins/generator.ts:63 %GeneratorPrototype%.return
 function GeneratorPrototypeReturn(value) {
   const state = GeneratorValidate(this);
   if (state === 0 || state === 3) {
@@ -2501,7 +2501,7 @@ function GeneratorPrototypeReturn(value) {
   return GeneratorStep(%AsObj(this), value, 2);
 }
 
-// builtins/generator.ts:75 %GeneratorPrototype%.throw
+// builtins/generator.ts:76 %GeneratorPrototype%.throw
 function GeneratorPrototypeThrow(exception) {
   const state = GeneratorValidate(this);
   if (state === 0 || state === 3) {
@@ -2511,12 +2511,12 @@ function GeneratorPrototypeThrow(exception) {
   return GeneratorStep(%AsObj(this), exception, 1);
 }
 
-// builtins/generator.ts:89 value %GeneratorPrototype%[Symbol.toStringTag]
+// builtins/generator.ts:90 value %GeneratorPrototype%[Symbol.toStringTag]
 function GeneratorPrototypeToStringTag() {
   return "Generator";
 }
 
-// builtins/generator.ts:101 %AsyncAwait
+// builtins/generator.ts:102 %AsyncAwait
 function AsyncAwait(a, v) {
   let promise = undefined;
   try {
@@ -2531,7 +2531,7 @@ function AsyncAwait(a, v) {
   return undefined;
 }
 
-// builtins/generator.ts:122 %AsyncFunctionReturn
+// builtins/generator.ts:123 %AsyncFunctionReturn
 function AsyncFunctionReturn(a, v) {
   %GeneratorSetState(a, 3);
   const promise = %AsyncFunctionPromise(a);
@@ -2539,17 +2539,17 @@ function AsyncFunctionReturn(a, v) {
   return promise;
 }
 
-// builtins/generator.ts:138 %GeneratorFunctionConstructor
+// builtins/generator.ts:139 %GeneratorFunctionConstructor
 function GeneratorFunctionConstructor(...args) {
   return CreateDynamicFunction(new.target, 1, "GeneratorFunctionPrototype", args);
 }
 
-// builtins/generator.ts:146 %AsyncGeneratorFunctionConstructor
+// builtins/generator.ts:147 %AsyncGeneratorFunctionConstructor
 function AsyncGeneratorFunctionConstructor(...args) {
   return CreateDynamicFunction(new.target, 3, "AsyncGeneratorFunctionPrototype", args);
 }
 
-// builtins/generator.ts:154 %AsyncFunctionConstructor
+// builtins/generator.ts:155 %AsyncFunctionConstructor
 function AsyncFunctionConstructor(...args) {
   return CreateDynamicFunction(new.target, 2, "AsyncFunctionPrototype", args);
 }
@@ -8386,6 +8386,7 @@ function GlobalAtob(...args) {
 %InstallIntrinsic("ClassHeritage", ClassHeritage);
 %InstallIntrinsic("ThrowTypeError", ThrowTypeError);
 %InstallIntrinsic("FunctionPrototypeBehavior", FunctionPrototypeBehavior);
+%InstallIntrinsic("GeneratorPrototypeNext", GeneratorPrototypeNext);
 %InstallIntrinsic("AsyncAwait", AsyncAwait);
 %InstallIntrinsic("AsyncFunctionReturn", AsyncFunctionReturn);
 %InstallIntrinsic("GeneratorFunctionConstructor", GeneratorFunctionConstructor);

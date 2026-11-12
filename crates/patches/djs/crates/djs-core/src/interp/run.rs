@@ -724,7 +724,7 @@ impl<'h> Exec<'h> {
             Continuation::DiscardResult => {}
             Continuation::Replace(slot) | Continuation::Retry(slot) => self.set(slot, p),
             // (`%EachDense` calls plain closures only.)
-            Continuation::Each => unreachable!(),
+            Continuation::Each | Continuation::GenStep => unreachable!(),
             // `Vm::call` of an async host function: done at once (it must not run jobs,
             // which could collect); the next `run` drains the queue.
             Continuation::Entry => {
@@ -773,6 +773,9 @@ impl<'h> Exec<'h> {
             return Ok(self.each_return(v));
         }
         self.pop_frame();
+        if cont == Continuation::GenStep {
+            return self.gen_step_return(v);
+        }
         match cont {
             Continuation::PushResult => self.push(v),
             Continuation::DiscardResult => {}
@@ -780,7 +783,12 @@ impl<'h> Exec<'h> {
                 self.push(if v.as_object().is_some() { v } else { this })
             }
             Continuation::Replace(slot) | Continuation::Retry(slot) => self.set(slot, v),
-            Continuation::Entry | Continuation::Job | Continuation::Each => unreachable!(),
+            Continuation::Entry
+            | Continuation::Job
+            | Continuation::Each
+            | Continuation::GenStep => {
+                unreachable!()
+            }
         }
         self.safepoint();
         Ok(None)
@@ -943,6 +951,9 @@ impl<'h> Exec<'h> {
             self.bp = self.header_int(frame::PREV_BP);
             self.hp = self.header_int(frame::PREV_HP);
             self.load_frame();
+            if cont == Continuation::GenStep {
+                self.gen_step_abort(ret_pc);
+            }
             key = if cont.is_retry() && self.native == 0 {
                 ret_pc
             } else {
@@ -2563,6 +2574,16 @@ impl<'h> Exec<'h> {
                         self.safepoint();
                     }
                     return Ok(None);
+                }
+                if let Some(g) = suspend::plain_generator(self.heap, it, f) {
+                    let (g, at) = (Value::object(g), self.pc);
+                    return self.generator_resume(
+                        g,
+                        Value::UNDEFINED,
+                        Value::int(0),
+                        at,
+                        Continuation::GenStep,
+                    );
                 }
                 if loc {
                     self.ensure(self.sp + 2)?;

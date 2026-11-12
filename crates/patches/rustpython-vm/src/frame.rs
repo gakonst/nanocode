@@ -37,7 +37,7 @@ use crate::{
     vm::{Context, PyMethod},
 };
 use alloc::fmt;
-use bstr::ByteSlice;
+use rustpython_common::wtf8::byte_slice::ByteSlice;
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::sync::atomic;

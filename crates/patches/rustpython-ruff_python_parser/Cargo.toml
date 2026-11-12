@@ -48,9 +48,6 @@ path = "tests/generate_inline_tests.rs"
 [dependencies.bitflags]
 version = "2.5.0"
 
-[dependencies.bstr]
-version = "1.9.1"
-
 [dependencies.memchr]
 version = "2.7.1"
 

@@ -145,7 +145,7 @@ mod _io {
         vm::VirtualMachine,
     };
     use alloc::borrow::Cow;
-    use bstr::ByteSlice;
+    use rustpython_common::wtf8::byte_slice::ByteSlice;
     use core::{
         hint::cold_path,
         ops::Range,

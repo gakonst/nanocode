@@ -365,17 +365,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bstr"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
-dependencies = [
- "memchr",
- "regex-automata",
- "serde_core",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3180,7 +3169,6 @@ name = "rustpython-ruff_python_parser"
 version = "0.16.5"
 dependencies = [
  "bitflags 2.13.1",
- "bstr",
  "memchr",
  "rustpython-ruff_python_ast",
  "rustpython-ruff_python_trivia",
@@ -3262,7 +3250,6 @@ version = "0.6.0"
 dependencies = [
  "ascii",
  "bitflags 2.13.1",
- "bstr",
  "crossbeam-utils",
  "indexmap",
  "itoa",
@@ -3293,7 +3280,6 @@ name = "rustpython-wtf8"
 version = "0.6.0"
 dependencies = [
  "ascii",
- "bstr",
  "memchr",
 ]
 

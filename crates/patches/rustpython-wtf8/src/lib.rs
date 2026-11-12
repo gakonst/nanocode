@@ -38,6 +38,7 @@
 
 extern crate alloc;
 
+pub mod byte_slice;
 pub mod iteration;
 
 use alloc::borrow::{Cow, ToOwned};
@@ -58,7 +59,7 @@ use core_char::{MAX_LEN_UTF16, encode_utf8_raw, encode_utf16_raw, len_utf8};
 use core_str::{next_code_point, next_code_point_reverse};
 use crate::iteration::{Either, Itertools};
 
-use bstr::{ByteSlice, ByteVec};
+use crate::byte_slice::ByteSlice;
 
 mod core_char;
 mod core_str;
@@ -537,7 +538,9 @@ impl Wtf8Buf {
     pub fn insert_wtf8(&mut self, idx: usize, w: &Wtf8) {
         assert!(is_code_point_boundary(self, idx));
 
-        self.bytes.insert_str(idx, w)
+        self.bytes
+            .splice(idx..idx, w.as_bytes().iter().copied())
+            .for_each(drop);
     }
 
     /// Consumes the WTF-8 string and tries to convert it to a vec of bytes.

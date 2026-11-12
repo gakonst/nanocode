@@ -35,7 +35,7 @@ use crate::{
         SelfIter,
     },
 };
-use bstr::ByteSlice;
+use rustpython_common::wtf8::byte_slice::ByteSlice;
 use core::mem::size_of;
 
 #[pyclass(module = false, name = "bytearray", unhashable = true)]

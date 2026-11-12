@@ -28,7 +28,7 @@ use crate::{
         IterNext, Iterable, PyComparisonOp, Representable, SelfIter,
     },
 };
-use bstr::ByteSlice;
+use rustpython_common::wtf8::byte_slice::ByteSlice;
 use core::{mem::size_of, ops::Deref};
 use memchr::memchr;
 

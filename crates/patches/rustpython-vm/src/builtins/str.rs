@@ -32,7 +32,7 @@ use crate::{
 };
 use alloc::{borrow::Cow, fmt};
 use ascii::{AsciiChar, AsciiStr, AsciiString};
-use bstr::ByteSlice;
+use rustpython_common::wtf8::byte_slice::ByteSlice;
 use core::ffi::CStr;
 use core::{char, mem, ops::Range};
 use rustpython_common::wtf8::iteration::Itertools;

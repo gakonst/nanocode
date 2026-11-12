@@ -1,6 +1,5 @@
 //! Parsing of string literals, bytes literals, and implicit string concatenation.
 
-use bstr::ByteSlice;
 use std::fmt;
 
 use ruff_python_ast::token::TokenKind;
@@ -374,7 +373,7 @@ impl<'src> StringParser<'src> {
     }
 
     fn parse_bytes(mut self) -> Result<StringType, LexicalError> {
-        if let Some(index) = self.source.as_bytes().find_non_ascii_byte() {
+        if let Some(index) = self.source.bytes().position(|byte| !byte.is_ascii()) {
             let ch = self.source.chars().nth(index).unwrap();
             return Err(LexicalError::new(
                 LexicalErrorType::InvalidByteLiteral,

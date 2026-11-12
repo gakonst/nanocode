@@ -570,12 +570,146 @@ fn expand_part_now(
     }
 }
 
-async fn arith_failed(vp: &mut Vp, msg: &str) -> Unwind {
+pub(crate) async fn arith_failed(vp: &mut Vp, msg: &str) -> Unwind {
     vp.error(msg).await;
     match vp.arith_unbound {
         true => Unwind::Exit(expansion_exit_status(vp)),
         false => Unwind::Abort(1),
     }
+}
+
+pub(crate) fn word_now(code: &Code, w: &Word, words: bool) -> bool {
+    if words
+        && let [p] = w.parts.as_slice()
+        && matches!(p.kind, Part::Lit)
+        && code.ast.bytes(p.span) == b"["
+    {
+        return true;
+    }
+    w.parts.iter().all(|p| part_static(code, p, words, false))
+}
+
+fn part_static(code: &Code, p: &WordPart, words: bool, quoted: bool) -> bool {
+    match &p.kind {
+        Part::Lit => {
+            quoted
+                || !words
+                || !code
+                    .ast
+                    .bytes(p.span)
+                    .iter()
+                    .any(|b| matches!(b, b'*' | b'?' | b'['))
+        }
+        Part::Escaped | Part::Single | Part::AnsiC => true,
+        Part::Double(inner) => inner.iter().all(|p| part_static(code, p, words, true)),
+        Part::Param(p) => {
+            matches!(p.op, ParamOp::None)
+                && p.prefix == ParamPrefix::None
+                && p.index.is_none()
+                && p.name != ParamName::Special(b'!')
+        }
+        Part::Arith(w) => crate::arith::literal(code, w).is_some_and(|l| !l.text.contains(&b'[')),
+        _ => false,
+    }
+}
+
+fn no_glob(s: &[u8]) -> bool {
+    !s.iter().any(|b| matches!(b, b'*' | b'?' | b'['))
+}
+
+pub(crate) fn params_now(vp: &Vp, code: &Code, w: &Word, words: bool) -> bool {
+    w.parts.iter().all(|p| param_now(vp, code, p, words, false))
+}
+
+fn param_now(vp: &Vp, code: &Code, part: &WordPart, words: bool, quoted: bool) -> bool {
+    let p = match &part.kind {
+        Part::Double(inner) => return inner.iter().all(|p| param_now(vp, code, p, words, true)),
+        Part::Param(p) => p,
+        _ => return true,
+    };
+    let free = quoted || !words;
+    let name = code.ast.text(p.name_span);
+    match p.name {
+        ParamName::Var => match vp.vars.get(name) {
+            Some(v) if !v.nameref && v.dynamic.is_none() && name != "LINENO" => match &v.value {
+                crate::vars::Value::Str(s) => free || no_glob(s),
+                _ => false,
+            },
+            _ => false,
+        },
+        ParamName::Special(b'!') => false,
+        ParamName::Positional | ParamName::Special(_) => match by_name(vp, name.as_bytes()) {
+            Some(Val::Str(s)) => free || no_glob(&s),
+            Some(Val::List(l, _)) => free || l.iter().all(|s| no_glob(s)),
+            Some(Val::Unset) | None => false,
+        },
+    }
+}
+
+fn part_sync(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    p: &WordPart,
+    quoted: bool,
+    f: &mut Fields,
+    ctx: Ctx,
+    first: bool,
+) -> Result<(), String> {
+    if let Part::Double(inner) = &p.kind {
+        if inner.is_empty() || !inner.iter().all(is_at) {
+            f.quoted(b"");
+        }
+        for p in inner {
+            part_sync(vp, code, p, true, f, Ctx::Word, false)?;
+        }
+        return Ok(());
+    }
+    match expand_part_now(vp, code, p, quoted, f, ctx, first) {
+        Now::Done => Ok(()),
+        Now::Arith(msg) => Err(msg),
+        Now::Later => {
+            if let Part::Param(pp) = &p.kind {
+                let val = by_name(vp, code.ast.text(pp.name_span).as_bytes()).unwrap_or(Val::Unset);
+                let _ = emit_val(vp, f, val, quoted);
+            }
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn words_now(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    words: &[Word],
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut f = Fields::new(vp, true);
+    for w in words {
+        for (i, p) in w.parts.iter().enumerate() {
+            part_sync(vp, code, p, false, &mut f, Ctx::Word, i == 0)?;
+        }
+        f.finish_word();
+    }
+    Ok(f.out.into_iter().map(|x| x.text).collect())
+}
+
+pub(crate) fn single_now(vp: &mut Vp, code: &Rc<Code>, w: &Word) -> Result<Vec<u8>, String> {
+    let mut f = Fields {
+        out: Vec::new(),
+        cur: Field::default(),
+        pending: Pending::None,
+        ifs: Vec::new(),
+        ifs_mb: Vec::new(),
+        split: false,
+        subst_status: None,
+        rep: false,
+        assign: true,
+        text_only: true,
+    };
+    for (i, p) in w.parts.iter().enumerate() {
+        part_sync(vp, code, p, false, &mut f, Ctx::Assign, i == 0)?;
+    }
+    f.finish_word();
+    Ok(f.joined())
 }
 
 fn expand_parts<'a>(

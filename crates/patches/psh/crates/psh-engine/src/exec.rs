@@ -18,6 +18,7 @@ use crate::builtins::trap::{self, TrapKey};
 use crate::expand::{self, Ctx};
 use crate::fd::{Fd, FdObj, Pump};
 use crate::host::{ChildFd, OpenOptions, SpawnSpec, error_text};
+use crate::now::Now;
 use crate::options::{SetOpt, Shopt};
 use crate::pipe;
 use crate::sched::{Join, LocalBoxFuture, safepoint};
@@ -36,7 +37,7 @@ pub(crate) fn run_list<'a>(
         for (i, item) in list.items.iter().enumerate() {
             let p = &item.first;
             status = if item.background {
-                Box::pin(run_background(vp, code, id, i)).await?
+                background(vp, code, id, i).await?
             } else if item.rest.is_empty()
                 && p.stages.len() == 1
                 && !p.negated()
@@ -44,14 +45,35 @@ pub(crate) fn run_list<'a>(
             {
                 // The common case, without the and-or and pipeline frames: less stack
                 // per nesting level (D1050).
-                run_command(vp, code, p.stages[0].cmd).await?
+                let id = p.stages[0].cmd;
+                if let Some(now) = crate::now::command(vp, code, id, true) {
+                    match now {
+                        Now::Done(r) => r?,
+                        Now::Later(f) => f.await?,
+                    }
+                } else {
+                    run_command(vp, code, id).await?
+                }
             } else {
-                Box::pin(run_andor(vp, code, item)).await?
+                andor(vp, code, item).await?
             };
             vp.status = status;
         }
         Ok(status)
     })
+}
+
+fn background<'a>(
+    vp: &'a mut Vp,
+    code: &'a Rc<Code>,
+    list: ListId,
+    item: usize,
+) -> LocalBoxFuture<'a, R> {
+    Box::pin(run_background(vp, code, list, item))
+}
+
+fn andor<'a>(vp: &'a mut Vp, code: &'a Rc<Code>, ao: &'a AndOr) -> LocalBoxFuture<'a, R> {
+    Box::pin(run_andor(vp, code, ao))
 }
 
 /// `cmd &`: a job, run as a detached subshell task (D1900).
@@ -104,7 +126,7 @@ async fn run_andor(vp: &mut Vp, code: &Rc<Code>, ao: &AndOr) -> R {
     let n = ao.rest.len();
     let saved = vp.no_errexit;
     vp.no_errexit |= n > 0;
-    let r = Box::pin(run_pipeline(vp, code, &ao.first)).await;
+    let r = andor_pipeline(vp, code, &ao.first).await;
     vp.no_errexit = saved;
     let mut status = r?;
     for (k, (op, p)) in ao.rest.iter().enumerate() {
@@ -115,12 +137,26 @@ async fn run_andor(vp: &mut Vp, code: &Rc<Code>, ao: &AndOr) -> R {
         };
         if run {
             vp.no_errexit |= k + 1 < n;
-            let r = Box::pin(run_pipeline(vp, code, p)).await;
+            let r = andor_pipeline(vp, code, p).await;
             vp.no_errexit = saved;
             status = r?;
         }
     }
     Ok(status)
+}
+
+async fn andor_pipeline(vp: &mut Vp, code: &Rc<Code>, p: &Pipeline) -> R {
+    if p.stages.len() == 1
+        && !p.negated()
+        && p.time.is_none()
+        && let Some(now) = crate::now::command(vp, code, p.stages[0].cmd, true)
+    {
+        return match now {
+            Now::Done(r) => r,
+            Now::Later(f) => f.await,
+        };
+    }
+    Box::pin(run_pipeline(vp, code, p)).await
 }
 
 /// `set -x` for a simple command: its prefix assignments, then its words (D1285).
@@ -133,7 +169,7 @@ async fn xtrace_command(vp: &mut Vp, assigns: &[(String, Vec<u8>)], argv: &[Vec<
 }
 
 /// `PIPESTATUS`: the statuses of the last foreground pipeline's commands.
-fn set_pipestatus(vp: &mut Vp, statuses: &[i32]) {
+pub(crate) fn set_pipestatus(vp: &mut Vp, statuses: &[i32]) {
     // After most commands the array has the elements it had: their digits are
     // rewritten where they are (building the array anew was 7% of a loop's samples).
     if let Some(var) = vp.vars.get_mut("PIPESTATUS")
@@ -441,7 +477,7 @@ fn run_command_with<'a>(
 }
 
 /// `$_` after a command: its last word, not exported (bash), unless `_` is readonly.
-fn set_underscore(vp: &mut Vp, last: Vec<u8>) {
+pub(crate) fn set_underscore(vp: &mut Vp, last: Vec<u8>) {
     let var = vp.vars.entry("_");
     if !var.readonly {
         var.set(last);
@@ -521,7 +557,7 @@ fn after_command<'a>(
 }
 
 /// errexit and the ERR trap after a command (D1281).
-fn after_errexit<'a>(
+pub(crate) fn after_errexit<'a>(
     vp: &'a mut Vp,
     code: &'a Rc<Code>,
     cmd: &'a Command,
@@ -944,7 +980,12 @@ async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCom
     loop {
         safepoint(&vp.core.sched).await;
         vp.line = line;
-        match arith_command(vp, code, &f.cond, "((: ", true).await? {
+        let cond = match crate::now::arith_word(vp, code, &f.cond) {
+            Some(Ok(v)) => Some(v),
+            Some(Err(msg)) => arith_error(vp, msg, "((: ").await?,
+            None => arith_command(vp, code, &f.cond, "((: ", true).await?,
+        };
+        match cond {
             None => return Ok(1),
             // An empty condition is true.
             Some(0) if !f.cond.parts.is_empty() => return Ok(status),
@@ -960,10 +1001,12 @@ async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCom
             }
         }
         vp.line = line;
-        if arith_command(vp, code, &f.step, "((: ", true)
-            .await?
-            .is_none()
-        {
+        let step = match crate::now::arith_word(vp, code, &f.step) {
+            Some(Ok(v)) => Some(v),
+            Some(Err(msg)) => arith_error(vp, msg, "((: ").await?,
+            None => arith_command(vp, code, &f.step, "((: ", true).await?,
+        };
+        if step.is_none() {
             return Ok(1);
         }
     }
@@ -1004,15 +1047,21 @@ async fn arith_command(
     };
     match value {
         Ok(v) => Ok(Some(v)),
-        Err(msg) if vp.arith_unbound => {
-            vp.error(&msg).await;
-            Err(Unwind::Exit(expand::expansion_exit_status(vp)))
-        }
-        Err(msg) => {
-            vp.error(&format!("{prefix}{msg}")).await;
-            Ok(None)
-        }
+        Err(msg) => arith_error(vp, msg, prefix).await,
     }
+}
+
+pub(crate) async fn arith_error(
+    vp: &mut Vp,
+    msg: String,
+    prefix: &str,
+) -> Result<Option<i64>, Unwind> {
+    if vp.arith_unbound {
+        vp.error(&msg).await;
+        return Err(Unwind::Exit(expand::expansion_exit_status(vp)));
+    }
+    vp.error(&format!("{prefix}{msg}")).await;
+    Ok(None)
 }
 
 async fn run_case(vp: &mut Vp, code: &Rc<Code>, cmd: &Command, c: &psh_syntax::CaseCommand) -> R {

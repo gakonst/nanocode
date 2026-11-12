@@ -383,6 +383,16 @@ impl Sched {
     /// Takes one unit of budget; false when it is spent (the caller yields). `counted`:
     /// a command or a loop iteration, which `spent` counts; a utility's own safepoints
     /// (`UtilCtx::check`) only yield.
+    pub(crate) fn pass(&self) -> bool {
+        let b = self.budget.get();
+        if b == 0 || self.shared.control.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+        self.budget.set(b - 1);
+        self.spent.set(self.spent.get() + 1);
+        true
+    }
+
     fn take_budget(&self, counted: bool) -> bool {
         let b = self.budget.get();
         if b == 0 {

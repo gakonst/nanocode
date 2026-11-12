@@ -34,6 +34,7 @@ mod fd;
 pub mod host;
 pub mod invocation;
 mod jobs;
+mod now;
 mod options;
 mod pattern;
 mod pidscan;

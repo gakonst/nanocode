@@ -482,13 +482,100 @@ fn expand_pieces<'a>(
         for (i, piece) in pieces.iter().enumerate() {
             match piece {
                 Piece::Text(t) => f.literal(t),
-                Piece::Part(p) => {
-                    expand_part(vp, code, p, quoted, f, ctx, i == 0).await?;
-                }
+                Piece::Part(p) => part(vp, code, p, quoted, f, ctx, i == 0).await?,
             }
         }
         Ok(())
     })
+}
+
+async fn part(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    part: &WordPart,
+    quoted: bool,
+    f: &mut Fields,
+    ctx: Ctx,
+    first: bool,
+) -> Result<(), Unwind> {
+    match expand_part_now(vp, code, part, quoted, f, ctx, first) {
+        Now::Done => Ok(()),
+        Now::Arith(msg) => Err(arith_failed(vp, &msg).await),
+        Now::Later => Box::pin(expand_part(vp, code, part, quoted, f, ctx, first)).await,
+    }
+}
+
+enum Now {
+    Done,
+    Arith(String),
+    Later,
+}
+
+fn expand_part_now(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    part: &WordPart,
+    quoted: bool,
+    f: &mut Fields,
+    ctx: Ctx,
+    first: bool,
+) -> Now {
+    match &part.kind {
+        Part::Lit | Part::Escaped | Part::Single | Part::AnsiC | Part::Brace(_) => {
+            expand_text(vp, code, part, quoted, f, ctx, first);
+            Now::Done
+        }
+        Part::Param(p) => {
+            if !matches!(p.op, ParamOp::None) || p.prefix != ParamPrefix::None || p.index.is_some()
+            {
+                return Now::Later;
+            }
+            let name = code.ast.text(p.name_span);
+            let val = match p.name {
+                ParamName::Var => match vp.vars.get(name) {
+                    Some(v) if !v.nameref && v.dynamic.is_none() && name != "LINENO" => {
+                        match &v.value {
+                            crate::vars::Value::Str(s) => Val::Str(s.clone()),
+                            _ => return Now::Later,
+                        }
+                    }
+                    _ => return Now::Later,
+                },
+                ParamName::Special(b'!') => return Now::Later,
+                ParamName::Positional | ParamName::Special(_) => {
+                    match by_name(vp, name.as_bytes()) {
+                        Some(Val::Unset) | None => return Now::Later,
+                        Some(val) => val,
+                    }
+                }
+            };
+            match emit_val(vp, f, val, quoted) {
+                Ok(()) => Now::Done,
+                Err(_) => Now::Later,
+            }
+        }
+        Part::Arith(w) => {
+            let Some(lit) = crate::arith::literal(code, w) else {
+                return Now::Later;
+            };
+            match crate::arith::eval_literal(vp, &lit) {
+                Ok(v) => {
+                    emit(f, v.to_string().as_bytes(), quoted);
+                    Now::Done
+                }
+                Err(msg) => Now::Arith(msg),
+            }
+        }
+        _ => Now::Later,
+    }
+}
+
+async fn arith_failed(vp: &mut Vp, msg: &str) -> Unwind {
+    vp.error(msg).await;
+    match vp.arith_unbound {
+        true => Unwind::Exit(expansion_exit_status(vp)),
+        false => Unwind::Abort(1),
+    }
 }
 
 fn expand_parts<'a>(
@@ -501,7 +588,7 @@ fn expand_parts<'a>(
 ) -> LocalBoxFuture<'a, Result<(), Unwind>> {
     Box::pin(async move {
         for (i, p) in parts.iter().enumerate() {
-            expand_part(vp, code, p, quoted, f, ctx, i == 0 && !quoted).await?;
+            part(vp, code, p, quoted, f, ctx, i == 0 && !quoted).await?;
         }
         Ok(())
     })
@@ -591,55 +678,8 @@ async fn expand_part(
 ) -> Result<(), Unwind> {
     let text = code.ast.bytes(part.span);
     match &part.kind {
-        Part::Lit => {
-            if ctx == Ctx::OperandDouble && text.contains(&b'\\') {
-                // A backslash quotes any char here: `"${v:+"a\xb"}"` is `axb`.
-                let mut out = Vec::with_capacity(text.len());
-                let mut i = 0;
-                while i < text.len() {
-                    if text[i] == b'\\' && i + 1 < text.len() {
-                        i += 1;
-                    }
-                    out.push(text[i]);
-                    i += 1;
-                }
-                f.quoted(&out);
-            } else if quoted {
-                f.quoted(text);
-            } else if ctx == Ctx::Operand {
-                // `${x-a b}` unquoted: two words.
-                if f.assign && text.contains(&b'~') {
-                    literal_with_tilde(vp, text, first, Ctx::Assign, f);
-                } else if first && text.first() == Some(&b'~') {
-                    literal_with_tilde(vp, text, first, Ctx::Word, f);
-                } else {
-                    f.unquoted(text);
-                }
-            } else if text.contains(&b'~') || ctx == Ctx::Assign {
-                literal_with_tilde(vp, text, first, ctx, f);
-            } else {
-                f.literal(text);
-            }
-        }
-        Part::Escaped => {
-            let c = &text[1..];
-            // In double quotes (a `${x-\z}` operand) only `$ ` " \ }` and newline are
-            // escapes; the backslash of anything else stays.
-            if quoted
-                && ctx != Ctx::OperandDouble
-                && !matches!(c.first(), Some(b'$' | b'`' | b'"' | b'\\' | b'}' | b'\n'))
-            {
-                f.quoted(text);
-            } else {
-                f.quoted(c);
-            }
-        }
-        // `"${x-'b'}"`: the quotes stay.
-        Part::Single if quoted && ctx == Ctx::Operand => f.quoted(text),
-        Part::Single => f.quoted(&text[1..text.len() - 1]),
-        Part::AnsiC => {
-            let inner = &text[2..text.len() - 1];
-            f.quoted(&psh_syntax::decode_ansi_c(inner));
+        Part::Lit | Part::Escaped | Part::Single | Part::AnsiC | Part::Brace(_) => {
+            expand_text(vp, code, part, quoted, f, ctx, first)
         }
         Part::Double(inner) | Part::Locale(inner) => {
             // `"…"` makes a field even when everything inside is empty, except that
@@ -714,14 +754,6 @@ async fn expand_part(
                 }
             }
         }
-        Part::Brace(_) => {
-            // Only reached where brace expansion does not apply: the text as is.
-            if quoted {
-                f.quoted(text);
-            } else {
-                f.literal(text);
-            }
-        }
         Part::ProcSubst { output, list } => {
             let path = exec::process_subst(vp, code, *list, *output).await?;
             f.literal(&path);
@@ -756,6 +788,79 @@ async fn expand_part(
         Part::Array(_) => return unsupported(vp, "array assignment").await,
     }
     Ok(())
+}
+
+fn expand_text(
+    vp: &Vp,
+    code: &Rc<Code>,
+    part: &WordPart,
+    quoted: bool,
+    f: &mut Fields,
+    ctx: Ctx,
+    first: bool,
+) {
+    let text = code.ast.bytes(part.span);
+    match &part.kind {
+        Part::Lit => {
+            if ctx == Ctx::OperandDouble && text.contains(&b'\\') {
+                // A backslash quotes any char here: `"${v:+"a\xb"}"` is `axb`.
+                let mut out = Vec::with_capacity(text.len());
+                let mut i = 0;
+                while i < text.len() {
+                    if text[i] == b'\\' && i + 1 < text.len() {
+                        i += 1;
+                    }
+                    out.push(text[i]);
+                    i += 1;
+                }
+                f.quoted(&out);
+            } else if quoted {
+                f.quoted(text);
+            } else if ctx == Ctx::Operand {
+                // `${x-a b}` unquoted: two words.
+                if f.assign && text.contains(&b'~') {
+                    literal_with_tilde(vp, text, first, Ctx::Assign, f);
+                } else if first && text.first() == Some(&b'~') {
+                    literal_with_tilde(vp, text, first, Ctx::Word, f);
+                } else {
+                    f.unquoted(text);
+                }
+            } else if text.contains(&b'~') || ctx == Ctx::Assign {
+                literal_with_tilde(vp, text, first, ctx, f);
+            } else {
+                f.literal(text);
+            }
+        }
+        Part::Escaped => {
+            let c = &text[1..];
+            // In double quotes (a `${x-\z}` operand) only `$ ` " \ }` and newline are
+            // escapes; the backslash of anything else stays.
+            if quoted
+                && ctx != Ctx::OperandDouble
+                && !matches!(c.first(), Some(b'$' | b'`' | b'"' | b'\\' | b'}' | b'\n'))
+            {
+                f.quoted(text);
+            } else {
+                f.quoted(c);
+            }
+        }
+        // `"${x-'b'}"`: the quotes stay.
+        Part::Single if quoted && ctx == Ctx::Operand => f.quoted(text),
+        Part::Single => f.quoted(&text[1..text.len() - 1]),
+        Part::AnsiC => {
+            let inner = &text[2..text.len() - 1];
+            f.quoted(&psh_syntax::decode_ansi_c(inner));
+        }
+        Part::Brace(_) => {
+            // Only reached where brace expansion does not apply: the text as is.
+            if quoted {
+                f.quoted(text);
+            } else {
+                f.literal(text);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `$@`, `${@}`, `${name[@]}`: expansions that may produce no field at all.

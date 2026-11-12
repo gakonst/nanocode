@@ -38,10 +38,8 @@ jaq-core = "3.1.2"
 # jq's math builtins with C libm's results (D1180).
 libm = "0.2.16"
 
-# git (nanocode's addition): objects inflate with miniz_oxide, and text is compared by
-# gitoxide's fork of imara-diff, whose Myers and slider heuristics follow git's xdiff.
+# git (nanocode's addition): objects inflate with miniz_oxide.
 miniz_oxide = "0.8.9"
-gix-imara-diff = "0.3.3"
 
 [lints]
 workspace = true

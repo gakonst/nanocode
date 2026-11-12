@@ -1,14 +1,12 @@
-//! The text of a change: which lines differ (gitoxide's imara-diff: Myers with xdiff's
+//! The text of a change: which lines differ (line_diff: Myers with xdiff's
 //! heuristics and its indent heuristic for where a change sits), written as git writes
 //! unified hunks, with the line a hunk is inside of in its header.
 
 use std::io::Write;
 use std::ops::Range;
 
-use gix_imara_diff::sources::byte_lines;
-use gix_imara_diff::{Algorithm, Diff, InternedInput};
-
 use super::Res;
+use super::line_diff::{changed_lines, lines};
 
 /// git's test for a binary file: a NUL in its first 8000 bytes.
 pub fn is_binary(data: &[u8]) -> bool {
@@ -80,24 +78,13 @@ impl<'a> TextDiff<'a> {
     pub fn with(old: &'a [u8], new: &'a [u8], space: Space) -> TextDiff<'a> {
         let squeezed =
             (space != Space::Exact).then(|| (squeezed(old, space), squeezed(new, space)));
-        let input = match &squeezed {
-            Some((a, b)) => InternedInput::new(byte_lines(a), byte_lines(b)),
-            None => InternedInput::new(byte_lines(old), byte_lines(new)),
+        let changes = match &squeezed {
+            Some((a, b)) => changed_lines(a, b),
+            None => changed_lines(old, new),
         };
-        let mut diff = Diff::compute(Algorithm::Myers, &input);
-        diff.postprocess_lines(&input);
-        let changes = diff
-            .hunks()
-            .map(|h| {
-                (
-                    h.before.start as usize..h.before.end as usize,
-                    h.after.start as usize..h.after.end as usize,
-                )
-            })
-            .collect();
         TextDiff {
-            old: byte_lines(old).collect(),
-            new: byte_lines(new).collect(),
+            old: lines(old).collect(),
+            new: lines(new).collect(),
             changes,
         }
     }

@@ -1187,16 +1187,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gix-imara-diff"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7518b930f6aeb75e871d32ce873c2ae46e35cef19b5a0b039d4337f651d897cd"
-dependencies = [
- "bstr",
- "hashbrown 0.17.1",
-]
-
-[[package]]
 name = "globset"
 version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1283,9 +1273,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-dependencies = [
- "foldhash",
-]
 
 [[package]]
 name = "hashlink"
@@ -3203,7 +3190,6 @@ version = "0.0.0"
 dependencies = [
  "bstr",
  "foldhash",
- "gix-imara-diff",
  "globset",
  "grep-matcher",
  "grep-printer",

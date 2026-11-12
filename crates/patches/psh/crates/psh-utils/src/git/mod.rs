@@ -18,6 +18,7 @@ mod commit;
 mod diff;
 mod extra;
 mod index;
+mod line_diff;
 mod log;
 mod patch;
 mod pretty;

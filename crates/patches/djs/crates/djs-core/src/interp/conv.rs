@@ -225,6 +225,9 @@ pub(crate) fn to_int32(n: f64) -> i32 {
     if let Some(i) = exact_i32(n) {
         return i;
     }
+    if n > i64::MIN as f64 && n < i64::MAX as f64 {
+        return n as i64 as i32;
+    }
     if !n.is_finite() {
         return 0;
     }

@@ -59,6 +59,7 @@ const OBJECT: u8 = Op::Object as u8;
 const ARRAY_FROM: u8 = Op::ArrayFrom as u8;
 const ARRAY_PUSH: u8 = Op::ArrayPush as u8;
 const ITER_CHECK_OBJECT: u8 = Op::IterCheckObject as u8;
+const YIELD: u8 = Op::Yield as u8;
 const FCLOSURE: u8 = Op::FClosure as u8;
 const NEW_BOX_INIT: u8 = Op::NewBoxInit as u8;
 const PUSH_ATOM: u8 = Op::PushAtom as u8;
@@ -493,12 +494,30 @@ impl Exec<'_> {
             }
             Op::IterCheckObject
         } else {
-            let at = self.lp + self.imm_u16(1);
-            let Some(r) = self.iter_done_hit(self.get(at), self.get(at + 1)) else {
+            if self.pc >= self.code_len {
                 return false;
+            }
+            let info = &OPS[op as usize];
+            let done = if op == YIELD {
+                self.yield_hit(self.pc + info.size as u32)
+            } else {
+                let at = self.lp + self.imm_u16(1);
+                let (it, f) = (self.get(at), self.get(at + 1));
+                if let Some(r) = self.iter_done_hit(it, f) {
+                    self.push(r);
+                    self.pc += info.size as u32;
+                    true
+                } else {
+                    self.resume_hit(it, f)
+                }
             };
-            self.push(r);
-            Op::IterNextLoc
+            if done {
+                self.fuel -= info.cost.fuel() as i64;
+                if self.retry_len == 0 {
+                    self.retry_len = super::NO_RETRY;
+                }
+            }
+            return done;
         };
         let info = &OPS[o as usize];
         self.fuel -= info.cost.fuel() as i64;
@@ -823,7 +842,7 @@ impl Exec<'_> {
         if op == fast::GET_ELEM {
             return self.decline_keyed_get();
         }
-        if op == fast::ITER_NEXT_LOC || op == ITER_CHECK_OBJECT {
+        if op == fast::ITER_NEXT_LOC || op == ITER_CHECK_OBJECT || op == YIELD {
             return self.decline_iter(op);
         }
         if op == fast::MOD {

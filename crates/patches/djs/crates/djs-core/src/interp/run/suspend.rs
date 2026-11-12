@@ -251,6 +251,42 @@ impl Exec<'_> {
     }
 
     /// Saves the frame `stack[bp..sp)` into `g`, to resume at `pc`.
+    pub(super) fn yield_hit(&mut self, next: u32) -> bool {
+        let flags = self.header_int(frame::FLAGS) as i32;
+        if Continuation::from_flags(flags) != Continuation::GenStep {
+            return false;
+        }
+        let Some(g) = as_generator(self.heap, self.get(self.lp + self.imm_u16(1)), GENERATOR)
+        else {
+            return false;
+        };
+        let v = self.pop();
+        if self.suspend_frame(g, SUSPENDED, next).is_err() {
+            self.push(v);
+            return false;
+        }
+        let r = self.do_return(v);
+        debug_assert!(matches!(r, Ok(None)));
+        true
+    }
+
+    pub(super) fn resume_hit(&mut self, it: Value, f: Value) -> bool {
+        let Some(g) = plain_generator(self.heap, it, f) else {
+            return false;
+        };
+        let at = self.pc;
+        matches!(
+            self.generator_resume(
+                Value::object(g),
+                Value::UNDEFINED,
+                Value::int(0),
+                at,
+                Continuation::GenStep
+            ),
+            Ok(None)
+        )
+    }
+
     fn suspend_frame(&mut self, g: Obj, state: i32, pc: u32) -> Result<(), Fault> {
         let len = self.sp - self.bp;
         let arr = match self.heap.object_slot(g, FRAME).as_internal() {

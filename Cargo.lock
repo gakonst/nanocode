@@ -6896,6 +6896,7 @@ dependencies = [
  "ignore",
  "jaq-core",
  "libm",
+ "md-5",
  "memchr",
  "miniz_oxide",
  "psh-classify",
@@ -6904,6 +6905,8 @@ dependencies = [
  "regex",
  "regex-automata",
  "regex-syntax",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
  "termcolor",
 ]
 

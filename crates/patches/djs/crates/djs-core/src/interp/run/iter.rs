@@ -51,9 +51,8 @@ impl Exec<'_> {
         let a0 = self.get(base);
         match id {
             GET_ITERATOR => {
-                let (holder, original, proto, target, kind) = if a0.as_string().is_some() {
+                let (original, proto, target, kind) = if a0.as_string().is_some() {
                     (
-                        intrinsic_obj(self.heap, Intrinsic::StringProto),
                         STRING_PROTOTYPE_ITERATOR,
                         Intrinsic::StringIteratorProto,
                         a0,
@@ -61,19 +60,14 @@ impl Exec<'_> {
                     )
                 } else {
                     match a0.as_object() {
-                        Some(o) if self.heap.object_class(o) == ObjectClass::Array => (
-                            o,
-                            ARRAY_PROTOTYPE_VALUES,
-                            Intrinsic::ArrayIteratorProto,
-                            a0,
-                            1,
-                        ),
+                        Some(o) if self.heap.object_class(o) == ObjectClass::Array => {
+                            (ARRAY_PROTOTYPE_VALUES, Intrinsic::ArrayIteratorProto, a0, 1)
+                        }
                         _ => return Ok(None),
                     }
                 };
-                let method = match self.heap.find_property(holder, atoms::SYM_ITERATOR) {
-                    Some((_, Property::Data { value, .. })) => value,
-                    _ => return Ok(None),
+                let Some(method) = self.iterator_method(a0) else {
+                    return Ok(None);
                 };
                 if method != realm::installed_intrinsic(self.heap, original) {
                     return Ok(None);
@@ -96,6 +90,9 @@ impl Exec<'_> {
                 else {
                     return Ok(None);
                 };
+                if self.lacks_return(it) {
+                    return Ok(Some(Value::UNDEFINED));
+                }
                 match self.heap.lookup_property(it, atoms::RETURN) {
                     Lookup::Absent => Ok(Some(Value::UNDEFINED)),
                     Lookup::Found(_, Property::Data { value, .. }) if value.is_nullish() => {

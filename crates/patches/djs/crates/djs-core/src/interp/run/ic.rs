@@ -406,12 +406,16 @@ impl Exec<'_> {
     /// of `o`: remembers it (D1621), with the receiver's shape word (0083).
     #[inline(never)]
     pub(super) fn ic_proto_fill(&mut self, o: Value, key: Atom, holder: Obj, ic: u32) {
-        if key.as_int().is_some() {
-            return;
+        if let Some(words) = self.proto_words(o, key, holder) {
+            self.ic_get_write(o, key, ic, words);
         }
-        let Some(proto) = proto_start(self.heap, o, key, 0) else {
-            return;
-        };
+    }
+
+    fn proto_words(&mut self, o: Value, key: Atom, holder: Obj) -> Option<Slot> {
+        if key.as_int().is_some() {
+            return None;
+        }
+        let proto = proto_start(self.heap, o, key, 0)?;
         let mut depth = 1;
         let mut h = proto;
         while h != holder {
@@ -420,14 +424,12 @@ impl Exec<'_> {
                     h = p;
                     depth += 1;
                 }
-                _ => return,
+                _ => return None,
             }
         }
-        let Some(i) = self.heap.own_entry_index(holder, key) else {
-            return;
-        };
+        let i = self.heap.own_entry_index(holder, key)?;
         if i + 1 > INDEX_MASK || self.heap.data_at(holder, i, key).is_none() {
-            return;
+            return None;
         }
         let mut h = proto;
         loop {
@@ -440,7 +442,49 @@ impl Exec<'_> {
         let w0 = IC_OFFSET_SLOT | depth << KIND_SHIFT | (i + 1);
         let epoch = self.heap.proto_epoch();
         let shape = o.as_object().map_or(0, |obj| self.heap.receiver_shape(obj));
-        self.ic_get_write(o, key, ic, [w0, proto.offset(), epoch, shape, 0]);
+        Some([w0, proto.offset(), epoch, shape, 0])
+    }
+
+    pub(super) fn iterator_method(&mut self, o: Value) -> Option<Value> {
+        let key = crate::heap::atoms::SYM_ITERATOR;
+        let [w0, w1, w2, w3, _] = self.heap.iterator_ic;
+        if let Some(v) = get_hit(self.heap, [w0, w1, w2], |_| w3, o, key) {
+            return Some(v);
+        }
+        let start = match o.as_object() {
+            Some(obj) => obj,
+            None => realm::primitive_proto(self.heap, o)?,
+        };
+        let (holder, Property::Data { value, .. }) = self.heap.find_property(start, key)? else {
+            return None;
+        };
+        if let Some(words) = self.proto_words(o, key, holder) {
+            self.heap.iterator_ic = words;
+        }
+        Some(value)
+    }
+
+    pub(super) fn lacks_return(&mut self, it: Obj) -> bool {
+        let key = crate::heap::atoms::RETURN;
+        if self.heap.has_own_property(it, key) {
+            return false;
+        }
+        let proto = self.heap.get_prototype_of(it);
+        let p = proto.map_or(0, |p| p.offset());
+        let epoch = self.heap.proto_epoch();
+        if p != 0 && self.heap.return_ic == [p, epoch] {
+            return true;
+        }
+        if !self.chain_lacks(proto, key) {
+            return false;
+        }
+        let mut q = proto;
+        while let Some(h) = q {
+            self.heap.mark_proto(h);
+            q = self.heap.get_prototype_of(h);
+        }
+        self.heap.return_ic = [p, self.heap.proto_epoch()];
+        true
     }
 
     /// After a slow access to `obj[key]`: remembers the property if `key` is an own data

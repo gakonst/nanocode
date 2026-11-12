@@ -234,6 +234,7 @@ struct CellObservationState {
     streamed: usize,
     streamed_bytes: usize,
     content_seen: u64,
+    running: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -241,6 +242,9 @@ struct ObservationBuffer {
     content: Vec<ToolOutputContent>,
     nested_calls: Vec<ObservedNestedCall>,
     notifications: Vec<CodeModeNotification>,
+    returned: u64,
+    failed: u64,
+    latest: Option<(String, String)>,
 }
 
 struct CellLifecycle {
@@ -1539,6 +1543,7 @@ impl LiveCell {
                 streamed: 0,
                 streamed_bytes: 0,
                 content_seen,
+                running: Vec::new(),
             })),
             lifecycle,
             interrupt,
@@ -1839,16 +1844,7 @@ async fn observe_updates(
         }
         let preempted = preempt_remaining.is_some();
         if preempt_remaining == Some(0) {
-            let buffered = take_buffered(observation);
-            return running_observation(
-                tools,
-                cell.id,
-                started_at,
-                buffered.content,
-                max_output_tokens,
-                buffered.nested_calls,
-                buffered.notifications,
-            );
+            return yielded_observation(tools, cell.id, started_at, observation, max_output_tokens);
         }
         let update = if let Some(update) = observation.replay.pop_front() {
             Some(update)
@@ -1876,16 +1872,7 @@ async fn observe_updates(
                     None => std::future::pending().await,
                 }
             } => {
-                let buffered = take_buffered(observation);
-                return running_observation(
-                    tools,
-                    cell.id,
-                    started_at,
-                    buffered.content,
-                    max_output_tokens,
-                    buffered.nested_calls,
-                    buffered.notifications,
-                );
+                return yielded_observation(tools, cell.id, started_at, observation, max_output_tokens);
             }
             () = stream_timer.as_mut(), if !terminating && !stream_open => {
                 stream_open = true;
@@ -1919,6 +1906,7 @@ async fn observe_updates(
                 delivered,
                 logged,
             }) => {
+                observation.running.push((call_id.clone(), name.clone()));
                 if logged && !delivered {
                     observer.update(CodeModeUpdate::NestedCallStarted {
                         call_id: &call_id,
@@ -1928,6 +1916,18 @@ async fn observe_updates(
                 }
             }
             Some(CellUpdate::NestedCall(mut call)) => {
+                observation
+                    .running
+                    .retain(|(call_id, _)| *call_id != call.call.call_id);
+                observation.buffered.returned += 1;
+                observation.buffered.failed += u64::from(!call.call.success);
+                observation.buffered.latest = Some((
+                    call.call.name.clone(),
+                    output_tail(match &call.call.output {
+                        ToolOutputBody::Text(text) => text.clone(),
+                        ToolOutputBody::Content(content) => content_text(content),
+                    }),
+                ));
                 if call.logged && !call.delivered {
                     observer.update(CodeModeUpdate::NestedCallCompleted(&call.call));
                 }
@@ -1972,15 +1972,12 @@ async fn observe_updates(
             }
             Some(CellUpdate::Yielded) if terminating => {}
             Some(CellUpdate::Yielded) => {
-                let buffered = take_buffered(observation);
-                return running_observation(
+                return yielded_observation(
                     tools,
                     cell.id,
                     started_at,
-                    buffered.content,
+                    observation,
                     max_output_tokens,
-                    buffered.nested_calls,
-                    buffered.notifications,
                 );
             }
             Some(CellUpdate::Completed) => {
@@ -2115,7 +2112,10 @@ const fn char_floor(text: &str, mut index: usize) -> usize {
 }
 
 fn terminated_output(content: &[ToolOutputContent]) -> String {
-    let text = content_text(content);
+    output_tail(content_text(content))
+}
+
+fn output_tail(text: String) -> String {
     if text.len() <= TERMINATED_OUTPUT_BYTES {
         return text;
     }
@@ -2151,6 +2151,49 @@ fn stream_output(
     observer.update(CodeModeUpdate::Notification(&CodeModeNotification::new(
         call_id, text,
     )));
+}
+
+fn yielded_observation(
+    tools: &dyn CodeModeToolset,
+    cell_id: u64,
+    started_at: Instant,
+    observation: &mut CellObservationState,
+    max_output_tokens: Option<usize>,
+) -> (CodeModeExecution, bool) {
+    let running = std::mem::take(&mut observation.running);
+    let mut buffered = take_buffered(observation);
+    if buffered.content.is_empty() && (buffered.returned > 0 || !running.is_empty()) {
+        let mut text = "The script printed nothing since the last yield.".to_owned();
+        if let Some((name, tail)) = &buffered.latest {
+            text.push_str(&format!(
+                " {} nested call(s) returned since then, {} of them failed. The latest, {name}, returned:\n{tail}",
+                buffered.returned, buffered.failed
+            ));
+        }
+        if !running.is_empty() {
+            let mut names = BTreeMap::<&str, usize>::new();
+            for (_, name) in &running {
+                *names.entry(name.as_str()).or_default() += 1;
+            }
+            let names = names
+                .iter()
+                .map(|(name, count)| format!("{count} {name}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!("\nNested calls still running: {names}."));
+        }
+        buffered.content.push(ToolOutputContent::InputText { text });
+    }
+    observation.running = running;
+    running_observation(
+        tools,
+        cell_id,
+        started_at,
+        buffered.content,
+        max_output_tokens,
+        buffered.nested_calls,
+        buffered.notifications,
+    )
 }
 
 fn running_observation(

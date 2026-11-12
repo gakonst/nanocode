@@ -946,3 +946,141 @@ impl<'a> Fields<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jws(payload: &str) -> String {
+        let encode = |bytes: &[u8]| nanocode_tempo::base64::encode_url(bytes);
+        format!(
+            "{}.{}.{}",
+            encode(br#"{"alg":"EdDSA","typ":"mpp-attestation+jwt"}"#),
+            encode(payload.as_bytes()),
+            encode(b"signature")
+        )
+    }
+
+    fn attestation(audience: &str, issuer: &str, iat: i64, exp: i64) -> String {
+        jws(&format!(
+            r#"{{"iss":"{issuer}","aud":"{audience}","sub":"a@example.com","type":"email","iat":{iat},"exp":{exp},"jti":"j"}}"#
+        ))
+    }
+
+    fn email(issuer: &str) -> Requirement {
+        Requirement {
+            kind: "email".to_owned(),
+            issuer: Some(issuer.to_owned()),
+        }
+    }
+
+    #[test]
+    fn parses_a_single_requirement() {
+        assert_eq!(
+            requirements(r#"email;issuer="https://identity.mpp.tempo.xyz""#),
+            vec![vec![email("https://identity.mpp.tempo.xyz")]]
+        );
+    }
+
+    #[test]
+    fn parses_alternatives_and_groups() {
+        assert_eq!(
+            requirements(
+                r#"(email;issuer="https://a.example" email;issuer="https://b.example"), phone;issuer="https://c.example""#
+            ),
+            vec![
+                vec![email("https://a.example"), email("https://b.example")],
+                vec![Requirement {
+                    kind: "phone".to_owned(),
+                    issuer: Some("https://c.example".to_owned()),
+                }],
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_insecure_or_malformed_members() {
+        assert_eq!(
+            requirements(r#"email;issuer="http://evil.example", email;issuer=1, email;issuer="http://localhost:8787""#),
+            vec![vec![email("http://localhost:8787")]]
+        );
+        assert!(requirements(r#"email;issuer="https://a.example","#).is_empty());
+        assert!(requirements(r#"email;issuer="unterminated"#).is_empty());
+        assert!(requirements("").is_empty());
+    }
+
+    #[test]
+    fn keeps_other_parameters_and_escapes() {
+        assert_eq!(
+            requirements(r#"email;v=1;issuer="https://a.example";x=?1;y=:YWJj:"#),
+            vec![vec![email("https://a.example")]]
+        );
+        assert_eq!(
+            requirements("email"),
+            vec![vec![Requirement {
+                kind: "email".to_owned(),
+                issuer: None,
+            }]]
+        );
+    }
+
+    #[test]
+    fn decodes_claims() {
+        let token = attestation("https://api.example", "https://issuer.example", 100, 200);
+        assert_eq!(
+            claims(&token),
+            Some(Claims {
+                audience: "https://api.example".to_owned(),
+                issuer: "https://issuer.example".to_owned(),
+                kind: "email".to_owned(),
+                issued: 100,
+                expires: 200,
+            })
+        );
+        assert_eq!(claims("a.b"), None);
+        assert_eq!(claims(&format!("{token}.x")), None);
+        assert_eq!(claims(&"a".repeat(MAX_LENGTH + 1)), None);
+    }
+
+    #[test]
+    fn usable_until_the_margin_unpaid_and_the_tolerance_paid() {
+        let held = Held::decode(&attestation("https://a", "https://i", 0, 86_400), Some(0)).unwrap();
+        assert!(held.usable(86_400 - 301, false));
+        assert!(!held.usable(86_400 - 300, false));
+        assert!(held.usable(86_400 - 300, true));
+        assert!(held.usable(86_400 + 59, true));
+        assert!(!held.usable(86_400 + 60, true));
+        let short = Held::decode(&attestation("https://a", "https://i", 0, 100), Some(0)).unwrap();
+        assert_eq!(short.margin(), 50);
+    }
+
+    #[test]
+    fn only_https_or_localhost_is_secure() {
+        for (url, secure_url) in [
+            ("https://api.example", true),
+            ("http://localhost:4000", true),
+            ("http://127.0.0.1:4000", true),
+            ("http://api.example", false),
+            ("http://localhost.evil.example", false),
+        ] {
+            assert_eq!(secure(&Url::parse(url).unwrap()), secure_url, "{url}");
+        }
+    }
+
+    #[test]
+    fn a_payment_credential_marks_a_paid_attempt() {
+        let mut headers = HeaderMap::new();
+        assert!(!paid(&headers));
+        headers.insert("authorization", HeaderValue::from_static("Bearer x"));
+        assert!(!paid(&headers));
+        headers.insert("authorization", HeaderValue::from_static("Payment eyJ"));
+        assert!(paid(&headers));
+    }
+
+    #[test]
+    fn answers() {
+        assert!(matches!(Answer::parse(" /pass "), Answer::Decline));
+        assert!(matches!(Answer::parse("a@b.c"), Answer::Email(email) if email == "a@b.c"));
+        assert!(matches!(Answer::parse("/pass 12345678"), Answer::Code(code) if code == "12345678"));
+    }
+}

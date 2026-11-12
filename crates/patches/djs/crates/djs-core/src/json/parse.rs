@@ -214,6 +214,7 @@ fn fail<T>(msg: Msg, pos: usize) -> Result<T, Fail> {
     Err(Fail::At(msg, pos, pos))
 }
 
+#[inline(always)]
 fn lex<const E: u8>(b: &[u8], pos: &mut usize) -> Result<Token, Fail> {
     let n = units_len::<E>(b);
     let mut p = *pos;
@@ -796,7 +797,7 @@ impl<'a, 'o> Parser<'a, 'o> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn next<const E: u8>(&mut self) -> Result<Token, Fail> {
         let b = src_bytes(self.heap, &self.src);
         lex::<E>(b, &mut self.pos)

@@ -15,12 +15,13 @@ psh-classify.workspace = true
 # POSIX patterns: the parser behind the BRE/ERE translator and the leftmost-longest,
 # back-reference matcher where the regex crate cannot answer (D1131).
 psh-regex.workspace = true
-# The search utilities (rg, fd, grep; later find and sed) on the ripgrep crates: exactly
-# the D020/D021 set. grep-printer without serde (D020); no grep-cli, no grep-pcre2.
+# The search utilities (rg, fd, grep; later find and sed): grep-regex's matcher behind
+# psh's own searcher and printers (crate::matcher; grep-matcher only for the trait the
+# adapter calls through); no grep-cli, no grep-pcre2.
 grep-matcher = "0.1.9"
 grep-regex = "0.1.14"
-grep-searcher = "0.1.17"
-grep-printer = { version = "0.3.1", default-features = false }
+# The encoding tables behind rg -E and BOM sniffing; the streaming decoder is psh's own.
+encoding_rs = "0.8.44"
 ignore = "0.4.34"
 globset = "0.4.21"
 regex = "1.13.1"
@@ -31,7 +32,6 @@ bstr = "1.12"
 # and the regex crates).
 memchr = "2.8.3"
 foldhash = "0.2.0"
-termcolor = "1.4"
 
 [lints]
 workspace = true

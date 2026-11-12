@@ -1,15 +1,15 @@
-//! GNU grep's output (D1137): a `grep-searcher` sink that prints selected and context
+//! GNU grep's output (D1137): a searcher sink that prints selected and context
 //! lines as GNU does (`FILE:LINE:OFFSET:text`, `-` for context, `--` between groups,
 //! `-o` spans, GREP_COLORS), and the buffered stdout it writes to.
 
 use std::cell::RefCell;
 use std::io::{self, Write};
 
-use grep_searcher::{Searcher, Sink, SinkContext, SinkMatch};
 use psh_engine::util::SyncWriter;
 
 use super::pattern::{Pats, char_len};
 use super::{BinaryFiles, Colors, Config};
+use crate::searcher::{Searcher, Sink, SinkContext, SinkMatch};
 
 /// stdout through a buffer (flushed when full, at every line with `--line-buffered`
 /// or on a terminal, and before stderr is written, D1081), and stderr.
@@ -296,8 +296,6 @@ fn spans_of(pats: &Pats, line: &[u8], utf8: bool) -> Vec<(usize, usize)> {
 }
 
 impl Sink for GrepSink<'_> {
-    type Error = io::Error;
-
     fn matched(&mut self, _: &Searcher, m: &SinkMatch<'_>) -> Result<bool, io::Error> {
         self.count += 1;
         let cfg = self.cfg;

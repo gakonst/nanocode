@@ -192,7 +192,6 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 
 [patch.crates-io]
 arc-swap = { path = "crates/patches/arc-swap" }
-grep-printer = { path = "crates/patches/psh/third_party/grep-printer" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
 pymath = { path = "crates/patches/pymath" }
 rustpython-codegen = { path = "crates/patches/rustpython-codegen" }

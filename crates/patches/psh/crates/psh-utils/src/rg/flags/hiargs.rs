@@ -10,7 +10,7 @@ use crate::rg::anyhow;
 // psh (D1133): the state comes from the utility's context (`SyncCtx`: cwd, TTY,
 // stdin, environment, file system) instead of the process; the walk is psh's walker
 // seam (`search::walk`) with the same settings `walk_builder` gave `ignore`; memory
-// maps are off (`MmapChoice::auto` is unsafe); `--pre`, `-z`, PCRE2 and `--json` run
+// maps are off (mapping a file is unsafe); `--pre`, `-z`, PCRE2 and `--json` run
 // the real rg (D1082), so their paths are gone. On Windows, `/` is the default path
 // separator and CRLF a line end (D030).
 
@@ -27,8 +27,8 @@ use psh_engine::{
 use crate::search::walk::{WalkHost, WalkOptions, Walker, os_bytes};
 
 use {
+    crate::printer::{ColorSpecs, SummaryKind},
     bstr::BString,
-    grep_printer::{ColorSpecs, SummaryKind},
 };
 
 use crate::rg::{
@@ -59,7 +59,7 @@ pub(crate) struct HiArgs {
     byte_offset: bool,
     case: CaseMode,
     color: ColorChoice,
-    colors: grep_printer::ColorSpecs,
+    colors: crate::printer::ColorSpecs,
     column: bool,
     context: ContextMode,
     context_separator: ContextSeparator,
@@ -75,7 +75,7 @@ pub(crate) struct HiArgs {
     file_separator: Option<Vec<u8>>,
     fixed_strings: bool,
     heading: bool,
-    hyperlink_config: grep_printer::HyperlinkConfig,
+    hyperlink_config: crate::printer::HyperlinkConfig,
     include_zero: bool,
     invert_match: bool,
     is_terminal_stdout: bool,
@@ -83,7 +83,6 @@ pub(crate) struct HiArgs {
     max_columns: Option<u64>,
     max_columns_preview: bool,
     max_count: Option<u64>,
-    mmap_choice: grep_searcher::MmapChoice,
     mode: Mode,
     multiline: bool,
     multiline_dotall: bool,
@@ -99,7 +98,7 @@ pub(crate) struct HiArgs {
     regex_size_limit: Option<usize>,
     replace: Option<BString>,
     sort: Option<SortMode>,
-    stats: Option<grep_printer::Stats>,
+    stats: Option<crate::printer::Stats>,
     stop_on_nonmatch: bool,
     threads: usize,
     trim: bool,
@@ -165,8 +164,8 @@ impl HiArgs {
             ColorChoice::Auto if !state.is_terminal_stdout => {
                 ColorChoice::Never
             }
-            // psh: termcolor's `Auto` reads the process's TERM and NO_COLOR; the
-            // utility's environment decides instead (by termcolor's rule).
+            // psh: the utility's TERM and NO_COLOR decide, not the process's: color
+            // unless TERM is unset (Windows aside) or `dumb`, or NO_COLOR is set.
             ColorChoice::Auto => {
                 let term_ok = match ctx.var(b"TERM") {
                     None => cfg!(windows),
@@ -257,8 +256,6 @@ impl HiArgs {
             }
         });
 
-        // psh: no memory maps (`MmapChoice::auto` is unsafe; D1133).
-        let mmap_choice = grep_searcher::MmapChoice::never();
         // psh: CRLF line ends and `/` separators by default on Windows (D030).
         let crlf = low.crlf;
         let crlf_match = low.crlf
@@ -301,7 +298,6 @@ impl HiArgs {
             max_columns: low.max_columns,
             max_columns_preview: low.max_columns_preview,
             max_count: low.max_count,
-            mmap_choice,
             multiline: low.multiline,
             multiline_dotall: low.multiline_dotall,
             no_unicode: low.no_unicode,
@@ -325,18 +321,18 @@ impl HiArgs {
         })
     }
 
-    /// psh: a buffer for one haystack's output on a search thread (what termcolor's
-    /// `BufferWriter::buffer` gave), colored as stdout is.
-    pub(crate) fn buffer(&self) -> termcolor::Buffer {
+    /// psh: a buffer for one haystack's output on a search thread, colored as stdout
+    /// is.
+    pub(crate) fn buffer(&self) -> crate::ansi::Buffer {
         if self.color_ansi() {
-            termcolor::Buffer::ansi()
+            crate::ansi::Buffer::ansi()
         } else {
-            termcolor::Buffer::no_color()
+            crate::ansi::Buffer::no_color()
         }
     }
 
     /// psh: what is printed between two haystacks' non-empty outputs when they are
-    /// searched on search threads (termcolor's `BufferWriter::separator`).
+    /// searched on search threads.
     pub(crate) fn file_separator(&self) -> Option<&[u8]> {
         self.file_separator.as_deref()
     }
@@ -517,8 +513,8 @@ impl HiArgs {
     /// of searching.
     pub(crate) fn path_printer_builder(
         &self,
-    ) -> grep_printer::PathPrinterBuilder {
-        let mut builder = grep_printer::PathPrinterBuilder::new();
+    ) -> crate::printer::PathPrinterBuilder {
+        let mut builder = crate::printer::PathPrinterBuilder::new();
         builder
             .color_specs(self.colors.clone())
             .hyperlink(self.hyperlink_config.clone())
@@ -531,7 +527,7 @@ impl HiArgs {
     ///
     /// This chooses which printer to build (JSON, summary or standard) based
     /// on the search mode given.
-    pub(crate) fn printer<W: termcolor::WriteColor>(
+    pub(crate) fn printer<W: crate::ansi::WriteColor>(
         &self,
         search_mode: SearchMode,
         wtr: W,
@@ -579,11 +575,11 @@ impl HiArgs {
 
     /// Builds a "standard" grep printer where matches are printed as plain
     /// text lines.
-    fn printer_standard<W: termcolor::WriteColor>(
+    fn printer_standard<W: crate::ansi::WriteColor>(
         &self,
         wtr: W,
-    ) -> grep_printer::Standard<W> {
-        let mut builder = grep_printer::StandardBuilder::new();
+    ) -> crate::printer::Standard<W> {
+        let mut builder = crate::printer::StandardBuilder::new();
         builder
             .byte_offset(self.byte_offset)
             .color_specs(self.colors.clone())
@@ -621,12 +617,12 @@ impl HiArgs {
 
     /// Builds a "summary" printer where search results are aggregated on a
     /// file-by-file basis.
-    fn printer_summary<W: termcolor::WriteColor>(
+    fn printer_summary<W: crate::ansi::WriteColor>(
         &self,
         wtr: W,
         kind: SummaryKind,
-    ) -> grep_printer::Summary<W> {
-        grep_printer::SummaryBuilder::new()
+    ) -> crate::printer::Summary<W> {
+        crate::printer::SummaryBuilder::new()
             .color_specs(self.colors.clone())
             .exclude_zero(!self.include_zero)
             .hyperlink(self.hyperlink_config.clone())
@@ -665,10 +661,10 @@ impl HiArgs {
     ///
     /// Search results are found using the given matcher and written to the
     /// given printer.
-    pub(crate) fn search_worker<W: termcolor::WriteColor>(
+    pub(crate) fn search_worker<W: crate::ansi::WriteColor>(
         &self,
         matcher: PatternMatcher,
-        searcher: grep_searcher::Searcher,
+        searcher: crate::searcher::Searcher,
         printer: Printer<W>,
     ) -> anyhow::Result<SearchWorker<W>> {
         let mut builder = SearchWorkerBuilder::new();
@@ -679,22 +675,23 @@ impl HiArgs {
     }
 
     /// Build a searcher from the command line parameters.
-    pub(crate) fn searcher(&self) -> anyhow::Result<grep_searcher::Searcher> {
+    pub(crate) fn searcher(
+        &self,
+    ) -> anyhow::Result<crate::searcher::Searcher> {
         let line_term = if self.crlf {
-            grep_matcher::LineTerminator::crlf()
+            crate::matcher::LineTerminator::crlf()
         } else if self.null_data {
-            grep_matcher::LineTerminator::byte(b'\x00')
+            crate::matcher::LineTerminator::byte(b'\x00')
         } else {
-            grep_matcher::LineTerminator::byte(b'\n')
+            crate::matcher::LineTerminator::byte(b'\n')
         };
-        let mut builder = grep_searcher::SearcherBuilder::new();
+        let mut builder = crate::searcher::SearcherBuilder::new();
         builder
             .max_matches(self.max_count)
             .line_terminator(line_term)
             .invert_match(self.invert_match)
             .line_number(self.line_number)
             .multi_line(self.multiline)
-            .memory_map(self.mmap_choice.clone())
             .stop_on_nonmatch(self.stop_on_nonmatch);
         match self.context {
             ContextMode::Passthru => {
@@ -824,7 +821,7 @@ impl HiArgs {
     ///
     /// When this returns `None`, then callers may assume that the user did
     /// not request statistics.
-    pub(crate) fn stats(&self) -> Option<grep_printer::Stats> {
+    pub(crate) fn stats(&self) -> Option<crate::printer::Stats> {
         self.stats.clone()
     }
 
@@ -1155,8 +1152,8 @@ impl Paths {
 /// file is always searched.)
 #[derive(Debug)]
 struct BinaryDetection {
-    explicit: grep_searcher::BinaryDetection,
-    implicit: grep_searcher::BinaryDetection,
+    explicit: crate::searcher::BinaryDetection,
+    implicit: crate::searcher::BinaryDetection,
 }
 
 impl BinaryDetection {
@@ -1165,16 +1162,16 @@ impl BinaryDetection {
         let none = matches!(low.binary, BinaryMode::AsText) || low.null_data;
         let convert = matches!(low.binary, BinaryMode::SearchAndSuppress);
         let explicit = if none {
-            grep_searcher::BinaryDetection::none()
+            crate::searcher::BinaryDetection::none()
         } else {
-            grep_searcher::BinaryDetection::convert(b'\x00')
+            crate::searcher::BinaryDetection::convert(b'\x00')
         };
         let implicit = if none {
-            grep_searcher::BinaryDetection::none()
+            crate::searcher::BinaryDetection::none()
         } else if convert {
-            grep_searcher::BinaryDetection::convert(b'\x00')
+            crate::searcher::BinaryDetection::convert(b'\x00')
         } else {
-            grep_searcher::BinaryDetection::quit(b'\x00')
+            crate::searcher::BinaryDetection::quit(b'\x00')
         };
         BinaryDetection { explicit, implicit }
     }
@@ -1182,7 +1179,7 @@ impl BinaryDetection {
     /// Returns true when both implicit and explicit binary detection is
     /// disabled.
     pub(crate) fn is_none(&self) -> bool {
-        let none = grep_searcher::BinaryDetection::none();
+        let none = crate::searcher::BinaryDetection::none();
         self.explicit == none && self.implicit == none
     }
 }
@@ -1237,12 +1234,12 @@ fn globs(
 
 /// Determines whether stats should be tracked for this search. If so, a stats
 /// object is returned.
-fn stats(low: &LowArgs) -> Option<grep_printer::Stats> {
+fn stats(low: &LowArgs) -> Option<crate::printer::Stats> {
     if !matches!(low.mode, Mode::Search(_)) {
         return None;
     }
     if low.stats || matches!(low.mode, Mode::Search(SearchMode::JSON)) {
-        return Some(grep_printer::Stats::new());
+        return Some(crate::printer::Stats::new());
     }
     None
 }
@@ -1250,7 +1247,7 @@ fn stats(low: &LowArgs) -> Option<grep_printer::Stats> {
 /// Pulls out any color specs provided by the user and assembles them into one
 /// single configuration.
 fn take_color_specs(_: &mut State, low: &mut LowArgs) -> ColorSpecs {
-    let mut specs = grep_printer::default_color_specs();
+    let mut specs = crate::printer::default_color_specs();
     // psh: grep-printer gives paths a color on Unix and Windows only; wasm gets
     // Unix's.
     if !cfg!(any(unix, windows)) {
@@ -1267,8 +1264,8 @@ fn take_color_specs(_: &mut State, low: &mut LowArgs) -> ColorSpecs {
 fn take_hyperlink_config(
     state: &mut State,
     low: &mut LowArgs,
-) -> anyhow::Result<grep_printer::HyperlinkConfig> {
-    let mut env = grep_printer::HyperlinkEnvironment::new();
+) -> anyhow::Result<crate::printer::HyperlinkConfig> {
+    let mut env = crate::printer::HyperlinkEnvironment::new();
     if let Some(hostname) = hostname(low.hostname_bin.as_deref()) {
         debug!("found hostname for hyperlink configuration: {hostname}");
         env.host(Some(hostname));
@@ -1279,7 +1276,7 @@ fn take_hyperlink_config(
     }
     let fmt = std::mem::take(&mut low.hyperlink_format);
     debug!("hyperlink format: {:?}", fmt.to_string());
-    Ok(grep_printer::HyperlinkConfig::new(env, fmt))
+    Ok(crate::printer::HyperlinkConfig::new(env, fmt))
 }
 
 /// psh: patterns from a `-f` file, read through the utility's file system

@@ -13,8 +13,8 @@ use std::{
 };
 
 use {
+    crate::printer::{HyperlinkFormat, UserColorSpec},
     bstr::{BString, ByteVec},
-    grep_printer::{HyperlinkFormat, UserColorSpec},
 };
 
 /// A collection of "low level" arguments.
@@ -328,7 +328,7 @@ pub(crate) enum ColorChoice {
     Ansi,
 }
 
-// psh: `ColorChoice::to_termcolor` is gone; hiargs decides ANSI or none (D1133).
+// psh: hiargs decides ANSI or none (D1133).
 
 /// Indicates the line context options ripgrep should use for output.
 ///
@@ -512,7 +512,7 @@ pub(crate) enum EncodingMode {
     #[default]
     Auto,
     /// Use an explicit encoding forcefully, but let BOM sniffing override it.
-    Some(grep_searcher::Encoding),
+    Some(crate::searcher::Encoding),
     /// Use no explicit encoding and disable all BOM sniffing. This will
     /// always result in searching the raw bytes, regardless of their
     /// true encoding.

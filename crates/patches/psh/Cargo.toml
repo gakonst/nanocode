@@ -1,9 +1,6 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# Patched copies of dependencies (D1135): not members, so fmt and clippy leave them as
-# they are.
-exclude = ["third_party"]
 
 [workspace.package]
 edition = "2024"
@@ -37,9 +34,3 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
-
-# grep-printer reads std::time::Instant, which panics on wasm32-unknown-unknown; the
-# patched copy has a clock that exists there (D1135, third_party/grep-printer/PATCHES.md).
-[patch.crates-io]
-grep-printer = { path = "third_party/grep-printer" }
-

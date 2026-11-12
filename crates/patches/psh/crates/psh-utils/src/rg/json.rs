@@ -1,10 +1,7 @@
 // The JSON printer below (`JSONBuilder`, `JSON`, `JSONSink`, `SubMatches`, the message
 // types and `base64_standard`) is copied from grep-printer 0.3.1 (`src/json.rs`,
-// `src/jsont.rs`), with `CounterWriter` (`src/counter.rs`) and `Replacer`,
-// `find_iter_at_in_context`, `trim_line_terminator` and
-// `replace_with_captures_in_context` (`src/util.rs`), in ripgrep
-// (https://github.com/BurntSushi/ripgrep): Copyright (c) 2015 Andrew Gallant.
-// Licensed under the MIT License (see NOTICE).
+// `src/jsont.rs`) in ripgrep (https://github.com/BurntSushi/ripgrep): Copyright (c)
+// 2015 Andrew Gallant. Licensed under the MIT License (see NOTICE).
 
 //! `rg --json` (D029, D1136): grep-printer's JSON printer, whose serialization needs
 //! serde, with the messages built as a small JSON tree written here. The
@@ -12,21 +9,16 @@
 //! `\n` after each message, `{"text":..}` or base64 `{"bytes":..}` data.
 
 use std::{
-    fmt,
     io::{self, Write},
     path::Path,
     sync::Arc,
     time::Duration,
 };
 
-use grep_matcher::{Match, Matcher};
-use grep_printer::Stats;
-use grep_searcher::{
-    Searcher, Sink, SinkContext, SinkError, SinkFinish, SinkMatch,
-};
-
-/// grep-printer's bound on how far past a match a multi-line search looks.
-const MAX_LOOK_AHEAD: usize = 128;
+use crate::matcher::{Match, Matcher};
+use crate::printer::Stats;
+use crate::printer::util::{CounterWriter, Replacer, find_iter_at_in_context};
+use crate::searcher::{Searcher, Sink, SinkContext, SinkFinish, SinkMatch};
 
 /// A JSON value; objects keep their keys in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -452,7 +444,7 @@ impl<'p, 's, M: Matcher, W: io::Write> JSONSink<'p, 's, M, W> {
                 matches.push(Match::new(s, e));
                 true
             },
-        )?;
+        );
         // Don't report empty matches appearing at the end of the bytes.
         if !matches.is_empty()
             && matches.last().unwrap().is_empty()
@@ -483,7 +475,7 @@ impl<'p, 's, M: Matcher, W: io::Write> JSONSink<'p, 's, M, W> {
                 bytes,
                 range,
                 replacement,
-            )?;
+            );
         }
         Ok(())
     }
@@ -502,13 +494,11 @@ impl<'p, 's, M: Matcher, W: io::Write> JSONSink<'p, 's, M, W> {
 }
 
 impl<'p, 's, M: Matcher, W: io::Write> Sink for JSONSink<'p, 's, M, W> {
-    type Error = io::Error;
-
     fn matched(
         &mut self,
         searcher: &Searcher,
         mat: &SinkMatch<'_>,
-    ) -> Result<bool, io::Error> {
+    ) -> io::Result<bool> {
         self.match_count += 1;
         self.write_begin_message()?;
 
@@ -542,7 +532,7 @@ impl<'p, 's, M: Matcher, W: io::Write> Sink for JSONSink<'p, 's, M, W> {
         &mut self,
         searcher: &Searcher,
         ctx: &SinkContext<'_>,
-    ) -> Result<bool, io::Error> {
+    ) -> io::Result<bool> {
         self.write_begin_message()?;
         self.json.matches.clear();
 
@@ -573,11 +563,11 @@ impl<'p, 's, M: Matcher, W: io::Write> Sink for JSONSink<'p, 's, M, W> {
         &mut self,
         _searcher: &Searcher,
         _binary_byte_offset: u64,
-    ) -> Result<bool, io::Error> {
+    ) -> io::Result<bool> {
         Ok(true)
     }
 
-    fn begin(&mut self, _searcher: &Searcher) -> Result<bool, io::Error> {
+    fn begin(&mut self, _searcher: &Searcher) -> io::Result<bool> {
         self.json.wtr.reset_count();
         self.start_time = crate::rg::main::Started::now();
         self.match_count = 0;
@@ -594,7 +584,7 @@ impl<'p, 's, M: Matcher, W: io::Write> Sink for JSONSink<'p, 's, M, W> {
         &mut self,
         _searcher: &Searcher,
         finish: &SinkFinish,
-    ) -> Result<(), io::Error> {
+    ) -> io::Result<()> {
         self.binary_byte_offset = finish.binary_byte_offset();
         self.stats.add_elapsed(self.start_time.elapsed());
         self.stats.add_searches(1);
@@ -721,284 +711,6 @@ fn base64_standard(bytes: &[u8]) -> String {
         _ => unreachable!("remainder must have length < 3"),
     }
     out
-}
-
-/// A writer that counts the number of bytes that have been successfully
-/// written.
-#[derive(Clone, Debug)]
-struct CounterWriter<W> {
-    wtr: W,
-    count: u64,
-    total_count: u64,
-}
-
-impl<W: Write> CounterWriter<W> {
-    fn new(wtr: W) -> CounterWriter<W> {
-        CounterWriter { wtr, count: 0, total_count: 0 }
-    }
-}
-
-impl<W> CounterWriter<W> {
-    /// Returns the total number of bytes written since construction or the
-    /// last time `reset` was called.
-    fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Resets the number of bytes written to `0`.
-    fn reset_count(&mut self) {
-        self.total_count += self.count;
-        self.count = 0;
-    }
-
-    fn get_mut(&mut self) -> &mut W {
-        &mut self.wtr
-    }
-}
-
-impl<W: Write> Write for CounterWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
-        let n = self.wtr.write(buf)?;
-        self.count += n as u64;
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> Result<(), io::Error> {
-        self.wtr.flush()
-    }
-}
-
-/// A type for handling replacements while amortizing allocation.
-struct Replacer<M: Matcher> {
-    space: Option<Space<M>>,
-}
-
-struct Space<M: Matcher> {
-    /// The place to store capture locations.
-    caps: M::Captures,
-    /// The place to write a replacement to.
-    dst: Vec<u8>,
-    /// The place to store match offsets in terms of `dst`.
-    matches: Vec<Match>,
-}
-
-impl<M: Matcher> fmt::Debug for Replacer<M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (dst, matches) = self.replacement().unwrap_or((&[], &[]));
-        f.debug_struct("Replacer")
-            .field("dst", &dst)
-            .field("matches", &matches)
-            .finish()
-    }
-}
-
-impl<M: Matcher> Replacer<M> {
-    /// Create a new replacer for use with a particular matcher.
-    fn new() -> Replacer<M> {
-        Replacer { space: None }
-    }
-
-    /// Executes a replacement on the given haystack string by replacing all
-    /// matches with the given replacement. To access the result of the
-    /// replacement, use the `replacement` method.
-    ///
-    /// This can fail if the underlying matcher reports an error.
-    fn replace_all<'a>(
-        &'a mut self,
-        searcher: &Searcher,
-        matcher: &M,
-        mut haystack: &[u8],
-        range: std::ops::Range<usize>,
-        replacement: &[u8],
-    ) -> io::Result<()> {
-        // See the giant comment in 'find_iter_at_in_context' below for why we
-        // do this dance.
-        let is_multi_line = searcher.multi_line_with_matcher(&matcher);
-        // Get the line_terminator that was removed (if any) so we can add it
-        // back.
-        let line_terminator = if is_multi_line {
-            if haystack[range.end..].len() >= MAX_LOOK_AHEAD {
-                haystack = &haystack[..range.end + MAX_LOOK_AHEAD];
-            }
-            &[]
-        } else {
-            // When searching a single line, we should remove the line
-            // terminator. Otherwise, it's possible for the regex (via
-            // look-around) to observe the line terminator and not match
-            // because of it.
-            let mut m = Match::new(0, range.end);
-            let line_terminator =
-                trim_line_terminator(searcher, haystack, &mut m);
-            haystack = &haystack[..m.end()];
-            line_terminator
-        };
-        {
-            let &mut Space { ref mut dst, ref mut caps, ref mut matches } =
-                self.allocate(matcher)?;
-            dst.clear();
-            matches.clear();
-
-            replace_with_captures_in_context(
-                matcher,
-                haystack,
-                line_terminator,
-                range.clone(),
-                caps,
-                dst,
-                |caps, dst| {
-                    let start = dst.len();
-                    grep_matcher::Captures::interpolate(
-                        caps,
-                        |name| matcher.capture_index(name),
-                        haystack,
-                        replacement,
-                        dst,
-                    );
-                    let end = dst.len();
-                    matches.push(Match::new(start, end));
-                    true
-                },
-            )
-            .map_err(io::Error::error_message)?;
-        }
-        Ok(())
-    }
-
-    /// Return the result of the prior replacement and the match offsets for
-    /// all replacement occurrences within the returned replacement buffer.
-    ///
-    /// If no replacement has occurred then `None` is returned.
-    fn replacement<'a>(&'a self) -> Option<(&'a [u8], &'a [Match])> {
-        match self.space {
-            None => None,
-            Some(ref space) => {
-                if space.matches.is_empty() {
-                    None
-                } else {
-                    Some((&space.dst, &space.matches))
-                }
-            }
-        }
-    }
-
-    /// Clear space used for performing a replacement.
-    fn clear(&mut self) {
-        if let Some(ref mut space) = self.space {
-            space.dst.clear();
-            space.matches.clear();
-        }
-    }
-
-    /// Allocate space for replacements when used with the given matcher and
-    /// return a mutable reference to that space.
-    fn allocate(&mut self, matcher: &M) -> io::Result<&mut Space<M>> {
-        if self.space.is_none() {
-            let caps =
-                matcher.new_captures().map_err(io::Error::error_message)?;
-            self.space = Some(Space { caps, dst: vec![], matches: vec![] });
-        }
-        Ok(self.space.as_mut().unwrap())
-    }
-}
-
-/// Like `Matcher::find_iter_at`, but accepts an end bound (see grep-printer's
-/// comment there: the regex may look past the match in multi-line mode, so it
-/// gets the rest of the buffer, capped).
-fn find_iter_at_in_context<M, F>(
-    searcher: &Searcher,
-    matcher: M,
-    mut bytes: &[u8],
-    range: std::ops::Range<usize>,
-    mut matched: F,
-) -> io::Result<()>
-where
-    M: Matcher,
-    F: FnMut(Match) -> bool,
-{
-    let is_multi_line = searcher.multi_line_with_matcher(&matcher);
-    if is_multi_line {
-        if bytes[range.end..].len() >= MAX_LOOK_AHEAD {
-            bytes = &bytes[..range.end + MAX_LOOK_AHEAD];
-        }
-    } else {
-        // When searching a single line, we should remove the line terminator.
-        // Otherwise, it's possible for the regex (via look-around) to observe
-        // the line terminator and not match because of it.
-        let mut m = Match::new(0, range.end);
-        // No need to rember the line terminator as we aren't doing a replace
-        // here.
-        trim_line_terminator(searcher, bytes, &mut m);
-        bytes = &bytes[..m.end()];
-    }
-    matcher
-        .find_iter_at(bytes, range.start, |m| {
-            if m.start() >= range.end {
-                return false;
-            }
-            matched(m)
-        })
-        .map_err(io::Error::error_message)
-}
-
-/// Given a buf and some bounds, if there is a line terminator at the end of
-/// the given bounds in buf, then the bounds are trimmed to remove the line
-/// terminator, returning the slice of the removed line terminator (if any).
-fn trim_line_terminator<'b>(
-    searcher: &Searcher,
-    buf: &'b [u8],
-    line: &mut Match,
-) -> &'b [u8] {
-    let lineterm = searcher.line_terminator();
-    if lineterm.is_suffix(&buf[*line]) {
-        let mut end = line.end() - 1;
-        if lineterm.is_crlf() && end > 0 && buf.get(end - 1) == Some(&b'\r') {
-            end -= 1;
-        }
-        let orig_end = line.end();
-        *line = line.with_end(end);
-        &buf[end..orig_end]
-    } else {
-        &[]
-    }
-}
-
-/// Like `Matcher::replace_with_captures_at`, but accepts an end bound.
-///
-/// See also: `find_iter_at_in_context` for why we need this.
-fn replace_with_captures_in_context<M, F>(
-    matcher: M,
-    bytes: &[u8],
-    line_terminator: &[u8],
-    range: std::ops::Range<usize>,
-    caps: &mut M::Captures,
-    dst: &mut Vec<u8>,
-    mut append: F,
-) -> Result<(), M::Error>
-where
-    M: Matcher,
-    F: FnMut(&M::Captures, &mut Vec<u8>) -> bool,
-{
-    use grep_matcher::Captures;
-
-    let mut last_match = range.start;
-    matcher.captures_iter_at(bytes, range.start, caps, |caps| {
-        let m = caps.get(0).unwrap();
-        if m.start() >= range.end {
-            return false;
-        }
-        dst.extend(&bytes[last_match..m.start()]);
-        last_match = m.end();
-        append(caps, dst)
-    })?;
-    let end = if last_match > range.end {
-        bytes.len()
-    } else {
-        std::cmp::min(bytes.len(), range.end)
-    };
-    dst.extend(&bytes[last_match..end]);
-    // Add back any line terminator.
-    dst.extend(line_terminator);
-    Ok(())
 }
 
 #[cfg(test)]

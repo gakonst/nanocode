@@ -5,6 +5,7 @@
 //! Adding a utility: a module with `SPEC` (its options, D1082) and `async fn run(ctx,
 //! argv) -> i32`, plus one entry in [`REGISTRY`] and one in [`SPECS`].
 
+mod ansi;
 mod common;
 mod fsutil;
 mod math;
@@ -70,7 +71,11 @@ mod dump;
 mod gzip;
 mod inflate;
 mod lines;
+mod matcher;
 mod patch;
+mod printer;
+mod regex_matcher;
+mod searcher;
 mod small;
 mod tar;
 mod tree;

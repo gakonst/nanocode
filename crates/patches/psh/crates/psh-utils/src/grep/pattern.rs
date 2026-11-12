@@ -12,12 +12,12 @@
 
 use std::fmt::Write as _;
 
-use grep_matcher::{Match, Matcher, NoCaptures, NoError};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use psh_regex::{ExecOptions, Options, Regex as Posix};
 use regex::bytes::{Regex, RegexBuilder};
 
 use super::Syntax;
+use crate::matcher::{Match, Matcher, NoCaptures};
 
 /// How patterns match (the options that change the matchers).
 #[derive(Clone, Copy, Debug)]
@@ -504,14 +504,13 @@ pub(crate) fn char_len(line: &[u8], i: usize, utf8: bool) -> usize {
 /// line terminator is declared, so the searcher takes its line-by-line path).
 impl Matcher for Pats {
     type Captures = NoCaptures;
-    type Error = NoError;
 
-    fn find_at(&self, haystack: &[u8], at: usize) -> Result<Option<Match>, NoError> {
-        Ok(Pats::find_at(self, self.content(haystack), at).map(|(s, e)| Match::new(s, e)))
+    fn find_at(&self, haystack: &[u8], at: usize) -> Option<Match> {
+        Pats::find_at(self, self.content(haystack), at).map(|(s, e)| Match::new(s, e))
     }
 
-    fn new_captures(&self) -> Result<NoCaptures, NoError> {
-        Ok(NoCaptures::new())
+    fn new_captures(&self) -> NoCaptures {
+        NoCaptures
     }
 }
 

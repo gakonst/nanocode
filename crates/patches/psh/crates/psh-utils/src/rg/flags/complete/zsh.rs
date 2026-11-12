@@ -23,7 +23,7 @@ long as it meets criteria 3 and 4 above.
 
 /// Generate completions for zsh.
 pub(crate) fn generate() -> String {
-    let hyperlink_alias_descriptions = grep_printer::hyperlink_aliases()
+    let hyperlink_alias_descriptions = crate::printer::hyperlink_aliases()
         .iter()
         .map(|alias| {
             format!(r#"    {}:"{}""#, alias.name(), alias.description())

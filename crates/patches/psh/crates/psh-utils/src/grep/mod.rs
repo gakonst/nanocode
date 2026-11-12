@@ -1,6 +1,6 @@
 //! `grep`, `egrep`, `fgrep` (D1137, ARCH "Search"): GNU grep 3.11's command line,
 //! output and exit rules on the search layer shared with `rg`: POSIX patterns through
-//! `psh_regex`'s translator into `grep-regex`, `grep-searcher` with psh's own GNU sink,
+//! `psh_regex`'s translator into `grep-regex`, psh's searcher with its own GNU sink,
 //! and GNU's recursion on the walker seam (hidden files searched, no ignore files,
 //! `-R` follows symbolic links). Written for psh after GNU grep's manual and its
 //! observed behavior.

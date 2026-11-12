@@ -15,13 +15,13 @@ search worker is where things like preprocessors or decompression happens.
 // decompression paths are gone; PCRE2 likewise. A haystack is searched natively when
 // the walk found it on the process's file system, else through the utility's file
 // system (`SyncCtx::open`), and stdin is the utility's (D1133). Memory maps are off
-// (`MmapChoice::auto` is unsafe).
+// (mapping a file is unsafe).
 
 use std::{io, path::Path};
 
 use psh_engine::util::SyncCtx;
 
-use {grep_matcher::Matcher, termcolor::WriteColor};
+use crate::{ansi::WriteColor, matcher::Matcher};
 
 /// The configuration for the search worker.
 ///
@@ -29,15 +29,15 @@ use {grep_matcher::Matcher, termcolor::WriteColor};
 /// show search results to users at a very high level.
 #[derive(Clone, Debug)]
 struct Config {
-    binary_implicit: grep_searcher::BinaryDetection,
-    binary_explicit: grep_searcher::BinaryDetection,
+    binary_implicit: crate::searcher::BinaryDetection,
+    binary_explicit: crate::searcher::BinaryDetection,
 }
 
 impl Default for Config {
     fn default() -> Config {
         Config {
-            binary_implicit: grep_searcher::BinaryDetection::none(),
-            binary_explicit: grep_searcher::BinaryDetection::none(),
+            binary_implicit: crate::searcher::BinaryDetection::none(),
+            binary_explicit: crate::searcher::BinaryDetection::none(),
         }
     }
 }
@@ -65,7 +65,7 @@ impl SearchWorkerBuilder {
     pub(crate) fn build<W: WriteColor>(
         &self,
         matcher: PatternMatcher,
-        searcher: grep_searcher::Searcher,
+        searcher: crate::searcher::Searcher,
         printer: Printer<W>,
     ) -> SearchWorker<W> {
         let config = self.config.clone();
@@ -76,13 +76,13 @@ impl SearchWorkerBuilder {
     /// found via a recursive directory search.
     ///
     /// Generally, this binary detection may be
-    /// `grep_searcher::BinaryDetection::quit` if we want to skip binary files
+    /// `crate::searcher::BinaryDetection::quit` if we want to skip binary files
     /// completely.
     ///
     /// By default, no binary detection is performed.
     pub(crate) fn binary_detection_implicit(
         &mut self,
-        detection: grep_searcher::BinaryDetection,
+        detection: crate::searcher::BinaryDetection,
     ) -> &mut SearchWorkerBuilder {
         self.config.binary_implicit = detection;
         self
@@ -92,13 +92,13 @@ impl SearchWorkerBuilder {
     /// explicitly supplied by an end user.
     ///
     /// Generally, this binary detection should NOT be
-    /// `grep_searcher::BinaryDetection::quit`, since we never want to
+    /// `crate::searcher::BinaryDetection::quit`, since we never want to
     /// automatically filter files supplied by the end user.
     ///
     /// By default, no binary detection is performed.
     pub(crate) fn binary_detection_explicit(
         &mut self,
-        detection: grep_searcher::BinaryDetection,
+        detection: crate::searcher::BinaryDetection,
     ) -> &mut SearchWorkerBuilder {
         self.config.binary_explicit = detection;
         self
@@ -114,7 +114,7 @@ impl SearchWorkerBuilder {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SearchResult {
     has_match: bool,
-    stats: Option<grep_printer::Stats>,
+    stats: Option<crate::printer::Stats>,
 }
 
 impl SearchResult {
@@ -127,7 +127,7 @@ impl SearchResult {
     ///
     /// It can be expensive to compute statistics, so these are only present
     /// if explicitly enabled in the printer provided by the caller.
-    pub(crate) fn stats(&self) -> Option<&grep_printer::Stats> {
+    pub(crate) fn stats(&self) -> Option<&crate::printer::Stats> {
         self.stats.as_ref()
     }
 }
@@ -144,10 +144,10 @@ pub(crate) enum PatternMatcher {
 #[derive(Clone, Debug)]
 pub(crate) enum Printer<W> {
     /// Use the standard printer, which supports the classic grep-like format.
-    Standard(grep_printer::Standard<W>),
+    Standard(crate::printer::Standard<W>),
     /// Use the summary printer, which supports aggregate displays of search
     /// results.
-    Summary(grep_printer::Summary<W>),
+    Summary(crate::printer::Summary<W>),
     /// A JSON printer, which emits results in the JSON Lines format.
     ///
     /// psh: crate::rg::json's, since grep-printer's needs serde.
@@ -174,7 +174,7 @@ impl<W: WriteColor> Printer<W> {
 pub(crate) struct SearchWorker<W> {
     config: Config,
     matcher: PatternMatcher,
-    searcher: grep_searcher::Searcher,
+    searcher: crate::searcher::Searcher,
     printer: Printer<W>,
 }
 
@@ -268,7 +268,7 @@ pub(crate) enum HaystackIo<'a> {
 /// searcher and printer.
 fn search_path<M: Matcher, W: WriteColor>(
     matcher: M,
-    searcher: &mut grep_searcher::Searcher,
+    searcher: &mut crate::searcher::Searcher,
     printer: &mut Printer<W>,
     path: &Path,
     file: &Path,
@@ -305,7 +305,7 @@ fn search_path<M: Matcher, W: WriteColor>(
 /// and printer.
 fn search_reader<M: Matcher, R: io::Read + ?Sized, W: WriteColor>(
     matcher: M,
-    searcher: &mut grep_searcher::Searcher,
+    searcher: &mut crate::searcher::Searcher,
     printer: &mut Printer<W>,
     path: &Path,
     rdr: &mut R,

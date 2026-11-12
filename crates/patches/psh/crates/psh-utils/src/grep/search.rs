@@ -5,9 +5,6 @@
 use std::cell::RefCell;
 use std::io::{self, Read};
 
-use grep_matcher::LineTerminator;
-use grep_matcher::Matcher;
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
 use ignore::WalkState;
 use psh_engine::host::{FileKind, error_text};
 use psh_engine::util::SyncCtx;
@@ -15,7 +12,9 @@ use psh_engine::util::SyncCtx;
 use super::pattern::{LineMatcher, Matchers, Pats};
 use super::sink::{GrepSink, Out};
 use super::{BinaryFiles, Config, Dirs, List};
+use crate::matcher::{LineTerminator, Matcher};
 use crate::search::walk::{WalkOptions, Walker};
+use crate::searcher::{BinaryDetection, Searcher, SearcherBuilder};
 
 pub(crate) fn run_sync(ctx: &mut SyncCtx, (cfg, m): (Config, Matchers)) -> i32 {
     let out = RefCell::new(Out::new(

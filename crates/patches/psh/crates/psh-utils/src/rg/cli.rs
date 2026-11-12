@@ -4,15 +4,15 @@
 // Copyright (c) 2015 Andrew Gallant. Licensed under the MIT License (see NOTICE).
 
 //! What ripgrep takes from `grep-cli`, which psh does not depend on (D020, D1133): size
-//! parsing and pattern files as there, and stdout as a termcolor stream over the
+//! parsing and pattern files as there, and stdout as an ANSI or plain stream over the
 //! utility's fd 1 ([`SyncWriter`]) instead of the process's.
 
 use std::io::{self, BufWriter, LineWriter, Write};
 
+use crate::ansi::{ColorSpec, WriteColor};
 use bstr::ByteSlice;
 use bstr::io::BufReadExt;
 use psh_engine::util::SyncWriter;
-use termcolor::{ColorSpec, WriteColor};
 
 /// An error that occurs when parsing a human readable size description.
 ///
@@ -174,8 +174,8 @@ pub fn patterns_from_reader<R: io::Read>(rdr: R) -> io::Result<Vec<String>> {
 /// grep-cli's `StandardStream`: stdout, line or block buffered, with ANSI colors or
 /// none. Never the Windows console API (ARCH "Windows").
 pub enum StandardStream {
-    Ansi(termcolor::Ansi<Buffered>),
-    NoColor(termcolor::NoColor<Buffered>),
+    Ansi(crate::ansi::Ansi<Buffered>),
+    NoColor(crate::ansi::NoColor<Buffered>),
 }
 
 pub enum Buffered {
@@ -208,9 +208,9 @@ pub fn stdout(out: SyncWriter, line: bool, color: bool) -> StandardStream {
         Buffered::Block(BufWriter::new(out))
     };
     if color {
-        StandardStream::Ansi(termcolor::Ansi::new(b))
+        StandardStream::Ansi(crate::ansi::Ansi::new(b))
     } else {
-        StandardStream::NoColor(termcolor::NoColor::new(b))
+        StandardStream::NoColor(crate::ansi::NoColor::new(b))
     }
 }
 
@@ -248,7 +248,7 @@ impl WriteColor for StandardStream {
 
     fn set_hyperlink(
         &mut self,
-        link: &termcolor::HyperlinkSpec,
+        link: &crate::ansi::HyperlinkSpec,
     ) -> io::Result<()> {
         match self {
             StandardStream::Ansi(w) => w.set_hyperlink(link),
@@ -261,10 +261,6 @@ impl WriteColor for StandardStream {
             StandardStream::Ansi(w) => w.reset(),
             StandardStream::NoColor(w) => w.reset(),
         }
-    }
-
-    fn is_synchronous(&self) -> bool {
-        false
     }
 }
 

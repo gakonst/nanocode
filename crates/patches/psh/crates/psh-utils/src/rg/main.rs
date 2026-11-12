@@ -422,7 +422,7 @@ struct Done {
 
 /// psh: the in-order merge of search threads' output.
 struct Merge {
-    /// termcolor's `BufferWriter::separator`.
+    /// What is printed between two haystacks' non-empty outputs.
     separator: Option<Vec<u8>>,
     printed: bool,
     /// The sequence number to print next.
@@ -437,7 +437,7 @@ struct Merge {
 }
 
 impl Merge {
-    /// termcolor's `BufferWriter::print`.
+    /// Prints one haystack's output, after the separator when something was printed.
     fn print(
         &mut self,
         out: &mut impl Write,
@@ -615,7 +615,7 @@ fn eprint_nothing_searched() {
 /// if writing to stdout itself fails.
 fn print_stats<W: Write>(
     mode: SearchMode,
-    stats: &grep_printer::Stats,
+    stats: &crate::printer::Stats,
     started: Started,
     mut wtr: W,
 ) -> std::io::Result<()> {

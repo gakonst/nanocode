@@ -1648,7 +1648,7 @@ via the \flag-negate{encoding} flag.
         args.encoding = match label {
             "auto" => EncodingMode::Auto,
             "none" => EncodingMode::Disabled,
-            _ => EncodingMode::Some(grep_searcher::Encoding::new(label)?),
+            _ => EncodingMode::Some(crate::searcher::Encoding::new(label)?),
         };
         Ok(())
     }
@@ -1682,7 +1682,7 @@ fn test_encoding() {
     assert_eq!(EncodingMode::Disabled, args.encoding);
 
     let args = parse_low_raw(["-E", "utf-16"]).unwrap();
-    let enc = grep_searcher::Encoding::new("utf-16").unwrap();
+    let enc = crate::searcher::Encoding::new("utf-16").unwrap();
     assert_eq!(EncodingMode::Some(enc), args.encoding);
 
     let args = parse_low_raw(["-E", "utf-16", "--no-encoding"]).unwrap();
@@ -2934,7 +2934,7 @@ Alternatively, a format string may correspond to one of the following aliases:
 "#,
             );
 
-            let mut aliases = grep_printer::hyperlink_aliases();
+            let mut aliases = crate::printer::hyperlink_aliases();
             aliases.sort_by_key(|alias| {
                 alias.display_priority().unwrap_or(i16::MAX)
             });
@@ -3033,7 +3033,7 @@ https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
 
     fn doc_choices(&self) -> &'static [&'static str] {
         static CHOICES: LazyLock<Vec<String>> = LazyLock::new(|| {
-            let mut aliases = grep_printer::hyperlink_aliases();
+            let mut aliases = crate::printer::hyperlink_aliases();
             aliases.sort_by_key(|alias| {
                 alias.display_priority().unwrap_or(i16::MAX)
             });
@@ -3057,7 +3057,7 @@ https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
 #[test]
 fn test_hyperlink_format() {
     let parseformat = |format: &str| {
-        format.parse::<grep_printer::HyperlinkFormat>().unwrap()
+        format.parse::<crate::printer::HyperlinkFormat>().unwrap()
     };
 
     let args = parse_low_raw(None::<&str>).unwrap();

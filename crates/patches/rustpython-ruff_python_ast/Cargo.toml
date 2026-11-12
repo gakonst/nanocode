@@ -46,9 +46,6 @@ serde = [
 name = "ruff_python_ast"
 path = "src/lib.rs"
 
-[dependencies.arrayvec]
-version = "0.7.6"
-
 [dependencies.bitflags]
 version = "2.5.0"
 

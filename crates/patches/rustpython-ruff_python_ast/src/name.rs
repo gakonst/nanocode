@@ -3,7 +3,6 @@ use std::fmt::{Debug, Display, Formatter, Write};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
-use arrayvec::ArrayVec;
 use std::sync::Arc;
 
 use crate::Expr;
@@ -669,11 +668,6 @@ impl<'a> FromIterator<&'a str> for UnqualifiedName<'a> {
 /// A smallvec like storage for qualified and unqualified name segments.
 ///
 /// Stores up to 8 segments inline, and falls back to a heap-allocated vector for names with more segments.
-///
-/// ## Note
-/// The inline variant uses `ArrayVec` rather than `SmallVec` v1 because `SmallVec`'s type
-/// definition has a variance problem. The incorrect variance leads lifetime inference in the
-/// `SemanticModel` astray, causing all sorts of "strange" lifetime errors.
 #[derive(Clone)]
 enum SegmentsVec<'a> {
     Stack(SegmentsStack<'a>),
@@ -703,9 +697,9 @@ impl<'a> SegmentsVec<'a> {
     /// Initializes the segments from a slice.
     #[inline]
     fn from_slice(slice: &[&'a str]) -> Self {
-        match SegmentsStack::try_from(slice) {
-            Ok(stack) => SegmentsVec::Stack(stack),
-            Err(_) => SegmentsVec::Heap(slice.to_vec()),
+        match SegmentsStack::try_from_slice(slice) {
+            Some(stack) => SegmentsVec::Stack(stack),
+            None => SegmentsVec::Heap(slice.to_vec()),
         }
     }
 
@@ -725,10 +719,10 @@ impl<'a> SegmentsVec<'a> {
     fn push(&mut self, name: &'a str) {
         match self {
             SegmentsVec::Stack(stack) => {
-                if let Err(error) = stack.try_push(name) {
+                if let Err(name) = stack.try_push(name) {
                     let mut segments = Vec::with_capacity(stack.len() * 2);
-                    segments.extend(stack.iter().copied());
-                    segments.push(error.element());
+                    segments.extend(stack.as_slice().iter().copied());
+                    segments.push(name);
                     *self = SegmentsVec::Heap(segments);
                 }
             }
@@ -755,7 +749,7 @@ impl<'a> SegmentsVec<'a> {
             SegmentsVec::Stack(stack) => {
                 if stack.try_extend_from_slice(slice).is_err() {
                     let mut segments = Vec::with_capacity(stack.len() + slice.len());
-                    segments.extend(stack.iter().copied());
+                    segments.extend(stack.as_slice().iter().copied());
                     segments.extend_from_slice(slice);
                     *self = SegmentsVec::Heap(segments);
                 }
@@ -810,7 +804,10 @@ impl<'a> FromIterator<&'a str> for SegmentsVec<'a> {
 impl<'a> From<[&'a str; 8]> for SegmentsVec<'a> {
     #[inline]
     fn from(segments: [&'a str; 8]) -> Self {
-        SegmentsVec::Stack(SegmentsStack::from(segments))
+        SegmentsVec::Stack(SegmentsStack {
+            segments,
+            len: SMALL_LEN,
+        })
     }
 }
 
@@ -831,17 +828,17 @@ impl<'a> Extend<&'a str> for SegmentsVec<'a> {
 
                 if lower > stack.remaining_capacity() {
                     let mut segments = Vec::with_capacity(stack.len() + lower);
-                    segments.extend(stack.iter().copied());
+                    segments.extend(stack.as_slice().iter().copied());
                     segments.extend(iter);
                     *self = SegmentsVec::Heap(segments);
                     return;
                 }
 
                 while let Some(name) = iter.next() {
-                    if let Err(error) = stack.try_push(name) {
+                    if let Err(name) = stack.try_push(name) {
                         let mut segments = Vec::with_capacity(stack.len() * 2);
-                        segments.extend(stack.iter().copied());
-                        segments.push(error.element());
+                        segments.extend(stack.as_slice().iter().copied());
+                        segments.push(name);
                         segments.extend(iter);
                         *self = SegmentsVec::Heap(segments);
                         return;
@@ -856,7 +853,71 @@ impl<'a> Extend<&'a str> for SegmentsVec<'a> {
 }
 
 const SMALL_LEN: usize = 8;
-type SegmentsStack<'a> = ArrayVec<&'a str, SMALL_LEN>;
+
+#[derive(Clone, Copy)]
+struct SegmentsStack<'a> {
+    segments: [&'a str; SMALL_LEN],
+    len: usize,
+}
+
+impl Default for SegmentsStack<'_> {
+    fn default() -> Self {
+        Self {
+            segments: [""; SMALL_LEN],
+            len: 0,
+        }
+    }
+}
+
+impl<'a> SegmentsStack<'a> {
+    fn try_from_slice(slice: &[&'a str]) -> Option<Self> {
+        if slice.len() > SMALL_LEN {
+            return None;
+        }
+        let mut stack = Self::default();
+        stack.segments[..slice.len()].copy_from_slice(slice);
+        stack.len = slice.len();
+        Some(stack)
+    }
+
+    fn as_slice(&self) -> &[&'a str] {
+        &self.segments[..self.len]
+    }
+
+    const fn len(&self) -> usize {
+        self.len
+    }
+
+    const fn remaining_capacity(&self) -> usize {
+        SMALL_LEN - self.len
+    }
+
+    fn try_push(&mut self, name: &'a str) -> Result<(), &'a str> {
+        if self.len == SMALL_LEN {
+            return Err(name);
+        }
+        self.segments[self.len] = name;
+        self.len += 1;
+        Ok(())
+    }
+
+    fn try_extend_from_slice(&mut self, slice: &[&'a str]) -> Result<(), ()> {
+        if slice.len() > self.remaining_capacity() {
+            return Err(());
+        }
+        self.segments[self.len..self.len + slice.len()].copy_from_slice(slice);
+        self.len += slice.len();
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Option<&'a str> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.segments[self.len])
+    }
+}
 
 #[cfg(test)]
 mod tests {

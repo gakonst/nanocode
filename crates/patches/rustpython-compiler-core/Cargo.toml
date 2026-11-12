@@ -37,8 +37,8 @@ version = "2.11.0"
 [dependencies.bitflagset]
 version = "0.0.4"
 
-[dependencies.lz4_flex]
-version = "0.14"
+[dependencies.nanocode-compression]
+path = "../../core/compression"
 
 [dependencies.malachite-bigint]
 version = "0.12.0"

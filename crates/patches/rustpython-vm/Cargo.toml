@@ -57,7 +57,7 @@ default = [
 ]
 doc = [
     "dep:rustpython-doc",
-    "dep:xz",
+    "dep:nanocode-compression",
 ]
 encodings = ["importlib"]
 flame-it = [
@@ -135,6 +135,10 @@ version = "2.8.1"
 features = ["alloc"]
 default-features = false
 
+[dependencies.nanocode-compression]
+path = "../../core/compression"
+optional = true
+
 [dependencies.num-complex]
 version = "0.4.6"
 
@@ -210,10 +214,6 @@ package = "serde_core"
 
 [dependencies.thiserror]
 version = "2.0"
-
-[dependencies.xz]
-version = "0.4.6-rc.0"
-optional = true
 
 [build-dependencies.jiff]
 version = "0.2"

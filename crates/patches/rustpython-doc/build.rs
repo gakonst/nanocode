@@ -45,9 +45,9 @@ fn main() {
         index.push_str(" }),\n");
     }
     index.push_str("];\n");
-    let blob = xz::encode_all(text.as_bytes(), 9).expect("xz encode");
+    let blob = nanocode_compression::lz4::compress_with_size(text.as_bytes());
     let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
-    fs::write(out.join("docs.xz"), blob).expect("write blob");
+    fs::write(out.join("docs.lz4"), blob).expect("write blob");
     fs::write(out.join("index.rs"), index).expect("write index");
 }
 

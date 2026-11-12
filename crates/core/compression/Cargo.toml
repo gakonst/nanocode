@@ -1,0 +1,19 @@
+[package]
+name = "nanocode-compression"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LZ4 block, DEFLATE, bzip2 and xz codecs for the embedded Python"
+autotests = false
+autobenches = false
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

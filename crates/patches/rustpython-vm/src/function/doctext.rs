@@ -109,7 +109,7 @@ fn db_slice(_offset: u32, _len: u32) -> Option<&'static str> {
 fn docs() -> &'static str {
     static TEXT: OnceLock<Box<str>> = OnceLock::new();
     TEXT.get_or_init(|| {
-        let bytes = match xz::decode_all(rustpython_doc::BLOB) {
+        let bytes = match nanocode_compression::lz4::decompress_with_size(rustpython_doc::BLOB) {
             Ok(bytes) => bytes,
             Err(_) => panic!("doc blob"),
         };

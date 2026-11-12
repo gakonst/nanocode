@@ -2024,15 +2024,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
-name = "lz4_flex"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
 name = "malachite-base"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,6 +2499,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "nanocode-compression"
+version = "0.7.0"
 
 [[package]]
 name = "nanocode-computer"
@@ -3961,8 +3956,8 @@ version = "0.6.0"
 dependencies = [
  "bitflags 2.13.1",
  "bitflagset",
- "lz4_flex",
  "malachite-bigint",
+ "nanocode-compression",
  "num-complex",
  "num-traits",
  "rustpython-ruff_source_file",
@@ -3994,7 +3989,7 @@ dependencies = [
 name = "rustpython-doc"
 version = "0.6.0"
 dependencies = [
- "xz",
+ "nanocode-compression",
 ]
 
 [[package]]
@@ -5032,12 +5027,6 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
-
-[[package]]
-name = "twox-hash"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "typed-arena"

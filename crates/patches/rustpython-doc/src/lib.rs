@@ -2,7 +2,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/index.rs"));
 
-pub static BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/docs.xz"));
+pub static BLOB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/docs.lz4"));
 
 const fn cmp_bytes(left: &[u8], right: &[u8]) -> i8 {
     let n = if left.len() < right.len() {

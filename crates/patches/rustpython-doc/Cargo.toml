@@ -32,11 +32,8 @@ name = "rustpython_doc"
 path = "src/lib.rs"
 doctest = false
 
-[dev-dependencies.xz]
-version = "0.4.6-rc.0"
-
-[build-dependencies.xz]
-version = "0.4.6-rc.0"
+[build-dependencies.nanocode-compression]
+path = "../../core/compression"
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

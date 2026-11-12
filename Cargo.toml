@@ -24,6 +24,7 @@ members = [
     "crates/core/http",
     "crates/core/zstd",
     "crates/core/digest",
+    "crates/core/compression",
     "crates/core/tempo",
     "crates/core/mcp",
     "crates/core/mcp-http",

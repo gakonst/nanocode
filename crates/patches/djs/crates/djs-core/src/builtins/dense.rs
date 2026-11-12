@@ -77,6 +77,21 @@ pub(crate) fn search(
             if len > heap.dense_len(o) {
                 return (DECLINE, 0);
             }
+            if let Some(s) = search.as_string() {
+                let n = heap.str_len(s);
+                for i in from..len {
+                    let Some(v) = heap.get_element_fast(o, i) else {
+                        return (DECLINE, 0);
+                    };
+                    if let Some(t) = v.as_string()
+                        && heap.str_len(t) == n
+                        && heap.str_eq(t, s)
+                    {
+                        return (i as f64, i - from + 1);
+                    }
+                }
+                return (-1.0, len.saturating_sub(from));
+            }
             for i in from..len {
                 let Some(v) = heap.get_element_fast(o, i) else {
                     return (DECLINE, 0);

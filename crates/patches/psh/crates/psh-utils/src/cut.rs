@@ -212,8 +212,11 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             out.clear();
             let keep = match mode {
                 Mode::Bytes => {
-                    let lens = std::iter::repeat_n(1, line.len());
-                    cut_units(&line, lens, &ranges, out_delim.as_deref(), &mut out);
+                    cut_bytes(&line, &ranges, out_delim.as_deref(), &mut out);
+                    true
+                }
+                Mode::Chars if line.is_ascii() => {
+                    cut_bytes(&line, &ranges, out_delim.as_deref(), &mut out);
                     true
                 }
                 Mode::Chars => {
@@ -245,7 +248,9 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             };
             if keep {
                 out.push(eol);
-                if let Err(e) = ctx.write(&out).await {
+                if !ctx.write_now(&out)
+                    && let Err(e) = ctx.write(&out).await
+                {
                     return common::write_failed(ctx, &e).await;
                 }
             }
@@ -280,6 +285,20 @@ fn cut_units(
     }
 }
 
+fn cut_bytes(line: &[u8], ranges: &Ranges, od: Option<&[u8]>, out: &mut Vec<u8>) {
+    let mut first = true;
+    for &(lo, hi) in ranges {
+        if lo > line.len() {
+            break;
+        }
+        if let (Some(d), false) = (od, first) {
+            out.extend_from_slice(d);
+        }
+        first = false;
+        out.extend_from_slice(&line[lo - 1..hi.min(line.len())]);
+    }
+}
+
 /// Fields: `false` when the line has no delimiter and `-s` drops it.
 fn cut_fields(
     line: &[u8],
@@ -290,6 +309,30 @@ fn cut_fields(
     only_delimited: bool,
     out: &mut Vec<u8>,
 ) -> bool {
+    if let (false, &[d]) = (whitespace, delim) {
+        if !line.contains(&d) {
+            if only_delimited {
+                return false;
+            }
+            out.extend_from_slice(line);
+            return true;
+        }
+        let last = ranges.last().map_or(0, |r| r.1);
+        let mut first = true;
+        for (i, f) in line.split(|&b| b == d).enumerate() {
+            if i >= last {
+                break;
+            }
+            if range_of(ranges, i + 1).is_some() {
+                if !first {
+                    out.extend_from_slice(od);
+                }
+                first = false;
+                out.extend_from_slice(f);
+            }
+        }
+        return true;
+    }
     let parts: Vec<&[u8]> = if whitespace {
         // BSD's -w: runs of blanks separate fields; leading blanks make an empty first.
         let mut v = Vec::new();

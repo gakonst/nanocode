@@ -321,6 +321,15 @@ impl Exec<'_> {
     }
 
     /// CreateIterResultObject(undefined, true).
+    pub(super) fn iter_done_hit(&mut self, it: Value, f: Value) -> Option<Value> {
+        let Plan::Done(it) = self.iter_plan(it, f) else {
+            return None;
+        };
+        let r = self.done_result().ok()?;
+        self.heap.set_object_slot(it, 0, Value::UNDEFINED);
+        Some(r)
+    }
+
     pub(super) fn done_result(&mut self) -> Result<Value, Fault> {
         let proto = intrinsic_obj(self.heap, Intrinsic::ObjectProto);
         let o = self.heap.new_object_from_entries(

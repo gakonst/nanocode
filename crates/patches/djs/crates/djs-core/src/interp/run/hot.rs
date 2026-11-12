@@ -58,6 +58,7 @@ const PUT_GLOBAL: u8 = Op::PutGlobal as u8;
 const OBJECT: u8 = Op::Object as u8;
 const ARRAY_FROM: u8 = Op::ArrayFrom as u8;
 const ARRAY_PUSH: u8 = Op::ArrayPush as u8;
+const ITER_CHECK_OBJECT: u8 = Op::IterCheckObject as u8;
 const FCLOSURE: u8 = Op::FClosure as u8;
 const NEW_BOX_INIT: u8 = Op::NewBoxInit as u8;
 const PUSH_ATOM: u8 = Op::PushAtom as u8;
@@ -485,6 +486,27 @@ impl Exec<'_> {
     }
 
     #[inline(never)]
+    fn decline_iter(&mut self, op: u8) -> bool {
+        let o = if op == ITER_CHECK_OBJECT {
+            if self.get(self.sp - 1).as_object().is_none() {
+                return false;
+            }
+            Op::IterCheckObject
+        } else {
+            let at = self.lp + self.imm_u16(1);
+            let Some(r) = self.iter_done_hit(self.get(at), self.get(at + 1)) else {
+                return false;
+            };
+            self.push(r);
+            Op::IterNextLoc
+        };
+        let info = &OPS[o as usize];
+        self.fuel -= info.cost.fuel() as i64;
+        self.pc += info.size as u32;
+        true
+    }
+
+    #[inline(never)]
     fn decline_keyed_get(&mut self) -> bool {
         let (o, k) = (self.get(self.sp - 2), self.get(self.sp - 1));
         let (Some(obj), Some(s)) = (o.as_object(), k.as_string()) else {
@@ -800,6 +822,9 @@ impl Exec<'_> {
         }
         if op == fast::GET_ELEM {
             return self.decline_keyed_get();
+        }
+        if op == fast::ITER_NEXT_LOC || op == ITER_CHECK_OBJECT {
+            return self.decline_iter(op);
         }
         if op == fast::MOD {
             let (a, c) = (self.get(self.sp - 2), self.get(self.sp - 1));

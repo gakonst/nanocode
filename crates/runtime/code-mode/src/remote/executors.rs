@@ -7,6 +7,7 @@ use nanocode_sync::Atom;
 
 use serde_json::{Value, json};
 
+use super::HandPermission;
 use crate::{
     Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolResult,
     embedded::{
@@ -31,6 +32,41 @@ pub struct HandRoute {
 pub enum Placement {
     Local,
     Hand(HandRoute),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HandRequestDecision {
+    Allow,
+    Pending(String),
+    Deny(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HandCallDecision {
+    Allow,
+    Refuse(String),
+}
+
+pub trait HandAuthorizer: Send + Sync + 'static {
+    fn authorize_request<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _hand: &'a str,
+        _capability: &'a str,
+        _reason: &'a str,
+    ) -> HostFuture<'a, HandRequestDecision> {
+        Box::pin(async { HandRequestDecision::Allow })
+    }
+
+    fn authorize_call<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _hand: &'a str,
+        _name: &'a str,
+        _input: &'a Value,
+    ) -> HostFuture<'a, HandCallDecision> {
+        Box::pin(async { HandCallDecision::Allow })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -75,6 +111,7 @@ struct State {
     fallback: Option<Arc<str>>,
     awaiting: bool,
     sessions: nanocode_sync::Map<Box<str>, Session>,
+    authorizer: Option<Arc<dyn HandAuthorizer>>,
 }
 
 #[derive(Clone, Default)]
@@ -273,7 +310,11 @@ impl Tool for HandsTool {
             ExecutorSelection::Executor(name) => Value::String(name.to_string()),
             ExecutorSelection::Local => Value::Null,
         };
-        let executors = self.0.state.read(|state| state.executors.clone());
+        let (executors, authorizer) = self
+            .0
+            .state
+            .read(|state| (state.executors.clone(), state.authorizer.clone()));
+        let session_id = context.session_id().to_owned();
         let input = match &input {
             ToolInput::Function(raw) => serde_json::from_str::<Value>(raw.get()).ok(),
             ToolInput::Freeform(text) => serde_json::from_str::<Value>(text).ok(),
@@ -288,6 +329,19 @@ impl Tool for HandsTool {
                 let host = executors.get(hand).ok_or_else(|| {
                     format!("hand `{hand}` is not attached; nothing was requested")
                 })?;
+                if let Some(authorizer) = &authorizer {
+                    match authorizer
+                        .authorize_request(&session_id, hand, capability, reason)
+                        .await
+                    {
+                        HandRequestDecision::Allow => {}
+                        HandRequestDecision::Pending(pending) => {
+                            let result = json!({"hand": hand, "capability": capability, "permission": HandPermission::Prompt, "reason": pending});
+                            return Ok(ToolOutput::json(&result).with_structured_result(result));
+                        }
+                        HandRequestDecision::Deny(denied) => return Err(denied.into()),
+                    }
+                }
                 let permission = host
                     .request_capability(capability, reason)
                     .await
@@ -359,6 +413,11 @@ impl CodeModeExecutors {
         });
         self.changed.notify_waiters();
         previous
+    }
+
+    pub fn set_authorizer(&self, authorizer: Option<Arc<dyn HandAuthorizer>>) {
+        self.state
+            .update(|state| state.authorizer.clone_from(&authorizer));
     }
 
     pub fn await_replacement(&self, awaiting: bool) {
@@ -510,6 +569,19 @@ impl CodeModeExecutors {
         context: ToolContext<'_>,
     ) -> ToolOutput {
         let session_id = context.session_id();
+        let authorizer = self.state.read(|state| {
+            state
+                .authorizer
+                .clone()
+                .filter(|_| state.executors.contains_key(hand))
+        });
+        if let Some(authorizer) = authorizer
+            && let HandCallDecision::Refuse(refusal) = authorizer
+                .authorize_call(session_id, hand, name, &input)
+                .await
+        {
+            return ToolOutput::error(refusal);
+        }
         let host = self.state.modify(|state| {
             let Some((hand, host)) = state
                 .executors

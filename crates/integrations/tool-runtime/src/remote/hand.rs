@@ -77,6 +77,7 @@ pub struct Hand {
     pricing: Option<HandPricing>,
     confirm: Option<(ConfirmRefusal, Duration)>,
     runtime: Option<String>,
+    version: Option<String>,
 }
 
 impl Hand {
@@ -105,6 +106,7 @@ impl Hand {
             pricing: None,
             confirm: None,
             runtime: None,
+            version: None,
         }
     }
 
@@ -141,6 +143,12 @@ impl Hand {
     #[must_use]
     pub fn environment(mut self, environment: nanocode_code_mode::remote::HandEnvironment) -> Self {
         self.environment = Some(environment);
+        self
+    }
+
+    #[must_use]
+    pub fn version(mut self, version: impl Into<String>) -> Self {
+        self.version = Some(version.into());
         self
     }
 
@@ -252,6 +260,7 @@ impl Hand {
                 tools_only: self.tools_only,
                 environment: self.environment.clone(),
                 moves: false,
+                version: self.version.clone(),
             };
             let policy = self.policy;
             match self.endpoint {

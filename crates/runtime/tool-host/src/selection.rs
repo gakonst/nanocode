@@ -209,6 +209,8 @@ pub struct Tools {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) hand_calls: Option<Arc<dyn crate::embedded::HandCalls>>,
     #[cfg(not(target_family = "wasm"))]
+    pub(crate) hand_authorizer: Option<Arc<dyn nanocode_code_mode::remote::HandAuthorizer>>,
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) cell_journals: Option<nanocode_code_mode::code_mode::CellJournals>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) nested_call_limit: Option<usize>,
@@ -275,6 +277,8 @@ impl Default for Tools {
             code_mode_executors: None,
             #[cfg(not(target_family = "wasm"))]
             hand_calls: None,
+            #[cfg(not(target_family = "wasm"))]
+            hand_authorizer: None,
             #[cfg(not(target_family = "wasm"))]
             cell_journals: None,
             #[cfg(not(target_family = "wasm"))]
@@ -848,6 +852,16 @@ impl ToolsBuilder {
     #[must_use]
     pub fn hand_calls(mut self, calls: Arc<dyn crate::embedded::HandCalls>) -> Self {
         self.tools.hand_calls = Some(calls);
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub fn hand_authorizer(
+        mut self,
+        authorizer: Arc<dyn nanocode_code_mode::remote::HandAuthorizer>,
+    ) -> Self {
+        self.tools.hand_authorizer = Some(authorizer);
         self
     }
 

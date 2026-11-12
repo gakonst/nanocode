@@ -22,7 +22,8 @@ pub use compact::{
     output_to_wire,
 };
 pub use executors::{
-    CodeModeExecutors, ExecutorSelection, HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
+    CodeModeExecutors, ExecutorSelection, HandAuthorizer, HandCallDecision, HandRequestDecision,
+    HandRoute, HandsTool, PLACEMENT_INSTRUCTIONS, Placement,
 };
 pub use hand::{
     BRAIN_DISCONNECTED, BusyItem, BusyKind, CALL_CANCELLED, DetachedObservers, ExecutorOptions,
@@ -181,6 +182,8 @@ pub struct HandDescription {
     pub capabilities: Vec<HandCapability>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub tools_only: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -312,6 +315,7 @@ impl RemoteCodeModeHost {
                 .cloned()
                 .collect(),
             tools_only: catalog.tools_only,
+            version: catalog.version.clone(),
         });
         self
     }
@@ -738,6 +742,8 @@ pub enum RemoteFrame {
         capabilities: Vec<HandCapability>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tools_only: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
     },
     Request {
         id: u64,
@@ -875,6 +881,7 @@ pub struct RemoteCatalog {
     pub environment: Option<HandEnvironment>,
     pub capabilities: Vec<HandCapability>,
     pub tools_only: bool,
+    pub version: Option<String>,
 }
 
 impl RemoteCatalog {
@@ -918,6 +925,7 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 environment,
                 capabilities,
                 tools_only,
+                version,
             } => Ok(Self {
                 definitions,
                 name,
@@ -931,6 +939,7 @@ impl TryFrom<RemoteFrame> for RemoteCatalog {
                 environment,
                 capabilities,
                 tools_only,
+                version,
             }),
             _ => Err(CodeModeHostError::new(NO_CATALOG)),
         }

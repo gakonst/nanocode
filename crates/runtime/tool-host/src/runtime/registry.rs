@@ -4,6 +4,7 @@ use super::execution::{
 use super::*;
 use crate::attachment::{ProcessRouteStore, RemoteRoute, RunnerRouting};
 use nanocode_code_mode::embedded::{declares_hand, take_hand, tool_not_available};
+use nanocode_code_mode::remote::{HandAuthorizer, HandCallDecision};
 use nanocode_sync::Atom;
 use std::sync::OnceLock;
 
@@ -68,6 +69,7 @@ pub(crate) struct ToolRegistry {
     pub(super) providers: Vec<Arc<dyn DynamicToolProvider>>,
     pub(super) policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
     pub(super) hand_calls: Option<Arc<dyn crate::embedded::HandCalls>>,
+    pub(super) hand_authorizer: Option<Arc<dyn HandAuthorizer>>,
     nested_gate: Arc<super::admission::AdmissionGate>,
     excluded_code_tools: HashSet<String>,
     nested_metadata: Arc<Atom<Option<Arc<NestedMetadata>>>>,
@@ -343,6 +345,16 @@ impl ToolRegistry {
         };
         if let Some((hand, calls)) = hand {
             span.record("tool.hand", hand.as_str());
+            if let Some(authorizer) = &self.hand_authorizer
+                && let HandCallDecision::Refuse(refusal) = authorizer
+                    .authorize_call(context.session_id(), &hand, name, &input)
+                    .instrument(span.clone())
+                    .await
+            {
+                let refused = ToolOutput::error(refusal);
+                open.refuse(&refused);
+                return refused;
+            }
             let started_at = std::time::Instant::now();
             let execution = calls
                 .call(&hand, name, input, context)
@@ -569,6 +581,7 @@ impl ToolRegistry {
             providers: Vec::new(),
             policies: Vec::new(),
             hand_calls: None,
+            hand_authorizer: None,
             nested_gate: Arc::default(),
             excluded_code_tools: HashSet::new(),
             nested_metadata: Arc::default(),

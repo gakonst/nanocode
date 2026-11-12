@@ -42,10 +42,10 @@ pub use nanocode_code_mode::embedded::{
     HostFuture,
 };
 pub use nanocode_code_mode::remote::{
-    CodeModeExecutors, ExecutorSelection, HandCapability, HandDescription, HandEnvironment,
-    HandPermission, HandToolSelection, RemoteCatalog, RemoteClient, RemoteCodeModeHost,
-    RemoteContext, RemoteDelivery, RemoteFrame, RemoteLink, RemoteOperation, RemoteTransport,
-    ResumedReply,
+    CodeModeExecutors, ExecutorSelection, HandAuthorizer, HandCallDecision, HandCapability,
+    HandDescription, HandEnvironment, HandPermission, HandRequestDecision, HandToolSelection,
+    RemoteCatalog, RemoteClient, RemoteCodeModeHost, RemoteContext, RemoteDelivery, RemoteFrame,
+    RemoteLink, RemoteOperation, RemoteTransport, ResumedReply,
 };
 pub use nanocode_code_mode::tool;
 pub use nanocode_tool_runtime::{

@@ -75,6 +75,7 @@ pub struct SocketTransport {
     environment: Option<HandEnvironment>,
     capabilities: Vec<HandCapability>,
     tools_only: bool,
+    version: Option<String>,
     shutdown: SocketShutdown,
     _shutdown: DropGuard,
 }
@@ -655,6 +656,7 @@ impl SocketTransport {
             environment: self.environment.clone(),
             capabilities: self.capabilities.clone(),
             tools_only: self.tools_only,
+            version: self.version.clone(),
         };
         RemoteCodeModeHost::new(self, catalog.definitions.clone()).described(&catalog)
     }
@@ -679,6 +681,7 @@ impl SocketTransport {
             environment,
             capabilities,
             tools_only,
+            version,
         } = match catalog {
             Some(text) => RemoteCatalog::decode(&text, policy.max_frame_bytes)?,
             None => tokio::time::timeout(policy.request_timeout, read(&mut socket, &liveness))
@@ -740,6 +743,7 @@ impl SocketTransport {
             environment,
             capabilities,
             tools_only,
+            version,
             _shutdown: shutdown.token.clone().drop_guard(),
             shutdown,
         })
@@ -1091,6 +1095,7 @@ const fn policy_options(policy: SocketPolicy) -> ExecutorOptions {
         tools_only: false,
         environment: None,
         moves: false,
+        version: None,
     }
 }
 pub async fn serve_connect(

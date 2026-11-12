@@ -66,6 +66,7 @@ pub struct ExecutorOptions {
     pub tools_only: bool,
     pub environment: Option<HandEnvironment>,
     pub moves: bool,
+    pub version: Option<String>,
 }
 
 pub trait HandHost: Send + Sync + 'static {
@@ -1705,6 +1706,7 @@ impl State {
                 .or_else(|| self.host.environment()),
             capabilities,
             tools_only: self.tools_only(),
+            version: self.options.version.clone(),
         }
         .encode(max_frame_bytes)
     }

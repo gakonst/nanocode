@@ -34,6 +34,8 @@ struct Catalog {
     capabilities: Vec<HandCapability>,
     #[serde(default)]
     tools_only: bool,
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +150,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 environment,
                 capabilities,
                 tools_only,
+                version,
             } = Catalog::deserialize(body)?;
             RemoteFrame::Catalog {
                 definitions,
@@ -162,6 +165,7 @@ fn body<'de, D: Deserializer<'de>>(tag: &str, body: D) -> Result<RemoteFrame, D:
                 environment,
                 capabilities,
                 tools_only,
+                version,
             }
         }
         "request" => {

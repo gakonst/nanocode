@@ -20,31 +20,27 @@ pub struct UnixFile {
     /// `O_NONBLOCK` is set: a private pipe end of our own, never shared.
     nonblocking: bool,
     terminal: bool,
+    write_waits: bool,
 }
 
 impl UnixFile {
     /// Wraps an open descriptor, shared or not; its flags are left alone.
     pub fn new(fd: impl Into<OwnedFd>) -> UnixFile {
+        use std::os::unix::fs::FileTypeExt;
         let file = File::from(fd.into());
-        let stream = match file.metadata() {
-            Ok(m) => {
-                let ft = m.file_type();
-                !(ft.is_file() || ft.is_dir() || {
-                    use std::os::unix::fs::FileTypeExt;
-                    ft.is_block_device()
-                })
-            }
-            Err(_) => true,
-        };
+        let kind = file.metadata().ok().map(|m| m.file_type());
+        let stream = kind.is_none_or(|ft| !(ft.is_file() || ft.is_dir() || ft.is_block_device()));
         let terminal = stream && {
             use std::io::IsTerminal;
             file.is_terminal()
         };
+        let device = kind.is_some_and(|ft| ft.is_char_device());
         UnixFile {
             file,
             stream,
             nonblocking: false,
             terminal,
+            write_waits: stream && (terminal || !device),
         }
     }
 
@@ -56,6 +52,7 @@ impl UnixFile {
             stream: true,
             nonblocking: true,
             terminal: false,
+            write_waits: true,
         })
     }
 
@@ -136,7 +133,7 @@ impl HostFile for UnixFile {
     fn poll_write(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         let mut buf = buf;
         loop {
-            if self.stream && !self.nonblocking {
+            if self.write_waits && !self.nonblocking {
                 match ready::now(self.raw_fd(), ready::WRITE) {
                     Ok(true) => {}
                     Ok(false) => return self.wait(cx, ready::WRITE),

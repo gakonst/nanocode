@@ -9,8 +9,8 @@ use proc_macro2::{Delimiter, Group, Span, TokenStream, TokenTree};
 use quote::{ToTokens, quote, quote_spanned};
 use std::collections::{HashMap, HashSet};
 use syn::{Attribute, Ident, Item, Result, parse_quote, spanned::Spanned};
-use syn_ext::ext::*;
-use syn_ext::types::*;
+use crate::syn_ext::ext::*;
+use crate::syn_ext::types::*;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum AttrName {
@@ -81,7 +81,7 @@ fn extract_items_into_context<'a, Item>(
     context: &mut ImplContext,
     items: impl Iterator<Item = &'a mut Item>,
 ) where
-    Item: ItemLike + ToTokens + GetIdent + syn_ext::ext::ItemAttrExt + 'a,
+    Item: ItemLike + ToTokens + GetIdent + crate::syn_ext::ext::ItemAttrExt + 'a,
 {
     for item in items {
         let r = item.try_split_attr_mut(|attrs, item| {

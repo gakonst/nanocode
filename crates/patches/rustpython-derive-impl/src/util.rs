@@ -6,7 +6,7 @@ use syn::visit_mut::VisitMut;
 use syn::{
     Attribute, FnArg, Ident, Result, Signature, Type, UseTree, ext::IdentExt, spanned::Spanned,
 };
-use syn_ext::{
+use crate::syn_ext::{
     ext::{AttributeExt as SynAttributeExt, *},
     types::*,
 };

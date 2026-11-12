@@ -52,10 +52,6 @@ features = [
     "visit-mut",
 ]
 
-[dependencies.syn-ext]
-version = "0.5.0"
-features = ["full"]
-
 [lints.clippy]
 alloc_instead_of_core = "warn"
 assigning_clones = "warn"

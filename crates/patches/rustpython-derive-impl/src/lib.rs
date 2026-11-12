@@ -9,6 +9,7 @@ extern crate proc_macro;
 mod error;
 #[macro_use]
 mod util;
+pub mod syn_ext;
 
 mod class_docs;
 mod compile_bytecode;
@@ -23,7 +24,7 @@ use error::Diagnostic;
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use syn::{DeriveInput, Item};
-use syn_ext::types::PunctuatedNestedMeta;
+use crate::syn_ext::types::PunctuatedNestedMeta;
 
 pub use pymodule::PyModuleArgs;
 

@@ -11,8 +11,8 @@ use quote::{ToTokens, format_ident, quote, quote_spanned};
 
 use std::collections::HashSet;
 use syn::{Attribute, Ident, Item, Result, parse_quote, spanned::Spanned};
-use syn_ext::ext::*;
-use syn_ext::types::NestedMeta;
+use crate::syn_ext::ext::*;
+use crate::syn_ext::types::NestedMeta;
 
 /// A `with(...)` item that may be gated by `#[cfg(...)]` attributes.
 pub struct WithItem {

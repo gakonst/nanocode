@@ -2,8 +2,8 @@ use crate::util::{ItemMeta, ItemMetaInner};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{DeriveInput, Ident, Item, Result};
-use syn_ext::ext::{AttributeExt, AttributeIteratorExt, GetIdent};
-use syn_ext::types::{Meta, PunctuatedNestedMeta};
+use crate::syn_ext::ext::{AttributeExt, AttributeIteratorExt, GetIdent};
+use crate::syn_ext::types::{Meta, PunctuatedNestedMeta};
 
 // #[pystruct_sequence_data] - For Data structs
 

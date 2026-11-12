@@ -107,6 +107,7 @@ const fn ctor(
 /// The index of `ArrayPrototypePush`'s entry: the interpreter appends for it directly
 /// (interp/run/fastpath.rs, 0231; a test checks the index).
 pub(crate) const ARRAY_PUSH: usize = 21;
+pub(crate) const ARRAY_POP: usize = ARRAY_PUSH + 1;
 
 /// The entries that pay their bytes (D2310: the rule and the measurements of every twin).
 pub(crate) static FAST: &[FastFn] = &[

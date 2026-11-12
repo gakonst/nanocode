@@ -77,6 +77,14 @@ impl Exec<'_> {
                 }
             }
         }
+        if argc == 0
+            && self.heap.arena().get(t, FuncTemplate::FAST) as usize
+                == crate::builtins::fast::ARRAY_POP
+            && self.array_pop_call(base, next)
+        {
+            self.fuel -= info.cost.fuel() as i64 + FAST_FUEL;
+            return true;
+        }
         match self.try_fast_call(t, base, argc, Continuation::PushResult, next) {
             Ok(true) => {
                 self.fuel -= info.cost.fuel() as i64;
@@ -93,6 +101,23 @@ impl Exec<'_> {
                 false
             }
         }
+    }
+
+    #[inline(never)]
+    fn array_pop_call(&mut self, base: u32, next: u32) -> bool {
+        let Some(a) = self.get(base + 1).as_object() else {
+            return false;
+        };
+        if !self.is_class(a, ObjectClass::Array) {
+            return false;
+        }
+        let Some(v) = self.heap.array_pop_dense(a) else {
+            return false;
+        };
+        self.sp = base;
+        self.push(v);
+        self.pc = next;
+        true
     }
 
     #[cfg(djs_prelude)]

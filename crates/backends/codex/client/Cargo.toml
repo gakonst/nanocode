@@ -45,7 +45,7 @@ tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 url.workspace = true
 flate2.workspace = true
-zstd.workspace = true
+nanocode-zstd.workspace = true
 
 [lints]
 workspace = true

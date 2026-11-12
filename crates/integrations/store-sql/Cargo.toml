@@ -23,7 +23,7 @@ tokio = { workspace = true, features = ["fs", "rt", "sync", "time"] }
 tokio-postgres.workspace = true
 tokio-postgres-rustls = "0.13"
 webpki-roots = "1"
-zstd.workspace = true
+nanocode-zstd.workspace = true
 
 [lints]
 workspace = true

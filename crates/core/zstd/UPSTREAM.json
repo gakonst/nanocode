@@ -2,7 +2,7 @@
   "source": "https://github.com/stephenberry/zstandard",
   "crate_version": "0.1.8",
   "crate_checksum": "1e95bb8ae3c19a8586de2347b2c8d427ceb2b705812b055a05ca3852105053ce",
-  "scope": "Streaming response decompression, no encoder, dictionary training or externally supplied dictionaries",
+  "scope": "Streaming decompression, with raw-content dictionaries; no dictionary training or formatted dictionaries. The encoder (src/encode) is written here, not vendored",
   "source_sha256": {
     "src/asm_inspect.rs": "f40656b96d9115f27306e1febe79065bb8b6ea557619197c3b2f6f053393e55c",
     "src/literals.rs": "0c30c1b54a951889558cab5ecfebc6679540d12111ca8b0c38e70dfe631fc078",

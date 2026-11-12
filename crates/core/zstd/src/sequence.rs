@@ -5,37 +5,37 @@ use crate::{
     literals::DecodedLiterals,
 };
 use std::sync::OnceLock;
-const LITERAL_LENGTH_BASELINES: [u32; 36] = [
+pub(crate) const LITERAL_LENGTH_BASELINES: [u32; 36] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64,
     128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
 ];
-const LITERAL_LENGTH_EXTRA_BITS: [u8; 36] = [
+pub(crate) const LITERAL_LENGTH_EXTRA_BITS: [u8; 36] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11,
     12, 13, 14, 15, 16,
 ];
-const MATCH_LENGTH_BASELINES: [u32; 53] = [
+pub(crate) const MATCH_LENGTH_BASELINES: [u32; 53] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
     28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027,
     2051, 4099, 8195, 16387, 32771, 65539,
 ];
-const MATCH_LENGTH_EXTRA_BITS: [u8; 53] = [
+pub(crate) const MATCH_LENGTH_EXTRA_BITS: [u8; 53] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
 ];
-const LITERAL_LENGTH_DEFAULT_DISTRIBUTION: [i16; 36] = [
+pub(crate) const LITERAL_LENGTH_DEFAULT_DISTRIBUTION: [i16; 36] = [
     4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1,
     -1, -1, -1, -1,
 ];
-const OFFSET_DEFAULT_DISTRIBUTION: [i16; 29] = [
+pub(crate) const OFFSET_DEFAULT_DISTRIBUTION: [i16; 29] = [
     1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1,
 ];
-const MATCH_LENGTH_DEFAULT_DISTRIBUTION: [i16; 53] = [
+pub(crate) const MATCH_LENGTH_DEFAULT_DISTRIBUTION: [i16; 53] = [
     1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1,
 ];
-const LL_DEFAULT_LOG: u32 = 6;
-const OF_DEFAULT_LOG: u32 = 5;
-const ML_DEFAULT_LOG: u32 = 6;
+pub(crate) const LL_DEFAULT_LOG: u32 = 6;
+pub(crate) const OF_DEFAULT_LOG: u32 = 5;
+pub(crate) const ML_DEFAULT_LOG: u32 = 6;
 static PREDEFINED_SEQUENCE_DTABLES: OnceLock<PredefinedSequenceDTables> = OnceLock::new();
 static PREDEFINED_SEQ_DTABLES: OnceLock<PredefinedSeqDTables> = OnceLock::new();
 struct PredefinedSequenceDTables {

@@ -6,7 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Streaming Zstandard response decoder"
+description = "Zstandard decoder and encoder"
 autotests = false
 autobenches = false
 

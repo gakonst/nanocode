@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use nanocode_zstd::{DecoderOptions, FrameHeader, StreamingDecoder, parse_frame_header};
 use sha2::{Digest, Sha256};
 
 use super::sync_journal;
@@ -28,8 +29,8 @@ pub(super) fn exists(path: &Path) -> bool {
 }
 
 pub(super) fn compress(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    let mut compressor = zstd::bulk::Compressor::with_dictionary(LEVEL, DICTIONARY)?;
-    let frame = compressor.compress(bytes)?;
+    let frame = nanocode_zstd::compress_with_dictionary(bytes, DICTIONARY, LEVEL)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut archive = Vec::with_capacity(frame.len() + 1);
     archive.push(FORMAT);
     archive.extend_from_slice(&frame);
@@ -41,12 +42,22 @@ pub(super) fn decompress(archive: &[u8]) -> io::Result<Vec<u8>> {
     let Some((&FORMAT, frame)) = archive.split_first() else {
         return Err(invalid("unknown JSONL archive format"));
     };
-    let size = zstd::zstd_safe::get_frame_content_size(frame)
-        .ok()
-        .flatten()
-        .ok_or_else(|| invalid("JSONL archive has no content size"))?;
+    let size = match parse_frame_header(frame) {
+        Ok(FrameHeader::Zstandard(header)) => header.content_size,
+        _ => None,
+    }
+    .ok_or_else(|| invalid("JSONL archive has no content size"))?;
     let capacity = usize::try_from(size).map_err(|_| invalid("JSONL archive is too large"))?;
-    zstd::bulk::Decompressor::with_dictionary(DICTIONARY)?.decompress(frame, capacity)
+    let options = DecoderOptions {
+        max_output_size: Some(capacity),
+        single_frame: true,
+        ..DecoderOptions::default()
+    };
+    let mut decoder = StreamingDecoder::with_dictionary(options, DICTIONARY);
+    let unreadable = |error| io::Error::new(io::ErrorKind::InvalidData, error);
+    decoder.push(frame).map_err(unreadable)?;
+    decoder.finish().map_err(unreadable)?;
+    Ok(decoder.take_output())
 }
 
 pub(super) fn archive(path: &Path) -> io::Result<Option<[u8; 32]>> {

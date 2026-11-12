@@ -177,7 +177,7 @@ impl ResponsesHttp {
         let body = request.json().to_owned();
         builder = if auth.mode() == OpenAiAuthMode::ChatGpt && self.gateway.is_none() {
             let encoded = tokio::task::spawn_blocking(move || {
-                zstd::stream::encode_all(body.as_bytes(), ZSTD_LEVEL)
+                nanocode_zstd::compress(body.as_bytes(), ZSTD_LEVEL)
             })
             .await
             .map_err(|error| encode_error(&error))?

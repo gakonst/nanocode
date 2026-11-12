@@ -9,6 +9,7 @@ use crate::{
     sequence::{OutputLimit, RepeatOffsets, SequenceTablesState},
     xxhash::Xxh64State,
 };
+use std::borrow::Cow;
 use std::mem;
 use std::ops::Range;
 pub struct StreamingDecoder {
@@ -24,10 +25,19 @@ pub struct StreamingDecoder {
     finished_input: bool,
     input_dropped: usize,
     decoded_a_frame: bool,
+    dictionary: Option<Cow<'static, [u8]>>,
 }
 impl StreamingDecoder {
     pub fn new(options: DecoderOptions) -> Self {
         Self::initialize(options)
+    }
+    pub fn with_dictionary(
+        options: DecoderOptions,
+        dictionary: impl Into<Cow<'static, [u8]>>,
+    ) -> Self {
+        let mut decoder = Self::initialize(options);
+        decoder.dictionary = Some(dictionary.into());
+        decoder
     }
 }
 impl Default for StreamingDecoder {
@@ -116,6 +126,7 @@ impl StreamingDecoder {
             finished_input: false,
             input_dropped: 0,
             decoded_a_frame: false,
+            dictionary: None,
         };
         decoder.reset_state();
         decoder
@@ -303,7 +314,7 @@ impl StreamingDecoder {
         let released = self.total_output_size.saturating_sub(block_start as u64);
         let limit = OutputLimit::after(released, self.options.max_output_size);
         let payload = &self.input[payload_range];
-        let dictionary_content = None;
+        let dictionary_content = self.dictionary.as_deref();
         let DecoderState::Frame { frame, .. } = &mut self.state else {
             return Err(Error::Generic);
         };

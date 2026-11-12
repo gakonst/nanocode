@@ -1159,7 +1159,11 @@ fn expand_text(
         Part::Single => f.quoted(&text[1..text.len() - 1]),
         Part::AnsiC => {
             let inner = &text[2..text.len() - 1];
-            f.quoted(&psh_syntax::decode_ansi_c(inner));
+            let mut v = psh_syntax::decode_ansi_c(inner);
+            if let Some(nul) = v.iter().position(|&b| b == 0) {
+                v.truncate(nul);
+            }
+            f.quoted(&v);
         }
         Part::Brace(_) => {
             // Only reached where brace expansion does not apply: the text as is.
@@ -1746,7 +1750,7 @@ async fn param(
                         // `@Q` of nothing is nothing, not `''`.
                         (Val::Unset, _) => Val::Unset,
                         _ => map_val(val, |s| match op {
-                            b'Q' => quote(s),
+                            b'Q' => quote(s, utf8),
                             b'E' => psh_syntax::decode_ansi_c(s),
                             b'U' => change_case(s, CaseKind::UpperAll, &any, utf8),
                             b'L' => change_case(s, CaseKind::LowerAll, &any, utf8),
@@ -1807,12 +1811,12 @@ fn transform_var(vp: &Vp, code: &Rc<Code>, p: &psh_syntax::Param, op: u8, val: V
         b'A' => {
             let Some(var) = var else {
                 return match val {
-                    Val::Str(s) if p.name != ParamName::Var => Val::Str(quote(&s)),
+                    Val::Str(s) if p.name != ParamName::Var => Val::Str(quote(&s, vp.utf8())),
                     _ => Val::Unset,
                 };
             };
             if list && var.is_array() {
-                let mut d = declaration(&name, &var);
+                let mut d = declaration(&name, &var, vp.utf8());
                 d.pop();
                 return Val::Str(d);
             }
@@ -1831,7 +1835,7 @@ fn transform_var(vp: &Vp, code: &Rc<Code>, p: &psh_syntax::Param, op: u8, val: V
             }
             out.extend_from_slice(name.as_bytes());
             out.push(b'=');
-            out.extend_from_slice(&quote(&s));
+            out.extend_from_slice(&quote(&s, vp.utf8()));
             Val::Str(out)
         }
         _ => {
@@ -1840,9 +1844,9 @@ fn transform_var(vp: &Vp, code: &Rc<Code>, p: &psh_syntax::Param, op: u8, val: V
                 (Some(v), true) if v.is_array() => v.keys().into_iter().zip(v.values()).collect(),
                 _ => {
                     return match val {
-                        Val::Str(s) => Val::Str(quote(&s)),
+                        Val::Str(s) => Val::Str(quote(&s, vp.utf8())),
                         Val::List(items, st) => {
-                            Val::List(items.iter().map(|s| quote(s)).collect(), st)
+                            Val::List(items.iter().map(|s| quote(s, vp.utf8())).collect(), st)
                         }
                         other => other,
                     };
@@ -1859,7 +1863,7 @@ fn transform_var(vp: &Vp, code: &Rc<Code>, p: &psh_syntax::Param, op: u8, val: V
                 }
                 out.extend_from_slice(k);
                 out.push(b' ');
-                out.extend_from_slice(&value_quote(v));
+                out.extend_from_slice(&value_quote(v, vp.utf8()));
             }
             if assoc {
                 out.push(b' ');
@@ -2131,10 +2135,10 @@ fn substring(s: &[u8], off: i64, len: Option<i64>, utf8: bool) -> Result<Vec<u8>
 }
 
 /// `${x@Q}`: quoted for reuse as shell input.
-pub(crate) fn quote(s: &[u8]) -> Vec<u8> {
+pub(crate) fn quote(s: &[u8], utf8: bool) -> Vec<u8> {
     // Control chars and invalid UTF-8 need `$'…'`; a lone quote is `\'` (bash).
-    if s.iter().any(|&b| b.is_ascii_control()) || std::str::from_utf8(s).is_err() {
-        return crate::builtins::set::ansi_c_quote(s);
+    if crate::builtins::set::needs_ansi(s, utf8) {
+        return crate::builtins::set::ansi_c_quote(s, utf8);
     }
     if s == b"'" {
         return b"\\'".to_vec();

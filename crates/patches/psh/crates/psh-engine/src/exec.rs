@@ -165,8 +165,7 @@ async fn coproc(
         None => "COPROC".to_string(),
     };
     if !is_name(name.as_bytes()) {
-        vp.error(&format!("`{name}': not a valid identifier"))
-            .await;
+        vp.error(&format!("`{name}': not a valid identifier")).await;
         return Ok(1);
     }
     let mut sub = enter(vp).await?;
@@ -1150,7 +1149,15 @@ async fn run_arith_for(vp: &mut Vp, code: &Rc<Code>, f: &psh_syntax::ArithForCom
         match cond {
             None => return Ok(1),
             // An empty condition is true.
-            Some(0) if !f.cond.parts.is_empty() => return Ok(status),
+            Some(0)
+                if !code
+                    .ast
+                    .bytes(f.cond.span)
+                    .iter()
+                    .all(u8::is_ascii_whitespace) =>
+            {
+                return Ok(status);
+            }
             Some(_) => {}
         }
         match run_list(vp, code, f.body).await {

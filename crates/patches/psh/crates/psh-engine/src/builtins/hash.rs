@@ -194,9 +194,9 @@ pub(super) async fn hash(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         if list {
             for (n, p, _) in &t.entries {
                 buf.extend_from_slice(b"builtin hash -p ");
-                buf.extend_from_slice(&shell_quote(p));
+                buf.extend_from_slice(&shell_quote(p, vp.utf8()));
                 buf.push(b' ');
-                buf.extend_from_slice(&shell_quote(n));
+                buf.extend_from_slice(&shell_quote(n, vp.utf8()));
                 buf.push(b'\n');
             }
         } else {

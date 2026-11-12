@@ -682,7 +682,7 @@ async fn print_named(vp: &mut Vp, bname: &str, names: &[DeclArg]) -> R {
             DeclArg::Word(w) if is_name(w) => {
                 let n = String::from_utf8_lossy(w).into_owned();
                 vp.refresh_dynamic(&n);
-                vp.vars.get(&n).map(|v| declaration(&n, v))
+                vp.vars.get(&n).map(|v| declaration(&n, v, vp.utf8()))
             }
             _ => None,
         };
@@ -720,7 +720,7 @@ async fn print_all(vp: &mut Vp, which: Which, o: &Opts) -> R {
             if let Some(val) = v.get().filter(|_| !v.is_array()) {
                 buf.extend_from_slice(n.as_bytes());
                 buf.push(b'=');
-                buf.extend_from_slice(&set_quote(val));
+                buf.extend_from_slice(&set_quote(val, vp.utf8()));
                 buf.push(b'\n');
                 continue;
             }
@@ -728,16 +728,16 @@ async fn print_all(vp: &mut Vp, which: Which, o: &Opts) -> R {
                 continue;
             }
         }
-        buf.extend_from_slice(&declaration(n, v));
+        buf.extend_from_slice(&declaration(n, v, vp.utf8()));
     }
     out(vp, which.name(), &buf).await
 }
 
 /// A value as `set` and `declare` without options print it: bare when safe, `'…'`, or
 /// `$'…'` with control characters.
-pub(crate) fn set_quote(v: &[u8]) -> Vec<u8> {
-    if v.iter().any(|b| b.is_ascii_control()) {
-        return ansi_c_quote(v);
+pub(crate) fn set_quote(v: &[u8], utf8: bool) -> Vec<u8> {
+    if super::set::needs_ansi(v, utf8) {
+        return super::set::ansi_c_quote(v, utf8);
     }
     // An empty value is listed as nothing after the `=`.
     let safe = v
@@ -759,13 +759,13 @@ pub(crate) fn set_quote(v: &[u8]) -> Vec<u8> {
 }
 
 /// `declare -FLAGS name=value` as `declare -p` prints it.
-pub(crate) fn declaration(name: &str, v: &Var) -> Vec<u8> {
+pub(crate) fn declaration(name: &str, v: &Var, utf8: bool) -> Vec<u8> {
     let mut out = format!("declare -{} {name}", v.flags()).into_bytes();
     match &v.value {
         Value::Unset => {}
         Value::Str(s) => {
             out.push(b'=');
-            out.extend_from_slice(&value_quote(s));
+            out.extend_from_slice(&value_quote(s, utf8));
         }
         Value::Indexed(m) if m.is_empty() && v.declared_only => {}
         Value::Assoc(a) if a.len() == 0 && v.declared_only => {}
@@ -776,7 +776,7 @@ pub(crate) fn declaration(name: &str, v: &Var) -> Vec<u8> {
                     out.push(b' ');
                 }
                 out.extend_from_slice(format!("[{k}]=").as_bytes());
-                out.extend_from_slice(&value_quote(val));
+                out.extend_from_slice(&value_quote(val, utf8));
             }
             out.push(b')');
         }
@@ -784,9 +784,9 @@ pub(crate) fn declaration(name: &str, v: &Var) -> Vec<u8> {
             out.extend_from_slice(b"=(");
             for (k, val) in a.iter() {
                 out.push(b'[');
-                out.extend_from_slice(&key_quote(k));
+                out.extend_from_slice(&key_quote(k, utf8));
                 out.extend_from_slice(b"]=");
-                out.extend_from_slice(&value_quote(val));
+                out.extend_from_slice(&value_quote(val, utf8));
                 out.push(b' ');
             }
             out.push(b')');
@@ -798,9 +798,9 @@ pub(crate) fn declaration(name: &str, v: &Var) -> Vec<u8> {
 
 /// A value as `declare -p` quotes it: `"…"` with `" \ $` and backquote escaped, or
 /// `$'…'` when it has control characters.
-pub(crate) fn value_quote(v: &[u8]) -> Vec<u8> {
-    if v.iter().any(|b| b.is_ascii_control()) {
-        return ansi_c_quote(v);
+pub(crate) fn value_quote(v: &[u8], utf8: bool) -> Vec<u8> {
+    if super::set::needs_ansi(v, utf8) {
+        return super::set::ansi_c_quote(v, utf8);
     }
     let mut out = vec![b'"'];
     for &b in v {
@@ -814,7 +814,7 @@ pub(crate) fn value_quote(v: &[u8]) -> Vec<u8> {
 }
 
 /// An associative key: bare when it has no special chars, else like a value.
-fn key_quote(k: &[u8]) -> Vec<u8> {
+fn key_quote(k: &[u8], utf8: bool) -> Vec<u8> {
     let plain = !k.is_empty()
         && k.iter().all(|&b| {
             !b.is_ascii_control()
@@ -845,27 +845,9 @@ fn key_quote(k: &[u8]) -> Vec<u8> {
                         | b'='
                 )
         });
-    if plain { k.to_vec() } else { value_quote(k) }
-}
-
-fn ansi_c_quote(v: &[u8]) -> Vec<u8> {
-    let mut out = b"$'".to_vec();
-    for &b in v {
-        match b {
-            b'\n' => out.extend_from_slice(b"\\n"),
-            b'\t' => out.extend_from_slice(b"\\t"),
-            b'\r' => out.extend_from_slice(b"\\r"),
-            0x07 => out.extend_from_slice(b"\\a"),
-            0x08 => out.extend_from_slice(b"\\b"),
-            0x0b => out.extend_from_slice(b"\\v"),
-            0x0c => out.extend_from_slice(b"\\f"),
-            0x1b => out.extend_from_slice(b"\\E"),
-            b'\'' => out.extend_from_slice(b"\\'"),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            b if b.is_ascii_control() => out.extend_from_slice(format!("\\{b:03o}").as_bytes()),
-            b => out.push(b),
-        }
+    if plain && !super::set::needs_ansi(k, utf8) {
+        k.to_vec()
+    } else {
+        value_quote(k, utf8)
     }
-    out.push(b'\'');
-    out
 }

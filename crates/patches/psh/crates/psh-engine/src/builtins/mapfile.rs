@@ -195,7 +195,7 @@ pub(super) async fn mapfile(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         {
             let mut text = cb.clone();
             text.extend_from_slice(format!(" {index} ").as_bytes());
-            text.extend_from_slice(&shell_quote(&line));
+            text.extend_from_slice(&shell_quote(&line, vp.utf8()));
             text.push(b'\n');
             super::eval::run_text(
                 vp,

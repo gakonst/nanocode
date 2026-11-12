@@ -176,7 +176,10 @@ async fn list_vars(vp: &Vp) -> R {
         buf.extend_from_slice(n.as_bytes());
         buf.push(b'=');
         // bash's `set` quoting ('…' or $'…'), shared with `declare` (0026).
-        buf.extend_from_slice(&super::declare::set_quote(v.get().unwrap_or_default()));
+        buf.extend_from_slice(&super::declare::set_quote(
+            v.get().unwrap_or_default(),
+            vp.utf8(),
+        ));
         buf.push(b'\n');
     }
     out(vp, "set", &buf).await
@@ -312,7 +315,7 @@ pub(crate) fn xtrace_word(w: &[u8]) -> Vec<u8> {
     }
     let valid = std::str::from_utf8(w).is_ok();
     if !valid || w.iter().any(|&b| b < 0x20 || b == 0x7f) {
-        return ansi_c_quote(w);
+        return ansi_c_quote(w, true);
     }
     let needs = w.iter().enumerate().any(|(i, &b)| {
         b" \t\n'\"\\|&;()<>!{}*[]?^$`".contains(&b)
@@ -334,14 +337,22 @@ pub(crate) fn xtrace_word(w: &[u8]) -> Vec<u8> {
     out
 }
 
+pub(crate) fn needs_ansi(v: &[u8], utf8: bool) -> bool {
+    v.iter().any(u8::is_ascii_control)
+        || match utf8 {
+            true => std::str::from_utf8(v).is_err(),
+            false => v.iter().any(|&b| b >= 0x80),
+        }
+}
+
 /// `$'…'` quoting: C escapes, octal for other control chars and invalid bytes.
-pub(crate) fn ansi_c_quote(w: &[u8]) -> Vec<u8> {
+pub(crate) fn ansi_c_quote(w: &[u8], utf8: bool) -> Vec<u8> {
     let mut out = b"$'".to_vec();
     let mut i = 0;
     while i < w.len() {
         let b = w[i];
         // A valid multibyte UTF-8 sequence stays as it is.
-        if b >= 0x80 {
+        if utf8 && b >= 0x80 {
             let len = match b {
                 0xc2..=0xdf => 2,
                 0xe0..=0xef => 3,

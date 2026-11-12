@@ -612,6 +612,10 @@ async fn return_(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     if rest.first().is_some_and(|a| a == b"--") {
         rest = &rest[1..];
     }
+    if rest.len() > 1 {
+        vp.error("return: too many arguments").await;
+        return Err(Unwind::Abort(1));
+    }
     match rest.first() {
         None => Err(Unwind::Return(vp.status)),
         Some(a) => match parse_int(a) {
@@ -634,6 +638,14 @@ async fn continue_(vp: &mut Vp, args: &[Vec<u8>]) -> R {
 }
 
 async fn loop_control(vp: &mut Vp, args: &[Vec<u8>], name: &str) -> R {
+    let args = match args.get(1) {
+        Some(a) if a == b"--" => &args[1..],
+        _ => args,
+    };
+    if args.len() > 2 && vp.loops > 0 {
+        vp.error(&format!("{name}: too many arguments")).await;
+        return Err(Unwind::Abort(1));
+    }
     let n = match args.get(1) {
         None => 1,
         Some(a) => match parse_int(a) {
@@ -834,6 +846,14 @@ async fn getopts(vp: &mut Vp, args: &[Vec<u8>]) -> R {
 }
 
 async fn shift(vp: &mut Vp, args: &[Vec<u8>]) -> R {
+    let args = match args.get(1) {
+        Some(a) if a == b"--" => &args[1..],
+        _ => args,
+    };
+    if args.len() > 2 {
+        vp.error("shift: too many arguments").await;
+        return Err(Unwind::Abort(1));
+    }
     let n = match args.get(1) {
         None => 1,
         Some(a) => match parse_int(a) {
@@ -859,26 +879,12 @@ async fn shift(vp: &mut Vp, args: &[Vec<u8>]) -> R {
 
 /// Quoting for `set` output and `printf %q`: backslashes, or `$'…'` for control chars,
 /// `''` for the empty string.
-pub(crate) fn shell_quote(v: &[u8]) -> Vec<u8> {
+pub(crate) fn shell_quote(v: &[u8], utf8: bool) -> Vec<u8> {
     if v.is_empty() {
         return b"''".to_vec();
     }
-    if v.iter().any(|b| b.is_ascii_control()) {
-        let mut out = b"$'".to_vec();
-        for &b in v {
-            match b {
-                b'\n' => out.extend_from_slice(b"\\n"),
-                b'\t' => out.extend_from_slice(b"\\t"),
-                b'\r' => out.extend_from_slice(b"\\r"),
-                0x1b => out.extend_from_slice(b"\\E"),
-                b'\'' => out.extend_from_slice(b"\\'"),
-                b'\\' => out.extend_from_slice(b"\\\\"),
-                b if b.is_ascii_control() => out.extend_from_slice(format!("\\{b:03o}").as_bytes()),
-                b => out.push(b),
-            }
-        }
-        out.push(b'\'');
-        return out;
+    if set::needs_ansi(v, utf8) {
+        return set::ansi_c_quote(v, utf8);
     }
     let mut out = Vec::with_capacity(v.len());
     for (i, &b) in v.iter().enumerate() {

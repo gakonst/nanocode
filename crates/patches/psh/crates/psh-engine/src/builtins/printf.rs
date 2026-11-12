@@ -69,6 +69,7 @@ pub(super) async fn printf(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         out: Vec::new(),
         errors: Vec::new(),
         stop: false,
+        utf8: vp.utf8(),
     };
     loop {
         let before = f.next;
@@ -105,9 +106,9 @@ pub(super) async fn printf(vp: &mut Vp, args: &[Vec<u8>]) -> R {
 }
 
 /// `%#q`: always single quotes (`'it'\''s'`), unless control characters need `$'…'`.
-fn single_quote(v: &[u8]) -> Vec<u8> {
-    if v.iter().any(u8::is_ascii_control) {
-        return shell_quote(v);
+fn single_quote(v: &[u8], utf8: bool) -> Vec<u8> {
+    if super::set::needs_ansi(v, utf8) {
+        return shell_quote(v, utf8);
     }
     let mut out = vec![b'\''];
     for &b in v {
@@ -143,6 +144,7 @@ struct Formatter<'a> {
     out: Vec<u8>,
     errors: Vec<String>,
     stop: bool,
+    utf8: bool,
 }
 
 #[derive(Default)]
@@ -425,11 +427,12 @@ impl Formatter<'_> {
                 {
                     a.truncate(p);
                 }
+                let utf8 = self.utf8;
                 let quote = |a: &[u8]| {
                     if spec.alt {
-                        single_quote(a)
+                        single_quote(a, utf8)
                     } else {
-                        shell_quote(a)
+                        shell_quote(a, utf8)
                     }
                 };
                 let mut body = match conv {

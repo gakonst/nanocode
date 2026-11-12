@@ -1,9 +1,11 @@
 mod executor;
 mod faults;
+mod host;
 mod model;
 mod rng;
 mod simulate;
 mod store;
+mod tidy;
 mod workload;
 
 use std::{ops::Range, process::ExitCode};
@@ -25,7 +27,7 @@ struct Args {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim (--seed S | --seeds A..B) [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]",
         Mutation::names()
     );
     ExitCode::from(2)
@@ -109,8 +111,34 @@ fn judge(seed: u64, args: &Args, totals: &mut Stats) -> Option<String> {
     })
 }
 
+fn tidy() -> ExitCode {
+    match tidy::check(&tidy::workspace_root()) {
+        Ok(problems) if problems.is_empty() => {
+            println!("TIDY determinism: clean");
+            ExitCode::SUCCESS
+        }
+        Ok(problems) => {
+            for problem in problems {
+                println!("TIDY {problem}");
+            }
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("TIDY could not read the sources: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args == ["--tidy"] {
+        return tidy();
+    }
+    if let Err(error) = host::install() {
+        eprintln!("could not install the simulated platform host: {error}");
+        return ExitCode::FAILURE;
+    }
     let Some(args) = parse_args(&args) else {
         return usage();
     };

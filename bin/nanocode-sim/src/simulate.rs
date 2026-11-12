@@ -116,6 +116,7 @@ pub fn simulate(seed: u64, options: Options) -> Outcome {
         profile.name, profile.durability, shape.states, shape.procs, shape.records_max
     );
     let clock = Clock::new();
+    crate::host::enter(seed, &clock);
     let kv = SimKv::new(
         seed,
         profile.clone(),

@@ -19,6 +19,7 @@ bench = false
 [dependencies]
 nanocode-durability-core.workspace = true
 nanocode-durability.workspace = true
+nanocode-platform.workspace = true
 nanocode-sync.workspace = true
 
 [lints]

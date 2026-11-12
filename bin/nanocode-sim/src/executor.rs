@@ -134,16 +134,18 @@ struct Running<'a> {
     future: Task<'a>,
     woken: Arc<Woken>,
     waker: Waker,
+    foreground: bool,
 }
 
 impl<'a> Running<'a> {
-    fn new(future: Task<'a>) -> Self {
+    fn new(future: Task<'a>, foreground: bool) -> Self {
         let woken = Arc::new(Woken(AtomicBool::new(true)));
         let waker = Waker::from(Arc::clone(&woken));
         Self {
             future,
             woken,
             waker,
+            foreground,
         }
     }
 
@@ -176,9 +178,18 @@ impl Executor {
     }
 
     pub fn run(&mut self, tasks: Vec<Task<'_>>, crash_at_ns: Option<u64>) -> Ended {
-        let mut running: Vec<Running<'_>> = tasks.into_iter().map(Running::new).collect();
+        let mut running: Vec<Running<'_>> = tasks
+            .into_iter()
+            .map(|task| Running::new(task, true))
+            .collect();
         let mut ready = Vec::with_capacity(running.len());
-        while !running.is_empty() {
+        let mut foreground = running.len();
+        while foreground > 0 {
+            running.extend(
+                crate::host::spawned()
+                    .into_iter()
+                    .map(|task| Running::new(task, false)),
+            );
             ready.clear();
             ready.extend((0..running.len()).filter(|at| running[*at].is_ready()));
             if ready.is_empty() {
@@ -189,6 +200,7 @@ impl Executor {
             }
             let at = ready[self.scheduler.pick(ready.len())];
             if running[at].poll().is_ready() {
+                foreground -= usize::from(running[at].foreground);
                 running.swap_remove(at);
             }
         }

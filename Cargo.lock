@@ -5602,6 +5602,7 @@ version = "0.7.0"
 dependencies = [
  "nanocode-durability",
  "nanocode-durability-core",
+ "nanocode-platform",
  "nanocode-sync",
 ]
 

@@ -33,8 +33,5 @@ memchr = "2.8.3"
 foldhash = "0.2.0"
 termcolor = "1.4"
 
-# jq (0018): the jaq interpreter (D028, D1180); psh's own values, builtins and JSON.
-jaq-core = "3.1.2"
-
 [lints]
 workspace = true

@@ -44,11 +44,6 @@ impl Num {
         self.lit.as_deref()
     }
 
-    /// Whether this is an integer (as jq sees it: the double has no fraction).
-    pub fn is_int(&self) -> bool {
-        self.f.is_finite() && self.f.fract() == 0.0
-    }
-
     /// jq's text of the number.
     pub fn write(&self, out: &mut Vec<u8>) {
         match &self.lit {

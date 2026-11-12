@@ -1,14 +1,14 @@
-//! jq's builtins that jq implements in C, as jaq natives over psh's values, with jq
-//! 1.7's behavior and messages; and the data the natives share (inputs, environment,
-//! stderr). The shape of the natives follows jaq-std's `lib.rs` (crates.io `jaq-std`
-//! 3.0.4, by Michael Färber, MIT license, see NOTICE).
+//! jq's builtins that jq implements in C, as natives of psh's jq interpreter over psh's
+//! values, with jq 1.7's behavior and messages; and the data the natives share (inputs,
+//! environment, stderr). The shape of the natives follows jaq-std's `lib.rs` (crates.io
+//! `jaq-std` 3.0.4, by Michael Färber, MIT license, see NOTICE).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use jaq_core::box_iter::box_once;
-use jaq_core::native::{Filter, Fun, bome, run, unary, v};
-use jaq_core::{Bind, Cv, DataT, Exn, Lut, RunPtr, ValT};
+use super::compile::{Bind, Lut, NativeDef};
+use super::eval::{Cv, Exn, Native, RunPtr, bome, core_natives, unary, v};
+use super::iter::box_once;
 
 use super::json;
 use super::map::Map;
@@ -16,25 +16,11 @@ use super::time;
 use super::val::{Error, Val, ValR, as_isize, err, split_str};
 use crate::math;
 
-/// The data kind of psh's jq programs.
-pub struct Kind;
-
-impl DataT for Kind {
-    type V<'a> = Val;
-    type Data<'a> = &'a Data<'a>;
-}
-
 /// What the natives see.
 pub struct Data<'a> {
-    pub lut: &'a Lut<Kind>,
+    pub lut: &'a Lut,
     pub env: &'a Env,
     pub inputs: &'a RefCell<dyn Inputs + 'a>,
-}
-
-impl<'a> jaq_core::data::HasLut<'a, Kind> for &'a Data<'a> {
-    fn lut(&self) -> &'a Lut<Kind> {
-        self.lut
-    }
 }
 
 /// The source of `input`, `inputs`, `input_filename` and `input_line_number`.
@@ -57,9 +43,9 @@ pub struct Env {
     pub builtins: Val,
 }
 
-type Natives = Box<[Filter<RunPtr<Kind>>]>;
+type Natives = Box<[(&'static str, Box<[Bind]>, RunPtr)]>;
 
-fn data<'a>(cv: &Cv<'a, Kind>) -> &'a Data<'a> {
+fn data<'a>(cv: &Cv<'a>) -> &'a Data<'a> {
     cv.0.data()
 }
 
@@ -1068,19 +1054,14 @@ fn natives() -> Natives {
     ])
 }
 
-/// All natives: jaq-core's path-aware ones under the names the definitions use, then
-/// psh's.
-pub fn funs() -> impl Iterator<Item = Fun<Kind>> {
-    let core = jaq_core::funs::<Kind>().filter_map(|(name, args, f)| {
-        let name = match name {
-            "path" | "first" => name,
-            "limit" => "_limit",
-            "range" => "_range3",
-            _ => return None,
-        };
-        Some((name, args, f))
-    });
-    core.chain(natives().into_vec().into_iter().map(run::<Kind>))
+/// All natives: the interpreter's path-aware ones under the names the definitions use,
+/// then psh's.
+pub fn funs() -> Vec<NativeDef> {
+    let mut all = core_natives();
+    for (name, args, run) in natives() {
+        all.push((name, args, Native { run, paths: None }));
+    }
+    all
 }
 
 /// The names of the natives and definitions, as `builtins` lists them.

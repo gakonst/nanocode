@@ -89,10 +89,6 @@ impl Map {
         self.entries.iter().map(|(k, _)| k)
     }
 
-    pub fn values(&self) -> impl Iterator<Item = &Val> {
-        self.entries.iter().map(|(_, v)| v)
-    }
-
     pub fn into_entries(self) -> Vec<(Rc<str>, Val)> {
         self.entries
     }

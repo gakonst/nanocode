@@ -8,9 +8,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use jaq_core::{Ctx, Vars};
-
-use super::funs::{Data, Env, Inputs, Kind};
+use super::eval::{Ctx, Vars};
+use super::funs::{Data, Env, Inputs};
 use super::json;
 use super::map::Map;
 use super::val::Val;
@@ -142,7 +141,7 @@ fn check(c: &Case) -> Option<String> {
         env: &env,
         inputs: &inputs,
     };
-    let ctx = Ctx::<Kind>::new(&data, Vars::new([env.env.clone()]));
+    let ctx = Ctx::new(&data, Vars::new([env.env.clone()]));
     let mut outputs = filter.id.run((ctx, input));
     for e in &c.expected {
         let want = match json::parse_all(e.as_bytes()) {

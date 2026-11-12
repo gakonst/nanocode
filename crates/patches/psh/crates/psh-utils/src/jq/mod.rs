@@ -1,14 +1,24 @@
-//! `jq` on the jaq interpreter (jaq-core, D028) with jq 1.7's values, builtins, output
-//! and messages (D1180–D1182). The command line is jq's (`-r -c -s -n -e -S -j -a -R
+//! `jq` on psh's own jq interpreter (lexer, parser, compiler and lazy evaluator in
+//! `lex.rs`, `parse.rs`, `compile.rs` and `eval.rs`, which parse and run programs
+//! as jaq-core 3.1.2 did, D028) with jq 1.7's values, builtins, output and messages
+//! (D1180–D1182). The command line is jq's (`-r -c -s -n -e -S -j -a -R
 //! -C -M --tab --indent --arg --argjson --slurpfile --rawfile --args --jsonargs -f --seq
 //! --stream --raw-output0`), exit statuses too (5 for an error, 4 for no output with
 //! `-e`, 3 for a compile error, 2 for a usage or file error). It runs as a blocking
-//! utility (jaq is synchronous): on a worker thread natively, inline elsewhere.
+//! utility (the interpreter is synchronous): on a worker thread natively, inline
+//! elsewhere.
 
+mod compile;
+mod eval;
 mod funs;
+mod iter;
 mod json;
+mod lex;
+mod list;
 mod map;
 mod num;
+mod parse;
+mod path;
 mod prep;
 mod time;
 mod val;
@@ -20,13 +30,13 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{self, Read};
 
-use jaq_core::load::{Arena, File, Loader};
-use jaq_core::{Compiler, Ctx, ValT, Vars};
 use psh_engine::util::{BlockingOptions, SyncCtx, UtilCtx};
 
 use crate::opts::{Spec, both, flag, long};
 
-use funs::{Data, Env, Inputs, Kind};
+use compile::{Filter, Undefined};
+use eval::{Ctx, EVAL_DEPTH_MAX, Vars};
+use funs::{Data, Env, Inputs};
 use json::{Colors, Indent, Reader, Style};
 use map::Map;
 use val::Val;
@@ -599,88 +609,106 @@ fn offset_of(code: &str, part: &str) -> Option<usize> {
     (at >= start && at <= start + code.len()).then(|| at - start)
 }
 
+fn syntax_error(what: &str) -> String {
+    format!("syntax error, unexpected {what} (Unix shell quoting issues?)")
+}
+
+fn nesting_error() -> String {
+    format!(
+        "syntax error, the program nests deeper than {} levels",
+        parse::NESTING_DEPTH_MAX
+    )
+}
+
+/// The main module of a program, or its lexer, parser and module errors with where
+/// each was found.
+fn load(code: &str) -> Result<parse::Module<'_, parse::Term<'_>>, Vec<(String, Option<usize>)>> {
+    let tokens = match lex::Lexer::new(code).lex() {
+        Ok(tokens) => tokens,
+        Err(errors) => {
+            let mut list = Vec::new();
+            for (expect, found) in errors {
+                let token: String = found.chars().take(1).collect();
+                let message = match expect {
+                    lex::Expect::Depth => nesting_error(),
+                    lex::Expect::Delim => syntax_error("end of file"),
+                    lex::Expect::Character if token.is_empty() => syntax_error("end of file"),
+                    lex::Expect::Character => syntax_error(&format!("INVALID_CHARACTER '{token}'")),
+                };
+                list.push((message, offset_of(code, found)));
+            }
+            return Err(list);
+        }
+    };
+    let parsed = parse::Parser::new(&tokens).parse(|p| p.module(|p| p.term()));
+    let module = match parsed {
+        Ok(module) => module,
+        Err(errors) => {
+            let mut list = Vec::new();
+            for (problem, found) in errors {
+                let found = parse::found_text(found, code);
+                let message = match problem {
+                    parse::Problem::Depth => nesting_error(),
+                    parse::Problem::Unexpected if found.is_empty() => syntax_error("end of file"),
+                    parse::Problem::Unexpected => {
+                        let token: String = found
+                            .chars()
+                            .take_while(|c| !c.is_whitespace())
+                            .take(16)
+                            .collect();
+                        syntax_error(&format!("'{token}'"))
+                    }
+                };
+                list.push((message, offset_of(code, found)));
+            }
+            return Err(list);
+        }
+    };
+    let mut modules = Vec::new();
+    for dep in &module.deps {
+        if !dep.name.is_some_and(|name| name.starts_with('$')) {
+            modules.push((
+                format!("module {}: module loading not supported", dep.path),
+                offset_of(code, dep.path),
+            ));
+        }
+    }
+    if modules.is_empty() {
+        Ok(module)
+    } else {
+        Err(modules)
+    }
+}
+
 /// Compiles a program with psh's definitions and natives and the given global variables
 /// (`$name`); the error is jq's report.
-fn compile(code: &str, names: &[String]) -> Result<jaq_core::Filter<Kind>, String> {
+fn compile(code: &str, names: &[String]) -> Result<Filter, String> {
     let original = code;
     let prepared = prep::prepare(code);
     let code = prepared.as_deref().unwrap_or(code);
-    let arena = Arena::default();
-    let defs = jaq_core::load::parse(DEFS, |p| p.defs()).expect("psh's jq definitions parse");
-    let loader = Loader::new(defs);
-    let modules = match loader.load(&arena, File { path: (), code }) {
-        Ok(m) => m,
-        Err(errs) => {
-            let mut list = Vec::new();
-            for (_file, e) in errs {
-                use jaq_core::load::Error;
-                match e {
-                    Error::Io(es) => {
-                        for (p, m) in es {
-                            list.push((format!("module {p}: {m}"), offset_of(code, p)));
-                        }
-                    }
-                    Error::Lex(es) => {
-                        for (expect, found) in es {
-                            let tok: String = found.chars().take(1).collect();
-                            let what = if tok.is_empty()
-                                || matches!(expect, jaq_core::load::lex::Expect::Delim(_))
-                            {
-                                "end of file".to_string()
-                            } else {
-                                format!("INVALID_CHARACTER '{tok}'")
-                            };
-                            list.push((
-                                format!(
-                                    "syntax error, unexpected {what} (Unix shell quoting issues?)"
-                                ),
-                                offset_of(code, found),
-                            ));
-                        }
-                    }
-                    Error::Parse(es) => {
-                        for (_expect, found) in es {
-                            let what = if found.is_empty() {
-                                "end of file".to_string()
-                            } else {
-                                let tok: String = found
-                                    .chars()
-                                    .take_while(|c| !c.is_whitespace())
-                                    .take(16)
-                                    .collect();
-                                format!("'{tok}'")
-                            };
-                            list.push((
-                                format!(
-                                    "syntax error, unexpected {what} (Unix shell quoting issues?)"
-                                ),
-                                offset_of(code, found),
-                            ));
-                        }
-                    }
-                }
-            }
-            return Err(compile_report(original, code, &list));
-        }
+    let defs_tokens = lex::Lexer::new(DEFS)
+        .lex()
+        .unwrap_or_else(|_| panic!("psh's jq definitions lex"));
+    let defs = parse::Parser::new(&defs_tokens)
+        .parse(|p| p.defs())
+        .unwrap_or_else(|_| panic!("psh's jq definitions parse"));
+    let module = match load(code) {
+        Ok(module) => module,
+        Err(list) => return Err(compile_report(original, code, &list)),
     };
-    let compiler = Compiler::default()
-        .with_funs(funs::funs())
-        .with_global_vars(names.iter().map(String::as_str));
-    match compiler.compile(modules) {
-        Ok(f) => Ok(f),
-        Err(errs) => {
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    match compile::compile(defs, module, funs::funs(), &names) {
+        Ok(filter) => Ok(filter),
+        Err(errors) => {
             let mut list = Vec::new();
-            for (_file, es) in errs {
-                for (found, undefined) in es {
-                    use jaq_core::compile::Undefined;
-                    let msg = match undefined {
-                        Undefined::Filter(arity) => format!("{found}/{arity} is not defined"),
-                        Undefined::Var => format!("{found} is not defined"),
-                        Undefined::Label => format!("$*label-{found} is not defined"),
-                        _ => format!("module {found} is not defined"),
-                    };
-                    list.push((msg, offset_of(code, found)));
-                }
+            for (found, undefined) in errors {
+                let message = match undefined {
+                    Undefined::Filter(arity) => format!("{found}/{arity} is not defined"),
+                    Undefined::Var => format!("{found} is not defined"),
+                    Undefined::Label => format!("$*label-{found} is not defined"),
+                    Undefined::Module => format!("module {found} is not defined"),
+                };
+                list.push((message, offset_of(code, found)));
             }
             Err(compile_report(original, code, &list))
         }
@@ -860,7 +888,7 @@ fn body(sync: &mut SyncCtx, args: Args) -> i32 {
 
     // One input through the filter: outputs written as they come.
     let mut run_one = |input: Val, last: &mut Option<bool>, status: &mut i32| -> Result<(), i32> {
-        let ctx = Ctx::<Kind>::new(&data, Vars::new(values.iter().cloned()));
+        let ctx = Ctx::new(&data, Vars::new(values.iter().cloned()));
         for r in filter.id.run((ctx, input)) {
             flush_stderr(&shared, &env_data);
             match r {
@@ -900,6 +928,15 @@ fn body(sync: &mut SyncCtx, args: Args) -> i32 {
                                 format!("jq: error (at {where_}) (not a string): {}\n", v.to_json())
                             }
                         };
+                        shared.borrow_mut().error_raw(text.as_bytes());
+                        *status = 5;
+                        return Ok(());
+                    }
+                    Err(e) if e.is_depth() => {
+                        let where_ = position(&source);
+                        let text = format!(
+                            "jq: error (at {where_}): the program nests deeper than {EVAL_DEPTH_MAX} levels as it runs\n"
+                        );
                         shared.borrow_mut().error_raw(text.as_bytes());
                         *status = 5;
                         return Ok(());

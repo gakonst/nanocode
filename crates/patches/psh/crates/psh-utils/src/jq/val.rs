@@ -1,5 +1,5 @@
-//! jq's values for the jaq interpreter: `jaq_core::ValT` with jq 1.7's semantics and
-//! error texts (indexing, iteration, slices, updates, arithmetic, order).
+//! jq's values for psh's jq interpreter, with jq 1.7's semantics and error texts
+//! (indexing, iteration, slices, updates, arithmetic, order).
 //!
 //! The structure follows jaq-json's `Val` (crates.io `jaq-json` 2.0.3, `src/lib.rs`),
 //! by Michael Färber, MIT license (see NOTICE): the trait methods
@@ -10,11 +10,11 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::rc::Rc;
 
-use jaq_core::box_iter::box_once;
-use jaq_core::{Exn, path, val};
-
+use super::eval::{Exn, ValX};
+use super::iter::box_once;
 use super::map::Map;
 use super::num::Num;
+use super::path::Opt;
 
 /// A jq value.
 #[derive(Clone, Debug, Default)]
@@ -28,9 +28,30 @@ pub enum Val {
     Obj(Rc<Map>),
 }
 
-pub type Error = jaq_core::Error<Val>;
-pub type ValR = jaq_core::ValR<Val>;
-pub type ValX<'a> = jaq_core::ValX<'a, Val>;
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Value(Val),
+    PathExpr(Val),
+}
+
+impl Error {
+    pub fn new(v: Val) -> Error {
+        Error::Value(v)
+    }
+
+    pub fn path_expr(v: Val) -> Error {
+        Error::PathExpr(v)
+    }
+
+    pub fn into_val(self) -> Val {
+        match self {
+            Error::Value(v) => v,
+            Error::PathExpr(v) => Val::from(format!("invalid path expression with input {v}")),
+        }
+    }
+}
+
+pub type ValR = Result<Val, Error>;
 
 /// An error with jq's message (a string value, so `catch` sees the text).
 pub fn err(msg: impl Into<String>) -> Error {
@@ -220,14 +241,14 @@ fn indices_of(a: &[Val], b: &[Val]) -> Val {
     found.collect()
 }
 
-impl jaq_core::ValT for Val {
-    fn from_num(n: &str) -> ValR {
+impl Val {
+    pub fn from_num(n: &str) -> ValR {
         Num::literal(n)
             .map(Val::Num)
             .ok_or_else(|| err(format!("Invalid numeric literal {n}")))
     }
 
-    fn from_map<I: IntoIterator<Item = (Self, Self)>>(iter: I) -> ValR {
+    pub fn from_map<I: IntoIterator<Item = (Self, Self)>>(iter: I) -> ValR {
         let mut m = Map::new();
         for (k, v) in iter {
             match k {
@@ -238,7 +259,7 @@ impl jaq_core::ValT for Val {
         Ok(Val::obj(m))
     }
 
-    fn key_values(self) -> Box<dyn Iterator<Item = Result<(Val, Val), Error>>> {
+    pub fn key_values(self) -> Box<dyn Iterator<Item = Result<(Val, Val), Error>>> {
         match self {
             Val::Arr(a) => Box::new(
                 rc_take(a)
@@ -256,7 +277,7 @@ impl jaq_core::ValT for Val {
         }
     }
 
-    fn values(self) -> Box<dyn Iterator<Item = ValR>> {
+    pub fn values(self) -> Box<dyn Iterator<Item = ValR>> {
         match self {
             Val::Arr(a) => Box::new(rc_take(a).into_iter().map(Ok)),
             Val::Obj(o) => Box::new(rc_take(o).into_entries().into_iter().map(|(_, v)| Ok(v))),
@@ -264,21 +285,17 @@ impl jaq_core::ValT for Val {
         }
     }
 
-    fn index(self, index: &Self) -> ValR {
+    pub fn index(self, index: &Self) -> ValR {
         self.get(index)
     }
 
-    fn range(self, range: val::Range<&Self>) -> ValR {
-        let from = range.start.cloned().unwrap_or_default();
-        let to = range.end.cloned().unwrap_or_default();
+    pub fn range(self, from: Option<&Val>, upto: Option<&Val>) -> ValR {
+        let from = from.cloned().unwrap_or_default();
+        let to = upto.cloned().unwrap_or_default();
         self.slice(&from, &to)
     }
 
-    fn map_values<'a, I: Iterator<Item = ValX<'a>>>(
-        self,
-        opt: path::Opt,
-        f: impl Fn(Self) -> I,
-    ) -> ValX<'a> {
+    pub fn map_values<I: Iterator<Item = ValX>>(self, opt: Opt, f: impl Fn(Self) -> I) -> ValX {
         match self {
             Val::Arr(a) => {
                 let mut out = Vec::new();
@@ -302,16 +319,16 @@ impl jaq_core::ValT for Val {
         }
     }
 
-    fn map_index<'a, I: Iterator<Item = ValX<'a>>>(
+    pub fn map_index<I: Iterator<Item = ValX>>(
         self,
         index: &Self,
-        opt: path::Opt,
+        opt: Opt,
         f: impl Fn(Self) -> I,
-    ) -> ValX<'a> {
+    ) -> ValX {
         if let (Val::Arr(_) | Val::Str(_) | Val::Null, Val::Obj(o)) = (&self, index) {
             let start = o.get("start");
             let end = o.get("end");
-            return self.map_range(start..end, opt, f);
+            return self.map_range(start, end, opt, f);
         }
         match (self, index) {
             (Val::Null, Val::Str(_)) => Val::obj(Map::new()).map_index(index, opt, f),
@@ -367,14 +384,15 @@ impl jaq_core::ValT for Val {
         }
     }
 
-    fn map_range<'a, I: Iterator<Item = ValX<'a>>>(
+    pub fn map_range<I: Iterator<Item = ValX>>(
         self,
-        range: val::Range<&Self>,
-        opt: path::Opt,
+        from: Option<&Val>,
+        upto: Option<&Val>,
+        opt: Opt,
         f: impl Fn(Self) -> I,
-    ) -> ValX<'a> {
-        let from = range.start.cloned().unwrap_or_default();
-        let to = range.end.cloned().unwrap_or_default();
+    ) -> ValX {
+        let from = from.cloned().unwrap_or_default();
+        let to = upto.cloned().unwrap_or_default();
         let a = match self {
             Val::Null => Rc::new(Vec::new()),
             Val::Arr(a) => a,
@@ -416,11 +434,11 @@ impl jaq_core::ValT for Val {
         Ok(Val::Arr(a))
     }
 
-    fn as_bool(&self) -> bool {
+    pub fn as_bool(&self) -> bool {
         !matches!(self, Val::Null | Val::Bool(false))
     }
 
-    fn into_string(self) -> Self {
+    pub fn into_string(self) -> Self {
         match self {
             Val::Str(_) => self,
             v => Val::from(v.to_json()),
@@ -436,8 +454,8 @@ impl From<bool> for Val {
 
 impl From<isize> for Val {
     fn from(i: isize) -> Val {
-        // jaq passes integer literals of the program as integers: one a double cannot
-        // hold keeps its digits, as jq's literals do.
+        // Integer literals of the program arrive as integers: one a double cannot hold
+        // keeps its digits, as jq's literals do.
         if i.unsigned_abs() as u64 > 1u64 << 53 {
             return Num::literal(&i.to_string()).map_or(Val::num(i as f64), Val::Num);
         }
@@ -459,7 +477,7 @@ impl From<f64> for Val {
 
 impl From<String> for Val {
     fn from(s: String) -> Val {
-        // jaq-core's own message for a path expression on a value, in jq's words.
+        // The interpreter's own message for a path expression on a value, in jq's words.
         if let Some(rest) = s.strip_prefix("invalid path expression with input ") {
             return Val::Str(format!("Invalid path expression with result {rest}").into());
         }
@@ -473,13 +491,13 @@ impl From<&str> for Val {
     }
 }
 
-impl From<val::Range<Val>> for Val {
-    fn from(r: val::Range<Val>) -> Val {
+impl Val {
+    pub fn from_range(start: Option<Val>, end: Option<Val>) -> Val {
         let mut m = Map::new();
-        if let Some(s) = r.start {
+        if let Some(s) = start {
             m.insert("start".into(), s);
         }
-        if let Some(e) = r.end {
+        if let Some(e) = end {
             m.insert("end".into(), e);
         }
         Val::obj(m)

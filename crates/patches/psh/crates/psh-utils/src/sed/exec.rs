@@ -57,7 +57,7 @@ pub struct Reader {
 
 pub struct Line {
     pub text: Vec<u8>,
-    /// It ended in the delimiter (or more input follows it).
+    /// It ended in the delimiter.
     pub nl: bool,
     pub name: Rc<[u8]>,
 }
@@ -174,9 +174,13 @@ impl Reader {
                 break;
             }
         }
-        // The file ended without a delimiter: GNU supplies it when more input follows.
-        let nl = self.fill(ctx).await;
-        Some(Line { text, nl, name })
+        // The file ended without a delimiter: the line is written without one, and GNU
+        // supplies it before whatever the same output gets next (`Out::missing`).
+        Some(Line {
+            text,
+            nl: false,
+            name,
+        })
     }
 
     fn buffered_line(&mut self) -> Option<&[u8]> {
@@ -395,8 +399,10 @@ impl<'p> Run<'p> {
         }
     }
 
-    /// Replaces where the main output goes, returning the old sink.
+    /// Replaces where the main output goes, returning the old sink. The new one starts
+    /// a file of its own: a newline the last line of the old one lacked is not owed to it.
     pub fn set_sink(&mut self, sink: Sink) -> Sink {
+        self.out.missing = false;
         std::mem::replace(&mut self.sink, sink)
     }
 
@@ -462,6 +468,11 @@ impl<'p> Run<'p> {
                 Flow::Quit(code) => {
                     if let Err(s) = self.end_cycle(ctx, st, true, true).await {
                         return End::Fail(s);
+                    }
+                    // GNU's `q` supplies the newline its last line lacked.
+                    if self.out.missing {
+                        self.out.buf.push(self.delim());
+                        self.out.missing = false;
                     }
                     return End::Quit(code);
                 }
@@ -779,10 +790,12 @@ impl<'p> Run<'p> {
                         }
                     }
                     Addr2::Mult(k) => {
-                        if *k == 0 || n.is_multiple_of(*k) {
+                        // GNU: up to the next multiple after this line, also from a
+                        // line that is one.
+                        if *k == 0 {
                             r.active = false;
                         } else {
-                            r.end = n.div_ceil(*k) * k;
+                            r.end = (n / k + 1) * k;
                         }
                     }
                     Addr2::Last => {
@@ -918,8 +931,13 @@ impl<'p> Run<'p> {
             }
             Kind::Next => {
                 if self.is_last(ctx, reader).await {
-                    // GNU: no next line ends sed, printing as at the end of a cycle.
-                    return Ok(Flow::Quit(0));
+                    // GNU: without a next line the cycle ends as any other, printing.
+                    // That ends this input, not sed: with `-s` or `-i` the next file
+                    // is still read.
+                    return Ok(Flow::EndCycle {
+                        print: true,
+                        restart: false,
+                    });
                 }
                 if !self.set.quiet {
                     let ps = std::mem::take(&mut self.ps);
@@ -937,7 +955,10 @@ impl<'p> Run<'p> {
             }
             Kind::NextAppend => {
                 if self.is_last(ctx, reader).await {
-                    return Ok(Flow::Quit(0));
+                    return Ok(Flow::EndCycle {
+                        print: true,
+                        restart: false,
+                    });
                 }
                 self.flush_appends(ctx).await;
                 self.drain(ctx).await?;
@@ -950,7 +971,10 @@ impl<'p> Run<'p> {
                         self.ps = ps;
                         Flow::Next
                     }
-                    None => Flow::Quit(0),
+                    None => Flow::EndCycle {
+                        print: true,
+                        restart: false,
+                    },
                 }
             }
             Kind::Print => {

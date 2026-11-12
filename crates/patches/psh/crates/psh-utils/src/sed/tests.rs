@@ -131,6 +131,75 @@ fn in_place() {
     assert_eq!((st, err.as_str()), (4, "sed: no input files\n"));
 }
 
+#[test]
+fn a_file_without_a_final_newline_does_not_reach_the_next_file() {
+    // In place each file is its own output: the newline one lacks is not owed to the next.
+    let src = "printf a1 > /tmp/m1; printf 'b1\\n' > /tmp/m2; printf c1 > /tmp/m3; \
+               sed -i -E 's/1/2/g' /tmp/m1 /tmp/m2 /tmp/m3";
+    assert_eq!(file_after(src, "/tmp/m1"), "a2");
+    assert_eq!(file_after(src, "/tmp/m2"), "b2\n");
+    assert_eq!(file_after(src, "/tmp/m3"), "c2");
+    let src = "printf a1 > /tmp/m1; : > /tmp/m2; printf 'c1\\n' > /tmp/m3; \
+               sed -i -n -e 's/1/2/p' /tmp/m1 /tmp/m2 /tmp/m3";
+    assert_eq!(file_after(src, "/tmp/m1"), "a2");
+    assert_eq!(file_after(src, "/tmp/m2"), "");
+    assert_eq!(file_after(src, "/tmp/m3"), "c2\n");
+    // One output for all the files: the newline is supplied before what follows.
+    let files = "printf a1 > /tmp/m1; printf 'b1\\n' > /tmp/m2; printf c1 > /tmp/m3; ";
+    check(&format!("{files}sed 's/1/2/' /tmp/m1 /tmp/m2 /tmp/m3"), "", "a2\nb2\nc2");
+    check(&format!("{files}sed -s 's/1/2/' /tmp/m1 /tmp/m2 /tmp/m3"), "", "a2\nb2\nc2");
+    check(&format!("{files}sed -n '$p' /tmp/m1 /tmp/m2 /tmp/m3"), "", "c1");
+    check(&format!("{files}sed -s -n '$p' /tmp/m1 /tmp/m2 /tmp/m3"), "", "a1\nb1\nc1");
+    // A w file is one output across the files edited in place.
+    let src = "printf a1 > /tmp/m1; printf 'b1\\n' > /tmp/m2; \
+               sed -i 's/1/2/w /tmp/w' /tmp/m1 /tmp/m2";
+    assert_eq!(file_after(src, "/tmp/w"), "a2\nb2\n");
+    assert_eq!(file_after(src, "/tmp/m2"), "b2\n");
+}
+
+#[test]
+fn n_without_a_next_line_ends_the_file_not_sed() {
+    // With -i and -s the files after one whose last line meets n or N are still read.
+    let src = "printf '1\\n2\\n3\\n' > /tmp/a; printf 'x\\ny\\n' > /tmp/b; \
+               sed -i 'N;s/\\n/+/' /tmp/a /tmp/b";
+    assert_eq!(file_after(src, "/tmp/a"), "1+2\n3\n");
+    assert_eq!(file_after(src, "/tmp/b"), "x+y\n");
+    let src = "printf '1\\n2\\n3\\n' > /tmp/a; printf 'x\\ny\\n' > /tmp/b; \
+               sed -i -n 'n;p' /tmp/a /tmp/b";
+    assert_eq!(file_after(src, "/tmp/a"), "2\n");
+    assert_eq!(file_after(src, "/tmp/b"), "y\n");
+    let files = "printf '1\\n2\\n3\\n' > /tmp/a; printf 'x\\ny\\n' > /tmp/b; ";
+    check(&format!("{files}sed -s 'N;s/\\n/+/' /tmp/a /tmp/b"), "", "1+2\n3\nx+y\n");
+    check(&format!("{files}sed 'N;s/\\n/+/' /tmp/a /tmp/b"), "", "1+2\n3+x\ny\n");
+    check(&format!("{files}sed '$!N;s/\\n/+/' /tmp/a"), "", "1+2\n3\n");
+    check("sed n", "a\n", "a\n");
+    check("sed -n 'N;p'", "a\n", "");
+}
+
+#[test]
+fn a_last_line_without_a_newline_gets_one_only_before_more_output() {
+    let files = "printf a1 > /tmp/a; printf 'b1\\n' > /tmp/b; ";
+    check(&format!("{files}sed -n '/a/p' /tmp/a /tmp/b"), "", "a1");
+    check(&format!("{files}sed -n '1p;$p' /tmp/a /tmp/b"), "", "a1\nb1\n");
+    // q supplies it, as GNU's does.
+    check(&format!("{files}sed 1q /tmp/a /tmp/b"), "", "a1\n");
+    check(&format!("{files}sed 1q /tmp/a"), "", "a1\n");
+    check(&format!("{files}sed -n '1{{p;q}}' /tmp/a"), "", "a1\n");
+    check(&format!("{files}sed -n 1p /tmp/a"), "", "a1");
+    let src = "printf a1 > /tmp/a; printf 'b1\\n' > /tmp/b; sed -n '/a/w /tmp/w' /tmp/a /tmp/b";
+    assert_eq!(file_after(src, "/tmp/w"), "a1");
+}
+
+#[test]
+fn a_range_to_a_multiple() {
+    let seq = "printf '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n' | ";
+    check(&format!("{seq}sed -n '4,~4p' | tr '\\n' ' '"), "", "4 5 6 7 8 ");
+    check(&format!("{seq}sed -n '5,~4p' | tr '\\n' ' '"), "", "5 6 7 8 ");
+    check(&format!("{seq}sed -n '/3/,~2p' | tr '\\n' ' '"), "", "3 4 ");
+    check(&format!("{seq}sed -n '2,~1p' | tr '\\n' ' '"), "", "2 3 ");
+    check(&format!("{seq}sed -n '3,~0p' | tr '\\n' ' '"), "", "3 ");
+}
+
 /// Every branch of D016's rule for a bare `-i` (D1141).
 #[test]
 fn in_place_forms() {

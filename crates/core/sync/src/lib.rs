@@ -1073,7 +1073,7 @@ where
     }
 
     pub fn peek(&self, key: &str) -> Option<V> {
-        let now = std::time::Instant::now();
+        let now = nanocode_platform::now();
         self.reads.read(|reads| {
             reads
                 .fresh(key, now, self.ttl)?
@@ -1087,7 +1087,7 @@ where
     pub fn keep(&self, key: &str, value: V) {
         let read: RecentRead<V, E> = futures_util::future::ready(Ok(value)).boxed().shared();
         let _ = read.clone().now_or_never();
-        let now = std::time::Instant::now();
+        let now = nanocode_platform::now();
         let key: Arc<str> = key.into();
         self.reads.update(|reads| {
             reads.put(Arc::clone(&key), now, read.clone(), self.ttl, self.kept);
@@ -1110,7 +1110,7 @@ where
     where
         F: Future<Output = Result<V, E>> + Send + 'static,
     {
-        let now = std::time::Instant::now();
+        let now = nanocode_platform::now();
         let shared = match self
             .reads
             .read(|reads| reads.fresh(key, now, self.ttl).cloned())
@@ -1327,7 +1327,7 @@ struct Refreshing<T: Clone> {
 impl<T: Clone> Drop for Refreshing<T> {
     fn drop(&mut self) {
         let value = self.value.take();
-        let now = std::time::Instant::now();
+        let now = nanocode_platform::now();
         self.entries.update(|entries| {
             if let Some(entry) = entries.held(&self.key) {
                 let mut entry = entry.clone();
@@ -1388,7 +1388,7 @@ impl<T: Clone + Send + Sync + 'static> Refreshed<T> {
             return value;
         }
         let key: Arc<str> = key.into();
-        let now = std::time::Instant::now();
+        let now = nanocode_platform::now();
         let (refresh, value) = self.entries.update(|entries| {
             let mut entry = entries.held(&key).cloned().unwrap_or(Fetched {
                 value: None,

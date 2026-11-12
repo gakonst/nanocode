@@ -451,7 +451,7 @@ async fn run(
         if let Err(error) = sink.deliver(batch).await {
             break Err(format!("persist agent events: {error}"));
         }
-        flushed = Some(Instant::now());
+        flushed = Some(nanocode_platform::now());
     };
     let _ = outcome.set(result.clone());
     drains.close();

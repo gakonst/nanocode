@@ -148,7 +148,7 @@ mod aged {
         }
 
         pub fn get_or_try<E>(&self, key: &K, make: impl FnOnce() -> Result<V, E>) -> Result<V, E> {
-            let now = Instant::now();
+            let now = nanocode_platform::now();
             if let Some(found) = self
                 .held
                 .read(|held| held.fresh(key, now, self.fresh).cloned())
@@ -184,7 +184,7 @@ mod aged {
             K: Borrow<Q> + for<'q> From<&'q Q>,
             Q: Hash + Eq + ?Sized,
         {
-            let now = Instant::now();
+            let now = nanocode_platform::now();
             if self
                 .seen
                 .read(|seen| seen.fresh(key, now, self.window).is_some())

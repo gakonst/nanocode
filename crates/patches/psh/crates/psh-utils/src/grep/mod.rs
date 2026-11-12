@@ -192,6 +192,7 @@ pub(crate) struct Config {
     pub label: Vec<u8>,
     pub only_matching: bool,
     pub quiet: bool,
+    pub discard: bool,
     pub no_messages: bool,
     pub binary: BinaryFiles,
     pub dirs: Dirs,
@@ -256,6 +257,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         label: b"(standard input)".to_vec(),
         only_matching: false,
         quiet: false,
+        discard: false,
         no_messages: false,
         binary: BinaryFiles::Binary,
         dirs: Dirs::Read,
@@ -460,7 +462,8 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 .await;
         }
     }
-    let shows_lines = !cfg.quiet && cfg.list.is_none() && !cfg.count;
+    cfg.discard = ctx.discards(1);
+    let shows_lines = !cfg.quiet && !cfg.discard && cfg.list.is_none() && !cfg.count;
     let opts = MatchOptions {
         syntax,
         icase,

@@ -301,7 +301,7 @@ impl Sink for GrepSink<'_> {
     fn matched(&mut self, _: &Searcher, m: &SinkMatch<'_>) -> Result<bool, io::Error> {
         self.count += 1;
         let cfg = self.cfg;
-        if cfg.quiet || cfg.list.is_some() {
+        if cfg.quiet || cfg.discard || cfg.list.is_some() {
             return Ok(false);
         }
         if cfg.count {

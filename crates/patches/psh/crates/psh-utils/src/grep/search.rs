@@ -76,7 +76,7 @@ pub(crate) fn run_sync(ctx: &mut SyncCtx, (cfg, m): (Config, Matchers)) -> i32 {
 }
 
 fn searcher(cfg: &Config) -> Searcher {
-    let shows_lines = !cfg.quiet && cfg.list.is_none() && !cfg.count;
+    let shows_lines = !cfg.quiet && !cfg.discard && cfg.list.is_none() && !cfg.count;
     let mut b = SearcherBuilder::new();
     b.line_terminator(LineTerminator::byte(if cfg.null_data {
         b'\0'

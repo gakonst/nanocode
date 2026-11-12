@@ -460,6 +460,10 @@ impl UtilCtx<'_> {
         matches!(self.fd(n).as_deref(), Some(FdObj::File(f)) if f.is_terminal())
     }
 
+    pub fn discards(&self, n: u32) -> bool {
+        matches!(self.fd(n).as_deref(), Some(FdObj::File(f)) if f.is_null())
+    }
+
     /// stdin is something to read: one of the shell's pipes, or a host file that is a
     /// regular file, a pipe or a socket; not a terminal, a device such as `/dev/null`,
     /// closed, or of a kind the host cannot tell.

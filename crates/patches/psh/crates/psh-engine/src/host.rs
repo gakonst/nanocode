@@ -57,6 +57,9 @@ pub trait HostFile: Any {
     fn seek(&self, _pos: io::SeekFrom) -> Option<io::Result<u64>> {
         None
     }
+    fn is_null(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

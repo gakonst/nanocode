@@ -21,6 +21,7 @@ pub struct UnixFile {
     nonblocking: bool,
     terminal: bool,
     write_waits: bool,
+    null: bool,
     #[cfg(target_os = "macos")]
     pipe: bool,
 }
@@ -44,6 +45,7 @@ impl UnixFile {
             nonblocking: false,
             terminal,
             write_waits: stream && (terminal || !device),
+            null: device && meta.as_ref().is_some_and(is_dev_null),
             #[cfg(target_os = "macos")]
             pipe: meta.as_ref().is_some_and(|m| {
                 use std::os::unix::fs::MetadataExt;
@@ -61,6 +63,7 @@ impl UnixFile {
             nonblocking: true,
             terminal: false,
             write_waits: true,
+            null: false,
             #[cfg(target_os = "macos")]
             pipe: true,
         })
@@ -104,6 +107,12 @@ impl UnixFile {
             Err(e) => Poll::Ready(Err(e)),
         }
     }
+}
+
+fn is_dev_null(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    static NULL: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *NULL.get_or_init(|| std::fs::metadata("/dev/null").ok().map(|n| n.rdev())) == Some(m.rdev())
 }
 
 impl Drop for UnixFile {
@@ -179,6 +188,10 @@ impl HostFile for UnixFile {
 
     fn is_terminal(&self) -> bool {
         self.terminal
+    }
+
+    fn is_null(&self) -> bool {
+        self.null
     }
 
     fn seek(&self, pos: io::SeekFrom) -> Option<io::Result<u64>> {

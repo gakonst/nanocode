@@ -303,6 +303,35 @@ fn fmt_g(v: f64, prec: usize, alt: bool) -> String {
     out
 }
 
+fn int_text(buf: &mut [u8; 48], v: i128, width: usize) -> &[u8] {
+    let mut i = buf.len();
+    let mut n = v.unsigned_abs();
+    while n > u128::from(u64::MAX) {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    let mut n = n as u64;
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    let neg = usize::from(v < 0);
+    while buf.len() - i + neg < width && i > 1 {
+        i -= 1;
+        buf[i] = b'0';
+    }
+    if v < 0 {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    &buf[i..]
+}
+
 /// Pads a formatted number with zeros after its sign to `width`.
 fn zero_pad(s: String, width: usize) -> String {
     if s.len() >= width {
@@ -382,7 +411,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             if count > 0 {
                 out.extend_from_slice(&sep);
             }
-            out.extend_from_slice($s.as_bytes());
+            out.extend_from_slice(AsRef::<[u8]>::as_ref(&$s));
             count += 1;
             if out.len() >= 32 * 1024 {
                 if let Err(e) = ctx.write(&out).await {
@@ -402,7 +431,8 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         };
         let mut v = f;
         while (s > 0 && v <= l) || (s < 0 && v >= l) {
-            emit!(zero_pad(v.to_string(), width));
+            let mut buf = [0u8; 48];
+            emit!(int_text(&mut buf, v, width));
             match v.checked_add(s) {
                 Some(n) => v = n,
                 None => break,

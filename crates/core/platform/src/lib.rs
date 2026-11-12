@@ -7,6 +7,9 @@ pub use host::{Host, Instant, LocalFuture, install, spawn_local};
 #[allow(unsafe_code)]
 pub mod unix;
 
+mod http_date;
+pub use http_date::{HttpDateError, parse_http_date};
+
 mod uuid;
 pub use uuid::{Simple, Uuid, UuidError, Variant};
 

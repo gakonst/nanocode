@@ -179,7 +179,7 @@ fn retry_after(headers: &http::header::HeaderMap) -> Option<Duration> {
     if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
     }
-    let deadline = httpdate::parse_http_date(value)
+    let deadline = nanocode_platform::parse_http_date(value)
         .ok()?
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?;

@@ -411,7 +411,7 @@ fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
-    let at = httpdate::parse_http_date(value).ok()?;
+    let at = nanocode_platform::parse_http_date(value).ok()?;
     Some(
         at.duration_since(SystemTime::now())
             .unwrap_or(Duration::ZERO),

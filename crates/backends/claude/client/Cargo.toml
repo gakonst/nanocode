@@ -19,7 +19,6 @@ nanocode-home.workspace = true
 base64.workspace = true
 url.workspace = true
 futures-util.workspace = true
-httpdate = "1.0.3"
 nanocode-http.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 http.workspace = true

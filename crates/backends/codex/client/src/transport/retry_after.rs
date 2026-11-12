@@ -109,7 +109,7 @@ impl RetryAfter {
         let delay = if numeric {
             Duration::try_from_secs_f64(value.parse().ok()?).ok()?
         } else {
-            let date = httpdate::parse_http_date(value).ok()?;
+            let date = nanocode_platform::parse_http_date(value).ok()?;
             let since_epoch = date.duration_since(std::time::UNIX_EPOCH).ok()?;
             UNIX_EPOCH
                 .checked_add(since_epoch)?

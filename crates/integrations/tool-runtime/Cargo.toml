@@ -28,7 +28,6 @@ nanocode-process.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
-httpdate.workspace = true
 nanocode-tls.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-util.workspace = true

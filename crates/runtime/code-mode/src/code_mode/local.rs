@@ -298,6 +298,10 @@ impl CodeModeHost for LocalCells {
         Ok(Vec::new())
     }
 
+    fn describe(&self) -> Option<crate::remote::HandDescription> {
+        Some(crate::remote::HandDescription::default())
+    }
+
     fn execute<'a>(
         &'a self,
         source: &'a str,

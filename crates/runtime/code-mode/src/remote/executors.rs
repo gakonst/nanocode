@@ -177,7 +177,7 @@ fn disconnected(name: &str) -> CodeModeHostError {
 
 pub const PLACEMENT_INSTRUCTIONS: &str = "Code Mode scripts run on one machine: the hand that sent the prompt, the only attached hand, or the session's configured executor. Inside a script any tool call runs on another attached hand when its arguments include hand: \"<name>\", so one script can work on several machines at once, for example with Promise.all; tools.hands() lists them. Relative paths resolve from each hand's working directory; query pwd through the shell when an absolute path is needed.";
 
-const HANDS_DESCRIPTION: &str = "List the hands attached to this session: whole machines, each with its own files, processes and tools. `hands` names them, `here` names the hand this script runs on, or is null on the brain's own machine, and `about` describes each: its platform, shell and OS version, working directory, tools, and capabilities such as a phone's photos or a browser's location, each with a `permission` of granted, prompt or denied. Inside exec, any tool call runs on another hand when its arguments include `hand: \"<name>\"`, for example `await Promise.all(names.map(hand => tools.exec_command({ cmd: \"uptime\", hand })))`; a freeform tool takes `{ input, hand }`. Calls without `hand` run where the script runs. Naming a hand that is not attached fails without running anything, and a hand lost mid-call leaves that call's outcome unknown. A capability whose permission is prompt needs the hand's user to allow it: `tools.hands({ request: { hand, capability, reason } })` asks them, with `reason` shown to them, and answers the new permission; a capability's tools may also ask on their first call. A hand whose `about` says `tools_only`, such as a browser tab or a phone, runs no scripts: call its tools with `hand` from a script that runs elsewhere.";
+const HANDS_DESCRIPTION: &str = "List the hands attached to this session: whole machines, each with its own files, processes and tools. `hands` names them, `here` names the hand this script runs on, or is null on the brain's own machine, and `about` describes each: its platform, shell and OS version, working directory, tools, and capabilities such as a phone's photos or a browser's location, each with a `permission` of granted, prompt or denied. Inside exec, any tool call runs on another hand when its arguments include `hand: \"<name>\"`, for example `await Promise.all(names.map(hand => tools.exec_command({ cmd: \"uptime\", hand })))`; a freeform tool takes `{ input, hand }`. Calls without `hand` run where the script runs. Naming a hand that is not attached fails without running anything, and a hand lost mid-call leaves that call's outcome unknown. A capability whose permission is prompt needs the hand's user to allow it: `tools.hands({ request: { hand, capability, reason } })` asks them, with `reason` shown to them, and answers the new permission; a capability's tools may also ask on their first call. A hand whose `about` says `tools_only`, such as a browser tab or a phone, runs no scripts: call its tools with `hand` from a script that runs elsewhere. A machine that only runs scripts and has no tools or capabilities of its own is not a hand to call: it is listed only when it is `here`.";
 
 struct ExecutorCalls {
     state: Weak<Atom<State>>,
@@ -308,6 +308,15 @@ impl Tool for HandsTool {
                     (name.to_string(), description)
                 }))
                 .await;
+            let described = described
+                .into_iter()
+                .filter(|(name, description)| {
+                    here.as_str() == Some(name.as_str())
+                        || description.as_ref().is_none_or(|description| {
+                            !description.tools.is_empty() || !description.capabilities.is_empty()
+                        })
+                })
+                .collect::<Vec<_>>();
             let names = described
                 .iter()
                 .map(|(name, _)| Value::String(name.clone()))

@@ -1,17 +1,19 @@
+mod grammar;
+mod highlighter;
+mod parser;
+mod regex;
+mod syntaxes;
+
 use crate::ui::{
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::Span,
 };
 use crate::unicode;
-use std::{path::Path, str::FromStr, sync::OnceLock};
-use syntect::{
-    easy::HighlightLines,
-    highlighting::{
-        Color as SyntectColor, FontStyle, ScopeSelectors, Style as SyntaxStyle, StyleModifier,
-        Theme as SyntaxTheme, ThemeItem, ThemeSettings,
-    },
-    parsing::{SyntaxReference, SyntaxSet},
-};
+pub use grammar::{Syntax, SyntaxSet};
+use highlighter::FontStyle;
+pub use highlighter::{HighlightLines, HighlightState, Theme};
+pub use parser::{ParseError, ParseState};
+use std::{path::Path, sync::OnceLock};
 
 pub struct Assets {
     pub syntaxes: SyntaxSet,
@@ -20,7 +22,7 @@ pub struct Assets {
 pub fn assets() -> &'static Assets {
     static ASSETS: OnceLock<Assets> = OnceLock::new();
     ASSETS.get_or_init(|| Assets {
-        syntaxes: SyntaxSet::load_defaults_newlines(),
+        syntaxes: SyntaxSet::load(),
     })
 }
 
@@ -36,38 +38,53 @@ pub fn prewarm() {
     });
 }
 
-pub fn theme() -> &'static SyntaxTheme {
-    static THEME: OnceLock<SyntaxTheme> = OnceLock::new();
-    THEME.get_or_init(|| SyntaxTheme {
-        name: Some("tact".to_owned()),
-        settings: ThemeSettings {
-            foreground: Some(syntect_color(Color::Reset)),
-            accent: Some(syntect_color(Color::Blue)),
-            ..ThemeSettings::default()
-        },
-        scopes: vec![
-            rule("comment", Color::DarkGray, Some(FontStyle::ITALIC)),
-            rule("string", Color::Green, None),
-            rule(
-                "constant.numeric, constant.language, constant.character",
-                Color::Magenta,
-                None,
-            ),
-            rule("keyword, storage", Color::Blue, Some(FontStyle::BOLD)),
-            rule("entity.name.function, support.function", Color::Cyan, None),
-            rule(
-                "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum, entity.name.trait, support.type",
-                Color::Yellow,
-                None,
-            ),
-            rule("variable.parameter", Color::Reset, Some(FontStyle::ITALIC)),
-            rule("invalid", Color::Red, Some(FontStyle::UNDERLINE)),
-        ],
-        ..SyntaxTheme::default()
+pub fn theme() -> &'static Theme {
+    static THEME: OnceLock<Theme> = OnceLock::new();
+    THEME.get_or_init(|| {
+        Theme::new(
+            Color::Reset,
+            &[
+                (&["comment"], Color::DarkGray, Some(FontStyle::ITALIC)),
+                (&["string"], Color::Green, None),
+                (
+                    &[
+                        "constant.numeric",
+                        "constant.language",
+                        "constant.character",
+                    ],
+                    Color::Magenta,
+                    None,
+                ),
+                (&["keyword", "storage"], Color::Blue, Some(FontStyle::BOLD)),
+                (
+                    &["entity.name.function", "support.function"],
+                    Color::Cyan,
+                    None,
+                ),
+                (
+                    &[
+                        "entity.name.type",
+                        "entity.name.class",
+                        "entity.name.struct",
+                        "entity.name.enum",
+                        "entity.name.trait",
+                        "support.type",
+                    ],
+                    Color::Yellow,
+                    None,
+                ),
+                (
+                    &["variable.parameter"],
+                    Color::Reset,
+                    Some(FontStyle::ITALIC),
+                ),
+                (&["invalid"], Color::Red, Some(FontStyle::UNDERLINE)),
+            ],
+        )
     })
 }
 
-pub fn syntax_for_token<'a>(syntaxes: &'a SyntaxSet, token: &str) -> &'a SyntaxReference {
+pub fn syntax_for_token(syntaxes: &SyntaxSet, token: &str) -> &'static Syntax {
     let token = token.split_ascii_whitespace().next().unwrap_or_default();
     highlightable(
         syntaxes,
@@ -78,7 +95,7 @@ pub fn syntax_for_token<'a>(syntaxes: &'a SyntaxSet, token: &str) -> &'a SyntaxR
     )
 }
 
-pub fn syntax_for_path<'a>(syntaxes: &'a SyntaxSet, path: &str) -> &'a SyntaxReference {
+pub fn syntax_for_path(syntaxes: &SyntaxSet, path: &str) -> &'static Syntax {
     let path = Path::new(path);
     let syntax = path
         .extension()
@@ -92,12 +109,9 @@ pub fn syntax_for_path<'a>(syntaxes: &'a SyntaxSet, path: &str) -> &'a SyntaxRef
     highlightable(syntaxes, syntax)
 }
 
-fn highlightable<'a>(
-    syntaxes: &'a SyntaxSet,
-    syntax: Option<&'a SyntaxReference>,
-) -> &'a SyntaxReference {
+fn highlightable(syntaxes: &SyntaxSet, syntax: Option<&'static Syntax>) -> &'static Syntax {
     syntax
-        .filter(|syntax| !matches!(syntax.name.as_str(), "Markdown" | "MultiMarkdown"))
+        .filter(|syntax| !matches!(syntax.name, "Markdown" | "MultiMarkdown"))
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text())
 }
 
@@ -128,7 +142,7 @@ pub(crate) fn runs(
     };
     let regions = regions
         .into_iter()
-        .map(|(style, region)| (span_style(style), region.trim_end_matches('\n')))
+        .map(|(style, region)| (style, region.trim_end_matches('\n')))
         .filter(|(_, region)| !region.is_empty())
         .collect::<Vec<_>>();
     if regions.is_empty() {
@@ -144,22 +158,6 @@ pub(crate) fn runs(
         runs.push((run[0].0, end));
     }
     runs
-}
-
-fn span_style(style: SyntaxStyle) -> Style {
-    let mut modifier = Modifier::empty();
-    if style.font_style.contains(FontStyle::BOLD) {
-        modifier.insert(Modifier::BOLD);
-    }
-    if style.font_style.contains(FontStyle::ITALIC) {
-        modifier.insert(Modifier::ITALIC);
-    }
-    if style.font_style.contains(FontStyle::UNDERLINE) {
-        modifier.insert(Modifier::UNDERLINED);
-    }
-    Style::default()
-        .fg(terminal_color(style.foreground))
-        .add_modifier(modifier)
 }
 
 fn printable(text: &str) -> bool {
@@ -233,44 +231,4 @@ fn push_grapheme(spans: &mut Vec<Span<'static>>, grapheme: &str, style: Style) {
         return;
     }
     spans.push(Span::styled(grapheme.to_owned(), style));
-}
-
-fn rule(scope: &str, color: Color, font_style: Option<FontStyle>) -> ThemeItem {
-    ThemeItem {
-        scope: ScopeSelectors::from_str(scope).expect("built-in syntax scopes should be valid"),
-        style: StyleModifier {
-            foreground: Some(syntect_color(color)),
-            background: None,
-            font_style,
-        },
-    }
-}
-
-fn syntect_color(color: Color) -> SyntectColor {
-    let (r, g, b) = match color {
-        Color::Reset => (0xd7, 0xd7, 0xd7),
-        Color::Red => (0xcd, 0x31, 0x31),
-        Color::Green => (0x0d, 0xbc, 0x79),
-        Color::Yellow => (0xe5, 0xe5, 0x10),
-        Color::Blue => (0x24, 0x72, 0xc8),
-        Color::Magenta => (0xbc, 0x3f, 0xbc),
-        Color::Cyan => (0x11, 0xa8, 0xcd),
-        Color::DarkGray => (0x66, 0x66, 0x66),
-        _ => unreachable!("syntax themes use named terminal colors"),
-    };
-    SyntectColor { r, g, b, a: 0xff }
-}
-
-const fn terminal_color(color: SyntectColor) -> Color {
-    match (color.r, color.g, color.b) {
-        (0xd7, 0xd7, 0xd7) => Color::Reset,
-        (0xcd, 0x31, 0x31) => Color::Red,
-        (0x0d, 0xbc, 0x79) => Color::Green,
-        (0xe5, 0xe5, 0x10) => Color::Yellow,
-        (0x24, 0x72, 0xc8) => Color::Blue,
-        (0xbc, 0x3f, 0xbc) => Color::Magenta,
-        (0x11, 0xa8, 0xcd) => Color::Cyan,
-        (0x66, 0x66, 0x66) => Color::DarkGray,
-        _ => Color::Reset,
-    }
 }

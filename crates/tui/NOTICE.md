@@ -6,45 +6,16 @@ revision `e20b1584642339546bb2310aad6968edeec66a53` imported through Nanocodex2)
 modified for Nanocode. Those portions are distributed under the Apache License 2.0;
 see `LICENSE-APACHE` at the repository root. Tact did not ship a separate NOTICE file.
 
-## Oniguruma
+## syntect
 
-This crate's native syntax highlighting uses syntect's `regex-onig` backend, which compiles the [Oniguruma](https://github.com/kkos/oniguruma) 6.9.10 sources bundled in `onig_sys` 69.9.3 and uses the [rust-onig](https://github.com/rust-onig/rust-onig) bindings in `onig` 6.5.3. The bundled `st.c` is a public domain hash table package by Peter Moore (UC Berkeley).
+This crate's native syntax highlighting (`src/highlight/grammar.rs`, `parser.rs` and `highlighter.rs`) is a port of the parsing and highlighting code of [syntect](https://github.com/trishume/syntect) 5.3.0, and `src/highlight/syntaxes.rs` is generated from the default syntax set syntect 5.3.0 bundles (the Sublime Text grammars it ships in `assets/default_newlines.packdump`).
 
-Oniguruma is distributed under the following license:
-
-```text
-Copyright (c) 2002-2021  K.Kosako  <kkosako0@gmail.com>
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions
-are met:
-1. Redistributions of source code must retain the above copyright
-   notice, this list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright
-   notice, this list of conditions and the following disclaimer in the
-   documentation and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
-OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
-HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
-OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
-SUCH DAMAGE.
-```
-
-The rust-onig crates `onig` and `onig_sys` are distributed under the following license:
+syntect is distributed under the following license:
 
 ```text
-The MIT License (MIT)
+MIT License
 
-Copyright (c) 2015 Will Speak <will@willspeak.me>, Ivan Ivashchenko
-<defuz@me.com>, and contributors.
+Copyright (c) 2017 Tristan Hume, Keith Hall, Google Inc and other contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -94,6 +65,9 @@ THE SOFTWARE.
 ```
 
 The parser's tables are generated from the [HTML Standard's named character references](https://html.spec.whatwg.org/entities.json) (WHATWG, CC BY 4.0) and the Unicode Character Database (`CaseFolding.txt` 18.0.0 and `UnicodeData.txt` 15.1.0), which is distributed under the following license:
+## Unicode
+
+The character property and case folding tables in `src/highlight/regex/unicode.rs` are generated from the Unicode Character Database 16.0.0 (`UnicodeData.txt`, `DerivedCoreProperties.txt`, `PropList.txt` and `CaseFolding.txt`), which is distributed under the following license:
 
 ```text
 UNICODE LICENSE V3

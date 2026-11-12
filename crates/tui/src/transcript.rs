@@ -13,7 +13,7 @@ use crate::ui::{
     widgets::{Paragraph, Widget},
 };
 
-use syntect::easy::HighlightLines;
+use crate::highlight::HighlightLines;
 
 use crate::{
     beautify::beautify,

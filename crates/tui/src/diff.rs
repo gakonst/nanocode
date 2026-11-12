@@ -1,3 +1,4 @@
+use super::highlight::{HighlightLines, SyntaxSet, Theme as SyntaxTheme};
 use crate::markdown::truncate_graphemes;
 use crate::theme::Theme;
 use crate::ui::{
@@ -5,7 +6,6 @@ use crate::ui::{
     text::{Line, Span},
 };
 use crate::unicode;
-use syntect::{easy::HighlightLines, highlighting::Theme as SyntaxTheme, parsing::SyntaxSet};
 
 pub fn render(source: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     render_rows(source, width, theme, usize::MAX).0

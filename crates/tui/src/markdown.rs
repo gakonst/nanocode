@@ -1,3 +1,4 @@
+use super::highlight::{HighlightLines, HighlightState, ParseState};
 use crate::commonmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use crate::ui::{
     style::{Modifier, Style},
@@ -5,7 +6,6 @@ use crate::ui::{
 };
 use crate::{format::sanitize_terminal_text, theme::Theme, unicode};
 use std::{borrow::Cow, ops::Range, sync::Arc};
-use syntect::{easy::HighlightLines, highlighting::HighlightState, parsing::ParseState};
 
 pub struct Layout {
     pub lines: Vec<Line<'static>>,

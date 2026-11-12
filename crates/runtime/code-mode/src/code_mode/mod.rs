@@ -1338,6 +1338,11 @@ fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
                 .to_owned(),
         );
     }
+    if let Some(key) = spec::json_wrapper_key(input) {
+        return Err(format!(
+            "exec expects raw JavaScript source text, but this input is a JSON object that wraps it (`{{\"{key}\": …}}`), so nothing ran. Send the JavaScript itself as the whole tool input, with no JSON around it and no JSON escaping. Inside it, quote shell commands and file content with `String.raw` template literals or single quotes rather than escaped double quotes."
+        ));
+    }
     let mut source = ParsedExecSource {
         code: input.to_owned(),
         yield_time_ms: None,

@@ -169,3 +169,16 @@ pub fn source_with_options<'a>(
         Value::Object(pragma)
     )))
 }
+
+const WRAPPER_KEYS: [&str; 2] = ["input", "code"];
+
+#[must_use]
+pub fn json_wrapper_key(source: &str) -> Option<&'static str> {
+    let rest = source.trim_start().strip_prefix('{')?.trim_start();
+    WRAPPER_KEYS.into_iter().find(|key| {
+        rest.strip_prefix('"')
+            .and_then(|rest| rest.strip_prefix(key))
+            .and_then(|rest| rest.strip_prefix('"'))
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    })
+}

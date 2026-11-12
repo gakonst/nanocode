@@ -21,7 +21,6 @@ nanocode-tool-provider.workspace = true
 nanocode-sync.workspace = true
 nanocode-tools.workspace = true
 nanocode-types.workspace = true
-schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

@@ -5,14 +5,24 @@ use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{
-    Error, FnArg, GenericArgument, ItemFn, LitStr, Pat, PathArguments, ReturnType, Token, Type,
-    parse::Parser, punctuated::Punctuated,
+    DeriveInput, Error, FnArg, GenericArgument, ItemFn, LitStr, Pat, PathArguments, ReturnType,
+    Token, Type, parse::Parser, punctuated::Punctuated,
 };
+
+mod json_schema;
 
 struct ToolArgs {
     description: LitStr,
     name: Option<LitStr>,
     parallel: bool,
+}
+
+#[proc_macro_derive(JsonSchema, attributes(serde))]
+pub fn derive_json_schema(item: TokenStream) -> TokenStream {
+    syn::parse::<DeriveInput>(item)
+        .and_then(|input| json_schema::expand(&input, &nanocode_path().0))
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
 }
 
 #[proc_macro_attribute]
@@ -44,10 +54,6 @@ fn expand_tool(
         &format!("{nanocode_path}::__private::serde"),
         Span::call_site(),
     );
-    let schemars_path = LitStr::new(
-        &format!("{nanocode_path}::__private::schemars"),
-        Span::call_site(),
-    );
 
     let (fields, calls) = function_arguments(&function)?;
 
@@ -66,13 +72,12 @@ fn expand_tool(
 
         #[derive(
             #nanocode::__private::serde::Deserialize,
-            #nanocode::__private::schemars::JsonSchema
+            #nanocode::__private::JsonSchema
         )]
         #[serde(
             crate = #serde_path,
             deny_unknown_fields
         )]
-        #[schemars(crate = #schemars_path)]
         struct #input_ident {
             #(#fields,)*
         }

@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use schemars::r#gen::SchemaSettings;
+use nanocode_tools::SchemaSettings;
 use serde_json::{Map, Value};
 
 use super::wire::SearchCommands;
@@ -12,17 +12,12 @@ pub(crate) fn commands_schema() -> Value {
 }
 
 fn generate_commands_schema() -> Value {
-    let schema = SchemaSettings::draft2019_09()
-        .with(|settings| {
-            settings.inline_subschemas = true;
-            settings.option_add_null_type = false;
-        })
-        .into_generator()
-        .into_root_schema_for::<SearchCommands>();
-    let schema = serde_json::to_value(schema).expect("web search command schema should serialize");
-    let Value::Object(mut schema) = schema else {
-        unreachable!("web search command schema must be an object");
-    };
+    let mut schema = SchemaSettings {
+        inline_subschemas: true,
+        option_add_null_type: false,
+        ..SchemaSettings::draft2019_09()
+    }
+    .root_schema_for::<SearchCommands>();
     let mut tool_schema = Map::new();
     for key in [
         "properties",

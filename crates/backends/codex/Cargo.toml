@@ -32,7 +32,6 @@ nanocode-sync.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-tools.workspace = true
 nanocode-types.workspace = true
-schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

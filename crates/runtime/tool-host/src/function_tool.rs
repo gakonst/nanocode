@@ -1,8 +1,7 @@
 use std::{future::Future, marker::PhantomData, sync::Arc};
 
 pub use nanocode_platform::MaybeSend;
-use nanocode_tools::{ToolInputError, ToolOutputContent, schema_for};
-use schemars::JsonSchema;
+use nanocode_tools::{JsonSchema, ToolInputError, ToolOutputContent, schema_for};
 use serde::de::{DeserializeOwned, Error as _};
 use serde_json::{Map, Value, json};
 

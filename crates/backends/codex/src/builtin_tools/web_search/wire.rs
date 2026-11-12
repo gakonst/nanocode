@@ -1,5 +1,5 @@
 use crate::client::responses::ResponseItem;
-use schemars::JsonSchema;
+use nanocode_tools::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

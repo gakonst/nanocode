@@ -166,7 +166,6 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 djs-embed = { path = "crates/patches/djs/crates/djs-embed" }
 psh-engine = { path = "crates/patches/psh/crates/psh-engine" }
 psh-utils = { path = "crates/patches/psh/crates/psh-utils" }
-schemars = "0.8.22"
 seccompiler = "0.5.0"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["float_roundtrip", "raw_value"] }

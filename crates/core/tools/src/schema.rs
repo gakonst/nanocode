@@ -1,4 +1,4 @@
-use schemars::{JsonSchema, r#gen::SchemaSettings};
+use crate::json_schema::{JsonSchema, SchemaSettings};
 use serde_json::{Map, Value, json};
 
 const ROOT: [&str; 5] = ["$schema", "title", "description", "$defs", "definitions"];
@@ -10,18 +10,12 @@ const NUMERIC: [&str; 2] = ["integer", "number"];
 #[doc(hidden)]
 #[must_use]
 pub fn schema_for<T: JsonSchema>() -> Value {
-    let schema = SchemaSettings::draft2019_09()
-        .with(|settings| {
-            settings.inline_subschemas = true;
-            settings.option_add_null_type = false;
-        })
-        .into_generator()
-        .into_root_schema_for::<T>();
-    let Value::Object(mut schema) =
-        serde_json::to_value(schema).expect("a schemars root schema should serialize to an object")
-    else {
-        unreachable!("a schemars root schema should be an object");
-    };
+    let mut schema = SchemaSettings {
+        inline_subschemas: true,
+        option_add_null_type: false,
+        ..SchemaSettings::draft2019_09()
+    }
+    .root_schema_for::<T>();
     let mut tool_schema = Map::new();
     for key in [
         "properties",

@@ -1,4 +1,4 @@
-use schemars::JsonSchema;
+use nanocode_tools::{JsonSchema, SchemaSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -228,7 +228,7 @@ fn decode<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, String> {
     serde_json::from_value(input).map_err(|e| format!("invalid Claude host input: {e}"))
 }
 fn schema<T: JsonSchema>() -> Value {
-    serde_json::to_value(schemars::schema_for!(T)).expect("JSON schema serialization")
+    Value::Object(SchemaSettings::draft07().root_schema_for::<T>())
 }
 fn definition(tool: HostTool) -> Value {
     match tool {

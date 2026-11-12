@@ -194,6 +194,7 @@ pub(crate) static FAST: &[FastFn] = &[
     m("StringPrototypeReplaceAll", replace_all),
     f("ArrayPrototypeReverse", array_reverse),
     f("ArrayPrototypeConcat", array_concat),
+    f("ArrayPrototypeFlat", array_flat),
     // ---- RegExps whose protocol is unobservable (D1503, D3137), matched in one go ----
     m("RegExpPrototypeTest", regexp_test),
     m("RegExpPrototypeExec", regexp_exec),
@@ -1592,6 +1593,52 @@ fn array_concat(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
         values.extend_from_slice(&part);
     }
     if values.len() as u64 > u64::from(crate::heap::atom::MAX_INT_ATOM) {
+        return Ok(None);
+    }
+    new_array(heap, &values)
+}
+
+const FLAT_MAX_NESTING: u32 = 64;
+
+fn flatten_into(heap: &Heap, o: Obj, depth: f64, level: u32, out: &mut Vec<Value>) -> bool {
+    let Some(part) = dense::dense_range(heap, o, 0, heap.array_length(o)) else {
+        return false;
+    };
+    for e in part {
+        match e.as_object() {
+            Some(eo) if depth > 0.0 && heap.is_proxy(eo) => return false,
+            Some(eo) if depth > 0.0 && heap.object_class(eo) == ObjectClass::Array => {
+                if level >= FLAT_MAX_NESTING || !flatten_into(heap, eo, depth - 1.0, level + 1, out)
+                {
+                    return false;
+                }
+            }
+            _ => out.push_out(e),
+        }
+    }
+    true
+}
+
+fn array_flat(heap: &mut Heap, this: Value, args: &[Value]) -> Fast {
+    let Some((o, _)) = this_array(heap, this) else {
+        return Ok(None);
+    };
+    let d = arg(args, 0);
+    let depth = if d.is_undefined() {
+        1.0
+    } else {
+        match int_arg(heap, d)? {
+            Some(n) => n.max(0.0),
+            None => return Ok(None),
+        }
+    };
+    if !plain_species(heap, o) {
+        return Ok(None);
+    }
+    let mut values: Vec<Value> = Vec::new();
+    if !flatten_into(heap, o, depth, 0, &mut values)
+        || values.len() as u64 > u64::from(crate::heap::atom::MAX_INT_ATOM)
+    {
         return Ok(None);
     }
     new_array(heap, &values)

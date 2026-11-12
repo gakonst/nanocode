@@ -935,6 +935,7 @@ function FlattenIntoArray(target: Obj, source: Obj, sourceLen: f64, start: f64, 
 /**
  * Array.prototype.flat ( [ depth ] ), 23.1.3.13.
  * @builtin Array.prototype.flat
+ * @fast
  */
 function ArrayPrototypeFlat(this: Value, depth?: Value): Obj {
   const o: Obj = ToObject(this);

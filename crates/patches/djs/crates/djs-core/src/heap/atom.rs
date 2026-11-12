@@ -42,6 +42,15 @@ pub const MAX_INT_ATOM: u32 = INT_BIT - 1;
 /// The largest array index (2^32 - 2).
 pub const MAX_ARRAY_INDEX: u32 = u32::MAX - 1;
 
+const ATOM_MEMO_BITS: u32 = 8;
+pub(crate) const ATOM_MEMO_LEN: usize = 1 << ATOM_MEMO_BITS;
+const FIB_HASH: u32 = 0x9E37_79B1;
+
+#[inline]
+fn atom_memo_slot(s: Str) -> usize {
+    (s.0.wrapping_mul(FIB_HASH) >> (u32::BITS - ATOM_MEMO_BITS)) as usize
+}
+
 /// An interned property key: an integer index, a string or a symbol. See the module docs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Atom(pub(crate) u32);
@@ -740,6 +749,16 @@ impl Heap {
 
     #[inline(always)]
     fn intern_inner(&mut self, s: Str) -> Result<Atom, HeapError> {
+        let slot = atom_memo_slot(s);
+        if self.atom_memo[slot][0] == s.0 {
+            return Ok(Atom(self.atom_memo[slot][1]));
+        }
+        let a = self.intern_uncached(s)?;
+        self.atom_memo[slot] = [s.0, a.0];
+        Ok(a)
+    }
+
+    fn intern_uncached(&mut self, s: Str) -> Result<Atom, HeapError> {
         if let Some(i) = self.str_array_index(s)
             && let Some(a) = Atom::int(i)
         {
@@ -770,6 +789,10 @@ impl Heap {
 
     /// The string atom of `s` if it is interned already (never an integer atom).
     pub(crate) fn find_string_atom_of(&mut self, s: Str) -> Option<Atom> {
+        let memo = self.atom_memo[atom_memo_slot(s)];
+        if memo[0] == s.0 && !Atom(memo[1]).is_int() {
+            return Some(Atom(memo[1]));
+        }
         if self.str_array_index(s).is_some() {
             return None;
         }

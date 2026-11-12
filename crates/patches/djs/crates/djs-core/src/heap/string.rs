@@ -752,10 +752,16 @@ impl Heap {
 
     /// The code units of `s` if they lie in one piece (a flat cell, a flattened rope, an
     /// append rope or a slice), else `None`.
+    #[inline]
     pub fn str_view(&self, s: Str) -> Option<StrView<'_>> {
         if let Some(v) = self.flat_fast(s) {
             return Some(v);
         }
+        self.str_view_resolved(s)
+    }
+
+    #[inline(never)]
+    fn str_view_resolved(&self, s: Str) -> Option<StrView<'_>> {
         let s = self.resolve_str(s);
         if let Some(buf) = self.append_rope_buffer(s) {
             return Some(self.prefix_view(buf, self.str_len(s)));

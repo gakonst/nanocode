@@ -4,17 +4,17 @@ use nanocode::subagents::AgentId;
 use nanocode_observability::TUI_TARGET;
 use nanocode_tui::{
     keybindings::{self, Binding},
-    ratatui::{
+    spinner::{self, SPINNER_SLOT, elapsed_label, elapsed_label_deadline},
+    terminal::Canvas,
+    theme::Theme,
+    transcript::Transcript,
+    ui::{
         buffer::Buffer,
         layout::{Constraint, Layout, Position, Rect},
         style::{Modifier, Style},
         text::{Line, Span},
         widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget},
     },
-    spinner::{self, SPINNER_SLOT, elapsed_label, elapsed_label_deadline},
-    terminal::Canvas,
-    theme::Theme,
-    transcript::Transcript,
 };
 
 use crate::{

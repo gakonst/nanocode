@@ -5,8 +5,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ratatui::{
-    buffer::{Buffer, CellWidth},
+use crate::ui::{
+    buffer::{Buffer, symbol_width},
     layout::{Alignment, Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
@@ -1818,7 +1818,7 @@ fn render_line(line: &Line<'_>, area: Rect, buffer: &mut Buffer, mut at: impl Fn
             .graphemes(true)
             .filter(|grapheme| !grapheme.contains(char::is_control))
         {
-            let width = usize::from(grapheme.cell_width());
+            let width = usize::from(symbol_width(grapheme));
             if width > cells.len() {
                 continue;
             }
@@ -1966,13 +1966,13 @@ fn url_at(rows: &Rows, row: usize, column: u16, width: u16) -> Option<String> {
         .flat_map(|span| span.content.graphemes(true))
         .map(|grapheme| {
             let cell = (at, grapheme);
-            at += grapheme.cell_width();
+            at += symbol_width(grapheme);
             cell
         })
         .collect::<Vec<(u16, &str)>>();
     let url = |grapheme: &str| grapheme.bytes().all(url_byte);
     let index = cells.iter().position(|&(start, grapheme)| {
-        url(grapheme) && (start..start + grapheme.cell_width()).contains(&column)
+        url(grapheme) && (start..start + symbol_width(grapheme)).contains(&column)
     })?;
     let start = cells[..index]
         .iter()

@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Instant};
 
 use nanocode::agent::events::{AgentEvent, AgentEventKind};
 use nanocode_observability::{METRICS_TARGET, TUI_TARGET};
-use nanocode_tui::crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind};
+use nanocode_tui::input::{Event, KeyCode, KeyModifiers, MouseEventKind};
 use opentelemetry::{Context, trace::TraceContextExt};
 use serde_json::Value;
 use tracing::{Level, Span, field::Empty};

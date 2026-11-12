@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ratatui::{
+use crate::ui::{
     layout::{Position, Rect},
     text::Line,
 };

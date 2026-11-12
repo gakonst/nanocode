@@ -17,13 +17,13 @@ test = false
 bench = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "events", "event-stream"] }
 nanocode-agent.workspace = true
 nanocode-agent-host.workspace = true
 nanocode-backend-codex.workspace = true
 nanocode-durability.workspace = true
 nanocode-store-jsonl.workspace = true
 nanocode-tool-runtime.workspace = true
+nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
 pulldown-cmark = { version = "0.13.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

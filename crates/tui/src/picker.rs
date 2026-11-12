@@ -1,5 +1,5 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
+use crate::input::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},

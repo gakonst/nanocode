@@ -1,7 +1,7 @@
 use std::ops::Range;
 
-use ratatui::{
-    buffer::{Buffer, Cell, CellWidth},
+use crate::ui::{
+    buffer::{Buffer, Cell},
     layout::{Position, Rect},
     style::Modifier,
 };

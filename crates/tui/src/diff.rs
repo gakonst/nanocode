@@ -1,6 +1,6 @@
 use crate::markdown::truncate_graphemes;
 use crate::theme::Theme;
-use ratatui::{
+use crate::ui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };

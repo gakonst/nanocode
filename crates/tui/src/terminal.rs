@@ -2,33 +2,25 @@ use std::{
     io::{self, Stdout, Write, stdout},
     panic,
     sync::{
-        Once,
+        Once, OnceLock,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
-use crossterm::{
-    cursor::{Hide, MoveTo, Show},
-    event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, MouseButton, MouseEvent, MouseEventKind,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-    },
-    execute, queue,
-    style::{Attribute, SetAttribute},
-    terminal::{
-        BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate, EnterAlternateScreen,
-        LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    },
-};
-use ratatui::{
-    backend::{Backend, CrosstermBackend},
+use crate::input::{MouseButton, MouseEvent, MouseEventKind};
+use crate::ui::{
     buffer::Buffer,
     layout::{Position, Rect},
     style::Color,
 };
 
 use crate::selection::Selection;
+
+pub mod ansi;
+mod device;
+
+pub(crate) use device::readable_now;
+pub use device::{Tty, disable_raw_mode, enable_raw_mode, raw_mode_enabled, size, tty};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static MODES: AtomicU8 = AtomicU8::new(0);
@@ -135,7 +127,7 @@ impl TerminalSession {
             cursor: None,
             bytes: Vec::new(),
             truecolor: truecolor(),
-            monochrome: crossterm::style::Colored::ansi_color_disabled_memoized(),
+            monochrome: no_color(),
             stats: FrameStats::default(),
             options,
             active: true,
@@ -146,7 +138,7 @@ impl TerminalSession {
     }
 
     pub fn draw(&mut self, render: impl FnOnce(&mut Canvas<'_>)) -> io::Result<()> {
-        let (columns, rows) = crossterm::terminal::size()?;
+        let (columns, rows) = size()?;
         let span = tracing::info_span!(
             "tui.terminal.draw",
             width = columns,
@@ -205,26 +197,35 @@ impl TerminalSession {
             return Ok(());
         }
         self.bytes.clear();
-        queue!(self.bytes, BeginSynchronizedUpdate)?;
+        self.bytes
+            .extend_from_slice(ansi::BEGIN_SYNCHRONIZED_UPDATE.as_bytes());
         if self.stale {
-            queue!(self.bytes, SetAttribute(Attribute::Reset))?;
+            self.bytes
+                .extend_from_slice(ansi::RESET_ATTRIBUTES.as_bytes());
             for row in area.top()..area.bottom() {
-                queue!(self.bytes, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+                ansi::move_to(&mut self.bytes, 0, row);
+                self.bytes.extend_from_slice(ansi::CLEAR_LINE.as_bytes());
             }
         }
         if has_updates {
             if self.cursor.is_some() {
-                queue!(self.bytes, Hide)?;
+                self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
             }
-            CrosstermBackend::new(&mut self.bytes).draw(updates)?;
+            ansi::draw(&mut self.bytes, updates, self.monochrome);
         }
         span.record("frame.changed_cells", changed_cells);
         match cursor {
-            Some(position) => queue!(self.bytes, MoveTo(position.x, position.y), Show)?,
-            None if self.cursor.is_some() => queue!(self.bytes, Hide)?,
+            Some(position) => {
+                ansi::move_to(&mut self.bytes, position.x, position.y);
+                self.bytes.extend_from_slice(ansi::SHOW_CURSOR.as_bytes());
+            }
+            None if self.cursor.is_some() => {
+                self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
+            }
             None => {}
         }
-        queue!(self.bytes, EndSynchronizedUpdate)?;
+        self.bytes
+            .extend_from_slice(ansi::END_SYNCHRONIZED_UPDATE.as_bytes());
         drop(diff_encode);
         span.record("frame.bytes", self.bytes.len());
         tracing::info_span!("tui.terminal.write", bytes = self.bytes.len()).in_scope(|| {
@@ -246,7 +247,7 @@ impl TerminalSession {
         if self.stale || !self.active || self.spinners.is_empty() {
             return Ok(false);
         }
-        let (columns, rows) = crossterm::terminal::size()?;
+        let (columns, rows) = size()?;
         if Rect::new(0, 0, columns, rows) != self.previous.area {
             return Ok(false);
         }
@@ -262,22 +263,27 @@ impl TerminalSession {
             }
         }
         self.bytes.clear();
-        queue!(self.bytes, BeginSynchronizedUpdate)?;
+        self.bytes
+            .extend_from_slice(ansi::BEGIN_SYNCHRONIZED_UPDATE.as_bytes());
         if self.cursor.is_some() {
-            queue!(self.bytes, Hide)?;
+            self.bytes.extend_from_slice(ansi::HIDE_CURSOR.as_bytes());
         }
         let previous = &self.previous;
-        CrosstermBackend::new(&mut self.bytes).draw(self.spinners.iter().filter_map(
-            |position| {
+        ansi::draw(
+            &mut self.bytes,
+            self.spinners.iter().filter_map(|position| {
                 previous
                     .cell(*position)
                     .map(|cell| (position.x, position.y, cell))
-            },
-        ))?;
+            }),
+            self.monochrome,
+        );
         if let Some(position) = self.cursor {
-            queue!(self.bytes, MoveTo(position.x, position.y), Show)?;
+            ansi::move_to(&mut self.bytes, position.x, position.y);
+            self.bytes.extend_from_slice(ansi::SHOW_CURSOR.as_bytes());
         }
-        queue!(self.bytes, EndSynchronizedUpdate)?;
+        self.bytes
+            .extend_from_slice(ansi::END_SYNCHRONIZED_UPDATE.as_bytes());
         span.record("frame.bytes", self.bytes.len());
         self.output.write_all(&self.bytes)?;
         self.output.flush()?;
@@ -322,10 +328,10 @@ impl TerminalSession {
         }
         self.options.mouse_capture = enabled;
         if enabled {
-            execute!(self.output, EnableMouseCapture)?;
+            execute(&mut self.output, ansi::ENABLE_MOUSE_CAPTURE.as_bytes())?;
             MODES.fetch_or(MOUSE, Ordering::AcqRel);
         } else {
-            execute!(self.output, DisableMouseCapture)?;
+            execute(&mut self.output, ansi::DISABLE_MOUSE_CAPTURE.as_bytes())?;
             MODES.fetch_and(!MOUSE, Ordering::AcqRel);
             self.selection = None;
         }
@@ -405,10 +411,9 @@ impl TerminalSession {
             }
             return written;
         }
-        execute!(
-            self.output,
-            crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
-        )
+        let mut bytes = Vec::new();
+        ansi::copy_to_clipboard(&mut bytes, text);
+        execute(&mut self.output, &bytes)
     }
 
     #[must_use]
@@ -428,6 +433,16 @@ impl Drop for TerminalSession {
             restore(&mut self.output);
         }
     }
+}
+
+fn execute(output: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+    output.write_all(bytes)?;
+    output.flush()
+}
+
+fn no_color() -> bool {
+    static NO_COLOR: OnceLock<bool> = OnceLock::new();
+    *NO_COLOR.get_or_init(|| std::env::var("NO_COLOR").is_ok_and(|value| !value.is_empty()))
 }
 
 fn truecolor() -> bool {
@@ -507,19 +522,16 @@ const fn ansi256(red: u8, green: u8, blue: u8) -> u8 {
 
 fn activate(output: &mut impl Write, options: TerminalOptions) -> io::Result<()> {
     ACTIVE.store(true, Ordering::Release);
-    queue!(output, EnterAlternateScreen, EnableBracketedPaste, Hide)?;
+    output.write_all(ansi::ENTER_ALTERNATE_SCREEN.as_bytes())?;
+    output.write_all(ansi::ENABLE_BRACKETED_PASTE.as_bytes())?;
+    output.write_all(ansi::HIDE_CURSOR.as_bytes())?;
     let mut modes = 0;
     if options.mouse_capture {
-        queue!(output, EnableMouseCapture)?;
+        output.write_all(ansi::ENABLE_MOUSE_CAPTURE.as_bytes())?;
         modes |= MOUSE;
     }
-    if options.keyboard_enhancement
-        && queue!(
-            output,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )
-        .is_ok()
-    {
+    if options.keyboard_enhancement {
+        output.write_all(ansi::PUSH_DISAMBIGUATE_ESCAPE_CODES.as_bytes())?;
         modes |= KEYBOARD;
     }
     output.flush()?;
@@ -531,19 +543,22 @@ fn restore(output: &mut impl Write) {
     ACTIVE.store(false, Ordering::Release);
     let modes = MODES.swap(0, Ordering::AcqRel);
     drop(disable_raw_mode());
+    let mut bytes = Vec::new();
     if modes & KEYBOARD != 0 {
-        drop(queue!(output, PopKeyboardEnhancementFlags));
+        bytes.extend_from_slice(ansi::POP_KEYBOARD_ENHANCEMENT_FLAGS.as_bytes());
     }
     if modes & MOUSE != 0 {
-        drop(queue!(output, DisableMouseCapture));
+        bytes.extend_from_slice(ansi::DISABLE_MOUSE_CAPTURE.as_bytes());
     }
-    drop(queue!(
-        output,
-        EndSynchronizedUpdate,
-        DisableBracketedPaste,
-        LeaveAlternateScreen,
-        Show
-    ));
+    for sequence in [
+        ansi::END_SYNCHRONIZED_UPDATE,
+        ansi::DISABLE_BRACKETED_PASTE,
+        ansi::LEAVE_ALTERNATE_SCREEN,
+        ansi::SHOW_CURSOR,
+    ] {
+        bytes.extend_from_slice(sequence.as_bytes());
+    }
+    drop(output.write_all(&bytes));
     drop(output.flush());
 }
 

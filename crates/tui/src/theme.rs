@@ -1,4 +1,4 @@
-use ratatui::style::Color;
+use crate::ui::style::Color;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{fmt, str::FromStr};
 

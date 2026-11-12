@@ -1,7 +1,7 @@
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
+use crate::input::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},

@@ -221,10 +221,7 @@ pub fn tier_picker(model: &ModelSelection, tiers: &[ServiceTier], current: Servi
     Picker::new(format!("Speed · {model}"), items).footer("enter select · esc cancel")
 }
 
-pub const fn thinking_color(
-    thinking: Thinking,
-    theme: &Theme,
-) -> nanocode_tui::ratatui::style::Color {
+pub const fn thinking_color(thinking: Thinking, theme: &Theme) -> nanocode_tui::ui::style::Color {
     match thinking {
         Thinking::None => theme.muted(),
         Thinking::Low => theme.thinking_low(),

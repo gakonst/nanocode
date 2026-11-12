@@ -1,4 +1,4 @@
-use ratatui::{
+use crate::ui::{
     style::{Color, Modifier, Style},
     text::Span,
 };

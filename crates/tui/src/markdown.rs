@@ -1,9 +1,9 @@
-use crate::{format::sanitize_terminal_text, theme::Theme};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::{
+use crate::ui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
+use crate::{format::sanitize_terminal_text, theme::Theme};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::{borrow::Cow, ops::Range, sync::Arc};
 use syntect::{easy::HighlightLines, highlighting::HighlightState, parsing::ParseState};
 use unicode_segmentation::UnicodeSegmentation;

@@ -8,6 +8,7 @@ pub mod file_finder;
 pub mod format;
 pub mod highlight;
 pub mod history;
+pub mod input;
 pub mod keybindings;
 pub mod markdown;
 pub mod overlay;
@@ -21,6 +22,4 @@ mod text;
 pub mod theme;
 pub mod transcript;
 pub mod tree;
-
-pub use crossterm;
-pub use ratatui;
+pub mod ui;

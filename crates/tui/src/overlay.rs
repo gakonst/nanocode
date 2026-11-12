@@ -1,4 +1,4 @@
-use ratatui::{
+use crate::ui::{
     buffer::Buffer,
     layout::Rect,
     style::{Modifier, Style},

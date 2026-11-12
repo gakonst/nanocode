@@ -2,13 +2,10 @@ use std::future::Future;
 use std::io::{BufWriter, Stdout, Write};
 use std::pin::Pin;
 
-use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
-};
-use crossterm::{execute, terminal};
 use nanocode_agent::events::AgentEvent;
 use nanocode_agent::{Agent, AgentEvents, TurnControl, TurnResult};
+use nanocode_tui::input::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use nanocode_tui::terminal::{self, ansi};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use unicode_width::UnicodeWidthChar;
@@ -73,7 +70,7 @@ struct Raw;
 impl Raw {
     fn enter() -> Result<Self> {
         terminal::enable_raw_mode()?;
-        execute!(std::io::stdout(), EnableBracketedPaste)?;
+        write_sequence(ansi::ENABLE_BRACKETED_PASTE)?;
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             restore();
@@ -90,15 +87,27 @@ impl Drop for Raw {
 }
 
 fn restore() {
-    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+    let _ = write_sequence(ansi::DISABLE_BRACKETED_PASTE);
     let _ = terminal::disable_raw_mode();
+}
+
+fn write_sequence(sequence: &str) -> std::io::Result<()> {
+    let mut out = std::io::stdout();
+    out.write_all(sequence.as_bytes())?;
+    out.flush()
 }
 
 fn keys() -> Keys {
     let (sender, receiver) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        loop {
-            let event = crossterm::event::read();
+    tokio::spawn(async move {
+        let mut events = match EventStream::new() {
+            Ok(events) => events,
+            Err(error) => {
+                let _ = sender.send(Err(error));
+                return;
+            }
+        };
+        while let Some(event) = events.next().await {
             let failed = event.is_err();
             if sender.send(event).is_err() || failed {
                 return;

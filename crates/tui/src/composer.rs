@@ -1,12 +1,12 @@
-use arc_swap::ArcSwapOption;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
+use crate::input::{KeyCode, KeyEvent, KeyModifiers};
+use crate::ui::{
     buffer::Buffer,
     layout::{Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
+use arc_swap::ArcSwapOption;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;

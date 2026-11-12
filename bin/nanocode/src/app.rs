@@ -21,12 +21,12 @@ use nanocode::{
 use nanocode_observability::TUI_TARGET;
 use nanocode_tui::{
     composer::{Composer, ComposerAction},
-    crossterm::event::{
+    effort::{DialAction, EffortDial},
+    history::History,
+    input::{
         Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
         MouseEventKind,
     },
-    effort::{DialAction, EffortDial},
-    history::History,
     picker::{Picker, PickerAction, PickerItem},
     queue::{Queue, QueueKind, QueueState, QueuedPrompt},
     scheduler::RenderScheduler,
@@ -707,7 +707,7 @@ impl App {
         terminal: &mut TerminalSession,
         rx: &mut UnboundedReceiver<AppEvent>,
     ) -> Result<()> {
-        let mut input = EventStream::new();
+        let mut input = EventStream::new()?;
         let mut scheduler = RenderScheduler::new(DISPLAY_FRAME, Instant::now());
         let mut metrics = crate::telemetry::FrameMetrics::new();
         let mut dirty = true;
@@ -804,7 +804,7 @@ impl App {
                                 }
                                 dirty |= changed;
                                 match std::future::poll_fn(|context| {
-                                    Poll::Ready(input.poll_next_unpin(context))
+                                    Poll::Ready(input.poll_next(context))
                                 })
                                 .await
                                 {

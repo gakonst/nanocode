@@ -14,8 +14,8 @@ use nanocode::{
     subagents::AgentId,
 };
 use nanocode_tui::{
-    ratatui::layout::{Position, Rect},
     transcript::{CellKind, NoticeLevel, Transcript, TranscriptPolicy},
+    ui::layout::{Position, Rect},
 };
 
 use crate::{

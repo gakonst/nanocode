@@ -379,7 +379,6 @@ async fn run(
 ) {
     let mut waiting = Vec::new();
     let mut flushed: Option<Instant> = None;
-    let mut ticked = Instant::now();
     let result = loop {
         let polled = poll_fn(|context| {
             while let Poll::Ready(Some(drain)) = drains.poll_recv(context) {
@@ -394,8 +393,7 @@ async fn run(
         });
         let polled = match sink.tick() {
             Some(period) => {
-                let due = period.saturating_sub(ticked.elapsed());
-                match select(pin!(polled), pin!(nanocode_platform::sleep(due))).await {
+                match select(pin!(polled), pin!(nanocode_platform::sleep(period))).await {
                     Either::Left((polled, _)) => polled,
                     Either::Right(_) => Polled::Tick,
                 }
@@ -406,7 +404,6 @@ async fn run(
             Polled::Batch(batch) => batch,
             Polled::Ended => break Ok(()),
             Polled::Tick => {
-                ticked = Instant::now();
                 if let Err(error) = sink.ticked().await {
                     break Err(format!("persist agent events: {error}"));
                 }

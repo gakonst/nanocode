@@ -5,7 +5,6 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 pub(crate) use nanocode_platform::unix_millis as now;
@@ -16,14 +15,13 @@ use serde_json::{Map, Value, value::RawValue};
 
 use crate::{
     durability::{
-        After, BlobKey, BlobUrl, Deferred, EncodedPayload, Migration, MissingColumn, Prepare,
-        SharedBlobStore, Sql, SqlRow, SqlStatement, StoreError, StoreFuture, get_blob,
-        migrate_format, migrate_format_then,
+        BlobKey, BlobUrl, EncodedPayload, Migration, MissingColumn, SharedBlobStore, Sql, SqlRow,
+        SqlStatement, StoreError, get_blob, migrate_format, migrate_format_then,
     },
     input::{Prompt, PromptInput, UserInput},
     stored_event::Stored,
     turn_inbox::{Envelope, accepted_bytes},
-    turn_log::{EventLog, Logged, Publish, Recording, TurnLog},
+    turn_log::{EventLog, Logged, Recording, TurnLog},
 };
 
 type Dialects = [&'static str; 2];
@@ -465,31 +463,6 @@ struct Writer {
     started: HashSet<String>,
     rows: HashMap<String, Row>,
     stale: bool,
-    publish: Option<Publish>,
-    unpublished: Vec<LoggedEvent>,
-}
-
-impl Writer {
-    fn committed(&mut self, last: u64) -> Option<(Publish, Vec<LoggedEvent>)> {
-        let through = self
-            .unpublished
-            .iter()
-            .position(|event| event.seq > last)
-            .unwrap_or(self.unpublished.len());
-        if through == 0 {
-            return None;
-        }
-        let events: Vec<LoggedEvent> = self.unpublished.drain(..through).collect();
-        self.publish.clone().map(|publish| (publish, events))
-    }
-}
-
-async fn published(committed: Option<(Publish, Vec<LoggedEvent>)>) {
-    if let Some((publish, events)) = committed
-        && let Err(error) = publish(events).await
-    {
-        tracing::warn!(target: "nanocode_agent", %error, "committed session log events could not be published");
-    }
 }
 
 impl Writer {
@@ -760,7 +733,6 @@ pub struct SessionLog<H: ?Sized> {
     limit: Option<usize>,
     physical_limit: Option<usize>,
     blobs: Option<Blobs>,
-    tick: Option<Duration>,
     writer: Owned<Writer>,
 }
 
@@ -774,15 +746,8 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             limit: None,
             physical_limit: None,
             blobs: None,
-            tick: None,
             writer: Owned::new(Writer::default()),
         }
-    }
-
-    #[must_use]
-    pub const fn flush_every(mut self, period: Duration) -> Self {
-        self.tick = Some(period);
-        self
     }
 
     #[must_use]
@@ -1378,7 +1343,6 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn commit(
         &self,
         writer: &mut Writer,
@@ -1387,7 +1351,6 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         own: Option<Own<'_>>,
         mut spill: Spill,
         build: impl FnOnce(Option<&(u64, u64, String)>) -> Vec<Stmt>,
-        defer: bool,
     ) -> Result<Vec<Vec<SqlRow>>, StoreError> {
         let buffered = writer.buffer.len();
         let own_lines = lines.len();
@@ -1408,48 +1371,31 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         let mut statements = placed.statements;
         let extra = statements.len();
         statements.extend(build(placed.own.as_ref()));
-        let mut results = if defer {
-            let after = writer.committed(placed.last).map(|committed| {
-                Box::new(move || Box::pin(published(Some(committed))) as StoreFuture<'static, ()>)
-                    as After
-            });
-            match self.deferred(operation, &statements, &spill, after).await {
-                Ok(()) => Vec::new(),
-                Err(error) => {
-                    restore(writer, all);
-                    writer.stale = true;
-                    return Err(error);
-                }
-            }
-        } else {
-            match self.execute(operation, &statements, &spill).await {
-                Ok(results) => results,
-                Err(error) => {
-                    restore(writer, all);
-                    writer.stale = true;
-                    let tail = placed.guard.as_ref().map(|(request_id, last)| Guard {
-                        request_id,
-                        status: TurnState::Queued,
-                        digest: "",
-                        tail_last: Some(*last),
-                    });
-                    let turn = own.and_then(|own| own.guard);
-                    return Err(
-                        if self.changed(tail, false).await || self.changed(turn, true).await {
-                            StoreError::NotCommitted(format!(
-                                "session log {} changed outside this writer, which reads it again before its next write",
-                                self.scope
-                            ))
-                        } else {
-                            error
-                        },
-                    );
-                }
+        let mut results = match self.execute(operation, &statements, &spill).await {
+            Ok(results) => results,
+            Err(error) => {
+                restore(writer, all);
+                writer.stale = true;
+                let tail = placed.guard.as_ref().map(|(request_id, last)| Guard {
+                    request_id,
+                    status: TurnState::Queued,
+                    digest: "",
+                    tail_last: Some(*last),
+                });
+                let turn = own.and_then(|own| own.guard);
+                return Err(
+                    if self.changed(tail, false).await || self.changed(turn, true).await {
+                        StoreError::NotCommitted(format!(
+                            "session log {} changed outside this writer, which reads it again before its next write",
+                            self.scope
+                        ))
+                    } else {
+                        error
+                    },
+                );
             }
         };
-        if !defer {
-            results.drain(..extra);
-        }
+        results.drain(..extra);
         writer.holder = placed.holder;
         writer.durable = writer.durable.max(placed.last);
         writer.outstanding = 0;
@@ -1466,59 +1412,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                 started(&mut row.record);
             }
         }
-        if !defer {
-            published(writer.committed(placed.last)).await;
-        }
         Ok(results)
-    }
-
-    async fn deferred(
-        &self,
-        operation: &'static str,
-        statements: &[Stmt],
-        spill: &Spill,
-        after: Option<After>,
-    ) -> Result<(), StoreError> {
-        if !self.ready.load(Ordering::Acquire) {
-            self.migrate().await?;
-        }
-        if let Some(limit) = self.physical_limit
-            && statements
-                .iter()
-                .any(|statement| statement.params.iter().any(|value| value.len() > limit))
-        {
-            return Err(StoreError::NotCommitted(
-                "session log binding exceeds the physical value limit".into(),
-            ));
-        }
-        self.put_blobs(&spill.blobs).await?;
-        let dialect = self.host.dialect();
-        let mut writes: Vec<Deferred> = spill
-            .parts
-            .iter()
-            .map(|(key, data)| Deferred {
-                sql: dialect.pick(&PART),
-                params: vec![key.clone(), data.clone()],
-                changes: None,
-            })
-            .collect();
-        writes.extend(
-            statements
-                .iter()
-                .filter(|statement| {
-                    !std::ptr::eq(statement.sql, &CHECK_TAIL)
-                        && !std::ptr::eq(statement.sql, &CHECK_TURN)
-                })
-                .map(|statement| Deferred {
-                    sql: dialect.pick(statement.sql),
-                    params: statement.params.clone(),
-                    changes: [&APPEND_TAIL, &NEW_CHUNK, &UPDATE_TURN, &NEW_TURN]
-                        .iter()
-                        .any(|known| std::ptr::eq(statement.sql, *known))
-                        .then_some(1),
-                }),
-        );
-        self.host.defer(operation, writes, after).await
     }
 
     async fn changed(&self, guard: Option<Guard<'_>>, whole: bool) -> bool {
@@ -1549,19 +1443,13 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         }
     }
 
-    async fn flush_locked(&self, writer: &mut Writer, defer: bool) -> Result<(), StoreError> {
+    async fn flush_locked(&self, writer: &mut Writer) -> Result<(), StoreError> {
         if writer.buffer.is_empty() {
             return Ok(());
         }
-        self.commit(
-            writer,
-            "flush",
-            Vec::new(),
-            None,
-            Spill::default(),
-            |_| Vec::new(),
-            defer,
-        )
+        self.commit(writer, "flush", Vec::new(), None, Spill::default(), |_| {
+            Vec::new()
+        })
         .await
         .map(drop)
     }
@@ -1594,54 +1482,13 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             logged.push(line.logged());
             self.buffer(&mut writer, line);
         }
-        self.flush_locked(&mut writer, false).await?;
+        self.flush_locked(&mut writer).await?;
         Ok(logged)
-    }
-
-    async fn stage_deferred(
-        &self,
-        entries: &[LogEntry],
-        live: Vec<Box<RawValue>>,
-        publish: Publish,
-    ) -> Result<(), StoreError> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-        let created_at = now();
-        let mut writer = self.writer().await?;
-        for (entry, live) in entries.iter().zip(live) {
-            let request_id = entry.request_id.as_deref();
-            let stored = self.event_fits(request_id, entry.event.get());
-            let body = if stored {
-                entry.event.clone()
-            } else {
-                omitted(request_id, entry.event.get())?
-            };
-            let line = Line {
-                seq: writer.allocate()?,
-                created_at,
-                request_id: entry.request_id.clone(),
-                body,
-            };
-            let mut event = line.logged();
-            if stored {
-                event.event = live;
-            }
-            writer.unpublished.push(event);
-            self.buffer(&mut writer, line);
-        }
-        writer.publish = Some(publish);
-        if writer.buffered >= self.chunk_capacity() {
-            self.flush_locked(&mut writer, self.host.defers()).await?;
-        }
-        Ok(())
     }
 
     pub async fn flush(&self) -> Result<(), StoreError> {
         let mut writer = self.writer().await?;
-        self.flush_locked(&mut writer, self.host.defers()).await?;
-        drop(writer);
-        self.host.barrier().await
+        self.flush_locked(&mut writer).await
     }
 
     pub async fn append(&self, entries: &[LogEntry]) -> Result<Vec<LoggedEvent>, StoreError> {
@@ -1829,7 +1676,6 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                         ],
                     }]
                 },
-                false,
             )
             .await;
         if let Err(error) = committed {
@@ -2048,7 +1894,6 @@ impl<H: Sql + ?Sized> SessionLog<H> {
                         },
                     ]
                 },
-                false,
             )
             .await?
             .last()
@@ -2770,23 +2615,15 @@ impl<H: Sql + ?Sized> SessionLog<H> {
         }
         let batches = self.batches(&rows)?;
         let scope = self.scope.to_string();
-        self.commit(
-            &mut writer,
-            "import",
-            lines,
-            None,
-            spill,
-            |_| {
-                batches
-                    .into_iter()
-                    .map(|batch| Stmt {
-                        sql: &IMPORT,
-                        params: vec![scope.clone(), batch],
-                    })
-                    .collect()
-            },
-            false,
-        )
+        self.commit(&mut writer, "import", lines, None, spill, |_| {
+            batches
+                .into_iter()
+                .map(|batch| Stmt {
+                    sql: &IMPORT,
+                    params: vec![scope.clone(), batch],
+                })
+                .collect()
+        })
         .await?;
         Ok(turns.len())
     }
@@ -2816,7 +2653,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
             previous = event.seq;
         }
         let mut writer = self.writer().await?;
-        self.flush_locked(&mut writer, false).await?;
+        self.flush_locked(&mut writer).await?;
         let ends = writer.durable;
         if ends < after {
             return Err(StoreError::NotCommitted(format!(
@@ -2928,11 +2765,7 @@ impl<H: Sql + ?Sized> SessionLog<H> {
 }
 
 impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
-    async fn recorded(
-        &self,
-        recording: Recording<'_>,
-        publish: Option<Publish>,
-    ) -> Result<Vec<LoggedEvent>, String> {
+    async fn recorded(&self, recording: Recording<'_>) -> Result<Vec<LoggedEvent>, String> {
         let unannotated = Map::new();
         let compact = self.compact.then_some(recording.session_id);
         let (entries, live): (Vec<_>, Vec<_>) = recording
@@ -2965,12 +2798,6 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> SessionLog<H> {
             .map_err(|error| format!("encode agent event: {error}"))?
             .into_iter()
             .unzip();
-        if let Some(publish) = publish {
-            self.stage_deferred(&entries, live, publish)
-                .await
-                .map_err(|error| error.to_string())?;
-            return Ok(Vec::new());
-        }
         let logged = self
             .stage(&entries)
             .await
@@ -2994,37 +2821,11 @@ impl<H: Sql + Send + Sync + ?Sized + 'static> EventLog for SessionLog<H> {
         &'a self,
         recording: Recording<'a>,
     ) -> HostFuture<'a, Result<Vec<LoggedEvent>, String>> {
-        Box::pin(self.recorded(recording, None))
-    }
-
-    fn record_deferred<'a>(
-        &'a self,
-        recording: Recording<'a>,
-        publish: Publish,
-    ) -> HostFuture<'a, Result<(), String>> {
-        Box::pin(async move { self.recorded(recording, Some(publish)).await.map(drop) })
+        Box::pin(self.recorded(recording))
     }
 
     fn flush(&self) -> Logged<'_, ()> {
         Box::pin(Self::flush(self))
-    }
-
-    fn tick(&self) -> Option<Duration> {
-        self.tick.filter(|_| self.host.defers())
-    }
-}
-
-impl<H: Sql + Send + Sync + ?Sized + 'static> Prepare for SessionLog<H> {
-    fn prepare<'a>(&'a self, _ledger: &'a dyn Sql) -> StoreFuture<'a, Result<(), StoreError>> {
-        Box::pin(async move {
-            let Some(mut writer) = self.writer.try_acquire() else {
-                return Ok(());
-            };
-            if !writer.ready || writer.stale {
-                return Ok(());
-            }
-            self.flush_locked(&mut writer, true).await
-        })
     }
 }
 

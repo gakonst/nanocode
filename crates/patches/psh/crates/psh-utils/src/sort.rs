@@ -564,6 +564,44 @@ fn cmp_text(a: &[u8], b: &[u8], o: &Order) -> Ordering {
         .cmp(b.iter().filter(|c| keep(c)).map(map))
 }
 
+struct Num {
+    rank: u128,
+    prefix: u64,
+    line: usize,
+    exact: bool,
+}
+
+impl Num {
+    fn new(line: usize, text: &[u8], k: &Key, tab: Option<u8>) -> Num {
+        let (sign, int, frac) = numeric_parts(key_slice(text, k, tab));
+        let exact = int.len() <= 18 && frac.len() <= 18;
+        let mut rank = 1u128 << 120;
+        if exact && sign != 0 {
+            let int = int
+                .iter()
+                .fold(0u128, |v, &d| v * 10 + u128::from(d - b'0'));
+            let frac = (0..18).fold(0u128, |v, j| {
+                v * 10 + frac.get(j).map_or(0, |&d| u128::from(d - b'0'))
+            });
+            let m = int << 60 | frac;
+            rank = if sign > 0 {
+                (2u128 << 120) + m
+            } else {
+                (1u128 << 120) - 1 - m
+            };
+        }
+        let mut prefix = [0u8; 8];
+        let n = text.len().min(8);
+        prefix[..n].copy_from_slice(&text[..n]);
+        Num {
+            rank,
+            prefix: u64::from_be_bytes(prefix),
+            line,
+            exact,
+        }
+    }
+}
+
 struct Sorter {
     keys: Vec<Key>,
     tab: Option<u8>,
@@ -598,7 +636,13 @@ impl Sorter {
         }
     }
 
-    fn cmp_keyed(&self, ka: &[(&[u8], Parts<'_>)], kb: &[(&[u8], Parts<'_>)], a: &[u8], b: &[u8]) -> Ordering {
+    fn cmp_keyed(
+        &self,
+        ka: &[(&[u8], Parts<'_>)],
+        kb: &[(&[u8], Parts<'_>)],
+        a: &[u8],
+        b: &[u8],
+    ) -> Ordering {
         for ((k, x), y) in self.keys.iter().zip(ka).zip(kb) {
             let r = match k.order.kind {
                 Kind::Numeric if k.order.reverse => cmp_parts(x.1, y.1).reverse(),
@@ -613,6 +657,25 @@ impl Sorter {
             return Ordering::Equal;
         }
         if self.reverse { b.cmp(a) } else { a.cmp(b) }
+    }
+
+    fn cmp_num(&self, k: &Key, a: &Num, b: &Num, lines: &[&[u8]]) -> Ordering {
+        let r = if a.exact && b.exact {
+            a.rank.cmp(&b.rank)
+        } else {
+            cmp_parts(
+                numeric_parts(key_slice(lines[a.line], k, self.tab)),
+                numeric_parts(key_slice(lines[b.line], k, self.tab)),
+            )
+        };
+        let r = if k.order.reverse { r.reverse() } else { r };
+        if r != Ordering::Equal || !self.last_resort {
+            return r;
+        }
+        let (x, y) = if self.reverse { (b, a) } else { (a, b) };
+        x.prefix
+            .cmp(&y.prefix)
+            .then_with(|| lines[x.line].cmp(lines[y.line]))
     }
 
     fn cmp_key(&self, k: &Key, ka: &[u8], kb: &[u8]) -> Ordering {
@@ -821,15 +884,37 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         lines.sort_by(|a, b| sorter.cmp(a, b));
     } else {
         let n = sorter.keys.len();
-        let keyed: Vec<(&[u8], Parts<'_>)> = lines
-            .iter()
-            .flat_map(|l| sorter.keys.iter().map(|k| sorter.keyed(l, k)))
-            .collect();
-        let mut order: Vec<usize> = (0..lines.len()).collect();
-        order.sort_by(|&a, &b| {
-            sorter.cmp_keyed(&keyed[a * n..][..n], &keyed[b * n..][..n], lines[a], lines[b])
-        });
-        lines = order.into_iter().map(|i| lines[i]).collect();
+        if let [k] = &sorter.keys[..]
+            && matches!(k.order.kind, Kind::Numeric)
+        {
+            let mut recs: Vec<Num> = lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| Num::new(i, l, k, sorter.tab))
+                .collect();
+            let cmp = |a: &Num, b: &Num| sorter.cmp_num(k, a, b, &lines);
+            if sorter.last_resort {
+                recs.sort_unstable_by(cmp);
+            } else {
+                recs.sort_by(cmp);
+            }
+            lines = recs.into_iter().map(|r| lines[r.line]).collect();
+        } else {
+            let keyed: Vec<(&[u8], Parts<'_>)> = lines
+                .iter()
+                .flat_map(|l| sorter.keys.iter().map(|k| sorter.keyed(l, k)))
+                .collect();
+            let mut order: Vec<usize> = (0..lines.len()).collect();
+            order.sort_by(|&a, &b| {
+                sorter.cmp_keyed(
+                    &keyed[a * n..][..n],
+                    &keyed[b * n..][..n],
+                    lines[a],
+                    lines[b],
+                )
+            });
+            lines = order.into_iter().map(|i| lines[i]).collect();
+        }
     }
     ctx.check().await;
     if unique {

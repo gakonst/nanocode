@@ -11,7 +11,7 @@ pub use foreground::{ForegroundOutput, run_bash};
 #[cfg(unix)]
 mod handover;
 #[cfg(unix)]
-pub use handover::{TERMINATED, hand_over, read_outputs_if_requested};
+pub use handover::{TERMINATED, hand_over, leave_reader, read_outputs_if_requested};
 #[cfg(unix)]
 mod marked;
 #[cfg(unix)]

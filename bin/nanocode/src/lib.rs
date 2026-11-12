@@ -733,8 +733,15 @@ async fn hand(args: HandArgs) -> Result<()> {
     });
     tokio::pin!(run);
     tokio::select! {
-        result = &mut run => result?,
-        signal = tokio::signal::ctrl_c() => signal?,
+        result = &mut run => {
+            let left = leave_reader();
+            result?;
+            left?;
+        }
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            leave_reader()?;
+        }
         signal = terminated() => {
             signal?;
             eprintln!("hand: stopped; what its commands left running is read until it ends");
@@ -758,14 +765,32 @@ async fn terminated() -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn hand_over() -> std::io::Result<()> {
+fn reader() -> std::io::Result<std::process::Command> {
     let (program, arguments) = nanocode_psh::program()?;
     let mut command = std::process::Command::new(program);
     command.args(arguments);
-    std::process::exit(nanocode_process::hand_over(command)?.into())
+    Ok(command)
+}
+
+#[cfg(unix)]
+fn hand_over() -> std::io::Result<()> {
+    std::process::exit(nanocode_process::hand_over(reader()?)?.into())
 }
 
 #[cfg(not(unix))]
 const fn hand_over() -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn leave_reader() -> std::io::Result<()> {
+    if nanocode_process::leave_reader(reader()?)? {
+        eprintln!("hand: ended; what its commands left running is read by a process of its own until it ends");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+const fn leave_reader() -> std::io::Result<()> {
     Ok(())
 }

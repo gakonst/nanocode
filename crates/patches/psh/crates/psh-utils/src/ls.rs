@@ -934,6 +934,20 @@ fn long_format(ctx: &UtilCtx<'_>, out: &mut Out, entries: &[Entry], o: &Opts, no
         size: String,
         time: Vec<u8>,
     }
+    let mut names: Vec<(bool, u32, Vec<u8>)> = Vec::new();
+    let mut name = |group: bool, id: u32| {
+        if let Some((_, _, n)) = names.iter().find(|(g, i, _)| *g == group && *i == id) {
+            return n.clone();
+        }
+        let n = if group {
+            ctx.group_name(id)
+        } else {
+            ctx.user_name(id)
+        }
+        .unwrap_or_else(|| id.to_string().into_bytes());
+        names.push((group, id, n.clone()));
+        n
+    };
     let rows: Vec<Option<Row>> = entries
         .iter()
         .map(|e| {
@@ -941,14 +955,12 @@ fn long_format(ctx: &UtilCtx<'_>, out: &mut Out, entries: &[Entry], o: &Opts, no
             let owner = if o.numeric {
                 m.uid.to_string().into_bytes()
             } else {
-                ctx.user_name(m.uid)
-                    .unwrap_or_else(|| m.uid.to_string().into_bytes())
+                name(false, m.uid)
             };
             let group = if o.numeric {
                 m.gid.to_string().into_bytes()
             } else {
-                ctx.group_name(m.gid)
-                    .unwrap_or_else(|| m.gid.to_string().into_bytes())
+                name(true, m.gid)
             };
             let size = if matches!(m.kind, FileKind::CharDevice | FileKind::BlockDevice) {
                 let (major, minor) = dev_parts(x.rdev);

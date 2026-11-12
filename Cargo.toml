@@ -37,6 +37,7 @@ members = [
     "crates/core/shell",
     "crates/core/tool-provider",
     "crates/core/image",
+    "crates/core/png",
     "crates/core/audio",
     "crates/core/tls",
     "crates/core/websocket",
@@ -183,6 +184,7 @@ url = "2.5.7"
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 nanocode-digest = { version = "0.7.0", path = "crates/core/digest" }
 nanocode-compression = { version = "0.7.0", path = "crates/core/compression" }
+nanocode-png = { version = "0.7.0", path = "crates/core/png" }
 ruff_python_ast = { package = "rustpython-ruff_python_ast", version = "=0.16.5" }
 ruff_python_parser = { package = "rustpython-ruff_python_parser", version = "=0.16.5" }
 rustpython-pylib = { version = "=0.6.0", features = ["freeze-stdlib"] }

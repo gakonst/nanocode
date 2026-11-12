@@ -1,0 +1,22 @@
+[package]
+name = "nanocode-png"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PNG decoding and encoding for prompt images"
+autotests = false
+autobenches = false
+
+[dependencies]
+nanocode-compression.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

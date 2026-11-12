@@ -2047,6 +2047,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-png"
+version = "0.7.0"
+dependencies = [
+ "nanocode-compression",
+]
+
+[[package]]
 name = "nanocode-process"
 version = "0.7.0"
 dependencies = [

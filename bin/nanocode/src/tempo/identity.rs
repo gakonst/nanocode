@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use nanocode_sync::{Atom, SingleFlight, Slot};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Request, Response, StatusCode, Url};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
@@ -20,6 +24,26 @@ const CODE_ATTEMPTS: u32 = 3;
 const CLOCK_TOLERANCE: i64 = 60;
 const REFRESH_MARGIN: i64 = 300;
 const MAX_LENGTH: usize = 8_192;
+const PASSES_DIRECTORY: &str = "mpp-passes";
+const PASS_EXTENSION: &str = "json";
+const TEMPORARY_EXTENSION: &str = "tmp";
+const PRIVATE_FILE_MODE: u32 = 0o600;
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+const UNASKED: &str = "nanocode exec asks for the code only on a terminal and with --identity-email: run nanocode and answer with /pass, run exec in a terminal with --identity-email <address>, or give --identity-attestation <pass>";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asker {
+    Pass,
+    Stdin,
+    Nobody,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    token: String,
+    received: i64,
+    email: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Requirement {
@@ -63,7 +87,7 @@ impl Held {
         REFRESH_MARGIN.min((self.claims.expires - self.received) / 2)
     }
 
-    fn usable(&self, now: i64, paid: bool) -> bool {
+    pub(crate) fn usable(&self, now: i64, paid: bool) -> bool {
         self.claims.expires > now - CLOCK_TOLERANCE
             && (paid || self.claims.expires - now > self.margin())
     }
@@ -102,6 +126,8 @@ pub(crate) struct Identity {
     answers: UnboundedSender<Answer>,
     inbox: Slot<UnboundedReceiver<Answer>>,
     payments: Payments,
+    asker: Asker,
+    passes: Option<PathBuf>,
 }
 
 struct Lent<'a> {
@@ -123,6 +149,7 @@ impl Identity {
         issuers: &[String],
         email: Option<String>,
         attestations: &[String],
+        asker: Asker,
     ) -> Result<Self, String> {
         let issuers = match issuers.is_empty() {
             true => vec![DEFAULT_ISSUER.to_owned()],
@@ -136,7 +163,15 @@ impl Identity {
                 "identity issuer {issuer} must be an https URL (http only on localhost)"
             ));
         }
-        let mut held = BTreeMap::new();
+        let email = email.filter(|email| !email.trim().is_empty());
+        let passes = passes_directory();
+        let mut held: BTreeMap<String, Held> = passes
+            .as_deref()
+            .map(|directory| load(directory, &issuers, email.as_deref(), now_seconds()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| (entry.claims.key(), entry))
+            .collect();
         for token in attestations.iter().flat_map(|value| tokens(value)) {
             let entry = Held::decode(&token, None)?;
             held.insert(entry.claims.key(), entry);
@@ -144,12 +179,14 @@ impl Identity {
         let (answers, inbox) = mpsc::unbounded_channel();
         Ok(Self {
             issuers,
-            email: Atom::new(email.filter(|email| !email.trim().is_empty())),
+            email: Atom::new(email),
             held: Atom::new(held),
             flight: SingleFlight::default(),
             answers,
             inbox: Slot::new(Some(inbox)),
             payments,
+            asker,
+            passes,
         })
     }
 
@@ -294,6 +331,7 @@ impl Identity {
                         held.remove(key);
                     }
                 });
+                self.forget(key, &entry.token).await;
                 Some(entry.token)
             }
             _ => None,
@@ -301,7 +339,12 @@ impl Identity {
         loop {
             let (ran, outcome) = self
                 .flight
-                .run(|| async { (key.to_owned(), self.acquire(key, issuer, audience).await) })
+                .run(|| async {
+                    let outcome = self
+                        .acquire(key, issuer, audience, rejected.as_deref())
+                        .await;
+                    (key.to_owned(), outcome)
+                })
                 .await;
             if let Some(entry) = self
                 .held(key)
@@ -319,7 +362,18 @@ impl Identity {
         self.held.read(|held| held.get(key).cloned())
     }
 
-    async fn acquire(&self, key: &str, issuer: &str, audience: &str) -> Result<(), String> {
+    async fn acquire(
+        &self,
+        key: &str,
+        issuer: &str,
+        audience: &str,
+        rejected: Option<&str>,
+    ) -> Result<(), String> {
+        if let Some(entry) = self.recall(key, rejected).await {
+            self.held
+                .update(|held| held.insert(key.to_owned(), entry.clone()));
+            return Ok(());
+        }
         let mut lent = Lent {
             inbox: self.inbox.take(),
             slot: &self.inbox,
@@ -329,9 +383,10 @@ impl Identity {
             .as_mut()
             .ok_or("another email pass is being asked for")?;
         while inbox.try_recv().is_ok() {}
-        let email = match self.email.read(Clone::clone) {
-            Some(email) => email,
-            None => {
+        let email = match (self.email.read(Clone::clone), self.asker) {
+            (_, Asker::Nobody) | (None, Asker::Stdin) => return Err(UNASKED.to_owned()),
+            (Some(email), Asker::Pass | Asker::Stdin) => email,
+            (None, Asker::Pass) => {
                 self.notice(format!(
                     "{audience} asks for an email pass from {issuer}: /pass <email> to get a code, or /pass alone to decline"
                 ));
@@ -361,9 +416,14 @@ impl Identity {
             .to_owned();
         let mut failure = String::new();
         for attempt in 1..=CODE_ATTEMPTS {
-            self.notice(format!(
-                "{issuer} sent a code to {email} for {audience}: /pass <code> (attempt {attempt} of {CODE_ATTEMPTS}), or /pass alone to decline{failure}"
-            ));
+            self.notice(match self.asker {
+                Asker::Stdin => format!(
+                    "{issuer} sent a code to {email} for {audience}: type it and press Enter (attempt {attempt} of {CODE_ATTEMPTS}), or an empty line to decline{failure}"
+                ),
+                Asker::Pass | Asker::Nobody => format!(
+                    "{issuer} sent a code to {email} for {audience}: /pass <code> (attempt {attempt} of {CODE_ATTEMPTS}), or /pass alone to decline{failure}"
+                ),
+            });
             let code = loop {
                 match inbox.recv().await {
                     Some(Answer::Code(code)) => break code,
@@ -398,12 +458,162 @@ impl Identity {
             }
             self.held
                 .update(|held| held.insert(key.to_owned(), entry.clone()));
-            self.notice(format!("email pass for {audience} verified"));
+            match self.remember(key, &entry, &email).await {
+                Ok(()) => self.notice(format!("email pass for {audience} verified")),
+                Err(error) => self.notice(format!(
+                    "email pass for {audience} verified, kept for this session only: {error}"
+                )),
+            }
             return Ok(());
         }
         Err(format!(
             "the code was rejected {CODE_ATTEMPTS} times{failure}"
         ))
+    }
+
+    async fn recall(&self, key: &str, rejected: Option<&str>) -> Option<Held> {
+        let directory = self.passes.clone()?;
+        let (issuers, email) = (self.issuers.clone(), self.email.read(Clone::clone));
+        let path = pass_path(&directory, key);
+        let entry = tokio::task::spawn_blocking(move || read_pass(&path))
+            .await
+            .ok()?
+            .ok()?;
+        let (entry, owner) = entry;
+        let fresh = entry.usable(now_seconds(), false) && Some(entry.token.as_str()) != rejected;
+        (fresh && admitted(&entry, &owner, &issuers, email.as_deref())).then_some(entry)
+    }
+
+    async fn remember(&self, key: &str, entry: &Held, email: &str) -> Result<(), String> {
+        let Some(directory) = self.passes.clone() else {
+            return Err("nanocode found no home directory to keep it in".to_owned());
+        };
+        let (key, entry, email) = (key.to_owned(), entry.clone(), email.to_owned());
+        tokio::task::spawn_blocking(move || save(&directory, &key, &entry, &email))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
+    }
+
+    async fn forget(&self, key: &str, token: &str) {
+        let Some(directory) = self.passes.clone() else {
+            return;
+        };
+        let (key, token) = (key.to_owned(), token.to_owned());
+        let forgotten = tokio::task::spawn_blocking(move || forget(&directory, &key, &token)).await;
+        if let Ok(Err(error)) = forgotten {
+            tracing::warn!(target: "nanocode", error = %error, "a refused email pass stays on disk");
+        }
+    }
+}
+
+fn passes_directory() -> Option<PathBuf> {
+    super::store::default_channel_database_path()
+        .ok()
+        .map(|path| path.with_file_name(PASSES_DIRECTORY))
+}
+
+pub(crate) fn pass_path(directory: &Path, key: &str) -> PathBuf {
+    let name: String = key
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    directory.join(format!("{name}.{PASS_EXTENSION}"))
+}
+
+fn admitted(entry: &Held, owner: &str, issuers: &[String], email: Option<&str>) -> bool {
+    entry.claims.kind == EMAIL
+        && issuers.contains(&entry.claims.issuer)
+        && email.is_none_or(|email| email == owner)
+}
+
+fn read_pass(path: &Path) -> Result<(Held, String), String> {
+    let bytes = fs::read(path).map_err(|error| error.kind().to_string())?;
+    let stored: Stored =
+        serde_json::from_slice(&bytes).map_err(|_| "the stored email pass is malformed")?;
+    let entry = Held::decode(&stored.token, Some(stored.received))?;
+    let directory = path
+        .parent()
+        .ok_or("the stored email pass has no directory")?;
+    if pass_path(directory, &entry.claims.key()) != path {
+        return Err("the stored email pass names another audience or issuer".to_owned());
+    }
+    Ok((entry, stored.email))
+}
+
+pub(crate) fn load(
+    directory: &Path,
+    issuers: &[String],
+    email: Option<&str>,
+    now: i64,
+) -> Vec<Held> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut held = Vec::new();
+    for path in entries.filter_map(|entry| Some(entry.ok()?.path())) {
+        if path
+            .extension()
+            .is_none_or(|extension| extension != PASS_EXTENSION)
+        {
+            continue;
+        }
+        let (entry, owner) = match read_pass(&path) {
+            Ok(read) => read,
+            Err(error) => {
+                tracing::warn!(target: "nanocode", path = %path.display(), error = %error, "skipped a stored email pass");
+                continue;
+            }
+        };
+        if !entry.usable(now, true) {
+            if let Err(error) = fs::remove_file(&path) {
+                tracing::warn!(target: "nanocode", path = %path.display(), error = %error, "an expired email pass stays on disk");
+            }
+            continue;
+        }
+        if admitted(&entry, &owner, issuers, email) {
+            held.push(entry);
+        }
+    }
+    held
+}
+
+pub(crate) fn save(directory: &Path, key: &str, entry: &Held, email: &str) -> std::io::Result<()> {
+    assert_eq!(entry.claims.key(), key);
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(PRIVATE_DIRECTORY_MODE);
+    }
+    builder.create(directory)?;
+    let bytes = serde_json::to_vec(&Stored {
+        token: entry.token.clone(),
+        received: entry.received,
+        email: email.to_owned(),
+    })?;
+    let path = pass_path(directory, key);
+    let temporary = path.with_extension(format!("{}.{TEMPORARY_EXTENSION}", std::process::id()));
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(PRIVATE_FILE_MODE);
+    }
+    let mut file = options.open(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&temporary, &path)
+}
+
+pub(crate) fn forget(directory: &Path, key: &str, token: &str) -> std::io::Result<()> {
+    let path = pass_path(directory, key);
+    match read_pass(&path) {
+        Ok((entry, _)) if entry.token == token => fs::remove_file(&path),
+        _ => Ok(()),
     }
 }
 

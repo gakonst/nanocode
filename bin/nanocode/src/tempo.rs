@@ -40,7 +40,7 @@ use self::{
     error::Fault,
     events::{Deposit, Events},
     flow::{DEFAULT_MAX_PAYMENT_RETRIES, Exchange, FlowError, Policy},
-    identity::{Identity, Proved},
+    identity::{Asker, Identity, Proved},
     mcp::McpPayment,
     payer::Payer,
     protocol::{Challenge, Credential, INTENT_CHARGE, INTENT_SESSION, METHOD_NAME, Receipt},
@@ -1745,6 +1745,21 @@ fn session_slot(origin: &str, named: Option<&str>) -> Result<String> {
     Err(format!("{SESSION_SLOTS} agents already pay this endpoint from this wallet").into())
 }
 
+fn asker(args: &GatewayArgs, exec: bool) -> Asker {
+    use std::io::IsTerminal;
+    let email = args
+        .identity_email
+        .as_deref()
+        .is_some_and(|email| !email.trim().is_empty());
+    match exec {
+        false => Asker::Pass,
+        true if email && std::io::stdin().is_terminal() && std::io::stderr().is_terminal() => {
+            Asker::Stdin
+        }
+        true => Asker::Nobody,
+    }
+}
+
 fn tool_deposit(args: &GatewayArgs) -> u128 {
     args.tempo_tool_deposit.unwrap_or(MACH / 10)
 }
@@ -1796,6 +1811,7 @@ fn shell(
 pub(crate) fn apply(
     clients: ModelClients,
     args: &GatewayArgs,
+    exec: bool,
 ) -> Result<(ModelClients, Option<Closing>)> {
     let models = !clients.supplies_openai();
     if clients.reports_spend() || !models && args.no_tempo_tools {
@@ -1817,6 +1833,7 @@ pub(crate) fn apply(
         &args.identity_issuer,
         args.identity_email.clone(),
         &args.identity_attestation,
+        asker(args, exec),
     )?);
     let mut clients = clients;
     if models {

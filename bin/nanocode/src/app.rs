@@ -2049,6 +2049,17 @@ impl App {
                 _ => {}
             }
         }
+        if key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.composer.text().starts_with('/')
+            && !self.composer.text().contains([' ', '\n'])
+            && let Some(command) = crate::commands::complete(
+                self.composer.text(),
+                self.host.config.clients.panel_command(),
+            )
+        {
+            self.composer.set_text(command);
+        }
         match key.code {
             KeyCode::Char('c')
                 if control && self.panes.side_active() && self.composer.is_empty() =>

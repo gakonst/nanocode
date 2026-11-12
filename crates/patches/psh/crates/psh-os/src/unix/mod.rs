@@ -576,6 +576,11 @@ impl Host for UnixHost {
         crate::spawn_helper(&name, None, body)
     }
 
+    fn inherits(&self, file: &dyn HostFile) -> bool {
+        let any: &dyn std::any::Any = file;
+        any.is::<UnixFile>()
+    }
+
     fn pipe(&self) -> io::Result<(Rc<dyn HostFile>, Rc<dyn HostFile>)> {
         let (r, w) = pipe()?;
         Ok((Rc::new(UnixFile::new(r)), Rc::new(UnixFile::new(w))))

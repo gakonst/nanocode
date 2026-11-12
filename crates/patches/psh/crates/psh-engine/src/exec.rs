@@ -1894,9 +1894,20 @@ pub(crate) async fn run_external_with(
         let theirs: Fd = Rc::new(FdObj::File(theirs));
         match &*ours {
             FdObj::PipeRead(_) => inputs.push(Pump::new(ours.clone(), theirs)),
+            FdObj::File(_) if n == 0 => inputs.push(Pump::new(ours.clone(), theirs)),
             _ => outputs.push(Pump::new(theirs, ours.clone())),
         }
     }
+    // A pipe that held bytes when the external got its OS read end: they go into the
+    // OS pipe while the external runs (pipe.rs).
+    let mut feeds: Vec<crate::pipe::Feed> = vp
+        .fds
+        .iter()
+        .filter_map(|(_, fd)| match &**fd {
+            FdObj::PipeRead(r) => r.feed(),
+            _ => None,
+        })
+        .collect();
     // The vproc's last act: the external has its descriptors now (bash execs it), so
     // the vproc lets go of them; a pipe the external closes is closed (D1902).
     if std::mem::take(&mut vp.exec_now) {
@@ -1909,6 +1920,7 @@ pub(crate) async fn run_external_with(
                 let _ = p.poll(cx);
             }
             inputs.retain(|p| !p.is_done());
+            feeds.retain(|f| f.poll(cx).is_pending());
         }
         for p in &mut outputs {
             let _ = p.poll(cx);
@@ -1921,6 +1933,7 @@ pub(crate) async fn run_external_with(
             // The process is gone: its input pipes close, and a vproc writing to
             // them gets EPIPE instead of waiting forever.
             inputs.clear();
+            feeds.clear();
         }
         match status {
             // Output is complete only at EOF of its pipes (pitfall 7).
@@ -1968,10 +1981,13 @@ async fn spawn_program(
     let mut seen: Vec<(u32, &Fd)> = Vec::new();
     for (n, fd) in vp.fds.iter() {
         let child = match &**fd {
-            FdObj::File(f) => ChildFd::File(f.clone()),
+            FdObj::File(f) if vp.host().inherits(&**f) => ChildFd::File(f.clone()),
             _ if let Some((m, _)) = seen.iter().find(|(_, o)| Rc::ptr_eq(o, fd)) => {
                 ChildFd::Dup(*m)
             }
+            // Not a file the host can give to a program: a pump (written, or read as
+            // descriptor 0).
+            FdObj::File(_) => ChildFd::Pipe { input: n == 0 },
             // An OS pipe passed as it is when possible (D1068), else a pump.
             FdObj::PipeRead(r) => match r.os_end(vp.host()) {
                 Some(f) => ChildFd::File(f),

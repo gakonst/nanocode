@@ -2,9 +2,9 @@
 //! [-t timeout] [-u fd] [name ...]`: one line (or up to a delimiter, or a number of
 //! characters) from a descriptor, split by `IFS` into variables.
 //!
-//! Reads ahead from engine pipes and seekable files and gives back what follows the
-//! delimiter, one byte at a time from anything else, so the bytes after the delimiter
-//! stay in the descriptor for the next reader (bash does the same).
+//! Reads ahead from engine pipes that are not OS pipes and from seekable files and gives
+//! back what follows the delimiter, one byte at a time from anything else, so the bytes
+//! after the delimiter stay in the descriptor for the next reader (bash does the same).
 
 use std::future::poll_fn;
 use std::task::Poll;
@@ -507,7 +507,10 @@ struct Input {
 impl Input {
     fn chunk(&mut self) -> usize {
         let ahead = *self.ahead.get_or_insert_with(|| match &*self.fd {
-            crate::fd::FdObj::PipeRead(_) => true,
+            // An OS pipe is read a byte at a time, as bash reads any pipe: what a
+            // read-ahead gave back would sit in front of what an external reading
+            // the OS end takes next.
+            crate::fd::FdObj::PipeRead(r) => !r.is_os(),
             crate::fd::FdObj::File(f) => {
                 matches!(f.seek(std::io::SeekFrom::Current(0)), Some(Ok(_)))
             }
@@ -560,7 +563,12 @@ impl Input {
         let fd = &self.fd;
         let timer = &mut self.timer;
         let got = poll_fn(|cx| {
-            if let Poll::Ready(r) = fd.poll_read(cx, buf) {
+            // The pipe may have become an OS pipe while this read waited.
+            let n = match &**fd {
+                crate::fd::FdObj::PipeRead(r) if r.is_os() => 1,
+                _ => buf.len(),
+            };
+            if let Poll::Ready(r) = fd.poll_read(cx, &mut buf[..n]) {
                 return Poll::Ready(Some(r));
             }
             if let Some(t) = timer

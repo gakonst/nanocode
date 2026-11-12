@@ -793,11 +793,12 @@ struct TPipeInner {
     buf: VecDeque<u8>,
     reader: bool,
     writer: bool,
-    waker: Option<Waker>,
-    wwaker: Option<Waker>,
+    wakers: Vec<Waker>,
+    wwakers: Vec<Waker>,
 }
 
-/// One end of a pipe between the engine and a fake process.
+/// One end of a pipe between the engine and a fake process, or of an OS pipe of the
+/// host (`set_os_pipes`), which several holders poll.
 struct TPipe {
     inner: Rc<RefCell<TPipeInner>>,
     read_end: bool,
@@ -810,12 +811,12 @@ impl Drop for TPipe {
         let mut p = self.inner.borrow_mut();
         if self.read_end {
             p.reader = false;
-            if let Some(w) = p.wwaker.take() {
+            for w in p.wwakers.drain(..) {
                 w.wake();
             }
         } else {
             p.writer = false;
-            if let Some(w) = p.waker.take() {
+            for w in p.wakers.drain(..) {
                 w.wake();
             }
         }
@@ -843,7 +844,7 @@ impl HostFile for TPipe {
             for (i, b) in p.buf.drain(..n).enumerate() {
                 buf[i] = b;
             }
-            if let Some(w) = p.wwaker.take() {
+            for w in p.wwakers.drain(..) {
                 w.wake();
             }
             return Poll::Ready(Ok(n));
@@ -851,7 +852,7 @@ impl HostFile for TPipe {
         if !p.writer {
             return Poll::Ready(Ok(0));
         }
-        p.waker = Some(cx.waker().clone());
+        p.wakers.push(cx.waker().clone());
         Poll::Pending
     }
 
@@ -869,12 +870,12 @@ impl HostFile for TPipe {
         // A small buffer, so that back pressure is exercised.
         let space = 4096usize.saturating_sub(p.buf.len());
         if space == 0 {
-            p.wwaker = Some(cx.waker().clone());
+            p.wwakers.push(cx.waker().clone());
             return Poll::Pending;
         }
         let n = space.min(buf.len());
         p.buf.extend(&buf[..n]);
-        if let Some(w) = p.waker.take() {
+        for w in p.wakers.drain(..) {
             w.wake();
         }
         Poll::Ready(Ok(n))
@@ -965,6 +966,8 @@ pub struct TestHost {
     /// What `path_entries` splits on (`;` plays a Windows host).
     path_sep: Cell<u8>,
     strips_crlf: Cell<bool>,
+    os_pipes: Cell<bool>,
+    gives_stdio: Cell<bool>,
     counters: Rc<Counters>,
     stdin: Rc<RefCell<Vec<u8>>>,
     stdout: Rc<RefCell<Vec<u8>>>,
@@ -989,6 +992,8 @@ impl TestHost {
             latency: Cell::new(false),
             path_sep: Cell::new(b':'),
             strips_crlf: Cell::new(false),
+            os_pipes: Cell::new(false),
+            gives_stdio: Cell::new(true),
             counters: Rc::new(Counters::default()),
             stdin: Rc::new(RefCell::new(Vec::new())),
             stdout: Rc::new(RefCell::new(Vec::new())),
@@ -1011,6 +1016,18 @@ impl TestHost {
     /// Act as a Windows host for line ends (`Host::strips_crlf`).
     pub fn set_strips_crlf(&self, on: bool) {
         self.strips_crlf.set(on);
+    }
+
+    /// Have OS pipes (`Host::pipe`), as a host with a machine under it does: an
+    /// external started on a pipe gets the pipe itself.
+    pub fn set_os_pipes(&self, on: bool) {
+        self.os_pipes.set(on);
+    }
+
+    /// Off: the shell's stdio and the files of the memory fs are not the host's to give
+    /// to a program (`Host::inherits`), as an embedder's sinks are not.
+    pub fn set_gives_stdio(&self, on: bool) {
+        self.gives_stdio.set(on);
     }
 
     pub fn set_stdin(&self, data: &[u8]) {
@@ -1087,8 +1104,8 @@ impl TestHost {
             buf: VecDeque::new(),
             reader: true,
             writer: true,
-            waker: None,
-            wwaker: None,
+            wakers: Vec::new(),
+            wwakers: Vec::new(),
         }));
         let mk = |read_end| TPipe {
             inner: inner.clone(),
@@ -1227,6 +1244,19 @@ impl Host for TestHost {
         delayed(self.latency.get(), found)
     }
 
+    fn inherits(&self, file: &dyn HostFile) -> bool {
+        let any: &dyn std::any::Any = file;
+        self.gives_stdio.get() || !any.is::<MemFile>()
+    }
+
+    fn pipe(&self) -> io::Result<(Rc<dyn HostFile>, Rc<dyn HostFile>)> {
+        if !self.os_pipes.get() {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let (r, w) = self.pipe_pair();
+        Ok((Rc::new(r), Rc::new(w)))
+    }
+
     fn spawn(&self, spec: SpawnSpec) -> io::Result<Spawned> {
         // A file of the in-memory fs is a script for the shell to run (D1300).
         if let Ok(p) = std::str::from_utf8(&spec.program)
@@ -1249,6 +1279,9 @@ impl Host for TestHost {
         let mut given: Vec<(u32, Rc<dyn HostFile>)> = Vec::new();
         for (n, fd) in spec.fds {
             let theirs: Rc<dyn HostFile> = match fd {
+                ChildFd::File(f) if !self.inherits(&*f) => {
+                    return Err(io::Error::other("not a file of this host"));
+                }
                 ChildFd::File(f) => f,
                 ChildFd::Dup(m) => given
                     .iter()

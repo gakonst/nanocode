@@ -951,3 +951,100 @@ fn prefix_assignments_and_temp_unset() {
         "[a] []\nbad\n",
     );
 }
+
+/// A host with OS pipes: an external gets the pipe itself, as a child of bash does.
+#[track_caller]
+fn check_os(src: &str, stdout: &str) {
+    let o = run_setup(src, |h| h.set_os_pipes(true));
+    assert_eq!(o.stdout, stdout, "stdout of {src:?} (stderr: {})", o.stderr);
+}
+
+#[test]
+fn an_external_in_a_loop_leaves_the_loops_input() {
+    // The body's program does not read: every line is still the loop's.
+    check_os(
+        r"printf '1\n2\n3\n' | while read x; do /bin/true; echo got $x; done",
+        "got 1\ngot 2\ngot 3\n",
+    );
+    check_os(
+        r"printf '1\n2\n3\n' | while read x; do argv a; /bin/true; argv b; done",
+        "[a]\n[b]\n[a]\n[b]\n[a]\n[b]\n",
+    );
+    // An external writes the lines.
+    check_os(
+        r"printf 'a\nb\n' > f; cat f | while IFS= read -r x; do /bin/true; echo got $x; done",
+        "got a\ngot b\n",
+    );
+    // until and for, a here-document, a here-string and a redirected file.
+    check_os(
+        r"printf '1\n2\n' | until ! read x; do /bin/true; echo $x; done",
+        "1\n2\n",
+    );
+    check_os(
+        r"printf '1\n2\n' | for i in a b; do read x; /bin/true; echo $i$x; done",
+        "a1\nb2\n",
+    );
+    check_os(
+        "while read x; do /bin/true; echo $x; done <<EOF\na\nb\nEOF",
+        "a\nb\n",
+    );
+    check_os(
+        r"while read x; do /bin/true; echo $x; done <<< $'a\nb'",
+        "a\nb\n",
+    );
+    check_os(
+        r"printf 'a b\nc d\n' > f; while IFS=' ' read -r x y; do /bin/true; echo $y $x; done < f",
+        "b a\nd c\n",
+    );
+    // Nested loops, each with its own input.
+    check_os(
+        r"printf 'x\ny\n' | while read a; do /bin/true; printf '1\n2\n' | while read b; do /bin/true; echo $a$b; done; done",
+        "x1\nx2\ny1\ny2\n",
+    );
+}
+
+#[test]
+fn an_external_that_reads_takes_the_loops_input() {
+    // As in bash: what the body's program reads is gone for the loop.
+    check_os(
+        r"printf '1\n2\n3\n' | while read x; do head -n 1; echo got $x; done",
+        "2\ngot 1\ngot 3\n",
+    );
+    check_os(
+        r"printf '1\n2\n3\n' | while read x; do cat; echo got $x; done",
+        "2\n3\ngot 1\n",
+    );
+    check_os(
+        r"printf '1\n2\n3\n4\n' | { read a; head -n 1; read b; echo $a $b; cat; }",
+        "2\n1 3\n4\n",
+    );
+    check_os(
+        "while read x; do head -n 1; echo got $x; done <<EOF\na\nb\nc\nEOF",
+        "b\ngot a\ngot c\n",
+    );
+}
+
+#[test]
+fn a_pipe_larger_than_the_os_pipe_reaches_an_external_in_order() {
+    // The test host's OS pipe holds 4096 bytes: the rest follows as the external reads,
+    // and what it leaves is the next reader's.
+    check_os(
+        "i=0; while [ $i -lt 2000 ]; do echo line$i; i=$((i+1)); done > f; all=$(cat f); \
+         { read a; /bin/true; head -n 1; cat | wc -l; } <<< $all; echo $a; \
+         cat f | { read a; /bin/true; n=0; while read x; do n=$((n+1)); done; echo $a $n; }",
+        "line1\n1998\nline0\nline0 1999\n",
+    );
+}
+
+#[test]
+fn a_program_writes_through_a_file_the_host_cannot_give_it() {
+    // The shell's stdout and stderr are an embedder's sinks: the program gets pipes, and
+    // what it writes arrives in order with the shell's own output.
+    let o = run_setup(
+        "echo before; argv a b; cat nofile; echo x | cat; argv c >&2; echo after",
+        |h| h.set_gives_stdio(false),
+    );
+    assert_eq!(o.stdout, "before\n[a]\n[b]\nx\nafter\n", "{}", o.stderr);
+    assert_eq!(o.stderr, "cat: no such file\n[c]\n");
+    assert_eq!(o.status, 0);
+}

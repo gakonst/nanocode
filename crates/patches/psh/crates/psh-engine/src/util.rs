@@ -178,6 +178,16 @@ async fn run_with(
     let env = vp.env(&assigns);
     let name = String::from_utf8_lossy(&argv[0]).into_owned();
     let replay = Rc::new(std::cell::RefCell::new(blocking::Replay::default()));
+    let named_fds = argv[1..]
+        .iter()
+        .filter_map(|a| {
+            let path = match a.iter().position(|&b| b == b'=') {
+                Some(i) if a.starts_with(b"-") => &a[i + 1..],
+                _ => &a[..],
+            };
+            crate::exec::dev_fd(path).filter(|n| *n > 2)
+        })
+        .collect();
     let mut ctx = UtilCtx {
         vp,
         name,
@@ -187,6 +197,7 @@ async fn run_with(
         zone: None,
         tty: None,
         replay: replay.clone(),
+        named_fds,
     };
     // A signal that ends the shell ends the utility, as it ends the wait for an
     // external (D1903). The vproc is the utility's now: watch with what it needs.
@@ -263,6 +274,10 @@ pub struct UtilCtx<'v> {
     tty: Option<bool>,
     /// What a blocking body asked of a host that answers later (`blocking::Replay`).
     replay: Rc<std::cell::RefCell<blocking::Replay>>,
+    /// The shell's descriptors the arguments name (`/dev/fd/N`, alone or after an
+    /// `=`): a process substitution is a pipe of the engine, which a blocking body's
+    /// thread cannot open.
+    named_fds: Vec<u32>,
 }
 
 /// How [`UtilCtx::spawn`] changes the environment of the command it runs.

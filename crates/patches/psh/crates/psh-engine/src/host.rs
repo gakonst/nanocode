@@ -446,6 +446,13 @@ pub trait Host {
     /// Starts an external process. Errors are the reasons it could not start
     /// (`NotFound`, `PermissionDenied`, ...).
     fn spawn(&self, spec: SpawnSpec) -> io::Result<Spawned>;
+    /// Whether a program this host starts can be given `file` as a descriptor
+    /// ([`ChildFd::File`]). A file that is not the host's own (an embedder's sink as
+    /// the shell's stdout) cannot: the engine gives the program a pipe and moves the
+    /// bytes itself.
+    fn inherits(&self, _file: &dyn HostFile) -> bool {
+        true
+    }
     /// A new OS pipe: (read end, write end). Both are files of this host: the engine
     /// may read and write them like any file and pass them to externals as
     /// [`ChildFd::File`]. Hosts without OS pipes keep the default.

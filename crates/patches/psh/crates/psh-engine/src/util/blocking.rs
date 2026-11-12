@@ -61,6 +61,16 @@ impl AsRef<[u8]> for Held {
     }
 }
 
+/// What one of the shell's descriptors held, read to its end for a blocking body.
+#[derive(Clone)]
+struct Stream(Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for Stream {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// A question the host had not answered when the body asked.
 enum Waiting {
     Stat((Vec<u8>, bool), HostFuture<io::Result<Metadata>>),
@@ -80,6 +90,8 @@ pub(crate) struct Replay {
     waiting: Vec<Waiting>,
     /// stdin, read to its end by the first run.
     stdin: Option<Held>,
+    /// The engine's pipes the arguments name, read to their end by the first run.
+    streams: Option<Vec<(u32, Stream)>>,
     /// The body ran on answers that were not all there: the utility runs again.
     pub(crate) again: bool,
     /// The body changed the file system ([`SyncCtx::no_replay`]): it keeps its one run.
@@ -162,6 +174,9 @@ pub struct SyncCtx {
     stdin_readable: bool,
     /// [`UtilPolicy::unconfigured`](super::UtilPolicy) is off.
     configured: bool,
+    /// The shell's descriptors the arguments name as `/dev/fd/N` that are pipes of
+    /// the engine (process substitutions), read to their end before the body started.
+    streams: Vec<(u32, Stream)>,
     io: Io,
     out: Vec<u8>,
     write_error: Option<io::ErrorKind>,
@@ -251,6 +266,8 @@ enum FileInner {
     Host(Rc<dyn HostFile>),
     /// A file a replay read to its end.
     Held(io::Cursor<Held>),
+    /// One of the shell's descriptors (`SyncCtx::streams`).
+    Stream(io::Cursor<Stream>),
 }
 
 impl Read for SyncFile {
@@ -262,6 +279,7 @@ impl Read for SyncFile {
                 None => Err(would_block()),
             },
             FileInner::Held(f) => f.read(buf),
+            FileInner::Stream(f) => f.read(buf),
         }
     }
 }
@@ -374,8 +392,19 @@ impl SyncCtx {
         }
     }
 
+    /// What `/dev/fd/N` held, when it names a pipe of the engine.
+    fn stream(&self, p: &[u8]) -> Option<&Stream> {
+        let n = crate::exec::dev_fd(p)?;
+        self.streams.iter().find(|(k, _)| *k == n).map(|(_, s)| s)
+    }
+
     /// Opens a file for reading.
     pub fn open(&self, p: &[u8]) -> io::Result<SyncFile> {
+        if let Some(stream) = self.stream(p) {
+            return Ok(SyncFile {
+                inner: FileInner::Stream(io::Cursor::new(stream.clone())),
+            });
+        }
         let abs = self.path(p);
         match &self.io {
             Io::Thread { native, .. } => Ok(SyncFile {
@@ -408,6 +437,18 @@ impl SyncCtx {
 
     /// `stat` (`follow`) or `lstat`.
     pub fn stat(&self, p: &[u8], follow: bool) -> io::Result<Metadata> {
+        if let Some(stream) = self.stream(p) {
+            return Ok(Metadata {
+                kind: crate::host::FileKind::Fifo,
+                size: stream.0.len() as u64,
+                mode: 0o600,
+                mtime_ns: 0,
+                dev: 0,
+                ino: 0,
+                uid: 0,
+                gid: 0,
+            });
+        }
         let abs = self.path(p);
         match &self.io {
             Io::Thread { native, .. } => native_stat(&native(&abs)?, follow),
@@ -771,6 +812,28 @@ impl UtilCtx<'_> {
         let host = self.vp.core.host.clone();
         let native = host.native_paths();
         let stdin_readable = self.stdin_readable();
+        // A body opens files itself, on a thread or through the host, and neither can
+        // open a pipe of the engine: what the arguments name of those is read here, to
+        // its end (once: a replayed run finds it).
+        let held = self.replay.borrow().streams.clone();
+        let streams = match held {
+            Some(streams) => streams,
+            None => {
+                let mut streams = Vec::new();
+                for n in self.named_fds.clone() {
+                    if let Some(fd) = self.fd(n)
+                        && matches!(*fd, crate::fd::FdObj::PipeRead(_))
+                    {
+                        let mut data = Vec::new();
+                        if fd.read_to_end(&mut data).await.is_ok() {
+                            streams.push((n, Stream(Arc::new(data))));
+                        }
+                    }
+                }
+                self.replay.borrow_mut().streams = Some(streams.clone());
+                streams
+            }
+        };
         let mut sync = SyncCtx {
             name: self.name.clone(),
             cwd: self.vp.cwd.clone(),
@@ -778,6 +841,7 @@ impl UtilCtx<'_> {
             terminal,
             stdin_readable,
             configured: !self.vp.core.utilities.unconfigured,
+            streams,
             io: Io::Inline {
                 host,
                 stdin: io::Cursor::new(Held(Rc::default())),
@@ -886,6 +950,7 @@ impl UtilCtx<'_> {
             terminal,
             stdin_readable,
             configured,
+            streams,
             ..
         } = sync;
         let thread_pipe = pipe.clone();
@@ -900,6 +965,7 @@ impl UtilCtx<'_> {
                     terminal,
                     stdin_readable,
                     configured,
+                    streams,
                     io: Io::Thread {
                         pipe: thread_pipe.clone(),
                         native,

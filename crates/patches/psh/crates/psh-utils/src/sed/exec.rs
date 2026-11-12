@@ -179,6 +179,13 @@ impl Reader {
         Some(Line { text, nl, name })
     }
 
+    fn buffered_line(&mut self) -> Option<&[u8]> {
+        let start = self.start;
+        let i = memchr::memchr(self.delim, &self.buf[start..])?;
+        self.start += i + 1;
+        Some(&self.buf[start..start + i])
+    }
+
     /// Reads more of the current file only.
     async fn fill_same(&mut self, ctx: &mut UtilCtx<'_>) -> bool {
         if self.eof {
@@ -401,7 +408,17 @@ impl<'p> Run<'p> {
     pub async fn run(&mut self, ctx: &mut UtilCtx<'_>, st: &mut State, reader: &mut Reader) -> End {
         let mut restart = false;
         let mut steps: u32 = 0;
+        let plain = self.plain_substs();
         loop {
+            if !restart && plain {
+                if let Err(s) = self.batch(st, reader) {
+                    return End::Fail(s);
+                }
+                if let Err(s) = self.drain(ctx).await {
+                    return End::Fail(s);
+                }
+                ctx.check().await;
+            }
             if !restart {
                 let spare = std::mem::take(&mut self.spare);
                 let Some(line) = reader.next_line(ctx, spare).await else {
@@ -465,6 +482,78 @@ impl<'p> Run<'p> {
             return End::Fail(4);
         }
         End::Input
+    }
+
+    fn plain_substs(&self) -> bool {
+        self.prog.cmds.iter().all(|c| {
+            c.a1.is_none()
+                && c.a2.is_none()
+                && !c.a1_zero
+                && !c.neg
+                && matches!(&c.kind, Kind::Subst(s) if s.re.is_some() && s.write.is_none() && !s.eval)
+        })
+    }
+
+    fn batch(&mut self, st: &mut State, reader: &mut Reader) -> Result<(), i32> {
+        let prog = self.prog;
+        let delim = self.delim();
+        if let [cmd] = prog.cmds.as_slice()
+            && let Kind::Subst(s) = &cmd.kind
+            && let Some(re) = &s.re
+            && !s.print
+            && !self.set.quiet
+            && !self.out.missing
+        {
+            st.last_re = Some(re.clone());
+            let finder = re.literal().map(memchr::memmem::Finder::new);
+            while self.out.buf.len() < 64 * 1024
+                && let Some(line) = reader.buffered_line()
+            {
+                self.line_no += 1;
+                if !replace_into(
+                    re,
+                    finder.as_ref(),
+                    s,
+                    line,
+                    self.set.utf8,
+                    &mut self.out.buf,
+                ) {
+                    self.out.buf.extend_from_slice(line);
+                }
+                self.out.buf.push(delim);
+            }
+            return Ok(());
+        }
+        while self.out.buf.len() < 64 * 1024
+            && let Some(line) = reader.buffered_line()
+        {
+            self.ps.clear();
+            self.ps.extend_from_slice(line);
+            self.ps_nl = true;
+            self.line_no += 1;
+            self.tflag = false;
+            if !Rc::ptr_eq(&self.line_name, &reader.name) {
+                self.line_name = reader.name.clone();
+            }
+            for cmd in &prog.cmds {
+                if let Kind::Subst(s) = &cmd.kind
+                    && self.subst(st, s)?
+                {
+                    self.tflag = true;
+                    if s.print {
+                        let ps = std::mem::take(&mut self.ps);
+                        self.emit_line(&ps, true);
+                        self.ps = ps;
+                    }
+                }
+            }
+            if !self.set.quiet {
+                let ps = std::mem::take(&mut self.ps);
+                self.emit_line(&ps, true);
+                self.ps = ps;
+            }
+        }
+        Ok(())
     }
 
     fn load(&mut self, line: Line) {
@@ -976,70 +1065,15 @@ impl<'p> Run<'p> {
                 None => return Err(1),
             },
         };
-        let ps = &self.ps;
-        let utf8 = self.set.utf8;
         let mut out = std::mem::take(&mut self.scratch);
         out.clear();
-        let mut pos = 0;
-        let mut from = 0;
-        let mut count = 0;
-        let mut prev_end: Option<usize> = None;
-        let mut did = false;
-        // Only a replacement that names a subexpression needs their positions.
-        let grouped = s.repl.iter().any(|r| matches!(r, Repl::Group(n) if *n > 0));
-        let mut whole = [None];
-        while from <= ps.len() {
-            let held;
-            let caps: &[Option<(usize, usize)>] = if grouped {
-                let Some(found) = re.exec_at(ps, from, ExecOptions::default()) else {
-                    break;
-                };
-                held = found;
-                &held
-            } else {
-                let Some(found) = re.find_at(ps, from, ExecOptions::default()) else {
-                    break;
-                };
-                whole[0] = Some(found);
-                &whole
-            };
-            let (s0, e0) = caps[0].unwrap_or((from, from));
-            let step = |at: usize| if utf8 { char_len(&ps[at..]) } else { 1 };
-            if s0 == e0 && prev_end == Some(s0) {
-                // An empty match right after a match does not count.
-                if s0 >= ps.len() {
-                    break;
-                }
-                from = s0 + step(s0);
-                continue;
-            }
-            count += 1;
-            if count >= s.nth {
-                out.extend_from_slice(&ps[pos..s0]);
-                expand(&mut out, &s.repl, ps, caps, utf8);
-                pos = e0;
-                did = true;
-                if !s.global {
-                    break;
-                }
-            }
-            prev_end = Some(e0);
-            from = if s0 == e0 {
-                if e0 >= ps.len() {
-                    break;
-                }
-                e0 + step(e0)
-            } else {
-                e0
-            };
-        }
-        if did {
-            out.extend_from_slice(&ps[pos..]);
+        if replace_into(&re, None, s, &self.ps, self.set.utf8, &mut out) {
             self.scratch = std::mem::replace(&mut self.ps, out);
+            Ok(true)
         } else {
             self.scratch = out;
+            Ok(false)
         }
-        Ok(did)
     }
 }
 
@@ -1061,6 +1095,96 @@ async fn shell_output(ctx: &mut UtilCtx<'_>, script: &[u8], chomp: bool) -> Vec<
         out.pop();
     }
     out
+}
+
+fn replace_into(
+    re: &Regex,
+    finder: Option<&memchr::memmem::Finder>,
+    s: &Subst,
+    ps: &[u8],
+    utf8: bool,
+    out: &mut Vec<u8>,
+) -> bool {
+    if let Some(finder) = finder {
+        let lit = finder.needle();
+        let mut pos = 0;
+        let mut count = 0;
+        let mut did = false;
+        for s0 in finder.find_iter(ps) {
+            count += 1;
+            if count >= s.nth {
+                let e0 = s0 + lit.len();
+                out.extend_from_slice(&ps[pos..s0]);
+                expand(out, &s.repl, ps, &[Some((s0, e0))], utf8);
+                pos = e0;
+                did = true;
+                if !s.global {
+                    break;
+                }
+            }
+        }
+        if did {
+            out.extend_from_slice(&ps[pos..]);
+        }
+        return did;
+    }
+    let mut pos = 0;
+    let mut from = 0;
+    let mut count = 0;
+    let mut prev_end: Option<usize> = None;
+    let mut did = false;
+    // Only a replacement that names a subexpression needs their positions.
+    let grouped = s.repl.iter().any(|r| matches!(r, Repl::Group(n) if *n > 0));
+    let mut whole = [None];
+    while from <= ps.len() {
+        let held;
+        let caps: &[Option<(usize, usize)>] = if grouped {
+            let Some(found) = re.exec_at(ps, from, ExecOptions::default()) else {
+                break;
+            };
+            held = found;
+            &held
+        } else {
+            let Some(found) = re.find_at(ps, from, ExecOptions::default()) else {
+                break;
+            };
+            whole[0] = Some(found);
+            &whole
+        };
+        let (s0, e0) = caps[0].unwrap_or((from, from));
+        let step = |at: usize| if utf8 { char_len(&ps[at..]) } else { 1 };
+        if s0 == e0 && prev_end == Some(s0) {
+            // An empty match right after a match does not count.
+            if s0 >= ps.len() {
+                break;
+            }
+            from = s0 + step(s0);
+            continue;
+        }
+        count += 1;
+        if count >= s.nth {
+            out.extend_from_slice(&ps[pos..s0]);
+            expand(out, &s.repl, ps, caps, utf8);
+            pos = e0;
+            did = true;
+            if !s.global {
+                break;
+            }
+        }
+        prev_end = Some(e0);
+        from = if s0 == e0 {
+            if e0 >= ps.len() {
+                break;
+            }
+            e0 + step(e0)
+        } else {
+            e0
+        };
+    }
+    if did {
+        out.extend_from_slice(&ps[pos..]);
+    }
+    did
 }
 
 fn emit(out: &mut Out, text: &[u8], nl: bool, delim: u8) {

@@ -207,6 +207,10 @@ impl Regex {
         exec::find(&self.prog, self.groups, text, start, eopts)
     }
 
+    pub fn literal(&self) -> Option<&[u8]> {
+        self.literal.as_deref()
+    }
+
     pub fn is_match(&self, text: &[u8]) -> bool {
         self.find(text, ExecOptions::default()).is_some()
     }

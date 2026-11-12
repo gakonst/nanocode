@@ -2,7 +2,6 @@ use std::io::{self, Write};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::time::{Duration, Instant};
 
-use tracing_subscriber::fmt::MakeWriter;
 
 const CLOSE_SEND_WAIT: Duration = Duration::from_millis(100);
 const CLOSE_SEND_POLL: Duration = Duration::from_millis(1);
@@ -70,11 +69,11 @@ impl Write for LineWriter {
     }
 }
 
-impl<'a> MakeWriter<'a> for LineWriter {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
+impl crate::format::Output for LineWriter {
+    fn write_line(&self, line: &[u8]) -> io::Result<()> {
+        self.0
+            .send(Message::Line(line.to_vec()))
+            .map_err(|_| io::Error::from(io::ErrorKind::Other))
     }
 }
 

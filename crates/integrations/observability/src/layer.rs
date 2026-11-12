@@ -1,21 +1,20 @@
 use std::{
     borrow::Cow,
     fmt, mem,
+    sync::Arc,
+    task::{Context as TaskContext, Poll, Wake, Waker},
     time::{Instant, SystemTime},
 };
 
+use nanocode_sync::{Sequencer, Slot};
 use tracing::{
-    Event, Subscriber,
+    Event,
     field::{Field, Visit},
-    span::{Attributes, Id, Record},
-};
-use tracing_subscriber::{
-    Layer, Registry,
-    layer::Context,
-    registry::{LookupSpan, SpanRef},
+    span::{Attributes, Record},
 };
 
 use crate::{
+    subscriber::{Context, Layer, Registry, SpanRef},
     model::{Event as SpanEvent, KeyValue, SpanContext, SpanKind, Status, Text, Value},
     trace::{Builder, Parent, Started, Tracer},
 };
@@ -314,19 +313,15 @@ impl OtelLayer {
         Self { tracer }
     }
 
-    fn started<S>(span: &SpanRef<'_, S>) -> Option<(SpanContext, Parent)>
-    where
-        S: Subscriber + for<'span> LookupSpan<'span>,
-    {
-        let mut extensions = span.extensions_mut();
-        let started = extensions.get_mut::<OtelData>()?.start();
-        Some((started.context(), started.children()))
+    fn started(span: &SpanRef<'_, OtelSpan>) -> Option<(SpanContext, Parent)> {
+        let data = span.data()?;
+        data.0.with(|slot| {
+            let started = slot.data.as_mut()?.start();
+            Some((started.context(), started.children()))
+        })
     }
 
-    fn parent<S>(&self, attributes: &Attributes<'_>, context: &Context<'_, S>) -> Parent
-    where
-        S: Subscriber + for<'span> LookupSpan<'span>,
-    {
+    fn parent(&self, attributes: &Attributes<'_>, context: &Context<'_, OtelSpan>) -> Parent {
         if let Some(started) = attributes
             .parent()
             .and_then(|parent| context.span(parent))
@@ -356,19 +351,82 @@ fn location(metadata: &tracing::Metadata<'_>, attributes: &mut Vec<KeyValue>) {
     }
 }
 
-impl<S> Layer<S> for OtelLayer
-where
-    S: Subscriber + for<'span> LookupSpan<'span>,
-{
-    fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, context: Context<'_, S>) {
-        let span = context.span(id).expect("a new span is registered");
+struct Exclusive<T> {
+    turns: Sequencer,
+    value: Slot<T>,
+}
+
+struct Unpark(std::thread::Thread);
+
+impl Wake for Unpark {
+    fn wake(self: Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+fn wait_for<F: Future>(future: F) -> F::Output {
+    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut context = TaskContext::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        std::thread::park();
+    }
+}
+
+impl<T> Exclusive<T> {
+    fn new(value: T) -> Self {
+        Self {
+            turns: Sequencer::new(),
+            value: Slot::new(Some(value)),
+        }
+    }
+
+    fn with<R>(&self, change: impl FnOnce(&mut T) -> R) -> R {
+        let turn = self
+            .turns
+            .try_enter()
+            .unwrap_or_else(|| wait_for(self.turns.enter()));
+        let mut value = self
+            .value
+            .take()
+            .expect("the holder of a span's turn owns its OpenTelemetry data");
+        let output = change(&mut value);
+        let previous = self.value.put(value);
+        assert!(
+            previous.is_none(),
+            "only the holder of a span's turn puts its data back"
+        );
+        drop(turn);
+        output
+    }
+}
+
+pub(crate) struct OtelSpan(Exclusive<OtelSlot>);
+
+struct OtelSlot {
+    data: Option<OtelData>,
+    timings: Option<Timings>,
+}
+
+impl Layer for OtelLayer {
+    type Span = OtelSpan;
+
+    fn new_span(
+        &self,
+        attributes: &Attributes<'_>,
+        _span: &SpanRef<'_, OtelSpan>,
+        context: &Context<'_, OtelSpan>,
+    ) -> OtelSpan {
         let timings = Timings {
             idle: 0,
             busy: 0,
             last: Instant::now(),
             entered: 0,
         };
-        let parent = self.parent(attributes, &context);
+        let parent = self.parent(attributes, context);
         let metadata = attributes.metadata();
         let mut builder = Builder {
             name: Cow::Borrowed(metadata.name()),
@@ -392,93 +450,98 @@ where
         attributes.record(&mut SpanAttributes(&mut updates));
         let mut status = Status::Unset;
         updates.apply(&mut builder, &mut status);
-        let mut extensions = span.extensions_mut();
-        if extensions.get_mut::<Timings>().is_none() {
-            extensions.insert(timings);
-        }
-        extensions.insert(OtelData {
-            state: State::Building {
-                builder,
-                parent,
-                status,
-            },
-            end_time: None,
-            tracer: self.tracer.clone(),
+        OtelSpan(Exclusive::new(OtelSlot {
+            data: Some(OtelData {
+                state: State::Building {
+                    builder,
+                    parent,
+                    status,
+                },
+                end_time: None,
+                tracer: self.tracer.clone(),
+            }),
+            timings: Some(timings),
+        }))
+    }
+
+    fn on_enter(&self, span: &SpanRef<'_, OtelSpan>, _context: &Context<'_, OtelSpan>) {
+        let data = span.data().expect("a visible span has its layer's data");
+        data.0.with(|slot| {
+            if let Some(timings) = &mut slot.timings {
+                if timings.entered == 0 {
+                    let now = Instant::now();
+                    timings.idle += nanos(timings.last, now);
+                    timings.last = now;
+                }
+                timings.entered += 1;
+            }
         });
     }
 
-    fn on_enter(&self, id: &Id, context: Context<'_, S>) {
-        let span = context.span(id).expect("an entered span is registered");
-        let mut extensions = span.extensions_mut();
-        if let Some(timings) = extensions.get_mut::<Timings>() {
-            if timings.entered == 0 {
-                let now = Instant::now();
-                timings.idle += nanos(timings.last, now);
-                timings.last = now;
+    fn on_exit(&self, span: &SpanRef<'_, OtelSpan>, _context: &Context<'_, OtelSpan>) {
+        let data = span.data().expect("a visible span has its layer's data");
+        data.0.with(|slot| {
+            if let Some(data) = &mut slot.data {
+                data.end_time = Some(SystemTime::now());
             }
-            timings.entered += 1;
-        }
+            if let Some(timings) = &mut slot.timings {
+                timings.entered -= 1;
+                if timings.entered == 0 {
+                    let now = Instant::now();
+                    timings.busy += nanos(timings.last, now);
+                    timings.last = now;
+                }
+            }
+        });
     }
 
-    fn on_exit(&self, id: &Id, context: Context<'_, S>) {
-        let span = context.span(id).expect("an exited span is registered");
-        let mut extensions = span.extensions_mut();
-        if let Some(data) = extensions.get_mut::<OtelData>() {
-            data.end_time = Some(SystemTime::now());
-        }
-        if let Some(timings) = extensions.get_mut::<Timings>() {
-            timings.entered -= 1;
-            if timings.entered == 0 {
-                let now = Instant::now();
-                timings.busy += nanos(timings.last, now);
-                timings.last = now;
-            }
-        }
-    }
-
-    fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
-        let span = context.span(id).expect("a recorded span is registered");
+    fn on_record(
+        &self,
+        span: &SpanRef<'_, OtelSpan>,
+        values: &Record<'_>,
+        _context: &Context<'_, OtelSpan>,
+    ) {
         let mut updates = Updates::default();
         values.record(&mut SpanAttributes(&mut updates));
-        let mut extensions = span.extensions_mut();
-        if let Some(data) = extensions.get_mut::<OtelData>() {
-            match &mut data.state {
-                State::Building {
-                    builder, status, ..
-                } => updates.apply(builder, status),
-                State::Started(started) => updates.apply_started(started),
+        let data = span.data().expect("a visible span has its layer's data");
+        data.0.with(|slot| {
+            if let Some(data) = &mut slot.data {
+                match &mut data.state {
+                    State::Building {
+                        builder, status, ..
+                    } => updates.apply(builder, status),
+                    State::Started(started) => updates.apply_started(started),
+                }
             }
-        }
+        });
     }
 
-    fn on_follows_from(&self, id: &Id, follows: &Id, context: Context<'_, S>) {
-        let span = context.span(id).expect("a span that follows is registered");
-        if span.extensions().get::<OtelData>().is_none() {
+    fn on_follows_from(
+        &self,
+        span: &SpanRef<'_, OtelSpan>,
+        follows: &SpanRef<'_, OtelSpan>,
+        _context: &Context<'_, OtelSpan>,
+    ) {
+        let data = span.data().expect("a visible span has its layer's data");
+        if data.0.with(|slot| slot.data.is_none()) {
             return;
         }
-        let Some(followed) = context
-            .span(follows)
-            .and_then(|followed| Self::started(&followed))
-        else {
+        let Some(followed) = Self::started(follows) else {
             return;
         };
         let link = followed.0;
-        let mut extensions = span.extensions_mut();
-        if let Some(data) = extensions.get_mut::<OtelData>() {
-            match &mut data.state {
-                State::Building { builder, .. } => builder.links.push(link),
-                State::Started(started) => started.add_link(link),
+        data.0.with(|slot| {
+            if let Some(data) = &mut slot.data {
+                match &mut data.state {
+                    State::Building { builder, .. } => builder.links.push(link),
+                    State::Started(started) => started.add_link(link),
+                }
             }
-        }
+        });
     }
 
-    fn on_event(&self, event: &Event<'_>, context: Context<'_, S>) {
-        let Some(span) = event.parent().and_then(|id| context.span(id)).or_else(|| {
-            event
-                .is_contextual()
-                .then(|| context.lookup_current())
-                .flatten()
-        }) else {
+    fn on_event(&self, event: &Event<'_>, context: &Context<'_, OtelSpan>) {
+        let Some(span) = context.event_span(event) else {
             return;
         };
         let metadata = event.metadata();
@@ -497,48 +560,46 @@ where
         if name.is_empty() {
             name = Cow::Borrowed(metadata.name());
         }
-        let mut extensions = span.extensions_mut();
-        let Some(data) = extensions.get_mut::<OtelData>() else {
-            return;
-        };
-        location(metadata, &mut attributes);
-        let error = *metadata.level() == tracing::Level::ERROR;
-        match &mut data.state {
-            State::Building {
-                builder, status, ..
-            } => {
-                if *status == Status::Unset && error {
-                    *status = Status::Error(Cow::Borrowed(""));
+        let data = span.data().expect("a visible span has its layer's data");
+        data.0.with(|slot| {
+            let Some(data) = &mut slot.data else {
+                return;
+            };
+            location(metadata, &mut attributes);
+            let error = *metadata.level() == tracing::Level::ERROR;
+            match &mut data.state {
+                State::Building {
+                    builder, status, ..
+                } => {
+                    if *status == Status::Unset && error {
+                        *status = Status::Error(Cow::Borrowed(""));
+                    }
+                    if let Some(updates) = updates {
+                        updates.apply(builder, status);
+                    }
+                    builder.events.push(SpanEvent {
+                        name,
+                        timestamp,
+                        attributes,
+                        dropped_attributes_count: 0,
+                    });
                 }
-                if let Some(updates) = updates {
-                    updates.apply(builder, status);
+                State::Started(started) => {
+                    if error {
+                        started.set_status(Status::Error(Cow::Borrowed("")));
+                    }
+                    if let Some(updates) = updates {
+                        updates.apply_started(started);
+                    }
+                    started.add_event(name, attributes);
                 }
-                builder.events.push(SpanEvent {
-                    name,
-                    timestamp,
-                    attributes,
-                    dropped_attributes_count: 0,
-                });
             }
-            State::Started(started) => {
-                if error {
-                    started.set_status(Status::Error(Cow::Borrowed("")));
-                }
-                if let Some(updates) = updates {
-                    updates.apply_started(started);
-                }
-                started.add_event(name, attributes);
-            }
-        }
+        });
     }
 
-    fn on_close(&self, id: Id, context: Context<'_, S>) {
-        let span = context.span(&id).expect("a closed span is registered");
-        let (data, timings) = {
-            let mut extensions = span.extensions_mut();
-            let timings = extensions.remove::<Timings>();
-            (extensions.remove::<OtelData>(), timings)
-        };
+    fn on_close(&self, span: &SpanRef<'_, OtelSpan>, _context: &Context<'_, OtelSpan>) {
+        let held = span.data().expect("a visible span has its layer's data");
+        let (data, timings) = held.0.with(|slot| (slot.data.take(), slot.timings.take()));
         let Some(data) = data else {
             return;
         };
@@ -576,13 +637,13 @@ fn with_data(span: &tracing::Span, change: impl FnOnce(&mut OtelData)) {
         let Some(registry) = dispatch.downcast_ref::<Registry>() else {
             return;
         };
-        let Some(span) = registry.span(id) else {
-            return;
-        };
-        let mut extensions = span.extensions_mut();
-        if let Some(data) = extensions.get_mut::<OtelData>() {
-            change(data);
-        }
+        registry.data::<OtelSpan, _>(id, |otel| {
+            otel.0.with(|slot| {
+                if let Some(data) = &mut slot.data {
+                    change(data);
+                }
+            });
+        });
     });
 }
 
@@ -604,3 +665,4 @@ pub fn add_link(span: &tracing::Span, link: SpanContext) {
         State::Started(started) => started.add_link(link),
     });
 }
+

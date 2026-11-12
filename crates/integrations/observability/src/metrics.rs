@@ -12,14 +12,13 @@ use std::{
 
 use nanocode_sync::{Atom, Map};
 use tracing::{
-    Event, Metadata, Subscriber,
+    Event, Metadata,
     field::{Field, Visit},
+    span::Attributes,
     subscriber::Interest,
 };
-use tracing_subscriber::{
-    Layer,
-    layer::{Context, Filter},
-};
+
+use crate::subscriber::{Context, Filter, Layer, SpanRef};
 
 use crate::model::{ExportError, Exported, KeyValue, Resource, Scope, Text, Value};
 
@@ -786,8 +785,12 @@ impl Visit for Visited {
     }
 }
 
-impl<S: Subscriber> Layer<S> for MetricsLayer {
-    fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
+impl Layer for MetricsLayer {
+    type Span = ();
+
+    fn new_span(&self, _: &Attributes<'_>, _: &SpanRef<'_, ()>, _: &Context<'_, ()>) {}
+
+    fn on_event(&self, event: &Event<'_>, _: &Context<'_, ()>) {
         let (attributes, metrics) = BUFFERS.take();
         let mut visited = Visited {
             attributes,
@@ -819,8 +822,8 @@ fn metrics_event(metadata: &Metadata<'_>) -> bool {
         })
 }
 
-impl<S> Filter<S> for MetricsFilter {
-    fn enabled(&self, metadata: &Metadata<'_>, _: &Context<'_, S>) -> bool {
+impl Filter for MetricsFilter {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         metrics_event(metadata)
     }
 

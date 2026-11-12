@@ -111,6 +111,7 @@ nanocode-tool-contracts = { version = "0.7.0", path = "crates/core/tool-contract
 nanocode-store-jsonl = { version = "0.7.0", path = "crates/integrations/store-jsonl" }
 landlock = "0.4.4"
 libc = "0.2"
+log = { version = "0.4.33", default-features = false }
 x11rb = { version = "0.13.2", features = ["xtest"] }
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 base64 = "0.22.1"
@@ -179,6 +180,7 @@ tokio = "1.48.0"
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-rustls = { version = "0.26.4", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-core = { version = "0.1.36", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
 unicode-normalization = { path = "crates/core/unicode-normalization" }
 url = "2.5.7"

@@ -5,26 +5,27 @@ extern crate self as nanocode_observability;
 
 mod batch;
 mod cli;
+pub mod env_filter;
 mod file;
+pub mod filter;
+pub mod format;
+mod json;
 mod layer;
+mod log_bridge;
 mod metrics;
 mod model;
 mod otlp;
 mod otlp_http;
+mod pattern;
+mod pretty;
 mod protobuf;
+mod style;
+pub mod subscriber;
 mod trace;
 mod writer;
 
 use std::{borrow::Cow, fs::OpenOptions, io, path::PathBuf, sync::Arc, time::Duration};
 
-use tracing_subscriber::{
-    EnvFilter, Layer,
-    filter::{FilterExt, Targets},
-    fmt::format::FmtSpan,
-    layer::{Filter, SubscriberExt},
-    registry::LookupSpan,
-    util::SubscriberInitExt,
-};
 
 pub use cli::ObservabilityOutputArgs;
 pub use layer::{add_link, span_context};
@@ -33,6 +34,9 @@ pub use otlp_http::OtlpError;
 
 use crate::{
     batch::BatchSpanProcessor,
+    filter::{And, FilterFn, ParseError},
+    format::{FmtLayer, Format},
+    subscriber::{Filtered, Registry},
     layer::OtelLayer,
     metrics::{Meter, MetricsFilter, MetricsLayer},
     model::{KeyValue, Resource, Scope},
@@ -116,7 +120,7 @@ pub struct ObservabilityGuard {
 
 #[derive(Debug)]
 pub enum ObservabilityError {
-    Filter(tracing_subscriber::filter::ParseError),
+    Filter(ParseError),
 
     Output(io::Error),
 
@@ -156,8 +160,8 @@ impl std::error::Error for ObservabilityError {
     }
 }
 
-impl From<tracing_subscriber::filter::ParseError> for ObservabilityError {
-    fn from(source: tracing_subscriber::filter::ParseError) -> Self {
+impl From<ParseError> for ObservabilityError {
+    fn from(source: ParseError) -> Self {
         Self::Filter(source)
     }
 }
@@ -257,31 +261,16 @@ impl ObservabilityBuilder {
         let (fmt_layer, writer_guard) = match self.writer()? {
             Some(output) => {
                 let (writer, guard) = writer::spawn(output, LOCAL_LOG_BUFFERED_LINES_LIMIT)?;
-                let filter = scope(self.filter.as_str())?;
-                let layer = match self.format {
-                    LogFormat::Pretty => tracing_subscriber::fmt::layer()
-                        .pretty()
-                        .with_writer(writer)
-                        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-                        .with_filter(filter)
-                        .boxed(),
-                    LogFormat::Compact => tracing_subscriber::fmt::layer()
-                        .compact()
-                        .with_ansi(false)
-                        .with_writer(writer)
-                        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-                        .with_filter(filter)
-                        .boxed(),
-                    LogFormat::Json => tracing_subscriber::fmt::layer()
-                        .json()
-                        .with_span_list(true)
-                        .with_current_span(false)
-                        .with_writer(writer)
-                        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
-                        .with_filter(filter)
-                        .boxed(),
+                let filter = filter::scope(self.filter.as_str())?;
+                let format = match self.format {
+                    LogFormat::Pretty => Format::Pretty,
+                    LogFormat::Compact => Format::Compact,
+                    LogFormat::Json => Format::Json,
                 };
-                (Some(layer), Some(guard))
+                (
+                    Some(Filtered::new(FmtLayer::new(format, writer), filter)),
+                    Some(guard),
+                )
             }
             None => (None, None),
         };
@@ -311,34 +300,32 @@ impl ObservabilityBuilder {
         };
         let terminal = self.telemetry == Telemetry::All;
         let tracing_layer = match &tracer_provider {
-            Some(provider) => Some(OtelLayer::new(provider.clone()).with_filter(
-                scope(self.otel_filter.as_str())?.and(tracing_subscriber::filter::filter_fn(
-                    move |metadata| {
+            Some(provider) => Some(Filtered::new(
+                OtelLayer::new(provider.clone()),
+                And(
+                    filter::scope(self.otel_filter.as_str())?,
+                    FilterFn(move |metadata: &tracing::Metadata<'_>| {
                         metadata.target() != METRICS_TARGET
                             && (terminal || !terminal_target(metadata.target()))
-                    },
-                )),
+                    }),
+                ),
             )),
             None => None,
         };
         let metrics_layer = match &meter_provider {
-            Some(provider) => Some(
-                MetricsLayer::new(Arc::clone(provider))
-                    .with_filter(MetricsFilter)
-                    .with_filter(scope(self.otel_filter.as_str())?.and(
-                        tracing_subscriber::filter::filter_fn(move |metadata| {
-                            terminal || !terminal_target(metadata.target())
-                        }),
-                    )),
-            ),
+            Some(provider) => Some(Filtered::nested(
+                MetricsLayer::new(Arc::clone(provider)),
+                MetricsFilter,
+                And(
+                    filter::scope(self.otel_filter.as_str())?,
+                    FilterFn(move |metadata: &tracing::Metadata<'_>| {
+                        terminal || !terminal_target(metadata.target())
+                    }),
+                ),
+            )),
             None => None,
         };
-        tracing_subscriber::registry()
-            .with(fmt_layer)
-            .with(tracing_layer)
-            .with(metrics_layer)
-            .try_init()
-            .map_err(|_| ObservabilityError::Subscriber)?;
+        init(Registry::new([fmt_layer, tracing_layer, metrics_layer]))?;
         tracing::callsite::rebuild_interest_cache();
         Ok(ObservabilityGuard {
             tracer_provider,
@@ -461,20 +448,14 @@ fn detected() -> Resource {
     resource
 }
 
-fn scope<S>(directives: &str) -> Result<Box<dyn Filter<S> + Send + Sync>, ObservabilityError>
-where
-    S: tracing::Subscriber + for<'span> LookupSpan<'span>,
-{
-    let filter = EnvFilter::try_new(directives)?;
-    let targets = directives
-        .split(',')
-        .map(str::trim)
-        .filter(|directive| !directive.is_empty())
-        .collect::<Vec<_>>();
-    if targets.is_empty() || directives.contains('[') {
-        return Ok(Box::new(filter));
-    }
-    Ok(Box::new(targets.join(",").parse::<Targets>()?))
+pub fn init(registry: Registry) -> Result<(), ObservabilityError> {
+    tracing::dispatcher::set_global_default(tracing::Dispatch::new(registry))
+        .map_err(|_| ObservabilityError::Subscriber)?;
+    log::set_logger(&log_bridge::LOG_BRIDGE).map_err(|_| ObservabilityError::Subscriber)?;
+    log::set_max_level(log_bridge::log_level_filter(
+        tracing::level_filters::LevelFilter::current(),
+    ));
+    Ok(())
 }
 
 fn tracer_provider(

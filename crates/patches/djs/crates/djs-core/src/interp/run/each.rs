@@ -280,7 +280,7 @@ impl Exec<'_> {
         let stop = if mode == FOR_EACH {
             Ok(false)
         } else {
-            self.each_complete(base, v)
+            self.each_complete(base, mode, v)
         };
         let next = match stop {
             Ok(false) => k + 1,
@@ -302,7 +302,7 @@ impl Exec<'_> {
             self.pop_frame();
             return self.each_next(base, next);
         };
-        let kv = conv::number(f64::from(next));
+        let kv = i32::try_from(next).map_or_else(|_| conv::number(f64::from(next)), Value::int);
         self.set(base + K, kv);
         self.set(base + KVALUE, x);
         self.fuel -= super::native::CALL_FUEL;
@@ -349,10 +349,10 @@ impl Exec<'_> {
     /// filter at its length, find's and reduce's box at 0) of KVALUE: map and reduce put
     /// `v` there first, which the step no longer needs. At the heap cap the store
     /// collects and is tried once more (D1900).
-    fn each_complete(&mut self, base: u32, v: Value) -> Result<bool, Fault> {
-        let mode = self.get(base + MODE).as_int().unwrap_or(FOR_EACH);
-        let truthy =
-            !matches!(mode, MAP | REDUCE | FROM | REPLACE) && conv::to_boolean(self.heap, v);
+    fn each_complete(&mut self, base: u32, mode: i32, v: Value) -> Result<bool, Fault> {
+        let truthy = !matches!(mode, MAP | REDUCE | FROM | REPLACE)
+            && v.as_bool()
+                .unwrap_or_else(|| conv::to_boolean(self.heap, v));
         let (stop, store) = match mode {
             MAP | REDUCE | FROM => {
                 self.set(base + KVALUE, v);

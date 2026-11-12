@@ -32,15 +32,19 @@ pub enum Mutation {
     RecordInsertDrops,
     PowerLossDropsAcked,
     RecordInsertOverwrites,
+    CacheKeepsBlank,
+    StagedRefusesRewrite,
 }
 
 impl Mutation {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::None,
         Self::CasIgnoresExpected,
         Self::RecordInsertDrops,
         Self::PowerLossDropsAcked,
         Self::RecordInsertOverwrites,
+        Self::CacheKeepsBlank,
+        Self::StagedRefusesRewrite,
     ];
 
     pub fn parse(name: &str) -> Option<Self> {
@@ -56,6 +60,8 @@ impl Mutation {
             Self::RecordInsertDrops => "record_insert_drops",
             Self::PowerLossDropsAcked => "power_loss_drops_acked",
             Self::RecordInsertOverwrites => "record_insert_overwrites",
+            Self::CacheKeepsBlank => "cache_keeps_blank",
+            Self::StagedRefusesRewrite => "staged_refuses_rewrite",
         }
     }
 

@@ -133,6 +133,7 @@ pub fn simulate(seed: u64, options: Options) -> Outcome {
         states: shape.states,
         records_max: shape.records_max,
         slots: options.slots,
+        mutation: options.mutation,
     };
     let mut run = Run {
         seed,

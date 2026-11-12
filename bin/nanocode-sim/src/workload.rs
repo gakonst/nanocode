@@ -16,7 +16,7 @@ use crate::{
     executor::Clock,
     model::{Attempt, Ctx, Model, Observed, Status, head_state, parse_version, state_id, version},
     rng::{FNV_OFFSET, Rng, fnv},
-    store::SimKv,
+    store::{Mutation, SimKv},
 };
 
 const THINK_NS_MAX: u64 = 200_000;
@@ -24,6 +24,8 @@ const RECORD_CACHE_BYTES_MAX: u64 = 4096;
 const INHERITED_REFS_MAX: usize = 4;
 const READ_AFTER_ACQUIRE_PPM: u64 = 500_000;
 const INHERIT_REF_PPM: u64 = 500_000;
+const REWRITE_INHERITED_PPM: u64 = 250_000;
+const REFUSED_REWRITE: &str = "a staged record already has different content";
 const STEP_ROLLS: u64 = 100;
 const ACQUIRE_ROLLS_END: u64 = 25;
 const COMMIT_ROLLS_END: u64 = 60;
@@ -40,6 +42,7 @@ pub struct World {
     pub states: usize,
     pub records_max: u64,
     pub slots: bool,
+    pub mutation: Mutation,
 }
 
 impl World {
@@ -314,6 +317,9 @@ impl Proc {
                 && !refs.contains(inherited)
             {
                 refs.push(inherited.clone());
+                if self.rng.chance(REWRITE_INHERITED_PPM) {
+                    rewrite(world, inherited, &mut records);
+                }
             }
         }
         (records, refs)
@@ -358,11 +364,19 @@ impl Proc {
             summary: &SummaryUpdate::Unchanged,
             settle: Settle::Durable,
         };
+        let rewritten = rewritten(&records);
         let ctx = world.begin(&what);
-        let writing = self
-            .writer()
-            .commit(&id, &held.token, held.revision, commit);
-        let result = world.kv.tagged(ctx.op, writing).await;
+        let result = if staged
+            && world.mutation == Mutation::StagedRefusesRewrite
+            && !rewritten.is_empty()
+        {
+            Err(StoreError::NotCommitted(REFUSED_REWRITE.to_owned()))
+        } else {
+            let writing = self
+                .writer()
+                .commit(&id, &held.token, held.revision, commit);
+            world.kv.tagged(ctx.op, writing).await
+        };
         let ctx = world.end(ctx, &result);
         let judged = Judged {
             state,
@@ -384,8 +398,45 @@ impl Proc {
                 refs,
             };
             self.held.insert(state, held);
+            if !rewritten.is_empty() {
+                world.model.borrow_mut().stats.rewrites += 1;
+                self.read_back(world, state, rewritten).await;
+            }
         } else {
             self.held.remove(&state);
+        }
+    }
+
+    async fn read_back(&mut self, world: &World, state: usize, keys: Vec<String>) {
+        let id = state_id(state);
+        let what = format!(
+            "p{} {} read_back {id} {keys:?}",
+            self.id,
+            self.mode_name()
+        );
+        let ctx = world.begin(&what);
+        let result = world
+            .kv
+            .tagged(ctx.op, self.writer().read_records(&id, &keys))
+            .await;
+        let ctx = world.end(ctx, &result);
+        let mut values = match result {
+            Ok(values) => values,
+            Err(error) => return world.model.borrow_mut().failed(&error, &ctx, &what),
+        };
+        if world.mutation == Mutation::CacheKeepsBlank && matches!(self.mode, Mode::Cached(_)) {
+            values.iter_mut().for_each(|value| *value = Some(String::new()));
+        }
+        let mut model = world.model.borrow_mut();
+        if values.len() != keys.len() {
+            return model.wrong(format!(
+                "{what}: answered {} of {} records",
+                values.len(),
+                keys.len()
+            ));
+        }
+        for (key, value) in keys.iter().zip(&values) {
+            judge_content_value(&mut model, key, value.as_deref(), &what);
         }
     }
 
@@ -698,6 +749,28 @@ fn judge_commit_failed(
     model.register(ctx);
 }
 
+fn rewrite(world: &World, key: &str, records: &mut Vec<StoreRecord>) {
+    let Some(value) = world.model.borrow().records.get(key).cloned() else {
+        return;
+    };
+    records.push(StoreRecord {
+        key: key.to_owned(),
+        value: String::new(),
+    });
+    records.push(StoreRecord {
+        key: key.to_owned(),
+        value,
+    });
+}
+
+fn rewritten(records: &[StoreRecord]) -> Vec<String> {
+    records
+        .iter()
+        .filter(|record| record.value.is_empty())
+        .map(|record| record.key.clone())
+        .collect()
+}
+
 fn record_key(state: usize, key: &str) -> String {
     let id = state_id(state);
     format!("record/{}/{id}/{key}", id.len())
@@ -897,6 +970,9 @@ fn judge_slot_value(
 fn judge_content_value(model: &mut Model, key: &str, value: Option<&str>, what: &str) {
     let expected = model.records.get(key).cloned();
     match value {
+        Some("") => model.wrong(format!(
+            "{what}: record {key} read blank, which only removes a record, expected {expected:?}"
+        )),
         Some(value) if Some(value) == expected.as_deref() => {}
         Some(value) => model.wrong(format!(
             "{what}: record {key} read {value:?}, expected {expected:?}"

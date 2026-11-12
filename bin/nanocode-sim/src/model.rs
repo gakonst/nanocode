@@ -100,6 +100,7 @@ pub struct Stats {
     pub staged_fence_races: u64,
     pub kv_faults: u64,
     pub epochs: u64,
+    pub rewrites: u64,
 }
 
 impl Stats {
@@ -118,6 +119,7 @@ impl Stats {
         self.staged_fence_races += other.staged_fence_races;
         self.kv_faults += other.kv_faults;
         self.epochs += other.epochs;
+        self.rewrites += other.rewrites;
     }
 }
 
@@ -163,7 +165,7 @@ impl Model {
     }
 
     pub fn plan(&mut self, attempt: Attempt, records: &[StoreRecord]) {
-        for record in records {
+        for record in records.iter().filter(|record| !record.value.is_empty()) {
             self.records
                 .insert(record.key.clone(), record.value.clone());
         }

@@ -472,21 +472,16 @@ pub(crate) fn vm_options(memory: usize, frozen_builtins: bool) -> VmOptions {
 /// measured no better for short calls and cost the allocator more per instance.
 pub(crate) const IMAGE_ROOM: usize = 64 << 10;
 
-/// FNV-1a over the parts of a setup, each with its length.
+/// [`crate::park::hash_words`] over the parts of a setup, each with its length.
 struct SetupHash(u64);
 
 impl SetupHash {
     fn word(&mut self, w: u64) {
-        for b in w.to_le_bytes() {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-        }
+        self.0 = crate::park::hash_words(self.0, &w.to_le_bytes());
     }
 
     fn bytes(&mut self, bytes: &[u8]) {
-        self.word(bytes.len() as u64);
-        for &b in bytes {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-        }
+        self.0 = crate::park::hash_words(self.0, bytes);
     }
 
     fn host_fn(&mut self, f: &HostFn) {

@@ -6,6 +6,8 @@ every incompatible change is listed here with what to do instead.
 
 ## nanocode's additions (not upstream)
 
+- Snapshot and parked bytes hash the image and the setup a word at a time; bytes written
+  before that are refused as another setup.
 - `Instance::resolve_unhandled`, `Instance::seed_random`, `Instance::set_time_zone_offset`.
 - `Instance::park` and `Parked`: an instance between two steps held as what differs from
   its snapshot's image (kilobytes for a call that waits, instead of its heap), and

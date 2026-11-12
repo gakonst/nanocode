@@ -330,12 +330,21 @@ fn static_fingerprint(snapshot: &Snapshot) -> u64 {
         .get_or_init(|| image_fingerprint(snapshot.image()))
 }
 
-/// FNV-1a over an image's bytes.
+/// [`hash_words`] over an image's bytes.
 pub(crate) fn image_fingerprint(image: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in image {
-        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    hash_words(0xcbf2_9ce4_8422_2325, image)
+}
+
+pub(crate) fn hash_words(mut h: u64, bytes: &[u8]) -> u64 {
+    let mut mix = |w: u64| h = (h.rotate_left(5) ^ w).wrapping_mul(0x517c_c1b7_2722_0a95);
+    let mut words = bytes.chunks_exact(8);
+    for word in &mut words {
+        mix(u64::from_le_bytes(word.try_into().unwrap_or_default()));
     }
+    let mut tail = [0; 8];
+    tail[..words.remainder().len()].copy_from_slice(words.remainder());
+    mix(u64::from_le_bytes(tail));
+    mix(bytes.len() as u64);
     h
 }
 

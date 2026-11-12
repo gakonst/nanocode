@@ -3361,7 +3361,6 @@ dependencies = [
 name = "nanocode-tools-macros"
 version = "0.7.0"
 dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",

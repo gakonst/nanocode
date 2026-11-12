@@ -1,7 +1,10 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod manifest;
+mod toml;
+
+use manifest::{FoundCrate, crate_name};
 use proc_macro::TokenStream;
-use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
 use quote::{format_ident, quote};
 use syn::{
@@ -277,7 +280,7 @@ fn nanocode_path() -> (proc_macro2::TokenStream, String) {
         "nanocode-backend-codex",
         "nanocode-backend-claude",
     ] {
-        if let Ok(found) = crate_name(package) {
+        if let Some(found) = crate_name(package) {
             let name = match found {
                 FoundCrate::Itself => package.replace('-', "_"),
                 FoundCrate::Name(name) => name,

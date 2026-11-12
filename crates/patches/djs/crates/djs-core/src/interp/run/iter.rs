@@ -22,6 +22,7 @@ use super::intrinsics::{
 use super::*;
 use crate::builtins::dense::index;
 use crate::builtins::{collection, string};
+use crate::heap::cells::Object;
 use crate::heap::{Lookup, atoms};
 use crate::value::Str;
 
@@ -255,6 +256,9 @@ impl Exec<'_> {
 
     /// What the next step of `it` with `next` method `f` does, without doing it.
     fn iter_plan(&self, it: Value, f: Value) -> Plan {
+        if let Some(p) = self.array_values_plan(it, f) {
+            return p;
+        }
         let Some(it) = it.as_object() else {
             return Plan::Slow;
         };
@@ -325,6 +329,33 @@ impl Exec<'_> {
             &[Value::UNDEFINED, Value::TRUE],
         )?;
         Ok(Value::object(o))
+    }
+
+    #[inline(always)]
+    fn array_values_plan(&self, it: Value, f: Value) -> Option<Plan> {
+        let o = it.as_object()?;
+        if !self.is_class(o, ObjectClass::ArrayIterator) {
+            return None;
+        }
+        let slot = |o: Obj, k: u32| {
+            self.heap
+                .arena()
+                .read::<Value>(Object::SLOTS.at(o.offset(), k))
+        };
+        let (i, kind, t) = (
+            slot(o, 1).as_int()?,
+            slot(o, 2).as_int(),
+            slot(o, 0).as_object()?,
+        );
+        if kind != Some(1)
+            || !self.is_class(t, ObjectClass::Array)
+            || f != realm::installed_intrinsic(self.heap, ARRAY_ITERATOR_NEXT)
+        {
+            return None;
+        }
+        let i = u32::try_from(i).ok()?;
+        let v = self.heap.get_element_fast(t, i)?;
+        Some(Plan::Elem(o, v, i, 1))
     }
 }
 

@@ -6,6 +6,7 @@
 //! `diff_algo`. BSD diff (macOS) prints the same for these options, except where noted
 //! in the cases.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 
@@ -377,6 +378,8 @@ impl Text {
     }
 }
 
+type LineIds<'a> = HashMap<(Cow<'a, [u8]>, bool), u32, foldhash::fast::RandomState>;
+
 struct Differ {
     o: Opts,
     status: i32,
@@ -411,7 +414,10 @@ impl Differ {
     }
 
     /// The comparison key of a line under -i -w -b --strip-trailing-cr.
-    fn key(&self, line: &[u8]) -> Vec<u8> {
+    fn key<'a>(&self, line: &'a [u8]) -> Cow<'a, [u8]> {
+        if !(self.o.strip_cr || self.o.all_space || self.o.space_change || self.o.icase) {
+            return Cow::Borrowed(line);
+        }
         let mut l = line;
         if self.o.strip_cr {
             l = l.strip_suffix(b"\r").unwrap_or(l);
@@ -441,7 +447,18 @@ impl Differ {
         if self.o.icase {
             k.make_ascii_lowercase();
         }
-        k
+        Cow::Owned(k)
+    }
+
+    fn line_ids<'a>(&self, t: &'a Text, ids: &mut LineIds<'a>) -> Vec<u32> {
+        (0..t.lines.len())
+            .map(|i| {
+                let last = t.no_newline && i + 1 == t.lines.len();
+                let k = (self.key(t.line(i)), last);
+                let next = ids.len() as u32;
+                *ids.entry(k).or_insert(next)
+            })
+            .collect()
     }
 
     fn ignorable_line(&self, line: &[u8]) -> bool {
@@ -539,19 +556,9 @@ impl Differ {
             return ctx.write(msg.as_bytes()).await;
         }
         // Line ids: equal keys, and the missing newline of a last line counts.
-        let mut ids: HashMap<(Vec<u8>, bool), u32> = HashMap::new();
-        let mut seq = |t: &Text, me: &Differ| -> Vec<u32> {
-            (0..t.lines.len())
-                .map(|i| {
-                    let last = t.no_newline && i + 1 == t.lines.len();
-                    let k = (me.key(t.line(i)), last);
-                    let next = ids.len() as u32;
-                    *ids.entry(k).or_insert(next)
-                })
-                .collect()
-        };
-        let sa = seq(&ta, self);
-        let sb = seq(&tb, self);
+        let mut ids = LineIds::default();
+        let sa = self.line_ids(&ta, &mut ids);
+        let sb = self.line_ids(&tb, &mut ids);
         ctx.check().await;
         let changes = diff_algo::diff(&sa, &sb);
         let shown_flags: Vec<bool> = changes

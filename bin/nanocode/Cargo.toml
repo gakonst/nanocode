@@ -45,7 +45,7 @@ nanocode-tempo.workspace = true
 nanocode-tui = { path = "../../crates/tui", version = "0.7.0" }
 serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest.workspace = true
-rustls-native-certs.workspace = true
+nanocode-platform.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { workspace = true, features = ["tls12"] }
@@ -56,7 +56,6 @@ nanocode-process.workspace = true
 nanocode-psh.workspace = true
 nanocode-psh-embedded.workspace = true
 nanocode-python.workspace = true
-nanocode-platform.workspace = true
 psh.workspace = true
 
 [lints]

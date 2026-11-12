@@ -24,7 +24,6 @@ hyper-util = { workspace = true, features = ["tokio"] }
 nanocode-sync.workspace = true
 rcgen.workspace = true
 rustls = { workspace = true, features = ["ring", "std", "tls12"] }
-rustls-native-certs.workspace = true
 rustls-platform-verifier = "0.7.0"
 libc.workspace = true
 nanocode-sys.workspace = true

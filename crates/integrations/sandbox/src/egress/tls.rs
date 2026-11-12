@@ -90,9 +90,9 @@ impl Tls {
 
     #[cfg(not(all(unix, not(target_os = "android"), not(target_vendor = "apple"))))]
     pub fn new(name: &str) -> io::Result<Self> {
-        let found = rustls_native_certs::load_native_certs();
+        let found = nanocode_platform::trust::load_native_certificates();
         let mut roots = RootCertStore::empty();
-        let (added, _) = roots.add_parsable_certificates(found.certs);
+        let (added, _) = roots.add_parsable_certificates(found.certificates);
         if added == 0 {
             return Err(other(format!(
                 "no trusted root certificates found ({} errors loading them)",

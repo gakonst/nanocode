@@ -33,6 +33,9 @@ mod native;
 pub use native::{Host, HostFuture, host, install, now, sleep, spawn, system_time, timeout};
 
 #[cfg(not(target_family = "wasm"))]
+pub mod trust;
+
+#[cfg(not(target_family = "wasm"))]
 mod temporary;
 #[cfg(not(target_family = "wasm"))]
 pub use temporary::{PersistError, TemporaryFile, TemporaryPath};

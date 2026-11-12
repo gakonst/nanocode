@@ -1624,7 +1624,6 @@ dependencies = [
  "nanocode-tui",
  "psh",
  "reqwest",
- "rustls-native-certs",
  "serde",
  "serde_json",
  "tokio",
@@ -1897,6 +1896,7 @@ dependencies = [
  "getrandom 0.4.3",
  "nanocode-digest",
  "nanocode-sys",
+ "rustls-pki-types",
  "serde",
  "tokio",
 ]
@@ -1980,7 +1980,6 @@ dependencies = [
  "nanocode-sys",
  "rcgen",
  "rustls",
- "rustls-native-certs",
  "rustls-platform-verifier",
  "seccompiler",
  "serde",
@@ -2089,6 +2088,7 @@ name = "nanocode-sys"
 version = "0.7.0"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2109,10 +2109,10 @@ version = "0.7.0"
 name = "nanocode-tls"
 version = "0.7.0"
 dependencies = [
+ "nanocode-platform",
  "nanocode-sync",
  "rustls",
  "rustls-graviola",
- "rustls-native-certs",
  "rustls-platform-verifier",
  "tokio",
  "tracing",
@@ -2352,12 +2352,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "openssl-probe"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ordered-stream"
@@ -2734,18 +2728,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustls-native-certs"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
-dependencies = [
- "openssl-probe",
- "rustls-pki-types",
- "schannel",
- "security-framework",
-]
-
-[[package]]
 name = "rustls-pki-types"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2762,10 +2744,10 @@ dependencies = [
  "core-foundation-sys",
  "jni",
  "log",
+ "nanocode-platform",
  "nanocode-sys",
  "once_cell",
  "rustls",
- "rustls-native-certs",
  "rustls-platform-verifier-android",
  "rustls-webpki",
  "security-framework",

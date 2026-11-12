@@ -74,7 +74,7 @@ fn load() -> io::Result<ClientConfig> {
     }
     let loaded = native_certs();
     let mut roots = RootCertStore::empty();
-    let (added, rejected) = roots.add_parsable_certificates(loaded.certs);
+    let (added, rejected) = roots.add_parsable_certificates(loaded.certificates);
     tracing::info!(target: "nanocode_tls", stage = "tls.native_roots", elapsed_ms = began.elapsed().as_secs_f64() * 1000.0,
         certificates = added, rejected, load_errors = loaded.errors.len());
     if roots.is_empty() {
@@ -89,20 +89,20 @@ fn load() -> io::Result<ClientConfig> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn native_certs() -> rustls_native_certs::CertificateResult {
-    rustls_native_certs::load_native_certs()
+fn native_certs() -> nanocode_platform::trust::NativeCertificates {
+    nanocode_platform::trust::load_native_certificates()
 }
 
 #[cfg(target_os = "macos")]
 struct PathCerts {
-    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    certificates: Vec<rustls::pki_types::CertificateDer<'static>>,
     errors: Vec<String>,
 }
 
 #[cfg(target_os = "macos")]
 fn native_certs() -> PathCerts {
     let mut loaded = PathCerts {
-        certs: Vec::new(),
+        certificates: Vec::new(),
         errors: Vec::new(),
     };
     if let Some(file) = std::env::var_os("SSL_CERT_FILE") {
@@ -128,9 +128,9 @@ fn native_certs() -> PathCerts {
         }
     }
     loaded
-        .certs
+        .certificates
         .sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
-    loaded.certs.dedup();
+    loaded.certificates.dedup();
     loaded
 }
 
@@ -142,7 +142,7 @@ fn pem_certs(path: &std::path::Path, loaded: &mut PathCerts) {
         Ok(certs) => {
             for cert in certs {
                 match cert {
-                    Ok(cert) => loaded.certs.push(cert),
+                    Ok(cert) => loaded.certificates.push(cert),
                     Err(error) => loaded.errors.push(format!("{}: {error}", path.display())),
                 }
             }

@@ -208,9 +208,9 @@ pub mod system {
                 return Arc::clone(&loaded.roots);
             }
         }
-        let result = rustls_native_certs::load_native_certs();
+        let result = nanocode_platform::trust::load_native_certificates();
         let mut store = rustls::RootCertStore::empty();
-        let (added, ignored) = store.add_parsable_certificates(result.certs);
+        let (added, ignored) = store.add_parsable_certificates(result.certificates);
         if ignored > 0 {
             log::warn!("{ignored} platform CA root certificates were ignored due to errors");
         }

@@ -161,7 +161,7 @@ fn simple<'a>(
     }
     vp.exec_now = false;
     let mut fut: LocalBoxFuture<'a, R> = Box::pin(async move {
-        let r = (b.run)(vp, &argv).await;
+        let r = crate::builtins::call(vp, b, &argv).await;
         restore(vp, saved);
         exec::set_underscore(vp, last);
         let status = r?;

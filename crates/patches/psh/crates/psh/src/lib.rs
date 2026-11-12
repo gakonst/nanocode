@@ -132,6 +132,17 @@ fn shell_config() -> ShellConfig {
     cfg.cwd = std::env::current_dir()
         .map(|p| os_bytes(p.into_os_string()))
         .unwrap_or_else(|_| b"/".to_vec());
+    #[cfg(unix)]
+    if let Some((_, pwd)) = cfg.env.iter().find(|(k, _)| k == b"PWD")
+        && pwd.starts_with(b"/")
+        && !pwd.split(|&b| b == b'/').any(|c| c == b"." || c == b"..")
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let same = |p: &[u8]| std::fs::canonicalize(std::ffi::OsStr::from_bytes(p)).ok();
+        if same(pwd).is_some() && same(pwd) == same(&cfg.cwd) {
+            cfg.cwd = pwd.clone();
+        }
+    }
     #[cfg(windows)]
     {
         cfg.cwd = cfg
@@ -193,10 +204,7 @@ fn utilities() -> &'static [psh_engine::util::UtilEntry] {
 /// [`run`] with `extra` utilities after psh's own (nanocode's addition): `python3`,
 /// which like any `PathFallback` utility runs only when `PATH` has no such program.
 /// The first call decides the registry for the process.
-pub fn run_with(
-    args: Vec<std::ffi::OsString>,
-    extra: &[psh_engine::util::UtilEntry],
-) -> ExitCode {
+pub fn run_with(args: Vec<std::ffi::OsString>, extra: &[psh_engine::util::UtilEntry]) -> ExitCode {
     UTILITIES.get_or_init(|| psh_utils::REGISTRY.iter().chain(extra).copied().collect());
     run(args)
 }

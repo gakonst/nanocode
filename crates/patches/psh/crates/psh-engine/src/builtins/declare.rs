@@ -202,6 +202,12 @@ pub(crate) async fn run(vp: &mut Vp, which: Which, args: Vec<DeclArg>) -> R {
         vp.error("local: can only be used in a function").await;
         return Ok(1);
     }
+    if let Some(DeclArg::Word(w)) = args.first()
+        && w == b"--help"
+        && super::help_option(vp, bname.as_bytes()).await
+    {
+        return Ok(2);
+    }
     let mut o = Opts::default();
     match which {
         Which::Export => o.export = Some(true),

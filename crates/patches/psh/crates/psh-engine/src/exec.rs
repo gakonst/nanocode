@@ -1771,7 +1771,7 @@ pub(crate) async fn run_builtin(
             var.exported = true;
             vp.assigned_dynamic(&n);
         }
-        let r = (b.run)(vp, &argv).await;
+        let r = builtins::call(vp, b, &argv).await;
         for (n, old) in saved {
             match old {
                 Some(var) => vp.vars.insert(&n, var),

@@ -280,6 +280,13 @@ const TOPICS: &[(&str, &str, &str)] = &[
 ];
 
 /// `help [-dms] [pattern ...]`
+pub(super) fn topic_text(name: &[u8]) -> Option<String> {
+    TOPICS
+        .iter()
+        .find(|(n, _, _)| n.as_bytes() == name)
+        .map(|(n, syn, what)| format!("{n}: {syn}\n    {what}\n"))
+}
+
 pub(super) async fn help(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let mut mode = b'm';
     let mut i = 1;

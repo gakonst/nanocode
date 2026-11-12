@@ -111,6 +111,29 @@ pub(crate) fn find(name: &[u8]) -> Option<Builtin> {
 }
 
 /// The builtin `name` runs, unless `enable -n` turned it off.
+pub(crate) async fn call(vp: &mut Vp, b: Builtin, args: &[Vec<u8>]) -> R {
+    if args.get(1).is_some_and(|a| a == b"--help")
+        && !matches!(
+            &args[0][..],
+            b"echo" | b"test" | b"[" | b"true" | b"false" | b":" | b"let" | b"kill"
+        )
+        && help_option(vp, &args[0]).await
+    {
+        return Ok(2);
+    }
+    (b.run)(vp, args).await
+}
+
+pub(crate) async fn help_option(vp: &Vp, name: &[u8]) -> bool {
+    let Some(text) = help::topic_text(name) else {
+        return false;
+    };
+    if let Some(f) = vp.fd(1) {
+        let _ = f.write_all(text.as_bytes()).await;
+    }
+    true
+}
+
 pub(crate) fn get(vp: &Vp, name: &[u8]) -> Option<Builtin> {
     if vp.disabled.iter().any(|d| d == name) {
         return None;
@@ -347,22 +370,30 @@ async fn cd(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     let mut physical = false;
     let mut i = 1;
     while i < args.len() && args[i].len() > 1 && args[i][0] == b'-' {
-        match &args[i][..] {
-            b"--" => {
-                i += 1;
-                break;
+        if args[i] == b"--" {
+            i += 1;
+            break;
+        }
+        for &c in &args[i][1..] {
+            match c {
+                b'L' => physical = false,
+                b'P' => physical = true,
+                b'e' | b'@' => {}
+                _ => {
+                    vp.error(&format!("cd: -{}: invalid option", c as char))
+                        .await;
+                    vp.error_raw(b"cd: usage: cd [-L|[-P [-e]] [-@]] [dir]\n")
+                        .await;
+                    return Ok(2);
+                }
             }
-            b"-L" => physical = false,
-            b"-P" => physical = true,
-            b"-e" | b"-@" => {}
-            _ => break,
         }
         i += 1;
     }
     let rest = &args[i..];
     if rest.len() > 1 {
         vp.error("cd: too many arguments").await;
-        return Ok(1);
+        return Ok(2);
     }
     let mut print = false;
     let dir = match rest.first() {
@@ -387,6 +418,31 @@ async fn cd(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     };
     if dir.is_empty() {
         return Ok(0);
+    }
+    let mut dir = dir;
+    if !dir.starts_with(b"/")
+        && !dir.starts_with(b"./")
+        && !dir.starts_with(b"../")
+        && dir != b"."
+        && dir != b".."
+        && let Some(cdpath) = vp.var("CDPATH").map(<[u8]>::to_vec)
+    {
+        for entry in cdpath.split(|&b| b == b':') {
+            if entry.is_empty() {
+                continue;
+            }
+            let mut cand = entry.to_vec();
+            if !cand.ends_with(b"/") {
+                cand.push(b'/');
+            }
+            cand.extend_from_slice(&dir);
+            let abs = normalize(&vp.abs_path(&cand));
+            if matches!(vp.host().stat(&abs, true).await, Ok(m) if m.kind == FileKind::Dir) {
+                dir = cand;
+                print = true;
+                break;
+            }
+        }
     }
     let logical = vp.abs_path(&dir);
     // `cd missing/..` fails: each `..` leaves a directory that must be one. The working
@@ -436,7 +492,7 @@ async fn cd(vp: &mut Vp, args: &[Vec<u8>]) -> R {
             return Ok(1);
         }
     }
-    if physical && let Ok(p) = vp.host().canonicalize(&target).await {
+    if physical && let Ok(p) = vp.host().canonicalize(&logical).await {
         target = p;
     }
     let old = vp.cwd.clone();
@@ -452,7 +508,24 @@ async fn cd(vp: &mut Vp, args: &[Vec<u8>]) -> R {
 }
 
 async fn pwd(vp: &mut Vp, args: &[Vec<u8>]) -> R {
-    let physical = args[1..].iter().any(|a| a == b"-P");
+    let mut physical = false;
+    for a in &args[1..] {
+        if a == b"--" || a.len() < 2 || a[0] != b'-' {
+            break;
+        }
+        for &c in &a[1..] {
+            match c {
+                b'L' => physical = false,
+                b'P' => physical = true,
+                _ => {
+                    vp.error(&format!("pwd: -{}: invalid option", c as char))
+                        .await;
+                    vp.error_raw(b"pwd: usage: pwd [-LP]\n").await;
+                    return Ok(2);
+                }
+            }
+        }
+    }
     let mut dir = vp.cwd.clone();
     if physical && let Ok(p) = vp.host().canonicalize(&dir).await {
         dir = p;

@@ -222,7 +222,7 @@ pub(super) async fn command(vp: &mut Vp, args: &[Vec<u8>]) -> R {
     }
     let name = &rest[0];
     if let Some(b) = super::get(vp, name) {
-        return (b.run)(vp, rest).await;
+        return super::call(vp, b, rest).await;
     }
     // `command -p` asks for the standard program from the default PATH.
     if !default_path && let Some(e) = crate::util::lookup(vp, name).await {
@@ -359,7 +359,7 @@ pub(super) async fn builtin(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         return Ok(0);
     };
     match super::get(vp, name) {
-        Some(b) => (b.run)(vp, rest).await,
+        Some(b) => super::call(vp, b, rest).await,
         None => {
             vp.error(&format!("builtin: {}: not a shell builtin", s(name)))
                 .await;

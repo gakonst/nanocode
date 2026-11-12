@@ -571,7 +571,7 @@ struct Fields<'a> {
 }
 
 impl<'a> Fields<'a> {
-    fn new(input: &'a str) -> Self {
+    const fn new(input: &'a str) -> Self {
         Self {
             input: input.as_bytes(),
             at: 0,

@@ -89,7 +89,7 @@ impl RecordReader {
         let Rs::Byte(sep) = rs else {
             return None;
         };
-        let at = self.pos + bstr::ByteSlice::find_byte(&self.buf[self.pos..], *sep)?;
+        let at = self.pos + memchr::memchr(*sep, &self.buf[self.pos..])?;
         rec.clear();
         rec.extend_from_slice(&self.buf[self.pos..at]);
         self.pos = at + 1;
@@ -127,7 +127,7 @@ impl RecordReader {
         loop {
             let hay = &self.buf[searched..];
             let found = if sep.len() == 1 {
-                bstr::ByteSlice::find_byte(hay, sep[0])
+                memchr::memchr(sep[0], hay)
             } else {
                 hay.windows(sep.len()).position(|w| w == sep)
             };

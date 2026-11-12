@@ -3,8 +3,6 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use bstr::ByteSlice;
-
 use super::color::ColorSpecs;
 use super::hyperlink::{self, HyperlinkConfig, InterpolatorStatus};
 use super::stats::{Started, Stats};
@@ -707,13 +705,7 @@ impl<'a, M: Matcher, W: WriteColor> StandardImpl<'a, M, W> {
                 .config()
                 .max_columns
                 .map_or(0, |columns| columns as usize);
-            let end = bytes[line]
-                .grapheme_indices()
-                .map(|(_, end, _)| end)
-                .take(columns)
-                .last()
-                .unwrap_or(0)
-                + line.start();
+            let end = super::grapheme::end_of_graphemes(&bytes[line], columns) + line.start();
             line = line.with_end(end);
             self.write_colored_matches(bytes, line, matches, match_index)?;
             if matches.is_empty() {
@@ -791,8 +783,8 @@ impl<'a, M: Matcher, W: WriteColor> StandardImpl<'a, M, W> {
             self.write(b": ")?;
         }
         let remainder = format!(
-            "{message} (found {:?} byte around offset {offset})\n",
-            [byte].as_bstr()
+            "{message} (found {} byte around offset {offset})\n",
+            quoted_byte(byte)
         );
         self.write(remainder.as_bytes())
     }
@@ -1059,5 +1051,13 @@ impl<'a, M: Matcher, W: WriteColor> PreludeWriter<'a, M, W> {
         }
         self.next_separator = PreludeSeparator::None;
         Ok(())
+    }
+}
+
+fn quoted_byte(byte: u8) -> String {
+    match byte {
+        0 => "\"\\0\"".to_string(),
+        0x01..=0x7F => format!("\"{}\"", byte.escape_ascii()),
+        _ => format!("\"\\x{byte:02x}\""),
     }
 }

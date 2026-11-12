@@ -14,8 +14,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use bstr::{ByteSlice, io::BufReadExt};
-
 use crate::rg::anyhow;
 
 /// psh: `RIPGREP_CONFIG_PATH` as the utility's environment names it, and the file's
@@ -92,22 +90,25 @@ fn parse(
 fn parse_reader<R: std::io::Read>(
     rdr: R,
 ) -> anyhow::Result<(Vec<OsString>, Vec<anyhow::Error>)> {
-    let mut bufrdr = std::io::BufReader::new(rdr);
+    let bufrdr = std::io::BufReader::new(rdr);
     let (mut args, mut errs) = (vec![], vec![]);
     let mut line_number = 0;
-    bufrdr.for_byte_line_with_terminator(|line| {
+    crate::rg::bytes::for_each_line(bufrdr, |line| {
         line_number += 1;
 
-        let line = line.trim();
+        let line = crate::rg::bytes::trim_whitespace(line);
         if line.is_empty() || line[0] == b'#' {
             return Ok(true);
         }
-        match line.to_os_str() {
+        match crate::rg::bytes::os_str(line) {
             Ok(osstr) => {
                 args.push(osstr.to_os_string());
             }
             Err(err) => {
-                errs.push(anyhow::anyhow!("{line_number}: {err}"));
+                errs.push(anyhow::anyhow!(
+                    "{line_number}: invalid UTF-8 found at byte offset {}",
+                    err.valid_up_to()
+                ));
             }
         }
         Ok(true)

@@ -12,10 +12,7 @@ use std::{
     path::PathBuf,
 };
 
-use {
-    crate::printer::{HyperlinkFormat, UserColorSpec},
-    bstr::{BString, ByteVec},
-};
+use crate::printer::{HyperlinkFormat, UserColorSpec};
 
 /// A collection of "low level" arguments.
 ///
@@ -103,7 +100,7 @@ pub(crate) struct LowArgs {
     pub(crate) pre_glob: Vec<String>,
     pub(crate) quiet: bool,
     pub(crate) regex_size_limit: Option<usize>,
-    pub(crate) replace: Option<BString>,
+    pub(crate) replace: Option<Vec<u8>>,
     pub(crate) search_zip: bool,
     pub(crate) sort: Option<SortMode>,
     pub(crate) stats: bool,
@@ -466,11 +463,11 @@ impl ContextModeLimited {
 ///
 /// The default is `--`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ContextSeparator(Option<BString>);
+pub(crate) struct ContextSeparator(Option<Vec<u8>>);
 
 impl Default for ContextSeparator {
     fn default() -> ContextSeparator {
-        ContextSeparator(Some(BString::from("--")))
+        ContextSeparator(Some(b"--".to_vec()))
     }
 }
 
@@ -484,7 +481,7 @@ impl ContextSeparator {
                  to provide a separator that is not valid UTF-8)"
             )
         };
-        Ok(ContextSeparator(Some(Vec::unescape_bytes(string).into())))
+        Ok(ContextSeparator(Some(crate::rg::bytes::unescape(string))))
     }
 
     /// Creates a new separator that instructs the printer to disable contextual
@@ -499,7 +496,7 @@ impl ContextSeparator {
     ///
     /// Note that this may return a `Some` variant with zero bytes.
     pub(crate) fn into_bytes(self) -> Option<Vec<u8>> {
-        self.0.map(|sep| sep.into())
+        self.0
     }
 }
 
@@ -544,11 +541,11 @@ pub(crate) enum EngineChoice {
 ///
 /// The default is `-`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FieldContextSeparator(BString);
+pub(crate) struct FieldContextSeparator(Vec<u8>);
 
 impl Default for FieldContextSeparator {
     fn default() -> FieldContextSeparator {
-        FieldContextSeparator(BString::from("-"))
+        FieldContextSeparator(b"-".to_vec())
     }
 }
 
@@ -562,14 +559,14 @@ impl FieldContextSeparator {
                  to provide a separator that is not valid UTF-8)"
             )
         };
-        Ok(FieldContextSeparator(Vec::unescape_bytes(string).into()))
+        Ok(FieldContextSeparator(crate::rg::bytes::unescape(string)))
     }
 
     /// Return the raw bytes of this separator.
     ///
     /// Note that this may return an empty `Vec`.
     pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.0.into()
+        self.0
     }
 }
 
@@ -578,11 +575,11 @@ impl FieldContextSeparator {
 ///
 /// The default is `:`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FieldMatchSeparator(BString);
+pub(crate) struct FieldMatchSeparator(Vec<u8>);
 
 impl Default for FieldMatchSeparator {
     fn default() -> FieldMatchSeparator {
-        FieldMatchSeparator(BString::from(":"))
+        FieldMatchSeparator(b":".to_vec())
     }
 }
 
@@ -596,14 +593,14 @@ impl FieldMatchSeparator {
                  to provide a separator that is not valid UTF-8)"
             )
         };
-        Ok(FieldMatchSeparator(Vec::unescape_bytes(string).into()))
+        Ok(FieldMatchSeparator(crate::rg::bytes::unescape(string)))
     }
 
     /// Return the raw bytes of this separator.
     ///
     /// Note that this may return an empty `Vec`.
     pub(crate) fn into_bytes(self) -> Vec<u8> {
-        self.0.into()
+        self.0
     }
 }
 

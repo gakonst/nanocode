@@ -10,8 +10,6 @@
 use std::io::{self, BufWriter, LineWriter, Write};
 
 use crate::ansi::{ColorSpec, WriteColor};
-use bstr::ByteSlice;
-use bstr::io::BufReadExt;
 use psh_engine::util::SyncWriter;
 
 /// An error that occurs when parsing a human readable size description.
@@ -143,7 +141,7 @@ pub fn pattern_from_bytes(
     pattern: &[u8],
 ) -> Result<&str, InvalidPatternError> {
     std::str::from_utf8(pattern).map_err(|err| InvalidPatternError {
-        original: pattern.escape_bytes().to_string(),
+        original: super::bytes::escape(pattern),
         valid_up_to: err.valid_up_to(),
     })
 }
@@ -156,9 +154,9 @@ pub fn pattern_from_bytes(
 pub fn patterns_from_reader<R: io::Read>(rdr: R) -> io::Result<Vec<String>> {
     let mut patterns = vec![];
     let mut line_number = 0;
-    io::BufReader::new(rdr).for_byte_line(|line| {
+    super::bytes::for_each_line(io::BufReader::new(rdr), |line| {
         line_number += 1;
-        match pattern_from_bytes(line) {
+        match pattern_from_bytes(super::bytes::trim_terminator(line)) {
             Ok(pattern) => {
                 patterns.push(pattern.to_string());
                 Ok(true)

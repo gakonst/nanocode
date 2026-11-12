@@ -2,10 +2,8 @@
 // src/regex_helper.rs, with the psh patches marked `psh:` (D1138):
 // Copyright (c) 2017-present The fd developers. Licensed under the MIT License (see NOTICE).
 
-// psh: paths are bytes (globs see them as `Path`s); errors are messages (no anyhow);
-// bstr's substring search stands in for memchr's.
+// psh: paths are bytes (globs see them as `Path`s); errors are messages (no anyhow).
 use crate::search::glob::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
-use bstr::ByteSlice;
 use psh_pattern::bytes::{RegexSet, RegexSetBuilder};
 
 use self::regex_helper::pattern_matches_strings_with_leading_dot;
@@ -170,7 +168,7 @@ fn is_empty_pattern(patterns: &[String], pattern_type: PatternType) -> bool {
 
 /// Test if the needle is a substring of the haystack
 fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.find(needle).is_some()
+    memchr::memmem::find(haystack, needle).is_some()
 }
 
 #[test]

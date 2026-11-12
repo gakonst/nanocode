@@ -16,6 +16,7 @@
 mod messages;
 
 mod anyhow;
+mod bytes;
 mod cli;
 mod flags;
 mod haystack;

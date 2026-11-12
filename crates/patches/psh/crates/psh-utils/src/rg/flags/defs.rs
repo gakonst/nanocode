@@ -24,7 +24,6 @@ same encoding state in ripgrep.
 use std::{path::PathBuf, sync::LazyLock};
 
 use crate::rg::anyhow::{self, Context as AnyhowContext};
-use bstr::ByteVec;
 
 use crate::rg::flags::{
     Category, Flag, FlagValue,
@@ -1191,17 +1190,15 @@ is still inserted. To completely disable context separators, use the
 #[cfg(test)]
 #[test]
 fn test_context_separator() {
-    use bstr::BString;
-
     use crate::rg::flags::lowargs::ContextSeparator as Separator;
 
-    let getbytes = |ctxsep: Separator| ctxsep.into_bytes().map(BString::from);
+    let getbytes = |ctxsep: Separator| ctxsep.into_bytes();
 
     let args = parse_low_raw(None::<&str>).unwrap();
-    assert_eq!(Some(BString::from("--")), getbytes(args.context_separator));
+    assert_eq!(Some(b"--".to_vec()), getbytes(args.context_separator));
 
     let args = parse_low_raw(["--context-separator", "XYZ"]).unwrap();
-    assert_eq!(Some(BString::from("XYZ")), getbytes(args.context_separator));
+    assert_eq!(Some(b"XYZ".to_vec()), getbytes(args.context_separator));
 
     let args = parse_low_raw(["--no-context-separator"]).unwrap();
     assert_eq!(None, getbytes(args.context_separator));
@@ -1220,14 +1217,14 @@ fn test_context_separator() {
         "XYZ",
     ])
     .unwrap();
-    assert_eq!(Some(BString::from("XYZ")), getbytes(args.context_separator));
+    assert_eq!(Some(b"XYZ".to_vec()), getbytes(args.context_separator));
 
     // This checks that invalid UTF-8 can be used. This case isn't too tricky
     // to handle, because it passes the invalid UTF-8 as an escape sequence
     // that is itself valid UTF-8. It doesn't become invalid UTF-8 until after
     // the argument is parsed and then unescaped.
     let args = parse_low_raw(["--context-separator", r"\xFF"]).unwrap();
-    assert_eq!(Some(BString::from(b"\xFF")), getbytes(args.context_separator));
+    assert_eq!(Some(b"\xFF".to_vec()), getbytes(args.context_separator));
 
     // In this case, we specifically try to pass an invalid UTF-8 argument to
     // the flag. In theory we might be able to support this, but because we do
@@ -1826,22 +1823,14 @@ The \fB-\fP character is the default value.
 #[cfg(test)]
 #[test]
 fn test_field_context_separator() {
-    use bstr::BString;
-
     let args = parse_low_raw(None::<&str>).unwrap();
-    assert_eq!(BString::from("-"), args.field_context_separator.into_bytes());
+    assert_eq!(b"-".to_vec(), args.field_context_separator.into_bytes());
 
     let args = parse_low_raw(["--field-context-separator", "XYZ"]).unwrap();
-    assert_eq!(
-        BString::from("XYZ"),
-        args.field_context_separator.into_bytes()
-    );
+    assert_eq!(b"XYZ".to_vec(), args.field_context_separator.into_bytes());
 
     let args = parse_low_raw(["--field-context-separator=XYZ"]).unwrap();
-    assert_eq!(
-        BString::from("XYZ"),
-        args.field_context_separator.into_bytes()
-    );
+    assert_eq!(b"XYZ".to_vec(), args.field_context_separator.into_bytes());
 
     let args = parse_low_raw([
         "--field-context-separator",
@@ -1850,29 +1839,20 @@ fn test_field_context_separator() {
         "ABC",
     ])
     .unwrap();
-    assert_eq!(
-        BString::from("ABC"),
-        args.field_context_separator.into_bytes()
-    );
+    assert_eq!(b"ABC".to_vec(), args.field_context_separator.into_bytes());
 
     let args = parse_low_raw(["--field-context-separator", r"\t"]).unwrap();
-    assert_eq!(BString::from("\t"), args.field_context_separator.into_bytes());
+    assert_eq!(b"\t".to_vec(), args.field_context_separator.into_bytes());
 
     let args = parse_low_raw(["--field-context-separator", r"\x00"]).unwrap();
-    assert_eq!(
-        BString::from("\x00"),
-        args.field_context_separator.into_bytes()
-    );
+    assert_eq!(b"\x00".to_vec(), args.field_context_separator.into_bytes());
 
     // This checks that invalid UTF-8 can be used. This case isn't too tricky
     // to handle, because it passes the invalid UTF-8 as an escape sequence
     // that is itself valid UTF-8. It doesn't become invalid UTF-8 until after
     // the argument is parsed and then unescaped.
     let args = parse_low_raw(["--field-context-separator", r"\xFF"]).unwrap();
-    assert_eq!(
-        BString::from(b"\xFF"),
-        args.field_context_separator.into_bytes()
-    );
+    assert_eq!(b"\xFF".to_vec(), args.field_context_separator.into_bytes());
 
     // In this case, we specifically try to pass an invalid UTF-8 argument to
     // the flag. In theory we might be able to support this, but because we do
@@ -1934,16 +1914,14 @@ The \fB:\fP character is the default value.
 #[cfg(test)]
 #[test]
 fn test_field_match_separator() {
-    use bstr::BString;
-
     let args = parse_low_raw(None::<&str>).unwrap();
-    assert_eq!(BString::from(":"), args.field_match_separator.into_bytes());
+    assert_eq!(b":".to_vec(), args.field_match_separator.into_bytes());
 
     let args = parse_low_raw(["--field-match-separator", "XYZ"]).unwrap();
-    assert_eq!(BString::from("XYZ"), args.field_match_separator.into_bytes());
+    assert_eq!(b"XYZ".to_vec(), args.field_match_separator.into_bytes());
 
     let args = parse_low_raw(["--field-match-separator=XYZ"]).unwrap();
-    assert_eq!(BString::from("XYZ"), args.field_match_separator.into_bytes());
+    assert_eq!(b"XYZ".to_vec(), args.field_match_separator.into_bytes());
 
     let args = parse_low_raw([
         "--field-match-separator",
@@ -1952,23 +1930,20 @@ fn test_field_match_separator() {
         "ABC",
     ])
     .unwrap();
-    assert_eq!(BString::from("ABC"), args.field_match_separator.into_bytes());
+    assert_eq!(b"ABC".to_vec(), args.field_match_separator.into_bytes());
 
     let args = parse_low_raw(["--field-match-separator", r"\t"]).unwrap();
-    assert_eq!(BString::from("\t"), args.field_match_separator.into_bytes());
+    assert_eq!(b"\t".to_vec(), args.field_match_separator.into_bytes());
 
     let args = parse_low_raw(["--field-match-separator", r"\x00"]).unwrap();
-    assert_eq!(BString::from("\x00"), args.field_match_separator.into_bytes());
+    assert_eq!(b"\x00".to_vec(), args.field_match_separator.into_bytes());
 
     // This checks that invalid UTF-8 can be used. This case isn't too tricky
     // to handle, because it passes the invalid UTF-8 as an escape sequence
     // that is itself valid UTF-8. It doesn't become invalid UTF-8 until after
     // the argument is parsed and then unescaped.
     let args = parse_low_raw(["--field-match-separator", r"\xFF"]).unwrap();
-    assert_eq!(
-        BString::from(b"\xFF"),
-        args.field_match_separator.into_bytes()
-    );
+    assert_eq!(b"\xFF".to_vec(), args.field_match_separator.into_bytes());
 
     // In this case, we specifically try to pass an invalid UTF-8 argument to
     // the flag. In theory we might be able to support this, but because we do
@@ -5221,7 +5196,7 @@ is, the path separator is automatically chosen based on the environment.
 
     fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {
         let s = convert::string(v.unwrap_value())?;
-        let raw = Vec::unescape_bytes(&s);
+        let raw = crate::rg::bytes::unescape(&s);
         args.path_separator = if raw.is_empty() {
             None
         } else if raw.len() == 1 {
@@ -6042,25 +6017,23 @@ This flag can be used with the \flag{only-matching} flag.
 #[cfg(test)]
 #[test]
 fn test_replace() {
-    use bstr::BString;
-
     let args = parse_low_raw(None::<&str>).unwrap();
     assert_eq!(None, args.replace);
 
     let args = parse_low_raw(["--replace", "foo"]).unwrap();
-    assert_eq!(Some(BString::from("foo")), args.replace);
+    assert_eq!(Some(b"foo".to_vec()), args.replace);
 
     let args = parse_low_raw(["--replace", "-foo"]).unwrap();
-    assert_eq!(Some(BString::from("-foo")), args.replace);
+    assert_eq!(Some(b"-foo".to_vec()), args.replace);
 
     let args = parse_low_raw(["-r", "foo"]).unwrap();
-    assert_eq!(Some(BString::from("foo")), args.replace);
+    assert_eq!(Some(b"foo".to_vec()), args.replace);
 
     let args = parse_low_raw(["-r", "foo", "-rbar"]).unwrap();
-    assert_eq!(Some(BString::from("bar")), args.replace);
+    assert_eq!(Some(b"bar".to_vec()), args.replace);
 
     let args = parse_low_raw(["-r", "foo", "-r", ""]).unwrap();
-    assert_eq!(Some(BString::from("")), args.replace);
+    assert_eq!(Some(b"".to_vec()), args.replace);
 }
 
 /// -z/--search-zip

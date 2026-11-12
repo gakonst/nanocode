@@ -1,4 +1,5 @@
 mod color;
+mod grapheme;
 mod hyperlink;
 mod path;
 mod standard;

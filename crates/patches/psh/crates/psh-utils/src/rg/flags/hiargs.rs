@@ -26,10 +26,7 @@ use psh_engine::{
 
 use crate::search::walk::{WalkHost, WalkOptions, Walker, os_bytes};
 
-use {
-    crate::printer::{ColorSpecs, SummaryKind},
-    bstr::BString,
-};
+use crate::printer::{ColorSpecs, SummaryKind};
 
 use crate::rg::{
     flags::lowargs::{
@@ -96,7 +93,7 @@ pub(crate) struct HiArgs {
     quiet: bool,
     quit_after_match: bool,
     regex_size_limit: Option<usize>,
-    replace: Option<BString>,
+    replace: Option<Vec<u8>>,
     sort: Option<SortMode>,
     stats: Option<crate::printer::Stats>,
     stop_on_nonmatch: bool,
@@ -479,7 +476,9 @@ impl HiArgs {
                 anyhow::bail!(suggest_text(suggest_multiline(err.to_string())))
             }
         };
-        Ok(PatternMatcher::RustRegex(crate::search::matcher::RegexMatcher::new(m)))
+        Ok(PatternMatcher::RustRegex(
+            crate::search::matcher::RegexMatcher::new(m),
+        ))
     }
 
     /// Returns true if some non-zero number of matches is believed to be
@@ -569,7 +568,7 @@ impl HiArgs {
     ) -> crate::rg::json::JSON<W> {
         crate::rg::json::JSONBuilder::new()
             .always_begin_end(false)
-            .replacement(self.replace.clone().map(|r| r.into()))
+            .replacement(self.replace.clone())
             .build(wtr)
     }
 
@@ -593,7 +592,7 @@ impl HiArgs {
             .path_terminator(self.path_terminator.clone())
             .per_match_one_line(true)
             .per_match(self.vimgrep)
-            .replacement(self.replace.clone().map(|r| r.into()))
+            .replacement(self.replace.clone())
             .separator_context(self.context_separator.clone().into_bytes())
             .separator_field_context(
                 self.field_context_separator.clone().into_bytes(),

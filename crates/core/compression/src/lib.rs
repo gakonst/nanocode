@@ -8,4 +8,5 @@ pub mod checksum;
 pub mod deflate;
 pub mod inflate;
 pub mod lz4;
+pub mod miniz;
 pub mod xz;

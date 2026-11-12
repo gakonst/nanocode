@@ -55,6 +55,7 @@ const ADD_SET: u32 = 1;
 
 /// The slots of the megamorphic cache (`Heap::mega_ic`), a power of two.
 const MEGA_SLOTS: u32 = 256;
+const MEGA_KEY: usize = WORDS as usize - 1;
 
 /// Global slot word 0: the entry is in the global lexical record.
 const IN_LEX: u32 = 1 << 31;
@@ -203,6 +204,9 @@ fn mega_at(heap: &Heap, o: Value, key: Atom) -> Option<usize> {
 pub(crate) fn mega_get(heap: &Heap, o: Value, key: Atom) -> Option<Value> {
     let i = mega_at(heap, o, key)?;
     let s = heap.mega_ic.get(i..i + WORDS as usize)?;
+    if s[MEGA_KEY] != key.0 {
+        return None;
+    }
     get_hit(heap, [s[0], s[1], s[2]], |_| s[3], o, key)
 }
 
@@ -305,6 +309,7 @@ impl Exec<'_> {
                 mega.resize((MEGA_SLOTS * WORDS) as usize, 0);
             }
             mega[i..i + WORDS as usize].copy_from_slice(&words);
+            mega[i + MEGA_KEY] = key.0;
         }
         self.ic_write(ic, words);
     }

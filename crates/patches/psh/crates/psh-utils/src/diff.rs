@@ -328,6 +328,13 @@ async fn kind(ctx: &UtilCtx<'_>, name: &[u8]) -> Option<bool> {
         .map(|m| m.kind == FileKind::Dir)
 }
 
+/// `/dev/fd/N`, `/dev/stdin` and friends: the shell's own descriptors.
+fn is_dev_fd(p: &[u8]) -> bool {
+    matches!(p, b"/dev/stdin" | b"/dev/stdout" | b"/dev/stderr")
+        || p.strip_prefix(b"/dev/fd/")
+            .is_some_and(|n| !n.is_empty() && n.iter().all(u8::is_ascii_digit))
+}
+
 fn basename(p: &[u8]) -> &[u8] {
     let t = p.strip_suffix(b"/").unwrap_or(p);
     t.rsplit(|&b| b == b'/').next().unwrap_or(t)
@@ -405,7 +412,13 @@ impl Differ {
         let mtime = if name == b"-" {
             now
         } else {
-            ctx.stat(name, true).await?.mtime_ns
+            match ctx.stat(name, true).await {
+                Ok(m) => m.mtime_ns,
+                // One of the shell's descriptors (`diff <(a) <(b)`): a stream the
+                // host has no file for.
+                Err(_) if is_dev_fd(name) => now,
+                Err(e) => return Err(e),
+            }
         };
         let input = Input::open(ctx, name).await?;
         let mut data = Vec::new();

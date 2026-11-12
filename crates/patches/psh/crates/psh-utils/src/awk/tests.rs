@@ -388,3 +388,51 @@ fn sort_key(id: &str) -> (String, u64, String) {
         None => (id.to_string(), 0, String::new()),
     }
 }
+
+#[test]
+fn a_program_only_gawk_runs_is_the_real_programs() {
+    // With gawk on PATH, what this awk cannot compile or does not act on goes to it.
+    let run_with_gawk = |src: &str| {
+        let host = Rc::new(TestHost::new());
+        host.add_command("gawk", |p| {
+            Box::pin(async move {
+                let _ = p.write(b"the real gawk\n").await;
+                7
+            })
+        });
+        let mut cfg = host.config();
+        cfg.utilities = crate::policy(false);
+        let mut shell = Shell::new(cfg);
+        shell.start(Script::command(src));
+        let status = loop {
+            match shell.step(1000) {
+                Step::Done(s) => break s,
+                Step::Yield => {}
+                other => panic!("{other:?} running {src:?}"),
+            }
+        };
+        (status, String::from_utf8_lossy(&host.stdout()).into_owned())
+    };
+    for program in [
+        "BEGIN { n = asorti(a, b) }",
+        "BEGIN { PROCINFO[\"sorted_in\"] = \"@ind_str_asc\" }",
+        "BEGINFILE { print FILENAME }",
+        "BEGIN { IGNORECASE = 1 }",
+        "BEGIN { a[1][2] = 3 }",
+    ] {
+        assert_eq!(
+            run_with_gawk(&format!("gawk '{program}'")),
+            (7, "the real gawk\n".into()),
+            "{program}"
+        );
+    }
+    assert_eq!(run_with_gawk("gawk -i inplace 1 f"), (7, "the real gawk\n".into()));
+    // What it runs itself stays its own, and without the program its own error stands.
+    assert_eq!(run_with_gawk("gawk 'BEGIN { print 1 + 1 }'"), (0, "2\n".into()));
+    let o = run("awk 'BEGIN { n = asorti(a, b) }'", b"", &[]);
+    assert_eq!(o.status, Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&o.stderr),
+        "awk: cmd. line:1: fatal: function `asorti' not defined\n"
+    );
+}

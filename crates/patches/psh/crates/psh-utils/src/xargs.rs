@@ -1,4 +1,5 @@
-//! `xargs` with GNU semantics plus BSD's empty-input rule (D1170): items from stdin (or
+//! `xargs` with GNU semantics (off Linux with BSD's empty-input rule, D1170; on Linux
+//! the command runs once without items unless `-r`, as GNU's does): items from stdin (or
 //! `-a FILE`) are appended to a command, as many as fit (`-s`, 128 KiB by default), or
 //! `-n` per command, or `-L` lines per command, or one line per command with `-I`
 //! replacing a string in the arguments. Input splits on blanks and newlines with
@@ -59,6 +60,8 @@ struct Opts {
     verbose: bool,
     exit: bool,
     open_tty: bool,
+    /// `-r`: no command for input without items (the rule off Linux anyway).
+    no_run_if_empty: bool,
 }
 
 /// What the parser could not take: the real program gets the command line.
@@ -247,7 +250,7 @@ fn parse(args: &[Vec<u8>]) -> Parse {
                         return Parse::Error("option '--max-chars' requires an argument".into());
                     }
                 },
-                "no-run-if-empty" => {}
+                "no-run-if-empty" => o.no_run_if_empty = true,
                 "verbose" => o.verbose = true,
                 "exit" => o.exit = true,
                 "open-tty" => o.open_tty = true,
@@ -264,7 +267,7 @@ fn parse(args: &[Vec<u8>]) -> Parse {
             let rest = &a[j + 1..];
             match c {
                 b'0' => o.delim = Some(0),
-                b'r' => {}
+                b'r' => o.no_run_if_empty = true,
                 b't' => o.verbose = true,
                 b'x' => o.exit = true,
                 b'o' => o.open_tty = true,
@@ -519,6 +522,8 @@ struct Runner {
     status: i32,
     /// A command that ended everything: 124, 125, 126, 127.
     fatal: Option<i32>,
+    /// A command was started.
+    launched: bool,
     stdin: Option<Vec<u8>>,
 }
 
@@ -613,6 +618,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         max: o.max_procs,
         status: 0,
         fatal: None,
+        launched: false,
         // The commands read /dev/null (GNU), or the terminal; with -a, xargs's stdin.
         stdin: if o.open_tty {
             Some(b"/dev/tty".to_vec())
@@ -663,7 +669,12 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                 return 1;
             }
             Got::End => {
-                if !args.is_empty() {
+                // GNU runs the command once for input without items; BSD does not.
+                let empty = cfg!(target_os = "linux")
+                    && !o.no_run_if_empty
+                    && !replace_mode
+                    && !runner.launched;
+                if !args.is_empty() || empty {
                     launch(ctx, &o, &command, &mut args, &mut runner, &mut names).await;
                 }
                 break;
@@ -723,7 +734,7 @@ fn args_push_line(args: &mut Vec<Vec<u8>>, item: Vec<u8>, size: &mut usize) {
     args.push(item);
 }
 
-/// Starts the command with the collected arguments (BSD rule: never with none, D1170).
+/// Starts the command with the collected arguments.
 async fn launch(
     ctx: &mut UtilCtx<'_>,
     o: &Opts,
@@ -732,6 +743,7 @@ async fn launch(
     runner: &mut Runner,
     names: &mut Vec<String>,
 ) {
+    runner.launched = true;
     let items = std::mem::take(args);
     let argv: Vec<Vec<u8>> = match &o.replace {
         Some(r) => {

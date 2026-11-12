@@ -157,4 +157,14 @@ fn diff() {
         "diff: /tmp/nope: No such file or directory\n",
     );
     check("diff -q /tmp/f /tmp/g", "Files /tmp/f and /tmp/g differ\n");
+    // Process substitutions are the shell's descriptors: streams without a file.
+    check_all(
+        "diff <(echo a; echo b) <(echo a; echo c); echo $?",
+        "",
+        0,
+        "2c2\n< b\n---\n> c\n1\n",
+        "",
+    );
+    check_all("diff <(echo a) <(echo a); echo $?", "", 0, "0\n", "");
+    check_all("diff /tmp/g <(cat /tmp/g) && echo same", "", 0, "same\n", "");
 }

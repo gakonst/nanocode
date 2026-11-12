@@ -312,8 +312,15 @@ fn xargs() {
     check_all("xargs -0 echo", "a b\0c\0", 0, "a b c\n", "");
     check_all("xargs -d, -n2 echo", "a,b,c", 0, "a b\nc\n", "");
     check_all("xargs -E X echo", "a X b\n", 0, "a\n", "");
-    // Empty input runs nothing (D1170).
-    check_all("xargs echo ran", "\n", 0, "", "");
+    // Input without items: GNU runs the command once, unless -r or -I; BSD's rule off
+    // Linux is to run nothing (D1170).
+    let once = if cfg!(target_os = "linux") { "ran\n" } else { "" };
+    check_all("xargs echo ran", "\n", 0, once, "");
+    check_all("xargs -n1 echo ran", "", 0, once, "");
+    check_all("xargs -r echo ran", "\n", 0, "", "");
+    check_all("xargs --no-run-if-empty echo ran", "", 0, "", "");
+    check_all("xargs -I{} echo ran {}", "\n", 0, "", "");
+    check_all("xargs echo ran", "a\n", 0, "ran a\n", "");
     check_all("xargs false", "a\n", 123, "", "");
     check_all("xargs -P2 -n1 echo", "a\n", 0, "a\n", "");
     check_all(

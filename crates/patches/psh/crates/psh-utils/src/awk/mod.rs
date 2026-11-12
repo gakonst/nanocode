@@ -129,6 +129,12 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                     }
                 }
                 Err(e) => {
+                    // gawk's extensions (`-i inplace`) are files of its own.
+                    if includes.contains(f)
+                        && let Some(status) = ctx.run_program(argv.to_vec()).await
+                    {
+                        return status;
+                    }
                     ctx.error(&format!(
                         "fatal: cannot open source file `{name}' for reading: {}",
                         error_text(&e)
@@ -148,7 +154,15 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
     };
 
     let utf8 = ctx.utf8();
-    let prog = match build(&source.text, utf8) {
+    let built = build(&source.text, utf8);
+    // A program this awk cannot compile, or one that names what only gawk acts on, is
+    // the real program's when PATH has one: it runs it or says what is wrong with it.
+    if (built.is_err() || names_gawk_only(&source.text))
+        && let Some(status) = ctx.run_program(argv.to_vec()).await
+    {
+        return status;
+    }
+    let prog = match built {
         Ok(p) => Rc::new(p),
         Err(e) if e.msg.starts_with("fatal: ") || e.msg.starts_with("error: ") => {
             // gawk's fatal errors (status 2) and its errors without an excerpt (1).
@@ -219,6 +233,31 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         }
     }
     m.run_program().await
+}
+
+/// gawk's variables and patterns that this awk reads as plain names.
+const GAWK_ONLY: &[&[u8]] = &[
+    b"ARGIND",
+    b"BEGINFILE",
+    b"BINMODE",
+    b"ENDFILE",
+    b"ERRNO",
+    b"FIELDWIDTHS",
+    b"FPAT",
+    b"FUNCTAB",
+    b"IGNORECASE",
+    b"LINT",
+    b"PROCINFO",
+    b"SYMTAB",
+    b"TEXTDOMAIN",
+];
+
+/// Whether the source has one of [`GAWK_ONLY`] as a word (in a string or a comment
+/// too: the real program runs those as well).
+fn names_gawk_only(src: &[u8]) -> bool {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    src.split(|&b| !word(b))
+        .any(|w| GAWK_ONLY.contains(&w))
 }
 
 /// Source to a runnable program.

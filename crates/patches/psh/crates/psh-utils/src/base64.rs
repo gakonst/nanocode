@@ -177,36 +177,46 @@ async fn run_encode(
         } else {
             carry.len() / 3 * 3
         };
-        let mut text = Vec::with_capacity(whole / 3 * 4 + whole / 40 + 2);
-        for chunk in carry[..whole].chunks(3) {
-            let b = [
-                chunk[0],
-                *chunk.get(1).unwrap_or(&0),
-                *chunk.get(2).unwrap_or(&0),
-            ];
-            let sym = [
-                ALPHABET[usize::from(b[0] >> 2)],
-                ALPHABET[usize::from((b[0] & 3) << 4 | b[1] >> 4)],
-                if chunk.len() > 1 {
-                    ALPHABET[usize::from((b[1] & 15) << 2 | b[2] >> 6)]
-                } else {
-                    b'='
-                },
-                if chunk.len() > 2 {
-                    ALPHABET[usize::from(b[2] & 63)]
-                } else {
-                    b'='
-                },
-            ];
-            for s in sym {
-                if wrap > 0 && col == wrap {
+        let full = whole / 3 * 3;
+        let mut syms = Vec::with_capacity(whole / 3 * 4 + 4);
+        for c in carry[..full].as_chunks::<3>().0 {
+            let n = u32::from(c[0]) << 16 | u32::from(c[1]) << 8 | u32::from(c[2]);
+            syms.extend_from_slice(&[
+                ALPHABET[(n >> 18) as usize & 63],
+                ALPHABET[(n >> 12) as usize & 63],
+                ALPHABET[(n >> 6) as usize & 63],
+                ALPHABET[n as usize & 63],
+            ]);
+        }
+        if whole > full {
+            let c = &carry[full..whole];
+            let b1 = c.get(1).copied().unwrap_or(0);
+            syms.push(ALPHABET[usize::from(c[0] >> 2)]);
+            syms.push(ALPHABET[usize::from((c[0] & 3) << 4 | b1 >> 4)]);
+            syms.push(if c.len() > 1 {
+                ALPHABET[usize::from((b1 & 15) << 2)]
+            } else {
+                b'='
+            });
+            syms.push(b'=');
+        }
+        let mut text = if let Some(lines) = syms.len().checked_div(wrap) {
+            let mut text = Vec::with_capacity(syms.len() + lines + 2);
+            let mut rest = &syms[..];
+            while !rest.is_empty() {
+                if col == wrap {
                     text.push(b'\n');
                     col = 0;
                 }
-                text.push(s);
-                col += 1;
+                let take = (wrap - col).min(rest.len());
+                text.extend_from_slice(&rest[..take]);
+                col += take;
+                rest = &rest[take..];
             }
-        }
+            text
+        } else {
+            syms
+        };
         carry.drain(..whole);
         any |= !text.is_empty();
         if eof && any && wrap > 0 {
@@ -219,6 +229,16 @@ async fn run_encode(
         ctx.check().await;
     }
 }
+
+const DECODE: [u8; 256] = {
+    let mut t = [0xff; 256];
+    let mut i = 0;
+    while i < 64 {
+        t[ALPHABET[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
 
 fn value(c: u8) -> Option<u8> {
     match c {
@@ -307,7 +327,25 @@ async fn run_decode(
             }
             return Ok(0);
         }
-        for &c in &buf[..n] {
+        let data = &buf[..n];
+        let mut i = 0;
+        while i < data.len() {
+            if d.len == 0
+                && let Some(g) = data.get(i..i + 4)
+            {
+                let v: [u8; 4] = std::array::from_fn(|k| DECODE[usize::from(g[k])]);
+                if (v[0] | v[1] | v[2] | v[3]) < 64 {
+                    bytes.extend_from_slice(&[
+                        v[0] << 2 | v[1] >> 4,
+                        v[1] << 4 | v[2] >> 2,
+                        v[2] << 6 | v[3],
+                    ]);
+                    i += 4;
+                    continue;
+                }
+            }
+            let c = data[i];
+            i += 1;
             if c == b'\n' {
                 continue;
             }

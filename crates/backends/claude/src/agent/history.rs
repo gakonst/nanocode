@@ -196,6 +196,7 @@ pub(super) struct CodeRound(Arc<Round>);
 struct Round {
     value: serde_json::Value,
     record: OnceLock<EncodedPayload>,
+    bytes: OnceLock<usize>,
 }
 
 impl CodeRound {
@@ -210,6 +211,13 @@ impl CodeRound {
         let record = EncodedPayload::from_json(serde_json::to_string(&self.0.value)?.into());
         Ok(self.0.record.get_or_init(|| record).clone())
     }
+
+    pub(super) fn bytes(&self) -> usize {
+        *self
+            .0
+            .bytes
+            .get_or_init(|| super::bounded_json_len(&self.0.value, usize::MAX))
+    }
 }
 
 impl From<serde_json::Value> for CodeRound {
@@ -217,6 +225,7 @@ impl From<serde_json::Value> for CodeRound {
         Self(Arc::new(Round {
             value,
             record: OnceLock::new(),
+            bytes: OnceLock::new(),
         }))
     }
 }

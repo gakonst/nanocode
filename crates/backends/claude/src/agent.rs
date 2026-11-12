@@ -2652,7 +2652,7 @@ impl Conversation {
             round["omitted_calls"] = json!(omitted);
         }
         self.code_calls.push(round.into());
-        let size = |round: &history::CodeRound| bounded_json_len(round, usize::MAX);
+        let size = history::CodeRound::bytes;
         let mut total = self.code_calls.iter().map(size).sum::<usize>();
         while self.code_calls.len() > Self::CODE_CALL_ROUNDS
             || (total > Self::CODE_CALL_BYTES && !self.code_calls.is_empty())

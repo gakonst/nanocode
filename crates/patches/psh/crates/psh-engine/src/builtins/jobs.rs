@@ -29,9 +29,16 @@ async fn report(vp: &Vp, job: &Job) {
 }
 
 /// Removes a finished job from the table once `wait` or `jobs` reported it.
-fn reap(vp: &Vp, job: &Rc<Job>) {
+fn reap(vp: &mut Vp, job: &Rc<Job>) {
     if job.status().is_some() {
         vp.jobs.borrow_mut().remove(job);
+        if let Some(name) = job.coproc.take() {
+            let pid = format!("{name}_PID");
+            if vp.var(&pid) == Some(job.pid().to_string().as_bytes()) {
+                vp.vars.remove(&pid);
+                vp.vars.remove(&name);
+            }
+        }
     }
 }
 

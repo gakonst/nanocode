@@ -145,6 +145,71 @@ async fn run_background(vp: &mut Vp, code: &Rc<Code>, list: ListId, item: usize)
     Ok(0)
 }
 
+fn run_coproc<'a>(
+    vp: &'a mut Vp,
+    code: &'a Rc<Code>,
+    span: psh_syntax::Span,
+    cp: &'a psh_syntax::Coproc,
+) -> LocalBoxFuture<'a, R> {
+    Box::pin(coproc(vp, code, span, cp))
+}
+
+async fn coproc(
+    vp: &mut Vp,
+    code: &Rc<Code>,
+    span: psh_syntax::Span,
+    cp: &psh_syntax::Coproc,
+) -> R {
+    let name = match &cp.name {
+        Some(w) => code.ast.text(w.span).to_string(),
+        None => "COPROC".to_string(),
+    };
+    if !is_name(name.as_bytes()) {
+        vp.error(&format!("`{name}': not a valid identifier"))
+            .await;
+        return Ok(1);
+    }
+    let mut sub = enter(vp).await?;
+    let (to_r, to_w) = pipe::pipe();
+    let (from_r, from_w) = pipe::pipe();
+    sub.fds.set(0, Rc::new(FdObj::PipeRead(to_r)));
+    sub.fds.set(1, Rc::new(FdObj::PipeWrite(from_w)));
+    let mut free = (10..=63).rev().filter(|n| vp.fds.get(*n).is_none());
+    let (Some(rfd), Some(wfd)) = (free.next(), free.next()) else {
+        vp.error("coproc: cannot open pipe").await;
+        return Ok(1);
+    };
+    vp.fds.set(rfd, Rc::new(FdObj::PipeRead(from_r)));
+    vp.fds.set(wfd, Rc::new(FdObj::PipeWrite(to_w)));
+    let text = code.ast.text(span).trim_end().to_string();
+    let job = vp.jobs.borrow_mut().add(text, vp.core.next_job_id(), false);
+    *job.coproc.borrow_mut() = Some(name.clone());
+    sub.job = Some(job.clone());
+    vp.last_bg = Some(job.clone());
+    let code = code.clone();
+    let body = cp.body;
+    let j = job.clone();
+    let id = vp.core.sched.spawn_task(Box::pin(async move {
+        let r = run_command_unchecked(&mut sub, &code, body).await;
+        let status = r.unwrap_or_else(|u| u.status(sub.status));
+        Box::pin(trap::exit_trap(&mut sub, status)).await;
+        j.finish(status);
+    }));
+    job.set_task(id);
+    let var = vp.vars.entry(&name);
+    var.value = crate::vars::Value::Indexed(
+        [
+            (0, rfd.to_string().into_bytes()),
+            (1, wfd.to_string().into_bytes()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let pid = job.pid().to_string().into_bytes();
+    vp.vars.entry(&format!("{name}_PID")).set(pid);
+    Ok(0)
+}
+
 /// Forks the shell's process for the background job `vp` runs in (D1900). `Some`: this
 /// is still the shell, the job ran in the copy and ended with that status. `None`: this
 /// process is to run the job: the copy, where `vp` is the shell now (it takes the
@@ -562,9 +627,9 @@ fn run_command_with<'a>(
         }
         let result = match &cmd.kind {
             CommandKind::Simple(s) => run_simple(vp, code, cmd, s).await,
-            CommandKind::Coproc(_) => {
+            CommandKind::Coproc(cp) => {
                 vp.line = code.line(cmd.span.start);
-                expand::unsupported(vp, compound_name(&cmd.kind)).await
+                run_coproc(vp, code, cmd.span, cp).await
             }
             _ if cmd.redirects.is_empty() => run_compound(vp, code, cmd).await,
             _ => Box::pin(with_redirects(vp, code, cmd)).await,
@@ -689,23 +754,6 @@ pub(crate) fn after_errexit<'a>(
         vp.vars.entry("BASH_COMMAND").set(text);
     }
     Some(Box::pin(check_failure(vp, status)))
-}
-
-fn compound_name(kind: &CommandKind) -> &'static str {
-    match kind {
-        CommandKind::If(_) => "if",
-        CommandKind::While(w) if w.until => "until",
-        CommandKind::While(_) => "while",
-        CommandKind::For(_) => "for",
-        CommandKind::Select(_) => "select",
-        CommandKind::ArithFor(_) => "for ((…))",
-        CommandKind::Case(_) => "case",
-        CommandKind::Arith(_) => "((…))",
-        CommandKind::Cond(_) => "[[ … ]]",
-        CommandKind::Function(_) => "function definitions",
-        CommandKind::Coproc(_) => "coproc",
-        _ => "this command",
-    }
 }
 
 /// Runs a compound command with its redirections applied, then restores the

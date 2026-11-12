@@ -45,6 +45,7 @@ pub(crate) struct Job {
     direct: bool,
     /// The job's task (`Sched::drop_task`), while it runs.
     task: Cell<Option<usize>>,
+    pub coproc: RefCell<Option<String>>,
 }
 
 impl Job {
@@ -246,6 +247,7 @@ impl JobTable {
             last_signal: Cell::new(None),
             direct,
             task: Cell::new(None),
+            coproc: RefCell::new(None),
         });
         self.jobs.push(job.clone());
         job

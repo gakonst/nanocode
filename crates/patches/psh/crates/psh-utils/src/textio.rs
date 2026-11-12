@@ -16,6 +16,67 @@ pub struct LineReader {
 }
 
 impl LineReader {
+    pub fn buffered(&mut self) -> Option<std::ops::Range<usize>> {
+        let start = self.pos;
+        let rest = &self.buf[start..];
+        let short = rest.len().min(16);
+        let i = match rest[..short].iter().position(|&b| b == self.delim) {
+            None => memchr::memchr(self.delim, &rest[short..])? + short,
+            Some(i) => i,
+        };
+        self.pos += i + 1;
+        Some(start..start + i)
+    }
+
+    pub fn get(&self, r: std::ops::Range<usize>) -> &[u8] {
+        &self.buf[r]
+    }
+
+    pub async fn next_ref(
+        &mut self,
+        ctx: &mut UtilCtx<'_>,
+        input: &Input,
+    ) -> io::Result<Option<(&[u8], bool)>> {
+        loop {
+            let rest = &self.buf[self.pos..];
+            let short = rest.len().min(16);
+            let found = match rest[..short].iter().position(|&b| b == self.delim) {
+                None => memchr::memchr(self.delim, &rest[short..]).map(|i| i + short),
+                found => found,
+            };
+            if let Some(i) = found {
+                let start = self.pos;
+                self.pos += i + 1;
+                return Ok(Some((&self.buf[start..start + i], true)));
+            }
+            if self.eof {
+                if self.pos < self.buf.len() {
+                    let start = self.pos;
+                    self.pos = self.buf.len();
+                    return Ok(Some((&self.buf[start..], false)));
+                }
+                return Ok(None);
+            }
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+            let start = self.buf.len();
+            self.buf.resize(start + 64 * 1024, 0);
+            let n = input.read(ctx, &mut self.buf[start..]).await;
+            let n = match n {
+                Ok(n) => n,
+                Err(e) => {
+                    self.buf.truncate(start);
+                    return Err(e);
+                }
+            };
+            self.buf.truncate(start + n);
+            if n == 0 {
+                self.eof = true;
+            }
+            ctx.check().await;
+        }
+    }
+
     pub fn new(delim: u8) -> LineReader {
         LineReader {
             buf: Vec::new(),

@@ -59,6 +59,9 @@ struct Key {
 impl Key {
     /// The part of `line` that is compared.
     fn of<'a>(&self, line: &'a [u8]) -> &'a [u8] {
+        if self.fields == 0 && self.chars == 0 && self.check.is_none() {
+            return line;
+        }
         let mut i = 0;
         for _ in 0..self.fields {
             while i < line.len() && (line[i] == b' ' || line[i] == b'\t') {
@@ -234,7 +237,7 @@ async fn filter(
     eol: u8,
 ) -> i32 {
     let mut reader = LineReader::new(eol);
-    let mut line = Vec::new();
+    let mut steps: u32 = 0;
     let mut first: Option<Vec<u8>> = None;
     let mut n: u64 = 0;
     let mut groups: u64 = 0;
@@ -250,15 +253,18 @@ async fn filter(
         out.buf.push(eol);
     };
     loop {
-        match reader.next(ctx, input, &mut line).await {
-            Ok(Some(_)) => {}
-            Ok(None) => break,
-            Err(e) => {
-                common::file_error(ctx, in_name, &e).await;
-                return 1;
-            }
-        }
-        let same = first.as_deref().is_some_and(|f| key.equal(f, &line));
+        let line = match reader.buffered() {
+            Some(r) => reader.get(r),
+            None => match reader.next_ref(ctx, input).await {
+                Ok(Some((line, _))) => line,
+                Ok(None) => break,
+                Err(e) => {
+                    common::file_error(ctx, in_name, &e).await;
+                    return 1;
+                }
+            },
+        };
+        let same = first.as_deref().is_some_and(|f| key.equal(f, line));
         if same {
             n += 1;
             match mode {
@@ -277,11 +283,11 @@ async fn filter(
                             .extend_from_slice(first.as_deref().unwrap_or_default());
                         out.buf.push(eol);
                     }
-                    out.buf.extend_from_slice(&line);
+                    out.buf.extend_from_slice(line);
                     out.buf.push(eol);
                 }
                 Mode::Group(_) => {
-                    out.buf.extend_from_slice(&line);
+                    out.buf.extend_from_slice(line);
                     out.buf.push(eol);
                 }
                 Mode::First => {}
@@ -304,10 +310,16 @@ async fn filter(
                 if sep {
                     out.buf.push(eol);
                 }
-                out.buf.extend_from_slice(&line);
+                out.buf.extend_from_slice(line);
                 out.buf.push(eol);
             }
-            first = Some(line.clone());
+            match &mut first {
+                Some(f) => {
+                    f.clear();
+                    f.extend_from_slice(line);
+                }
+                None => first = Some(line.to_vec()),
+            }
             n = 1;
         }
         if out.buf.len() >= 32 * 1024
@@ -315,7 +327,10 @@ async fn filter(
         {
             return common::write_failed(ctx, &e).await;
         }
-        ctx.check().await;
+        steps = steps.wrapping_add(1);
+        if steps.is_multiple_of(256) {
+            ctx.check().await;
+        }
     }
     if let Some(f) = &first {
         if mode == Mode::First {

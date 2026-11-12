@@ -173,6 +173,7 @@ async fn run_with(
         out: Vec::new(),
         write_error: None,
         zone: None,
+        tty: None,
         replay: replay.clone(),
     };
     // A signal that ends the shell ends the utility, as it ends the wait for an
@@ -247,6 +248,7 @@ pub struct UtilCtx<'v> {
     write_error: Option<io::ErrorKind>,
     /// The time zone, once [`UtilCtx::load_zone`] ran (`Some(None)`: none readable).
     zone: Option<Option<crate::builtins::strftime::Zone>>,
+    tty: Option<bool>,
     /// What a blocking body asked of a host that answers later (`blocking::Replay`).
     replay: Rc<std::cell::RefCell<blocking::Replay>>,
 }
@@ -460,6 +462,15 @@ impl UtilCtx<'_> {
         matches!(self.fd(n).as_deref(), Some(FdObj::File(f)) if f.is_terminal())
     }
 
+    fn stdout_tty(&mut self) -> bool {
+        if let Some(tty) = self.tty {
+            return tty;
+        }
+        let tty = self.is_terminal(1);
+        self.tty = Some(tty);
+        tty
+    }
+
     pub fn discards(&self, n: u32) -> bool {
         matches!(self.fd(n).as_deref(), Some(FdObj::File(f)) if f.is_null())
     }
@@ -503,7 +514,7 @@ impl UtilCtx<'_> {
     pub fn write_now(&mut self, data: &[u8]) -> bool {
         if self.write_error.is_some()
             || self.out.len() + data.len() >= BUFFER
-            || (data.contains(&b'\n') && self.is_terminal(1))
+            || (data.contains(&b'\n') && self.stdout_tty())
         {
             return false;
         }
@@ -518,7 +529,7 @@ impl UtilCtx<'_> {
             return Err(kind.into());
         }
         self.out.extend_from_slice(data);
-        if self.out.len() >= BUFFER || (data.contains(&b'\n') && self.is_terminal(1)) {
+        if self.out.len() >= BUFFER || (data.contains(&b'\n') && self.stdout_tty()) {
             self.flush().await?;
         }
         Ok(())

@@ -191,8 +191,8 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         b'\n'
     };
     let mut status = 0;
-    let mut line = Vec::new();
     let mut out = Vec::new();
+    let tty = ctx.is_terminal(1);
     for name in common::operands_or_stdin(&p) {
         let Some(input) = textio::open_or_report(ctx, &name).await else {
             status = 1;
@@ -200,29 +200,32 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         };
         let mut reader = LineReader::new(eol);
         loop {
-            match reader.next(ctx, &input, &mut line).await {
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(e) => {
-                    common::file_error(ctx, &name, &e).await;
-                    status = 1;
-                    break;
-                }
-            }
-            out.clear();
+            let line = match reader.buffered() {
+                Some(r) => reader.get(r),
+                None => match reader.next_ref(ctx, &input).await {
+                    Ok(Some((line, _))) => line,
+                    Ok(None) => break,
+                    Err(e) => {
+                        common::file_error(ctx, &name, &e).await;
+                        status = 1;
+                        break;
+                    }
+                },
+            };
+            let mark = out.len();
             let keep = match mode {
                 Mode::Bytes => {
-                    cut_bytes(&line, &ranges, out_delim.as_deref(), &mut out);
+                    cut_bytes(line, &ranges, out_delim.as_deref(), &mut out);
                     true
                 }
                 Mode::Chars if line.is_ascii() => {
-                    cut_bytes(&line, &ranges, out_delim.as_deref(), &mut out);
+                    cut_bytes(line, &ranges, out_delim.as_deref(), &mut out);
                     true
                 }
                 Mode::Chars => {
                     cut_units(
-                        &line,
-                        char_lengths(&line),
+                        line,
+                        char_lengths(line),
                         &ranges,
                         out_delim.as_deref(),
                         &mut out,
@@ -236,7 +239,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
                         (None, false) => &delim,
                     };
                     cut_fields(
-                        &line,
+                        line,
                         &delim,
                         whitespace,
                         &ranges,
@@ -248,13 +251,21 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             };
             if keep {
                 out.push(eol);
-                if !ctx.write_now(&out)
-                    && let Err(e) = ctx.write(&out).await
-                {
+            } else {
+                out.truncate(mark);
+            }
+            if (tty || out.len() >= 64 * 1024) && !out.is_empty() {
+                if let Err(e) = ctx.write(&out).await {
                     return common::write_failed(ctx, &e).await;
                 }
+                out.clear();
             }
         }
+    }
+    if !out.is_empty()
+        && let Err(e) = ctx.write(&out).await
+    {
+        return common::write_failed(ctx, &e).await;
     }
     status
 }

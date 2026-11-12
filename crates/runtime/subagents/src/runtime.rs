@@ -7782,7 +7782,7 @@ impl Registry {
             );
             let resident = harness.clone();
             let scoped = root.clone();
-            let announce = self
+            let installed = self
                 .state
                 .call(move |state| {
                     let session = state
@@ -7792,6 +7792,9 @@ impl Registry {
                         .sessions
                         .get_mut(&id)
                         .expect("retained child");
+                    if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
+                        return None;
+                    }
                     session.descriptor.model = Some(context.model);
                     session.descriptor.thinking = Some(context.thinking);
                     session.descriptor.reasoning_mode = context.reasoning_mode;
@@ -7799,7 +7802,7 @@ impl Registry {
                     session.harness_task = Some(task);
                     session.event_task = Some(event_task);
 
-                    (
+                    Some((
                         std::mem::take(&mut session.announce).then(|| {
                             let mut descriptor = session.descriptor.clone();
                             descriptor.task = session.binding_task.clone();
@@ -7809,10 +7812,16 @@ impl Registry {
                         session.hibernations,
                         session.turn.as_ref().is_some_and(|turn| turn.interrupted),
                         Arc::clone(&session.marks),
-                    )
+                    ))
                 })
                 .await;
-            let (announce, hibernated, hibernations, interrupted, marks) = announce;
+            let Some((announce, hibernated, hibernations, interrupted, marks)) = installed else {
+                drop(start);
+                if let Err(error) = harness.close().await {
+                    tracing::debug!(%id, %error, "a restored subagent that began closing did not shut down");
+                }
+                return Ok(());
+            };
             if let Some(descriptor) = announce {
                 self.send(&root, AgentUpdate::Added(descriptor));
             }

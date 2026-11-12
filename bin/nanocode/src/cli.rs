@@ -328,6 +328,32 @@ pub struct GatewayArgs {
         help = "Leave out the paid tools of the Tempo gateway (key-value store, buckets, compute) and Mercator, and the local proxy through which shell commands pay Tempo's services (*.mpp.tempo.xyz), the Tempo gateway and Mercator; every session has them by default and pays from the Tempo wallet (/login tempo, /fund) when one charges. A session whose environment sets its own HTTP(S)_PROXY, ALL_PROXY or CA bundle keeps those and gets no proxy"
     )]
     pub no_tempo_tools: bool,
+
+    #[arg(
+        long,
+        env = "NANOCODE_IDENTITY_ISSUER",
+        value_name = "URL",
+        value_delimiter = ',',
+        help = "Identity issuer an MPP service may name when it asks for an email pass, repeatable: the address and code go only to these; https://identity.mpp.tempo.xyz unless set"
+    )]
+    pub identity_issuer: Vec<String>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_IDENTITY_EMAIL",
+        value_name = "ADDRESS",
+        help = "Email address to get an email pass for when an MPP service asks for one; without it the session asks (/pass <email>)"
+    )]
+    pub identity_email: Option<String>,
+
+    #[arg(
+        long,
+        env = "NANOCODE_IDENTITY_ATTESTATION",
+        value_name = "JWS",
+        value_delimiter = ',',
+        help = "Email pass already obtained from an issuer, sent in Identity-Attestation to the origin it names until it expires, repeatable"
+    )]
+    pub identity_attestation: Vec<String>,
 }
 
 impl SessionArgs {
@@ -377,6 +403,15 @@ impl SessionArgs {
                     .tempo_tool_deposit
                     .or(root.gateway.tempo_tool_deposit),
                 no_tempo_tools: self.gateway.no_tempo_tools || root.gateway.no_tempo_tools,
+                identity_issuer: match self.gateway.identity_issuer.is_empty() {
+                    true => root.gateway.identity_issuer,
+                    false => self.gateway.identity_issuer,
+                },
+                identity_email: self.gateway.identity_email.or(root.gateway.identity_email),
+                identity_attestation: match self.gateway.identity_attestation.is_empty() {
+                    true => root.gateway.identity_attestation,
+                    false => self.gateway.identity_attestation,
+                },
             },
             remote: RemoteArgs {
                 runner_connect: self.remote.runner_connect.or(root.remote.runner_connect),

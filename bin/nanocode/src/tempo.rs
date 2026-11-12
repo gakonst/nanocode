@@ -21,6 +21,7 @@ mod charge;
 mod error;
 mod events;
 mod flow;
+mod identity;
 mod keys;
 mod mcp;
 mod payer;
@@ -39,6 +40,7 @@ use self::{
     error::Fault,
     events::{Deposit, Events},
     flow::{DEFAULT_MAX_PAYMENT_RETRIES, Exchange, FlowError, Policy},
+    identity::{Identity, Proved},
     mcp::McpPayment,
     payer::Payer,
     protocol::{Challenge, Credential, INTENT_CHARGE, INTENT_SESSION, METHOD_NAME, Receipt},
@@ -95,6 +97,7 @@ struct Mpp {
     wallet: Wallet,
     probe: (String, Option<&'static str>),
     warm: Arc<Warm>,
+    identity: Option<Arc<Identity>>,
 }
 
 #[derive(Default)]
@@ -109,6 +112,14 @@ impl Mpp {
             wallet,
             probe,
             warm: Arc::default(),
+            identity: None,
+        }
+    }
+
+    fn identified(self, identity: Arc<Identity>) -> Self {
+        Self {
+            identity: Some(identity),
+            ..self
         }
     }
 
@@ -153,14 +164,17 @@ impl Layer for Mpp {
             let mut paid = reqwest::Request::new(request.method, url);
             *paid.headers_mut() = request.headers;
             *paid.body_mut() = Some(request.body.into());
-            let mut exchange = NextExchange {
-                next,
-                client: self
-                    .wallet
-                    .payments
-                    .client()
-                    .map_err(|error| layer::Error::new(error).unsent(true))?,
-                body: None,
+            let mut exchange = Proved {
+                exchange: NextExchange {
+                    next,
+                    client: self
+                        .wallet
+                        .payments
+                        .client()
+                        .map_err(|error| layer::Error::new(error).unsent(true))?,
+                    body: None,
+                },
+                identity: self.identity.as_deref(),
             };
             let response = flow::send_with_exchange(
                 &mut exchange,
@@ -176,6 +190,7 @@ impl Layer for Mpp {
                 FlowError::Payment(error) => layer::Error::new(error.to_string()),
             })?;
             let body = exchange
+                .exchange
                 .body
                 .ok_or_else(|| layer::Error::new("the payment flow returned no response"))?;
             Ok(
@@ -1376,7 +1391,7 @@ impl Tempo {
     pub(crate) const BOUNDLESS: &str = "boundless";
     pub(crate) const BOUNDLESS_ABOUT: &str = "models Boundless serves at api.inference.boundless.network, paid directly from the Tempo wallet";
 
-    fn new(payments: &Payments, args: &GatewayArgs) -> Result<Self> {
+    fn new(payments: &Payments, args: &GatewayArgs, identity: Arc<Identity>) -> Result<Self> {
         let terms = Terms::tempo(args)?;
         let wallet = payments.wallet(
             &reqwest::Url::parse(&format!("{TEMPO_GATEWAY}/v1"))?,
@@ -1392,7 +1407,9 @@ impl Tempo {
         let boundless = Mpp::new(
             payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &unsponsored),
             (format!("{BOUNDLESS}/responses"), None),
-        );
+        )
+        .identified(identity);
+        let client = payments.client()?;
         let responses = Mpp::new(
             wallet.clone(),
             (format!("{TEMPO_GATEWAY}/v1/responses"), None),
@@ -1417,6 +1434,7 @@ impl Tempo {
                 nanocode::OpenAi::builder(nanocode::codex::OpenAiAuth::gateway_managed())
                     .api_base_url(BOUNDLESS)
                     .transport(nanocode::codex::transport::ResponsesTransport::Https)
+                    .http_client(client.clone())
                     .http_layer(boundless.clone())
             }),
             payments: payments.clone(),
@@ -1794,9 +1812,15 @@ pub(crate) fn apply(
         false => Vec::new(),
     };
     let payments = Payments::new(machine, served, args.tempo_session.clone());
+    let identity = Arc::new(Identity::new(
+        payments.clone(),
+        &args.identity_issuer,
+        args.identity_email.clone(),
+        &args.identity_attestation,
+    )?);
     let mut clients = clients;
     if models {
-        clients = clients.tempo(Tempo::new(&payments, args)?);
+        clients = clients.tempo(Tempo::new(&payments, args, identity.clone())?);
     }
     let mut certificates = None;
     if !args.no_tempo_tools {
@@ -1806,6 +1830,7 @@ pub(crate) fn apply(
     let clients = clients
         .notices(move || notices.notices())
         .status(move || status.status())
+        .answer(move |text| identity.answer(text))
         .panel(
             "/spend",
             "show or hide what models and tools have spent",

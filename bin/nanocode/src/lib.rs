@@ -560,6 +560,13 @@ async fn exec(args: SessionArgs, clients: ModelClients) -> Result<()> {
             }
         });
     }
+    if let Some(answer) = host.config.clients.answering() {
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lines().map_while(std::io::Result::ok) {
+                answer(&line);
+            }
+        });
+    }
     let outcome: Result<()> = async {
         for pending in pending {
             eprintln!("nanocode: resuming interrupted turn {}", pending.id);

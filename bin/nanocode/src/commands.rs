@@ -1,4 +1,4 @@
-pub const COMMANDS: [(&str, &str); 34] = [
+pub const COMMANDS: [(&str, &str); 35] = [
     (
         "/model",
         "choose the model, thinking and speed for a new thread; tempo/<model> runs on the Tempo gateway",
@@ -29,6 +29,10 @@ pub const COMMANDS: [(&str, &str); 34] = [
     (
         "/wallet",
         "open the Tempo wallet web app for the wallet nanocode pays from",
+    ),
+    (
+        "/pass",
+        "answer an MPP service that asks for an email pass: /pass <email>, /pass <code>, or /pass alone to decline",
     ),
     ("/new", "start a new session"),
     (

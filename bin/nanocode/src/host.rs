@@ -26,6 +26,7 @@ pub struct ModelClients {
     warm_up: Option<std::sync::Arc<dyn Fn() -> WarmUp + Send + Sync>>,
     status: Option<std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     notices: Option<std::sync::Arc<dyn Fn() -> Notices + Send + Sync>>,
+    answer: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
     panel: Option<PanelSource>,
     tool_environment: Vec<(String, String)>,
     mcp_servers: Vec<(String, nanocode::tools::mcp::McpServer)>,
@@ -216,6 +217,12 @@ impl ModelClients {
     }
 
     #[must_use]
+    pub fn answer(mut self, answer: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.answer = Some(std::sync::Arc::new(answer));
+        self
+    }
+
+    #[must_use]
     pub fn panel(
         mut self,
         command: &'static str,
@@ -346,6 +353,10 @@ impl ModelClients {
 
     pub(crate) fn render_panel(&self) -> Option<Panel> {
         self.panel.as_ref().and_then(|source| (source.panel)())
+    }
+
+    pub(crate) fn answering(&self) -> Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>> {
+        self.answer.clone()
     }
 
     pub(crate) fn notifying(&self) -> Option<Notices> {

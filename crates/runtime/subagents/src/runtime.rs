@@ -1331,19 +1331,7 @@ async fn journal_writer(
                 }
             };
             tokio::select! {
-                changed = revision.changed() => {
-                    if changed.is_err() {
-                        return;
-                    }
-                    break;
-                }
-                request = requests.recv() => match request {
-                    Some(request) => {
-                        pending.push(request);
-                        break;
-                    }
-                    None => return,
-                },
+                biased;
                 fill = taken => {
                     slot = None;
                     let filled = match (fill, registry.upgrade()) {
@@ -1360,6 +1348,19 @@ async fn journal_writer(
                         filled,
                     );
                 }
+                changed = revision.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break;
+                }
+                request = requests.recv() => match request {
+                    Some(request) => {
+                        pending.push(request);
+                        break;
+                    }
+                    None => return,
+                },
                 () = &mut retry => break,
             }
         }

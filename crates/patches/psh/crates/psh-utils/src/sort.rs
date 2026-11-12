@@ -576,9 +576,12 @@ fn rank((sign, int, frac): Parts<'_>) -> Option<u128> {
         return Some(1u128 << 120);
     }
     let int = int.iter().fold(0u64, |v, &d| v * 10 + u64::from(d - b'0'));
-    let frac = (0..18).fold(0u64, |v, j| {
-        v * 10 + frac.get(j).map_or(0, |&d| u64::from(d - b'0'))
-    });
+    let frac = match frac {
+        [] => 0,
+        _ => (0..18).fold(0u64, |v, j| {
+            v * 10 + frac.get(j).map_or(0, |&d| u64::from(d - b'0'))
+        }),
+    };
     let m = u128::from(int) << 60 | u128::from(frac);
     Some(if sign > 0 {
         (2u128 << 120) + m
@@ -602,19 +605,20 @@ struct KeyPart<'a> {
 }
 
 struct Num {
-    rank: u128,
+    rank: (u64, u64),
     prefix: u64,
-    line: usize,
+    line: u32,
     exact: bool,
 }
 
 impl Num {
     fn new(line: usize, text: &[u8], k: &Key, tab: Option<u8>) -> Num {
         let rank = rank(numeric_parts(key_slice(text, k, tab)));
+        let r = rank.unwrap_or(0);
         Num {
-            rank: rank.unwrap_or(0),
+            rank: ((r >> 64) as u64, r as u64),
             prefix: (prefix(text) >> 64) as u64,
-            line,
+            line: line as u32,
             exact: rank.is_some(),
         }
     }
@@ -706,8 +710,8 @@ impl Sorter {
             a.rank.cmp(&b.rank)
         } else {
             cmp_parts(
-                numeric_parts(key_slice(lines[a.line], k, self.tab)),
-                numeric_parts(key_slice(lines[b.line], k, self.tab)),
+                numeric_parts(key_slice(lines[a.line as usize], k, self.tab)),
+                numeric_parts(key_slice(lines[b.line as usize], k, self.tab)),
             )
         };
         let r = if k.order.reverse { r.reverse() } else { r };
@@ -717,7 +721,7 @@ impl Sorter {
         let (x, y) = if self.reverse { (b, a) } else { (a, b) };
         x.prefix
             .cmp(&y.prefix)
-            .then_with(|| lines[x.line].cmp(lines[y.line]))
+            .then_with(|| lines[x.line as usize].cmp(lines[y.line as usize]))
     }
 
     fn cmp_key(&self, k: &Key, ka: &[u8], kb: &[u8]) -> Ordering {
@@ -941,6 +945,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
         let n = sorter.keys.len();
         if let [k] = &sorter.keys[..]
             && matches!(k.order.kind, Kind::Numeric)
+            && u32::try_from(lines.len()).is_ok()
         {
             let mut recs: Vec<Num> = lines
                 .iter()
@@ -953,7 +958,7 @@ pub async fn run(ctx: &mut UtilCtx<'_>, argv: &[Vec<u8>]) -> i32 {
             } else {
                 recs.sort_by(cmp);
             }
-            lines = recs.into_iter().map(|r| lines[r.line]).collect();
+            lines = recs.into_iter().map(|r| lines[r.line as usize]).collect();
         } else {
             let keyed: Vec<KeyPart<'_>> = lines
                 .iter()

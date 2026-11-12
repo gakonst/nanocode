@@ -2,8 +2,9 @@
 //! [-t timeout] [-u fd] [name ...]`: one line (or up to a delimiter, or a number of
 //! characters) from a descriptor, split by `IFS` into variables.
 //!
-//! Reads one byte at a time, so the bytes after the delimiter stay in the descriptor
-//! for the next reader (bash does the same on pipes).
+//! Reads ahead from engine pipes and seekable files and gives back what follows the
+//! delimiter, one byte at a time from anything else, so the bytes after the delimiter
+//! stay in the descriptor for the next reader (bash does the same).
 
 use std::future::poll_fn;
 use std::task::Poll;
@@ -205,6 +206,11 @@ pub(super) async fn read(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         fd,
         timer: o.timeout.map(|d| vp.host().sleep(d)),
         back: None,
+        buf: Vec::new(),
+        pos: 0,
+        ahead: None,
+        size: 128,
+        delim: o.delim,
     };
     // The bytes read, each with whether a backslash escaped it.
     let mut line: Vec<(u8, bool)> = Vec::new();
@@ -224,6 +230,7 @@ pub(super) async fn read(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         let got = crate::signals::or_signal(vp, crate::signals::Gives::Trapped, input.next()).await;
         let b = match got.unwrap_or(Got::Signal) {
             Got::Signal => {
+                input.give_back();
                 super::trap::take_signals(vp).await?;
                 continue;
             }
@@ -237,6 +244,7 @@ pub(super) async fn read(vp: &mut Vp, args: &[Vec<u8>]) -> R {
                 break;
             }
             Got::Err(e) => {
+                input.give_back();
                 vp.error(&format!("read: {}: read error: {}", o.fd, error_text(&e)))
                     .await;
                 return Ok(1);
@@ -289,6 +297,7 @@ pub(super) async fn read(vp: &mut Vp, args: &[Vec<u8>]) -> R {
         }
         chars += 1;
     }
+    input.give_back();
 
     let ifs = vp.var("IFS").map(<[u8]>::to_vec);
     let ifs = ifs.as_deref().unwrap_or(b" \t\n");
@@ -488,29 +497,99 @@ struct Input {
     timer: Option<HostFuture<()>>,
     /// A byte read ahead (an incomplete multibyte character).
     back: Option<u8>,
+    buf: Vec<u8>,
+    pos: usize,
+    ahead: Option<bool>,
+    size: usize,
+    delim: u8,
 }
 
 impl Input {
+    fn chunk(&mut self) -> usize {
+        let ahead = *self.ahead.get_or_insert_with(|| match &*self.fd {
+            crate::fd::FdObj::PipeRead(_) => true,
+            crate::fd::FdObj::File(f) => {
+                matches!(f.seek(std::io::SeekFrom::Current(0)), Some(Ok(_)))
+            }
+            crate::fd::FdObj::PipeWrite(_) => false,
+        });
+        if !ahead {
+            return 1;
+        }
+        if let crate::fd::FdObj::PipeRead(r) = &*self.fd
+            && let Some(n) = r.line_len(self.delim)
+        {
+            return n.min(4096);
+        }
+        let n = self.size;
+        self.size = (n * 2).min(4096);
+        n
+    }
+
+    fn give_back(&mut self) {
+        let mut rest = Vec::new();
+        rest.extend(self.back.take());
+        rest.extend_from_slice(&self.buf[self.pos..]);
+        self.buf.clear();
+        self.pos = 0;
+        if rest.is_empty() {
+            return;
+        }
+        match &*self.fd {
+            crate::fd::FdObj::PipeRead(r) => r.unread(&rest),
+            crate::fd::FdObj::File(f) => {
+                let _ = f.seek(std::io::SeekFrom::Current(-(rest.len() as i64)));
+            }
+            crate::fd::FdObj::PipeWrite(_) => {}
+        }
+    }
+
     async fn next(&mut self) -> Got {
         if let Some(b) = self.back.take() {
             return Got::Byte(b);
         }
-        let mut buf = [0u8];
-        poll_fn(|cx| {
-            match self.fd.poll_read(cx, &mut buf) {
-                Poll::Ready(Ok(0)) => return Poll::Ready(Got::Eof),
-                Poll::Ready(Ok(_)) => return Poll::Ready(Got::Byte(buf[0])),
-                Poll::Ready(Err(e)) => return Poll::Ready(Got::Err(e)),
-                Poll::Pending => {}
+        if self.pos < self.buf.len() {
+            self.pos += 1;
+            return Got::Byte(self.buf[self.pos - 1]);
+        }
+        let n = self.chunk();
+        self.buf.clear();
+        self.buf.resize(n, 0);
+        self.pos = 0;
+        let buf = &mut self.buf;
+        let fd = &self.fd;
+        let timer = &mut self.timer;
+        let got = poll_fn(|cx| {
+            if let Poll::Ready(r) = fd.poll_read(cx, buf) {
+                return Poll::Ready(Some(r));
             }
-            if let Some(t) = &mut self.timer
+            if let Some(t) = timer
                 && t.as_mut().poll(cx).is_ready()
             {
-                return Poll::Ready(Got::Timeout);
+                return Poll::Ready(None);
             }
             Poll::Pending
         })
-        .await
+        .await;
+        match got {
+            Some(Ok(0)) => {
+                self.buf.clear();
+                Got::Eof
+            }
+            Some(Ok(n)) => {
+                self.buf.truncate(n);
+                self.pos = 1;
+                Got::Byte(self.buf[0])
+            }
+            Some(Err(e)) => {
+                self.buf.clear();
+                Got::Err(e)
+            }
+            None => {
+                self.buf.clear();
+                Got::Timeout
+            }
+        }
     }
 }
 

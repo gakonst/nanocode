@@ -142,6 +142,28 @@ impl PipeReader {
     }
 }
 
+impl PipeReader {
+    pub(crate) fn line_len(&self, delim: u8) -> Option<usize> {
+        let p = self.0.borrow();
+        let (front, back) = p.buf.as_slices();
+        match front.iter().position(|&b| b == delim) {
+            Some(i) => Some(i + 1),
+            None => back
+                .iter()
+                .position(|&b| b == delim)
+                .map(|i| front.len() + i + 1),
+        }
+        .or((!p.buf.is_empty()).then_some(p.buf.len()))
+    }
+
+    pub(crate) fn unread(&self, data: &[u8]) {
+        let mut p = self.0.borrow_mut();
+        for &b in data.iter().rev() {
+            p.buf.push_front(b);
+        }
+    }
+}
+
 impl PipeWriter {
     /// See [`os_end`].
     pub(crate) fn os_end(&self, host: &dyn Host) -> Option<Rc<dyn HostFile>> {

@@ -8477,7 +8477,7 @@ function RegExpExec(r, s) {
   return (($2 = %Get(r, "lastIndex"), %RegExpExecRaw(r, s, %IsNumber($2) ? %AsNumber($2) : ToLength($2), undefined)));
 }
 
-// builtins/regexp.ts:289 RegExp.prototype.test
+// builtins/regexp.ts:290 RegExp.prototype.test %RegExpPrototypeTest
 function RegExpPrototypeTest(s) {
   if (!%IsObject(this)) {
     throw %NewTypeError("RegExp object expected");
@@ -8497,7 +8497,7 @@ function RegExpPrototypeTest(s) {
   return RegExpExec(r, str) !== null;
 }
 
-// builtins/regexp.ts:311
+// builtins/regexp.ts:312
 function AdvanceStringIndex(s, index, unicode) {
   if (!unicode || index + 1 >= (%StrLength(s))) {
     return index + 1;
@@ -8506,23 +8506,23 @@ function AdvanceStringIndex(s, index, unicode) {
   return %IsNumber(cp) && %AsNumber(cp) > 65535 ? index + 2 : index + 1;
 }
 
-// builtins/regexp.ts:320
+// builtins/regexp.ts:321
 function FlagsInclude(flags, c) {
   return %StrIndexOf(flags, c, 0) >= 0;
 }
 
-// builtins/regexp.ts:325
+// builtins/regexp.ts:326
 function MatchString(result) {
   return ToString(%Get(%AsObj(result), 0));
 }
 
-// builtins/regexp.ts:330
+// builtins/regexp.ts:331
 function AdvanceAfterEmptyMatch(rx, s, fullUnicode) {
   const thisIndex = ToLength(%Get(rx, "lastIndex"));
   %Set(rx, "lastIndex", AdvanceStringIndex(s, thisIndex, fullUnicode));
 }
 
-// builtins/regexp.ts:340 RegExp.prototype[Symbol.match] %RegExpPrototypeMatch
+// builtins/regexp.ts:341 RegExp.prototype[Symbol.match] %RegExpPrototypeMatch
 function RegExpPrototypeMatch(string) {
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -8551,7 +8551,7 @@ function RegExpPrototypeMatch(string) {
   }
 }
 
-// builtins/regexp.ts:373 RegExp.prototype[Symbol.matchAll] %RegExpPrototypeMatchAll
+// builtins/regexp.ts:374 RegExp.prototype[Symbol.matchAll] %RegExpPrototypeMatchAll
 function RegExpPrototypeMatchAll(string) {
   const r = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -8571,7 +8571,7 @@ function RegExpPrototypeMatchAll(string) {
   return %CreateRegExpStringIterator(matcher, s, global, fullUnicode);
 }
 
-// builtins/regexp.ts:404 %RegExpStringIteratorPrototype%.next
+// builtins/regexp.ts:405 %RegExpStringIteratorPrototype%.next
 function RegExpStringIteratorNext() {
   if (%AsBool(%RegExpStringIteratorSlot(this, 4))) {
     return %CreateIterResultObject(undefined, true);
@@ -8593,12 +8593,12 @@ function RegExpStringIteratorNext() {
   return %CreateIterResultObject(match, false);
 }
 
-// builtins/regexp.ts:430 value %RegExpStringIteratorPrototype%[Symbol.toStringTag]
+// builtins/regexp.ts:431 value %RegExpStringIteratorPrototype%[Symbol.toStringTag]
 function RegExpStringIteratorToStringTag() {
   return "RegExp String Iterator";
 }
 
-// builtins/regexp.ts:439 RegExp.prototype[Symbol.replace] %RegExpPrototypeReplace
+// builtins/regexp.ts:440 RegExp.prototype[Symbol.replace] %RegExpPrototypeReplace
 function RegExpPrototypeReplace(string, replaceValue) {
   let $1;
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
@@ -8716,7 +8716,7 @@ function RegExpPrototypeReplace(string, replaceValue) {
   return accumulatedResult + %StrSubstring(s, nextSourcePosition, lengthS);
 }
 
-// builtins/regexp.ts:563
+// builtins/regexp.ts:564
 function GetSubstitution(matched, str, position, captures, m, namedCaptures, template) {
   let i = %StrIndexOf(template, "$", 0);
   if (i < 0) {
@@ -8796,7 +8796,7 @@ function GetSubstitution(matched, str, position, captures, m, namedCaptures, tem
   return result;
 }
 
-// builtins/regexp.ts:656 RegExp.prototype[Symbol.search] %RegExpPrototypeSearch
+// builtins/regexp.ts:657 RegExp.prototype[Symbol.search] %RegExpPrototypeSearch
 function RegExpPrototypeSearch(string) {
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
   const s = ToString(string);
@@ -8815,7 +8815,7 @@ function RegExpPrototypeSearch(string) {
   return %Get(%AsObj(result), "index");
 }
 
-// builtins/regexp.ts:679 RegExp.prototype[Symbol.split] %RegExpPrototypeSplit
+// builtins/regexp.ts:680 RegExp.prototype[Symbol.split] %RegExpPrototypeSplit
 function RegExpPrototypeSplit(string, limit) {
   let $1, $2;
   const rx = ((!%IsObject(this)) ? %Throw(%NewTypeError("not an object")) : %AsObj(this));
@@ -12453,6 +12453,7 @@ function GlobalAtob(...args) {
 %InstallIntrinsic("RegExpPrototypeSticky", RegExpPrototypeSticky);
 %InstallIntrinsic("RegExpPrototypeFlags", RegExpPrototypeFlags);
 %InstallIntrinsic("RegExpPrototypeExec", RegExpPrototypeExec);
+%InstallIntrinsic("RegExpPrototypeTest", RegExpPrototypeTest);
 %InstallIntrinsic("RegExpPrototypeMatch", RegExpPrototypeMatch);
 %InstallIntrinsic("RegExpPrototypeMatchAll", RegExpPrototypeMatchAll);
 %InstallIntrinsic("RegExpPrototypeReplace", RegExpPrototypeReplace);

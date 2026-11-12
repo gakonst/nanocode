@@ -224,6 +224,11 @@ pub(crate) fn program(heap: &Heap, o: Obj) -> Prog<'_> {
         .object_slot(o, SLOT_PROGRAM)
         .as_internal()
         .expect("RegExp program");
+    cell_program(heap, cell)
+}
+
+/// The program in the U32Array `cell`.
+fn cell_program(heap: &Heap, cell: u32) -> Prog<'_> {
     let n = heap.u32_array_len(cell);
     let bytes = heap
         .arena()
@@ -634,6 +639,7 @@ pub(crate) fn substitute(
 // builtins/fast.rs, which decline where the builtins suspend or throw) ----
 
 const REGEXP_PROTOTYPE_EXEC: u16 = super::fast::intrinsic_id("RegExpPrototypeExec");
+const REGEXP_PROTOTYPE_TEST: u16 = super::fast::intrinsic_id("RegExpPrototypeTest");
 const REGEXP_PROTOTYPE_MATCH: u16 = super::fast::intrinsic_id("RegExpPrototypeMatch");
 const REGEXP_SPECIES: u16 = super::fast::intrinsic_id("RegExpSpecies");
 /// The accessors of %RegExp.prototype% that a pristine RegExp must still have (D1503).
@@ -685,7 +691,8 @@ pub(crate) const SEARCH: usize = 3;
 pub(crate) const SPLIT: usize = 4;
 pub(crate) const MATCH_ALL: usize = 5;
 const CONSTRUCTOR: usize = 6;
-const GETTERS: usize = 7;
+const TEST: usize = 7;
+const GETTERS: usize = 8;
 
 /// The entry slot of %RegExp.prototype% where each of those properties was found last.
 /// Only a hint (the slot is read with its key): every VM of a base image has them in the
@@ -847,13 +854,56 @@ fn run(
     fuel: &mut i64,
     st: &mut ExecState,
 ) -> Outcome {
+    run_program(heap, program(heap, r), flat, start, sticky, fuel, st)
+}
+
+/// `run` of the program `prog`.
+fn run_program(
+    heap: &Heap,
+    prog: Prog<'_>,
+    flat: Str,
+    start: usize,
+    sticky: bool,
+    fuel: &mut i64,
+    st: &mut ExecState,
+) -> Outcome {
     let mut left = FAST_STEPS;
-    let prog = program(heap, r);
     let view = heap.str_view(flat).expect("flat string");
     let limits = ExecLimits::default();
     let o = regexp::exec_in(prog, input(view), start, sticky, &mut left, limits, st);
     charge(fuel, left, matches!(o, Outcome::Match | Outcome::NoMatch));
     o
+}
+
+/// `/re/.key(s)` for a regex literal whose RegExp nothing else reaches (only the
+/// receiver of the call): when `key` is the original `test` and `exec` is original, the
+/// fresh RegExp's lastIndex is 0 and nobody reads what the match writes, so the match
+/// runs on the literal's program `cell` without the object. `None` (nothing changed)
+/// when that does not hold or as `exec_now`: the literal is then created and called.
+pub(crate) fn literal_test(
+    heap: &mut Heap,
+    cell: u32,
+    key: Atom,
+    s: Str,
+    fuel: &mut i64,
+) -> Result<Option<bool>, Fault> {
+    let test = realm::installed_intrinsic(heap, REGEXP_PROTOTYPE_TEST);
+    if test.as_object().is_none()
+        || proto_value(heap, TEST, key, false) != Some(test)
+        || !original_method(heap, EXEC, atoms::EXEC, REGEXP_PROTOTYPE_EXEC)
+    {
+        return Ok(None);
+    }
+    // The flag bits are the program's header word, as in `create`.
+    let sticky = Flags::from_bits(heap.u32_array_get(cell, 0) as u16).contains(Flags::STICKY);
+    let flat = heap.contiguous(s)?;
+    Ok(with_state(heap, |heap, st| {
+        match run_program(heap, cell_program(heap, cell), flat, 0, sticky, fuel, st) {
+            Outcome::OutOfFuel | Outcome::StackOverflow => None,
+            Outcome::NoMatch => Some(false),
+            Outcome::Match => Some(true),
+        }
+    }))
 }
 
 /// ToLength of a Number `lastIndex`.

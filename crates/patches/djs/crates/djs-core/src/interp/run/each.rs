@@ -14,6 +14,7 @@ use super::*;
 use crate::builtins::dense::index;
 
 const EACH_DENSE: u16 = super::intrinsics::id("EachDense");
+const REGEXP_CREATE: u16 = super::intrinsics::id("RegExpCreate");
 
 /// The loop state below the callback's frame.
 const STATE: u32 = 8;
@@ -85,6 +86,15 @@ impl Exec<'_> {
             return None;
         }
         let info = &crate::bytecode::OPS[op as usize];
+        if id == REGEXP_CREATE
+            && let Some((v, after)) = self.literal_test(self.pc + info.size as u32, argc)
+        {
+            self.fuel -= info.cost.fuel() as i64;
+            self.sp -= argc;
+            self.push(v);
+            self.pc = after;
+            return Some(None);
+        }
         self.fuel -= info.cost.fuel() as i64;
         let (pc0, next) = (self.pc, self.pc + info.size as u32);
         let r = if id == EACH_DENSE {
@@ -99,6 +109,43 @@ impl Exec<'_> {
             Ok(st) => st,
             Err(f) => self.throw_fault(f, pc0),
         })
+    }
+
+    /// `/re/.test(x)` without the RegExp (`regexp::literal_test`): after a regex literal's
+    /// `call_intrinsic %RegExpCreate` (its `argc` arguments on the stack), the code at `at` is
+    /// `get_method; get_loc | get_arg; call1`. The result and the pc after `call1`, with
+    /// those instructions charged; `None`, with nothing changed, for any other code or case.
+    fn literal_test(&mut self, at: u32, argc: u32) -> Option<(Value, u32)> {
+        let cell = self.get(self.sp - argc).as_internal()?;
+        if self.byte(at) != Op::GetMethod as u8 {
+            return None;
+        }
+        let key = Atom::from_id(self.heap.arena().read::<u32>(self.code + at + 1));
+        let p = at + OPS[Op::GetMethod as usize].size as u32;
+        let op = self.byte(p);
+        let (x, size) = match op {
+            _ if (Op::GetLoc0 as u8..=Op::GetLoc3 as u8).contains(&op) => {
+                (self.lp + (op - Op::GetLoc0 as u8) as u32, 1)
+            }
+            _ if (Op::GetArg0 as u8..=Op::GetArg3 as u8).contains(&op) => {
+                (self.bp + 2 + (op - Op::GetArg0 as u8) as u32, 1)
+            }
+            _ if op == Op::GetLoc8 as u8 => (self.lp + self.byte(p + 1) as u32, 2),
+            _ if op == Op::GetArg8 as u8 => (self.bp + 2 + self.byte(p + 1) as u32, 2),
+            _ => return None,
+        };
+        let call = p + size;
+        if call >= self.code_len || self.byte(call) != Op::Call1 as u8 {
+            return None;
+        }
+        let s = self.get(x).as_string()?;
+        let found = crate::builtins::regexp::literal_test(self.heap, cell, key, s, &mut self.fuel)
+            .ok()
+            .flatten()?;
+        for o in [Op::GetMethod, Op::GetLoc0, Op::Call1] {
+            self.fuel -= OPS[o as usize].cost.fuel() as i64;
+        }
+        Some((Value::bool(found), call + 1))
     }
 
     /// Whether the loop can run at all: a known mode over an Array and a plain closure

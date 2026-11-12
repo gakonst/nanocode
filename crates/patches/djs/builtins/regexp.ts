@@ -284,6 +284,7 @@ function RegExpExec(r: Obj, s: Str): Value {
 /**
  * RegExp.prototype.test ( S ), 22.2.6.16.
  * @builtin RegExp.prototype.test
+ * @intrinsic
  * @fast
  */
 function RegExpPrototypeTest(this: Value, s: Value): boolean {

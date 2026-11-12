@@ -123,7 +123,7 @@ pub(crate) async fn timeout_at<T, F>(deadline: Instant, future: F) -> Result<T, 
 where
     F: Future<Output = T>,
 {
-    let delay = deadline.saturating_duration_since(Instant::now());
+    let delay = deadline.saturating_duration_since(nanocode_platform::now());
     futures_util::pin_mut!(future);
     let timeout = sleep(delay);
     futures_util::pin_mut!(timeout);
@@ -134,18 +134,9 @@ where
 }
 
 fn spawn_detached(future: BackendFuture<()>) {
-    #[cfg(not(target_family = "wasm"))]
-    drop(tokio::spawn(future));
-    #[cfg(target_family = "wasm")]
-    nanocode_platform::spawn_local(future);
+    nanocode_platform::spawn(future);
 }
 
-#[cfg(not(target_family = "wasm"))]
-pub(crate) async fn sleep(duration: Duration) {
-    tokio::time::sleep(duration).await;
-}
-
-#[cfg(target_family = "wasm")]
 pub(crate) async fn sleep(duration: Duration) {
     nanocode_platform::sleep(duration).await;
 }

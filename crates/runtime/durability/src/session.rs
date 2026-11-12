@@ -4049,6 +4049,7 @@ impl DurableOwner {
             return Ok(());
         }
         tokio::select! {
+            biased;
             changed = completed.changed() => changed.map_err(|_| Error::DriverStopped),
             () = self.commands.closed() => {
                 self.release.finish();
@@ -4090,24 +4091,27 @@ fn spawn_claim_ack(
     caller: Caller,
     operation_id: String,
 ) {
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(runtime.spawn(async move {
-            if acknowledged.await.is_err() {
-                let (result, _receiver) = oneshot::channel();
-                drop(
-                    commands
-                        .send(
-                            Command::Release {
-                                caller,
-                                operation_id,
-                                result,
-                            }
-                            .into(),
-                        )
-                        .await,
-                );
-            }
-        }));
+    let release = async move {
+        if acknowledged.await.is_err() {
+            let (result, _receiver) = oneshot::channel();
+            drop(
+                commands
+                    .send(
+                        Command::Release {
+                            caller,
+                            operation_id,
+                            result,
+                        }
+                        .into(),
+                    )
+                    .await,
+            );
+        }
+    };
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(release));
+    } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        drop(runtime.spawn(release));
     }
 }
 
@@ -4139,6 +4143,10 @@ fn spawn_claim_ack(
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_driver(mut driver: Driver) -> Result<()> {
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(async move { driver.run().await }));
+        return Ok(());
+    }
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
     drop(runtime.spawn(async move { driver.run().await }));
     Ok(())

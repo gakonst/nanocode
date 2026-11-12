@@ -276,7 +276,7 @@ impl SharedStore {
                     result,
                 },
                 span,
-                queued: Instant::now(),
+                queued: nanocode_platform::now(),
             })
             .map_err(|_| stopped())?;
         receiver.await.map_err(|_| stopped())?
@@ -873,7 +873,7 @@ async fn run_group<S: StateStore + ?Sized>(store: &mut S, group: Vec<Grouped>) {
     for grouped in group {
         grouped.span.record(
             "queue.duration_ms",
-            grouped.queued.elapsed().as_secs_f64() * 1_000.0,
+            nanocode_platform::now().saturating_duration_since(grouped.queued).as_secs_f64() * 1_000.0,
         );
         match grouped.work {
             Work::Commit {
@@ -1019,7 +1019,7 @@ async fn run<S: StateStore + ?Sized>(store: &mut S, request: StoreRequest) {
     } = request;
     span.record(
         "queue.duration_ms",
-        queued.elapsed().as_secs_f64() * 1_000.0,
+        nanocode_platform::now().saturating_duration_since(queued).as_secs_f64() * 1_000.0,
     );
     async {
         match command {
@@ -1200,7 +1200,7 @@ impl SharedStore {
                     state.id = state_id,
                     queue.duration_ms = tracing::field::Empty
                 ),
-                queued: Instant::now(),
+                queued: nanocode_platform::now(),
             })
             .map_err(|_| stopped())?;
         Ok(receiver)
@@ -1231,7 +1231,7 @@ impl SharedStore {
                     state.id = state_id,
                     queue.duration_ms = tracing::field::Empty
                 ),
-                queued: Instant::now(),
+                queued: nanocode_platform::now(),
             })
             .map_err(|_| stopped())?;
         Ok(receiver)
@@ -1259,7 +1259,7 @@ impl StateStore for SharedStore {
                 .send(StoreRequest {
                     command: Command::Flush { result },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1314,7 +1314,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1345,7 +1345,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             let acquired = receiver.await.map_err(|_| stopped())??;
@@ -1384,7 +1384,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             let (acquired, companion) = receiver.await.map_err(|_| stopped())??;
@@ -1437,7 +1437,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             let acquired = receiver.await.map_err(|_| stopped())??;
@@ -1476,7 +1476,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1505,7 +1505,7 @@ impl StateStore for SharedStore {
                                 result,
                             },
                             span,
-                            queued: Instant::now(),
+                            queued: nanocode_platform::now(),
                         })
                         .map_err(|_| stopped())?;
                     receiver.await.map_err(|_| stopped())??
@@ -1535,7 +1535,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1558,7 +1558,7 @@ impl StateStore for SharedStore {
                 .send(StoreRequest {
                     command: Command::ListStates { limit, result },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1584,7 +1584,7 @@ impl StateStore for SharedStore {
                         result,
                     },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1607,7 +1607,7 @@ impl StateStore for SharedStore {
                 .send(StoreRequest {
                     command: Command::ListSummaries { limit, result },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1630,7 +1630,7 @@ impl StateStore for SharedStore {
                 .send(StoreRequest {
                     command: Command::RememberSummaries { summaries, result },
                     span,
-                    queued: Instant::now(),
+                    queued: nanocode_platform::now(),
                 })
                 .map_err(|_| stopped())?;
             receiver.await.map_err(|_| stopped())?
@@ -1781,6 +1781,10 @@ fn stopped() -> StoreError {
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Result<()> {
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(driver));
+        return Ok(());
+    }
     static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Handle>> =
         std::sync::OnceLock::new();
     let runtime = RUNTIME
@@ -1810,7 +1814,7 @@ fn spawn_driver(driver: impl Future<Output = ()> + 'static) -> crate::Result<()>
 
 #[cfg(not(target_family = "wasm"))]
 pub(crate) fn spawn_operation(operation: impl Future<Output = ()> + Send + 'static) {
-    drop(tokio::spawn(operation));
+    nanocode_platform::spawn(operation);
 }
 
 #[cfg(target_family = "wasm")]

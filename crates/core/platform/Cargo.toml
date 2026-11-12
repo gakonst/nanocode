@@ -15,7 +15,7 @@ uuid.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 getrandom.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["rt", "time"] }
 uuid = { workspace = true, features = ["v4", "v7"] }
 
 [lints]

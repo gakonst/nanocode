@@ -356,6 +356,10 @@ async fn write_journal(
 ) {
     loop {
         tokio::select! {
+            biased;
+            result = settled(&mut fenced.inflight), if !fenced.inflight.is_empty() => {
+                fenced.settled(result);
+            }
             write = writes.recv() => match write {
                 Some(Write::Load(result)) => {
                     fenced.drain().await;
@@ -373,9 +377,6 @@ async fn write_journal(
                 }
                 None => break,
             },
-            result = settled(&mut fenced.inflight), if !fenced.inflight.is_empty() => {
-                fenced.settled(result);
-            }
         }
     }
     fenced.drain().await;
@@ -676,6 +677,10 @@ pub(crate) fn seeded_child_journal(
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_writer(writer: impl Future<Output = ()> + Send + 'static) {
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(writer));
+        return;
+    }
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         drop(runtime.spawn(writer));
     }

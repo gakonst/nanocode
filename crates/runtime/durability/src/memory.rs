@@ -658,6 +658,10 @@ fn stopped() -> StoreError {
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn_driver(driver: impl Future<Output = ()> + Send + 'static) -> crate::Result<()> {
+    if let Some(host) = nanocode_platform::host() {
+        host.spawn(Box::pin(driver));
+        return Ok(());
+    }
     let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::RuntimeUnavailable)?;
     drop(runtime.spawn(driver));
     Ok(())

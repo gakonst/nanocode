@@ -8255,7 +8255,7 @@ impl Registry {
             })
             .await;
 
-        let deadline = Instant::now().checked_add(duration);
+        let deadline = nanocode_platform::now().checked_add(duration);
         loop {
             let session = session_id.to_owned();
             let wanted = ids.to_vec();
@@ -8505,7 +8505,7 @@ impl Registry {
             .await?;
         self.settle_held(&root_session_id, held);
         self.changed();
-        let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
+        let deadline = nanocode_platform::now() + AGENT_STOP_TIMEOUT;
         self.interrupt_harnesses(&root_session_id, &ids, deadline)
             .await?;
         self.state
@@ -8585,7 +8585,7 @@ impl Registry {
         let _closing = locks.closing.enter().await;
         let _paused = self.pause_messages(session_id).await;
         let mut revision = self.revision.subscribe();
-        let capture_deadline = Instant::now() + AGENT_STOP_TIMEOUT;
+        let capture_deadline = nanocode_platform::now() + AGENT_STOP_TIMEOUT;
         let registry = self.shared();
         let (request, final_journal) = loop {
             let session = session_id.to_owned();
@@ -8691,7 +8691,7 @@ impl Registry {
     async fn release_scope(&self, root_session_id: &str) -> std::io::Result<()> {
         drop(
             timeout_at(
-                Instant::now() + AGENT_STOP_TIMEOUT,
+                nanocode_platform::now() + AGENT_STOP_TIMEOUT,
                 self.await_restored(root_session_id),
             )
             .await,
@@ -8701,7 +8701,7 @@ impl Registry {
         let _paused = self.pause_messages(root_session_id).await;
         if self.store_for(root_session_id).is_some()
             && let Ok(Err(error)) = timeout_at(
-                Instant::now() + AGENT_STOP_TIMEOUT,
+                nanocode_platform::now() + AGENT_STOP_TIMEOUT,
                 self.save_scope(root_session_id),
             )
             .await
@@ -8737,7 +8737,7 @@ impl Registry {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
+        let deadline = nanocode_platform::now() + AGENT_STOP_TIMEOUT;
         let closing_result = self.close_harnesses(harnesses, deadline).await;
         if let Some(registry) = self.shared() {
             registry
@@ -8835,7 +8835,7 @@ impl Registry {
             .await;
         self.settle_held(&root_session_id, held);
         self.changed();
-        let deadline = Instant::now() + AGENT_STOP_TIMEOUT;
+        let deadline = nanocode_platform::now() + AGENT_STOP_TIMEOUT;
         drop(
             self.interrupt_harnesses(&root_session_id, &ids, deadline)
                 .await,

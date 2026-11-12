@@ -4,16 +4,13 @@ mod host;
 pub use host::{Host, Instant, LocalFuture, install, spawn_local};
 
 #[cfg(not(target_family = "wasm"))]
+mod native;
+#[cfg(not(target_family = "wasm"))]
+pub use native::{Host, HostFuture, host, install, now, sleep, spawn, system_time, timeout};
+
+#[cfg(not(target_family = "wasm"))]
 pub use std::time::Instant;
 pub use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-#[cfg(not(target_family = "wasm"))]
-pub use tokio::time::{error::Elapsed, sleep, timeout};
-
-#[cfg(not(target_family = "wasm"))]
-pub fn system_time() -> SystemTime {
-    SystemTime::now()
-}
 
 #[cfg(target_family = "wasm")]
 pub fn system_time() -> SystemTime {
@@ -26,18 +23,31 @@ pub fn sleep(duration: Duration) -> LocalFuture<'static, ()> {
 }
 
 #[cfg(target_family = "wasm")]
+pub fn now() -> Instant {
+    Instant::now()
+}
+
+#[cfg(target_family = "wasm")]
+pub fn spawn(future: impl std::future::Future<Output = ()> + 'static) {
+    spawn_local(future);
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Elapsed;
 
-#[cfg(target_family = "wasm")]
 impl std::fmt::Display for Elapsed {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("deadline has elapsed")
     }
 }
 
-#[cfg(target_family = "wasm")]
 impl std::error::Error for Elapsed {}
+
+impl From<Elapsed> for std::io::Error {
+    fn from(elapsed: Elapsed) -> Self {
+        Self::new(std::io::ErrorKind::TimedOut, elapsed)
+    }
+}
 
 #[cfg(target_family = "wasm")]
 pub async fn timeout<F: std::future::Future>(
@@ -89,6 +99,9 @@ fn kernel_random(bytes: &mut [u8]) -> std::io::Result<()> {
 
 #[cfg(not(target_family = "wasm"))]
 pub fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
+    if let Some(host) = host() {
+        return host.fill_random(bytes);
+    }
     if bytes.len() >= KERNEL_ENTROPY_READ {
         return kernel_random(bytes);
     }
@@ -126,7 +139,7 @@ pub fn uuid_v4() -> uuid::Uuid {
 pub fn uuid_v7() -> uuid::Uuid {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
-    let millis = SystemTime::now()
+    let millis = system_time()
         .duration_since(UNIX_EPOCH)
         .expect("the system clock predates the Unix epoch")
         .as_millis();

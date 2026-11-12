@@ -2,6 +2,8 @@
 
 mod actions;
 mod app;
+#[cfg(target_os = "linux")]
+mod arguments;
 mod cli;
 mod commands;
 #[cfg(unix)]
@@ -115,6 +117,13 @@ pub fn run_with(clients: ModelClients) -> ExitCode {
     }
     let entered = std::time::Instant::now();
     let cli = Cli::parse();
+    #[cfg(target_os = "linux")]
+    if (cli.session.prompt.is_some()
+        || matches!(&cli.command, Some(cli::Command::Exec(args)) if args.prompt.is_some()))
+        && let Err(error) = arguments::hide()
+    {
+        eprintln!("nanocode: the prompt stays visible in this process's arguments: {error}");
+    }
     let parsed = entered.elapsed();
     #[cfg(unix)]
     if cli.shell == cli::ShellArg::Psh {

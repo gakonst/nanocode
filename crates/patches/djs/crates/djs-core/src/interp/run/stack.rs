@@ -262,19 +262,12 @@ impl Exec<'_> {
     /// if it applies now (qjs's js_get_prepare_stack_trace): an own data property of the
     /// realm's Error constructor (read without running code) that is callable, with JS
     /// frames on the stack and no call of it running already.
-    fn prepare_stack_trace(&mut self) -> Option<(Value, Value)> {
+    fn prepare_stack_trace(&mut self, ctor: Option<Obj>) -> Option<(Value, Value)> {
         if !self.has_frame() {
             return None;
         }
-        let ctors = intrinsic_obj(self.heap, Intrinsic::Constructors);
-        let ctor = self
-            .heap
-            .get_own_property(ctors, atoms::ERROR)
-            .and_then(|p| p.value())?;
-        let f = match self
-            .heap
-            .get_own_property(ctor.as_object()?, atoms::PREPARE_STACK_TRACE)
-        {
+        let ctor = ctor?;
+        let f = match self.heap.get_own_property(ctor, atoms::PREPARE_STACK_TRACE) {
             Some(Property::Data { value, .. }) => value,
             _ => return None,
         };
@@ -297,7 +290,7 @@ impl Exec<'_> {
             hp = self.get(hp + frame::PREV_HP).as_int().unwrap_or(0) as u32;
             bp = prev_bp;
         }
-        Some((f, ctor))
+        Some((f, Value::object(ctor)))
     }
 
     /// The `stack` of a new error from the current frames (the innermost at `pc`): the
@@ -311,8 +304,9 @@ impl Exec<'_> {
         below: Option<Obj>,
         input: Option<(u32, u32)>,
     ) -> Result<Value, HeapError> {
-        let limit = realm::stack_trace_limit(self.heap);
-        let prepare = self.prepare_stack_trace();
+        let ctor = realm::error_constructor(self.heap);
+        let limit = realm::stack_trace_limit(self.heap, ctor);
+        let prepare = self.prepare_stack_trace(ctor);
         let frames = self.trace_frames(pc, skip_prelude, below, limit, input);
         let default = Value::string(self.heap.alloc_str(&self.format_trace(&frames))?);
         let Some((f, ctor)) = prepare else {

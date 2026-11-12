@@ -717,17 +717,20 @@ pub fn set_error_stack(heap: &mut Heap, o: Obj, stack: Value) -> Result<(), Heap
     define_hidden(heap, o, atoms::STACK, stack)
 }
 
-/// The number of frames a stack trace records: the realm's `Error.stackTraceLimit`
-/// (D2030), as qjs reads it: an own data property of the original Error constructor,
-/// read without running code. A number is truncated and clamped to `0..=i32::MAX`
-/// (NaN is 0); anything else, an accessor or no property gives 0.
-pub fn stack_trace_limit(heap: &mut Heap) -> u32 {
+/// The realm's original Error constructor, if it is still installed.
+pub fn error_constructor(heap: &Heap) -> Option<Obj> {
     let ctors = intrinsic_obj(heap, Intrinsic::Constructors);
-    let Some(ctor) = heap
-        .get_own_property(ctors, atoms::ERROR)
+    heap.get_own_property(ctors, atoms::ERROR)
         .and_then(|p| p.value())
         .and_then(|v| v.as_object())
-    else {
+}
+
+/// The number of frames a stack trace records: the realm's `Error.stackTraceLimit`
+/// (D2030), as qjs reads it: an own data property of `ctor`, the original Error
+/// constructor ([`error_constructor`]), read without running code. A number is truncated and clamped to `0..=i32::MAX`
+/// (NaN is 0); anything else, an accessor or no property gives 0.
+pub fn stack_trace_limit(heap: &Heap, ctor: Option<Obj>) -> u32 {
+    let Some(ctor) = ctor else {
         return crate::interp::run::STACK_TRACE_LIMIT;
     };
     let v = match heap.get_own_property(ctor, atoms::STACK_TRACE_LIMIT) {

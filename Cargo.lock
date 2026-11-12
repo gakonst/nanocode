@@ -3180,7 +3180,6 @@ version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "idna",
- "percent-encoding",
  "serde",
  "serde_json",
  "url",

@@ -5,12 +5,46 @@ use std::{
     str::FromStr,
 };
 
-use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str};
 use serde_json::Value;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use url::Url;
 
 use crate::CompileError;
+
+const ASCII_LIMIT: u8 = 0x80;
+const FRAGMENT_ESCAPED: &[u8] = b"% \"<>`";
+const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+
+fn hex_value(byte: u8) -> Option<u8> {
+    char::from(byte).to_digit(16).map(|digit| digit as u8)
+}
+
+fn percent_decode(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| {
+                Some((
+                    hex_value(*bytes.get(index + 1)?)?,
+                    hex_value(*bytes.get(index + 2)?)?,
+                ))
+            })
+            .flatten();
+        match escaped {
+            Some((high, low)) => {
+                decoded.push(high << 4 | low);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    decoded
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct JsonPointer(pub(crate) String);
@@ -155,13 +189,11 @@ pub(crate) enum Fragment {
 impl Fragment {
     pub(crate) fn split(s: &str) -> Result<(&str, Self), CompileError> {
         let (u, frag) = split(s);
-        let frag = percent_decode_str(frag)
-            .decode_utf8()
-            .map_err(|src| CompileError::ParseUrlError {
+        let frag =
+            String::from_utf8(percent_decode(frag)).map_err(|src| CompileError::ParseUrlError {
                 url: s.to_string(),
-                src: src.into(),
-            })?
-            .to_string();
+                src: src.utf8_error().into(),
+            })?;
         let frag = if frag.is_empty() || frag.starts_with('/') {
             Self::JsonPointer(JsonPointer(frag))
         } else {
@@ -171,14 +203,17 @@ impl Fragment {
     }
 
     pub(crate) fn encode(frag: &str) -> String {
-        const FRAGMENT: &AsciiSet = &CONTROLS
-            .add(b'%')
-            .add(b' ')
-            .add(b'"')
-            .add(b'<')
-            .add(b'>')
-            .add(b'`');
-        percent_encoding::utf8_percent_encode(frag, FRAGMENT).to_string()
+        let mut encoded = String::with_capacity(frag.len());
+        for &byte in frag.as_bytes() {
+            if byte.is_ascii_control() || byte >= ASCII_LIMIT || FRAGMENT_ESCAPED.contains(&byte) {
+                encoded.push('%');
+                encoded.push(char::from(HEX_UPPER[usize::from(byte >> 4)]));
+                encoded.push(char::from(HEX_UPPER[usize::from(byte & 0x0F)]));
+            } else {
+                encoded.push(char::from(byte));
+            }
+        }
+        encoded
     }
 
     pub(crate) fn as_str(&self) -> &str {

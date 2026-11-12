@@ -442,27 +442,57 @@ impl IntrinsicFunction2 {
     }
 }
 
-bitflagset::bitflag! {
-    /// `SET_FUNCTION_ATTRIBUTE` flags.
-    /// Bitmask: Defaults=0x01, KwOnly=0x02, Annotations=0x04,
-    /// Closure=0x08, TypeParams=0x10, Annotate=0x20.
-    /// Stored as bit position (0-5) by `bitflag!` macro.
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-    #[repr(u8)]
-    pub enum MakeFunctionFlag {
-        Defaults = 0,
-        KwOnlyDefaults = 1,
-        Annotations = 2,
-        Closure = 3,
-        /// PEP 649: __annotate__ function closure (instead of __annotations__ dict)
-        Annotate = 4,
-        TypeParams = 5,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum MakeFunctionFlag {
+    Defaults = 0,
+    KwOnlyDefaults = 1,
+    Annotations = 2,
+    Closure = 3,
+    Annotate = 4,
+    TypeParams = 5,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
+pub struct MakeFunctionFlags(u8);
+
+impl MakeFunctionFlags {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub const fn insert(&mut self, flag: MakeFunctionFlag) {
+        self.0 |= 1 << flag as u8;
+    }
+
+    #[must_use]
+    pub const fn contains(&self, flag: &MakeFunctionFlag) -> bool {
+        self.0 & (1 << *flag as u8) != 0
     }
 }
 
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct MakeFunctionFlags(u8): MakeFunctionFlag
+impl core::ops::BitOr for MakeFunctionFlags {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl<const N: usize> From<[MakeFunctionFlag; N]> for MakeFunctionFlags {
+    fn from(flags: [MakeFunctionFlag; N]) -> Self {
+        let mut set = Self::new();
+        for flag in flags {
+            set.insert(flag);
+        }
+        set
+    }
 }
 
 impl TryFrom<u32> for MakeFunctionFlag {

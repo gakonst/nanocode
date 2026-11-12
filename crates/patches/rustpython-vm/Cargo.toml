@@ -92,9 +92,6 @@ default-features = false
 [dependencies.bitflags]
 version = "2.11.0"
 
-[dependencies.bitflagset]
-version = "0.0.4"
-
 [dependencies.bstr]
 version = "1"
 features = ["unicode"]

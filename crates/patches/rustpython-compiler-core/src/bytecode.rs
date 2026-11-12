@@ -425,30 +425,55 @@ impl<T> IndexMut<oparg::VarNum> for [T] {
     }
 }
 
-bitflagset::bitflag! {
-    /// Per-slot kind flags for localsplus (`co_localspluskinds`).
-    /// Values are bit *positions* (`Local` is bit 5 → mask `0x20`).
-    #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-    #[repr(u8)]
-    pub enum CoFastFlag {
-        ArgPos = 1,
-        ArgKw = 2,
-        ArgVar = 3,
-        Hidden = 4,
-        Local = 5,
-        Cell = 6,
-        Free = 7,
-    }
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum CoFastFlag {
+    ArgPos = 1,
+    ArgKw = 2,
+    ArgVar = 3,
+    Hidden = 4,
+    Local = 5,
+    Cell = 6,
+    Free = 7,
 }
 
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct CoFastFlags(u8): CoFastFlag
-}
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct CoFastFlags(u8);
 
 impl CoFastFlags {
     pub const ARG: Self =
         Self::from_slice(&[CoFastFlag::ArgPos, CoFastFlag::ArgKw, CoFastFlag::ArgVar]);
+
+    #[must_use]
+    pub const fn from_element(flag: CoFastFlag) -> Self {
+        Self(1 << flag as u8)
+    }
+
+    #[must_use]
+    pub const fn from_slice(flags: &[CoFastFlag]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < flags.len() {
+            bits |= 1 << flags[index] as u8;
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn from_bits_retain(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn contains(&self, flag: &CoFastFlag) -> bool {
+        self.0 & (1 << *flag as u8) != 0
+    }
 }
 
 pub const CO_FAST_ARG_POS: u8 = CoFastFlags::from_element(CoFastFlag::ArgPos).bits();

@@ -92,30 +92,26 @@ mod _stat {
     #[pyattr]
     pub const S_IFWHT: Mode = rustpython_host_env::os::S_IFWHT as Mode;
 
-    bitflagset::bitflag! {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-        #[allow(non_camel_case_types)]
-        #[repr(u8)]
-        enum StatPerm {
-            S_IXOTH = 0,
-            S_IWOTH = 1,
-            S_IROTH = 2,
-            S_IXGRP = 3,
-            S_IWGRP = 4,
-            S_IRGRP = 5,
-            S_IXUSR = 6,
-            S_IWUSR = 7,
-            S_IRUSR = 8,
-            S_ISVTX = 9,
-            S_ISGID = 10,
-            S_ISUID = 11,
-        }
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[allow(non_camel_case_types)]
+    #[repr(u8)]
+    enum StatPerm {
+        S_IXOTH = 0,
+        S_IWOTH = 1,
+        S_IROTH = 2,
+        S_IXGRP = 3,
+        S_IWGRP = 4,
+        S_IRGRP = 5,
+        S_IXUSR = 6,
+        S_IWUSR = 7,
+        S_IRUSR = 8,
+        S_ISVTX = 9,
+        S_ISGID = 10,
+        S_ISUID = 11,
     }
 
-    bitflagset::bitflagset! {
-        #[derive(Copy, Clone, PartialEq, Eq)]
-        struct StatPerms(u32): StatPerm
-    }
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    struct StatPerms(u32);
 
     impl StatPerms {
         const S_IRWXO: Self =
@@ -124,6 +120,24 @@ mod _stat {
             Self::from_slice(&[StatPerm::S_IXGRP, StatPerm::S_IWGRP, StatPerm::S_IRGRP]);
         const S_IRWXU: Self =
             Self::from_slice(&[StatPerm::S_IXUSR, StatPerm::S_IWUSR, StatPerm::S_IRUSR]);
+
+        const fn from_element(flag: StatPerm) -> Self {
+            Self(1 << flag as u8)
+        }
+
+        const fn from_slice(flags: &[StatPerm]) -> Self {
+            let mut bits = 0;
+            let mut index = 0;
+            while index < flags.len() {
+                bits |= 1 << flags[index] as u8;
+                index += 1;
+            }
+            Self(bits)
+        }
+
+        const fn bits(self) -> u32 {
+            self.0
+        }
     }
 
     const fn perm(flag: StatPerm) -> Mode {

@@ -241,34 +241,208 @@ impl core::fmt::Debug for PyTypeSlots {
     }
 }
 
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct PyTypeFlags(u64) {
-        const INLINE_VALUES = 2;
-        const MANAGED_WEAKREF = 3;
-        const MANAGED_DICT = 4;
-        const SEQUENCE = 5;
-        const MAPPING = 6;
-        const DISALLOW_INSTANTIATION = 7;
-        const IMMUTABLETYPE = 8;
-        const HEAPTYPE = 9;
-        const BASETYPE = 10;
-        const METHOD_DESCRIPTOR = 17;
-        const IS_ABSTRACT = 20;
-        // Built-in types that match the subject itself in pattern matching
-        // (bool, int, float, str, bytes, bytearray, list, tuple, dict, set, frozenset).
-        // This is not a stable API.
-        const _MATCH_SELF = 22;
-        const HAS_DICT = 40;
-        const HAS_WEAKREF = 41;
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
+#[repr(transparent)]
+pub struct PyTypeFlags(u64);
+
+#[allow(non_upper_case_globals)]
+impl PyTypeFlags {
+    pub const INLINE_VALUES: u8 = 2;
+    pub const MANAGED_WEAKREF: u8 = 3;
+    pub const MANAGED_DICT: u8 = 4;
+    pub const SEQUENCE: u8 = 5;
+    pub const MAPPING: u8 = 6;
+    pub const DISALLOW_INSTANTIATION: u8 = 7;
+    pub const IMMUTABLETYPE: u8 = 8;
+    pub const HEAPTYPE: u8 = 9;
+    pub const BASETYPE: u8 = 10;
+    pub const METHOD_DESCRIPTOR: u8 = 17;
+    pub const IS_ABSTRACT: u8 = 20;
+    pub const _MATCH_SELF: u8 = 22;
+    pub const HAS_DICT: u8 = 40;
+    pub const HAS_WEAKREF: u8 = 41;
+    #[cfg(debug_assertions)]
+    pub const _CREATED_WITH_FLAGS: u8 = 63;
+
+    const NAMED_BITS: u64 = {
+        let mut mask: u64 = 0;
+        mask |= 1 << Self::INLINE_VALUES;
+        mask |= 1 << Self::MANAGED_WEAKREF;
+        mask |= 1 << Self::MANAGED_DICT;
+        mask |= 1 << Self::SEQUENCE;
+        mask |= 1 << Self::MAPPING;
+        mask |= 1 << Self::DISALLOW_INSTANTIATION;
+        mask |= 1 << Self::IMMUTABLETYPE;
+        mask |= 1 << Self::HEAPTYPE;
+        mask |= 1 << Self::BASETYPE;
+        mask |= 1 << Self::METHOD_DESCRIPTOR;
+        mask |= 1 << Self::IS_ABSTRACT;
+        mask |= 1 << Self::_MATCH_SELF;
+        mask |= 1 << Self::HAS_DICT;
+        mask |= 1 << Self::HAS_WEAKREF;
         #[cfg(debug_assertions)]
-        const _CREATED_WITH_FLAGS = 63;
+        {
+            mask |= 1 << Self::_CREATED_WITH_FLAGS;
+        }
+        mask
+    };
+
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn bits(&self) -> u64 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn from_bits_retain(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn from_bits_truncate(bits: u64) -> Self {
+        Self(bits & Self::NAMED_BITS)
+    }
+
+    #[must_use]
+    pub const fn from_element(position: u8) -> Self {
+        assert!(position < u64::BITS as u8);
+        Self(1 << position)
+    }
+
+    #[must_use]
+    pub const fn from_slice(positions: &[u8]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < positions.len() {
+            assert!(positions[index] < u64::BITS as u8);
+            bits |= 1 << positions[index];
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn contains(&self, position: &u8) -> bool {
+        assert!(*position < u64::BITS as u8);
+        self.0 & (1 << *position) != 0
+    }
+
+    pub const fn insert(&mut self, position: u8) -> bool {
+        assert!(position < u64::BITS as u8);
+        let absent = self.0 & (1 << position) == 0;
+        self.0 |= 1 << position;
+        absent
+    }
+
+    pub const fn remove(&mut self, position: u8) -> bool {
+        assert!(position < u64::BITS as u8);
+        let present = self.0 & (1 << position) != 0;
+        self.0 &= !(1 << position);
+        present
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    #[must_use]
+    pub const fn is_superset(&self, other: &Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    #[must_use]
+    pub const fn is_disjoint(&self, other: &Self) -> bool {
+        self.0 & other.0 == 0
     }
 }
 
-bitflagset::atomic_bitflagset!(
-    pub struct AtomicPyTypeFlags(core::sync::atomic::AtomicU64) on PyTypeFlags
-);
+impl core::ops::BitAnd for PyTypeFlags {
+    type Output = Self;
+
+    fn bitand(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+}
+
+impl core::ops::BitOr for PyTypeFlags {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl core::ops::BitOrAssign for PyTypeFlags {
+    fn bitor_assign(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+impl core::ops::Sub for PyTypeFlags {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+}
+
+#[repr(transparent)]
+pub struct AtomicPyTypeFlags(core::sync::atomic::AtomicU64);
+
+impl Default for AtomicPyTypeFlags {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AtomicPyTypeFlags {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(core::sync::atomic::AtomicU64::new(0))
+    }
+
+    #[must_use]
+    pub const fn from_plain(flags: PyTypeFlags) -> Self {
+        Self(core::sync::atomic::AtomicU64::new(flags.0))
+    }
+
+    #[must_use]
+    pub const fn as_bits(&self) -> &core::sync::atomic::AtomicU64 {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn contains(&self, position: &u8) -> bool {
+        assert!(*position < u64::BITS as u8);
+        self.0.load(core::sync::atomic::Ordering::Relaxed) & (1 << *position) != 0
+    }
+
+    pub fn insert(&self, position: u8) -> bool {
+        assert!(position < u64::BITS as u8);
+        let old = self
+            .0
+            .fetch_or(1 << position, core::sync::atomic::Ordering::AcqRel);
+        old & (1 << position) == 0
+    }
+
+    pub fn remove(&self, position: u8) -> bool {
+        assert!(position < u64::BITS as u8);
+        let old = self
+            .0
+            .fetch_and(!(1 << position), core::sync::atomic::Ordering::AcqRel);
+        old & (1 << position) != 0
+    }
+}
 
 impl PyTypeFlags {
     pub const HEAP_TYPE: Self = Self::from_slice(&[Self::HEAPTYPE, Self::BASETYPE]);

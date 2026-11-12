@@ -34,9 +34,6 @@ path = "src/lib.rs"
 [dependencies.bitflags]
 version = "2.11.0"
 
-[dependencies.bitflagset]
-version = "0.0.4"
-
 [dependencies.nanocode-compression]
 path = "../../core/compression"
 

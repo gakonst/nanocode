@@ -5,27 +5,66 @@ use crate::crt_fd;
 use crate::errno::errors::{EAGAIN, EBADF, EINTR, EISDIR};
 use crate::os::{O_APPEND, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 
-bitflagset::bitflag! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum FileModeFlag {
-        Created = 0,
-        Readable = 1,
-        Writable = 2,
-        Appending = 3,
-    }
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FileModeFlag {
+    Created = 0,
+    Readable = 1,
+    Writable = 2,
+    Appending = 3,
 }
 
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct FileMode(u8): FileModeFlag
-}
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub struct FileMode(u8);
 
 impl FileMode {
     pub const CREATED: Self = Self::from_element(FileModeFlag::Created);
     pub const READABLE: Self = Self::from_element(FileModeFlag::Readable);
     pub const WRITABLE: Self = Self::from_element(FileModeFlag::Writable);
     pub const APPENDING: Self = Self::from_element(FileModeFlag::Appending);
+
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn from_element(flag: FileModeFlag) -> Self {
+        Self(1 << flag as u8)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_superset(&self, other: &Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn insert(&mut self, flag: FileModeFlag) {
+        self.0 |= 1 << flag as u8;
+    }
+
+    #[must_use]
+    pub const fn contains(&self, flag: &FileModeFlag) -> bool {
+        self.0 & (1 << *flag as u8) != 0
+    }
+}
+
+impl core::ops::BitOr for FileMode {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+impl core::ops::BitOrAssign for FileMode {
+    fn bitor_assign(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -14,34 +14,52 @@ use crate::{PyObjectRef, PyResult, TryFromBorrowedObject, TryFromObject, Virtual
 pub(crate) const NSIG: usize = 64;
 
 #[cfg(not(feature = "threading"))]
-bitflagset::bitflag! {
-    /// Eval-breaker bits checked once per bytecode instruction.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[repr(u8)]
-    enum EvalBreakerFlag {
-        Signal = 0,
-    }
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum EvalBreakerFlag {
+    Signal = 0,
 }
 
 #[cfg(feature = "threading")]
-bitflagset::bitflag! {
-    /// Eval-breaker bits checked once per bytecode instruction.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[repr(u8)]
-    enum EvalBreakerFlag {
-        Signal = 0,
-        Qsbr = 1,
-        Stop = 3,
-        Finalizing = 4,
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum EvalBreakerFlag {
+    Signal = 0,
+    Qsbr = 1,
+    Stop = 3,
+    Finalizing = 4,
+}
+
+struct EvalBreaker(AtomicU8);
+
+impl EvalBreaker {
+    const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+
+    fn contains(&self, flag: &EvalBreakerFlag) -> bool {
+        self.0.load(Ordering::Relaxed) & (1 << *flag as u8) != 0
+    }
+
+    fn insert(&self, flag: EvalBreakerFlag) -> bool {
+        let old = self.0.fetch_or(1 << flag as u8, Ordering::AcqRel);
+        old & (1 << flag as u8) == 0
+    }
+
+    fn remove(&self, flag: EvalBreakerFlag) -> bool {
+        let old = self.0.fetch_and(!(1 << flag as u8), Ordering::AcqRel);
+        old & (1 << flag as u8) != 0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.load(Ordering::Relaxed) == 0
+    }
+
+    #[cfg(all(test, feature = "threading"))]
+    fn clear(&self) {
+        self.0.store(0, Ordering::Release);
     }
 }
-
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    struct EvalBreakerBits(u8): EvalBreakerFlag
-}
-
-bitflagset::atomic_bitflagset!(struct EvalBreaker(AtomicU8) on EvalBreakerBits);
 
 /// Signal handlers and QSBR set bits with fetch_or (async-signal-safe,
 /// lock-free); consumers clear only their own bit with fetch_and.

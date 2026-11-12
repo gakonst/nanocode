@@ -30,25 +30,53 @@ use {
     },
 };
 
-bitflagset::bitflag! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum AccessFlag {
-        X = 0,
-        W = 1,
-        R = 2,
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AccessFlag {
+    X = 0,
+    W = 1,
+    R = 2,
+}
+
+const fn access_bit(flag: AccessFlag) -> u8 {
+    1 << flag as u8
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct AccessMode(u8);
+
+impl AccessMode {
+    const NAMED_BITS: u8 = access_bit(AccessFlag::X) | access_bit(AccessFlag::W) | access_bit(AccessFlag::R);
+
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        if bits & !Self::NAMED_BITS == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    #[must_use]
+    pub const fn contains(&self, flag: &AccessFlag) -> bool {
+        self.0 & access_bit(*flag) != 0
     }
 }
 
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct AccessMode(u8): AccessFlag
-}
-
-pub const F_OK: u8 = AccessMode::empty().bits();
-pub const X_OK: u8 = AccessMode::from_element(AccessFlag::X).bits();
-pub const W_OK: u8 = AccessMode::from_element(AccessFlag::W).bits();
-pub const R_OK: u8 = AccessMode::from_element(AccessFlag::R).bits();
+pub const F_OK: u8 = 0;
+pub const X_OK: u8 = access_bit(AccessFlag::X);
+pub const W_OK: u8 = access_bit(AccessFlag::W);
+pub const R_OK: u8 = access_bit(AccessFlag::R);
 
 #[cfg(any(unix, target_os = "wasi"))]
 pub use libc::AT_FDCWD;
@@ -173,47 +201,51 @@ mod wasm_oflag {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use wasm_oflag::*;
 
-bitflagset::bitflag! {
-    /// BSD `chflags` bits. Values are bit *positions*; masks are `1 << pos`.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[repr(u8)]
-    pub enum ChFlag {
-        UfNodump = 0,
-        UfImmutable = 1,
-        UfAppend = 2,
-        UfOpaque = 3,
-        UfNounlink = 4,
-        UfCompressed = 5,
-        UfTracked = 6,
-        UfDatavault = 7,
-        UfHidden = 15,
-        SfArchived = 16,
-        SfImmutable = 17,
-        SfAppend = 18,
-        SfNounlink = 20,
-        SfSnapshot = 21,
-        SfFirmlink = 23,
-        SfDataless = 30,
-    }
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ChFlag {
+    UfNodump = 0,
+    UfImmutable = 1,
+    UfAppend = 2,
+    UfOpaque = 3,
+    UfNounlink = 4,
+    UfCompressed = 5,
+    UfTracked = 6,
+    UfDatavault = 7,
+    UfHidden = 15,
+    SfArchived = 16,
+    SfImmutable = 17,
+    SfAppend = 18,
+    SfNounlink = 20,
+    SfSnapshot = 21,
+    SfFirmlink = 23,
+    SfDataless = 30,
 }
 
-bitflagset::bitflagset! {
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    pub struct ChFlags(u32): ChFlag
-}
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct ChFlags(u32);
 
 impl ChFlags {
-    /// Owner-settable bits, including reserved user-flag positions.
-    pub const UF_SETTABLE: Self = Self::from_bits_retain(0x0000ffff);
-    pub const SF_SETTABLE: Self = Self::from_bits_retain(if cfg!(target_os = "macos") {
+    pub const UF_SETTABLE: Self = Self(0x0000ffff);
+    pub const SF_SETTABLE: Self = Self(if cfg!(target_os = "macos") {
         0x3fff0000
     } else {
         0xffff0000
     });
     #[cfg(target_os = "macos")]
-    pub const SF_SUPPORTED: Self = Self::from_bits_retain(0x009f0000);
+    pub const SF_SUPPORTED: Self = Self(0x009f0000);
     #[cfg(target_os = "macos")]
-    pub const SF_SYNTHETIC: Self = Self::from_bits_retain(0xc0000000);
+    pub const SF_SYNTHETIC: Self = Self(0xc0000000);
+
+    #[must_use]
+    pub const fn from_element(flag: ChFlag) -> Self {
+        Self(1 << flag as u8)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
 }
 
 pub const UF_NODUMP: u32 = ChFlags::from_element(ChFlag::UfNodump).bits();

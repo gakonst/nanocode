@@ -1,0 +1,1963 @@
+// spell-checker:ignore typecode tofile tolist fromfile
+
+pub(crate) use array::module_def;
+
+#[pymodule(name = "array")]
+pub mod array {
+    use crate::{
+        common::{
+            atomic::{self, AtomicUsize},
+            lock::{
+                PyMappedRwLockReadGuard, PyMappedRwLockWriteGuard, PyMutex, PyRwLock,
+                PyRwLockReadGuard, PyRwLockWriteGuard,
+            },
+            str::wchar_t,
+        },
+        vm::{
+            AsObject, Py, PyObject, PyObjectRef, PyPayload, PyRef, PyResult, VirtualMachine,
+            atomic_func,
+            builtins::{
+                PositionIterInternal, PyByteArray, PyBytes, PyBytesRef, PyDictRef, PyFloat,
+                PyGenericAlias, PyInt, PyList, PyListRef, PyStr, PyStrRef, PyTupleRef, PyType,
+                PyTypeRef, PyUtf8Str, PyUtf8StrRef, builtins_iter, locked_next,
+            },
+            class_or_notimplemented,
+            convert::{ToPyObject, ToPyResult, TryFromBorrowedObject, TryFromObject},
+            function::{
+                ArgBytesLike, ArgIndex, ArgIntoFloat, ArgIterable, KwArgs, OptionalArg,
+                PyComparisonValue,
+            },
+            protocol::{
+                BufferDescriptor, BufferFlags, BufferMethods, BufferResizeGuard, PyBuffer,
+                PyIterReturn, PyMappingMethods, PySequenceMethods,
+            },
+            sequence::{SequenceExt, SequenceMutExt},
+            sliceable::{
+                SaturatedSlice, SequenceIndex, SequenceIndexOp, SliceableSequenceMutOp,
+                SliceableSequenceOp,
+            },
+            stdlib::_warnings,
+            types::{
+                AsBuffer, AsMapping, AsSequence, Comparable, Constructor, IterNext, Iterable,
+                PyComparisonOp, Representable, SelfIter,
+            },
+        },
+    };
+    use alloc::fmt;
+    use core::cmp::Ordering;
+    use itertools::Itertools;
+    use num_traits::{Signed, ToPrimitive};
+    use rustpython_common::wtf8::{CodePoint, Wtf8, Wtf8Buf};
+    use std::os::raw;
+    macro_rules! def_array_enum {
+        ($(($n:ident, $t:ty, $c:literal, $scode:literal)),*$(,)?) => {
+            #[derive(Debug, Clone)]
+            pub enum ArrayContentType {
+                $($n(Vec<$t>),)*
+            }
+
+            /// One item, already converted to the array's element type.
+            enum ArrayItem {
+                $($n($t),)*
+            }
+
+            impl ArrayContentType {
+                fn from_char(c: char) -> Result<Self, String> {
+                    match c {
+                        $($c => Ok(ArrayContentType::$n(Vec::new())),)*
+                        _ => Err(
+                            "bad typecode (must be b, B, u, w, h, H, i, I, l, L, q, Q, f or d)".into()
+                        ),
+                    }
+                }
+
+                const fn typecode(&self) -> char {
+                    match self {
+                        $(ArrayContentType::$n(_) => $c,)*
+                    }
+                }
+
+                const fn typecode_str(&self) -> &'static str {
+                    match self {
+                        $(ArrayContentType::$n(_) => $scode,)*
+                    }
+                }
+
+                const fn itemsize_of_typecode(c: char) -> Option<usize> {
+                    match c {
+                        $($c => Some(core::mem::size_of::<$t>()),)*
+                        _ => None,
+                    }
+                }
+
+                const fn itemsize(&self) -> usize {
+                    match self {
+                        $(ArrayContentType::$n(_) => core::mem::size_of::<$t>(),)*
+                    }
+                }
+
+                fn addr(&self) -> usize {
+                    match self {
+                        $(ArrayContentType::$n(v) => v.as_ptr() as usize,)*
+                    }
+                }
+
+                fn len(&self) -> usize {
+                    match self {
+                        $(ArrayContentType::$n(v) => v.len(),)*
+                    }
+                }
+
+                fn reserve(&mut self, len: usize) {
+                    match self {
+                        $(ArrayContentType::$n(v) => v.reserve(len),)*
+                    }
+                }
+
+                fn push(&mut self, obj: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            let val = <$t>::try_into_from_object(vm, obj)?;
+                            v.push(val);
+                        })*
+                    }
+                    Ok(())
+                }
+
+                fn pop(&mut self, i: isize, vm: &VirtualMachine) -> PyResult {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                        let i = v.wrap_index(i).ok_or_else(|| {
+                            vm.new_index_error("pop index out of range".to_owned())
+                        })?;
+                            v.remove(i).to_pyresult(vm)
+                        })*
+                    }
+                }
+
+                fn push_item(&mut self, item: ArrayItem) {
+                    match (self, item) {
+                        $((Self::$n(v), ArrayItem::$n(value)) => v.push(value),)*
+                        _ => unreachable!("item was converted for this array"),
+                    }
+                }
+
+                fn insert_item(&mut self, i: isize, item: ArrayItem) {
+                    match (self, item) {
+                        $((Self::$n(v), ArrayItem::$n(value)) => {
+                            v.insert(i.saturated_at(v.len()), value);
+                        })*
+                        _ => unreachable!("item was converted for this array"),
+                    }
+                }
+
+                fn search_item(
+                    typecode: char,
+                    needle: &PyObject,
+                    vm: &VirtualMachine,
+                ) -> Option<Option<ArrayItem>> {
+                    match typecode {
+                        $($c => <$t>::exact_search_item(needle, vm)
+                            .map(|value| value.map(ArrayItem::$n)),)*
+                        _ => unreachable!("array has a typecode"),
+                    }
+                }
+
+                fn count_item(&self, item: &ArrayItem, vm: &VirtualMachine) -> PyResult<usize> {
+                    match (self, item) {
+                        $((Self::$n(v), ArrayItem::$n(value)) => {
+                            <$t>::validate_slice(v, vm)?;
+                            Ok(v.iter().filter(|element| *element == value).count())
+                        })*
+                        _ => unreachable!("item was converted for this array"),
+                    }
+                }
+
+                fn find_item(
+                    &self,
+                    item: &ArrayItem,
+                    start: usize,
+                    stop: usize,
+                    vm: &VirtualMachine,
+                ) -> PyResult<Option<usize>> {
+                    match (self, item) {
+                        $((Self::$n(v), ArrayItem::$n(value)) => {
+                            let end = stop.min(v.len());
+                            let start = start.min(end);
+                            let items = &v[start..end];
+                            let index = items.iter().position(|element| element == value);
+                            // An invalid character after an early match is not visited.
+                            let visited = index.map_or(items.len(), |index| index + 1);
+                            <$t>::validate_slice(&items[..visited], vm)?;
+                            Ok(index.map(|index| start + index))
+                        })*
+                        _ => unreachable!("item was converted for this array"),
+                    }
+                }
+
+                fn clear(&mut self) -> PyResult<()>{
+                    match self {
+                        $(ArrayContentType::$n(v) => v.clear(),)*
+                    };
+                    Ok(())
+                }
+
+                fn frombytes_move(&mut self, b: Vec<u8>) {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            if v.is_empty() {
+                                // safe because every configuration of bytes for the types we
+                                // support are valid
+                                let b = core::mem::ManuallyDrop::new(b);
+                                let ptr = b.as_ptr() as *mut $t;
+                                let len = b.len() / core::mem::size_of::<$t>();
+                                let capacity = b.capacity() / core::mem::size_of::<$t>();
+                                *v = unsafe { Vec::from_raw_parts(ptr, len, capacity) };
+                            } else {
+                                self.frombytes(&b);
+                            }
+                        })*
+                    }
+                }
+
+                fn frombytes(&mut self, b: &[u8]) {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            // safe because every configuration of bytes for the types we
+                            // support are valid
+                            if b.len() > 0 {
+                                let ptr = b.as_ptr() as *const $t;
+                                let ptr_len = b.len() / core::mem::size_of::<$t>();
+                                let slice = unsafe { core::slice::from_raw_parts(ptr, ptr_len) };
+                                v.extend_from_slice(slice);
+                            }
+                        })*
+                    }
+                }
+
+                fn fromlist(&mut self, list: &Py<PyList>, vm: &VirtualMachine) -> PyResult<()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            // convert list before modify self
+                            let mut list: Vec<$t> = list
+                                .borrow_vec()
+                                .iter()
+                                .cloned()
+                                .map(|value| <$t>::try_into_from_object(vm, value))
+                                .try_collect()?;
+                            v.append(&mut list);
+                            Ok(())
+                        })*
+                    }
+                }
+
+                fn get_bytes(&self) -> &[u8] {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            // safe because we're just reading memory as bytes
+                            let ptr = v.as_ptr() as *const u8;
+                            let ptr_len = v.len() * core::mem::size_of::<$t>();
+                            unsafe { core::slice::from_raw_parts(ptr, ptr_len) }
+                        })*
+                    }
+                }
+
+                fn get_bytes_mut(&mut self) -> &mut [u8] {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            // safe because we're just reading memory as bytes
+                            let ptr = v.as_ptr() as *mut u8;
+                            let ptr_len = v.len() * core::mem::size_of::<$t>();
+                            unsafe { core::slice::from_raw_parts_mut(ptr, ptr_len) }
+                        })*
+                    }
+                }
+
+                fn reverse(&mut self) {
+                    match self {
+                        $(ArrayContentType::$n(v) => v.reverse(),)*
+                    }
+                }
+
+                fn get(
+                    &self,
+                    i: usize,
+                    vm: &VirtualMachine
+                ) -> Option<PyResult> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            v.get(i).map(|x| x.to_pyresult(vm))
+                        })*
+                    }
+                }
+
+                fn getitem_by_index(&self, i: isize, vm: &VirtualMachine) -> PyResult {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            v.getitem_by_index(vm, i).map(|x| x.to_pyresult(vm))?
+                        })*
+                    }
+                }
+
+                fn getitem_by_slice(&self, slice: SaturatedSlice, vm: &VirtualMachine) -> PyResult {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            let r = v.getitem_by_slice(vm, slice)?;
+                            let array = PyArray::from(ArrayContentType::$n(r));
+                            array.to_pyresult(vm)
+                        })*
+                    }
+                }
+
+                /// Convert an object to the element type of the array with
+                /// this typecode. This runs the object's conversion methods,
+                /// which can reach the array, so it takes the typecode by
+                /// value and holds no lock on it.
+                fn item_from_object(
+                    typecode: char,
+                    value: PyObjectRef,
+                    vm: &VirtualMachine
+                ) -> PyResult<ArrayItem> {
+                    match typecode {
+                        $($c => Ok(ArrayItem::$n(<$t>::try_into_from_object(vm, value)?)),)*
+                        _ => unreachable!("array has a typecode"),
+                    }
+                }
+
+                fn setitem_by_item(
+                    &mut self,
+                    i: isize,
+                    item: ArrayItem,
+                    vm: &VirtualMachine
+                ) -> PyResult<()> {
+                    match (self, item) {
+                        $((ArrayContentType::$n(v), ArrayItem::$n(value)) =>
+                            v.setitem_by_index(vm, i, value),)*
+                        _ => unreachable!("item was converted for this array"),
+                    }
+                }
+
+                fn setitem_by_slice(
+                    &mut self,
+                    slice: SaturatedSlice,
+                    items: &ArrayContentType,
+                    vm: &VirtualMachine
+                ) -> PyResult<()> {
+                    match self {
+                        $(Self::$n(elements) => if let ArrayContentType::$n(items) = items {
+                            elements.setitem_by_slice(vm, slice, items)
+                        } else {
+                            Err(vm.new_type_error(
+                                "bad argument type for built-in operation".to_owned()
+                            ))
+                        },)*
+                    }
+                }
+
+                fn setitem_by_slice_no_resize(
+                    &mut self,
+                    slice: SaturatedSlice,
+                    items: &ArrayContentType,
+                    vm: &VirtualMachine
+                ) -> PyResult<()> {
+                    match self {
+                        $(Self::$n(elements) => if let ArrayContentType::$n(items) = items {
+                            elements.setitem_by_slice_no_resize(vm, slice, items)
+                        } else {
+                            Err(vm.new_type_error(
+                                "bad argument type for built-in operation".to_owned()
+                            ))
+                        },)*
+                    }
+                }
+
+                fn delitem_by_index(&mut self, i: isize, vm: &VirtualMachine) -> PyResult<()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            v.delitem_by_index(vm, i)
+                        })*
+                    }
+                }
+
+                fn delitem_by_slice(&mut self, slice: SaturatedSlice, vm: &VirtualMachine) -> PyResult<()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            v.delitem_by_slice(vm, slice)
+                        })*
+                    }
+                }
+
+                fn add(&self, other: &ArrayContentType, vm: &VirtualMachine) -> PyResult<Self> {
+                    match self {
+                        $(ArrayContentType::$n(v) => if let ArrayContentType::$n(other) = other {
+                            let elements = v.iter().chain(other.iter()).cloned().collect();
+                            Ok(ArrayContentType::$n(elements))
+                        } else {
+                            Err(vm.new_type_error(
+                                "bad argument type for built-in operation".to_owned()
+                            ))
+                        },)*
+                    }
+                }
+
+                fn iadd(&mut self, other: &ArrayContentType, vm: &VirtualMachine) -> PyResult<()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => if let ArrayContentType::$n(other) = other {
+                            v.extend(other);
+                            Ok(())
+                        } else {
+                            Err(vm.new_type_error(
+                                "can only extend with array of same kind".to_owned()
+                            ))
+                        },)*
+                    }
+                }
+
+                fn mul(&self, value: isize, vm: &VirtualMachine) -> PyResult<Self> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            // MemoryError instead Overflow Error, hard to says it is right
+                            // but it is how cpython doing right now
+                            let elements = v.mul(vm, value).map_err(|_| vm.no_memory_error())?;
+                            Ok(ArrayContentType::$n(elements))
+                        })*
+                    }
+                }
+
+                fn imul(&mut self, value: isize, vm: &VirtualMachine) -> PyResult<()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            // MemoryError instead Overflow Error, hard to says it is right
+                            // but it is how cpython doing right now
+                            v.imul(vm, value).map_err(|_| vm.no_memory_error())
+                        })*
+                    }
+                }
+
+                fn byteswap(&mut self) {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            for element in v.iter_mut() {
+                                let x = element.byteswap();
+                                *element = x;
+                            }
+                        })*
+                    }
+                }
+
+                fn repr(&self, class_name: &str, _vm: &VirtualMachine) -> PyResult<String> {
+                    // we don't need ReprGuard here
+                    let s = match self {
+                        $(ArrayContentType::$n(v) => {
+                            if v.is_empty() {
+                                format!("{}('{}')", class_name, $c)
+                            } else {
+                                format!("{}('{}', [{}])", class_name, $c, v.iter().format(", "))
+                            }
+                        })*
+                    };
+                    Ok(s)
+                }
+
+                fn iter<'a, 'vm: 'a>(
+                    &'a self,
+                    vm: &'vm VirtualMachine
+                ) -> impl Iterator<Item = PyResult> + 'a {
+                    (0..self.len()).map(move |i| self.get(i, vm).unwrap())
+                }
+
+                fn cmp(&self, other: &ArrayContentType) -> Result<Option<Ordering>, ()> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            if let ArrayContentType::$n(other) = other {
+                                Ok(PartialOrd::partial_cmp(v, other))
+                            } else {
+                                Err(())
+                            }
+                        })*
+                    }
+                }
+
+                fn get_objects(&self, vm: &VirtualMachine) -> Vec<PyObjectRef> {
+                    match self {
+                        $(ArrayContentType::$n(v) => {
+                            v.iter().map(|&x| x.to_object(vm)).collect()
+                        })*
+                    }
+                }
+            }
+        };
+    }
+
+    def_array_enum!(
+        (SignedByte, i8, 'b', "b"),
+        (UnsignedByte, u8, 'B', "B"),
+        (PyUnicode, WideChar, 'u', "u"),
+        (PyUcs4, Ucs4Char, 'w', "w"),
+        (SignedShort, raw::c_short, 'h', "h"),
+        (UnsignedShort, raw::c_ushort, 'H', "H"),
+        (SignedInt, raw::c_int, 'i', "i"),
+        (UnsignedInt, raw::c_uint, 'I', "I"),
+        (SignedLong, raw::c_long, 'l', "l"),
+        (UnsignedLong, raw::c_ulong, 'L', "L"),
+        (SignedLongLong, raw::c_longlong, 'q', "q"),
+        (UnsignedLongLong, raw::c_ulonglong, 'Q', "Q"),
+        (Float, f32, 'f', "f"),
+        (Double, f64, 'd', "d"),
+    );
+
+    #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+    pub struct WideChar(wchar_t);
+
+    /// Element type for the 'w' typecode: always a 4-byte unicode code point
+    /// (Py_UCS4), unlike 'u' which is platform-dependent `wchar_t`.
+    #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Debug)]
+    pub struct Ucs4Char(u32);
+
+    trait ArrayElement: Sized {
+        fn try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self>;
+        fn byteswap(self) -> Self;
+        fn to_object(self, vm: &VirtualMachine) -> PyObjectRef;
+
+        fn validate_slice(_items: &[Self], _vm: &VirtualMachine) -> PyResult<()> {
+            Ok(())
+        }
+
+        // Only exact builtins can be compared without running Python. The inner
+        // None means that no element of this type can equal the given value.
+        fn exact_search_item(_obj: &PyObject, _vm: &VirtualMachine) -> Option<Option<Self>> {
+            None
+        }
+    }
+
+    macro_rules! impl_int_element {
+        ($($t:ty,)*) => {$(
+            impl ArrayElement for $t {
+                fn try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+                    obj.try_index(vm)?.try_to_primitive_in_range(vm)
+                }
+                fn exact_search_item(obj: &PyObject, vm: &VirtualMachine) -> Option<Option<Self>> {
+                    obj.class().is(vm.ctx.types.int_type).then(|| {
+                        <$t>::try_from(obj.downcast_ref::<PyInt>().unwrap().as_bigint()).ok()
+                    })
+                }
+                fn byteswap(self) -> Self {
+                    <$t>::swap_bytes(self)
+                }
+                fn to_object(self, vm: &VirtualMachine) -> PyObjectRef {
+                    self.to_pyobject(vm)
+                }
+            }
+        )*};
+    }
+
+    macro_rules! impl_float_element {
+        ($(($t:ty, $f_from:path, $f_swap:path, $f_to:path),)*) => {$(
+            impl ArrayElement for $t {
+                fn try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+                    $f_from(vm, obj)
+                }
+                fn exact_search_item(obj: &PyObject, vm: &VirtualMachine) -> Option<Option<Self>> {
+                    obj.class().is(vm.ctx.types.float_type).then(|| {
+                        let value = obj.downcast_ref::<PyFloat>().unwrap().to_f64();
+                        let item = value as Self;
+                        (item as f64 == value).then_some(item)
+                    })
+                }
+                fn byteswap(self) -> Self {
+                    $f_swap(self)
+                }
+                fn to_object(self, vm: &VirtualMachine) -> PyObjectRef {
+                    $f_to(self).into_pyobject(vm)
+                }
+            }
+        )*};
+    }
+
+    impl_int_element!(i8, u8, i16, u16, i32, u32, i64, u64,);
+    impl_float_element!(
+        (
+            f32,
+            f32_try_into_from_object,
+            f32_swap_bytes,
+            pyfloat_from_f32
+        ),
+        (f64, f64_try_into_from_object, f64_swap_bytes, PyFloat::from),
+    );
+
+    const fn f32_swap_bytes(x: f32) -> f32 {
+        f32::from_bits(x.to_bits().swap_bytes())
+    }
+
+    const fn f64_swap_bytes(x: f64) -> f64 {
+        f64::from_bits(x.to_bits().swap_bytes())
+    }
+
+    fn f32_try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<f32> {
+        ArgIntoFloat::try_from_object(vm, obj).map(|x| x.into_float() as f32)
+    }
+
+    fn f64_try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<f64> {
+        ArgIntoFloat::try_from_object(vm, obj).map(|x| x.into_float())
+    }
+
+    fn pyfloat_from_f32(value: f32) -> PyFloat {
+        PyFloat::from(value as f64)
+    }
+
+    impl ArrayElement for WideChar {
+        fn exact_search_item(obj: &PyObject, vm: &VirtualMachine) -> Option<Option<Self>> {
+            if !obj.class().is(vm.ctx.types.str_type) {
+                return None;
+            }
+            let ch = obj
+                .downcast_ref::<PyStr>()
+                .unwrap()
+                .as_wtf8()
+                .code_points()
+                .exactly_one()
+                .ok()?;
+            num_traits::cast(ch.to_u32()).map(Self).map(Some)
+        }
+
+        fn validate_slice(items: &[Self], vm: &VirtualMachine) -> PyResult<()> {
+            let codepoints = || {
+                items
+                    .iter()
+                    .map(|item| num_traits::AsPrimitive::<u32>::as_(item.0))
+            };
+            if codepoints().max().unwrap_or(0) > 0x10ffff {
+                let invalid = codepoints().find(|&value| value > 0x10ffff).unwrap();
+                return Err(vm.new_value_error(u32_to_char(invalid).unwrap_err()));
+            }
+            Ok(())
+        }
+
+        fn try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            PyUtf8StrRef::try_from_object(vm, obj)?
+                .as_str()
+                .chars()
+                .exactly_one()
+                .map(|ch| Self(ch as _))
+                .map_err(|_| vm.new_type_error("array item must be unicode character"))
+        }
+        fn byteswap(self) -> Self {
+            Self(self.0.swap_bytes())
+        }
+        fn to_object(self, _vm: &VirtualMachine) -> PyObjectRef {
+            unreachable!()
+        }
+    }
+
+    impl ArrayElement for Ucs4Char {
+        fn exact_search_item(obj: &PyObject, vm: &VirtualMachine) -> Option<Option<Self>> {
+            if !obj.class().is(vm.ctx.types.str_type) {
+                return None;
+            }
+            let ch = obj
+                .downcast_ref::<PyStr>()
+                .unwrap()
+                .as_wtf8()
+                .code_points()
+                .exactly_one()
+                .ok()?;
+            Some(Some(Self(ch.to_u32())))
+        }
+
+        fn validate_slice(items: &[Self], vm: &VirtualMachine) -> PyResult<()> {
+            if items.iter().map(|item| item.0).max().unwrap_or(0) > 0x10ffff {
+                let invalid = items.iter().find(|item| item.0 > 0x10ffff).unwrap();
+                return Err(vm.new_value_error(u32_to_char(invalid.0).unwrap_err()));
+            }
+            Ok(())
+        }
+
+        fn try_into_from_object(vm: &VirtualMachine, obj: PyObjectRef) -> PyResult<Self> {
+            let s = obj.downcast::<PyStr>().map_err(|obj| {
+                vm.new_type_error(format!(
+                    "array item must be a unicode character, not {}",
+                    obj.class().name()
+                ))
+            })?;
+            s.as_wtf8()
+                .code_points()
+                .exactly_one()
+                .map(|ch| Self(ch.to_u32()))
+                .map_err(|e| {
+                    vm.new_type_error(format!(
+                        "array item must be a unicode character, not a string of length {}",
+                        e.count()
+                    ))
+                })
+        }
+        fn byteswap(self) -> Self {
+            Self(self.0.swap_bytes())
+        }
+        fn to_object(self, _vm: &VirtualMachine) -> PyObjectRef {
+            unreachable!()
+        }
+    }
+
+    impl ToPyResult for Ucs4Char {
+        fn to_pyresult(self, vm: &VirtualMachine) -> PyResult {
+            Ok(u32_to_char(self.0)
+                .map_err(|msg| vm.new_value_error(msg))?
+                .to_pyobject(vm))
+        }
+    }
+
+    impl fmt::Display for Ucs4Char {
+        fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            unreachable!("`repr(array('w'))` calls `PyStr::repr`")
+        }
+    }
+
+    fn u32_to_char(ch: u32) -> Result<CodePoint, String> {
+        CodePoint::from_u32(ch)
+            .ok_or_else(|| format!("character U+{ch:4x} is not in range [U+0000; U+10ffff]"))
+    }
+
+    impl TryFrom<WideChar> for CodePoint {
+        type Error = String;
+
+        fn try_from(ch: WideChar) -> Result<Self, Self::Error> {
+            // safe because every configuration of bytes for the types we support are valid
+            u32_to_char(ch.0 as _)
+        }
+    }
+
+    impl ToPyResult for WideChar {
+        fn to_pyresult(self, vm: &VirtualMachine) -> PyResult {
+            Ok(CodePoint::try_from(self)
+                .map_err(|e| vm.new_value_error(e))?
+                .to_pyobject(vm))
+        }
+    }
+
+    impl fmt::Display for WideChar {
+        fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            unreachable!("`repr(array('u'))` calls `PyStr::repr`")
+        }
+    }
+
+    #[pyattr]
+    #[pyattr(name = "ArrayType")]
+    #[pyclass(name = "array", unhashable = true)]
+    #[derive(Debug, PyPayload)]
+    pub struct PyArray {
+        array: PyRwLock<ArrayContentType>,
+        exports: AtomicUsize,
+    }
+
+    pub type PyArrayRef = PyRef<PyArray>;
+
+    impl From<ArrayContentType> for PyArray {
+        fn from(array: ArrayContentType) -> Self {
+            Self {
+                array: PyRwLock::new(array),
+                exports: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[derive(FromArgs)]
+    pub struct ArrayNewArgs {
+        #[pyarg(positional)]
+        spec: PyUtf8StrRef,
+        #[pyarg(positional, optional)]
+        init: OptionalArg<PyObjectRef>,
+    }
+
+    impl Constructor for PyArray {
+        type Args = (ArrayNewArgs, KwArgs);
+
+        fn py_new(
+            cls: &Py<PyType>,
+            (ArrayNewArgs { spec, init }, kwargs): Self::Args,
+            vm: &VirtualMachine,
+        ) -> PyResult<Self> {
+            let spec = spec.as_str().chars().exactly_one().map_err(|_| {
+                vm.new_type_error("array() argument 1 must be a unicode character, not str")
+            })?;
+
+            if cls.is(Self::class(&vm.ctx)) && !kwargs.is_empty() {
+                return Err(vm.new_type_error("array.array() takes no keyword arguments"));
+            }
+
+            if spec == 'u' {
+                _warnings::warn(
+                    vm.ctx.exceptions.deprecation_warning,
+                    "The 'u' type code is deprecated and will be removed in Python 3.16".to_owned(),
+                    1,
+                    vm,
+                )?;
+            }
+
+            let mut array =
+                ArrayContentType::from_char(spec).map_err(|err| vm.new_value_error(err))?;
+
+            if let OptionalArg::Present(init) = init {
+                if let Some(init) = init.downcast_ref::<Self>() {
+                    let value = init.read().typecode();
+                    match (spec, value) {
+                        (spec, ch) if spec == ch => array.frombytes(&init.get_bytes()),
+                        (spec, 'u' | 'w') if !matches!(spec, 'u' | 'w') => {
+                            return Err(vm.new_type_error(format!(
+                            "cannot use a unicode array to initialize an array with typecode '{spec}'"
+                        )))
+                        }
+                        _ => {
+                            for obj in init.read().iter(vm) {
+                                array.push(obj?, vm)?;
+                            }
+                        }
+                    }
+                } else if let Some(wtf8) = init.downcast_ref::<PyStr>() {
+                    if matches!(spec, 'u' | 'w') {
+                        let bytes = Self::_unicode_to_wchar_bytes(wtf8.as_wtf8(), array.itemsize());
+                        array.frombytes_move(bytes);
+                    } else {
+                        return Err(vm.new_type_error(format!(
+                            "cannot use a str to initialize an array with typecode '{spec}'"
+                        )));
+                    }
+                } else if init.downcastable::<PyBytes>() || init.downcastable::<PyByteArray>() {
+                    init.try_bytes_like(vm, |x| array.frombytes(x))?;
+                } else {
+                    // Everything else is taken item by item, buffer or not.
+                    let iter = ArgIterable::try_from_object(vm, init)?;
+                    for obj in iter.iter(vm)? {
+                        array.push(obj?, vm)?;
+                    }
+                }
+            }
+
+            Ok(Self::from(array))
+        }
+    }
+
+    #[derive(FromArgs)]
+    struct PopArgs {
+        #[pyarg(positional, default = -1)]
+        i: isize,
+    }
+
+    #[derive(FromArgs)]
+    struct ArrayIndexArgs {
+        #[pyarg(positional, optional, py_default = "0")]
+        start: OptionalArg<ArgIndex>,
+        #[pyarg(positional, optional, py_default = "9223372036854775807")]
+        stop: OptionalArg<ArgIndex>,
+    }
+
+    #[pyclass(
+        flags(BASETYPE, HAS_WEAKREF),
+        with(
+            Comparable,
+            AsBuffer,
+            AsMapping,
+            AsSequence,
+            Iterable,
+            Constructor,
+            Representable
+        )
+    )]
+    impl PyArray {
+        fn read(&self) -> PyRwLockReadGuard<'_, ArrayContentType> {
+            self.array.read()
+        }
+
+        fn write(&self) -> PyRwLockWriteGuard<'_, ArrayContentType> {
+            self.array.write()
+        }
+
+        #[pygetset]
+        fn typecode(zelf: &Py<Self>, vm: &VirtualMachine) -> PyStrRef {
+            vm.ctx
+                .intern_str(zelf.read().typecode().to_string())
+                .to_owned()
+        }
+
+        #[pygetset]
+        fn itemsize(zelf: &Py<Self>) -> usize {
+            zelf.read().itemsize()
+        }
+
+        #[pymethod]
+        fn append(zelf: &Py<Self>, v: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let typecode = zelf.read().typecode();
+            let item = ArrayContentType::item_from_object(typecode, v, vm)?;
+            zelf.try_resizable(vm)?.push_item(item);
+            Ok(())
+        }
+
+        #[pymethod]
+        fn clear(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<()> {
+            zelf.try_resizable(vm)?.clear()
+        }
+
+        #[pymethod]
+        fn buffer_info(zelf: &Py<Self>) -> (usize, usize) {
+            let array = zelf.read();
+            (array.addr(), array.len())
+        }
+
+        #[pymethod]
+        fn count(zelf: &Py<Self>, v: PyObjectRef, vm: &VirtualMachine) -> PyResult<usize> {
+            let array = zelf.read();
+            if let Some(item) = ArrayContentType::search_item(array.typecode(), &v, vm) {
+                return item.map_or(Ok(0), |item| array.count_item(&item, vm));
+            }
+            drop(array);
+            let mut count = 0;
+            for index in 0..usize::MAX {
+                let item = zelf.read().get(index, vm);
+                let Some(item) = item else { break };
+                if item?.rich_compare_bool(&v, PyComparisonOp::Eq, vm)? {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+
+        fn find(
+            &self,
+            value: &PyObject,
+            start: usize,
+            stop: usize,
+            vm: &VirtualMachine,
+        ) -> PyResult<Option<usize>> {
+            let array = self.read();
+            if let Some(item) = ArrayContentType::search_item(array.typecode(), value, vm) {
+                return item.map_or(Ok(None), |item| array.find_item(&item, start, stop, vm));
+            }
+            drop(array);
+            for index in start..stop {
+                let item = self.read().get(index, vm);
+                let Some(item) = item else { break };
+                if item?.rich_compare_bool(value, PyComparisonOp::Eq, vm)? {
+                    return Ok(Some(index));
+                }
+            }
+            Ok(None)
+        }
+
+        #[pymethod]
+        fn remove(zelf: &Py<Self>, v: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let index = zelf
+                .find(&v, 0, usize::MAX, vm)?
+                .ok_or_else(|| vm.new_value_error("array.remove(x): x not in array"))?;
+            // Equality can shrink the array past the matching position. An
+            // empty deletion succeeds even if the callback exported a buffer.
+            if index < zelf.__len__() {
+                let mut array = zelf.try_resizable(vm)?;
+                if index < array.len() {
+                    array.delitem_by_index(index as isize, vm)?;
+                }
+            }
+            Ok(())
+        }
+
+        #[pymethod]
+        fn extend(zelf: &Py<Self>, bb: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            if zelf.is(&bb) {
+                zelf.try_resizable(vm)?.imul(2, vm)
+            } else if let Some(array) = bb.downcast_ref::<Self>() {
+                zelf.try_resizable(vm)?.iadd(&array.read(), vm)
+            } else {
+                let iter = ArgIterable::try_from_object(vm, bb)?;
+                for obj in iter.iter(vm)? {
+                    Self::append(zelf, obj?, vm)?;
+                }
+                Ok(())
+            }
+        }
+
+        fn _wchar_bytes_to_string(
+            bytes: &[u8],
+            item_size: usize,
+            vm: &VirtualMachine,
+        ) -> PyResult<Wtf8Buf> {
+            if item_size == 2 {
+                // safe because every configuration of bytes for the types we support are valid
+                let utf16 = unsafe {
+                    core::slice::from_raw_parts(
+                        bytes.as_ptr() as *const u16,
+                        bytes.len() / core::mem::size_of::<u16>(),
+                    )
+                };
+                Ok(Wtf8Buf::from_wide(utf16))
+            } else {
+                // safe because every configuration of bytes for the types we support are valid
+                let chars = unsafe {
+                    core::slice::from_raw_parts(
+                        bytes.as_ptr() as *const u32,
+                        bytes.len() / core::mem::size_of::<u32>(),
+                    )
+                };
+                chars
+                    .iter()
+                    .map(|&ch| {
+                        // cpython issue 17223
+                        u32_to_char(ch).map_err(|msg| vm.new_value_error(msg))
+                    })
+                    .try_collect()
+            }
+        }
+
+        fn _unicode_to_wchar_bytes(wtf8: &Wtf8, item_size: usize) -> Vec<u8> {
+            if item_size == 2 {
+                wtf8.encode_wide().flat_map(|ch| ch.to_ne_bytes()).collect()
+            } else {
+                wtf8.code_points()
+                    .flat_map(|ch| ch.to_u32().to_ne_bytes())
+                    .collect()
+            }
+        }
+
+        #[pymethod]
+        fn fromunicode(zelf: &Py<Self>, ustr: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let wtf8: &Wtf8 = ustr.try_to_value(vm).map_err(|_| {
+                vm.new_type_error(format!(
+                    "fromunicode() argument must be str, not {}",
+                    ustr.class().name()
+                ))
+            })?;
+            if !matches!(zelf.read().typecode(), 'u' | 'w') {
+                return Err(vm.new_value_error(
+                    "fromunicode() may only be called on unicode type arrays ('u' or 'w')",
+                ));
+            }
+            let mut w = zelf.try_resizable(vm)?;
+            let bytes = Self::_unicode_to_wchar_bytes(wtf8, w.itemsize());
+            w.frombytes_move(bytes);
+            Ok(())
+        }
+
+        #[pymethod]
+        fn tounicode(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<Wtf8Buf> {
+            let array = zelf.array.read();
+            if !matches!(array.typecode(), 'u' | 'w') {
+                return Err(vm.new_value_error(
+                    "tounicode() may only be called on unicode type arrays ('u' or 'w')",
+                ));
+            }
+            let bytes = array.get_bytes();
+            Self::_wchar_bytes_to_string(bytes, Self::itemsize(zelf), vm)
+        }
+
+        fn _from_bytes(&self, b: &[u8], itemsize: usize, vm: &VirtualMachine) -> PyResult<()> {
+            if !b.len().is_multiple_of(itemsize) {
+                return Err(vm.new_value_error("bytes length not a multiple of item size"));
+            }
+            if b.len() / itemsize > 0 {
+                self.try_resizable(vm)?.frombytes(b);
+            }
+            Ok(())
+        }
+
+        #[pymethod]
+        fn frombytes(zelf: &Py<Self>, buffer: ArgBytesLike, vm: &VirtualMachine) -> PyResult<()> {
+            // The source is read as bytes, so items of any other width would
+            // be reinterpreted rather than appended.
+            if buffer.itemsize() != 1 {
+                return Err(vm.new_type_error("a bytes-like object is required"));
+            }
+            let buffer = buffer.borrow_buf();
+            let itemsize = zelf.read().itemsize();
+            zelf._from_bytes(&buffer, itemsize, vm)
+        }
+
+        #[pymethod]
+        fn fromfile(
+            zelf: &Py<Self>,
+            f: PyObjectRef,
+            n: isize,
+            vm: &VirtualMachine,
+        ) -> PyResult<()> {
+            let itemsize = Self::itemsize(zelf);
+            if n < 0 {
+                return Err(vm.new_value_error("negative count"));
+            }
+            let n = vm.check_repeat_or_overflow_error(itemsize, n)?;
+            let n_bytes = n * itemsize;
+
+            let b = vm.call_method(&f, "read", (n_bytes,))?;
+            let b = b
+                .downcast::<PyBytes>()
+                .map_err(|_| vm.new_type_error("read() didn't return bytes"))?;
+
+            let not_enough_bytes = b.as_bytes().len() != n_bytes;
+
+            zelf._from_bytes(b.as_bytes(), itemsize, vm)?;
+
+            if not_enough_bytes {
+                Err(vm.new_eof_error("read() didn't return enough bytes"))
+            } else {
+                Ok(())
+            }
+        }
+
+        #[pymethod]
+        fn byteswap(zelf: &Py<Self>) {
+            zelf.write().byteswap();
+        }
+
+        #[pymethod]
+        fn index(
+            zelf: &Py<Self>,
+            v: PyObjectRef,
+            ArrayIndexArgs { start, stop }: ArrayIndexArgs,
+            vm: &VirtualMachine,
+        ) -> PyResult<usize> {
+            let len = zelf.__len__();
+            let bound = |value: ArgIndex| {
+                let value = value.as_ref().as_bigint();
+                value.saturated_at(if value.is_negative() {
+                    len
+                } else {
+                    isize::MAX as usize
+                })
+            };
+            let start = start.map_or(0, bound);
+            let stop = stop.map_or(isize::MAX as usize, bound);
+            zelf.find(&v, start, stop, vm)?
+                .ok_or_else(|| vm.new_value_error("array.index(x): x not in array"))
+        }
+
+        #[pymethod]
+        fn insert(zelf: &Py<Self>, i: isize, v: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            let typecode = zelf.read().typecode();
+            let item = ArrayContentType::item_from_object(typecode, v, vm)?;
+            zelf.try_resizable(vm)?.insert_item(i, item);
+            Ok(())
+        }
+
+        #[pymethod]
+        fn pop(zelf: &Py<Self>, args: PopArgs, vm: &VirtualMachine) -> PyResult {
+            let mut w = zelf.try_resizable(vm)?;
+            if w.len() == 0 {
+                Err(vm.new_index_error("pop from empty array"))
+            } else {
+                w.pop(args.i, vm)
+            }
+        }
+
+        #[pymethod]
+        pub(crate) fn tobytes(zelf: &Py<Self>) -> Vec<u8> {
+            zelf.read().get_bytes().to_vec()
+        }
+
+        #[pymethod]
+        fn tofile(zelf: &Py<Self>, f: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            /* Write 64K blocks at a time */
+            /* XXX Make the block size settable */
+            const BLOCKSIZE: usize = 64 * 1024;
+
+            let bytes = {
+                let bytes = zelf.read();
+                bytes.get_bytes().to_vec()
+            };
+
+            for b in bytes.chunks(BLOCKSIZE) {
+                let b = PyBytes::from(b.to_vec()).into_ref(&vm.ctx);
+                vm.call_method(&f, "write", (b,))?;
+            }
+            Ok(())
+        }
+
+        pub(crate) fn get_bytes(&self) -> PyMappedRwLockReadGuard<'_, [u8]> {
+            PyRwLockReadGuard::map(self.read(), |a| a.get_bytes())
+        }
+
+        pub(crate) fn get_bytes_mut(&self) -> PyMappedRwLockWriteGuard<'_, [u8]> {
+            PyRwLockWriteGuard::map(self.write(), |a| a.get_bytes_mut())
+        }
+
+        #[pymethod]
+        fn tolist(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<Vec<PyObjectRef>> {
+            let array = zelf.read();
+            let mut v = Vec::with_capacity(array.len());
+            for obj in array.iter(vm) {
+                v.push(obj?);
+            }
+            Ok(v)
+        }
+
+        #[pymethod]
+        fn fromlist(zelf: &Py<Self>, list: PyListRef, vm: &VirtualMachine) -> PyResult<()> {
+            zelf.try_resizable(vm)?.fromlist(&list, vm)
+        }
+
+        #[pymethod]
+        fn reverse(zelf: &Py<Self>) {
+            zelf.write().reverse()
+        }
+
+        #[pymethod]
+        fn __copy__(zelf: &Py<Self>) -> Self {
+            zelf.array.read().clone().into()
+        }
+
+        #[pymethod]
+        fn __deepcopy__(zelf: &Py<Self>, _unused: PyObjectRef) -> Self {
+            Self::__copy__(zelf)
+        }
+
+        fn getitem_inner(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult {
+            match SequenceIndex::try_from_borrowed_object(vm, needle, "array")? {
+                SequenceIndex::Int(i) => self.read().getitem_by_index(i, vm),
+                SequenceIndex::Slice(slice) => self.read().getitem_by_slice(slice, vm),
+            }
+        }
+
+        fn __getitem__(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult {
+            self.getitem_inner(needle, vm)
+        }
+
+        fn setitem_inner(
+            zelf: &Py<Self>,
+            needle: &PyObject,
+            value: PyObjectRef,
+            vm: &VirtualMachine,
+        ) -> PyResult<()> {
+            match SequenceIndex::try_from_borrowed_object(vm, needle, "array")? {
+                SequenceIndex::Int(i) => {
+                    let typecode = zelf.read().typecode();
+                    let item = ArrayContentType::item_from_object(typecode, value, vm)?;
+                    zelf.write().setitem_by_item(i, item, vm)
+                }
+                SequenceIndex::Slice(slice) => {
+                    let cloned;
+                    let guard;
+                    let items = if zelf.is(&value) {
+                        cloned = zelf.read().clone();
+                        &cloned
+                    } else {
+                        match value.downcast_ref::<Self>() {
+                            Some(array) => {
+                                guard = array.read();
+                                &*guard
+                            }
+                            None => {
+                                return Err(vm.new_type_error(format!(
+                                    "can only assign array (not \"{}\") to array slice",
+                                    value.class()
+                                )));
+                            }
+                        }
+                    };
+                    if let Ok(mut w) = zelf.try_resizable(vm) {
+                        w.setitem_by_slice(slice, items, vm)
+                    } else {
+                        zelf.write().setitem_by_slice_no_resize(slice, items, vm)
+                    }
+                }
+            }
+        }
+
+        fn __setitem__(
+            zelf: &Py<Self>,
+            needle: &PyObject,
+            value: PyObjectRef,
+            vm: &VirtualMachine,
+        ) -> PyResult<()> {
+            Self::setitem_inner(zelf, needle, value, vm)
+        }
+
+        fn delitem_inner(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult<()> {
+            match SequenceIndex::try_from_borrowed_object(vm, needle, "array")? {
+                SequenceIndex::Int(i) => self.try_resizable(vm)?.delitem_by_index(i, vm),
+                SequenceIndex::Slice(slice) => self.try_resizable(vm)?.delitem_by_slice(slice, vm),
+            }
+        }
+
+        fn __delitem__(&self, needle: &PyObject, vm: &VirtualMachine) -> PyResult<()> {
+            self.delitem_inner(needle, vm)
+        }
+
+        fn __add__(&self, other: &PyObject, vm: &VirtualMachine) -> PyResult<PyRef<Self>> {
+            if let Some(other) = other.downcast_ref::<Self>() {
+                self.read()
+                    .add(&other.read(), vm)
+                    .map(|array| Self::from(array).into_ref(&vm.ctx))
+            } else {
+                Err(vm.new_type_error(format!(
+                    "can only append array (not \"{}\") to array",
+                    other.class().name()
+                )))
+            }
+        }
+
+        fn __iadd__(
+            zelf: PyRef<Self>,
+            other: &PyObject,
+            vm: &VirtualMachine,
+        ) -> PyResult<PyRef<Self>> {
+            if zelf.is(other) {
+                zelf.try_resizable(vm)?.imul(2, vm)?;
+            } else if let Some(other) = other.downcast_ref::<Self>() {
+                zelf.try_resizable(vm)?.iadd(&other.read(), vm)?;
+            } else {
+                return Err(vm.new_type_error(format!(
+                    "can only extend array with array (not \"{}\")",
+                    other.class().name()
+                )));
+            }
+            Ok(zelf)
+        }
+
+        fn __mul__(&self, value: isize, vm: &VirtualMachine) -> PyResult<PyRef<Self>> {
+            self.read()
+                .mul(value, vm)
+                .map(|x| Self::from(x).into_ref(&vm.ctx))
+        }
+
+        fn __imul__(zelf: PyRef<Self>, value: isize, vm: &VirtualMachine) -> PyResult<PyRef<Self>> {
+            zelf.try_resizable(vm)?.imul(value, vm)?;
+            Ok(zelf)
+        }
+
+        pub(crate) fn __len__(&self) -> usize {
+            self.read().len()
+        }
+
+        fn array_eq(&self, other: &Self, vm: &VirtualMachine) -> PyResult<bool> {
+            // we cannot use zelf.is(other) for shortcut because if we contenting a
+            // float value NaN we always return False even they are the same object.
+            if self.__len__() != other.__len__() {
+                return Ok(false);
+            }
+            let array_a = self.read();
+            let array_b = other.read();
+
+            // fast path for same ArrayContentType type
+            if let Ok(ord) = array_a.cmp(&array_b) {
+                return Ok(ord == Some(Ordering::Equal));
+            }
+
+            let iter = Iterator::zip(array_a.iter(vm), array_b.iter(vm));
+
+            for (a, b) in iter {
+                if !vm.bool_eq(&*a?, &*b?)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+
+        #[pymethod]
+        fn __reduce_ex__(
+            zelf: &Py<Self>,
+            value: usize,
+            vm: &VirtualMachine,
+        ) -> PyResult<(PyObjectRef, PyTupleRef, Option<PyDictRef>)> {
+            if value < 3 {
+                return Self::__reduce__(zelf, vm);
+            }
+            let array = zelf.read();
+            let cls = zelf.class().to_owned();
+            let typecode = vm.ctx.new_str(array.typecode_str());
+            let bytes = vm.ctx.new_bytes(array.get_bytes().to_vec());
+            let code = MachineFormatCode::from_typecode(array.typecode()).unwrap();
+            let code = PyInt::from(u8::from(code)).into_pyobject(vm);
+            let module = vm.import("array", 0)?;
+            let func = module.get_attr("_array_reconstructor", vm)?;
+            Ok((
+                func,
+                vm.new_tuple((cls, typecode, code, bytes)),
+                zelf.as_object().dict(),
+            ))
+        }
+
+        #[pymethod]
+        fn __reduce__(
+            zelf: &Py<Self>,
+            vm: &VirtualMachine,
+        ) -> PyResult<(PyObjectRef, PyTupleRef, Option<PyDictRef>)> {
+            let array = zelf.read();
+            let cls = zelf.class().to_owned();
+            let typecode = vm.ctx.new_str(array.typecode_str());
+            let values = if matches!(array.typecode(), 'u' | 'w') {
+                let s = Self::_wchar_bytes_to_string(array.get_bytes(), array.itemsize(), vm)?;
+                s.code_points().map(|x| x.to_pyobject(vm)).collect()
+            } else {
+                array.get_objects(vm)
+            };
+            let values = vm.ctx.new_list(values);
+            Ok((
+                cls.into(),
+                vm.new_tuple((typecode, values)),
+                zelf.as_object().dict(),
+            ))
+        }
+
+        fn __contains__(&self, value: &PyObject, vm: &VirtualMachine) -> PyResult<bool> {
+            self.find(value, 0, usize::MAX, vm)
+                .map(|index| index.is_some())
+        }
+
+        #[pyclassmethod]
+        fn __class_getitem__(
+            cls: PyTypeRef,
+            object: PyObjectRef,
+            vm: &VirtualMachine,
+        ) -> PyResult<PyGenericAlias> {
+            PyGenericAlias::from_args(cls, object, vm)
+        }
+    }
+
+    impl Comparable for PyArray {
+        fn cmp(
+            zelf: &Py<Self>,
+            other: &PyObject,
+            op: PyComparisonOp,
+            vm: &VirtualMachine,
+        ) -> PyResult<PyComparisonValue> {
+            // TODO: deduplicate this logic with sequence::cmp in sequence.rs. Maybe make it generic?
+
+            // we cannot use zelf.is(other) for shortcut because if we contenting a
+            // float value NaN we always return False even they are the same object.
+            let other = class_or_notimplemented!(Self, other);
+
+            if let PyComparisonValue::Implemented(x) =
+                op.eq_only(|| Ok(zelf.array_eq(other, vm)?.into()))?
+            {
+                return Ok(x.into());
+            }
+
+            let array_a = zelf.read();
+            let array_b = other.read();
+
+            let res = match array_a.cmp(&array_b) {
+                // fast path for same ArrayContentType type
+                Ok(partial_ord) => partial_ord.is_some_and(|ord| op.eval_ord(ord)),
+                Err(()) => {
+                    let iter = Iterator::zip(array_a.iter(vm), array_b.iter(vm));
+
+                    for (a, b) in iter {
+                        let ret = match op {
+                            PyComparisonOp::Lt | PyComparisonOp::Le => {
+                                vm.bool_seq_lt(&*a?, &*b?)?
+                            }
+                            PyComparisonOp::Gt | PyComparisonOp::Ge => {
+                                vm.bool_seq_gt(&*a?, &*b?)?
+                            }
+                            _ => unreachable!(),
+                        };
+                        if let Some(v) = ret {
+                            return Ok(PyComparisonValue::Implemented(v));
+                        }
+                    }
+
+                    // fallback:
+                    op.eval_ord(array_a.len().cmp(&array_b.len()))
+                }
+            };
+
+            Ok(res.into())
+        }
+    }
+
+    impl PyArray {
+        fn buffer_desc(&self) -> BufferDescriptor {
+            let array = self.read();
+            BufferDescriptor::format(
+                array.len() * array.itemsize(),
+                false,
+                array.itemsize(),
+                array.typecode_str().into(),
+            )
+        }
+    }
+
+    impl AsBuffer for PyArray {
+        const RELEASE_BUFFER: bool = true;
+
+        // array_buffer_getbuf, which reports the type code only when the request
+        // asked for a format.
+        fn slot_as_buffer(
+            zelf: &PyObject,
+            flags: BufferFlags,
+            vm: &VirtualMachine,
+        ) -> PyResult<PyBuffer> {
+            let zelf = zelf
+                .downcast_ref::<Self>()
+                .ok_or_else(|| vm.new_type_error("unexpected payload for as_buffer"))?;
+            let desc = zelf.buffer_desc().projected(flags);
+            flags.check_writable(desc.readonly, "Object is not writable.", vm)?;
+            Ok(PyBuffer::new(zelf.to_owned().into(), desc, &BUFFER_METHODS))
+        }
+
+        fn as_buffer(zelf: &Py<Self>, _vm: &VirtualMachine) -> PyResult<PyBuffer> {
+            Ok(PyBuffer::new(
+                zelf.to_owned().into(),
+                zelf.buffer_desc(),
+                &BUFFER_METHODS,
+            ))
+        }
+    }
+
+    impl Representable for PyArray {
+        #[inline]
+        fn repr_str(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<String> {
+            let class = zelf.class();
+            let class_name = class.name();
+            let typecode = zelf.read().typecode();
+            if matches!(typecode, 'u' | 'w') {
+                if zelf.__len__() == 0 {
+                    return Ok(format!("{class_name}('{typecode}')"));
+                }
+                let to_unicode = Self::tounicode(zelf, vm)?;
+                let escape = crate::vm::literal::escape::UnicodeEscape::new_repr(&to_unicode);
+                return Ok(format!("{class_name}('{typecode}', {})", escape.str_repr()));
+            }
+            zelf.read().repr(&class_name, vm)
+        }
+    }
+
+    static BUFFER_METHODS: BufferMethods = BufferMethods {
+        obj_bytes: |buffer| buffer.obj_as::<PyArray>().get_bytes().into(),
+        obj_bytes_mut: |buffer| buffer.obj_as::<PyArray>().get_bytes_mut().into(),
+        release: |buffer| {
+            buffer
+                .obj_as::<PyArray>()
+                .exports
+                .fetch_sub(1, atomic::Ordering::Release);
+        },
+        retain: |buffer| {
+            buffer
+                .obj_as::<PyArray>()
+                .exports
+                .fetch_add(1, atomic::Ordering::Release);
+        },
+    };
+
+    impl AsMapping for PyArray {
+        fn as_mapping() -> &'static PyMappingMethods {
+            static AS_MAPPING: PyMappingMethods = PyMappingMethods {
+                length: atomic_func!(|mapping, _vm| Ok(
+                    PyArray::mapping_downcast(mapping).__len__()
+                )),
+                subscript: atomic_func!(|mapping, needle, vm| {
+                    PyArray::mapping_downcast(mapping).getitem_inner(needle, vm)
+                }),
+                ass_subscript: atomic_func!(|mapping, needle, value, vm| {
+                    let zelf = PyArray::mapping_downcast(mapping);
+                    if let Some(value) = value {
+                        PyArray::setitem_inner(zelf, needle, value, vm)
+                    } else {
+                        zelf.delitem_inner(needle, vm)
+                    }
+                }),
+            };
+            &AS_MAPPING
+        }
+    }
+
+    impl AsSequence for PyArray {
+        fn as_sequence() -> &'static PySequenceMethods {
+            static AS_SEQUENCE: PySequenceMethods = PySequenceMethods {
+                length: atomic_func!(|seq, _vm| Ok(PyArray::sequence_downcast(seq).__len__())),
+                concat: atomic_func!(|seq, other, vm| {
+                    let zelf = PyArray::sequence_downcast(seq);
+                    PyArray::__add__(zelf, other, vm).map(|x| x.into())
+                }),
+                repeat: atomic_func!(|seq, n, vm| {
+                    PyArray::sequence_downcast(seq)
+                        .__mul__(n, vm)
+                        .map(|x| x.into())
+                }),
+                item: atomic_func!(|seq, i, vm| {
+                    PyArray::sequence_downcast(seq)
+                        .read()
+                        .getitem_by_index(i, vm)
+                }),
+                ass_item: atomic_func!(|seq, i, value, vm| {
+                    let zelf = PyArray::sequence_downcast(seq);
+                    if let Some(value) = value {
+                        let typecode = zelf.read().typecode();
+                        let item = ArrayContentType::item_from_object(typecode, value, vm)?;
+                        zelf.write().setitem_by_item(i, item, vm)
+                    } else {
+                        zelf.write().delitem_by_index(i, vm)
+                    }
+                }),
+                contains: atomic_func!(|seq, target, vm| {
+                    let zelf = PyArray::sequence_downcast(seq);
+                    zelf.__contains__(target, vm)
+                }),
+                inplace_concat: atomic_func!(|seq, other, vm| {
+                    let zelf = PyArray::sequence_downcast(seq).to_owned();
+                    PyArray::__iadd__(zelf, other, vm).map(|x| x.into())
+                }),
+                inplace_repeat: atomic_func!(|seq, n, vm| {
+                    let zelf = PyArray::sequence_downcast(seq).to_owned();
+                    PyArray::__imul__(zelf, n, vm).map(|x| x.into())
+                }),
+            };
+            &AS_SEQUENCE
+        }
+    }
+
+    impl Iterable for PyArray {
+        fn iter(zelf: PyRef<Self>, vm: &VirtualMachine) -> PyResult {
+            Ok(PyArrayIter {
+                internal: PyMutex::new(PositionIterInternal::new(zelf, 0)),
+            }
+            .into_pyobject(vm))
+        }
+    }
+
+    impl BufferResizeGuard for PyArray {
+        type Resizable<'a> = PyRwLockWriteGuard<'a, ArrayContentType>;
+
+        fn try_resizable_opt(&self) -> Option<Self::Resizable<'_>> {
+            // An export is a borrow someone else still holds, so it is
+            // answered before the lock rather than by waiting on it.
+            (self.exports.load(atomic::Ordering::SeqCst) == 0).then(|| self.write())
+        }
+
+        fn try_resizable(&self, vm: &VirtualMachine) -> PyResult<Self::Resizable<'_>> {
+            self.try_resizable_opt().ok_or_else(|| {
+                vm.new_buffer_error("cannot resize an array that is exporting buffers")
+            })
+        }
+    }
+
+    #[pyattr]
+    #[pyclass(name = "arrayiterator", traverse)]
+    #[derive(Debug, PyPayload)]
+    pub struct PyArrayIter {
+        internal: PyMutex<PositionIterInternal<PyArrayRef>>,
+    }
+
+    #[pyclass(with(IterNext, Iterable), flags(HAS_DICT, DISALLOW_INSTANTIATION))]
+    impl PyArrayIter {
+        #[pymethod]
+        fn __setstate__(zelf: &Py<Self>, state: PyObjectRef, vm: &VirtualMachine) -> PyResult<()> {
+            zelf.internal
+                .lock()
+                .set_state(&state, |obj, pos| pos.min(obj.__len__()), vm)
+        }
+
+        #[pymethod]
+        fn __reduce__(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyTupleRef> {
+            let func = builtins_iter(vm)?;
+            Ok(zelf.internal.lock().reduce(
+                func,
+                |x| x.clone().into(),
+                |vm| vm.ctx.empty_tuple.clone().into(),
+                vm,
+            ))
+        }
+    }
+
+    impl SelfIter for PyArrayIter {}
+
+    impl IterNext for PyArrayIter {
+        fn next(zelf: &Py<Self>, vm: &VirtualMachine) -> PyResult<PyIterReturn> {
+            locked_next(&zelf.internal, |array, pos| {
+                let value = array.read().get(pos, vm);
+                Ok(if let Some(item) = value {
+                    PyIterReturn::Return(item?)
+                } else {
+                    PyIterReturn::StopIteration(None)
+                })
+            })
+        }
+    }
+
+    #[derive(FromArgs)]
+    struct ReconstructorArgs {
+        #[pyarg(positional)]
+        arraytype: PyTypeRef,
+        #[pyarg(positional)]
+        typecode: PyUtf8StrRef,
+        #[pyarg(positional)]
+        mformat_code: MachineFormatCode,
+        #[pyarg(positional)]
+        items: PyBytesRef,
+    }
+
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[repr(u8)]
+    enum MachineFormatCode {
+        Int8 { signed: bool },                    // 0, 1
+        Int16 { signed: bool, big_endian: bool }, // 2, 3, 4, 5
+        Int32 { signed: bool, big_endian: bool }, // 6, 7, 8, 9
+        Int64 { signed: bool, big_endian: bool }, // 10, 11, 12, 13
+        Ieee754Float { big_endian: bool },        // 14, 15
+        Ieee754Double { big_endian: bool },       // 16, 17
+        Utf16 { big_endian: bool },               // 18, 19
+        Utf32 { big_endian: bool },               // 20, 21
+    }
+
+    impl From<MachineFormatCode> for u8 {
+        fn from(code: MachineFormatCode) -> Self {
+            match code {
+                MachineFormatCode::Int8 { signed } => signed as Self,
+                MachineFormatCode::Int16 { signed, big_endian } => {
+                    2 + signed as Self * 2 + big_endian as Self
+                }
+                MachineFormatCode::Int32 { signed, big_endian } => {
+                    6 + signed as Self * 2 + big_endian as Self
+                }
+                MachineFormatCode::Int64 { signed, big_endian } => {
+                    10 + signed as Self * 2 + big_endian as Self
+                }
+                MachineFormatCode::Ieee754Float { big_endian } => 14 + big_endian as Self,
+                MachineFormatCode::Ieee754Double { big_endian } => 16 + big_endian as Self,
+                MachineFormatCode::Utf16 { big_endian } => 18 + big_endian as Self,
+                MachineFormatCode::Utf32 { big_endian } => 20 + big_endian as Self,
+            }
+        }
+    }
+
+    impl TryFrom<u8> for MachineFormatCode {
+        type Error = u8;
+
+        fn try_from(code: u8) -> Result<Self, Self::Error> {
+            let big_endian = !code.is_multiple_of(2);
+            let signed = match code {
+                0 | 1 => code != 0,
+                2..=13 => (code - 2) % 4 >= 2,
+                _ => false,
+            };
+            match code {
+                0..=1 => Ok(Self::Int8 { signed }),
+                2..=5 => Ok(Self::Int16 { signed, big_endian }),
+                6..=9 => Ok(Self::Int32 { signed, big_endian }),
+                10..=13 => Ok(Self::Int64 { signed, big_endian }),
+                14..=15 => Ok(Self::Ieee754Float { big_endian }),
+                16..=17 => Ok(Self::Ieee754Double { big_endian }),
+                18..=19 => Ok(Self::Utf16 { big_endian }),
+                20..=21 => Ok(Self::Utf32 { big_endian }),
+                _ => Err(code),
+            }
+        }
+    }
+
+    impl<'a> TryFromBorrowedObject<'a> for MachineFormatCode {
+        fn try_from_borrowed_object(vm: &VirtualMachine, obj: &'a PyObject) -> PyResult<Self> {
+            obj.try_to_ref::<PyInt>(vm)
+                .map_err(|_| {
+                    vm.new_type_error(format!(
+                        "an integer is required (got type {})",
+                        obj.class().name()
+                    ))
+                })?
+                .try_to_primitive::<i32>(vm)?
+                .to_u8()
+                .unwrap_or(u8::MAX)
+                .try_into()
+                .map_err(|_| {
+                    vm.new_value_error("third argument must be a valid machine format code.")
+                })
+        }
+    }
+
+    impl MachineFormatCode {
+        fn from_typecode(code: char) -> Option<Self> {
+            use core::mem::size_of;
+            let signed = code.is_ascii_uppercase();
+            let big_endian = cfg!(target_endian = "big");
+            let int_size = match code {
+                'b' | 'B' => return Some(Self::Int8 { signed }),
+                'u' => {
+                    return match size_of::<wchar_t>() {
+                        2 => Some(Self::Utf16 { big_endian }),
+                        4 => Some(Self::Utf32 { big_endian }),
+                        _ => None,
+                    };
+                }
+                'w' => return Some(Self::Utf32 { big_endian }),
+                'f' => {
+                    // Copied from CPython
+                    const Y: f32 = 16711938.0;
+                    return match &Y.to_ne_bytes() {
+                        b"\x4b\x7f\x01\x02" => Some(Self::Ieee754Float { big_endian: true }),
+                        b"\x02\x01\x7f\x4b" => Some(Self::Ieee754Float { big_endian: false }),
+                        _ => None,
+                    };
+                }
+                'd' => {
+                    // Copied from CPython
+                    const Y: f64 = 9006104071832581.0;
+                    return match &Y.to_ne_bytes() {
+                        b"\x43\x3f\xff\x01\x02\x03\x04\x05" => {
+                            Some(Self::Ieee754Double { big_endian: true })
+                        }
+                        b"\x05\x04\x03\x02\x01\xff\x3f\x43" => {
+                            Some(Self::Ieee754Double { big_endian: false })
+                        }
+                        _ => None,
+                    };
+                }
+                _ => ArrayContentType::itemsize_of_typecode(code)? as u8,
+            };
+            match int_size {
+                2 => Some(Self::Int16 { signed, big_endian }),
+                4 => Some(Self::Int32 { signed, big_endian }),
+                8 => Some(Self::Int64 { signed, big_endian }),
+                _ => None,
+            }
+        }
+        const fn item_size(self) -> usize {
+            match self {
+                Self::Int8 { .. } => 1,
+                Self::Int16 { .. } | Self::Utf16 { .. } => 2,
+                Self::Int32 { .. } | Self::Utf32 { .. } | Self::Ieee754Float { .. } => 4,
+                Self::Int64 { .. } | Self::Ieee754Double { .. } => 8,
+            }
+        }
+    }
+
+    fn check_array_type(typ: PyTypeRef, vm: &VirtualMachine) -> PyResult<PyTypeRef> {
+        if !typ.fast_issubclass(PyArray::class(&vm.ctx)) {
+            return Err(
+                vm.new_type_error(format!("{} is not a subtype of array.array", typ.name()))
+            );
+        }
+        Ok(typ)
+    }
+
+    fn check_type_code(spec: &Py<PyUtf8Str>, vm: &VirtualMachine) -> PyResult<ArrayContentType> {
+        let spec = spec.as_str().chars().exactly_one().map_err(|_| {
+            vm.new_type_error(
+                "_array_reconstructor() argument 2 must be a unicode character, not str",
+            )
+        })?;
+        ArrayContentType::from_char(spec)
+            .map_err(|_| vm.new_value_error("second argument must be a valid type code"))
+    }
+
+    macro_rules! chunk_to_obj {
+        ($BYTE:ident, $TY:ty, $BIG_ENDIAN:ident) => {{
+            let b = <[u8; ::core::mem::size_of::<$TY>()]>::try_from($BYTE).unwrap();
+            if $BIG_ENDIAN {
+                <$TY>::from_be_bytes(b)
+            } else {
+                <$TY>::from_le_bytes(b)
+            }
+        }};
+        ($VM:ident, $BYTE:ident, $TY:ty, $BIG_ENDIAN:ident) => {
+            chunk_to_obj!($BYTE, $TY, $BIG_ENDIAN).to_pyobject($VM)
+        };
+        ($VM:ident, $BYTE:ident, $SIGNED_TY:ty, $UNSIGNED_TY:ty, $SIGNED:ident, $BIG_ENDIAN:ident) => {{
+            let b = <[u8; ::core::mem::size_of::<$SIGNED_TY>()]>::try_from($BYTE).unwrap();
+            match ($SIGNED, $BIG_ENDIAN) {
+                (false, false) => <$UNSIGNED_TY>::from_le_bytes(b).to_pyobject($VM),
+                (false, true) => <$UNSIGNED_TY>::from_be_bytes(b).to_pyobject($VM),
+                (true, false) => <$SIGNED_TY>::from_le_bytes(b).to_pyobject($VM),
+                (true, true) => <$SIGNED_TY>::from_be_bytes(b).to_pyobject($VM),
+            }
+        }};
+    }
+
+    #[pyfunction]
+    fn _array_reconstructor(args: ReconstructorArgs, vm: &VirtualMachine) -> PyResult<PyArrayRef> {
+        let cls = check_array_type(args.arraytype, vm)?;
+        let mut array = check_type_code(&args.typecode, vm)?;
+        let format = args.mformat_code;
+        let bytes = args.items.as_bytes();
+        if !bytes.len().is_multiple_of(format.item_size()) {
+            return Err(vm.new_value_error("bytes length not a multiple of item size"));
+        }
+        if MachineFormatCode::from_typecode(array.typecode()) == Some(format) {
+            array.frombytes(bytes);
+            return PyArray::from(array).into_ref_with_type(vm, cls);
+        }
+        if !matches!(
+            format,
+            MachineFormatCode::Utf16 { .. } | MachineFormatCode::Utf32 { .. }
+        ) {
+            array.reserve(bytes.len() / format.item_size());
+        }
+        let mut chunks = bytes.chunks(format.item_size());
+        match format {
+            MachineFormatCode::Ieee754Float { big_endian } => {
+                chunks.try_for_each(|b| array.push(chunk_to_obj!(vm, b, f32, big_endian), vm))?
+            }
+            MachineFormatCode::Ieee754Double { big_endian } => {
+                chunks.try_for_each(|b| array.push(chunk_to_obj!(vm, b, f64, big_endian), vm))?
+            }
+            MachineFormatCode::Int8 { signed } => chunks
+                .try_for_each(|b| array.push(chunk_to_obj!(vm, b, i8, u8, signed, false), vm))?,
+            MachineFormatCode::Int16 { signed, big_endian } => chunks.try_for_each(|b| {
+                array.push(chunk_to_obj!(vm, b, i16, u16, signed, big_endian), vm)
+            })?,
+            MachineFormatCode::Int32 { signed, big_endian } => chunks.try_for_each(|b| {
+                array.push(chunk_to_obj!(vm, b, i32, u32, signed, big_endian), vm)
+            })?,
+            MachineFormatCode::Int64 { signed, big_endian } => chunks.try_for_each(|b| {
+                array.push(chunk_to_obj!(vm, b, i64, u64, signed, big_endian), vm)
+            })?,
+            MachineFormatCode::Utf16 { big_endian } => {
+                let utf16: Vec<_> = chunks.map(|b| chunk_to_obj!(b, u16, big_endian)).collect();
+                let s = String::from_utf16(&utf16).map_err(|_| {
+                    let (index, reason) = invalid_utf16(&utf16).unwrap();
+                    vm.new_unicode_decode_error(
+                        vm.ctx
+                            .new_str(if big_endian { "utf-16-be" } else { "utf-16-le" }),
+                        args.items.clone(),
+                        index * 2,
+                        index * 2 + 2,
+                        vm.ctx.new_str(reason),
+                    )
+                })?;
+                let bytes = PyArray::_unicode_to_wchar_bytes((*s).as_ref(), array.itemsize());
+                array.frombytes_move(bytes);
+            }
+            MachineFormatCode::Utf32 { big_endian } => {
+                let s: Wtf8Buf = chunks
+                    .map(|b| chunk_to_obj!(b, u32, big_endian))
+                    .map(|ch| u32_to_char(ch).map_err(|msg| vm.new_value_error(msg)))
+                    .try_collect()?;
+                let bytes = PyArray::_unicode_to_wchar_bytes(&s, array.itemsize());
+                array.frombytes_move(bytes);
+            }
+        };
+        PyArray::from(array).into_ref_with_type(vm, cls)
+    }
+
+    fn invalid_utf16(units: &[u16]) -> Option<(usize, &'static str)> {
+        let mut index = 0;
+        while index < units.len() {
+            let unit = units[index];
+            if (0xd800..=0xdbff).contains(&unit) {
+                match units.get(index + 1) {
+                    Some(next) if (0xdc00..=0xdfff).contains(next) => index += 2,
+                    Some(_) => return Some((index, "illegal UTF-16 surrogate")),
+                    None => return Some((index, "unexpected end of data")),
+                }
+            } else if (0xdc00..=0xdfff).contains(&unit) {
+                return Some((index, "illegal encoding"));
+            } else {
+                index += 1;
+            }
+        }
+        None
+    }
+
+    // Register array.array as collections.abc.MutableSequence
+    pub(crate) fn module_exec(
+        vm: &VirtualMachine,
+        module: &Py<crate::vm::builtins::PyModule>,
+    ) -> PyResult<()> {
+        __module_exec(vm, module);
+
+        let array_type = module
+            .get_attr("array", vm)
+            .expect("array module has array type");
+
+        // vm.import returns the top-level module, so we need to get abc submodule
+        let collections_abc = vm.import("collections.abc", 0)?;
+        let abc = collections_abc.get_attr("abc", vm)?;
+        let mutable_sequence = abc.get_attr("MutableSequence", vm)?;
+        let register = mutable_sequence.get_attr("register", vm)?;
+        register.call((array_type,), vm)?;
+
+        Ok(())
+    }
+}

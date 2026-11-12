@@ -4022,8 +4022,6 @@ dependencies = [
 [[package]]
 name = "pymath"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc10e50b7a1f2cc3887e983721cb51fc7574be0066c84bff3ef9e5c096e8d6d5"
 dependencies = [
  "libc",
  "libm",
@@ -4481,8 +4479,6 @@ dependencies = [
 [[package]]
 name = "rustpython-codegen"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e49dd431654f74e825e6a99f523f6f18dc18e2812106b29d37e018395a38770b"
 dependencies = [
  "bitflags 2.13.1",
  "indexmap",
@@ -4505,8 +4501,6 @@ dependencies = [
 [[package]]
 name = "rustpython-common"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee61139fe4c98223662d922bbed5451dd5fa350bd2bf4772804b21ddbbeb3f30"
 dependencies = [
  "ascii",
  "base64 0.23.1",
@@ -4546,8 +4540,6 @@ dependencies = [
 [[package]]
 name = "rustpython-compiler"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "671ce211c9e6625de0db244980557bc868bdf8d34d9a73f1bf7fbe1f7f05e77c"
 dependencies = [
  "rustpython-codegen",
  "rustpython-compiler-core",
@@ -4561,8 +4553,6 @@ dependencies = [
 [[package]]
 name = "rustpython-compiler-core"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb32abe513ebec41ece35d8865fed562f1d262525a085593f927863729c1e863"
 dependencies = [
  "bitflags 2.13.1",
  "bitflagset",
@@ -4578,8 +4568,6 @@ dependencies = [
 [[package]]
 name = "rustpython-derive"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd56a9161f03f360742ef7504137d5d969f37171815ec0842b4e6f8142fd8ba"
 dependencies = [
  "rustpython-compiler",
  "rustpython-derive-impl",
@@ -4589,8 +4577,6 @@ dependencies = [
 [[package]]
 name = "rustpython-derive-impl"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8367cc016b3fe861c6630d5e713c70f1b54dfee13caa8d579d8100ce543e635f"
 dependencies = [
  "itertools 0.15.0",
  "proc-macro2",
@@ -4605,8 +4591,6 @@ dependencies = [
 [[package]]
 name = "rustpython-doc"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e52eeff866784e0a66e9f6529e93801917a29abefe058f8c651ec28bc3df630"
 dependencies = [
  "xz",
 ]
@@ -4614,8 +4598,6 @@ dependencies = [
 [[package]]
 name = "rustpython-host_env"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5ba18fdd58c870be7daa17486ce043112ffd9f5c6477e8a89e7101834e00c7a"
 dependencies = [
  "bitflags 2.13.1",
  "bitflagset",
@@ -4648,8 +4630,6 @@ dependencies = [
 [[package]]
 name = "rustpython-literal"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbff9becaa7c03c284a516fd70b1b55d50667070e23742702298bbe0e939b06d"
 dependencies = [
  "hexf-parse",
  "is-macro",
@@ -4671,8 +4651,6 @@ dependencies = [
 [[package]]
 name = "rustpython-ruff_python_ast"
 version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc19eeb4cfa2c35428143693eadf85ee78816f22a829298593581a56700c0a21"
 dependencies = [
  "aho-corasick",
  "arrayvec",
@@ -4693,8 +4671,6 @@ dependencies = [
 [[package]]
 name = "rustpython-ruff_python_parser"
 version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "480eec9ac4dda77b6724f0c9a54a81d3c57868d6a707c3d7c5133fd83c933f66"
 dependencies = [
  "bitflags 2.13.1",
  "bstr",
@@ -4716,8 +4692,6 @@ dependencies = [
 [[package]]
 name = "rustpython-ruff_python_trivia"
 version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d69a5d9bb610a76bee05d23adce0de55f0fa06f251c0e1c7f7a0c625a366a58"
 dependencies = [
  "itertools 0.15.0",
  "rustc-hash",
@@ -4729,8 +4703,6 @@ dependencies = [
 [[package]]
 name = "rustpython-ruff_source_file"
 version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3aa9c91c8a4e86bf0fa8a67aec284fa6c0c533cdefb900b08584be15748c606"
 dependencies = [
  "memchr",
  "rustpython-ruff_text_size",
@@ -4739,8 +4711,6 @@ dependencies = [
 [[package]]
 name = "rustpython-ruff_text_size"
 version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fedbd1af4f91cd828185123d95119662db9c4a0b21c02b695783d74360d4f46"
 dependencies = [
  "get-size2",
 ]
@@ -4759,8 +4729,6 @@ dependencies = [
 [[package]]
 name = "rustpython-stdlib"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be63f0082b47da64d81c00af0e807e9a39d71843cb19a8e8a83a573f34900b0e"
 dependencies = [
  "adler32",
  "ascii",
@@ -4801,8 +4769,6 @@ dependencies = [
 [[package]]
 name = "rustpython-unicode"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e72650cd5378a6df8126a4065f0e875563dd606bc38a4ee8c1bb48e8b3bd5ef"
 dependencies = [
  "icu_casemap",
  "icu_locale",
@@ -4870,8 +4836,6 @@ dependencies = [
 [[package]]
 name = "rustpython-wtf8"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89f11dc9d946f08e411301c7e9cc8288fdaeb25ec6836131cf488cd32b79465"
 dependencies = [
  "ascii",
  "bstr",

@@ -192,9 +192,27 @@ rustpython-vm = { version = "=0.6.0", default-features = false, features = ["com
 arc-swap = { path = "crates/patches/arc-swap" }
 grep-printer = { path = "crates/patches/psh/third_party/grep-printer" }
 rustls-platform-verifier = { path = "crates/patches/rustls-platform-verifier" }
+pymath = { path = "crates/patches/pymath" }
+rustpython-codegen = { path = "crates/patches/rustpython-codegen" }
+rustpython-common = { path = "crates/patches/rustpython-common" }
+rustpython-compiler = { path = "crates/patches/rustpython-compiler" }
+rustpython-compiler-core = { path = "crates/patches/rustpython-compiler-core" }
+rustpython-derive = { path = "crates/patches/rustpython-derive" }
+rustpython-derive-impl = { path = "crates/patches/rustpython-derive-impl" }
+rustpython-doc = { path = "crates/patches/rustpython-doc" }
+rustpython-host_env = { path = "crates/patches/rustpython-host_env" }
+rustpython-literal = { path = "crates/patches/rustpython-literal" }
 rustpython-pylib = { path = "crates/patches/rustpython-pylib" }
+rustpython-ruff_python_ast = { path = "crates/patches/rustpython-ruff_python_ast" }
+rustpython-ruff_python_parser = { path = "crates/patches/rustpython-ruff_python_parser" }
+rustpython-ruff_python_trivia = { path = "crates/patches/rustpython-ruff_python_trivia" }
+rustpython-ruff_source_file = { path = "crates/patches/rustpython-ruff_source_file" }
+rustpython-ruff_text_size = { path = "crates/patches/rustpython-ruff_text_size" }
 rustpython-sre_engine = { path = "crates/patches/rustpython-sre_engine" }
+rustpython-stdlib = { path = "crates/patches/rustpython-stdlib" }
+rustpython-unicode = { path = "crates/patches/rustpython-unicode" }
 rustpython-vm = { path = "crates/patches/rustpython-vm" }
+rustpython-wtf8 = { path = "crates/patches/rustpython-wtf8" }
 sqlx-core = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
 sqlx-postgres = { git = "https://github.com/gakonst/sqlx", rev = "7667896a183e2597e8bf9df17bbd22c5d1658772" }
 unicode-normalization = { path = "crates/core/unicode-normalization" }

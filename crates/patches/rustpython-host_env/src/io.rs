@@ -1,0 +1,303 @@
+#[cfg(any(unix, target_os = "wasi"))]
+use core::ffi::CStr;
+use std::io;
+
+#[cfg(any(unix, target_os = "wasi"))]
+use rustix::{fs::FileType, io::Errno};
+
+#[cfg(any(unix, target_os = "wasi"))]
+use crate::fileutils;
+use crate::{crt_fd, os};
+
+bitflagset::bitflag! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum FileModeFlag {
+        Created = 0,
+        Readable = 1,
+        Writable = 2,
+        Appending = 3,
+    }
+}
+
+bitflagset::bitflagset! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct FileMode(u8): FileModeFlag
+}
+
+impl FileMode {
+    pub const CREATED: Self = Self::from_element(FileModeFlag::Created);
+    pub const READABLE: Self = Self::from_element(FileModeFlag::Readable);
+    pub const WRITABLE: Self = Self::from_element(FileModeFlag::Writable);
+    pub const APPENDING: Self = Self::from_element(FileModeFlag::Appending);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileModeError {
+    Invalid,
+    BadRwa,
+}
+
+impl FileModeError {
+    pub fn error_msg(self, mode_str: &str) -> String {
+        match self {
+            Self::Invalid => format!("invalid mode: {mode_str}"),
+            Self::BadRwa => {
+                "Must have exactly one of create/read/write/append mode and at most one plus"
+                    .to_owned()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ParsedFileMode {
+    pub mode: FileMode,
+    pub flags: i32,
+}
+
+impl FileMode {
+    pub const fn raw_mode(self) -> &'static str {
+        if self.contains(&FileModeFlag::Created) {
+            if self.contains(&FileModeFlag::Readable) {
+                "xb+"
+            } else {
+                "xb"
+            }
+        } else if self.contains(&FileModeFlag::Appending) {
+            if self.contains(&FileModeFlag::Readable) {
+                "ab+"
+            } else {
+                "ab"
+            }
+        } else if self.contains(&FileModeFlag::Readable) {
+            if self.contains(&FileModeFlag::Writable) {
+                "rb+"
+            } else {
+                "rb"
+            }
+        } else {
+            "wb"
+        }
+    }
+}
+
+pub fn parse_fileio_mode(mode_str: &str) -> Result<ParsedFileMode, FileModeError> {
+    let mut flags = 0;
+    let mut plus = false;
+    let mut rwa = false;
+    let mut mode = FileMode::empty();
+    for c in mode_str.bytes() {
+        match c {
+            b'x' => {
+                if rwa {
+                    return Err(FileModeError::BadRwa);
+                }
+                rwa = true;
+                mode |= FileMode::WRITABLE | FileMode::CREATED;
+                flags |= os::O_EXCL | os::O_CREAT;
+            }
+            b'r' => {
+                if rwa {
+                    return Err(FileModeError::BadRwa);
+                }
+                rwa = true;
+                mode |= FileMode::READABLE;
+            }
+            b'w' => {
+                if rwa {
+                    return Err(FileModeError::BadRwa);
+                }
+                rwa = true;
+                mode |= FileMode::WRITABLE;
+                flags |= os::O_CREAT | os::O_TRUNC;
+            }
+            b'a' => {
+                if rwa {
+                    return Err(FileModeError::BadRwa);
+                }
+                rwa = true;
+                mode |= FileMode::WRITABLE | FileMode::APPENDING;
+                flags |= os::O_APPEND | os::O_CREAT;
+            }
+            b'+' => {
+                if plus {
+                    return Err(FileModeError::BadRwa);
+                }
+                plus = true;
+                mode |= FileMode::READABLE | FileMode::WRITABLE;
+            }
+            b'b' => {}
+            _ => return Err(FileModeError::Invalid),
+        }
+    }
+
+    if !rwa {
+        return Err(FileModeError::BadRwa);
+    }
+
+    if mode.is_superset(&(FileMode::READABLE | FileMode::WRITABLE)) {
+        flags |= os::O_RDWR;
+    } else if mode.contains(&FileModeFlag::Readable) {
+        flags |= os::O_RDONLY;
+    } else {
+        flags |= os::O_WRONLY;
+    }
+
+    #[cfg(windows)]
+    {
+        flags |= os::O_BINARY | os::O_NOINHERIT;
+    }
+    #[cfg(unix)]
+    {
+        flags |= os::O_CLOEXEC;
+    }
+
+    Ok(ParsedFileMode { mode, flags })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FileTargetInfo {
+    pub blksize: Option<i64>,
+}
+
+#[cfg(any(unix, target_os = "wasi"))]
+pub fn inspect_file_target(fd: crt_fd::Borrowed<'_>) -> io::Result<FileTargetInfo> {
+    let status = fileutils::fstat(fd)?;
+    if FileType::from_raw_mode(status.st_mode).is_dir() {
+        return Err(io::Error::from(Errno::ISDIR));
+    }
+    #[allow(clippy::useless_conversion, reason = "needed for 32-bit platforms")]
+    let blksize = (status.st_blksize > 1).then(|| i64::from(status.st_blksize));
+    Ok(FileTargetInfo { blksize })
+}
+
+#[cfg(windows)]
+pub fn inspect_file_target(fd: crt_fd::Borrowed<'_>) -> io::Result<FileTargetInfo> {
+    if !crate::nt::fd_exists(fd) {
+        return Err(io::Error::from_raw_os_error(
+            crate::nt::ERROR_INVALID_HANDLE_I32,
+        ));
+    }
+    Ok(FileTargetInfo { blksize: None })
+}
+
+#[cfg(any(unix, target_os = "wasi"))]
+pub fn open_path(path: &CStr, flags: i32, mode: i32) -> io::Result<crt_fd::Owned> {
+    crt_fd::open(path, flags, mode)
+}
+
+#[cfg(windows)]
+pub fn open_path(path: &widestring::WideCStr, flags: i32, mode: i32) -> io::Result<crt_fd::Owned> {
+    crt_fd::wopen(path, flags, mode)
+}
+
+#[cfg(windows)]
+pub fn should_forget_fd_after_inspect_error(err: &io::Error, _fd_is_own: bool) -> bool {
+    err.raw_os_error() == Some(crate::nt::ERROR_INVALID_HANDLE_I32)
+}
+
+#[cfg(any(unix, target_os = "wasi"))]
+pub fn should_forget_fd_after_inspect_error(err: &io::Error, fd_is_own: bool) -> bool {
+    let errno = err.raw_os_error();
+    (errno == Some(libc::EISDIR) || errno == Some(libc::EBADF))
+        && (!fd_is_own || errno == Some(libc::EBADF))
+}
+
+pub fn seek_to_end(fd: crt_fd::Borrowed<'_>) -> io::Result<crt_fd::Offset> {
+    os::seek_fd(fd, 0, libc::SEEK_END)
+}
+
+pub fn is_seekable(fd: crt_fd::Borrowed<'_>) -> bool {
+    os::seek_fd(fd, 0, libc::SEEK_CUR).is_ok()
+}
+
+/// Whether a read from `fd` answers from data the file already holds, rather
+/// than waiting for whoever writes the other end.
+///
+/// Seeking answers this everywhere but Windows, where a pipe seeks too --
+/// `lseek` on one succeeds and reports a position, so a reader that took
+/// seekability for an answer would wait on a peer while holding whatever it
+/// holds for the length of the call.
+#[cfg(not(windows))]
+pub fn reads_without_waiting(fd: crt_fd::Borrowed<'_>) -> bool {
+    is_seekable(fd)
+}
+
+#[cfg(windows)]
+pub fn reads_without_waiting(fd: crt_fd::Borrowed<'_>) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, GetFileType};
+
+    let Ok(handle) = crt_fd::as_handle(fd) else {
+        return false;
+    };
+    unsafe { GetFileType(handle.as_raw_handle() as _) == FILE_TYPE_DISK }
+}
+
+pub fn validate_whence(whence: i32) -> bool {
+    let standard = (0..=2).contains(&whence);
+    #[cfg(any(target_os = "dragonfly", target_os = "freebsd", target_os = "linux"))]
+    {
+        standard || matches!(whence, libc::SEEK_DATA | libc::SEEK_HOLE)
+    }
+    #[cfg(not(any(target_os = "dragonfly", target_os = "freebsd", target_os = "linux")))]
+    {
+        standard
+    }
+}
+
+pub fn is_interrupted_errno(errno: i32) -> bool {
+    errno == libc::EINTR
+}
+
+pub fn is_interrupted_error(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(libc::EINTR)
+}
+
+pub fn is_would_block_error(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::WouldBlock || err.raw_os_error() == Some(libc::EAGAIN)
+}
+
+pub fn seek(
+    fd: crt_fd::Borrowed<'_>,
+    offset: crt_fd::Offset,
+    how: i32,
+) -> io::Result<crt_fd::Offset> {
+    os::seek_fd(fd, offset, how)
+}
+
+pub fn tell(fd: crt_fd::Borrowed<'_>) -> io::Result<crt_fd::Offset> {
+    os::seek_fd(fd, 0, libc::SEEK_CUR)
+}
+
+pub fn isatty(fd: i32) -> bool {
+    os::isatty(fd)
+}
+
+pub fn read_once(fd: crt_fd::Borrowed<'_>, buf: &mut [u8]) -> io::Result<usize> {
+    crt_fd::read(fd, buf)
+}
+
+pub fn read_all(fd: crt_fd::Borrowed<'_>, out: &mut Vec<u8>) -> io::Result<()> {
+    let mut fd = fd;
+    std::io::Read::read_to_end(&mut fd, out).map(|_| ())
+}
+
+pub fn write_once(fd: crt_fd::Borrowed<'_>, buf: &[u8]) -> io::Result<usize> {
+    crt_fd::write(fd, buf)
+}
+
+pub fn close_owned_fd(fd: crt_fd::Owned) -> io::Result<()> {
+    crt_fd::close(fd)
+}
+
+/// Async-signal-safe raw write to the platform stderr file descriptor.
+/// Avoids `std::io::stderr()` locking so it is safe to call from fork
+/// children and signal handlers.
+#[cfg(unix)]
+pub fn write_stderr_raw(buf: &[u8]) {
+    unsafe {
+        let _ = libc::write(libc::STDERR_FILENO, buf.as_ptr().cast(), buf.len());
+    }
+}

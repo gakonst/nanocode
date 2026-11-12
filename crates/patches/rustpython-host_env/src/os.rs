@@ -1,0 +1,1024 @@
+// spell-checker:disable
+// TODO: we can move more os-specific bindings/interfaces from stdlib::{os, posix, nt} to here
+
+use crate::crt_fd;
+#[cfg(windows)]
+use crate::fs;
+#[cfg(windows)]
+pub use crate::posix::rename;
+#[cfg(any(unix, target_os = "wasi"))]
+pub use crate::posix_unix_like::rename;
+#[cfg(any(unix, windows))]
+use core::ffi::CStr;
+use core::str::Utf8Error;
+#[cfg(windows)]
+use core::time::Duration;
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    io,
+    path::PathBuf,
+    process::ExitCode,
+};
+#[cfg(windows)]
+use {
+    std::{os::windows::io::AsRawHandle, path::Path},
+    windows_sys::Win32::{
+        Foundation::FILETIME,
+        Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, SetFilePointerEx, SetFileTime},
+        System::SystemInformation::{GetSystemInfo, SYSTEM_INFO},
+    },
+};
+
+bitflagset::bitflag! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum AccessFlag {
+        X = 0,
+        W = 1,
+        R = 2,
+    }
+}
+
+bitflagset::bitflagset! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct AccessMode(u8): AccessFlag
+}
+
+pub const F_OK: u8 = AccessMode::empty().bits();
+pub const X_OK: u8 = AccessMode::from_element(AccessFlag::X).bits();
+pub const W_OK: u8 = AccessMode::from_element(AccessFlag::W).bits();
+pub const R_OK: u8 = AccessMode::from_element(AccessFlag::R).bits();
+
+#[cfg(any(unix, target_os = "wasi"))]
+pub use libc::AT_FDCWD;
+#[cfg(not(any(unix, target_os = "wasi")))]
+pub const AT_FDCWD: i32 = -100;
+
+#[cfg(unix)]
+pub use libc::{AT_REMOVEDIR, AT_SYMLINK_FOLLOW, AT_SYMLINK_NOFOLLOW};
+
+#[cfg(any(
+    target_os = "freebsd",
+    target_os = "linux",
+    target_os = "netbsd",
+    target_vendor = "apple"
+))]
+pub use libc::AT_EACCESS;
+
+/// bionic does not export `AT_EACCESS`; the value is the Linux `fcntl.h` one.
+#[cfg(target_os = "android")]
+pub const AT_EACCESS: i32 = 0x200;
+
+#[cfg(all(unix, not(target_os = "redox")))]
+pub use libc::{ST_NOSUID, ST_RDONLY};
+
+/// `open(2)` flags. libc on hosts that bind them; Darwin/BSD numbers on
+/// `wasm32-unknown-unknown`, matching the guest errno table.
+#[cfg(any(unix, windows, target_os = "wasi"))]
+pub use libc::{O_APPEND, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
+
+#[cfg(unix)]
+pub use libc::{O_ACCMODE, O_CLOEXEC, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK};
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "redox"
+))]
+pub use libc::{O_ASYNC, O_NDELAY, O_NOCTTY};
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "freebsd",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd"
+))]
+pub use libc::O_DSYNC;
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd"
+))]
+pub use libc::O_SYNC;
+
+#[cfg(any(
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "redox"
+))]
+pub use libc::O_FSYNC;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub use libc::{O_DIRECT, O_LARGEFILE, O_NOATIME, O_PATH, O_RSYNC, O_TMPFILE};
+
+#[cfg(target_os = "freebsd")]
+pub use libc::{O_DIRECT, O_PATH};
+
+#[cfg(target_os = "redox")]
+pub use libc::O_PATH;
+
+#[cfg(target_os = "netbsd")]
+pub use libc::{O_DIRECT, O_RSYNC};
+
+#[cfg(target_os = "dragonfly")]
+pub use libc::O_DIRECT;
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use libc::{O_EVTONLY, O_EXEC, O_EXLOCK, O_NOFOLLOW_ANY, O_SEARCH, O_SHLOCK, O_SYMLINK};
+
+#[cfg(any(
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "redox"
+))]
+pub use libc::{O_EXLOCK, O_SHLOCK};
+
+#[cfg(target_os = "redox")]
+pub use libc::O_SYMLINK;
+
+#[cfg(windows)]
+pub use libc::{O_BINARY, O_NOINHERIT, O_RANDOM, O_SEQUENTIAL, O_TEMPORARY, O_TEXT};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod wasm_oflag {
+    pub const O_RDONLY: i32 = 0x0000;
+    pub const O_WRONLY: i32 = 0x0001;
+    pub const O_RDWR: i32 = 0x0002;
+    pub const O_ACCMODE: i32 = 0x0003;
+    pub const O_NONBLOCK: i32 = 0x0004;
+    pub const O_APPEND: i32 = 0x0008;
+    pub const O_SYNC: i32 = 0x0080;
+    pub const O_NOFOLLOW: i32 = 0x0100;
+    pub const O_CREAT: i32 = 0x0200;
+    pub const O_TRUNC: i32 = 0x0400;
+    pub const O_EXCL: i32 = 0x0800;
+    pub const O_DIRECTORY: i32 = 0x0010_0000;
+    pub const O_CLOEXEC: i32 = 0x0100_0000;
+    pub const O_NDELAY: i32 = O_NONBLOCK;
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use wasm_oflag::*;
+
+bitflagset::bitflag! {
+    /// BSD `chflags` bits. Values are bit *positions*; masks are `1 << pos`.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum ChFlag {
+        UfNodump = 0,
+        UfImmutable = 1,
+        UfAppend = 2,
+        UfOpaque = 3,
+        UfNounlink = 4,
+        UfCompressed = 5,
+        UfTracked = 6,
+        UfDatavault = 7,
+        UfHidden = 15,
+        SfArchived = 16,
+        SfImmutable = 17,
+        SfAppend = 18,
+        SfNounlink = 20,
+        SfSnapshot = 21,
+        SfFirmlink = 23,
+        SfDataless = 30,
+    }
+}
+
+bitflagset::bitflagset! {
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    pub struct ChFlags(u32): ChFlag
+}
+
+impl ChFlags {
+    /// Owner-settable bits, including reserved user-flag positions.
+    pub const UF_SETTABLE: Self = Self::from_bits_retain(0x0000ffff);
+    pub const SF_SETTABLE: Self = Self::from_bits_retain(if cfg!(target_os = "macos") {
+        0x3fff0000
+    } else {
+        0xffff0000
+    });
+    #[cfg(target_os = "macos")]
+    pub const SF_SUPPORTED: Self = Self::from_bits_retain(0x009f0000);
+    #[cfg(target_os = "macos")]
+    pub const SF_SYNTHETIC: Self = Self::from_bits_retain(0xc0000000);
+}
+
+pub const UF_NODUMP: u32 = ChFlags::from_element(ChFlag::UfNodump).bits();
+pub const UF_IMMUTABLE: u32 = ChFlags::from_element(ChFlag::UfImmutable).bits();
+pub const UF_APPEND: u32 = ChFlags::from_element(ChFlag::UfAppend).bits();
+pub const UF_OPAQUE: u32 = ChFlags::from_element(ChFlag::UfOpaque).bits();
+pub const UF_NOUNLINK: u32 = ChFlags::from_element(ChFlag::UfNounlink).bits();
+pub const UF_COMPRESSED: u32 = ChFlags::from_element(ChFlag::UfCompressed).bits();
+pub const UF_TRACKED: u32 = ChFlags::from_element(ChFlag::UfTracked).bits();
+pub const UF_DATAVAULT: u32 = ChFlags::from_element(ChFlag::UfDatavault).bits();
+pub const UF_HIDDEN: u32 = ChFlags::from_element(ChFlag::UfHidden).bits();
+pub const UF_SETTABLE: u32 = ChFlags::UF_SETTABLE.bits();
+pub const SF_ARCHIVED: u32 = ChFlags::from_element(ChFlag::SfArchived).bits();
+pub const SF_IMMUTABLE: u32 = ChFlags::from_element(ChFlag::SfImmutable).bits();
+pub const SF_APPEND: u32 = ChFlags::from_element(ChFlag::SfAppend).bits();
+pub const SF_NOUNLINK: u32 = ChFlags::from_element(ChFlag::SfNounlink).bits();
+pub const SF_SNAPSHOT: u32 = ChFlags::from_element(ChFlag::SfSnapshot).bits();
+pub const SF_FIRMLINK: u32 = ChFlags::from_element(ChFlag::SfFirmlink).bits();
+pub const SF_DATALESS: u32 = ChFlags::from_element(ChFlag::SfDataless).bits();
+pub const SF_SETTABLE: u32 = ChFlags::SF_SETTABLE.bits();
+#[cfg(target_os = "macos")]
+pub const SF_SUPPORTED: u32 = ChFlags::SF_SUPPORTED.bits();
+#[cfg(target_os = "macos")]
+pub const SF_SYNTHETIC: u32 = ChFlags::SF_SYNTHETIC.bits();
+
+const _: () = {
+    assert!(UF_NODUMP == 0x00000001);
+    assert!(UF_IMMUTABLE == 0x00000002);
+    assert!(UF_APPEND == 0x00000004);
+    assert!(UF_OPAQUE == 0x00000008);
+    assert!(UF_NOUNLINK == 0x00000010);
+    assert!(UF_COMPRESSED == 0x00000020);
+    assert!(UF_TRACKED == 0x00000040);
+    assert!(UF_DATAVAULT == 0x00000080);
+    assert!(UF_HIDDEN == 0x00008000);
+    assert!(UF_SETTABLE == 0x0000ffff);
+    assert!(SF_ARCHIVED == 0x00010000);
+    assert!(SF_IMMUTABLE == 0x00020000);
+    assert!(SF_APPEND == 0x00040000);
+    assert!(SF_NOUNLINK == 0x00100000);
+    assert!(SF_SNAPSHOT == 0x00200000);
+    assert!(SF_FIRMLINK == 0x00800000);
+    assert!(SF_DATALESS == 0x40000000);
+};
+
+/// Solaris door/port and BSD whiteout. `_stat` publishes 0 where the
+/// platform has no such file type.
+pub const S_IFDOOR: u32 = 0;
+pub const S_IFPORT: u32 = 0;
+pub const S_IFWHT: u32 = if cfg!(target_os = "macos") {
+    0o160000
+} else {
+    0
+};
+
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+pub fn rename(
+    from: impl AsRef<std::path::Path>,
+    from_fd: Option<crt_fd::Borrowed<'_>>,
+    to: impl AsRef<std::path::Path>,
+    to_fd: Option<crt_fd::Borrowed<'_>>,
+) -> io::Result<()> {
+    if from_fd.is_none() && to_fd.is_none() {
+        std::fs::rename(from, to)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "renameat is not available on this platform",
+        ))
+    }
+}
+
+/// Convert exit code to std::process::ExitCode
+///
+/// On Windows, this supports the full u32 range including STATUS_CONTROL_C_EXIT (0xC000013A).
+/// On other platforms, only the lower 8 bits are used.
+pub fn exit_code(code: u32) -> ExitCode {
+    #[cfg(windows)]
+    {
+        // For large exit codes like STATUS_CONTROL_C_EXIT (0xC000013A),
+        // we need to call std::process::exit() directly since ExitCode::from(u8)
+        // would truncate the value, and ExitCode::from_raw() is still unstable.
+        // FIXME: side effect in exit_code is not ideal.
+        if code > u8::MAX as u32 {
+            std::process::exit(code as i32)
+        }
+    }
+    ExitCode::from(code as u8)
+}
+
+pub fn current_dir() -> io::Result<PathBuf> {
+    env::current_dir()
+}
+
+#[must_use]
+pub fn temp_dir() -> PathBuf {
+    env::temp_dir()
+}
+
+pub fn var(key: &str) -> Result<String, env::VarError> {
+    env::var(key)
+}
+
+pub fn var_os(key: impl AsRef<OsStr>) -> Option<OsString> {
+    env::var_os(key)
+}
+
+#[must_use]
+pub fn vars_os() -> env::VarsOs {
+    env::vars_os()
+}
+
+#[must_use]
+pub fn vars() -> env::Vars {
+    env::vars()
+}
+
+/// # Safety
+/// The caller must ensure no other threads can concurrently read or write
+/// the process environment while this mutation is performed.
+pub unsafe fn set_var(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
+    unsafe { env::set_var(key, value) };
+}
+
+/// # Safety
+/// The caller must ensure no other threads can concurrently read or write
+/// the process environment while this mutation is performed.
+pub unsafe fn remove_var(key: impl AsRef<OsStr>) {
+    unsafe { env::remove_var(key) };
+}
+
+/// Publish the working directory as `=X:` for the drive it is on.
+///
+/// CRT `_wspawnve` / `_wexecve` walk the environment for the first `=X:`
+/// entry with no bound; a process that was not started by cmd.exe has none
+/// and that walk runs off the block. A UNC-like path is on no drive and
+/// publishes nothing.
+#[cfg(windows)]
+pub fn publish_drive_current_directory() -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Environment::SetEnvironmentVariableW;
+
+    let mut cwd_wide: Vec<u16> = env::current_dir()?.as_os_str().encode_wide().collect();
+    let unc_like = cwd_wide.len() >= 2
+        && ((cwd_wide[0] == b'\\' as u16 && cwd_wide[1] == b'\\' as u16)
+            || (cwd_wide[0] == b'/' as u16 && cwd_wide[1] == b'/' as u16));
+    if unc_like || cwd_wide.is_empty() {
+        return Ok(());
+    }
+    let env_name = [b'=' as u16, cwd_wide[0], b':' as u16, 0];
+    cwd_wide.push(0);
+    let ok = unsafe { SetEnvironmentVariableW(env_name.as_ptr(), cwd_wide.as_ptr()) };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether the process environment already has an `=X:` drive-cwd entry.
+#[cfg(windows)]
+pub fn environment_has_drive_current_directory() -> bool {
+    use windows_sys::Win32::System::Environment::{
+        FreeEnvironmentStringsW, GetEnvironmentStringsW,
+    };
+
+    let block = unsafe { GetEnvironmentStringsW() };
+    if block.is_null() {
+        return false;
+    }
+    let mut present = false;
+    let mut entry = block;
+    unsafe {
+        while *entry != 0 {
+            if *entry == b'=' as u16 {
+                present = true;
+                break;
+            }
+            while *entry != 0 {
+                entry = entry.add(1);
+            }
+            entry = entry.add(1);
+        }
+        FreeEnvironmentStringsW(block);
+    }
+    present
+}
+
+/// Publish `=X:` when the process environment has none, so a later
+/// `_wspawnv` / `_wexecv` walk has a first entry.
+#[cfg(windows)]
+pub fn ensure_drive_current_directory() {
+    if !environment_has_drive_current_directory() {
+        let _ = publish_drive_current_directory();
+    }
+}
+
+pub fn set_current_dir(path: impl AsRef<std::path::Path>) -> io::Result<()> {
+    env::set_current_dir(&path)?;
+    #[cfg(windows)]
+    publish_drive_current_directory()?;
+    Ok(())
+}
+
+#[must_use]
+pub fn process_id() -> u32 {
+    std::process::id()
+}
+
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+pub fn cpu_count() -> usize {
+    num_cpus::get()
+}
+
+#[cfg(not(any(not(target_arch = "wasm32"), target_os = "wasi")))]
+pub fn cpu_count() -> usize {
+    1
+}
+
+#[cfg(unix)]
+pub fn page_size() -> usize {
+    rustix::param::page_size()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub const fn page_size() -> usize {
+    // WebAssembly's page size is a constant defined by the spec.
+    1024 * 64
+}
+
+#[cfg(windows)]
+pub fn page_size() -> usize {
+    let mut info = SYSTEM_INFO::default();
+    unsafe {
+        GetSystemInfo(&mut info);
+    }
+    info.dwPageSize as _
+}
+
+#[cfg(unix)]
+pub fn alloc_granularity() -> usize {
+    // On Unix-likes, the page size is the smallest allocation unit rather than a separate concept
+    // of allocation granularity.
+    page_size()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub const fn alloc_granularity() -> usize {
+    // Like Unix, WebAssembly doesn't separate page size and alloc granularity.
+    page_size()
+}
+
+#[cfg(windows)]
+pub fn alloc_granularity() -> usize {
+    let mut info = SYSTEM_INFO::default();
+    unsafe {
+        GetSystemInfo(&mut info);
+    }
+    info.dwAllocationGranularity as _
+}
+
+pub fn device_encoding(_fd: i32) -> Option<String> {
+    #[cfg(any(
+        target_os = "android",
+        target_os = "redox",
+        all(target_arch = "wasm32", not(target_os = "wasi"))
+    ))]
+    {
+        Some("UTF-8".to_owned())
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console;
+        let cp = match _fd {
+            0 => unsafe { Console::GetConsoleCP() },
+            1 | 2 => unsafe { Console::GetConsoleOutputCP() },
+            _ => 0,
+        };
+
+        Some(format!("cp{cp}"))
+    }
+
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "redox",
+        windows,
+        all(target_arch = "wasm32", not(target_os = "wasi"))
+    )))]
+    {
+        let encoding = unsafe {
+            let encoding = libc::nl_langinfo(libc::CODESET);
+            if encoding.is_null() || encoding.read() == b'\0' as libc::c_char {
+                "UTF-8".to_owned()
+            } else {
+                core::ffi::CStr::from_ptr(encoding)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        };
+
+        Some(encoding)
+    }
+}
+
+pub fn exit(code: i32) -> ! {
+    std::process::exit(code)
+}
+
+/// Wrapper around the C `abort()` call: terminates the process abnormally.
+pub fn abort() -> ! {
+    unsafe extern "C" {
+        fn abort() -> !;
+    }
+    unsafe { abort() }
+}
+
+/// Read `size` cryptographically random bytes from the OS.
+pub fn urandom(size: usize) -> io::Result<Vec<u8>> {
+    let mut buf = vec![0u8; size];
+    getrandom::fill(&mut buf).map_err(io::Error::from)?;
+    Ok(buf)
+}
+
+#[cfg(any(unix, windows, target_os = "wasi"))]
+pub fn isatty(fd: i32) -> bool {
+    unsafe { suppress_iph!(libc::isatty(fd)) != 0 }
+}
+
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+pub fn isatty(_fd: i32) -> bool {
+    false
+}
+
+#[cfg(any(unix, windows))]
+pub fn system(command: &CStr) -> libc::c_int {
+    unsafe { libc::system(command.as_ptr()) }
+}
+
+#[cfg(target_os = "linux")]
+pub fn copy_file_range(
+    src: crt_fd::Borrowed<'_>,
+    offset_src: Option<&mut u64>,
+    dst: crt_fd::Borrowed<'_>,
+    offset_dst: Option<&mut u64>,
+    count: usize,
+) -> rustix::io::Result<usize> {
+    // `copy_file_range` isn't wrapped in every libc (i.e. musl).
+    // However, Rustix is a safe wrapper around the syscall that bypasses libc.
+    rustix::fs::copy_file_range(src, offset_src, dst, offset_dst, count)
+}
+
+#[cfg(windows)]
+pub fn seek_fd(
+    fd: crt_fd::Borrowed<'_>,
+    position: crt_fd::Offset,
+    how: i32,
+) -> io::Result<crt_fd::Offset> {
+    use crate::windows::CheckWin32Bool;
+
+    let handle = crt_fd::as_handle(fd)?;
+    // `SetFilePointer` returns the low half of the new position and reports
+    // failure with the value a position four gigabytes in also has, so the two
+    // are only told apart through the error code. The `Ex` form answers with
+    // the whole position and a success flag of its own.
+    let mut new_position = 0;
+    unsafe {
+        SetFilePointerEx(
+            handle.as_raw_handle(),
+            position,
+            &mut new_position,
+            how as _,
+        )
+    }
+    .check_win32_bool()?;
+    Ok(new_position)
+}
+
+#[cfg(any(unix, target_os = "wasi"))]
+pub fn seek_fd(
+    fd: crt_fd::Borrowed<'_>,
+    position: crt_fd::Offset,
+    how: i32,
+) -> io::Result<crt_fd::Offset> {
+    unsafe { suppress_iph!(libc::lseek(fd.as_raw(), position, how)) }.check_libc_neg()
+}
+
+#[cfg(windows)]
+fn filetime_from_duration(duration: Duration) -> FILETIME {
+    let intervals = ((duration.as_secs() as i64 + 11644473600) * 10_000_000)
+        + (duration.subsec_nanos() as i64 / 100);
+    FILETIME {
+        dwLowDateTime: intervals as u32,
+        dwHighDateTime: (intervals >> 32) as u32,
+    }
+}
+
+#[cfg(windows)]
+pub fn set_file_times(
+    path: impl AsRef<Path>,
+    access: Duration,
+    modified: Duration,
+) -> io::Result<()> {
+    use crate::windows::CheckWin32Bool;
+    let access = filetime_from_duration(access);
+    let modified = filetime_from_duration(modified);
+    let file = fs::open_write_with_custom_flags(path, FILE_FLAG_BACKUP_SEMANTICS)?;
+    unsafe {
+        SetFileTime(
+            file.as_raw_handle() as _,
+            core::ptr::null(),
+            &access,
+            &modified,
+        )
+    }
+    .check_win32_bool()
+}
+
+pub trait ErrorExt {
+    fn posix_errno(&self) -> i32;
+}
+
+impl ErrorExt for io::Error {
+    #[cfg(not(windows))]
+    fn posix_errno(&self) -> i32 {
+        self.raw_os_error().unwrap_or(0)
+    }
+    #[cfg(windows)]
+    fn posix_errno(&self) -> i32 {
+        // A C runtime error carries its exact errno as the payload; report it
+        // directly instead of round-tripping through a Win32 error code.
+        if let Some(crt) = self.get_ref().and_then(|e| e.downcast_ref::<CrtErrno>()) {
+            return crt.0;
+        }
+        let winerror = self.raw_os_error().unwrap_or(0);
+        winerror_to_errno(winerror)
+    }
+}
+
+/// Wraps a raw C runtime `errno` inside an [`io::Error`].
+///
+/// CRT functions (`open`, `read`, `dup`, ...) report failures through `errno`,
+/// not `GetLastError`. Translating that `errno` into a Win32 error code is
+/// lossy — any value missing from [`errno_to_winerror`] collapses to `EINVAL` —
+/// and also attaches a spurious `winerror` to the resulting `OSError`. Carrying
+/// the `errno` as the error payload lets [`ErrorExt::posix_errno`] recover it
+/// exactly while leaving `raw_os_error()` empty, so no `winerror` is reported.
+#[cfg(windows)]
+#[derive(Debug)]
+struct CrtErrno(i32);
+
+#[cfg(windows)]
+impl core::fmt::Display for CrtErrno {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match crate::errno::strerror_string(self.0) {
+            Some(msg) => f.write_str(&msg),
+            None => write!(f, "os error {}", self.0),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl core::error::Error for CrtErrno {}
+
+/// Build an [`io::Error`] that preserves a raw C runtime `errno`.
+///
+/// The [`io::ErrorKind`] is derived from the closest Win32 mapping so callers
+/// matching on `kind()` keep working, while the exact `errno` is preserved for
+/// [`ErrorExt::posix_errno`].
+#[cfg(windows)]
+#[must_use]
+pub fn io_error_from_errno(errno: i32) -> io::Error {
+    let kind = io::Error::from_raw_os_error(errno_to_winerror(errno)).kind();
+    io::Error::new(kind, CrtErrno(errno))
+}
+
+#[cfg(all(not(windows), not(target_arch = "wasm32")))]
+impl ErrorExt for rustix::io::Errno {
+    fn posix_errno(&self) -> i32 {
+        self.raw_os_error()
+    }
+}
+
+/// Get the last error from C runtime library functions (like _dup, _dup2, _fstat, etc.)
+/// CRT functions set errno, not GetLastError(), so we need to read errno directly.
+#[cfg(windows)]
+#[must_use]
+pub fn errno_io_error() -> io::Error {
+    io_error_from_errno(get_errno())
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn errno_io_error() -> io::Error {
+    std::io::Error::last_os_error()
+}
+
+/// Convert a libc-style return value into an `io::Result`.
+///
+/// Negative values are treated as errors; errno is read via [`errno_io_error`].
+/// Modeled after PyPy's `rposix.handle_posix_error`.
+pub trait CheckLibcResult: Sized {
+    /// Returns `Ok(self)` if non-negative, otherwise `Err` with the current errno.
+    fn check_libc_neg(self) -> io::Result<Self>;
+}
+
+macro_rules! impl_check_libc_result {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl CheckLibcResult for $ty {
+                #[inline]
+                fn check_libc_neg(self) -> io::Result<Self> {
+                    if self < 0 { Err(errno_io_error()) } else { Ok(self) }
+                }
+            }
+        )*
+    };
+}
+
+impl_check_libc_result!(i16, i32, i64, isize);
+
+/// libc convention where `0` means success and any non-zero value indicates failure
+/// (with errno set). Used by APIs like `sigemptyset`, `sigaction`, `pthread_*`, etc.
+pub trait CheckLibcZero {
+    /// Returns `Ok(())` if `self == 0`, otherwise the current errno as an `io::Error`.
+    fn check_libc_zero(self) -> io::Result<()>;
+}
+
+macro_rules! impl_check_libc_zero {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl CheckLibcZero for $ty {
+                #[inline]
+                fn check_libc_zero(self) -> io::Result<()> {
+                    if self == 0 { Ok(()) } else { Err(errno_io_error()) }
+                }
+            }
+        )*
+    };
+}
+
+impl_check_libc_zero!(i32, i64, isize);
+
+#[cfg(windows)]
+pub fn get_errno() -> i32 {
+    unsafe extern "C" {
+        fn _get_errno(pValue: *mut i32) -> i32;
+    }
+    let mut errno = 0;
+    unsafe { suppress_iph!(_get_errno(&mut errno)) };
+    errno
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub fn get_errno() -> i32 {
+    std::io::Error::last_os_error().posix_errno()
+}
+
+pub fn clear_errno() {
+    set_errno(0);
+}
+
+/// Set errno to the specified value.
+#[cfg(windows)]
+pub fn set_errno(value: i32) {
+    unsafe extern "C" {
+        fn _set_errno(value: i32) -> i32;
+    }
+    unsafe { suppress_iph!(_set_errno(value)) };
+}
+
+#[cfg(unix)]
+pub fn set_errno(value: i32) {
+    nix::errno::Errno::from_raw(value).set();
+}
+
+#[cfg(target_os = "wasi")]
+pub fn set_errno(value: i32) {
+    unsafe {
+        *libc::__errno_location() = value;
+    }
+}
+
+#[cfg(not(any(unix, windows, target_os = "wasi")))]
+pub fn set_errno(_value: i32) {}
+
+// WASIp1, like Unix, provides byte-preserving OsStr conversions.
+#[cfg(any(unix, all(target_os = "wasi", not(target_env = "p2"))))]
+pub fn bytes_as_os_str(b: &[u8]) -> Result<&std::ffi::OsStr, Utf8Error> {
+    use self::ffi::OsStrExt;
+    Ok(std::ffi::OsStr::from_bytes(b))
+}
+
+#[cfg(not(any(unix, all(target_os = "wasi", not(target_env = "p2")))))]
+pub fn bytes_as_os_str(b: &[u8]) -> Result<&std::ffi::OsStr, Utf8Error> {
+    Ok(core::str::from_utf8(b)?.as_ref())
+}
+
+#[cfg(unix)]
+pub use std::os::unix::ffi;
+
+// WASIp1 uses stable std::os::wasi::ffi
+#[cfg(all(target_os = "wasi", not(target_env = "p2")))]
+pub use std::os::wasi::ffi;
+
+// WASIp2: std::os::wasip2::ffi is unstable, so we provide a stable implementation
+// leveraging WASI's UTF-8 string guarantee
+#[cfg(all(target_os = "wasi", target_env = "p2"))]
+pub mod ffi {
+    use std::ffi::{OsStr, OsString};
+
+    pub trait OsStrExt: sealed::Sealed {
+        fn as_bytes(&self) -> &[u8];
+        fn from_bytes(slice: &[u8]) -> &Self;
+    }
+
+    impl OsStrExt for OsStr {
+        fn as_bytes(&self) -> &[u8] {
+            // WASI strings are guaranteed to be UTF-8
+            self.to_str().expect("wasip2 strings are UTF-8").as_bytes()
+        }
+
+        fn from_bytes(slice: &[u8]) -> &OsStr {
+            // WASI strings are guaranteed to be UTF-8
+            OsStr::new(core::str::from_utf8(slice).expect("wasip2 strings are UTF-8"))
+        }
+    }
+
+    pub trait OsStringExt: sealed::Sealed {
+        fn from_vec(vec: Vec<u8>) -> Self;
+        fn into_vec(self) -> Vec<u8>;
+    }
+
+    impl OsStringExt for OsString {
+        fn from_vec(vec: Vec<u8>) -> OsString {
+            // WASI strings are guaranteed to be UTF-8
+            OsString::from(String::from_utf8(vec).expect("wasip2 strings are UTF-8"))
+        }
+
+        fn into_vec(self) -> Vec<u8> {
+            // WASI strings are guaranteed to be UTF-8
+            self.to_str()
+                .expect("wasip2 strings are UTF-8")
+                .as_bytes()
+                .to_vec()
+        }
+    }
+
+    mod sealed {
+        pub trait Sealed {}
+        impl Sealed for std::ffi::OsStr {}
+        impl Sealed for std::ffi::OsString {}
+    }
+}
+
+#[cfg(windows)]
+#[must_use]
+pub fn errno_to_winerror(errno: i32) -> i32 {
+    use libc::*;
+    use windows_sys::Win32::Foundation::*;
+    let winerror = match errno {
+        ENOENT => ERROR_FILE_NOT_FOUND,
+        E2BIG => ERROR_BAD_ENVIRONMENT,
+        ENOEXEC => ERROR_BAD_FORMAT,
+        EBADF => ERROR_INVALID_HANDLE,
+        ECHILD => ERROR_WAIT_NO_CHILDREN,
+        EAGAIN => ERROR_NO_PROC_SLOTS,
+        ENOMEM => ERROR_NOT_ENOUGH_MEMORY,
+        EACCES => ERROR_ACCESS_DENIED,
+        EEXIST => ERROR_FILE_EXISTS,
+        EXDEV => ERROR_NOT_SAME_DEVICE,
+        ENOTDIR => ERROR_DIRECTORY,
+        EMFILE => ERROR_TOO_MANY_OPEN_FILES,
+        ENOSPC => ERROR_DISK_FULL,
+        EPIPE => ERROR_BROKEN_PIPE,
+        ENOTEMPTY => ERROR_DIR_NOT_EMPTY,
+        EILSEQ => ERROR_NO_UNICODE_TRANSLATION,
+        EINVAL => ERROR_INVALID_FUNCTION,
+        _ => ERROR_INVALID_FUNCTION,
+    };
+    winerror as _
+}
+
+// winerror: https://learn.microsoft.com/windows/win32/debug/system-error-codes--0-499-
+// errno: https://learn.microsoft.com/cpp/c-runtime-library/errno-constants?view=msvc-170
+#[cfg(windows)]
+#[must_use]
+pub fn winerror_to_errno(winerror: i32) -> i32 {
+    use libc::*;
+    use windows_sys::Win32::{
+        Foundation::*,
+        Networking::WinSock::{
+            WSAEACCES, WSAEBADF, WSAECONNABORTED, WSAECONNREFUSED, WSAECONNRESET, WSAEFAULT,
+            WSAEINTR, WSAEINVAL, WSAEMFILE,
+        },
+    };
+    // Unwrap FACILITY_WIN32 HRESULT errors.
+    // if ((winerror & 0xFFFF0000) == 0x80070000) {
+    //     winerror &= 0x0000FFFF;
+    // }
+
+    // Winsock error codes (10000-11999) are errno values.
+    if (10000..12000).contains(&winerror) {
+        match winerror {
+            WSAEINTR | WSAEBADF | WSAEACCES | WSAEFAULT | WSAEINVAL | WSAEMFILE => {
+                // Winsock definitions of errno values. See WinSock2.h
+                return winerror - 10000;
+            }
+            _ => return winerror as _,
+        }
+    }
+
+    #[allow(non_upper_case_globals)]
+    match winerror as u32 {
+        ERROR_FILE_NOT_FOUND
+        | ERROR_PATH_NOT_FOUND
+        | ERROR_INVALID_DRIVE
+        | ERROR_NO_MORE_FILES
+        | ERROR_BAD_NETPATH
+        | ERROR_BAD_NET_NAME
+        | ERROR_BAD_PATHNAME
+        | ERROR_FILENAME_EXCED_RANGE => ENOENT,
+        ERROR_BAD_ENVIRONMENT => E2BIG,
+        ERROR_BAD_FORMAT
+        | ERROR_INVALID_STARTING_CODESEG
+        | ERROR_INVALID_STACKSEG
+        | ERROR_INVALID_MODULETYPE
+        | ERROR_INVALID_EXE_SIGNATURE
+        | ERROR_EXE_MARKED_INVALID
+        | ERROR_BAD_EXE_FORMAT
+        | ERROR_ITERATED_DATA_EXCEEDS_64k
+        | ERROR_INVALID_MINALLOCSIZE
+        | ERROR_DYNLINK_FROM_INVALID_RING
+        | ERROR_IOPL_NOT_ENABLED
+        | ERROR_INVALID_SEGDPL
+        | ERROR_AUTODATASEG_EXCEEDS_64k
+        | ERROR_RING2SEG_MUST_BE_MOVABLE
+        | ERROR_RELOC_CHAIN_XEEDS_SEGLIM
+        | ERROR_INFLOOP_IN_RELOC_CHAIN => ENOEXEC,
+        ERROR_INVALID_HANDLE | ERROR_INVALID_TARGET_HANDLE | ERROR_DIRECT_ACCESS_HANDLE => EBADF,
+        ERROR_WAIT_NO_CHILDREN | ERROR_CHILD_NOT_COMPLETE => ECHILD,
+        ERROR_NO_PROC_SLOTS | ERROR_MAX_THRDS_REACHED | ERROR_NESTING_NOT_ALLOWED => EAGAIN,
+        ERROR_ARENA_TRASHED
+        | ERROR_NOT_ENOUGH_MEMORY
+        | ERROR_INVALID_BLOCK
+        | ERROR_NOT_ENOUGH_QUOTA => ENOMEM,
+        ERROR_ACCESS_DENIED
+        | ERROR_CURRENT_DIRECTORY
+        | ERROR_WRITE_PROTECT
+        | ERROR_BAD_UNIT
+        | ERROR_NOT_READY
+        | ERROR_BAD_COMMAND
+        | ERROR_CRC
+        | ERROR_BAD_LENGTH
+        | ERROR_SEEK
+        | ERROR_NOT_DOS_DISK
+        | ERROR_SECTOR_NOT_FOUND
+        | ERROR_OUT_OF_PAPER
+        | ERROR_WRITE_FAULT
+        | ERROR_READ_FAULT
+        | ERROR_GEN_FAILURE
+        | ERROR_SHARING_VIOLATION
+        | ERROR_LOCK_VIOLATION
+        | ERROR_WRONG_DISK
+        | ERROR_SHARING_BUFFER_EXCEEDED
+        | ERROR_NETWORK_ACCESS_DENIED
+        | ERROR_CANNOT_MAKE
+        | ERROR_FAIL_I24
+        | ERROR_DRIVE_LOCKED
+        | ERROR_SEEK_ON_DEVICE
+        | ERROR_NOT_LOCKED
+        | ERROR_LOCK_FAILED
+        | 35 => EACCES,
+        ERROR_FILE_EXISTS | ERROR_ALREADY_EXISTS => EEXIST,
+        ERROR_NOT_SAME_DEVICE => EXDEV,
+        ERROR_DIRECTORY => ENOTDIR,
+        ERROR_TOO_MANY_OPEN_FILES => EMFILE,
+        ERROR_DISK_FULL => ENOSPC,
+        ERROR_BROKEN_PIPE | ERROR_NO_DATA => EPIPE,
+        ERROR_DIR_NOT_EMPTY => ENOTEMPTY,
+        ERROR_NO_UNICODE_TRANSLATION => EILSEQ,
+        // Connection-related Windows error codes - map to Winsock error codes
+        // which Python uses on Windows (errno.ECONNREFUSED = 10061, etc.)
+        ERROR_CONNECTION_REFUSED => WSAECONNREFUSED,
+        ERROR_CONNECTION_ABORTED => WSAECONNABORTED,
+        ERROR_NETNAME_DELETED => WSAECONNRESET,
+        ERROR_INVALID_FUNCTION
+        | ERROR_INVALID_ACCESS
+        | ERROR_INVALID_DATA
+        | ERROR_INVALID_PARAMETER
+        | ERROR_NEGATIVE_SEEK => EINVAL,
+        _ => EINVAL,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn o_rdonly_is_zero() {
+        assert_eq!(super::O_RDONLY, 0);
+    }
+
+    #[test]
+    fn o_wronly_is_one() {
+        assert_eq!(super::O_WRONLY, 1);
+    }
+}

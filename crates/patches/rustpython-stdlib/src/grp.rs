@@ -1,0 +1,102 @@
+// spell-checker:disable
+pub(crate) use grp::module_def;
+
+#[pymodule]
+mod grp {
+    use crate::vm::{
+        PyObjectRef, PyResult, VirtualMachine,
+        builtins::{PyIntRef, PyListRef, PyUtf8StrRef},
+        convert::{IntoPyException, ToPyObject},
+        exceptions,
+        types::PyStructSequence,
+    };
+    use core::hint::cold_path;
+    use rustpython_host_env::grp as host_grp;
+
+    #[pystruct_sequence_data]
+    struct GroupData {
+        gr_name: String,
+        gr_passwd: String,
+        gr_gid: u32,
+        gr_mem: PyListRef,
+    }
+
+    #[pyattr]
+    #[pystruct_sequence(name = "struct_group", module = "grp", data = "GroupData")]
+    struct PyGroup;
+
+    #[pyclass(with(PyStructSequence))]
+    impl PyGroup {}
+
+    impl GroupData {
+        fn from_group(group: host_grp::Group, vm: &VirtualMachine) -> Self {
+            Self {
+                gr_name: group.name,
+                gr_passwd: group.passwd,
+                gr_gid: group.gid,
+                gr_mem: vm
+                    .ctx
+                    .new_list(group.mem.iter().map(|s| s.to_pyobject(vm)).collect()),
+            }
+        }
+    }
+
+    #[derive(FromArgs)]
+    struct GetGrGidArgs {
+        #[pyarg(any)]
+        id: PyIntRef,
+    }
+
+    #[pyfunction]
+    fn getgrgid(id: GetGrGidArgs, vm: &VirtualMachine) -> PyResult<GroupData> {
+        let gid = id.id;
+        let gr_gid = gid.as_bigint();
+        let gid = host_grp::gid_t::try_from(gr_gid).ok();
+        let group = gid
+            .map(host_grp::getgrgid)
+            .transpose()
+            .map_err(|err| err.into_pyexception(vm))?
+            .flatten();
+        let group = group.ok_or_else(|| {
+            vm.new_key_error(
+                vm.ctx
+                    .new_str(format!("getgrgid: group id {gr_gid} not found"))
+                    .into(),
+            )
+        })?;
+        Ok(GroupData::from_group(group, vm))
+    }
+
+    #[derive(FromArgs)]
+    struct GetGrNamArgs {
+        #[pyarg(any)]
+        name: PyUtf8StrRef,
+    }
+
+    #[pyfunction]
+    fn getgrnam(name: GetGrNamArgs, vm: &VirtualMachine) -> PyResult<GroupData> {
+        let name = name.name;
+        if name.as_pystr().contains_nuls() {
+            cold_path();
+            return Err(exceptions::nul_char_error(vm));
+        }
+        let gr_name = name.as_str();
+        let group = host_grp::getgrnam(gr_name).map_err(|err| err.into_pyexception(vm))?;
+        let group = group.ok_or_else(|| {
+            vm.new_key_error(
+                vm.ctx
+                    .new_str(format!("getgrnam: group name {gr_name} not found"))
+                    .into(),
+            )
+        })?;
+        Ok(GroupData::from_group(group, vm))
+    }
+
+    #[pyfunction]
+    fn getgrall(vm: &VirtualMachine) -> Vec<PyObjectRef> {
+        host_grp::getgrall()
+            .into_iter()
+            .map(|group| GroupData::from_group(group, vm).to_pyobject(vm))
+            .collect()
+    }
+}

@@ -18,19 +18,8 @@ export function createCodeTools(names, invoke) {
       throw error;
     },
   };
-  const target = Object.create(null);
-  for (const name of names) {
-    Object.defineProperty(target, name, {
-      enumerable: true,
-      value(input) {
-        return helpers.observe(helpers.dispatch(name, input));
-      },
-    });
-  }
-  Object.freeze(target);
-  return new Proxy(target, {
-    get(target, name) {
-      if (Object.prototype.hasOwnProperty.call(target, name)) return target[name];
+  const missing = new Proxy(Object.create(null), {
+    get(_, name) {
 
 
       if (typeof name !== "string" || name === "then") return undefined;
@@ -49,4 +38,14 @@ export function createCodeTools(names, invoke) {
       }.missing;
     },
   });
+  const target = Object.create(missing);
+  for (const name of names) {
+    Object.defineProperty(target, name, {
+      enumerable: true,
+      value(input) {
+        return helpers.observe(helpers.dispatch(name, input));
+      },
+    });
+  }
+  return Object.freeze(target);
 }

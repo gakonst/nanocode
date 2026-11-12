@@ -472,7 +472,10 @@
     });
     const finish = async (promise) => {
       try {
-        await Promise.race([promise, stopped]);
+        await new Promise((resolve, reject) => {
+          promise.then(resolve, reject);
+          stopped.then(resolve);
+        });
       } catch (error) {
         if (error !== EXIT) throw error;
       }
@@ -481,9 +484,10 @@
         nativeSettled();
       });
     };
+    const written = () => storedWrites.size ? Object.fromEntries(storedWrites) : {};
     const terminal = () => failure === undefined
-      ? jsonStringify({ type: "done", stored: Object.fromEntries(storedWrites) })
-      : jsonStringify({ type: "error", message: failure, stored: Object.fromEntries(storedWrites) });
+      ? jsonStringify({ type: "done", stored: written() })
+      : jsonStringify({ type: "error", message: failure, stored: written() });
     const invokeTool = (name, input, host = false) => {
       const encodedInput = input === undefined ? "null" : jsonStringify(input);
       return callTool(name, encodedInput, host);
@@ -615,7 +619,7 @@
         return jsonStringify({
           type: "error",
           message: failure ?? thrownText(error),
-          stored: Object.fromEntries(storedWrites),
+          stored: written(),
         });
       }
     };

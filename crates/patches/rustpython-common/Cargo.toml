@@ -57,8 +57,7 @@ json = [
 ]
 lzma = [
     "std",
-    "dep:xz",
-    "dep:xz-sys",
+    "dep:nanocode-compression",
 ]
 std = []
 threading = [
@@ -169,14 +168,6 @@ optional = true
 
 [dependencies.siphasher]
 version = "1"
-
-[dependencies.xz]
-version = "0.4.6-rc.0"
-optional = true
-
-[dependencies.xz-sys]
-version = "0.4.6-rc.0"
-optional = true
 
 [lints.clippy]
 alloc_instead_of_core = "warn"

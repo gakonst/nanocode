@@ -30,7 +30,7 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 http.workspace = true
-mimalloc.workspace = true
+mimalloc = { workspace = true, features = ["no_thp"] }
 mpp.workspace = true
 nanocode = { path = "../../crates/nanocode", version = "0.7.0", default-features = false, features = ["local-cells"] }
 nanocode-agent-host = { path = "../../crates/integrations/agent-host", version = "0.7.0", features = ["cua"] }

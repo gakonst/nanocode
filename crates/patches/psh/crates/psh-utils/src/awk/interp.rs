@@ -1262,7 +1262,7 @@ impl<'c, 'v> Interp<'c, 'v> {
 
     /// The character count of `text[..byte]`.
     pub fn char_pos(&self, text: &[u8], byte: usize) -> usize {
-        if self.utf8 {
+        if self.utf8 && !text[..byte].is_ascii() {
             crate::textio::char_lengths(&text[..byte]).count()
         } else {
             byte

@@ -67,6 +67,23 @@ impl AsyncRead for Reader {
     }
 }
 
+impl process::Ready for Reader {
+    fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        while self.read == self.chunk.len() {
+            match self.chunks.try_recv() {
+                Ok(chunk) => (self.chunk, self.read) = (chunk, 0),
+                Err(mpsc::error::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::error::TryRecvError::Disconnected) => return Ok(Some(0)),
+            }
+        }
+        let end = self.chunk.len().min(self.read + buffer.len());
+        let read = end - self.read;
+        buffer[..read].copy_from_slice(&self.chunk[self.read..end]);
+        self.read = end;
+        Ok(Some(read))
+    }
+}
+
 fn sink(written: mpsc::Sender<Vec<u8>>) -> Sink {
     Box::new(move |bytes: &[u8]| {
         written

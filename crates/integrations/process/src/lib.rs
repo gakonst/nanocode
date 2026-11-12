@@ -706,10 +706,21 @@ impl Session {
         let output = output::Capture::new(output_limit)?;
         let chunks = output::Sender::Captured(output.clone());
         let activity = Arc::new(LastActivity::new());
+        let exited = spawned.child.exited();
         let drains = match spawned.output {
             process::ProcessOutput::Pipes { stdout, stderr } => vec![
-                tokio::spawn(output::drain(stdout, chunks.clone(), Arc::clone(&activity))),
-                tokio::spawn(output::drain(stderr, chunks, Arc::clone(&activity))),
+                tokio::spawn(output::drain(
+                    stdout,
+                    chunks.clone(),
+                    Arc::clone(&activity),
+                    Arc::clone(&exited),
+                )),
+                tokio::spawn(output::drain(
+                    stderr,
+                    chunks,
+                    Arc::clone(&activity),
+                    Arc::clone(&exited),
+                )),
             ],
             process::ProcessOutput::Pty(reader) => vec![output::drain_blocking(
                 reader,
@@ -722,18 +733,24 @@ impl Session {
                     Some(stdout),
                     chunks.clone(),
                     Arc::clone(&activity),
+                    Arc::clone(&exited),
                 )),
-                tokio::spawn(output::drain(Some(stderr), chunks, Arc::clone(&activity))),
+                tokio::spawn(output::drain(
+                    Some(stderr),
+                    chunks,
+                    Arc::clone(&activity),
+                    Arc::clone(&exited),
+                )),
             ],
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             process::ProcessOutput::Stream(both) => vec![tokio::spawn(output::drain(
                 Some(both),
                 chunks,
                 Arc::clone(&activity),
+                Arc::clone(&exited),
             ))],
         };
         let process_group = spawned.process_group;
-        let exited = spawned.child.exited();
         exited.notify(exits);
         let owner = Actor::spawn(SessionState {
             id,
@@ -806,7 +823,6 @@ impl SessionState {
         let status = timeout(yield_time, self.child.wait()).await;
         let exit_code = match status {
             Ok(Ok(exit_code)) => {
-                self.process_group.terminate_and_disarm();
                 self.finish_drains().await;
                 Some(exit_code)
             }
@@ -846,7 +862,6 @@ impl SessionState {
                 .is_err()
             {
                 handle.abort();
-                let _ = handle.await;
             }
         }
     }

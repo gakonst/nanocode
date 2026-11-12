@@ -5,6 +5,8 @@ use nanocode_sync::{Actor, Stopped};
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+use super::process::{Exit, Ready};
+
 pub(super) const READ_BUFFER_LENGTH: usize = 8 * 1024;
 pub(super) use nanocode_process_contracts::{effective_token_limit, redact_and_limit};
 
@@ -49,17 +51,26 @@ impl Sender {
     }
 }
 
-pub(super) async fn drain(
-    mut pipe: Option<impl AsyncRead + Unpin>,
+pub(super) async fn discard(mut pipe: impl AsyncRead + Unpin) {
+    let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
+}
+
+pub(super) async fn drain<P: AsyncRead + Ready + Unpin + Send + 'static>(
+    mut pipe: Option<P>,
     chunks: Sender,
     activity: Arc<LastActivity>,
+    exited: Arc<Exit>,
 ) {
     let Some(mut pipe) = pipe.take() else {
         return;
     };
     let mut buffer = [0_u8; READ_BUFFER_LENGTH];
     loop {
-        match pipe.read(&mut buffer).await {
+        let read = tokio::select! {
+            read = pipe.read(&mut buffer) => read,
+            () = exited.wait() => break,
+        };
+        match read {
             Ok(0) => return,
             Ok(length) => {
                 activity.touch();
@@ -71,6 +82,21 @@ pub(super) async fn drain(
                 let _ = chunks
                     .send(format!("failed to read command output: {error}").into_bytes())
                     .await;
+                return;
+            }
+        }
+    }
+    loop {
+        match pipe.ready(&mut buffer) {
+            Ok(Some(0)) | Err(_) => return,
+            Ok(Some(length)) => {
+                activity.touch();
+                if chunks.send(buffer[..length].to_vec()).await.is_err() {
+                    return;
+                }
+            }
+            Ok(None) => {
+                drop(tokio::spawn(discard(pipe)));
                 return;
             }
         }

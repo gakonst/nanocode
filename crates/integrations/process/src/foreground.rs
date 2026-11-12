@@ -76,32 +76,25 @@ pub(crate) fn run_bash_with_environment<'call>(
             }
         }
         let cleanup = Cleanup(spawned.process_group);
-        type Stream = Option<Box<dyn AsyncRead + Send + Unpin>>;
-        let (stdout, stderr): (Stream, Stream) = match spawned.output {
-            process::ProcessOutput::Pipes { stdout, stderr } => (
-                stdout.map(|pipe| Box::new(pipe) as _),
-                stderr.map(|pipe| Box::new(pipe) as _),
-            ),
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
-            process::ProcessOutput::Streams { stdout, stderr } => {
-                (Some(Box::new(stdout)), Some(Box::new(stderr)))
-            }
-            _ => return Err("foreground execution requires pipes".into()),
-        };
         let outcome = tokio::time::timeout(timeout, async {
-            let (status, stdout, stderr) = tokio::join!(
-                spawned.child.wait(),
-                capture(stdout, max_stdout, output, &secrets),
-                capture(stderr, max_stderr, output, &secrets)
-            );
-            let (stdout, stdout_cut) = stdout?;
-            let (stderr, stderr_cut) = stderr?;
-            Ok::<_, std::io::Error>(ForegroundOutput {
-                stdout,
-                stderr,
-                exit_code: status?,
-                truncated: stdout_cut || stderr_cut,
-            })
+            match spawned.output {
+                process::ProcessOutput::Pipes { stdout, stderr } => {
+                    let captures = (
+                        Capture::new(stdout, max_stdout),
+                        Capture::new(stderr, max_stderr),
+                    );
+                    collect(&mut spawned.child, captures, output, &secrets).await
+                }
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
+                process::ProcessOutput::Streams { stdout, stderr } => {
+                    let captures = (
+                        Capture::new(Some(stdout), max_stdout),
+                        Capture::new(Some(stderr), max_stderr),
+                    );
+                    collect(&mut spawned.child, captures, output, &secrets).await
+                }
+                _ => Err(std::io::Error::other("foreground execution requires pipes")),
+            }
         })
         .await;
         drop(cleanup);
@@ -115,32 +108,104 @@ pub(crate) fn run_bash_with_environment<'call>(
     })
 }
 
-async fn capture<R: AsyncRead + Unpin>(
-    pipe: Option<R>,
-    limit: usize,
+async fn collect<O: Pipe, E: Pipe>(
+    child: &mut process::ProcessChild,
+    (mut stdout, mut stderr): (Capture<O>, Capture<E>),
     output: Option<&dyn OutputSink>,
     secrets: &nanocode_process_contracts::Redactor,
-) -> std::io::Result<(String, bool)> {
-    let Some(mut pipe) = pipe else {
-        return Ok((String::new(), false));
+) -> std::io::Result<ForegroundOutput> {
+    let exit_code = {
+        let read =
+            async { tokio::try_join!(stdout.read(output, secrets), stderr.read(output, secrets)) };
+        tokio::pin!(read);
+        tokio::select! {
+            status = child.wait() => status?,
+            ended = &mut read => {
+                ended?;
+                child.wait().await?
+            }
+        }
     };
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let read = pipe.read(&mut buffer).await?;
-        if read == 0 {
-            break;
+    stdout.rest(output, secrets)?;
+    stderr.rest(output, secrets)?;
+    Ok(ForegroundOutput {
+        truncated: stdout.truncated || stderr.truncated,
+        stdout: stdout.text(secrets),
+        stderr: stderr.text(secrets),
+        exit_code,
+    })
+}
+
+trait Pipe: AsyncRead + process::Ready + Unpin + Send + 'static {}
+
+impl<P: AsyncRead + process::Ready + Unpin + Send + 'static> Pipe for P {}
+
+struct Capture<P> {
+    pipe: Option<P>,
+    bytes: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl<P: Pipe> Capture<P> {
+    const fn new(pipe: Option<P>, limit: usize) -> Self {
+        Self {
+            pipe,
+            bytes: Vec::new(),
+            limit,
+            truncated: false,
         }
-        if let Some(output) = output {
-            output.write(&crate::redact(&buffer[..read], secrets));
-        }
-        let keep = read.min(limit.saturating_sub(bytes.len()));
-        bytes.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < read;
     }
-    Ok((
-        String::from_utf8_lossy(&crate::redact(&bytes, secrets)).into_owned(),
-        truncated,
-    ))
+
+    fn keep(
+        &mut self,
+        chunk: &[u8],
+        output: Option<&dyn OutputSink>,
+        secrets: &nanocode_process_contracts::Redactor,
+    ) {
+        if let Some(output) = output {
+            output.write(&crate::redact(chunk, secrets));
+        }
+        let keep = chunk.len().min(self.limit.saturating_sub(self.bytes.len()));
+        self.bytes.extend_from_slice(&chunk[..keep]);
+        self.truncated |= keep < chunk.len();
+    }
+
+    async fn read(
+        &mut self,
+        output: Option<&dyn OutputSink>,
+        secrets: &nanocode_process_contracts::Redactor,
+    ) -> std::io::Result<()> {
+        let mut buffer = [0_u8; crate::output::READ_BUFFER_LENGTH];
+        while let Some(pipe) = self.pipe.as_mut() {
+            match pipe.read(&mut buffer).await? {
+                0 => self.pipe = None,
+                read => self.keep(&buffer[..read], output, secrets),
+            }
+        }
+        Ok(())
+    }
+
+    fn rest(
+        &mut self,
+        output: Option<&dyn OutputSink>,
+        secrets: &nanocode_process_contracts::Redactor,
+    ) -> std::io::Result<()> {
+        let mut buffer = [0_u8; crate::output::READ_BUFFER_LENGTH];
+        while let Some(mut pipe) = self.pipe.take() {
+            match pipe.ready(&mut buffer)? {
+                None => drop(tokio::spawn(crate::output::discard(pipe))),
+                Some(0) => {}
+                Some(read) => {
+                    self.keep(&buffer[..read], output, secrets);
+                    self.pipe = Some(pipe);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn text(&self, secrets: &nanocode_process_contracts::Redactor) -> String {
+        String::from_utf8_lossy(&crate::redact(&self.bytes, secrets)).into_owned()
+    }
 }

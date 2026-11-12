@@ -68,12 +68,14 @@ pub(super) struct ProcessChild {
 #[derive(Default)]
 pub(super) struct Exit {
     done: AtomicBool,
+    ended: tokio::sync::Notify,
     waiters: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
 }
 
 impl Exit {
     fn mark(&self) {
         self.done.store(true, Ordering::SeqCst);
+        self.ended.notify_waiters();
         if let Some(waiters) = self.waiters.get() {
             waiters.notify_waiters();
         }
@@ -81,6 +83,15 @@ impl Exit {
 
     pub(super) fn get(&self) -> bool {
         self.done.load(Ordering::SeqCst)
+    }
+
+    pub(super) async fn wait(&self) {
+        let ended = self.ended.notified();
+        tokio::pin!(ended);
+        ended.as_mut().enable();
+        if !self.get() {
+            ended.await;
+        }
     }
 
     pub(super) fn notify(&self, waiters: &Arc<tokio::sync::Notify>) {
@@ -124,8 +135,7 @@ impl ProcessChild {
                 while let Ok(command) = received.try_recv() {
                     command.apply(&mut guard);
                 }
-                let ready = guard.prepare_to_reap();
-                match ready.and_then(|ready| if ready { try_wait() } else { Ok(None) }) {
+                match try_wait() {
                     Ok(None) => {}
                     Ok(Some(status)) => {
                         guard.disarm();
@@ -338,6 +348,39 @@ pub(super) enum ProcessOutput {
     },
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     Stream(super::embedded::Reader),
+}
+
+pub(super) trait Ready {
+    fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>>;
+}
+
+#[cfg(unix)]
+fn ready(pipe: impl std::os::fd::AsFd, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+    loop {
+        match rustix::io::read(&pipe, &mut *buffer) {
+            Ok(read) => return Ok(Some(read)),
+            Err(rustix::io::Errno::AGAIN) => return Ok(None),
+            Err(rustix::io::Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn ready<P>(_: P, _: &mut [u8]) -> io::Result<Option<usize>> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
+impl Ready for ChildStdout {
+    fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        ready(&*self, buffer)
+    }
+}
+
+impl Ready for ChildStderr {
+    fn ready(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        ready(&*self, buffer)
+    }
 }
 
 pub(super) fn spawn(
@@ -557,49 +600,6 @@ impl ProcessGroupGuard {
         Self {
             guarded: Some(Guarded::Running(running)),
         }
-    }
-
-    #[cfg(all(
-        unix,
-        not(any(
-            target_os = "openbsd",
-            target_os = "redox",
-            target_os = "horizon",
-            target_os = "cygwin"
-        ))
-    ))]
-    fn prepare_to_reap(&mut self) -> io::Result<bool> {
-        use rustix::process::{WaitId, WaitIdOptions, waitid};
-
-        let Some(Guarded::Group(group)) = &self.guarded else {
-            return Ok(true);
-        };
-        let pid = rustix::process::Pid::from_raw(group.as_raw())
-            .ok_or_else(|| io::Error::other("invalid shell process identifier"))?;
-        match waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        ) {
-            Ok(None) => Ok(false),
-            Ok(Some(_)) => {
-                let _ = self.terminate_and_disarm();
-                Ok(true)
-            }
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    #[cfg(not(all(
-        unix,
-        not(any(
-            target_os = "openbsd",
-            target_os = "redox",
-            target_os = "horizon",
-            target_os = "cygwin"
-        ))
-    )))]
-    fn prepare_to_reap(&mut self) -> io::Result<bool> {
-        Ok(true)
     }
 
     #[cfg(unix)]

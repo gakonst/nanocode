@@ -104,9 +104,6 @@ version = "0.6.0"
 version = "0.11"
 optional = true
 
-[dependencies.widestring]
-version = "1.2.0"
-
 [dependencies.x509-parser]
 version = "0.18"
 optional = true
@@ -145,6 +142,9 @@ version = "0.1.29"
 
 [target."cfg(windows)".dependencies.parking_lot]
 version = "0.12.3"
+
+[target."cfg(windows)".dependencies.widestring]
+version = "1.2.0"
 
 [target."cfg(windows)".dependencies.windows-sys]
 version = "0.61.2"

@@ -10,6 +10,7 @@ mod formats;
 mod loader;
 mod numbers;
 mod output;
+mod regex;
 mod root;
 mod roots;
 mod unicode;

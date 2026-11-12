@@ -19,7 +19,6 @@ fluent-uri = "0.4"
 idna = "1"
 percent-encoding = "2"
 appendlist = "1.4"
-regress = "0.12"
 num-cmp = "0.1"
 email_address = "0.2.9"
 

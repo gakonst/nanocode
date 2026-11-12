@@ -1,26 +1,22 @@
 use std::borrow::Cow;
 
+use crate::regex;
+
 pub(crate) struct Regex {
     source: String,
-    compiled: regress::Regex,
+    compiled: regex::Regex,
 }
 
 impl Regex {
-    pub(crate) fn new(pattern: &str) -> Result<Self, regress::Error> {
+    pub(crate) fn new(pattern: &str) -> Result<Self, regex::Error> {
         Ok(Self {
             source: pattern.to_owned(),
-            compiled: regress::Regex::with_flags(
-                pattern,
-                regress::Flags {
-                    unicode: true,
-                    ..Default::default()
-                },
-            )?,
+            compiled: regex::Regex::new(pattern)?,
         })
     }
 
     pub(crate) fn is_match(&self, text: &str) -> bool {
-        self.compiled.find(text).is_some()
+        self.compiled.is_match(text)
     }
 
     pub(crate) fn as_str(&self) -> &str {

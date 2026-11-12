@@ -23,7 +23,6 @@ pub use parentheses::{parentheses_iterator, parenthesized_range};
 pub use tokens::{TokenAt, TokenIterWithContext, Tokens};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub struct Token {
     /// The kind of the token.
     kind: TokenKind,
@@ -131,7 +130,6 @@ impl fmt::Debug for Token {
 
 /// A kind of a token.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub enum TokenKind {
     /// Token kind for a name, commonly known as an identifier.
     Name,
@@ -767,9 +765,6 @@ bitflags! {
 
     }
 }
-
-#[cfg(feature = "get-size")]
-impl get_size2::GetSize for TokenFlags {}
 
 impl StringFlags for TokenFlags {
     fn quote_style(self) -> Quote {

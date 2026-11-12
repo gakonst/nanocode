@@ -1,8 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::ops::Deref;
 
-use itertools::Itertools;
-use rustc_hash::FxHashSet;
+use crate::fx_hash::FxHashSet;
 
 use ruff_source_file::LineRanges;
 use ruff_text_size::{Ranged, TextRange, TextSize};
@@ -98,9 +97,9 @@ impl CommentRanges {
         // We expect there are few comments, so switching to find should be faster
         match self.raw[start..]
             .iter()
-            .find_position(|comment| comment.end() > range.end())
+            .position(|comment| comment.end() > range.end())
         {
-            Some((in_range, _element)) => &self.raw[start..start + in_range],
+            Some(in_range) => &self.raw[start..start + in_range],
             None => &self.raw[start..],
         }
     }

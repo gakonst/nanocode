@@ -1,4 +1,3 @@
-use static_assertions::assert_eq_size;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 
@@ -139,7 +138,7 @@ impl Indentations {
 #[derive(Debug, Clone)]
 pub(crate) struct IndentationsCheckpoint(Vec<Indentation>);
 
-assert_eq_size!(Indentation, u64);
+const _: () = assert!(size_of::<Indentation>() == size_of::<u64>());
 
 #[cfg(test)]
 mod tests {

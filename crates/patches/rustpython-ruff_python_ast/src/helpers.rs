@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-use rustc_hash::FxHashMap;
+use ruff_python_trivia::fx_hash::FxHashMap;
 
 use ruff_python_trivia::{SimpleTokenKind, SimpleTokenizer, indentation_at_offset};
 use ruff_source_file::LineRanges;
@@ -1371,7 +1371,7 @@ pub fn is_unpacking_assignment(parent: &Stmt, child: &Expr) -> bool {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, is_macro::Is)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Truthiness {
     /// The expression is `True`.
     True,
@@ -1385,6 +1385,32 @@ pub enum Truthiness {
     None,
     /// The expression evaluates to an unknown value (e.g., a variable `x` of unknown type).
     Unknown,
+}
+
+impl Truthiness {
+    #[inline]
+    pub const fn is_true(&self) -> bool {
+        match *self {
+            Self::True { .. } => true,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub const fn is_none(&self) -> bool {
+        match *self {
+            Self::None { .. } => true,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub const fn is_unknown(&self) -> bool {
+        match *self {
+            Self::Unknown { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl Truthiness {

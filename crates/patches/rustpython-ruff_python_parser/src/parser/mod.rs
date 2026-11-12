@@ -11,8 +11,7 @@ use ruff_python_ast::{
 };
 use ruff_python_trivia::is_python_whitespace;
 use ruff_text_size::{Ranged, TextRange, TextSize};
-use rustc_hash::FxHashSet;
-use thin_vec::ThinVec;
+use ruff_python_trivia::fx_hash::FxHashSet;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::error::UnsupportedSyntaxError;
@@ -44,17 +43,12 @@ struct NameInterner {
 }
 
 impl NameInterner {
-    /// Returns an inline name directly, or a shared clone of a heap-allocated name.
     fn intern(&mut self, text: &str) -> Name {
-        if let Some(name) = Name::new_inline(text) {
-            return name;
-        }
-
         if let Some(name) = self.names.get(text) {
             return name.clone();
         }
 
-        let name = Name::new_heap(text);
+        let name = Name::new(text);
         self.names.insert(name.clone());
         name
     }
@@ -715,8 +709,8 @@ impl<'src> Parser<'src> {
         &mut self,
         recovery_context_kind: RecoveryContextKind,
         parse_element: impl Fn(&mut Parser<'src>) -> T,
-    ) -> ThinVec<T> {
-        let mut elements = ThinVec::new();
+    ) -> Vec<T> {
+        let mut elements = Vec::new();
         self.parse_list(recovery_context_kind, |p| elements.push(parse_element(p)));
         elements.shrink_to_fit();
         elements

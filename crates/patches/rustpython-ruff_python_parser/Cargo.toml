@@ -51,26 +51,11 @@ version = "2.5.0"
 [dependencies.bstr]
 version = "1.9.1"
 
-[dependencies.drop_bomb]
-version = "0.1.5"
-
-[dependencies.get-size2]
-version = "0.10.3"
-features = [
-    "derive",
-    "smallvec",
-    "hashbrown",
-    "compact-str",
-    "ordermap",
-    "thin-vec",
-]
-
 [dependencies.memchr]
 version = "2.7.1"
 
 [dependencies.ruff_python_ast]
 version = "0.16.5"
-features = ["get-size"]
 package = "rustpython-ruff_python_ast"
 
 [dependencies.ruff_python_trivia]
@@ -79,20 +64,10 @@ package = "rustpython-ruff_python_trivia"
 
 [dependencies.ruff_text_size]
 version = "0.16.5"
-features = ["get-size"]
 package = "rustpython-ruff_text_size"
-
-[dependencies.rustc-hash]
-version = "2.0.0"
 
 [dependencies.stacker]
 version = "0.1.24"
-
-[dependencies.static_assertions]
-version = "1.1.0"
-
-[dependencies.thin-vec]
-version = "0.2.14"
 
 [dependencies.unicode-ident]
 version = "1.0.12"

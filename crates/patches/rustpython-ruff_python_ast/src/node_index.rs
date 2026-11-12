@@ -57,7 +57,6 @@ where
 /// doesn't have to use them, and there's never a real reason to use sub-annotation
 /// let-alone a sub-sub-annotation.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub struct NodeIndex(NonZeroU32);
 
 impl NodeIndex {
@@ -157,7 +156,6 @@ impl std::fmt::Debug for NodeIndex {
 ///
 /// This type is interiorly mutable to allow assigning node indices
 /// on-demand after parsing.
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub struct AtomicNodeIndex(AtomicU32);
 
 #[expect(clippy::declare_interior_mutable_const)]

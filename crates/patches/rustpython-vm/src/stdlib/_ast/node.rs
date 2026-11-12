@@ -1,6 +1,5 @@
 use crate::{PyObjectRef, PyResult, VirtualMachine, builtins::PyList};
 use rustpython_compiler_core::SourceFile;
-use thin_vec::ThinVec;
 
 pub(crate) trait Node: Sized {
     fn ast_to_object(self, vm: &VirtualMachine, source_file: &SourceFile) -> PyObjectRef;
@@ -58,26 +57,6 @@ impl<T: Node> Node for Vec<T> {
             }
         }
         Ok(result)
-    }
-}
-
-impl<T: Node> Node for ThinVec<T> {
-    fn ast_to_object(self, vm: &VirtualMachine, source_file: &SourceFile) -> PyObjectRef {
-        vm.ctx
-            .new_list(
-                self.into_iter()
-                    .map(|node| node.ast_to_object(vm, source_file))
-                    .collect(),
-            )
-            .into()
-    }
-
-    fn ast_from_object(
-        vm: &VirtualMachine,
-        source_file: &SourceFile,
-        object: PyObjectRef,
-    ) -> PyResult<Self> {
-        Vec::<T>::ast_from_object(vm, source_file, object).map(Into::into)
     }
 }
 

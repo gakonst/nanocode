@@ -34,9 +34,6 @@ path = "src/lib.rs"
 [dependencies.hexf-parse]
 version = "0.2.1"
 
-[dependencies.is-macro]
-version = "0.3.7"
-
 [dependencies.lexical-parse-float]
 version = "1.0.6"
 features = ["format"]

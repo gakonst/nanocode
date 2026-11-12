@@ -6,7 +6,7 @@ use std::fmt;
 ///
 /// Bytestrings and f-strings are excluded from this enumeration,
 /// as they are represented by different AST nodes.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, is_macro::Is)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum StringLiteralPrefix {
     /// Just a regular string with no prefixes
     Empty,
@@ -23,6 +23,32 @@ pub enum StringLiteralPrefix {
     /// A "raw" string, that has an `r` or `R` prefix,
     /// e.g. `r"foo\."` or `R'bar\d'`.
     Raw { uppercase: bool },
+}
+
+impl StringLiteralPrefix {
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        match *self {
+            Self::Empty { .. } => true,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub const fn is_unicode(&self) -> bool {
+        match *self {
+            Self::Unicode { .. } => true,
+            _ => false,
+        }
+    }
+
+    #[inline]
+    pub const fn is_raw(&self) -> bool {
+        match *self {
+            Self::Raw { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl StringLiteralPrefix {
@@ -184,7 +210,7 @@ impl fmt::Display for ByteStringPrefix {
 ///
 /// [String and Bytes literals]: https://docs.python.org/3/reference/lexical_analysis.html#string-and-bytes-literals
 /// [PEP 701]: https://peps.python.org/pep-0701/
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, is_macro::Is)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum AnyStringPrefix {
     /// Prefixes that indicate the string is a bytestring
     Bytes(ByteStringPrefix),
@@ -197,6 +223,40 @@ pub enum AnyStringPrefix {
 
     /// All other prefixes
     Regular(StringLiteralPrefix),
+}
+
+impl AnyStringPrefix {
+    #[inline]
+    pub fn as_bytes(&self) -> Option<&ByteStringPrefix> {
+        match self {
+            Self::Bytes(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn bytes(self) -> Option<ByteStringPrefix> {
+        match self {
+            Self::Bytes(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn format(self) -> Option<FStringPrefix> {
+        match self {
+            Self::Format(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn template(self) -> Option<TStringPrefix> {
+        match self {
+            Self::Template(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl AnyStringPrefix {

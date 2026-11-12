@@ -3,7 +3,6 @@ use std::str::FromStr;
 
 /// A Python integer literal. Represents both small (fits in an `i64`) and large integers.
 #[derive(Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub struct Int(Number);
 
 impl FromStr for Int {
@@ -217,7 +216,6 @@ impl From<u64> for Int {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 enum Number {
     /// A "small" number that can be represented as an `u64`.
     Small(u64),

@@ -30,7 +30,6 @@ repository = "https://github.com/astral-sh/ruff"
 resolver = "2"
 
 [features]
-get-size = ["dep:get-size2"]
 serde = ["dep:serde"]
 
 [lib]
@@ -58,18 +57,6 @@ path = "tests/main.rs"
 name = "serde"
 path = "tests/serde.rs"
 required-features = ["serde"]
-
-[dependencies.get-size2]
-version = "0.10.3"
-features = [
-    "derive",
-    "smallvec",
-    "hashbrown",
-    "compact-str",
-    "ordermap",
-    "thin-vec",
-]
-optional = true
 
 [dependencies.schemars]
 version = "1.0.4"

@@ -1,7 +1,5 @@
 use std::vec::Drain;
 
-use drop_bomb::DebugDropBomb;
-use thin_vec::ThinVec;
 
 /// Reusable scratch storage that preserves entries belonging to outer parser frames.
 #[derive(Debug)]
@@ -38,7 +36,7 @@ impl<T> ScratchBuffer<T> {
     pub(super) fn snapshot(&self) -> ScratchSnapshot {
         ScratchSnapshot {
             len: self.buffer.len(),
-            bomb: DebugDropBomb::new("Scratch buffer snapshots must be restored."),
+            restored: false,
         }
     }
 
@@ -48,14 +46,14 @@ impl<T> ScratchBuffer<T> {
     }
 
     #[inline]
-    pub(super) fn take_thin_vec(&mut self, mut snapshot: ScratchSnapshot) -> ThinVec<T> {
+    pub(super) fn take_thin_vec(&mut self, mut snapshot: ScratchSnapshot) -> Vec<T> {
         if self.is_empty(&snapshot) {
-            snapshot.bomb.defuse();
-            return ThinVec::new();
+            snapshot.restored = true;
+            return Vec::new();
         }
 
         let drain = self.drain_snapshot(snapshot);
-        let mut result = ThinVec::with_capacity(drain.len());
+        let mut result = Vec::with_capacity(drain.len());
         result.extend(drain);
         result
     }
@@ -66,7 +64,7 @@ impl<T> ScratchBuffer<T> {
             self.buffer.len() >= snapshot.len,
             "Scratch buffer snapshots must be restored in reverse order of creation."
         );
-        snapshot.bomb.defuse();
+        snapshot.restored = true;
         self.buffer.drain(snapshot.len..)
     }
 }
@@ -82,7 +80,16 @@ impl<T> Drop for ScratchBuffer<T> {
 
 pub(super) struct ScratchSnapshot {
     len: usize,
-    bomb: DebugDropBomb,
+    restored: bool,
+}
+
+impl Drop for ScratchSnapshot {
+    fn drop(&mut self) {
+        debug_assert!(
+            self.restored || std::thread::panicking(),
+            "Scratch buffer snapshots must be restored."
+        );
+    }
 }
 
 #[cfg(test)]

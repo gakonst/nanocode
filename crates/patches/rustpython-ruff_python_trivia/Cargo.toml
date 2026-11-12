@@ -33,9 +33,6 @@ resolver = "2"
 name = "ruff_python_trivia"
 path = "src/lib.rs"
 
-[dependencies.itertools]
-version = "0.15.0"
-
 [dependencies.ruff_source_file]
 version = "0.16.5"
 package = "rustpython-ruff_source_file"
@@ -43,9 +40,6 @@ package = "rustpython-ruff_source_file"
 [dependencies.ruff_text_size]
 version = "0.16.5"
 package = "rustpython-ruff_text_size"
-
-[dependencies.rustc-hash]
-version = "2.0.0"
 
 [dependencies.unicode-ident]
 version = "1.0.12"

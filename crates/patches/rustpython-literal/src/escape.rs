@@ -1,10 +1,20 @@
 use alloc::string::String;
 use rustpython_wtf8::{CodePoint, Wtf8};
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash, is_macro::Is)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum Quote {
     Single,
     Double,
+}
+
+impl Quote {
+    #[inline]
+    pub const fn is_double(&self) -> bool {
+        match *self {
+            Self::Double { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl Quote {

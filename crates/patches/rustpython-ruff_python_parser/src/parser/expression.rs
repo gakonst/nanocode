@@ -1,7 +1,6 @@
 use std::ops::Deref;
 
 use bitflags::bitflags;
-use thin_vec::ThinVec;
 
 use ruff_python_ast::name::Name;
 use ruff_python_ast::token::TokenKind;
@@ -735,7 +734,7 @@ impl<'src> Parser<'src> {
                 range: self.node_range(start),
                 node_index: AtomicNodeIndex::NONE,
                 args: Box::default(),
-                keywords: ThinVec::default(),
+                keywords: Vec::default(),
                 runtime_args: None,
                 runtime_bases: None,
             };

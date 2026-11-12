@@ -1,4 +1,5 @@
 mod comment_ranges;
+pub mod fx_hash;
 mod comments;
 mod cursor;
 mod pragmas;

@@ -253,9 +253,6 @@ version = "0.28"
 [dependencies.strum_macros]
 version = "0.28"
 
-[dependencies.thin-vec]
-version = "0.2.14"
-
 [dependencies.thiserror]
 version = "2.0"
 

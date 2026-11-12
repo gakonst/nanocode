@@ -15,7 +15,7 @@ impl<'a> From<&'a Box<Expr>> for ExprRef<'a> {
 
 /// Unowned pendant to all the literal variants of [`ast::Expr`] that stores a
 /// reference instead of an owned value.
-#[derive(Copy, Clone, Debug, PartialEq, is_macro::Is)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum LiteralExpressionRef<'a> {
     StringLiteral(&'a ast::ExprStringLiteral),
     BytesLiteral(&'a ast::ExprBytesLiteral),
@@ -23,6 +23,16 @@ pub enum LiteralExpressionRef<'a> {
     BooleanLiteral(&'a ast::ExprBooleanLiteral),
     NoneLiteral(&'a ast::ExprNoneLiteral),
     EllipsisLiteral(&'a ast::ExprEllipsisLiteral),
+}
+
+impl<'a> LiteralExpressionRef<'a> {
+    #[inline]
+    pub fn number_literal(self) -> Option<&'a ast::ExprNumberLiteral> {
+        match self {
+            Self::NumberLiteral(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl Ranged for LiteralExpressionRef<'_> {

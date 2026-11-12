@@ -37,7 +37,7 @@ pub mod visitor;
 pub mod whitespace;
 
 /// The type of a source file.
-#[derive(Clone, Copy, Debug, PartialEq, is_macro::Is)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SourceType {
     /// The file contains Python source code.
     Python(PySourceType),
@@ -45,6 +45,24 @@ pub enum SourceType {
     Toml(TomlSourceType),
     /// The file contains Markdown.
     Markdown,
+}
+
+impl SourceType {
+    #[inline]
+    pub fn python(self) -> Option<PySourceType> {
+        match self {
+            Self::Python(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn toml(self) -> Option<TomlSourceType> {
+        match self {
+            Self::Toml(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 impl SourceType {
@@ -82,7 +100,7 @@ impl<P: AsRef<Path>> From<P> for SourceType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, is_macro::Is)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TomlSourceType {
     /// The source is a `pyproject.toml`.
     Pyproject,

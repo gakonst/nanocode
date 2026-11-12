@@ -4,92 +4,102 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 
 use arrayvec::ArrayVec;
-use char_str::{CharStr, CharString};
+use std::sync::Arc;
 
 use crate::Expr;
 use crate::generated::ExprName;
 
-/// An immutable name.
-///
-/// # Choosing a string representation
-///
-/// On 64-bit targets, [`CharStr`] occupies 16 bytes and stores up to 16 UTF-8 bytes inline. Longer
-/// values use an exactly-sized, reference-counted allocation, so cloning a heap-backed value
-/// reuses its allocation. [`compact_str::CompactString`] occupies 24 bytes, stores up to 24 bytes
-/// inline, and remains mutable; cloning a heap-backed value copies its contents into a new
-/// allocation.
-///
-/// Prefer `CharStr` for immutable text that is retained densely or passed between owners, when
-/// either the smaller handle or structural sharing offsets the extra heap allocations for values
-/// between 17 and 24 bytes. Prefer `CompactString` for uniquely owned text, especially when it is
-/// built incrementally, mutated, or commonly falls in that 17-to-24-byte range.
-///
-/// `Name` uses `CharStr` because names appear throughout the AST and repeated heap-backed parser
-/// names share an allocation. By contrast, [`crate::DebugText`] uses `CompactString` because it
-/// builds a uniquely owned buffer incrementally, and `ty_module_resolver::ModuleName` uses
-/// `CompactString` because module names can be extended in place.
-///
-/// Converting a borrowed `&str` into `CharStr` creates a new value and does not preserve structural
-/// sharing. When an API retains text already held in a `CharStr` (including a `Name`), pass or clone
-/// the owned value rather than converting it through `&str`. This is especially relevant at Salsa
-/// interning boundaries.
+#[derive(Clone)]
+enum NameText {
+    Static(&'static str),
+    Shared(Arc<str>),
+}
+
+impl NameText {
+    #[inline]
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Static(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+}
+
+impl Default for NameText {
+    #[inline]
+    fn default() -> Self {
+        Self::Static("")
+    }
+}
+
+impl PartialEq for NameText {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for NameText {}
+
+impl PartialOrd for NameText {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NameText {
+    #[inline]
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl Hash for NameText {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "salsa", derive(salsa::SalsaValue))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "cache", derive(ruff_macros::CacheKey))]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
-#[cfg_attr(
-    feature = "schemars",
-    derive(schemars::JsonSchema),
-    schemars(with = "String")
-)]
-pub struct Name(CharStr);
+pub struct Name(NameText);
 
 impl Name {
     #[inline]
     pub fn empty() -> Self {
-        Self(CharStr::new())
+        Self(NameText::default())
     }
 
     #[inline]
     pub fn new(name: impl AsRef<str>) -> Self {
-        Self(CharStr::from(name.as_ref()))
-    }
-
-    /// Creates an inline name, returning `None` if `name` does not fit inline.
-    #[inline]
-    pub fn new_inline(name: impl AsRef<str>) -> Option<Self> {
-        CharStr::new_inline(name.as_ref()).map(Self)
-    }
-
-    /// Creates an exactly-sized, heap-allocated name.
-    #[inline]
-    pub fn new_heap(name: impl AsRef<str>) -> Self {
-        Self(CharStr::new_heap(name.as_ref()))
+        Self(NameText::Shared(Arc::from(name.as_ref())))
     }
 
     #[inline]
     pub const fn new_static(name: &'static str) -> Self {
-        Self(CharStr::from_static_str(name))
+        Self(NameText::Static(name))
     }
 
-    /// Creates an exactly-sized name by concatenating string slices.
-    ///
-    /// The combined length is computed up front, so heap storage is allocated at most once.
     #[inline]
     pub fn concat<T: AsRef<str>>(slices: &[T]) -> Self {
-        Self(CharStr::concat(slices))
+        let mut text = String::with_capacity(slices.iter().map(|slice| slice.as_ref().len()).sum());
+        for slice in slices {
+            text.push_str(slice.as_ref());
+        }
+        Self::from(text)
     }
 
-    /// Creates an exactly-sized name by joining string slices with a separator.
-    ///
-    /// Like [`Name::concat`], this computes the combined length up front, so heap storage is
-    /// allocated at most once. For dynamically formatted names, use [`Name::from`] with
-    /// [`format_char!`](char_str::format_char). If a [`CharStr`] is sufficient, use
-    /// [`format_char_str!`](char_str::format_char_str) instead.
     #[inline]
     pub fn join<T: AsRef<str>>(slices: &[T], separator: &str) -> Self {
-        Self(CharStr::join(slices, separator))
+        let mut text = String::new();
+        for (index, slice) in slices.iter().enumerate() {
+            if index > 0 {
+                text.push_str(separator);
+            }
+            text.push_str(slice.as_ref());
+        }
+        Self::from(text)
     }
 
     #[inline]
@@ -137,7 +147,7 @@ impl<'a> From<&'a str> for Name {
 impl From<String> for Name {
     #[inline]
     fn from(s: String) -> Self {
-        Name(s.into())
+        Name(NameText::Shared(Arc::from(s)))
     }
 }
 
@@ -151,14 +161,14 @@ impl<'a> From<&'a String> for Name {
 impl<'a> From<Cow<'a, str>> for Name {
     #[inline]
     fn from(cow: Cow<'a, str>) -> Self {
-        Name(cow.into())
+        Name(NameText::Shared(Arc::from(cow)))
     }
 }
 
 impl From<Box<str>> for Name {
     #[inline]
     fn from(b: Box<str>) -> Self {
-        Name(b.into())
+        Name(NameText::Shared(Arc::from(b)))
     }
 }
 
@@ -186,14 +196,7 @@ impl salsa::HashEqLike<&str> for Name {
 impl From<Name> for String {
     #[inline]
     fn from(name: Name) -> Self {
-        name.0.into()
-    }
-}
-
-impl From<Name> for CharStr {
-    #[inline]
-    fn from(name: Name) -> Self {
-        name.0
+        name.as_str().to_owned()
     }
 }
 
@@ -239,16 +242,9 @@ impl salsa::HashEqLike<&Name> for compact_str::CompactString {
     }
 }
 
-impl From<CharString> for Name {
-    #[inline]
-    fn from(name: CharString) -> Self {
-        Self(name.freeze())
-    }
-}
-
 impl FromIterator<char> for Name {
     fn from_iter<I: IntoIterator<Item = char>>(iter: I) -> Self {
-        Self(iter.into_iter().collect())
+        Self::from(iter.into_iter().collect::<String>())
     }
 }
 

@@ -6,13 +6,23 @@ use ruff_text_size::{TextLen, TextRange};
 
 /// Enumeration of the two kinds of quotes that can be used
 /// for Python string/f/t-string/bytestring literals
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq, is_macro::Is)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum Quote {
     /// E.g. `'`
     Single,
     /// E.g. `"`
     #[default]
     Double,
+}
+
+impl Quote {
+    #[inline]
+    pub const fn is_double(&self) -> bool {
+        match *self {
+            Self::Double { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl Quote {

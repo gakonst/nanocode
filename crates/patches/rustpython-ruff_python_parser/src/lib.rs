@@ -384,7 +384,7 @@ pub fn parse_cells_unchecked(
 }
 
 /// Represents the parsed source code.
-#[derive(Debug, PartialEq, Clone, get_size2::GetSize)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Parsed<T> {
     syntax: T,
     tokens: Tokens,

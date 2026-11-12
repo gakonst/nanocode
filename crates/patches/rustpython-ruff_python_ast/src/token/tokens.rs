@@ -3,11 +3,10 @@ use std::{iter::FusedIterator, ops::Deref};
 use super::{Token, TokenKind};
 use ruff_python_trivia::{CommentRanges, ParenthesizedExpressions, TriviaRanges};
 use ruff_text_size::{Ranged as _, TextRange, TextSize};
-use rustc_hash::FxHashSet;
+use ruff_python_trivia::fx_hash::FxHashSet;
 
 /// Tokens represents a vector of lexed [`Token`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub struct Tokens {
     raw: Vec<Token>,
 }

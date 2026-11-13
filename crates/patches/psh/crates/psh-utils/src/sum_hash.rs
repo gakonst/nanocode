@@ -4,6 +4,10 @@
 //! Streaming: [`Digest::update`] any number of times, then [`Digest::finish`]. The tests
 //! check the specifications' vectors.
 
+use nanocode_sys::sha1::Sha1Instructions;
+use nanocode_sys::sha256::Sha256Instructions;
+use nanocode_sys::sha512::Sha512Instructions;
+
 /// A digest algorithm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Algo {
@@ -510,6 +514,10 @@ fn md5_compress(state: &mut [u32; 4], block: &[u8]) {
 
 fn sha1_compress(state: &mut [u32; 5], block: &[u8]) {
     assert_eq!(block.len(), SMALL_BLOCK_BYTES);
+    if let Some(instructions) = Sha1Instructions::detect() {
+        instructions.compress(state, block.as_chunks().0);
+        return;
+    }
     let mut schedule = [0u32; 80];
     for (word, bytes) in schedule.iter_mut().zip(block.as_chunks::<4>().0) {
         *word = u32::from_be_bytes(*bytes);
@@ -547,6 +555,10 @@ fn sha1_compress(state: &mut [u32; 5], block: &[u8]) {
 
 fn sha256_compress(state: &mut [u32; 8], block: &[u8]) {
     assert_eq!(block.len(), SMALL_BLOCK_BYTES);
+    if let Some(instructions) = Sha256Instructions::detect() {
+        instructions.compress(state, block.as_chunks().0);
+        return;
+    }
     let mut schedule = [0u32; 64];
     for (word, bytes) in schedule.iter_mut().zip(block.as_chunks::<4>().0) {
         *word = u32::from_be_bytes(*bytes);
@@ -589,6 +601,10 @@ fn sha256_compress(state: &mut [u32; 8], block: &[u8]) {
 
 fn sha512_compress(state: &mut [u64; 8], block: &[u8]) {
     assert_eq!(block.len(), BLOCK_BYTES_MAX);
+    if let Some(instructions) = Sha512Instructions::detect() {
+        instructions.compress(state, block.as_chunks().0);
+        return;
+    }
     let mut schedule = [0u64; 80];
     for (word, bytes) in schedule.iter_mut().zip(block.as_chunks::<8>().0) {
         *word = u64::from_be_bytes(*bytes);

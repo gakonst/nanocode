@@ -14,6 +14,8 @@ pub(crate) mod m;
 pub(crate) mod m;
 #[cfg(any(unix, windows))]
 mod m_sys;
+#[cfg(not(any(unix, windows)))]
+mod m_libm;
 #[cfg(test)]
 mod test;
 

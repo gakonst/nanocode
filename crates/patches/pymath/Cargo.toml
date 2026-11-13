@@ -55,6 +55,3 @@ features = [
     "abi3",
     "auto-initialize",
 ]
-
-[target."cfg(not(any(unix, windows)))".dependencies.libm]
-version = "0.2"

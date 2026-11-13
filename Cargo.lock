@@ -2380,6 +2380,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocode-webp"
+version = "0.7.0"
+
+[[package]]
 name = "nanocode-websocket"
 version = "0.7.0"
 dependencies = [

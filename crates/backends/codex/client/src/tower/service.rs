@@ -1041,6 +1041,20 @@ impl ResponsesService {
                     connection.invalidate(ConnectionPurpose::Reconnect);
                 }
                 if matches!(request.kind, ResponsesAttemptKind::Connect) {
+                    if matches!(transport, ResponsesTransport::Https) {
+                        service
+                            .platform
+                            .http()
+                            .preconnect(&service.config.api_base_url)
+                            .await
+                            .map_err(|error| {
+                                ResponsesServiceError::responses(
+                                    error,
+                                    FailurePhase::Send,
+                                    connection.generation,
+                                )
+                            })?;
+                    }
                     if matches!(transport, ResponsesTransport::WebSocket)
                         && connection.socket.is_none()
                         && let Err(error) = service.connect(connection, &request).await

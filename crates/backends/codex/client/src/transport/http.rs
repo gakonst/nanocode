@@ -104,6 +104,16 @@ pub(crate) struct HttpMetadata {
 
 #[cfg(not(target_family = "wasm"))]
 impl ResponsesHttp {
+    pub(crate) async fn preconnect(&self, api_base_url: &str) -> Result<(), ResponsesError> {
+        if self.host.is_some() || self.chat_gateway.is_some() || self.layer.is_some() {
+            return Ok(());
+        }
+        self.client
+            .preconnect(format!("{}/responses", api_base_url.trim_end_matches('/')))
+            .await
+            .map_err(map_http_error)
+    }
+
     pub(crate) fn new(
         client: nanocode_http::Client,
         host: Option<std::sync::Arc<dyn HostTransport>>,
@@ -579,6 +589,11 @@ pub(super) fn map_http_error(error: nanocode_http::Error) -> ResponsesError {
 
 #[cfg(target_family = "wasm")]
 impl ResponsesHttp {
+    #[expect(clippy::unused_async, reason = "a WebAssembly host opens its own connections")]
+    pub(crate) async fn preconnect(&self, _api_base_url: &str) -> Result<(), ResponsesError> {
+        Ok(())
+    }
+
     pub(crate) fn new(
         host: Option<std::sync::Arc<dyn HostTransport>>,
         chat_gateway: Option<std::sync::Arc<super::chat::ChatGateway>>,

@@ -454,12 +454,6 @@ impl ModelRun {
     pub(crate) fn preconnect(
         &mut self,
     ) -> Option<crate::agent::execution::ExecutionFuture<'static, ()>> {
-        if !matches!(
-            self.config.responses_transport,
-            ResponsesTransport::WebSocket
-        ) {
-            return None;
-        }
         let factory = ResponsesAttemptFactory::new(
             RequestProfile::new(
                 self.provider_session_id.to_string(),

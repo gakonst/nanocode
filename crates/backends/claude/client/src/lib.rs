@@ -2192,6 +2192,15 @@ impl ClaudeClient {
                 .is_ok_and(|endpoint| endpoint.host_str() == Some(FIRST_PARTY_HOST))
     }
 
+    pub async fn preconnect(&self) -> Result<(), ClaudeError> {
+        match (&self.http, &self.http_layer) {
+            (HttpConnection::Client(client), None) => transport::preconnect(client, &self.endpoint)
+                .await
+                .map_err(ClaudeError::Transport),
+            _ => Ok(()),
+        }
+    }
+
     pub async fn create(&self, request: &MessagesRequest) -> Result<MessageResponse, ClaudeError> {
         let wire = self.prepare_wire(request, &request.messages, false)?;
         self.create_prepared(&wire).await

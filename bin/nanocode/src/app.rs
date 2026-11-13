@@ -1588,6 +1588,13 @@ impl App {
         self.launch_turn(agent, id, text, sent, false);
     }
 
+    fn prepare_turn(&self) {
+        nanocode_tui::highlight::prewarm();
+        if let Some(agent) = self.agent.clone() {
+            tokio::spawn(async move { drop(agent.preconnect().await) });
+        }
+    }
+
     fn launch_turn(
         &mut self,
         agent: Agent,
@@ -1882,6 +1889,9 @@ impl App {
                 true
             }
             Event::Paste(text) => {
+                if self.overlay.is_none() && self.composer.is_empty() {
+                    self.prepare_turn();
+                }
                 if let Some(Overlay::Picker(_, picker)) = &mut self.overlay {
                     for character in text.chars().filter(|character| !character.is_control()) {
                         picker.handle_key(KeyEvent::new(
@@ -2012,6 +2022,9 @@ impl App {
         if self.overlay.is_some() {
             self.overlay_key(key);
             return;
+        }
+        if self.composer.is_empty() && matches!(key.code, KeyCode::Char(_)) && !control && !alt {
+            self.prepare_turn();
         }
         let busy = !matches!(self.turn, TurnState::Idle);
         if key.code != KeyCode::Esc {

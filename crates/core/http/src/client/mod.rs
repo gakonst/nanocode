@@ -277,6 +277,47 @@ impl Client {
         Box::pin(async move { client.run(request).await })
     }
 
+    pub fn preconnect<U: IntoUrl>(&self, url: U) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> {
+        let client = self.clone();
+        let url = url.into_url();
+        Box::pin(async move {
+            let (key, proxy) = client.destination(&url?)?;
+            let connection = match client.inner.pool.checkout(&key) {
+                Some(connection) => connection,
+                None => client.connect(&key, proxy.as_ref()).await?,
+            };
+            client.inner.pool.checkin(key, connection);
+            Ok(())
+        })
+    }
+
+    fn destination(&self, url: &Url) -> Result<(Key, Option<Proxy>)> {
+        let secure = match url.scheme() {
+            "https" => true,
+            "http" if !self.inner.https_only => false,
+            _ => return Err(Error::builder(BadScheme)),
+        };
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::builder("URL has no host"))?
+            .to_owned();
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| Error::builder("URL has no port"))?;
+        let proxy = if self.inner.proxies {
+            Proxy::from_env(&host, port, secure).map_err(Error::builder)?
+        } else {
+            None
+        };
+        let key = Key {
+            secure,
+            host,
+            port,
+            proxy: proxy.as_ref().map(Proxy::authority),
+        };
+        Ok((key, proxy))
+    }
+
     async fn run(&self, request: Request) -> Result<Response> {
         let (method, url, mut headers, body, timeout) = request.into_parts();
         for (key, value) in &self.inner.headers {
@@ -383,24 +424,8 @@ impl Client {
         body: Body,
     ) -> Result<Response> {
         let url = &outgoing.url;
-        let secure = match url.scheme() {
-            "https" => true,
-            "http" if !self.inner.https_only => false,
-            _ => return Err(Error::builder(BadScheme)),
-        };
-        let host = url
-            .host_str()
-            .ok_or_else(|| Error::builder("URL has no host"))?
-            .to_owned();
-        let port = url
-            .port_or_known_default()
-            .ok_or_else(|| Error::builder("URL has no port"))?;
-        let proxy = if self.inner.proxies {
-            Proxy::from_env(&host, port, secure).map_err(Error::builder)?
-        } else {
-            None
-        };
-        let forwards = !secure
+        let (key, proxy) = self.destination(url)?;
+        let forwards = !key.secure
             && proxy.as_ref().is_some_and(|proxy| {
                 matches!(proxy.scheme, ProxyScheme::Http | ProxyScheme::Https)
             });
@@ -413,25 +438,19 @@ impl Client {
             headers.insert(PROXY_AUTHORIZATION, value);
         }
         let target = if forwards {
-            absolute_form(url, &host)
+            absolute_form(url, &key.host)
         } else {
             origin_form(url)
         };
         if let Entry::Vacant(entry) = headers.entry(HOST) {
             let value = match url.port() {
-                Some(port) => format!("{host}:{port}"),
-                None => host.clone(),
+                Some(port) => format!("{}:{port}", key.host),
+                None => key.host.clone(),
             };
             entry.insert(HeaderValue::from_str(&value).map_err(Error::builder)?);
         }
         let mut body = Payload::new(body, &outgoing.method, &mut headers)?;
         let head = wire::request_head(&outgoing.method, &target, &headers);
-        let key = Key {
-            secure,
-            host,
-            port,
-            proxy: proxy.as_ref().map(Proxy::authority),
-        };
         let reusable = wire::keeps_alive(Version::HTTP_11, &headers);
         let idempotent = matches!(
             outgoing.method,

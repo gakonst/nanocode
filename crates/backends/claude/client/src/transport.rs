@@ -199,6 +199,17 @@ fn client_error(error: nanocode_http::Error) -> HttpError {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+pub(crate) async fn preconnect(client: &HttpClient, endpoint: &str) -> Result<(), HttpError> {
+    client.preconnect(endpoint).await.map_err(client_error)
+}
+
+#[cfg(target_family = "wasm")]
+#[expect(clippy::unused_async, reason = "a WebAssembly host opens its own connections")]
+pub(crate) async fn preconnect(_client: &HttpClient, _endpoint: &str) -> Result<(), HttpError> {
+    Ok(())
+}
+
 #[cfg(target_family = "wasm")]
 pub(crate) async fn post(
     client: &HttpClient,

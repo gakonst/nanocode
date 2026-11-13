@@ -1840,6 +1840,8 @@ impl ClaudeBuilder {
                 state.accept_steer(turn, None, text.into()).await.is_ok()
             })
         });
+        let client = state.client.clone();
+        spawn_task(Box::pin(async move { drop(client.preconnect().await) }));
         let driver = Driver { state, handle };
         let agent = runtime.bind(driver);
         for bound in &agent_bound {
@@ -8582,6 +8584,16 @@ impl LifecycleBackend for Driver {
             Ok(())
         })
     }
+    fn preconnect(&self) -> BackendFuture<Result<()>> {
+        let client = self.state.client.clone();
+        Box::pin(async move {
+            client
+                .preconnect()
+                .await
+                .map_err(|error| NanocodeError::backend("claude", error))
+        })
+    }
+
     fn compact(&self) -> BackendFuture<Result<()>> {
         let state = self.state.clone();
         Box::pin(async move {

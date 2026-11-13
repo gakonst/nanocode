@@ -82,7 +82,7 @@ impl ModelRun {
         let reasoning_mode = self.config.reasoning_mode;
         let service_tier = self.service_tier;
         let request_history = conversation.managed.generation_request();
-        let sent = evict_images(&self.images, &request_history);
+        let sent = evict_images(&request_history);
         let previous_response_id = sent.previous_response_id();
         let started_at = Instant::now();
         self.stats.model_calls += 1;

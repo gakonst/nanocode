@@ -20,7 +20,7 @@ pub use decode::{
     DEFAULT_ALLOC_BYTES_MAX, DecodeError, Decoded, Decoder, Format, Limits, dimensions,
     guess_format,
 };
-pub use history::{DEFAULT_INLINE_IMAGES, ImageHistory, SharedBlobStore};
+pub use history::{ImageHistory, ImageWindow, SharedBlobStore};
 pub use pixels::{Image, Pixels, RgbLayout};
 pub use resample::lanczos3;
 pub use thumbnail::thumbnail;

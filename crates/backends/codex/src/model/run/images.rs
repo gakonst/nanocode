@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::*;
 use crate::client::responses::FunctionOutputContent;
 use nanocode_durability::agent_store_error;
+use nanocode_image::ImageWindow;
 
 fn images(item: &ResponseItem) -> Vec<&str> {
     match item {
@@ -88,7 +89,8 @@ fn rewrite(item: &mut ResponseItem, mut replace: impl FnMut(&str) -> Option<Rewr
     }
 }
 
-pub(super) fn evict_images(limit: &ImageHistory, history: &RequestHistory) -> RequestHistory {
+pub(super) fn evict_images(history: &RequestHistory) -> RequestHistory {
+    let limit = ImageWindow::CODEX;
     let full = history.full();
     let (total, start) = full.images_before(full.len());
     let (sent_before, _) = full.images_before(history.incremental_start());

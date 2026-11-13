@@ -78,7 +78,7 @@ impl ModelCheckpoint {
                 text: side_question_prompt(question).into_boxed_str(),
             }],
         )]);
-        let history = evict_images(images, &conversation.managed.generation_request());
+        let history = evict_images(&conversation.managed.generation_request());
         let request = factory.generation(
             1,
             &inline_images(images, history).await?,

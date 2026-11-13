@@ -5,57 +5,33 @@ use nanocode_types_core::{
     tools::{ToolOutputBody, ToolOutputContent},
 };
 
-pub const DEFAULT_INLINE_IMAGES: usize = 8;
-
 pub use nanocode_durability_core::SharedBlobStore;
 
 #[derive(Clone, Default)]
 pub struct ImageHistory {
-    inline_images: Option<usize>,
     blobs: Option<SharedBlobStore>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageWindow(usize);
 
 impl std::fmt::Debug for ImageHistory {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ImageHistory")
-            .field("inline_images", &self.inline_images)
             .field("blob_store", &self.blobs.is_some())
             .finish()
     }
 }
 
-impl ImageHistory {
-    #[must_use]
-    pub const fn new(inline_images: usize) -> Self {
-        Self {
-            inline_images: Some(inline_images),
-            blobs: None,
-        }
-    }
+impl ImageWindow {
+    pub const CLAUDE: Self = Self(100);
+    pub const CLAUDE_LONG_CONTEXT: Self = Self(600);
+    pub const CODEX: Self = Self(8);
 
     #[must_use]
-    pub fn or_inline_images(mut self, inline_images: usize) -> Self {
-        self.inline_images.get_or_insert(inline_images);
-        self
-    }
-
-    const fn limit(&self) -> usize {
-        match self.inline_images {
-            Some(limit) => limit,
-            None => DEFAULT_INLINE_IMAGES,
-        }
-    }
-
-    #[must_use]
-    pub fn with_blob_store(mut self, store: SharedBlobStore) -> Self {
-        self.blobs = Some(store);
-        self
-    }
-
-    #[must_use]
-    pub fn evicted(&self, images: usize) -> usize {
-        let limit = self.limit();
+    pub fn evicted(self, images: usize) -> usize {
+        let limit = self.0;
         if images <= limit {
             return 0;
         }
@@ -64,15 +40,23 @@ impl ImageHistory {
     }
 
     #[must_use]
-    pub fn omitted(&self, reference: &str) -> String {
+    pub fn omitted(self, reference: &str) -> String {
         let reference = reference
             .strip_prefix("data:")
             .and_then(|data| data.split([';', ',']).next())
             .map_or_else(|| reference.to_owned(), |media| format!("inline {media}"));
         format!(
             "[image omitted from this request, which keeps only the newest {} images: {reference}]",
-            self.limit()
+            self.0
         )
+    }
+}
+
+impl ImageHistory {
+    #[must_use]
+    pub fn with_blob_store(mut self, store: SharedBlobStore) -> Self {
+        self.blobs = Some(store);
+        self
     }
 
     pub async fn inline(&self, url: &str) -> Result<Option<String>, StoreError> {

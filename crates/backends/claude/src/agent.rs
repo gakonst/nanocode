@@ -37,7 +37,7 @@ pub use durable::{
 use durable::{Cursor, Effect, Journal, Snapshot};
 use history::HistoryMessage;
 use nanocode_http::layer::retry;
-use nanocode_image::ImageHistory;
+use nanocode_image::{ImageHistory, ImageWindow};
 use nanocode_platform::Instant;
 #[cfg(target_family = "wasm")]
 use nanocode_platform::sleep;
@@ -639,14 +639,12 @@ fn model_max_tokens(model: &str) -> Option<u32> {
 pub const DEFAULT_COMPACTION_RESERVED_TOKENS: u64 = 20_000 + 13_000;
 
 const STANDARD_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
-const STANDARD_CONTEXT_REQUEST_IMAGES: usize = 100;
-const REQUEST_IMAGES: usize = 600;
 
-const fn request_images(context_window_tokens: u64) -> usize {
+const fn request_images(context_window_tokens: u64) -> ImageWindow {
     if context_window_tokens > STANDARD_CONTEXT_WINDOW_TOKENS {
-        REQUEST_IMAGES
+        ImageWindow::CLAUDE_LONG_CONTEXT
     } else {
-        STANDARD_CONTEXT_REQUEST_IMAGES
+        ImageWindow::CLAUDE
     }
 }
 
@@ -1001,24 +999,9 @@ impl ClaudeBuilder {
         self
     }
 
-    pub const fn automatic_cache(mut self, enabled: bool) -> Self {
-        self.automatic_cache = enabled;
-        self
-    }
-
     pub const fn cache_one_hour(mut self) -> Self {
         self.automatic_cache = true;
         self.cache_one_hour = true;
-        self
-    }
-
-    pub const fn adaptive_thinking(mut self) -> Self {
-        self.thinking_mode = ThinkingMode::Adaptive;
-        self
-    }
-
-    pub const fn keep_thinking(mut self) -> Self {
-        self.keep_thinking = true;
         self
     }
 
@@ -1771,9 +1754,7 @@ impl ClaudeBuilder {
             context_window_tokens: self.context_window_tokens,
             auto_compact_window_tokens: self.auto_compact_window_tokens,
             auto_compact_token_limit: Atom::default(),
-            images: self
-                .images
-                .or_inline_images(request_images(self.context_window_tokens)),
+            images: self.images,
             session_id,
             lineage,
             conversation_id,
@@ -5202,7 +5183,7 @@ impl State {
         request.tool_choice = context.force_text.then(|| json!({"type":"none"}));
 
         let (mut sent, kept) = images::evict_images(
-            &self.images,
+            request_images(self.context_window_tokens),
             wire_messages(messages, &suffix, request.effort_updates),
         );
         request
@@ -5316,7 +5297,7 @@ impl State {
             suffix.push(Message::text(Role::User, &upgrade.notice).into());
             let kept;
             (sent, kept) = images::evict_images(
-                &self.images,
+                request_images(self.context_window_tokens),
                 wire_messages(messages, &suffix, request.effort_updates),
             );
             request

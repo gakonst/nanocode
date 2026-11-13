@@ -6,7 +6,7 @@ use crate::{
 };
 use nanocode_agent_core::NanocodeError;
 use nanocode_durability::{BlobUrl, agent_store_error, base64_data_url};
-use nanocode_image::ImageHistory;
+use nanocode_image::{ImageHistory, ImageWindow};
 use serde_json::{Value, json};
 
 use super::history::HistoryMessage;
@@ -126,7 +126,7 @@ fn rewrite(message: &mut HistoryMessage, mut replace: impl FnMut(&Value) -> Opti
 }
 
 pub(super) fn evict_images(
-    images: &ImageHistory,
+    window: ImageWindow,
     mut messages: Vec<HistoryMessage>,
 ) -> (Vec<HistoryMessage>, [Option<usize>; 2]) {
     let counts: Vec<usize> = messages
@@ -134,8 +134,8 @@ pub(super) fn evict_images(
         .map(|message| message.image_count(|message| image_sources(message).count()))
         .collect();
     let total: usize = counts.iter().sum();
-    let evicted = images.evicted(total);
-    let earlier = images.evicted(
+    let evicted = window.evicted(total);
+    let earlier = window.evicted(
         total
             - counts
                 .iter()
@@ -162,7 +162,7 @@ pub(super) fn evict_images(
         }
         rewrite(message, |source| {
             ordinal += 1;
-            (ordinal <= evicted).then(|| Rewrite::Omit(images.omitted(&reference(source))))
+            (ordinal <= evicted).then(|| Rewrite::Omit(window.omitted(&reference(source))))
         });
     }
     (messages, kept)

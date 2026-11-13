@@ -36,7 +36,6 @@ fn main() {
         let display = entry.display();
         println!("cargo:rerun-if-changed={display}");
     }
-    println!("cargo:rerun-if-changed=../../Lib/importlib/_bootstrap.py");
 
     // = 3.14.0alpha
     python_version(3, 14, 0, "alpha", 0);

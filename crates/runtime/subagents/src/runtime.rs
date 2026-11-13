@@ -6118,12 +6118,24 @@ impl Registry {
     pub(super) async fn pending_turn(
         &self,
         root: &str,
+        id: AgentId,
         session_id: &str,
     ) -> std::io::Result<Option<(String, serde_json::Value)>> {
-        if let Some(pending) =
-            Option::clone(&self.pending_turns.get()).and_then(|resolver| resolver(session_id))
-        {
-            return pending.await;
+        if let Some(resolver) = Option::clone(&self.pending_turns.get()) {
+            let scope = root.to_owned();
+            let resuming = self
+                .state
+                .call(move |state| {
+                    state
+                        .scopes
+                        .get(&scope)
+                        .and_then(|scope| scope.sessions.get(&id))
+                        .is_some_and(|session| session.resume_attempts > 0)
+                })
+                .await;
+            if let Some(pending) = resuming.then(|| resolver(session_id)).flatten() {
+                return pending.await;
+            }
         }
         match self.store_for(root) {
             Some(store) => store.pending_turn(session_id).await,
@@ -6324,7 +6336,7 @@ impl Registry {
                 let completion = (session.status.wakes_parent()
                     && session.descriptor.parent.is_none()
                     && !delivered)
-                .then_some(settled);
+                    .then_some(settled);
                 if let Some(revision) = completion {
                     session.settle_completion(revision);
                 }

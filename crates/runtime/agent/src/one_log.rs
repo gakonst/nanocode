@@ -1365,14 +1365,18 @@ impl StateStore for OneLogStore {
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let mut lease = self.0.log.lease().await;
-            self.replaced(
+            let revision = self.replaced(
                 &mut lease,
                 state_id,
                 owner,
                 expected_revision,
                 payload,
                 records,
-            )
+            )?;
+            if *self.0.durable_settles.get() {
+                lease.commit(Point::Progress).await?;
+            }
+            Ok(revision)
         })
     }
 

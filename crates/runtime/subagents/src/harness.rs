@@ -463,7 +463,7 @@ impl Harness {
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
         let (id, input) = registry
-            .pending_turn(&self.root_session_id, agent.session_id())
+            .pending_turn(&self.root_session_id, self.id, agent.session_id())
             .await?
             .ok_or_else(|| std::io::Error::other("the hibernated turn is not pending"))?;
         let recovered = agent
@@ -849,7 +849,7 @@ impl Harness {
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
         let pending = registry
-            .pending_turn(&self.root_session_id, agent.session_id())
+            .pending_turn(&self.root_session_id, self.id, agent.session_id())
             .await?;
         let pending = match pending {
             Some((id, input)) => Some((

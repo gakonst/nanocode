@@ -146,23 +146,26 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
         self,
         policy: impl Future<Output = Policy> + Send + 'static,
     ) -> Result<(), Fault> {
-        let native = nanocode_platform::trust::load_native_certificates();
-        if native.certificates.is_empty() {
-            return Err(Fault::config(format!(
-                "no trusted root certificates to bundle with the proxy's: {:?}",
-                native.errors
-            )));
-        }
         let (authority, root) = CertificateAuthority::generate()?;
-        let bundle: String = std::iter::once(root.as_slice())
-            .chain(
-                native
-                    .certificates
-                    .iter()
-                    .map(|certificate| certificate.as_ref()),
-            )
-            .map(x509::pem)
-            .collect();
+        let mut bundle = x509::pem(&root).into_bytes();
+        match nanocode_platform::trust::native_bundle_file() {
+            Some(file) => bundle.extend(std::fs::read(file)?),
+            None => {
+                let native = nanocode_platform::trust::load_native_certificates();
+                if native.certificates.is_empty() {
+                    return Err(Fault::config(format!(
+                        "no trusted root certificates to bundle with the proxy's: {:?}",
+                        native.errors
+                    )));
+                }
+                bundle.extend(
+                    native
+                        .certificates
+                        .iter()
+                        .flat_map(|certificate| x509::pem(certificate.as_ref()).into_bytes()),
+                );
+            }
+        }
         std::fs::write(&self.certificates, bundle)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

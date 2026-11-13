@@ -101,6 +101,18 @@ pub fn load_native_certificates() -> NativeCertificates {
     platform::load()
 }
 
+pub fn native_bundle_file() -> Option<PathBuf> {
+    if env::var_os(CERTIFICATE_DIRECTORY_VARIABLE).is_some_and(|directories| {
+        env::split_paths(&directories).any(|directory| !directory.as_os_str().is_empty())
+    }) {
+        return None;
+    }
+    match env::var_os(CERTIFICATE_FILE_VARIABLE) {
+        Some(file) => Some(PathBuf::from(file)).filter(|file| file.is_file()),
+        None => platform::bundle_file(),
+    }
+}
+
 fn load_paths(file: Option<&Path>, directories: &[PathBuf]) -> NativeCertificates {
     let mut loaded = NativeCertificates::default();
     if file.is_none() && directories.is_empty() {
@@ -288,6 +300,14 @@ mod platform {
             .filter(|path| path.exists())
     }
 
+    pub(super) fn bundle_file() -> Option<PathBuf> {
+        CERTIFICATE_FILES
+            .iter()
+            .map(Path::new)
+            .find(|path| path.is_file())
+            .map(PathBuf::from)
+    }
+
     pub(super) fn load() -> NativeCertificates {
         let file = existing(CERTIFICATE_FILE_VARIABLE).or_else(|| {
             CERTIFICATE_FILES
@@ -320,6 +340,10 @@ mod platform {
         (Domain::Admin, "failed to load admin trust settings"),
         (Domain::System, "failed to load system trust settings"),
     ];
+
+    pub(super) const fn bundle_file() -> Option<std::path::PathBuf> {
+        None
+    }
 
     pub(super) fn load() -> NativeCertificates {
         let mut loaded = NativeCertificates::default();
@@ -366,6 +390,10 @@ mod platform {
     use nanocode_sys::certificate_store::{self, Usages};
 
     const SERVER_AUTHENTICATION: &str = "1.3.6.1.5.5.7.3.1";
+
+    pub(super) const fn bundle_file() -> Option<std::path::PathBuf> {
+        None
+    }
 
     pub(super) fn load() -> NativeCertificates {
         let mut loaded = NativeCertificates::default();

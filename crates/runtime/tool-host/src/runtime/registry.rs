@@ -213,7 +213,7 @@ impl ToolRegistry {
         if let Some(arguments_content) = &arguments_content {
             record_tool_content(&span, "tool.arguments", arguments_content);
         }
-        let started_at = std::time::Instant::now();
+        let started_at = nanocode_platform::now();
         let dispatch = async {
             if let Some((handler, _definition)) = self.get(name) {
                 return match handler.execute(input, context).await {
@@ -355,7 +355,7 @@ impl ToolRegistry {
                 open.refuse(&refused);
                 return refused;
             }
-            let started_at = std::time::Instant::now();
+            let started_at = nanocode_platform::now();
             let execution = calls
                 .call(&hand, name, input, context)
                 .instrument(span.clone())
@@ -366,7 +366,7 @@ impl ToolRegistry {
             open.finish(started_at, &execution, output_content.as_deref());
             return execution;
         }
-        let queued_at = std::time::Instant::now();
+        let queued_at = nanocode_platform::now();
         let exclusive = self.policies.iter().any(|policy| policy.exclusive(name));
         let origin = (!exclusive)
             .then(|| context.call_id().rsplit_once('/').map(|(origin, _)| origin))
@@ -384,7 +384,7 @@ impl ToolRegistry {
             "tool.admission.wait_ns",
             u64::try_from(queued_at.elapsed().as_nanos()).unwrap_or(u64::MAX),
         );
-        let started_at = std::time::Instant::now();
+        let started_at = nanocode_platform::now();
         let dispatch = self
             .execute_nested_inner(name, input, context)
             .instrument(span.clone());

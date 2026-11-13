@@ -39,7 +39,6 @@ use history::HistoryMessage;
 use nanocode_http::layer::retry;
 use nanocode_image::{ImageHistory, ImageWindow};
 use nanocode_platform::Instant;
-#[cfg(target_family = "wasm")]
 use nanocode_platform::sleep;
 use nanocode_sync::{Atom, Owned, Sequencer, Slot};
 use std::{
@@ -54,8 +53,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, oneshot};
-#[cfg(not(target_family = "wasm"))]
-use tokio::time::sleep;
 use tracing::Instrument as _;
 
 fn estimate_text_tokens(text: &str) -> u64 {
@@ -3475,7 +3472,7 @@ impl LiveNestedCalls<'_> {
                         &parent,
                     ),
                 );
-                self.open.push((call_id, name, Instant::now()));
+                self.open.push((call_id, name, nanocode_platform::now()));
             }
             ClaudeNestedToolUpdate::Completed(call) => {
                 let Some(call_id) = call.get("call_id").and_then(Value::as_str) else {
@@ -3711,7 +3708,7 @@ async fn start_turn(
     let events = request.events.clone();
     let finished_span = turn_span.clone();
     let task = async move {
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         let outcome = AssertUnwindSafe(running.run(request, speed, cancellation))
             .catch_unwind()
             .await;
@@ -3783,8 +3780,9 @@ async fn defer_turn(
             }
 
             let admission = tokio::select! {
-                admission = state.admission.enter() => admission,
+                biased;
                 () = cancellation.cancelled() => break Err((cancellation.interruption(automatic), false)),
+                admission = state.admission.enter() => admission,
             };
             if state.life.stopped() {
                 break Err((NanocodeError::AgentStopped, false));
@@ -3823,8 +3821,9 @@ async fn defer_turn(
                         == Some(nanocode_agent_core::ExecutionPolicyDisposition::Retry);
                     if blocked && state.local_blocker(order) {
                         tokio::select! {
-                            () = retired.as_mut() => {}
+                            biased;
                             () = cancellation.cancelled() => {}
+                            () = retired.as_mut() => {}
                         }
                         continue;
                     }
@@ -5065,7 +5064,7 @@ impl State {
             &effort,
             messages.len(),
         );
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         let outcome = self
             .request_response(messages, tools, cancel, Some(events), index, context)
             .instrument(span.clone())
@@ -5096,7 +5095,7 @@ impl State {
         index: u32,
         context: ResponseContext<'_>,
     ) -> std::result::Result<ResponseOutcome, ResponseFailure> {
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         let elapsed_ns = || u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let completed = |response: &crate::MessageResponse,
                          attempt: u32,
@@ -5369,7 +5368,7 @@ impl State {
             attempt += 1;
             let attempt_span =
                 telemetry::attempt_span(index.saturating_add(1), attempt, max_attempts);
-            let attempt_started = Instant::now();
+            let attempt_started = nanocode_platform::now();
             let attempt_started_ns = elapsed_ns();
             let mut accepted = false;
             let mut first_event = None;
@@ -5384,7 +5383,7 @@ impl State {
             let turn = match thread {
                 Some(thread) => {
                     let turn = thread
-                        .read(|thread| thread.plan(&request, outgoing, Instant::now()))
+                        .read(|thread| thread.plan(&request, outgoing, nanocode_platform::now()))
                         .map_err(provider_error)?;
                     client
                         .attach_thread(&mut wire, &request, outgoing, &turn)
@@ -5432,11 +5431,12 @@ impl State {
                 }
             };
             let opened = tokio::select! {
-                result = opening.instrument(attempt_span.clone()) => result,
+                biased;
                 () = cancel.cancelled() => {
                     telemetry::cancel_attempt(&attempt_span);
                     return Err(ResponseFailure { error: NanocodeError::TurnCancelled, recovery });
                 }
+                result = opening.instrument(attempt_span.clone()) => result,
             };
             if opened.is_ok() {
                 response_headers_ns = Some(elapsed_ns());
@@ -5464,13 +5464,14 @@ impl State {
                     let mut thinking_item: Option<(usize, String)> = None;
                     let mut tool_blocks: HashMap<usize, (String, String)> = HashMap::new();
                     loop {
-                        let receive_started = Instant::now();
+                        let receive_started = nanocode_platform::now();
                         let mut next = tokio::select! {
-                            event = stream.next().instrument(attempt_span.clone()) => event,
+                            biased;
                             () = &mut cancelled => {
                                 telemetry::cancel_attempt(&attempt_span);
                                 return Err(ResponseFailure { error: NanocodeError::TurnCancelled, recovery });
                             }
+                            event = stream.next().instrument(attempt_span.clone()) => event,
                         };
                         pipeline.receive_decode_ns = pipeline
                             .receive_decode_ns
@@ -5553,7 +5554,7 @@ impl State {
                                         ) => Some(item.as_str()),
                                         _ => message_id.as_deref(),
                                     };
-                                    let emit_started = Instant::now();
+                                    let emit_started = nanocode_platform::now();
                                     let _ = events.emit_text_delta(
                                         kind,
                                         TextDeltaRef {
@@ -5593,7 +5594,7 @@ impl State {
                                 Err(error) => break Some(Err(error)),
                                 Ok(true) => {
                                     response_completed_ns = Some(elapsed_ns());
-                                    let collect_started = Instant::now();
+                                    let collect_started = nanocode_platform::now();
                                     let collected = accumulator.take().map_or(
                                         Err(ClaudeError::IncompleteStream),
                                         MessageAccumulator::finish,
@@ -5603,7 +5604,7 @@ impl State {
                                 }
                                 Ok(false) => {}
                             }
-                            let receive_started = Instant::now();
+                            let receive_started = nanocode_platform::now();
                             let ready = stream.next().now_or_never();
                             pipeline.receive_decode_ns = pipeline
                                 .receive_decode_ns
@@ -5614,7 +5615,7 @@ impl State {
                             }
                         };
                         if let Some(events) = events {
-                            let flush_started = Instant::now();
+                            let flush_started = nanocode_platform::now();
                             let _ = events.flush_deltas();
                             pipeline.display_delta_emit_ns = pipeline
                                 .display_delta_emit_ns
@@ -5650,7 +5651,7 @@ impl State {
                 Ok(mut response) => {
                     telemetry::complete_attempt(&attempt_span);
                     if let (Some(thread), Some(turn)) = (thread, &turn) {
-                        let completed_at = Instant::now();
+                        let completed_at = nanocode_platform::now();
                         thread
                             .modify(|thread| thread.complete(turn, &response, completed_at))
                             .map_err(provider_error)?;
@@ -5802,6 +5803,7 @@ impl State {
             waited += delay;
 
             tokio::select! {
+                biased;
                 () = cancel.cancelled() => {}
                 () = sleep(delay) => {}
             }
@@ -5813,7 +5815,7 @@ impl State {
         speed: Option<crate::Speed>,
         cancel: Arc<Cancellation>,
     ) -> Result<TurnResult> {
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         if request.cancel_on_admission {
             cancel.cancel();
         }
@@ -6077,7 +6079,7 @@ impl State {
             active_context_tokens: context.active_context_tokens,
             threshold: cursor.threshold,
         });
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         let result = self
             .summarize_locked(context, cancel, mode, cursor, step)
             .instrument(span.clone())
@@ -6700,7 +6702,7 @@ impl State {
                 original_bytes: None,
             },
         );
-        let began = Instant::now();
+        let began = nanocode_platform::now();
         let mut started = StartedToolCall {
             state: self,
             events,
@@ -7126,7 +7128,7 @@ impl State {
                     .saturating_add(incoming_tokens)
                     >= cursor.threshold
             {
-                let compaction_started = Instant::now();
+                let compaction_started = nanocode_platform::now();
                 self.stage_cursor(&mut cursor, conversation, journal)
                     .await?;
                 self.flush_journal(journal).await?;
@@ -7219,7 +7221,7 @@ impl State {
                 && !conversation.messages.is_empty()
                 && conversation.active_context_tokens >= cursor.threshold
             {
-                let compaction_started = Instant::now();
+                let compaction_started = nanocode_platform::now();
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
@@ -7393,7 +7395,7 @@ impl State {
                         cursor.context_recovery_attempted = true;
                         conversation.messages = pending.clone();
                         conversation.pending_continuation = false;
-                        let compaction_started = Instant::now();
+                        let compaction_started = nanocode_platform::now();
                         self.flush_journal(journal).await?;
                         add_usage(
                             &mut usage,
@@ -7924,7 +7926,7 @@ impl State {
                     return Err(provider_error("context window exhausted after recovery"));
                 }
                 cursor.context_recovery_attempted = true;
-                let compaction_started = Instant::now();
+                let compaction_started = nanocode_platform::now();
                 self.flush_journal(journal).await?;
                 add_usage(
                     &mut usage,
@@ -8635,7 +8637,7 @@ impl LifecycleBackend for Driver {
                         .stage_cursor(&mut cursor, &mut context, &mut journal)
                         .await?;
                     state.flush_journal(&mut journal).await?;
-                    let compaction_started = Instant::now();
+                    let compaction_started = nanocode_platform::now();
                     State::publish(
                         &state.session_events,
                         AgentEventKind::ModelCompactionStarted,
@@ -9072,8 +9074,5 @@ impl ClaudeBuilder {
 }
 
 fn spawn_task(task: BackendFuture<()>) {
-    #[cfg(not(target_family = "wasm"))]
-    drop(tokio::spawn(task));
-    #[cfg(target_family = "wasm")]
-    nanocode_platform::spawn_local(task);
+    nanocode_platform::spawn(task);
 }

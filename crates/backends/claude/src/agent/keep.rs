@@ -4,7 +4,7 @@ use super::{
 };
 use crate::FrozenWireProfile;
 use nanocode_agent_core::{ClaudeModel, Origin};
-use nanocode_platform::{Instant, sleep};
+use nanocode_platform::sleep;
 use std::{
     sync::{Arc, Weak, atomic::Ordering},
     time::Duration,
@@ -96,7 +96,7 @@ impl State {
         if self.refresh_due(&kept).is_none_or(|wait| !wait.is_zero()) {
             return;
         }
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         let span = tracing::info_span!(
             "claude.cache.refresh",
             session.id = self.session_id.as_str(),
@@ -193,6 +193,7 @@ async fn keep_cache(state: Weak<State>, changed: Arc<Notify>) {
             _ => return,
         };
         tokio::select! {
+            biased;
             () = &mut notified => continue,
             () = sleep(wait) => {}
         }

@@ -42,7 +42,7 @@ fn request_flush(
 
 #[cfg(not(target_family = "wasm"))]
 fn spawn(future: impl std::future::Future<Output = ()> + Send + 'static) {
-    drop(tokio::spawn(future));
+    nanocode_platform::spawn(future);
 }
 
 #[cfg(target_family = "wasm")]
@@ -179,7 +179,7 @@ struct EmbeddedHost {
 }
 
 async fn spawn_host() -> Result<EmbeddedHost, String> {
-    let started_at = Instant::now();
+    let started_at = nanocode_platform::now();
     let span = info_span!(
         target: "nanocode_code_mode",
         "code_mode.host_spawn",
@@ -214,7 +214,7 @@ async fn spawn_host() -> Result<EmbeddedHost, String> {
 #[derive(Clone)]
 struct CellRegistry {
     next_cell_id: u64,
-    live_cells: HashMap<u64, Arc<LiveCell>>,
+    live_cells: BTreeMap<u64, Arc<LiveCell>>,
 }
 
 struct LiveCell {
@@ -481,14 +481,14 @@ impl Drop for UnloggedCalls {
 }
 
 struct PendingCallReceipts {
-    calls: HashMap<u64, PendingCall>,
+    calls: BTreeMap<u64, PendingCall>,
     updates: mpsc::UnboundedSender<CellUpdate>,
 }
 
 impl Drop for PendingCallReceipts {
     fn drop(&mut self) {
         let message = "Code Mode cell ended before the tool returned; execution outcome unknown";
-        for (id, pending) in self.calls.drain() {
+        for (id, pending) in std::mem::take(&mut self.calls) {
             let call = NestedToolCall {
                 call_id: pending.call_id,
                 name: pending.name,
@@ -546,7 +546,7 @@ impl CodeModeRuntime {
 
             cells: Arc::new(Atom::new(CellRegistry {
                 next_cell_id: 1,
-                live_cells: HashMap::new(),
+                live_cells: BTreeMap::new(),
             })),
             stored: Arc::default(),
             host: Arc::default(),
@@ -759,7 +759,7 @@ impl CodeModeRuntime {
         context: OwnedToolContext,
         observer: &mut dyn CodeModeObserver,
     ) -> Option<CodeModeExecution> {
-        let started_at = Instant::now();
+        let started_at = nanocode_platform::now();
         let preempt = Preemption {
             signal: self.preempt.subscribe(),
             turn: self.current_turn.load(Ordering::Acquire),
@@ -890,7 +890,7 @@ impl CodeModeRuntime {
         context: OwnedToolContext,
         observer: &mut dyn CodeModeObserver,
     ) -> CodeModeExecution {
-        let started_at = Instant::now();
+        let started_at = nanocode_platform::now();
         let span = info_span!(
             target: "nanocode_code_mode",
             "code_mode.cell",
@@ -1056,7 +1056,7 @@ impl CodeModeRuntime {
         context: ToolContext<'_>,
         observer: &mut dyn CodeModeObserver,
     ) -> CodeModeExecution {
-        let started_at = Instant::now();
+        let started_at = nanocode_platform::now();
         let span = info_span!(
             target: "nanocode_code_mode",
             "code_mode.wait",
@@ -1673,7 +1673,7 @@ impl LiveCell {
         let _ = observe_cell(
             self,
             observation,
-            Instant::now(),
+            nanocode_platform::now(),
             ObservationMode::Terminate,
             None,
             None,
@@ -1878,7 +1878,7 @@ async fn observe_updates(
         ObservationMode::Terminate => (None, true, None),
     };
     let yield_deadline =
-        yield_after.and_then(|yield_after| Instant::now().checked_add(yield_after));
+        yield_after.and_then(|yield_after| nanocode_platform::now().checked_add(yield_after));
     let mut yield_timer =
         yield_after.map(|yield_after| Box::pin(nanocode_platform::sleep(yield_after)));
     let mut preempt_remaining = None;
@@ -1886,7 +1886,7 @@ async fn observe_updates(
     let mut stream_timer = Box::pin(nanocode_platform::sleep(STREAM_OUTPUT_AFTER));
     loop {
         let yield_deadline_elapsed =
-            yield_deadline.is_some_and(|yield_deadline| yield_deadline <= Instant::now());
+            yield_deadline.is_some_and(|yield_deadline| yield_deadline <= nanocode_platform::now());
         if preempt_remaining.is_none() && preempt.as_ref().is_some_and(Preemption::take) {
             preempt_remaining = Some(observation.updates.len() + observation.replay.len());
         }
@@ -2416,7 +2416,7 @@ impl CellCalls<'_, '_> {
             record.update(|status| status.calls.insert(id, Arc::clone(&shared)));
             journaled = persists.then(|| JournaledCall::clone(&shared));
         }
-        let started = Instant::now();
+        let started = nanocode_platform::now();
         let input = Arc::new(input);
         let admitted = self.unlogged.admit(&name);
         let logged = admitted <= LOGGED_NESTED_CALLS_PER_TOOL;
@@ -2588,7 +2588,7 @@ impl EmbeddedHost {
             updates: updates.clone(),
         };
         let mut pending_receipts = PendingCallReceipts {
-            calls: HashMap::new(),
+            calls: BTreeMap::new(),
             updates: updates.clone(),
         };
         let mut watch = CellWatch::new(limits.guard);
@@ -2648,7 +2648,7 @@ impl EmbeddedHost {
                     let Some(completed) = completed else {
                         continue;
                     };
-                    match watch.settled(&completed.call, Instant::now()) {
+                    match watch.settled(&completed.call, nanocode_platform::now()) {
                         Watched::Note(text) if !replaying => {
                             let _ = updates.send(CellUpdate::Notification {
                                 notification: CodeModeNotification::new(parent_call_id, text),
@@ -2689,7 +2689,7 @@ impl EmbeddedHost {
                 }
                 () = async {
                     match watch.stall {
-                        Some(stall) => nanocode_platform::sleep(stall.saturating_duration_since(Instant::now())).await,
+                        Some(stall) => nanocode_platform::sleep(stall.saturating_duration_since(nanocode_platform::now())).await,
                         None => std::future::pending().await,
                     }
                 }, if watch.stall.is_some() && !held && !replaying => {
@@ -2921,8 +2921,8 @@ async fn run_cell_actor(
     lifecycle: Arc<CellLifecycle>,
     journaling: Option<ActorJournaling>,
 ) {
-    let started_at = Instant::now();
-    let host_wait_started_at = Instant::now();
+    let started_at = nanocode_platform::now();
+    let host_wait_started_at = nanocode_platform::now();
     let (mut host, reused) = {
         let taken = if cfg!(target_family = "wasm") {
             shared_host.take()
@@ -3004,7 +3004,7 @@ async fn run_cell_actor(
     let terminal = match selected {
         Some(terminal) if lifecycle.claim_completion() => terminal,
         Some(_) | None => {
-            let termination_started_at = Instant::now();
+            let termination_started_at = nanocode_platform::now();
             host.worker.terminate().await;
             record_elapsed("host.termination_ns", termination_started_at);
             Ok(CellTerminal::Terminated)
@@ -3084,7 +3084,7 @@ async fn run_cell_actor(
             displaced.worker.terminate().await;
         }
     } else if !terminated {
-        let termination_started_at = Instant::now();
+        let termination_started_at = nanocode_platform::now();
         host.worker.terminate().await;
         record_elapsed("host.termination_ns", termination_started_at);
     }
@@ -3139,7 +3139,7 @@ async fn execute_nested_call(
     cell_started_at: Instant,
     how: Nested,
 ) -> CompletedNestedCall {
-    let started_at = Instant::now();
+    let started_at = nanocode_platform::now();
     let started_after_ns =
         u64::try_from(started_at.duration_since(cell_started_at).as_nanos()).unwrap_or(u64::MAX);
     let call_id = format!("{}/code-{id}", context.call_id);

@@ -376,7 +376,7 @@ impl ExecutionState {
             journal: None,
             replay: None,
             settling: false,
-            started: Instant::now(),
+            started: nanocode_platform::now(),
         }
     }
 
@@ -461,7 +461,7 @@ impl ExecutionState {
         if self.replay.take().is_none() {
             return;
         }
-        let now = Instant::now();
+        let now = nanocode_platform::now();
         let wall = wall_ms();
         let mut scheduled = Vec::new();
         for (id, timeout) in &mut self.pending_timeouts {
@@ -715,7 +715,7 @@ impl ExecutionState {
     fn set_timeout(&mut self, delay_ms: u64) -> u64 {
         let id = self.next_timeout_id;
         self.next_timeout_id = self.next_timeout_id.saturating_add(1);
-        let mut deadline = Instant::now().checked_add(Duration::from_millis(delay_ms));
+        let mut deadline = nanocode_platform::now().checked_add(Duration::from_millis(delay_ms));
         let mut planned = None;
         if self.journaling() {
             let wanted = JournalEntry::Timeout {
@@ -799,7 +799,7 @@ impl ExecutionState {
     }
 
     pub(crate) fn next_timeout_wait(&self) -> Option<Duration> {
-        let now = Instant::now();
+        let now = nanocode_platform::now();
         self.timeout_order
             .first()
             .map(|(deadline, _)| deadline.saturating_duration_since(now))

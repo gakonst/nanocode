@@ -42,7 +42,7 @@ fn buffers() -> &'static Atom<BTreeMap<u64, Arc<Buffer>>> {
 pub fn put(bytes: Vec<u8>) -> u64 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let buffer = Arc::new(Buffer {
-        at: Instant::now(),
+        at: nanocode_platform::now(),
         bytes: Slot::new(Some(bytes)),
     });
     buffers().update(|buffers| {

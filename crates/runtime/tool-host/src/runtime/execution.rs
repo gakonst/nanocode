@@ -1240,7 +1240,7 @@ impl OpenToolSpan {
     pub(super) fn new(span: &tracing::Span) -> Self {
         Self {
             span: span.clone(),
-            opened_at: std::time::Instant::now(),
+            opened_at: nanocode_platform::now(),
             finished: false,
         }
     }

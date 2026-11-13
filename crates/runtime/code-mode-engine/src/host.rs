@@ -164,7 +164,7 @@ impl Machine {
                         continue;
                     }
                     state.flush_text();
-                    self.phase = Phase::Idle(Instant::now());
+                    self.phase = Phase::Idle(nanocode_platform::now());
                     return Ok(Ran::Idle);
                 }
                 Step::Done => {
@@ -291,7 +291,7 @@ impl Machine {
             timer,
             park: self
                 .park_due()
-                .map(|due| due.saturating_duration_since(Instant::now())),
+                .map(|due| due.saturating_duration_since(nanocode_platform::now())),
         })
     }
 
@@ -455,7 +455,7 @@ impl EmbeddedHost {
     }
 
     fn rested(&mut self) -> Result<(), String> {
-        let now = Instant::now();
+        let now = nanocode_platform::now();
         if let Some(id) = self.state.next_due_timeout(now) {
             self.wake()?;
             return match self.machine.as_mut() {

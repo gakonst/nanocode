@@ -12,126 +12,35 @@ const REFILL_BITS_MIN: u8 = 32;
 const LONG_CODE_BITS: u8 = 16;
 const CODE_LENGTH_LIMIT: i32 = 17;
 
-pub(crate) struct BitStream {
+struct Window {
     buffer: u64,
     aligned: u64,
-    pub(crate) bits_left: u8,
-    pub(crate) marker: Option<Marker>,
-    pub(crate) successive_low: u8,
-    spectral_start: u8,
-    spectral_end: u8,
-    pub(crate) end_of_band_run: i32,
-    pub(crate) overread: usize,
-    pub(crate) seen_end_of_image: bool,
+    bits_left: u8,
 }
 
-impl BitStream {
-    pub(crate) const fn new(successive_low: u8, spectral_start: u8, spectral_end: u8) -> Self {
+impl Window {
+    const EMPTY: Self = Self {
+        buffer: 0,
+        aligned: 0,
+        bits_left: 0,
+    };
+
+    const fn copied(&self) -> Self {
         Self {
-            buffer: 0,
-            aligned: 0,
-            bits_left: 0,
-            marker: None,
-            successive_low,
-            spectral_start,
-            spectral_end,
-            end_of_band_run: 0,
-            overread: 0,
-            seen_end_of_image: false,
+            buffer: self.buffer,
+            aligned: self.aligned,
+            bits_left: self.bits_left,
         }
     }
 
-    pub(crate) const fn update_progressive(
-        &mut self,
-        successive_low: u8,
-        spectral_start: u8,
-        spectral_end: u8,
-    ) {
-        self.successive_low = successive_low;
-        self.spectral_start = spectral_start;
-        self.spectral_end = spectral_end;
-    }
-
-    pub(crate) const fn reset(&mut self) {
-        self.bits_left = 0;
-        self.marker = None;
-        self.buffer = 0;
-        self.aligned = 0;
-        self.end_of_band_run = 0;
+    const fn store(&mut self, other: &Self) {
+        self.buffer = other.buffer;
+        self.aligned = other.aligned;
+        self.bits_left = other.bits_left;
     }
 
     const fn align(&mut self) {
         self.aligned = self.buffer << (64 - self.bits_left);
-    }
-
-    #[inline(always)]
-    pub(crate) fn refill(&mut self, reader: &mut ByteReader<'_>) {
-        if self.bits_left >= REFILL_BITS_MIN {
-            return;
-        }
-        self.refill_word(reader);
-    }
-
-    #[inline]
-    fn refill_word(&mut self, reader: &mut ByteReader<'_>) {
-        if self.marker.is_some() || self.overread > 0 || self.seen_end_of_image {
-            self.buffer <<= 32;
-            self.bits_left += 32;
-            self.align();
-            return;
-        }
-        if let Some(word) = reader.read_u32() {
-            if !has_marker_byte(word) {
-                self.bits_left += 32;
-                self.buffer = (self.buffer << 32) | u64::from(word);
-                self.align();
-                return;
-            }
-            reader.rewind(4);
-        }
-        self.refill_bytes(reader);
-    }
-
-    #[cold]
-    fn refill_bytes(&mut self, reader: &mut ByteReader<'_>) {
-        for _ in 0..4 {
-            if !self.refill_byte(reader) {
-                return;
-            }
-        }
-        self.align();
-    }
-
-    fn refill_byte(&mut self, reader: &mut ByteReader<'_>) -> bool {
-        let byte = reader.read_u8_or_zero();
-        self.overread += usize::from(reader.eof());
-        self.buffer = (self.buffer << 8) | u64::from(byte);
-        self.bits_left += 8;
-        if byte != 0xFF {
-            return true;
-        }
-        let mut next = reader.read_u8_or_zero();
-        if next == 0 {
-            return true;
-        }
-        while next == 0xFF {
-            next = reader.read_u8_or_zero();
-        }
-        if next == 0 {
-            return true;
-        }
-        self.buffer >>= 8;
-        self.bits_left -= 8;
-        if self.bits_left != 0 {
-            self.aligned = self.buffer << (64 - self.bits_left);
-        }
-        self.marker = Marker::from_byte(next);
-        if next == 0xD9 {
-            self.buffer <<= 8;
-            self.bits_left += 8;
-            self.align();
-        }
-        false
     }
 
     const fn peek_lookahead(&self) -> usize {
@@ -183,8 +92,111 @@ impl BitStream {
         self.drop_bits(code_length as u8);
         Ok(symbol)
     }
+}
 
-    fn decode_dc(
+pub(crate) struct BitStream {
+    window: Window,
+    pub(crate) marker: Option<Marker>,
+    pub(crate) successive_low: u8,
+    spectral_start: u8,
+    spectral_end: u8,
+    pub(crate) end_of_band_run: i32,
+    pub(crate) overread: usize,
+    pub(crate) seen_end_of_image: bool,
+}
+
+impl BitStream {
+    pub(crate) const fn new(successive_low: u8, spectral_start: u8, spectral_end: u8) -> Self {
+        Self {
+            window: Window::EMPTY,
+            marker: None,
+            successive_low,
+            spectral_start,
+            spectral_end,
+            end_of_band_run: 0,
+            overread: 0,
+            seen_end_of_image: false,
+        }
+    }
+
+    pub(crate) const fn bits_left(&self) -> u8 {
+        self.window.bits_left
+    }
+
+    pub(crate) const fn update_progressive(
+        &mut self,
+        successive_low: u8,
+        spectral_start: u8,
+        spectral_end: u8,
+    ) {
+        self.successive_low = successive_low;
+        self.spectral_start = spectral_start;
+        self.spectral_end = spectral_end;
+    }
+
+    pub(crate) const fn reset(&mut self) {
+        self.window = Window::EMPTY;
+        self.marker = None;
+        self.end_of_band_run = 0;
+    }
+
+    #[inline(always)]
+    pub(crate) fn refill(&mut self, reader: &mut ByteReader<'_>) {
+        if self.window.bits_left >= REFILL_BITS_MIN {
+            return;
+        }
+        self.refill_word_in_place(reader);
+    }
+
+    #[inline]
+    fn refill_word_in_place(&mut self, reader: &mut ByteReader<'_>) {
+        if self.stalled() {
+            self.window.buffer <<= 32;
+            self.window.bits_left += 32;
+            self.window.align();
+            return;
+        }
+        if let Some(word) = reader.read_u32() {
+            if !has_marker_byte(word) {
+                self.window.bits_left += 32;
+                self.window.buffer = (self.window.buffer << 32) | u64::from(word);
+                self.window.align();
+                return;
+            }
+            reader.rewind(4);
+        }
+        self.refill_bytes_in_place(reader);
+    }
+
+    #[cold]
+    fn refill_bytes_in_place(&mut self, reader: &mut ByteReader<'_>) {
+        let mut window = self.window.copied();
+        self.refill_bytes(&mut window, reader);
+        self.window.store(&window);
+    }
+
+    const fn peek_lookahead(&self) -> usize {
+        self.window.peek_lookahead()
+    }
+
+    const fn drop_bits(&mut self, count: u8) {
+        self.window.drop_bits(count);
+    }
+
+    const fn get_bits(&mut self, count: u8) -> i32 {
+        self.window.get_bits(count)
+    }
+
+    const fn get_bit(&mut self) -> u8 {
+        self.window.get_bit()
+    }
+
+    #[inline(always)]
+    fn decode_symbol(&mut self, table: &HuffmanTable, entry: i32) -> Result<i32, JpegError> {
+        self.window.decode_symbol(table, entry)
+    }
+
+    fn decode_dc_in_place(
         &mut self,
         reader: &mut ByteReader<'_>,
         table: &HuffmanTable,
@@ -201,6 +213,112 @@ impl BitStream {
         Ok(())
     }
 
+    const fn stalled(&self) -> bool {
+        self.marker.is_some() || self.overread > 0 || self.seen_end_of_image
+    }
+
+    #[inline(always)]
+    fn refill_window(
+        &mut self,
+        window: &mut Window,
+        reader: &mut ByteReader<'_>,
+        stalled: &mut bool,
+    ) {
+        if window.bits_left >= REFILL_BITS_MIN {
+            return;
+        }
+        self.refill_word(window, reader, stalled);
+    }
+
+    #[inline(always)]
+    fn refill_word(
+        &mut self,
+        window: &mut Window,
+        reader: &mut ByteReader<'_>,
+        stalled: &mut bool,
+    ) {
+        if *stalled {
+            window.buffer <<= 32;
+            window.bits_left += 32;
+            window.align();
+            return;
+        }
+        if let Some(word) = reader.read_u32() {
+            if !has_marker_byte(word) {
+                window.bits_left += 32;
+                window.buffer = (window.buffer << 32) | u64::from(word);
+                window.align();
+                return;
+            }
+            reader.rewind(4);
+        }
+        self.refill_bytes(window, reader);
+        *stalled = self.stalled();
+    }
+
+    #[inline(always)]
+    fn refill_bytes(&mut self, window: &mut Window, reader: &mut ByteReader<'_>) {
+        for _ in 0..4 {
+            if !self.refill_byte(window, reader) {
+                return;
+            }
+        }
+        window.align();
+    }
+
+    #[inline(always)]
+    fn refill_byte(&mut self, window: &mut Window, reader: &mut ByteReader<'_>) -> bool {
+        let byte = reader.read_u8_or_zero();
+        self.overread += usize::from(reader.eof());
+        window.buffer = (window.buffer << 8) | u64::from(byte);
+        window.bits_left += 8;
+        if byte != 0xFF {
+            return true;
+        }
+        let mut next = reader.read_u8_or_zero();
+        if next == 0 {
+            return true;
+        }
+        while next == 0xFF {
+            next = reader.read_u8_or_zero();
+        }
+        if next == 0 {
+            return true;
+        }
+        window.buffer >>= 8;
+        window.bits_left -= 8;
+        if window.bits_left != 0 {
+            window.aligned = window.buffer << (64 - window.bits_left);
+        }
+        self.marker = Marker::from_byte(next);
+        if next == 0xD9 {
+            window.buffer <<= 8;
+            window.bits_left += 8;
+            window.align();
+        }
+        false
+    }
+
+    #[inline(always)]
+    fn decode_dc(
+        &mut self,
+        window: &mut Window,
+        reader: &mut ByteReader<'_>,
+        stalled: &mut bool,
+        table: &HuffmanTable,
+        prediction: &mut i32,
+    ) -> Result<(), JpegError> {
+        self.refill_window(window, reader, stalled);
+        let entry = table.lookup[window.peek_lookahead()];
+        let mut symbol = window.decode_symbol(table, entry)?;
+        if symbol != 0 {
+            let bits = window.get_bits(symbol as u8);
+            symbol = extend(bits, symbol);
+        }
+        *prediction = prediction.wrapping_add(symbol);
+        Ok(())
+    }
+
     pub(crate) fn decode_block(
         &mut self,
         reader: &mut ByteReader<'_>,
@@ -210,27 +328,54 @@ impl BitStream {
         block: &mut [i32; 64],
         prediction: &mut i32,
     ) -> Result<(), JpegError> {
-        self.decode_dc(reader, dc_table, prediction)?;
+        let mut window = self.window.copied();
+        let result = self.decode_block_window(
+            &mut window,
+            reader,
+            dc_table,
+            ac_table,
+            quantization,
+            block,
+            prediction,
+        );
+        self.window.store(&window);
+        result
+    }
+
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn decode_block_window(
+        &mut self,
+        window: &mut Window,
+        reader: &mut ByteReader<'_>,
+        dc_table: &HuffmanTable,
+        ac_table: &HuffmanTable,
+        quantization: &[i32; 64],
+        block: &mut [i32; 64],
+        prediction: &mut i32,
+    ) -> Result<(), JpegError> {
+        let mut stalled = self.stalled();
+        self.decode_dc(window, reader, &mut stalled, dc_table, prediction)?;
         block[0] = prediction.wrapping_mul(quantization[0]);
         let mut position = 1_usize;
         while position < 64 {
-            self.refill(reader);
-            let peeked = self.peek_lookahead();
+            self.refill_window(window, reader, &mut stalled);
+            let peeked = window.peek_lookahead();
             let fast = ac_table.fast_ac[peeked];
             if fast != 0 {
                 position += ((fast >> 4) & 15) as usize;
                 let target = UNZIGZAG[position.min(63)] & 63;
                 block[target] = i32::from(fast >> 8).wrapping_mul(quantization[target]);
-                self.drop_bits((fast & 15) as u8);
+                window.drop_bits((fast & 15) as u8);
                 position += 1;
                 continue;
             }
-            let symbol = self.decode_symbol(ac_table, ac_table.lookup[peeked])?;
+            let symbol = window.decode_symbol(ac_table, ac_table.lookup[peeked])?;
             let run = symbol >> 4;
             let size = symbol & 15;
             if size != 0 {
                 position += run as usize;
-                let bits = self.get_bits(size as u8);
+                let bits = window.get_bits(size as u8);
                 let value = extend(bits, size);
                 let target = UNZIGZAG[position & 63] & 63;
                 block[target] = value.wrapping_mul(quantization[target]);
@@ -251,13 +396,13 @@ impl BitStream {
         coefficient: &mut i16,
         prediction: &mut i32,
     ) -> Result<(), JpegError> {
-        self.decode_dc(reader, table, prediction)?;
+        self.decode_dc_in_place(reader, table, prediction)?;
         *coefficient = (*prediction as i16).wrapping_mul(1_i16 << self.successive_low);
         Ok(())
     }
 
     pub(crate) fn decode_dc_refine(&mut self, reader: &mut ByteReader<'_>, coefficient: &mut i16) {
-        if self.bits_left < 1 {
+        if self.window.bits_left < 1 {
             self.refill(reader);
         }
         if self.get_bit() == 1 {
@@ -347,7 +492,7 @@ impl BitStream {
                                     *coefficient = coefficient.wrapping_sub(bit);
                                 }
                             }
-                            if self.bits_left < 1 {
+                            if self.window.bits_left < 1 {
                                 self.refill(reader);
                             }
                         } else {
@@ -383,7 +528,7 @@ impl BitStream {
                             *coefficient = coefficient.wrapping_sub(bit);
                         }
                     }
-                    if self.bits_left < 1 {
+                    if self.window.bits_left < 1 {
                         self.refill(reader);
                     }
                     position += 1;

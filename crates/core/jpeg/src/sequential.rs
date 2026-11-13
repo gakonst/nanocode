@@ -275,7 +275,7 @@ impl Decoder<'_> {
                 self.handle_restart_main(stream)?;
                 continue;
             }
-            if stream.marker.is_some() && stream.bits_left == 0 {
+            if stream.marker.is_some() && stream.bits_left() == 0 {
                 break;
             }
         }

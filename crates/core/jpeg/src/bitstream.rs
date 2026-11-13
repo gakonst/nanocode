@@ -10,6 +10,7 @@ pub(crate) const UNZIGZAG: [usize; 64] = [
 ];
 const REFILL_BITS_MIN: u8 = 32;
 const LONG_CODE_BITS: u8 = 16;
+const ZERO_REFILLS_MAX: u32 = 2;
 const CODE_LENGTH_LIMIT: i32 = 17;
 
 struct Window {
@@ -415,6 +416,7 @@ impl BitStream {
         reader: &mut ByteReader<'_>,
         table: &HuffmanTable,
         block: &mut [i16; 64],
+        mask: &mut u64,
     ) -> Result<(), JpegError> {
         let shift = self.successive_low;
         let mut position = usize::from(self.spectral_start);
@@ -424,7 +426,10 @@ impl BitStream {
             let fast = table.fast_ac[peeked];
             if fast != 0 {
                 position += ((fast >> 4) & 15) as usize;
-                block[UNZIGZAG[position.min(63)]] = (fast >> 8).wrapping_mul(1 << shift);
+                let zigzag = position.min(63);
+                let coefficient = (fast >> 8).wrapping_mul(1 << shift);
+                block[UNZIGZAG[zigzag]] = coefficient;
+                *mask = marked(*mask, zigzag, coefficient);
                 self.drop_bits((fast & 15) as u8);
                 position += 1;
             } else {
@@ -435,7 +440,10 @@ impl BitStream {
                     position += run as usize;
                     let bits = self.get_bits(size as u8);
                     let value = extend(bits, size);
-                    block[UNZIGZAG[position & 63]] = (value as i16).wrapping_mul(1 << shift);
+                    let zigzag = position & 63;
+                    let coefficient = (value as i16).wrapping_mul(1 << shift);
+                    block[UNZIGZAG[zigzag]] = coefficient;
+                    *mask = marked(*mask, zigzag, coefficient);
                     position += 1;
                 } else if run != 15 {
                     self.end_of_band_run = 1 << run;
@@ -458,15 +466,18 @@ impl BitStream {
         reader: &mut ByteReader<'_>,
         table: &HuffmanTable,
         block: &mut [i16; 64],
+        mask: &mut u64,
     ) -> Result<(), JpegError> {
         let bit = (1_i32 << self.successive_low) as i16;
+        let end = self.spectral_end;
         let mut position = self.spectral_start;
+        let mut nonzero = *mask;
         if self.end_of_band_run == 0 {
             loop {
                 self.refill(reader);
                 let entry = table.lookup[self.peek_lookahead()];
                 let decoded = self.decode_symbol(table, entry)?;
-                let mut run = decoded >> 4;
+                let run = decoded >> 4;
                 let size = decoded & 15;
                 let mut value = 0;
                 if size == 0 {
@@ -481,63 +492,114 @@ impl BitStream {
                     }
                     value = if self.get_bit() == 1 { bit } else { -bit };
                 }
-                if position <= self.spectral_end {
-                    loop {
-                        let coefficient = &mut block[UNZIGZAG[usize::from(position) & 63]];
-                        if *coefficient != 0 {
-                            if self.get_bit() == 1 && (*coefficient & bit) == 0 {
-                                if *coefficient >= 0 {
-                                    *coefficient = coefficient.wrapping_add(bit);
-                                } else {
-                                    *coefficient = coefficient.wrapping_sub(bit);
-                                }
-                            }
-                            if self.window.bits_left < 1 {
-                                self.refill(reader);
-                            }
-                        } else {
-                            run -= 1;
-                            if run < 0 {
-                                break;
-                            }
-                        }
-                        if position == self.spectral_end {
-                            break;
-                        }
-                        position += 1;
-                    }
+                if position <= end {
+                    let band = band_mask(position, end);
+                    let (stop, corrected) = match nth_set_bit(!nonzero & band, run as u32) {
+                        Some(zero) => (zero, nonzero & band & ((1_u64 << zero) - 1)),
+                        None => (end, nonzero & band),
+                    };
+                    self.correct_run(reader, block, corrected, bit);
+                    position = stop;
                 }
                 if value != 0 {
                     block[UNZIGZAG[usize::from(position) & 63]] = value;
+                    nonzero |= 1_u64 << (position & 63);
+                    *mask = nonzero;
                 }
                 position += 1;
-                if position > self.spectral_end {
+                if position > end {
                     break;
                 }
             }
         }
         if self.end_of_band_run > 0 {
-            if block[1..].iter().any(|&coefficient| coefficient != 0) {
+            if nonzero >> 1 != 0 {
                 self.refill(reader);
-                while position <= self.spectral_end {
-                    let coefficient = &mut block[UNZIGZAG[usize::from(position) & 63]];
-                    if *coefficient != 0 && self.get_bit() == 1 && (*coefficient & bit) == 0 {
-                        if *coefficient >= 0 {
-                            *coefficient = coefficient.wrapping_add(bit);
-                        } else {
-                            *coefficient = coefficient.wrapping_sub(bit);
-                        }
-                    }
-                    if self.window.bits_left < 1 {
-                        self.refill(reader);
-                    }
-                    position += 1;
+                if position <= end {
+                    self.correct_band(reader, block, nonzero, position, end, bit);
                 }
             }
             self.end_of_band_run -= 1;
         }
         Ok(())
     }
+
+    fn correct_run(
+        &mut self,
+        reader: &mut ByteReader<'_>,
+        block: &mut [i16; 64],
+        mut corrected: u64,
+        bit: i16,
+    ) {
+        while corrected != 0 {
+            let index = corrected.trailing_zeros() as usize;
+            corrected &= corrected - 1;
+            self.correct(&mut block[UNZIGZAG[index]], bit);
+            if self.window.bits_left < 1 {
+                self.refill(reader);
+            }
+        }
+    }
+
+    fn correct_band(
+        &mut self,
+        reader: &mut ByteReader<'_>,
+        block: &mut [i16; 64],
+        nonzero: u64,
+        start: u8,
+        end: u8,
+        bit: i16,
+    ) {
+        let mut remaining = nonzero & band_mask(start, end);
+        let mut cursor = u32::from(start);
+        while remaining != 0 {
+            let index = remaining.trailing_zeros();
+            remaining &= remaining - 1;
+            self.refill_after_zeros(reader, index - cursor);
+            self.correct(&mut block[UNZIGZAG[index as usize]], bit);
+            if self.window.bits_left < 1 {
+                self.refill(reader);
+            }
+            cursor = index + 1;
+        }
+        self.refill_after_zeros(reader, u32::from(end) + 1 - cursor);
+    }
+
+    fn refill_after_zeros(&mut self, reader: &mut ByteReader<'_>, zeros: u32) {
+        for _ in 0..zeros.min(ZERO_REFILLS_MAX) {
+            if self.window.bits_left < 1 {
+                self.refill(reader);
+            }
+        }
+    }
+
+    const fn correct(&mut self, coefficient: &mut i16, bit: i16) {
+        if self.get_bit() == 1 && (*coefficient & bit) == 0 {
+            if *coefficient >= 0 {
+                *coefficient = coefficient.wrapping_add(bit);
+            } else {
+                *coefficient = coefficient.wrapping_sub(bit);
+            }
+        }
+    }
+}
+
+const fn marked(mask: u64, zigzag: usize, coefficient: i16) -> u64 {
+    (mask & !(1_u64 << zigzag)) | ((coefficient != 0) as u64) << zigzag
+}
+
+const fn band_mask(start: u8, end: u8) -> u64 {
+    (u64::MAX >> (63 - end)) & (u64::MAX << start)
+}
+
+fn nth_set_bit(mut bits: u64, skipped: u32) -> Option<u8> {
+    for _ in 0..skipped {
+        bits &= bits.wrapping_sub(1);
+    }
+    if bits == 0 {
+        return None;
+    }
+    Some(bits.trailing_zeros() as u8)
 }
 
 const fn extend(bits: i32, size: i32) -> i32 {

@@ -119,7 +119,33 @@ fn conflicting_record(key: &str) -> StoreError {
 }
 
 fn version(fence: u64, revision: u64, owner: &str) -> String {
-    format!("{fence}.{revision}.{owner}")
+    assert!(
+        fence > 0,
+        "a key-value head is written with a granted fence"
+    );
+    assert!(
+        !owner.is_empty(),
+        "a key-value head is written with its owner"
+    );
+    let version = format!("{fence}.{revision}.{owner}");
+    let head = Head::parse(&version);
+    assert!(
+        head.as_ref().is_ok_and(|head| head.fence == fence),
+        "a key-value head version parses back to its fence"
+    );
+    assert!(
+        head.as_ref().is_ok_and(|head| head.revision == revision),
+        "a key-value head version parses back to its revision"
+    );
+    assert!(
+        head.as_ref().is_ok_and(|head| head.owner == owner),
+        "a key-value head version parses back to its owner"
+    );
+    version
+}
+
+fn unnamed_owner() -> StoreError {
+    StoreError::NotCommitted("a key-value durability owner needs a non-empty id".to_owned())
 }
 
 impl<B: KeyValue + ?Sized> KeyValueStore<B> {
@@ -172,6 +198,9 @@ impl<B: KeyValue + ?Sized> KeyValueStore<B> {
         state_id: &str,
         owner_id: OwnerId,
     ) -> Result<OwnedState, StoreError> {
+        if owner_id.as_str().is_empty() {
+            return Err(unnamed_owner());
+        }
         let key = self.head_key(state_id);
         loop {
             let current = self.backend.get(&key).await?;
@@ -212,6 +241,9 @@ impl<B: KeyValue + ?Sized> KeyValueStore<B> {
         payload: &str,
         records: &[StoreRecord],
     ) -> Result<u64, StoreError> {
+        if owner.fence() == 0 || owner.owner_id().as_str().is_empty() {
+            return Err(StoreError::Fenced);
+        }
         let revision = expected_revision.checked_add(1).ok_or_else(|| {
             StoreError::NotCommitted("key-value durability revision overflow".to_owned())
         })?;

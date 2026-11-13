@@ -24,6 +24,30 @@ struct Staged {
 }
 
 impl Staged {
+    fn check(&self) {
+        assert!(
+            self.revision >= self.base_revision,
+            "a staged state never falls below its base revision"
+        );
+        assert_eq!(
+            u64::try_from(self.payloads.len()).ok(),
+            Some(self.revision - self.base_revision),
+            "a staged state keeps one payload per staged revision"
+        );
+        assert!(
+            self.owner.fence() >= self.base_fence,
+            "a staged owner's fence never falls below the base owner's"
+        );
+        assert_eq!(
+            self.payloads.last().map(Arc::as_ptr),
+            self.payload
+                .as_ref()
+                .filter(|_| !self.payloads.is_empty())
+                .map(Arc::as_ptr),
+            "a staged state's head payload is its last staged payload"
+        );
+    }
+
     fn unstored(&self, reached: Option<&HashSet<String>>) -> Vec<StoreRecord> {
         self.records
             .iter()
@@ -235,6 +259,7 @@ impl StagedWrites {
         let mut records = staged.unstored(None);
         let mut revision = staged.base_revision;
         for payload in &staged.payloads {
+            let expected = revision;
             revision = store
                 .commit(
                     state_id,
@@ -251,6 +276,11 @@ impl StagedWrites {
                 .await?
                 .revision;
             *landed = true;
+            if Some(revision) != expected.checked_add(1) {
+                return Err(StoreError::Backend(format!(
+                    "the store committed revision {revision} of state {state_id} over revision {expected}"
+                )));
+            }
             records.clear();
         }
         Ok(())
@@ -339,6 +369,7 @@ impl StagedWrites {
         staged.revision = revision;
         staged.payload = Some(Arc::clone(&payload));
         staged.payloads.push_back(payload);
+        staged.check();
         Ok(revision)
     }
 }
@@ -376,12 +407,19 @@ impl<S: StateStore> StagedStore<S> {
             })
             .cloned()
             .collect();
-        let mut read = if missing.is_empty() {
+        let read = if missing.is_empty() {
             Vec::new()
         } else {
             self.base.read_records(state_id, &missing).await?
+        };
+        if read.len() != missing.len() {
+            return Err(StoreError::Backend(format!(
+                "store answered {} of {} record reads",
+                read.len(),
+                missing.len()
+            )));
         }
-        .into_iter();
+        let mut read = read.into_iter();
         Ok(keys
             .iter()
             .map(|key| {
@@ -434,7 +472,12 @@ impl<S: StateStore> StagedStore<S> {
                     .entry(state_id.to_owned())
                     .or_insert_with(|| Arc::new(staged.clone())),
             );
+            assert!(
+                entry.owner.fence() < fence,
+                "a staged acquire grants a fence past the one it replaces"
+            );
             entry.owner = owner.clone();
+            entry.check();
             (entry.revision, entry.payload.clone())
         });
         Ok(OwnedState {

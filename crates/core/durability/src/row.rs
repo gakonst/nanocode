@@ -484,6 +484,10 @@ impl Index {
             }
         }
         held.listed = present;
+        assert!(
+            self.keys >= before,
+            "the row index counts every key a loaded state held"
+        );
         self.keys = self.keys - before + held.keys();
         Ok(())
     }
@@ -500,6 +504,10 @@ impl Index {
                 return;
             };
             if let Some(held) = self.states.remove(&oldest) {
+                assert!(
+                    self.keys >= held.keys(),
+                    "the row index counts every key an evicted state held"
+                );
                 self.keys -= held.keys();
             }
         }

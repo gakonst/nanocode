@@ -130,10 +130,25 @@ impl Layout {
         let mut offset = 0;
         while offset < content.len() {
             let end = offset + chunk_end(&content[offset..]);
+            assert!(end > offset, "a payload chunk is never empty");
+            assert!(
+                content.is_char_boundary(end),
+                "a payload chunk ends on a character boundary"
+            );
             hashes.push_str(&content_hash(&content[offset..end]));
             ends.push(end);
             offset = end;
         }
+        assert_eq!(
+            offset,
+            content.len(),
+            "payload chunks cover the content exactly"
+        );
+        assert_eq!(
+            hashes.len(),
+            ends.len() * HASH_HEX,
+            "a payload layout names one hash per chunk"
+        );
         let mut nodes = Vec::new();
         let root = manifest_tree(MANIFEST_PREFIX, &hashes, &mut nodes);
         Self {
@@ -158,8 +173,12 @@ fn manifest_tree(prefix: char, hashes: &str, nodes: &mut Vec<(String, String)>) 
     let mut parents = String::new();
     let mut group = String::from(prefix);
     let mut count = 0;
+    assert!(
+        hashes.len().is_multiple_of(HASH_HEX),
+        "a payload manifest holds whole hashes"
+    );
     for hash in hashes.as_bytes().chunks(HASH_HEX) {
-        let hash = std::str::from_utf8(hash).unwrap_or_default();
+        let hash = std::str::from_utf8(hash).expect("a payload manifest hash is hex");
         group.push_str(hash);
         count += 1;
         if count >= CHUNK_MAX / HASH_HEX || (count >= CHUNK_MIN / HASH_HEX && node_cut(hash)) {
@@ -966,12 +985,19 @@ impl<S: crate::StateStore + ?Sized> RecordSource for Overlay<'_, S> {
                 .filter(|key| !self.staged.contains_key(*key))
                 .cloned()
                 .collect();
-            let mut read = if missing.is_empty() {
+            let read = if missing.is_empty() {
                 Vec::new()
             } else {
                 self.store.read_records(state_id, &missing).await?
+            };
+            if read.len() != missing.len() {
+                return Err(crate::StoreError::Backend(format!(
+                    "store answered {} of {} record reads",
+                    read.len(),
+                    missing.len()
+                )));
             }
-            .into_iter();
+            let mut read = read.into_iter();
             Ok(keys
                 .iter()
                 .map(|key| match self.staged.get(key) {

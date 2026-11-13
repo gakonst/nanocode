@@ -81,8 +81,8 @@ pub use replay::{
 };
 use replay::{CellLife, CellRecord, CellStatus, Hold, Replay, ReplayPlan, Restored};
 pub use spec::{
-    exec_spec, exec_spec_with, exec_spec_yielding, source_with_options, wait_spec,
-    wait_spec_yielding,
+    exec_spec, exec_spec_with, exec_spec_yielding, source_with_options, source_yielding, wait_spec,
+    wait_spec_yielding, wait_yielding,
 };
 
 const INITIAL_YIELD: Duration = spec::DEFAULT_YIELD;

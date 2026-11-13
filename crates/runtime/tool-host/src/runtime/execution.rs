@@ -644,8 +644,13 @@ impl NativeToolRuntime {
             self.ready_placement(&context.session_id).await,
         ) {
             let tools = self.callbacks(hand.host.as_ref(), &context.session_id);
+            let source = self
+                .cell_yield
+                .map_or(std::borrow::Cow::Borrowed(source), |after| {
+                    code_mode::source_yielding(source, after)
+                });
             return Ok(executors
-                .execute_on(hand, tools, source, context.as_context(), observer)
+                .execute_on(hand, tools, &source, context.as_context(), observer)
                 .await);
         }
         let session_id = self.executors.is_some().then(|| context.session_id.clone());
@@ -862,6 +867,12 @@ impl NativeToolRuntime {
                     .wait_with_updates(input, context, observer)
                     .await);
             };
+            let input = self
+                .cell_yield
+                .map_or(std::borrow::Cow::Borrowed(input), |after| {
+                    code_mode::wait_yielding(input, after)
+                });
+            let input = input.as_ref();
             let session_id = context.session_id();
             self.track(session_id);
             let places = executors.wait_route(session_id);

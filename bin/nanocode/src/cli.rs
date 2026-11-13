@@ -368,7 +368,7 @@ const HAND: Group = Group::named(
             .help("Also serve computer use from the installed provider"),
         Argument::value("cell_yield_ms", "MS", Parser::U64)
             .long("cell-yield-ms")
-            .help("How long a cell runs before it yields when its call names no yield_time_ms (defaults to 10000)"),
+            .help("How long a cell runs before it yields when the brain's call names no yield_time_ms (defaults to 10000). A brain whose host set a cell yield, or that has an operation deadline, names one in every call, so this reaches only a brain with neither"),
         Argument::flag("own_processes")
             .long("own-processes")
             .help("Run every command in a process of its own, never in the hand's: one that exhausts memory then ends alone"),

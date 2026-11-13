@@ -17,18 +17,41 @@ use serde_json::{Value, json};
 
 const SURFACED_DOCUMENTS: usize = 4;
 
-static EXEC_SCHEMA: std::sync::LazyLock<Arc<Value>> = std::sync::LazyLock::new(|| {
+fn exec_schema(cell_yield: Option<std::time::Duration>) -> Arc<Value> {
+    type Schema = (std::time::Duration, Arc<Value>);
+    static DEFAULT: std::sync::LazyLock<Arc<Value>> = std::sync::LazyLock::new(|| {
+        build_exec_schema(nanocode_tool_host::code_mode_spec::DEFAULT_YIELD)
+    });
+    static LATEST: std::sync::LazyLock<nanocode_sync::Atom<Option<Schema>>> =
+        std::sync::LazyLock::new(nanocode_sync::Atom::default);
+    let Some(after) = cell_yield else {
+        return Arc::clone(&DEFAULT);
+    };
+    if let Some(schema) = LATEST.read(|latest| {
+        latest
+            .as_ref()
+            .filter(|(known, _)| *known == after)
+            .map(|(_, schema)| Arc::clone(schema))
+    }) {
+        return schema;
+    }
+    let schema = build_exec_schema(after);
+    LATEST.set(Some((after, Arc::clone(&schema))));
+    schema
+}
+
+fn build_exec_schema(after: std::time::Duration) -> Arc<Value> {
     Arc::new(json!({
         "type": "object",
         "properties": {
             "code": {"type": "string", "description": "JavaScript source to evaluate."},
-            "yield_time_ms": {"type": "number", "description": "Same as the pragma's `yield_time_ms`: how long to wait before a script that is still running yields. Defaults to 10000 ms."},
+            "yield_time_ms": {"type": "number", "description": format!("Same as the pragma's `yield_time_ms`: how long to wait before a script that is still running yields. Defaults to {} ms.", after.as_millis())},
             "max_output_tokens": {"type": "number", "description": "Same as the pragma's `max_output_tokens`: the token budget for this call's direct results. Omit for unlimited output."}
         },
         "required": ["code"],
         "additionalProperties": false,
     }))
-});
+}
 
 fn shared_description(name: &str, description: String) -> Arc<str> {
     static DESCRIPTIONS: std::sync::LazyLock<
@@ -164,7 +187,7 @@ pub(super) fn install(
             } if &*name == "exec" => (
                 name,
                 exec_description(&description),
-                Arc::clone(&EXEC_SCHEMA),
+                exec_schema(tools.cell_yield()),
                 Call::Exec,
             ),
             RuntimeDefinition::Function {

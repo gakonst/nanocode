@@ -191,6 +191,48 @@ pub fn source_with_options<'a>(
     )))
 }
 
+fn yield_ms(after: std::time::Duration) -> Value {
+    u64::try_from(after.as_millis()).unwrap_or(u64::MAX).into()
+}
+
+pub fn source_yielding(source: &str, after: std::time::Duration) -> std::borrow::Cow<'_, str> {
+    let (first, rest) = source.split_once('\n').unwrap_or((source, ""));
+    let Some(pragma) = first.trim_start().strip_prefix(EXEC_PRAGMA_PREFIX) else {
+        if source.trim().is_empty() || json_wrapper_key(source).is_some() {
+            return std::borrow::Cow::Borrowed(source);
+        }
+        return std::borrow::Cow::Owned(format!(
+            "{EXEC_PRAGMA_PREFIX} {}\n{source}",
+            json!({ "yield_time_ms": yield_ms(after) })
+        ));
+    };
+    match serde_json::from_str(pragma) {
+        Ok(Value::Object(mut pragma))
+            if pragma.get("yield_time_ms").is_none_or(Value::is_null) =>
+        {
+            pragma.insert("yield_time_ms".into(), yield_ms(after));
+            std::borrow::Cow::Owned(format!(
+                "{EXEC_PRAGMA_PREFIX} {}\n{rest}",
+                Value::Object(pragma)
+            ))
+        }
+        _ => std::borrow::Cow::Borrowed(source),
+    }
+}
+
+pub fn wait_yielding(input: &str, after: std::time::Duration) -> std::borrow::Cow<'_, str> {
+    match serde_json::from_str(input) {
+        Ok(Value::Object(mut arguments))
+            if !arguments.contains_key("yield_time_ms")
+                && arguments.get("terminate") != Some(&Value::Bool(true)) =>
+        {
+            arguments.insert("yield_time_ms".into(), yield_ms(after));
+            std::borrow::Cow::Owned(Value::Object(arguments).to_string())
+        }
+        _ => std::borrow::Cow::Borrowed(input),
+    }
+}
+
 const WRAPPER_KEYS: [&str; 2] = ["input", "code"];
 
 #[must_use]

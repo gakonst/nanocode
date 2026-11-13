@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     future::{Future, poll_fn},
     pin::pin,
@@ -28,6 +29,7 @@ use super::{
 };
 use crate::{
     Tool, ToolDefinition, ToolInput,
+    code_mode_spec::{DEFAULT_YIELD, source_yielding, wait_yielding},
     embedded::{CodeModeExecution, CodeModeHostError, CodeModeObserver, HandCalls, HostFuture},
 };
 
@@ -306,6 +308,22 @@ const fn delivery(operation: &RemoteOperation) -> RemoteDelivery {
     match operation {
         RemoteOperation::Execute { .. } | RemoteOperation::Cancel { .. } => RemoteDelivery::Durable,
         _ => RemoteDelivery::Immediate,
+    }
+}
+
+fn name_yield(operation: &mut RemoteOperation) {
+    match operation {
+        RemoteOperation::Execute { source, .. } => {
+            if let Cow::Owned(named) = source_yielding(source, DEFAULT_YIELD) {
+                *source = named;
+            }
+        }
+        RemoteOperation::Wait { input, .. } => {
+            if let Cow::Owned(named) = wait_yielding(input, DEFAULT_YIELD) {
+                *input = named;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1222,13 +1240,16 @@ impl RemoteTransport for RemoteClient {
     }
     fn request<'a>(
         &'a self,
-        operation: RemoteOperation,
+        mut operation: RemoteOperation,
         tools: Vec<Arc<dyn Tool>>,
         mut observer: Option<&'a mut dyn CodeModeObserver>,
     ) -> HostFuture<'a, Result<Option<CodeModeExecution>, CodeModeHostError>> {
         Box::pin(async move {
             let client = &self.client;
             client.not_dispatched()?;
+            if client.operation_timeout.is_some() {
+                name_yield(&mut operation);
+            }
             let executed = match &operation {
                 RemoteOperation::Execute { context, .. } => Some(context.clone()),
                 _ => None,

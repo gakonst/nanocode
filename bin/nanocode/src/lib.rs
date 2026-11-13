@@ -743,6 +743,11 @@ async fn hand(args: HandArgs) -> Result<()> {
         hand
     };
     eprintln!("nanocode hand {name} in {}", directory.display());
+    if let Some(after) = args.cell_yield_ms {
+        eprintln!(
+            "hand: a cell whose call names no yield_time_ms yields after {after} ms; a brain that names none and gives up on an operation sooner takes the cell for lost: set the brain's cell yield instead"
+        );
+    }
     let run = hand.run(|event| match event {
         HandEvent::Connecting { endpoint } => eprintln!("hand: connecting {endpoint}"),
         HandEvent::Connected { endpoint, .. } => eprintln!("hand: connected to {endpoint}"),

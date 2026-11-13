@@ -220,7 +220,6 @@ pub struct Tools {
     pub(crate) nested_call_limit: Option<usize>,
     #[cfg(not(target_family = "wasm"))]
     pub(crate) cell_guard: Option<nanocode_code_mode::code_mode::CellGuard>,
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) cell_yield: Option<std::time::Duration>,
     #[cfg(not(target_family = "wasm"))]
     pub(super) deferred_tools_guidance_enabled: bool,
@@ -291,7 +290,6 @@ impl Default for Tools {
             nested_call_limit: None,
             #[cfg(not(target_family = "wasm"))]
             cell_guard: None,
-            #[cfg(not(target_family = "wasm"))]
             cell_yield: None,
             #[cfg(not(target_family = "wasm"))]
             deferred_tools_guidance_enabled: false,
@@ -436,6 +434,11 @@ impl Tools {
     #[must_use]
     pub const fn has_code_mode_host(&self) -> bool {
         self.embedded_host.is_some()
+    }
+
+    #[must_use]
+    pub const fn cell_yield(&self) -> Option<std::time::Duration> {
+        self.cell_yield
     }
 
     #[must_use]
@@ -877,7 +880,6 @@ impl ToolsBuilder {
         self
     }
 
-    #[cfg(not(target_family = "wasm"))]
     #[must_use]
     pub const fn cell_yield(mut self, after: std::time::Duration) -> Self {
         self.tools.cell_yield = Some(after);

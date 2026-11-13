@@ -216,14 +216,30 @@ class _Loader:
 _loaded = []
 
 
+class _Namespace:
+    @staticmethod
+    def create_module(spec):
+        return None
+
+    @staticmethod
+    def exec_module(module):
+        pass
+
+
 class _Finder:
     @staticmethod
     def find_spec(name, path=None, target=None):
         tail = name.rpartition('.')[2]
+        portions = []
         for base in sys.path if path is None else path:
             if not isinstance(base, str):
                 continue
             base = (base or '.') + '/' + tail
+            try:
+                if posix.stat(base).st_mode & 0o170000 == 0o040000:
+                    portions.append(base)
+            except OSError:
+                pass
             for file, package in ((base + '/__init__.py', True), (base + '.py', False)):
                 try:
                     if posix.stat(file).st_mode & 0o170000 != 0o100000:
@@ -235,7 +251,12 @@ class _Finder:
                     spec.submodule_search_locations = [base]
                 _loaded.append(name)
                 return spec
-        return None
+        if not portions:
+            return None
+        spec = _frozen_importlib.ModuleSpec(name, _Namespace, is_package=True)
+        spec.submodule_search_locations = portions
+        _loaded.append(name)
+        return spec
 
     @staticmethod
     def invalidate_caches():
@@ -427,9 +448,10 @@ def _start(argv, first):
     while _loaded:
         sys.modules.pop(_loaded.pop(), None)
     if 'os' in sys.modules:
+        fresh = dict(posix.environ)
         environ = sys.modules['os'].environ
         environ._data.clear()
-        environ._data.update(posix.environ)
+        environ._data.update(fresh)
     sys.argv = argv
     sys.executable = sys._base_executable = ''
     sys.path[:] = [posix._abs(first).decode('utf-8', 'surrogateescape') if first else '']

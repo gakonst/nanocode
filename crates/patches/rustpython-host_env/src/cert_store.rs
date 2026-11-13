@@ -1,10 +1,10 @@
 use std::io;
 
-use schannel::{RawPointer, cert_context::ValidUses, cert_store::CertStore};
+use nanocode_sys::certificate_store::{self, Location, Usages};
 use windows_sys::Win32::{
     Foundation::{CRYPT_E_NOT_FOUND, GetLastError},
     Security::Cryptography::{
-        CERT_CONTEXT, CRL_CONTEXT, CertCloseStore, CertEnumCRLsInStore, CertOpenSystemStoreW,
+        CRL_CONTEXT, CertCloseStore, CertEnumCRLsInStore, CertOpenSystemStoreW,
         PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
     },
 };
@@ -52,33 +52,29 @@ fn encoding_type(raw: u32) -> EncodingType {
 }
 
 pub fn enum_certificates(store_name: &str) -> CertificateEntries {
-    let open_fns = [CertStore::open_current_user, CertStore::open_local_machine];
+    let locations = [Location::CurrentUser, Location::LocalMachine];
     let mut had_open_store = false;
     let mut entries = Vec::new();
 
-    for open in open_fns {
-        let Ok(store) = open(store_name) else {
+    for location in locations {
+        let Ok(certificates) = certificate_store::system_certificates(location, store_name) else {
             continue;
         };
         had_open_store = true;
 
-        for cert in store.certs() {
-            let encoding = unsafe {
-                let ptr = cert.as_ptr() as *const CERT_CONTEXT;
-                encoding_type((*ptr).dwCertEncodingType)
-            };
-            let valid_uses = cert.valid_uses().map_or_else(
+        for certificate in certificates {
+            let valid_uses = certificate.usages.map_or_else(
                 |err| Err(io::Error::other(err)),
-                |uses| {
-                    Ok(match uses {
-                        ValidUses::All => CertificateUses::All,
-                        ValidUses::Oids(oids) => CertificateUses::Oids(oids.into_iter().collect()),
+                |usages| {
+                    Ok(match usages {
+                        Usages::All => CertificateUses::All,
+                        Usages::Identifiers(oids) => CertificateUses::Oids(oids),
                     })
                 },
             );
             entries.push(CertificateEntry {
-                der: cert.to_der().to_owned(),
-                encoding,
+                der: certificate.der,
+                encoding: encoding_type(certificate.encoding),
                 valid_uses,
             });
         }

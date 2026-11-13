@@ -129,9 +129,6 @@ default-features = false
 [target."cfg(windows)".dependencies.nanocode-sys]
 path = "../../core/sys"
 
-[target."cfg(windows)".dependencies.schannel]
-version = "0.1.29"
-
 [target."cfg(windows)".dependencies.windows-sys]
 version = "0.61.2"
 features = [

@@ -3,12 +3,13 @@ use windows_sys::Win32::{
     Foundation::{CRYPT_E_NOT_FOUND, S_OK},
     Security::Cryptography::{
         CERT_CONTEXT, CERT_STORE_PROV_SYSTEM_W, CERT_SYSTEM_STORE_CURRENT_USER_ID,
-        CERT_SYSTEM_STORE_LOCATION_SHIFT, CTL_USAGE, CertCloseStore, CertEnumCertificatesInStore,
-        CertGetEnhancedKeyUsage, CertOpenStore, CertVerifyTimeValidity, HCERTSTORE,
+        CERT_SYSTEM_STORE_LOCAL_MACHINE_ID, CERT_SYSTEM_STORE_LOCATION_SHIFT, CTL_USAGE,
+        CertCloseStore, CertEnumCertificatesInStore, CertGetEnhancedKeyUsage, CertOpenStore,
+        CertVerifyTimeValidity, HCERTSTORE,
     },
 };
 
-const ROOT_STORE: &[u16] = &[b'R' as u16, b'O' as u16, b'O' as u16, b'T' as u16, 0];
+const ROOT_STORE: &str = "ROOT";
 const TIME_VALID: i32 = 0;
 const FAILED: i32 = 0;
 
@@ -18,9 +19,16 @@ pub enum Usages {
     Identifiers(Vec<String>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Location {
+    CurrentUser,
+    LocalMachine,
+}
+
 #[derive(Debug)]
 pub struct Certificate {
     pub der: Vec<u8>,
+    pub encoding: u32,
     pub usages: io::Result<Usages>,
     pub time_valid: bool,
 }
@@ -34,13 +42,22 @@ impl Drop for Store {
 }
 
 pub fn current_user_roots() -> io::Result<Vec<Certificate>> {
+    system_certificates(Location::CurrentUser, ROOT_STORE)
+}
+
+pub fn system_certificates(location: Location, store_name: &str) -> io::Result<Vec<Certificate>> {
+    let location_id = match location {
+        Location::CurrentUser => CERT_SYSTEM_STORE_CURRENT_USER_ID,
+        Location::LocalMachine => CERT_SYSTEM_STORE_LOCAL_MACHINE_ID,
+    };
+    let name: Vec<u16> = store_name.encode_utf16().chain([0]).collect();
     let store = unsafe {
         CertOpenStore(
             CERT_STORE_PROV_SYSTEM_W,
             0,
             0,
-            CERT_SYSTEM_STORE_CURRENT_USER_ID << CERT_SYSTEM_STORE_LOCATION_SHIFT,
-            ROOT_STORE.as_ptr().cast(),
+            location_id << CERT_SYSTEM_STORE_LOCATION_SHIFT,
+            name.as_ptr().cast(),
         )
     };
     if store.is_null() {
@@ -65,6 +82,7 @@ fn certificate(context: &CERT_CONTEXT) -> Certificate {
         unsafe { CertVerifyTimeValidity(ptr::null(), context.pCertInfo) } == TIME_VALID;
     Certificate {
         der: der.to_vec(),
+        encoding: context.dwCertEncodingType,
         usages: usages(context),
         time_valid,
     }

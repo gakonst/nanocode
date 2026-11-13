@@ -131,6 +131,7 @@ impl Wake for Woken {
 }
 
 struct Running<'a> {
+    id: u64,
     future: Task<'a>,
     woken: Arc<Woken>,
     waker: Waker,
@@ -138,10 +139,11 @@ struct Running<'a> {
 }
 
 impl<'a> Running<'a> {
-    fn new(future: Task<'a>, foreground: bool) -> Self {
+    fn new(id: u64, future: Task<'a>, foreground: bool) -> Self {
         let woken = Arc::new(Woken(AtomicBool::new(true)));
         let waker = Waker::from(Arc::clone(&woken));
         Self {
+            id,
             future,
             woken,
             waker,
@@ -178,18 +180,25 @@ impl Executor {
     }
 
     pub fn run(&mut self, tasks: Vec<Task<'_>>, crash_at_ns: Option<u64>) -> Ended {
+        let polls = std::env::var_os("NANOCODE_SIM_POLLS").is_some();
+        let mut next_id = 0_u64;
         let mut running: Vec<Running<'_>> = tasks
             .into_iter()
-            .map(|task| Running::new(task, true))
+            .map(|task| {
+                next_id += 1;
+                Running::new(next_id, task, true)
+            })
             .collect();
         let mut ready = Vec::with_capacity(running.len());
         let mut foreground = running.len();
         while foreground > 0 {
-            running.extend(
-                crate::host::spawned()
-                    .into_iter()
-                    .map(|task| Running::new(task, false)),
-            );
+            for (task, site) in crate::host::spawned() {
+                next_id += 1;
+                if polls {
+                    eprintln!("spawn #{next_id} at {} {site}", self.clock.now_ns());
+                }
+                running.push(Running::new(next_id, task, false));
+            }
             ready.clear();
             ready.extend((0..running.len()).filter(|at| running[*at].is_ready()));
             if ready.is_empty() {
@@ -199,6 +208,10 @@ impl Executor {
                 continue;
             }
             let at = ready[self.scheduler.pick(ready.len())];
+            if polls {
+                let ids: Vec<u64> = ready.iter().map(|index| running[*index].id).collect();
+                eprintln!("poll #{} of {ids:?}", running[at].id);
+            }
             if running[at].poll().is_ready() {
                 foreground -= usize::from(running[at].foreground);
                 running.swap_remove(at);

@@ -3,6 +3,7 @@ mod disk;
 mod executor;
 mod faults;
 mod host;
+mod log;
 mod model;
 mod onelog;
 mod rng;
@@ -12,7 +13,11 @@ mod store;
 mod tidy;
 mod turnlog;
 mod turns;
+mod whole;
 mod workload;
+mod world;
+mod network;
+mod server;
 
 use std::{collections::BTreeMap, ops::Range, process::ExitCode};
 
@@ -23,6 +28,7 @@ use crate::{
     simulate::{Options, run_seed},
     store::Mutation,
     turns::{Invariant, PolicyKind, TurnMutation, TurnOptions, TurnStats},
+    whole::{StoreKind, WholeOptions, WholeStats},
 };
 
 const DEFAULT_OPS: u64 = 1000;
@@ -33,6 +39,7 @@ enum Scenario {
     Store,
     Agents,
     Turns,
+    Runtime,
 }
 
 struct Args {
@@ -41,13 +48,14 @@ struct Args {
     twice: bool,
     scenario: Scenario,
     turns: TurnOptions,
+    whole: WholeOptions,
 }
 
 type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K]\n       runtime: [--store memory|kv] [--calm]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|")
@@ -84,12 +92,14 @@ fn parse_args(args: &[String]) -> Option<Args> {
         protections: Protections::ALL,
         verbose: false,
     };
+    let mut whole = WholeOptions::default();
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         match flag.as_str() {
             "--twice" => twice = true,
             "--verbose" => options.verbose = true,
             "--calm" => turns.calm = true,
+            "--store" => whole.store = Some(StoreKind::parse(rest.next()?)?),
             "--policy" => turns.policy = PolicyKind::parse(rest.next()?)?,
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
             "--long" => turns.long = Some(rest.next()?.parse().ok()?),
@@ -103,6 +113,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
                     "store" => Scenario::Store,
                     "agents" => Scenario::Agents,
                     "turns" => Scenario::Turns,
+                    "runtime" => Scenario::Runtime,
                     _ => return None,
                 };
             }
@@ -121,15 +132,18 @@ fn parse_args(args: &[String]) -> Option<Args> {
         (_, None) => {}
         (Scenario::Store, Some(name)) => options.mutation = Mutation::parse(name)?,
         (Scenario::Turns, Some(name)) => turns.mutation = TurnMutation::parse(name)?,
-        (Scenario::Agents, Some(_)) => return None,
+        (Scenario::Agents | Scenario::Runtime, Some(_)) => return None,
     }
     turns.verbose = options.verbose;
+    whole.verbose = options.verbose;
+    whole.calm = turns.calm;
     Some(Args {
         seeds: seeds?,
         options,
         twice,
         scenario,
         turns,
+        whole,
     })
 }
 
@@ -137,6 +151,17 @@ fn replay(seed: u64, args: &Args) -> String {
     let options = args.options;
     if args.scenario == Scenario::Agents {
         return format!("nanocode-sim --scenario agents --seed {seed}");
+    }
+    if args.scenario == Scenario::Runtime {
+        let mut command = format!("nanocode-sim --scenario runtime --seed {seed}");
+        if let Some(store) = args.whole.store {
+            command.push_str(" --store ");
+            command.push_str(store.name());
+        }
+        if args.whole.calm {
+            command.push_str(" --calm");
+        }
+        return command;
     }
     if args.scenario == Scenario::Turns {
         let mut command = format!("nanocode-sim --scenario turns --seed {seed}");
@@ -221,6 +246,33 @@ fn judge_agents(seed: u64, args: &Args, totals: &mut AgentStats) -> Option<Strin
         format!(
             "{} :: nondeterminism: trace digest {:016x} then {:016x}",
             first.shape, first.digest, second.digest
+        )
+    })
+}
+
+fn judge_whole(seed: u64, args: &Args, totals: &mut WholeStats) -> Option<String> {
+    let first = whole::run_seed(seed, args.whole);
+    totals.add(&first.stats);
+    if args.options.verbose {
+        println!("seed {seed} digest {:016x} {}", first.digest, first.shape);
+    }
+    if first.wrong.is_some() || !args.twice {
+        return first
+            .wrong
+            .map(|message| format!("{} :: {message}", first.shape));
+    }
+    let quiet = WholeOptions {
+        verbose: false,
+        ..args.whole
+    };
+    let second = whole::run_seed(seed, quiet);
+    (second.digest != first.digest || second.wrong.is_some()).then(|| {
+        format!(
+            "{} :: nondeterminism: trace digest {:016x} then {:016x}, {}",
+            first.shape,
+            first.digest,
+            second.digest,
+            whole::divergence(&first.lines, &second.lines)
         )
     })
 }
@@ -330,6 +382,7 @@ fn main() -> ExitCode {
     if args == ["--tidy"] {
         return tidy();
     }
+    log::install();
     if let Err(error) = host::install() {
         eprintln!("could not install the simulated platform host: {error}");
         return ExitCode::FAILURE;
@@ -345,12 +398,14 @@ fn main() -> ExitCode {
     let mut totals = Stats::default();
     let mut agent_totals = AgentStats::default();
     let mut turn_totals = TurnStats::default();
+    let mut whole_totals = WholeStats::default();
     let mut caught = Caught::new();
     for seed in args.seeds.clone() {
         let verdict = match args.scenario {
             Scenario::Store => judge(seed, &args, &mut totals),
             Scenario::Agents => judge_agents(seed, &args, &mut agent_totals),
             Scenario::Turns => judge_turns(seed, &args, &mut turn_totals, &mut caught),
+            Scenario::Runtime => judge_whole(seed, &args, &mut whole_totals),
         };
         let Some(message) = verdict else {
             passed += 1;
@@ -366,6 +421,17 @@ fn main() -> ExitCode {
     }
     if args.scenario == Scenario::Turns {
         return report_turns(&args, passed, failed, &turn_totals, &caught);
+    }
+    if args.scenario == Scenario::Runtime {
+        println!(
+            "RESULT seeds={}..{} scenario=runtime passed={passed} failed={failed} twice={} stats={whole_totals:?}",
+            args.seeds.start, args.seeds.end, args.twice
+        );
+        return if failed == 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
     }
     if args.scenario == Scenario::Agents {
         println!(

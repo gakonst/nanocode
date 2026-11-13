@@ -1573,6 +1573,8 @@ name = "nanocode-sim"
 version = "0.7.0"
 dependencies = [
  "futures-util",
+ "http",
+ "nanocode",
  "nanocode-agent-core",
  "nanocode-durability",
  "nanocode-durability-core",
@@ -1582,6 +1584,7 @@ dependencies = [
  "nanocode-turnlog",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

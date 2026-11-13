@@ -13,7 +13,7 @@ pub const SIMULATED_START_UNIX_SECS: u64 = 1_794_441_600;
 struct Simulation {
     clock: Arc<Clock>,
     random: Rng,
-    spawned: Vec<HostFuture>,
+    spawned: Vec<(HostFuture, String)>,
     started: Instant,
 }
 
@@ -31,9 +31,13 @@ fn with<R>(use_simulation: impl FnOnce(&mut Simulation) -> R) -> R {
     })
 }
 
-struct SimulatedHost;
+struct SimulatedHost {
+    uuid_stamps: std::sync::atomic::AtomicU64,
+}
 
-static HOST: SimulatedHost = SimulatedHost;
+static HOST: SimulatedHost = SimulatedHost {
+    uuid_stamps: std::sync::atomic::AtomicU64::new(0),
+};
 
 impl Host for SimulatedHost {
     fn now(&self) -> Instant {
@@ -59,8 +63,28 @@ impl Host for SimulatedHost {
         Ok(())
     }
 
+    fn uuid_stamps(&self) -> Option<&std::sync::atomic::AtomicU64> {
+        Some(&self.uuid_stamps)
+    }
+
     fn spawn(&self, future: HostFuture) {
-        with(|simulation| simulation.spawned.push(future));
+        let site = if std::env::var_os("NANOCODE_SIM_POLLS").is_some() {
+            let trace = std::backtrace::Backtrace::force_capture().to_string();
+            if std::env::var_os("NANOCODE_SIM_RAW").is_some() {
+                eprintln!("{trace}");
+            }
+            trace
+                .lines()
+                .filter(|line| line.contains("/crates/") && !line.contains("platform/src"))
+                .map(|line| line.rsplit("/crates/").next().unwrap_or(line))
+                .take(4)
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join(" < ")
+        } else {
+            String::new()
+        };
+        with(|simulation| simulation.spawned.push((future, site)));
     }
 }
 
@@ -69,6 +93,8 @@ pub fn install() -> std::io::Result<()> {
 }
 
 pub fn enter(seed: u64, clock: &Arc<Clock>) {
+    HOST.uuid_stamps
+        .store(0, std::sync::atomic::Ordering::Relaxed);
     CURRENT.with_borrow_mut(|current| {
         *current = Some(Simulation {
             clock: Arc::clone(clock),
@@ -79,7 +105,7 @@ pub fn enter(seed: u64, clock: &Arc<Clock>) {
     });
 }
 
-pub fn spawned() -> Vec<HostFuture> {
+pub fn spawned() -> Vec<(HostFuture, String)> {
     CURRENT.with_borrow_mut(|current| {
         current
             .as_mut()

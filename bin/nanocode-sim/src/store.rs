@@ -498,6 +498,9 @@ impl SimKv {
 
 impl KeyValue for SimKv {
     fn get<'a>(&'a self, key: &'a str) -> StoreFuture<'a, Result<Option<Versioned>, StoreError>> {
+        if std::env::var_os("NANOCODE_SIM_POLLS").is_some() {
+            eprintln!("kv get {key}");
+        }
         self.call(move |kv, op| kv.get(op, key))
     }
 
@@ -505,6 +508,9 @@ impl KeyValue for SimKv {
         &'a self,
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        if std::env::var_os("NANOCODE_SIM_POLLS").is_some() {
+            eprintln!("kv get_values {keys:?}");
+        }
         self.call(move |kv, op| kv.get_values(op, keys))
     }
 
@@ -512,6 +518,9 @@ impl KeyValue for SimKv {
         &'a self,
         entries: &'a [(String, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>> {
+        if std::env::var_os("NANOCODE_SIM_POLLS").is_some() {
+            eprintln!("kv put_values {:?}", entries.iter().map(|(key, _)| key).collect::<Vec<_>>());
+        }
         self.call(move |kv, op| kv.put_values(op, entries))
     }
 

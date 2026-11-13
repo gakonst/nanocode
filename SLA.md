@@ -66,21 +66,22 @@ nanocode-ts on Workers and Durable Objects, durable-cloudflare `scripts/measure-
 
 Live Claude, claude-haiku-4-5 with an API key from the hosted Hand, whose egress goes through a TLS-terminating proxy (DNS 0.2 to 0.4 s and TLS 0.24 to 0.27 s per new connection), 8 sessions of 3 turns each, Enter to the first token drawn, p50 (min to max): nanocode 477 ms (446 to 568), 439, 446; the same without that day's connection changes 875, 1,071, 848; Claude Code 2.1.318 1,844 ms (1,427 to 2,416), 813, 799. Ready 45.5 ms against Claude Code's 1,132.
 
-Live Claude 5.5 models, same host, proxy and method, 6 sessions of 3 turns each, Enter to the first token drawn, p50 (min to max) for turns 1, 2 and 3:
+Live Claude 5.5 models, same host and proxy, 6 sessions of 3 turns each, every session's prompts unique (the run's id in each), Enter to the first token drawn, p50 (min to max) for turns 1, 2 and 3, interleaved lanes (2026-11-13):
 
-| model | nanocode (5f299dbce) | Claude Code 2.1.318 |
-|---|---|---|
-| claude-haiku-5-5 | 695 (639 to 863), 1,317 (732 to 1,994), 1,183 | 1,704, 1,077, 1,079 |
-| claude-sonnet-5-5 | 807 (697 to 1,401), 1,595 (670 to 1,781), 823 | 2,286, 1,538, 1,482 |
-| claude-opus-5-5 | 1,639 (1,436 to 3,232), 2,233 (1,403 to 5,691), 1,478 | 2,633, 1,748, 1,739 |
+| model | nanocode 6638af866 | nanocode 5f299dbce | Claude Code 2.1.318 |
+|---|---|---|---|
+| claude-haiku-5-5 | 858 (686 to 1,383), 639 (564 to 984), 753 (561 to 789) | 666, 1,186 (525 to 3,557), 698 (475 to 1,986) | 1,969, 1,014, 982 |
+| claude-sonnet-5-5 | 952 (817 to 1,372), 956 (861 to 1,106), 901 (803 to 1,037) | 1,313, 1,375 (850 to 2,651), 1,278 | 2,249, 1,740, 1,508 |
+| claude-opus-5-5 | 1,148 (652 to 1,275), 1,045 (696 to 1,320), 1,074 (738 to 1,174) | 1,242, 1,158 (1,001 to 3,589), 1,478 | 2,222, 1,656, 1,644 |
 
-nanocode is ahead on every first turn (by 1.0 to 1.5 s) and on turn 3 for Sonnet and Opus, and behind on turn 2 for all three models and on turn 3 for Haiku, with a wide spread (nanocode's turn-2 minimum is below Claude Code's p50); six sessions do not settle whether that is the egress proxy or nanocode. Ready: nanocode 36 to 43 ms, Claude Code 1,376 to 1,518 ms.
+nanocode 6638af866 is ahead of Claude Code on every turn of every model: by 1.1 to 1.3 s on the first turn and 0.2 to 0.8 s on later ones, and its later turns are as fast as its first. Before it, nanocode lost later turns at random because the Claude stream dropped each response before its chunked terminator arrived, so the connection closed and the next turn paid for a new one (0.5 to 1 s here); DECISIONS.md has the trace. Ready: nanocode 33 to 46 ms, Claude Code 1,257 to 1,316 ms.
 
 The deployed Worker, nanocode-cloudflare-durable on tempo-dev.workers.dev (durable-cloudflare 7c43bb3, nanocode-ts build-1a597dd, version b1bdc8aa, deployed 2026-11-13), measured from gak-9 (M1 Max, home network, no proxy) with a `?live=1` turn stream, a new session per round (a cold Durable Object), 2 rounds of 3 turns per provider, demo models (claude-haiku-5-5; the demo's Responses model, priority tier), a 150-number reply. Claude: POST to response headers 196 to 270 ms on warm turns (one outlier 1,079), first delta 738 to 1,574 ms, of which the provider's own response start through the AI Gateway (`host.http_start`) is 566 to 774 ms; cold turns 1,238 to 2,505 ms to headers and 2,794 to 4,160 ms to the first delta, with opening the SDK 337 to 398 ms and the first provider request 1,630 to 1,798 ms. Responses: warm first delta 1,435 to 1,695 ms (provider start 664 to 958 ms), cold 3,281 to 5,081 ms (provider start 2,227 to 3,469, SDK open 396 to 1,043). The client draws 575 to 701 characters/s on Claude and 113 to 402 on Responses, the provider's own rate. The cold turn's largest share is the first provider request from a new isolate, 1 s or more above a warm one: a connection to the gateway that a new Durable Object opens on its first request, which opening it during the SDK open would hide.
 
 ## Not measured yet
 
-- The deployed Worker's cold first provider request (open the gateway connection while the SDK opens), more deployed samples, and on Workers: tool calls and Code Mode cells on Workers.
+- The deployed Worker's cold first turn: a new session object's first model call takes 1.4 to 4.3 s against 0.6 to 0.9 s warm even with the model path primed at admission, and its first turn sends 7 requests (the model call and the MCP servers' handshakes) against 1 later; which of them the first token waits on, and tool calls and Code Mode cells on Workers.
+- The Responses HTTP stream (gateways) may drop its connection the way the Claude one did; it was not traced live.
 - DeepSeek and GLM live (reachable through `NANOCODE_ANTHROPIC_BASE_URL` with their Anthropic-compatible endpoints), and live Claude from a host without an egress proxy.
 - Request compression on a blocking thread.
 

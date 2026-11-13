@@ -32,8 +32,10 @@ pub(super) fn build_agent(
         Arc::make_mut(&mut config).model = model;
         validate_model_thinking(config.model, config.thinking)?;
         validate_model_reasoning_mode(config.model, config.reasoning_mode)?;
-        if config.context_window_tokens > model.max_context_window_tokens() {
-            Arc::make_mut(&mut config).context_window_tokens = model.max_context_window_tokens();
+        if let Some(maximum) = model.context_window_limit()
+            && config.context_window_tokens > maximum
+        {
+            Arc::make_mut(&mut config).context_window_tokens = maximum;
         }
         if key
             .explicit()

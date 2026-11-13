@@ -155,6 +155,18 @@ const SESSION: Group = Group::new(&[
     Argument::value("tier", "TIER", Parser::OneOf(&TIERS))
         .long("tier")
         .help("Service tier; only tiers the model supports are accepted"),
+    Argument::value("context_window", "TOKENS", Parser::U64)
+        .long("context-window")
+        .env("NANOCODE_CONTEXT_WINDOW")
+        .help(
+            "The model's context window in tokens, for a model nanocode does not know, such as one on a custom endpoint; a known model's window cannot be raised past its maximum",
+        ),
+    Argument::value("max_output_tokens", "TOKENS", Parser::U64)
+        .long("max-output-tokens")
+        .env("NANOCODE_MAX_OUTPUT_TOKENS")
+        .help(
+            "Longest reply in tokens the Claude harness asks for (max_tokens); Codex requests carry no reply limit, as Codex's do not",
+        ),
     Argument::value("cyber_access_program", "PROGRAM", Parser::Choice(&CyberAccessProgramArg::CHOICES))
         .long("cyber-access-program")
         .help(
@@ -513,6 +525,8 @@ pub struct SessionArgs {
     pub harness: Option<HarnessArg>,
     pub thinking: Option<String>,
     pub tier: Option<String>,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
     pub cyber_access_program: Option<CyberAccessProgramArg>,
     pub workspace: Option<PathBuf>,
     pub resume: Option<String>,
@@ -555,6 +569,8 @@ impl SessionArgs {
                 .map(|index| HarnessArg::ALL[index]),
             thinking: matches.text("thinking"),
             tier: matches.text("tier"),
+            context_window: matches.u64("context_window"),
+            max_output_tokens: matches.u64("max_output_tokens"),
             cyber_access_program: matches
                 .choice("cyber_access_program")
                 .map(|index| CyberAccessProgramArg::ALL[index]),
@@ -578,6 +594,8 @@ impl SessionArgs {
             harness: self.harness.or(root.harness),
             thinking: self.thinking.or(root.thinking),
             tier: self.tier.or(root.tier),
+            context_window: self.context_window.or(root.context_window),
+            max_output_tokens: self.max_output_tokens.or(root.max_output_tokens),
             cyber_access_program: self.cyber_access_program.or(root.cyber_access_program),
             workspace: self.workspace.or(root.workspace),
             resume: self.resume.or(root.resume),

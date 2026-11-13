@@ -192,6 +192,14 @@ impl Model {
             _ => MAX_CONTEXT_WINDOW_TOKENS,
         }
     }
+
+    #[must_use]
+    pub const fn context_window_limit(self) -> Option<u64> {
+        match self {
+            Self::Custom(_) => None,
+            _ => Some(self.max_context_window_tokens()),
+        }
+    }
 }
 
 impl fmt::Display for Model {

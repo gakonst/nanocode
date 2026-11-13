@@ -85,17 +85,6 @@ fn native_model(model: &ModelSelection) -> bool {
             .is_some_and(|model| Model::ALL.contains(&model))
 }
 
-fn model_limit(name: &str) -> Result<Option<u64>> {
-    match std::env::var(name) {
-        Ok(value) => value
-            .trim()
-            .parse()
-            .map(Some)
-            .map_err(|error| format!("{name}: {error}").into()),
-        Err(_) => Ok(None),
-    }
-}
-
 pub fn on_harness(model: &ModelSelection, family: &nanocode::HarnessFamily) -> ModelSelection {
     let moved = ModelSelection::new(family.clone(), model.as_str());
     match (moved.as_codex(), moved.as_claude()) {
@@ -416,6 +405,8 @@ pub struct HostConfig {
     pub clients: ModelClients,
     pub headless: bool,
     pub cyber_access_program: Option<nanocode::codex::CyberAccessProgram>,
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -653,11 +644,19 @@ impl Host {
         let route = |request: &nanocode::HarnessRequest| {
             Route::of(request.options.selected_provider()).ok()
         };
-        let context_window = model_limit("NANOCODE_CONTEXT_WINDOW")?;
-        let max_output = model_limit("NANOCODE_MAX_OUTPUT_TOKENS")?
-            .map(u32::try_from)
-            .transpose()
-            .map_err(|error| format!("NANOCODE_MAX_OUTPUT_TOKENS: {error}"))?;
+        let context_window = config.context_window;
+        let max_output = config.max_output_tokens;
+        if let (Some(tokens), Some(maximum)) = (
+            context_window,
+            model.as_codex().and_then(|model| model.context_window_limit()),
+        ) && tokens > maximum
+        {
+            return Err(format!(
+                "--context-window {tokens} is over {}'s window of {maximum} tokens",
+                model.as_str()
+            )
+            .into());
+        }
         let hand = std::sync::Arc::new(nanocode_sync::Atom::new(None::<nanocode::HandDescription>));
         let described = std::sync::Arc::clone(&hand);
         let codex = CodexHarness::new(openai)

@@ -179,8 +179,10 @@ impl<F> CodexBuilder<F> {
         if !self.config.thinking_explicit {
             self.config.thinking = model.default_thinking();
         }
-        if self.config.context_window_tokens > model.max_context_window_tokens() {
-            self.config.context_window_tokens = model.max_context_window_tokens();
+        if let Some(maximum) = model.context_window_limit()
+            && self.config.context_window_tokens > maximum
+        {
+            self.config.context_window_tokens = maximum;
         }
         self
     }
@@ -226,8 +228,10 @@ impl<F> CodexBuilder<F> {
 
     #[must_use]
     pub const fn context_window_tokens(mut self, tokens: u64) -> Self {
-        let maximum = self.config.model.max_context_window_tokens();
-        self.config.context_window_tokens = if tokens > maximum { maximum } else { tokens };
+        self.config.context_window_tokens = match self.config.model.context_window_limit() {
+            Some(maximum) if tokens > maximum => maximum,
+            _ => tokens,
+        };
         self
     }
 

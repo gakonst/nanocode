@@ -290,9 +290,9 @@ impl BranchSpawner {
         }
         validate_model_thinking(config.model, config.thinking)?;
         validate_model_reasoning_mode(config.model, config.reasoning_mode)?;
-        config.context_window_tokens = config
-            .context_window_tokens
-            .min(config.model.max_context_window_tokens());
+        if let Some(maximum) = config.model.context_window_limit() {
+            config.context_window_tokens = config.context_window_tokens.min(maximum);
+        }
         spawner.config = Arc::new(config);
         let workspace = snapshot
             .conversation

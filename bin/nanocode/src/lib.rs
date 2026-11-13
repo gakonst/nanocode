@@ -364,6 +364,12 @@ async fn prepare(
         clients,
         headless,
         cyber_access_program: args.cyber_access_program.map(Into::into),
+        context_window: args.context_window,
+        max_output_tokens: args
+            .max_output_tokens
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|error| format!("--max-output-tokens: {error}"))?,
     };
     let host = tracing::Instrument::instrument(
         Host::build(config, &model, thinking),

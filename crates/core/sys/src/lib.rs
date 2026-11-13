@@ -14,6 +14,7 @@ mod random;
 pub mod sha1;
 pub mod sha256;
 pub mod sha512;
+mod stack;
 mod swap;
 #[cfg(unix)]
 pub mod unix;
@@ -27,4 +28,5 @@ pub use atomic::{AtomicArc, AtomicBox, AtomicStatic};
 pub use inline::{InlineVec, OwnedItems, new_arc_with};
 #[cfg(any(unix, windows))]
 pub use random::fill_random;
+pub use stack::current_thread_stack_remaining_bytes;
 pub use swap::{AsRaw, Enclosed, Guard, Pointer, Swap, SwapOption, Swapped};

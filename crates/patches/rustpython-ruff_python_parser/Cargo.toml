@@ -72,6 +72,9 @@ version = "1.0.12"
 [dependencies.unicode-normalization]
 version = "0.1.23"
 
+[target.'cfg(not(target_family = "wasm"))'.dependencies.nanocode-sys]
+path = "../../core/sys"
+
 [dev-dependencies.anyhow]
 version = "1.0.80"
 

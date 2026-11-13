@@ -1745,6 +1745,7 @@ version = "0.16.5"
 dependencies = [
  "bitflags",
  "memchr",
+ "nanocode-sys",
  "rustpython-ruff_python_ast",
  "rustpython-ruff_python_trivia",
  "rustpython-ruff_text_size",

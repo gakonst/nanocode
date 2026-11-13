@@ -61,6 +61,19 @@ const RECURSION_DEPTH_MAX: usize = 20_000;
 const STACK_BYTES_PER_RECURSION_MAX: usize = 12 * 1024;
 #[cfg(not(target_family = "wasm"))]
 const PARSER_STACK_BYTES: usize = RECURSION_DEPTH_MAX * STACK_BYTES_PER_RECURSION_MAX;
+#[cfg(not(target_family = "wasm"))]
+const PARSE_STACK_BYTES_OUTSIDE_RECURSION_MAX: usize = 64 * 1024;
+#[cfg(not(target_family = "wasm"))]
+const RECURSION_LEVELS_AFTER_NESTING_STOP_MAX: usize = 4;
+
+#[cfg(not(target_family = "wasm"))]
+fn caller_recursion_depth_max() -> Option<usize> {
+    let remaining = nanocode_sys::current_thread_stack_remaining_bytes()?;
+    let levels = remaining.checked_sub(PARSE_STACK_BYTES_OUTSIDE_RECURSION_MAX)?
+        / STACK_BYTES_PER_RECURSION_MAX;
+    let depth_max = levels.checked_sub(RECURSION_LEVELS_AFTER_NESTING_STOP_MAX)?;
+    (depth_max > 0).then_some(depth_max.min(RECURSION_DEPTH_MAX))
+}
 
 #[cfg(not(target_family = "wasm"))]
 struct ParseJob {
@@ -106,6 +119,7 @@ impl ParserWorker {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         Parser::new_starts_at(&job.source, job.start_offset, job.options)
                             .parse_here()
+                            .expect("a parse bounded by RECURSION_DEPTH_MAX always finishes")
                     }));
                     if reply.send(outcome).is_err() {
                         return;
@@ -170,6 +184,8 @@ pub(crate) struct Parser<'src> {
     /// Number of active recursive statement, expression, and pattern parsing operations.
     recursion_depth: usize,
 
+    recursion_depth_max: usize,
+
     nesting_too_deep: Option<NestingTooDeep>,
 
     /// Reusable, nesting-safe scratch storage for expression lists.
@@ -217,6 +233,7 @@ impl<'src> Parser<'src> {
             prev_token_end: TextSize::new(0),
             start_offset,
             recursion_depth: 0,
+            recursion_depth_max: RECURSION_DEPTH_MAX,
             nesting_too_deep: None,
             current_token_id: TokenId::default(),
             expr_scratch: ScratchBuffer::with_capacity(16),
@@ -231,7 +248,7 @@ impl<'src> Parser<'src> {
     #[inline]
     fn with_recursion<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         self.recursion_depth += 1;
-        if self.recursion_depth > RECURSION_DEPTH_MAX && self.nesting_too_deep.is_none() {
+        if self.recursion_depth > self.recursion_depth_max && self.nesting_too_deep.is_none() {
             self.stop_nesting();
         }
         let result = f(self);
@@ -251,14 +268,23 @@ impl<'src> Parser<'src> {
 
     /// Consumes the [`Parser`] and returns the parsed [`Parsed`].
     #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn parse(self) -> Parsed<Mod> {
+    pub(crate) fn parse(mut self) -> Parsed<Mod> {
+        let source = self.source;
+        let start_offset = self.start_offset;
+        let options = self.options.clone();
+        if let Some(depth_max) = caller_recursion_depth_max() {
+            self.recursion_depth_max = depth_max;
+            if let Some(parsed) = self.parse_here() {
+                return parsed;
+            }
+        }
         let job = ParseJob {
-            source: self.source.to_owned(),
-            start_offset: self.start_offset,
-            options: self.options.clone(),
+            source: source.to_owned(),
+            start_offset,
+            options,
         };
-        let range = TextRange::new(self.start_offset, self.source.text_len());
-        let mode = self.options.mode;
+        let range = TextRange::new(start_offset, source.text_len());
+        let mode = job.options.mode;
         match PARSER_WORKER.with(|worker| worker.parse(job)) {
             Ok(Ok(parsed)) => parsed,
             Ok(Err(payload)) => std::panic::resume_unwind(payload),
@@ -270,9 +296,10 @@ impl<'src> Parser<'src> {
     #[cfg(target_family = "wasm")]
     pub(crate) fn parse(self) -> Parsed<Mod> {
         self.parse_here()
+            .expect("a parse bounded by RECURSION_DEPTH_MAX always finishes")
     }
 
-    fn parse_here(mut self) -> Parsed<Mod> {
+    fn parse_here(mut self) -> Option<Parsed<Mod>> {
         let syntax = match self.options.mode {
             Mode::Expression | Mode::ParenthesizedExpression => {
                 Mod::Expression(self.parse_single_expression())
@@ -280,7 +307,10 @@ impl<'src> Parser<'src> {
             Mode::Module | Mode::Ipython => Mod::Module(self.parse_module()),
         };
 
-        self.finish(syntax)
+        if self.nesting_too_deep.is_some() && self.recursion_depth_max < RECURSION_DEPTH_MAX {
+            return None;
+        }
+        Some(self.finish(syntax))
     }
 
     /// Parses a single expression.

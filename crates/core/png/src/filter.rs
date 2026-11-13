@@ -20,8 +20,9 @@ impl Filter {
     }
 }
 
-const ADAPTIVE_CANDIDATES: [Filter; 4] = [Filter::Sub, Filter::Up, Filter::Average, Filter::Paeth];
-const MAGNITUDE_LANES: usize = 32;
+const CANDIDATES: usize = 4;
+const ADAPTIVE_CANDIDATES: [Filter; CANDIDATES] =
+    [Filter::Sub, Filter::Up, Filter::Average, Filter::Paeth];
 const FILTER_LANES: usize = 32;
 
 #[inline(always)]
@@ -364,20 +365,66 @@ fn apply(filter: Filter, bytes_per_pixel: usize, previous: &[u8], row: &[u8], ou
     }
 }
 
-fn magnitude(bytes: &[u8]) -> u64 {
-    let (lanes, rest) = bytes.as_chunks::<MAGNITUDE_LANES>();
+#[inline(always)]
+fn absolute(byte: u8) -> u32 {
+    u32::from(byte.cast_signed().unsigned_abs())
+}
+
+fn magnitude(
+    row: &[u8],
+    left: &[u8],
+    above: &[u8],
+    corner: &[u8],
+    predict: impl Fn(u8, u8, u8) -> u8,
+) -> u64 {
+    let (rows, row_rest) = row.as_chunks::<FILTER_LANES>();
+    let (lefts, left_rest) = left.as_chunks::<FILTER_LANES>();
+    let (aboves, above_rest) = above.as_chunks::<FILTER_LANES>();
+    let (corners, corner_rest) = corner.as_chunks::<FILTER_LANES>();
     let mut sum = 0u64;
-    for lane in lanes {
-        let mut partial = 0u32;
-        for &byte in lane {
-            partial += u32::from(byte.cast_signed().unsigned_abs());
+    for (((row, left), above), corner) in rows.iter().zip(lefts).zip(aboves).zip(corners) {
+        let mut filtered = [0u8; FILTER_LANES];
+        for lane in 0..FILTER_LANES {
+            filtered[lane] = row[lane].wrapping_sub(predict(left[lane], above[lane], corner[lane]));
         }
-        sum += u64::from(partial);
+        sum += u64::from(filtered.into_iter().map(absolute).sum::<u32>());
     }
-    sum + rest
+    for (((&row, &left), &above), &corner) in row_rest
         .iter()
-        .map(|&byte| u64::from(byte.cast_signed().unsigned_abs()))
-        .sum::<u64>()
+        .zip(left_rest)
+        .zip(above_rest)
+        .zip(corner_rest)
+    {
+        sum += u64::from(absolute(row.wrapping_sub(predict(left, above, corner))));
+    }
+    sum
+}
+
+fn magnitudes(bytes_per_pixel: usize, previous: &[u8], row: &[u8]) -> [u64; CANDIDATES] {
+    assert_eq!(previous.len(), row.len());
+    assert!(bytes_per_pixel <= row.len());
+    let lead = bytes_per_pixel;
+    let rest = &row[lead..];
+    let left = &row[..row.len() - lead];
+    let above = &previous[lead..];
+    let corner = &previous[..previous.len() - lead];
+    let lead_row = &row[..lead];
+    let lead_above = &previous[..lead];
+    [
+        magnitude(lead_row, lead_row, lead_above, lead_row, |_, _, _| 0)
+            + magnitude(rest, left, above, corner, |left, _, _| left),
+        magnitude(lead_row, lead_row, lead_above, lead_row, |_, above, _| {
+            above
+        }) + magnitude(rest, left, above, corner, |_, above, _| above),
+        magnitude(lead_row, lead_row, lead_above, lead_row, |_, above, _| {
+            above / 2
+        }) + magnitude(rest, left, above, corner, |left, above, _| {
+            average_encode(left, above)
+        }),
+        magnitude(lead_row, lead_row, lead_above, lead_row, |_, above, _| {
+            paeth_encode(0, above, 0)
+        }) + magnitude(rest, left, above, corner, paeth_encode),
+    ]
 }
 
 pub(crate) fn adaptive(
@@ -386,16 +433,13 @@ pub(crate) fn adaptive(
     row: &[u8],
     output: &mut [u8],
 ) -> Filter {
+    let sums = magnitudes(bytes_per_pixel, previous, row);
     let mut best = (u64::MAX, Filter::None);
-    for filter in ADAPTIVE_CANDIDATES {
-        apply(filter, bytes_per_pixel, previous, row, output);
-        let sum = magnitude(output);
+    for (filter, sum) in ADAPTIVE_CANDIDATES.into_iter().zip(sums) {
         if sum <= best.0 {
             best = (sum, filter);
         }
     }
-    if best.1 != Filter::Paeth {
-        apply(best.1, bytes_per_pixel, previous, row, output);
-    }
+    apply(best.1, bytes_per_pixel, previous, row, output);
     best.1
 }

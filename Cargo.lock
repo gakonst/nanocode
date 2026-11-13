@@ -1788,6 +1788,7 @@ dependencies = [
  "nanocode-subagents",
  "nanocode-tool-runtime",
  "nanocode-tools",
+ "nanocode-turnlog",
  "serde_json",
  "tokio",
 ]
@@ -1806,6 +1807,7 @@ dependencies = [
  "nanocode-sync",
  "nanocode-tool-contracts",
  "nanocode-tool-host",
+ "nanocode-turnlog",
  "serde",
  "serde_json",
  "tokio",
@@ -2293,6 +2295,7 @@ dependencies = [
  "nanocode-tls",
  "nanocode-tool-provider",
  "nanocode-tools",
+ "nanocode-turnlog",
  "nanocode-types",
  "reqwest",
  "serde",
@@ -2449,6 +2452,7 @@ dependencies = [
  "nanocode-platform",
  "nanocode-subagents",
  "nanocode-sync",
+ "nanocode-turnlog",
  "serde_json",
  "tokio",
 ]
@@ -2569,6 +2573,7 @@ dependencies = [
  "nanocode-tool-contracts",
  "nanocode-tool-provider",
  "nanocode-tools",
+ "nanocode-turnlog",
  "nanocode-types",
  "reqwest",
  "serde",
@@ -2641,6 +2646,18 @@ dependencies = [
  "nanocode-sys",
  "serde",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nanocode-turnlog"
+version = "0.7.0"
+dependencies = [
+ "imbl",
+ "nanocode-durability-core",
+ "nanocode-sync",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

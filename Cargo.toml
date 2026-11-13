@@ -6,6 +6,7 @@ members = [
     "crates/core/agent",
     "crates/core/agent-types",
     "crates/core/durability",
+    "crates/core/turnlog",
     "crates/core/types-core",
     "crates/core/unicode-normalization",
     "crates/core/process",
@@ -87,6 +88,7 @@ core-foundation-sys = "0.8.7"
 nanocode-backend-claude-tools = { version = "0.7.0", path = "crates/backends/claude/tools" }
 nanocode-agent-types = { version = "0.7.0", path = "crates/core/agent-types" }
 nanocode-durability-core = { version = "0.7.0", path = "crates/core/durability" }
+nanocode-turnlog = { version = "0.7.0", path = "crates/core/turnlog" }
 nanocode-types-core = { version = "0.7.0", path = "crates/core/types-core" }
 nanocode-agent-config = { version = "0.7.0", path = "crates/runtime/agent-config" }
 nanocode-process-contracts = { version = "0.7.0", path = "crates/core/process" }

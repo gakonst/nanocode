@@ -9,6 +9,7 @@ pub mod contract {
     pub use nanocode_tools::*;
 }
 
+pub mod effects;
 pub mod embedded;
 mod function_tool;
 

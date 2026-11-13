@@ -231,6 +231,8 @@ pub struct Tools {
 
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
 
+    effect_gate: Option<Arc<dyn crate::effects::EffectGate>>,
+
     pub(crate) brief_code_tools: Arc<[String]>,
 
     pub(crate) code_tools_layout: crate::code_mode_description::ExecLayout,
@@ -298,6 +300,7 @@ impl Default for Tools {
             #[cfg(not(target_family = "wasm"))]
             excluded_code_tools: HashSet::new(),
             recovery: None,
+            effect_gate: None,
             brief_code_tools: Arc::from([]),
             code_tools_layout: crate::code_mode_description::ExecLayout::default(),
             text_pins: None,
@@ -534,6 +537,10 @@ impl Tools {
 
     pub(crate) fn recovery(&self) -> Option<Arc<dyn crate::ToolRecovery>> {
         self.recovery.clone()
+    }
+
+    pub(crate) fn effect_gate(&self) -> Option<Arc<dyn crate::effects::EffectGate>> {
+        self.effect_gate.clone()
     }
 
     #[must_use]
@@ -1010,6 +1017,12 @@ impl ToolsBuilder {
     #[must_use]
     pub fn tool_recovery(mut self, recovery: Arc<dyn crate::ToolRecovery>) -> Self {
         self.tools.recovery = Some(recovery);
+        self
+    }
+
+    #[must_use]
+    pub fn effect_gate(mut self, gate: Arc<dyn crate::effects::EffectGate>) -> Self {
+        self.tools.effect_gate = Some(gate);
         self
     }
 

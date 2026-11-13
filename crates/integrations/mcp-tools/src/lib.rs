@@ -401,6 +401,10 @@ impl PreparedMcpTool {
         self.entry.read_only
     }
 
+    pub fn effect(&self) -> nanocode_turnlog::EffectClass {
+        nanocode_turnlog::EffectClass::mcp(self.entry.read_only, self.entry.resumable)
+    }
+
     pub fn call(
         &self,
         arguments: JsonObject,

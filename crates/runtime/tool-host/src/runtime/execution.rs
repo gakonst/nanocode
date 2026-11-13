@@ -6,6 +6,7 @@ use nanocode_sync::Atom;
 pub struct ToolRuntime {
     inner: Runtime,
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
+    effect_gate: Option<Arc<dyn crate::effects::EffectGate>>,
 }
 
 enum Runtime {
@@ -29,6 +30,7 @@ impl ToolRuntime {
         Self {
             inner: Runtime::Native(NativeToolRuntime::new(workspace, builtin_tools)),
             recovery: None,
+            effect_gate: None,
         }
     }
 
@@ -54,6 +56,7 @@ impl ToolRuntime {
         Self {
             inner,
             recovery: tools.recovery(),
+            effect_gate: tools.effect_gate(),
         }
     }
 
@@ -302,7 +305,16 @@ impl ToolRuntime {
     > {
         Box::pin(async move {
             match &self.inner {
-                Runtime::Native(runtime) => runtime.execute_tool(name, input, context).await,
+                Runtime::Native(runtime) => {
+                    crate::effects::gated(
+                        self.effect_gate.as_ref(),
+                        name,
+                        input,
+                        context,
+                        |input, context| runtime.execute_tool(name, input, context),
+                    )
+                    .await
+                }
                 Runtime::Host(runtime) => runtime.execute_tool(name, input, context).await,
             }
         })

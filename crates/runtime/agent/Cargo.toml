@@ -21,6 +21,7 @@ nanocode-durability.workspace = true
 nanocode-subagents.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-tool-contracts.workspace = true
+nanocode-turnlog.workspace = true
 nanocode-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true

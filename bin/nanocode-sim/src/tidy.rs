@@ -4,6 +4,7 @@ const SIMULATED: &[&str] = &[
     "crates/core/agent/src",
     "crates/core/durability/src",
     "crates/core/sync/src",
+    "crates/core/turnlog/src",
     "crates/integrations/store-jsonl/src",
     "crates/integrations/store-sql/src",
     "crates/runtime/agent/src",

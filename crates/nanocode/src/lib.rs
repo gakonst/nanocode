@@ -127,6 +127,35 @@ pub fn session_store<S: durability::StateStore + 'static>(
 ) -> durability::Result<durability::SessionStore> {
     nanocode_agent::session_store::<Defaults, S>(store)
 }
+
+pub mod turnlog {
+    pub use nanocode_agent::{OneLog, OneLogJournals, OneLogStore, Policy};
+    pub use nanocode_tool_runtime::effects::{EffectCall, EffectGate};
+    pub use nanocode_turnlog::*;
+
+    pub struct Parts {
+        pub gate: std::sync::Arc<dyn EffectGate>,
+        pub journals: nanocode_code_mode::code_mode::CellJournals,
+        pub log: std::sync::Arc<OneLog>,
+        pub store: crate::durability::SessionStore,
+    }
+}
+
+pub async fn turnlog(
+    host: std::sync::Arc<dyn turnlog::LogHost>,
+    scope: &str,
+    policy: turnlog::Policy,
+) -> durability::Result<turnlog::Parts> {
+    let log = turnlog::OneLog::open(host, scope, policy).await?;
+    let store = session_store(log.store())?.with_logged_prompts();
+    let journals = log.journals().await?;
+    Ok(turnlog::Parts {
+        gate: log.gate(),
+        journals,
+        log,
+        store,
+    })
+}
 pub use nanocode_subagents::{
     AgentContext, AgentDescriptor, AgentId, AgentMessageUpdate, AgentStatus, AgentUpdate,
     RunningSubagents, ScopedAgentUpdate, SubagentCompletion, SubagentControl, SubagentRuntimeId,
@@ -143,9 +172,9 @@ pub use nanocode_agent::{
 pub mod session_host {
     pub use nanocode_agent::{
         Attach, Base, Delivery, Driven, EventLog, Halt, ImportedTurn, InboxError, InboxHost,
-        LogEntry, LogPage, LoggedEvent, Missing, MovedQueued, Next, PassEnd, Recording, Replaced,
-        ResumeError, SessionLog, Settled, Started, Submission, Submitted, TurnInbox, TurnLog,
-        TurnRecord, TurnRetry, TurnState, Unresumable, Verdict, Wake, base_checkpoint,
+        LogEntry, LogPage, LoggedEvent, Missing, MovedQueued, Next, OneLog, PassEnd, Recording,
+        Replaced, ResumeError, SessionLog, Settled, Started, Submission, Submitted, TurnInbox,
+        TurnLog, TurnRecord, TurnRetry, TurnState, Unresumable, Verdict, Wake, base_checkpoint,
         settle_pending, submission_digest,
     };
 }

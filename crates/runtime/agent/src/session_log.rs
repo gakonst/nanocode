@@ -663,7 +663,7 @@ pub fn submission_digest(prompt: &Prompt, hand: Option<&str>) -> Result<String, 
         .map_err(|error| StoreError::NotCommitted(format!("digest turn submission: {error}")))
 }
 
-fn edited(prompt: &Prompt, text: &str) -> Result<Prompt, StoreError> {
+pub(crate) fn edited(prompt: &Prompt, text: &str) -> Result<Prompt, StoreError> {
     let mut prompt = prompt.clone();
     prompt.instruction = match prompt.instruction {
         PromptInput::Text(_) => PromptInput::Text(text.to_owned()),

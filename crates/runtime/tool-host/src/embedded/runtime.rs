@@ -36,6 +36,7 @@ pub struct EmbeddedToolRuntime {
     callable_tool_names: Swap<HashSet<String>>,
     policies: Vec<Arc<dyn crate::CodeModeToolPolicy>>,
     recovery: Option<Arc<dyn crate::ToolRecovery>>,
+    effect_gate: Option<Arc<dyn crate::effects::EffectGate>>,
     brief: Arc<[String]>,
     layout: crate::code_mode_description::ExecLayout,
 }
@@ -70,6 +71,7 @@ impl EmbeddedToolRuntime {
             callable_tool_names: Swap::default(),
             policies: Vec::new(),
             recovery: None,
+            effect_gate: None,
             brief: Arc::from([]),
             layout: crate::code_mode_description::ExecLayout::default(),
         }
@@ -89,6 +91,7 @@ impl EmbeddedToolRuntime {
         self.session_id.clone_from(&tools.embedded_session_id);
         self.policies = tools.code_mode_policies();
         self.recovery = tools.recovery();
+        self.effect_gate = tools.effect_gate();
         self.brief = Arc::clone(&tools.brief_code_tools);
         self.layout.clone_from(&tools.code_tools_layout);
         self.local
@@ -382,6 +385,22 @@ impl EmbeddedToolRuntime {
         reason = "matches the native tool-runtime contract"
     )]
     pub async fn execute_tool(
+        &self,
+        name: &str,
+        input: ToolInput,
+        context: ToolContext<'_>,
+    ) -> Result<ToolOutput, CodeModeHostError> {
+        crate::effects::gated(
+            self.effect_gate.as_ref(),
+            name,
+            input,
+            context,
+            |input, context| self.run_tool(name, input, context),
+        )
+        .await
+    }
+
+    async fn run_tool(
         &self,
         name: &str,
         input: ToolInput,

@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use super::flow::{Exchange, HttpFault};
-use super::protocol::{Challenge, decode_url, now_seconds};
+use super::protocol::{Challenge, PAYMENT_RECEIPT_HEADER, decode_url, now_seconds};
 use super::{Payments, notify};
 
 pub(crate) const ATTESTATION_HEADER: &str = "identity-attestation";
@@ -703,15 +703,22 @@ impl<X: Exchange> Exchange for Proved<'_, X> {
         identity.prove(&mut request);
         let resend = request.try_clone();
         let response = self.exchange.send(request).await?;
-        let Some(mut resend) = resend.filter(|resend| !paid(resend.headers())) else {
+        let Some(mut resend) = resend else {
             return Ok(response);
         };
+        let paid = paid(resend.headers());
+        if paid && response.headers().contains_key(PAYMENT_RECEIPT_HEADER) {
+            return Ok(response);
+        }
         let Some(rejected) = identity.rejected(&response, &resend) else {
             return Ok(response);
         };
         match identity.retry(rejected).await {
             Some(value) => {
                 resend.headers_mut().insert(ATTESTATION_HEADER, value);
+                if paid {
+                    unpay(resend.headers_mut());
+                }
                 self.exchange.send(resend).await
             }
             None => Ok(response),
@@ -723,14 +730,27 @@ fn key(audience: &str, issuer: &str, kind: &str) -> String {
     format!("{audience} {issuer} {kind}")
 }
 
+fn unpay(headers: &mut HeaderMap) {
+    let credentials: Vec<_> = headers
+        .iter()
+        .filter(|(_, value)| is_payment(value))
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in credentials {
+        headers.remove(name);
+    }
+}
+
+fn is_payment(value: &HeaderValue) -> bool {
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.get(..8))
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("payment "))
+}
+
 fn paid(headers: &HeaderMap) -> bool {
-    headers.values().any(|value| {
-        value
-            .to_str()
-            .ok()
-            .and_then(|value| value.get(..8))
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("payment "))
-    })
+    headers.values().any(is_payment)
 }
 
 pub(crate) fn secure(url: &Url) -> bool {

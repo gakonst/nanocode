@@ -1,4 +1,3 @@
-use base64::Engine as _;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -120,11 +119,11 @@ pub(crate) fn output(bytes: &[u8], detail: ImageDetail) -> ToolOutput {
     let prefix = format!("data:{};base64,", media_type(bytes));
     let mut image_url = String::with_capacity(
         prefix.len()
-            + base64::encoded_len(bytes.len(), true)
+            + nanocode_sys::base64::encoded_length(bytes.len(), true)
                 .expect("base64 length of an in-memory buffer fits in usize"),
     );
     image_url.push_str(&prefix);
-    base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut image_url);
+    nanocode_sys::base64::STANDARD.encode_string(bytes, &mut image_url);
     ToolOutput::content(vec![ToolOutputContent::InputImage {
         image_url: image_url.clone(),
         detail,

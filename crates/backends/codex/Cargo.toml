@@ -15,7 +15,6 @@ description = "Codex backend: agent driver, tools and durability over the Respon
 rustdoc-args = ["-D", "warnings"]
 
 [dependencies]
-base64.workspace = true
 futures-util.workspace = true
 http.workspace = true
 nanocode-agent-config.workspace = true
@@ -28,6 +27,7 @@ nanocode-image.workspace = true
 nanocode-platform.workspace = true
 nanocode-process-contracts.workspace = true
 nanocode-sync.workspace = true
+nanocode-sys.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-tools.workspace = true
 nanocode-types.workspace = true

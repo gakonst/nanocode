@@ -1,5 +1,5 @@
 use crate::{ContentBlock, Message, Role};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use nanocode_agent_core::{
     NanocodeError, Result,
     input::{Prompt, PromptInput, PromptMessageRole, UserInput},

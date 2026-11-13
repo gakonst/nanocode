@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use nanocode_platform::{MaybeSend, MaybeSync};
 use nanocode_sync::{AtomMap, Mailbox, Sequencer};
 

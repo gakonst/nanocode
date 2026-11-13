@@ -1,7 +1,7 @@
 #![allow(unsafe_code, non_upper_case_globals)]
 
 use crate::{Button, state::shown_units};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use core_foundation::{
     array::CFArray,
     base::{CFType, TCFType},

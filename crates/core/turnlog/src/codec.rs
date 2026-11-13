@@ -1,4 +1,4 @@
-use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
+use nanocode_sys::base64::STANDARD_NO_PAD;
 use nanocode_compression::{
     deflate::{Deflate, DeflateConfig, DeflateFlush, DeflateStatus, Strategy},
     inflate::{Inflate, InflateFlush, InflateStatus},

@@ -1,6 +1,6 @@
 use std::io::Write as _;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version};
 use httparse::Status;
 use tokio::io::{AsyncRead, AsyncReadExt as _};

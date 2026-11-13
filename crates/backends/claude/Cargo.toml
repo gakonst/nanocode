@@ -15,6 +15,7 @@ nanocode-backend-claude-client.workspace = true
 nanocode-http.workspace = true
 nanocode-process-contracts.workspace = true
 nanocode-agent-config.workspace = true
+nanocode-sys.workspace = true
 nanocode-tool-contracts.workspace = true
 nanocode-tool-host.workspace = true
 nanocode-platform.workspace = true
@@ -25,7 +26,6 @@ nanocode-types.workspace = true
 nanocode-tools.workspace = true
 nanocode-image.workspace = true
 nanocode-home = { workspace = true  }
-base64.workspace = true
 url.workspace = true
 futures-util.workspace = true
 nanocode-code-mode = { path = "../../runtime/code-mode", version = "0.7.0"   }

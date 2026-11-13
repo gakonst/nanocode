@@ -3,7 +3,7 @@
 #[cfg(unix)]
 pub mod browser;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use nanocode_tool_contracts::{
     Tool, ToolContext, ToolDefinition, ToolError, ToolInput, ToolOutput, ToolOutputContent,
     ToolResult,

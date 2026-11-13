@@ -1,6 +1,5 @@
 use std::{collections::HashMap, error::Error};
 
-use base64::Engine;
 use serde::de::IgnoredAny;
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -26,7 +25,7 @@ pub(crate) static DECODERS: LazyLock<HashMap<&'static str, Decoder>> = LazyLock:
 });
 
 fn decode_base64(s: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    Ok(base64::engine::general_purpose::STANDARD.decode(s)?)
+    Ok(nanocode_sys::base64::STANDARD.decode(s)?)
 }
 
 #[derive(Clone, Copy)]

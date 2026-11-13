@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,9 +518,9 @@ version = "0.7.0"
 name = "nanocode-audio"
 version = "0.7.0"
 dependencies = [
- "base64",
  "nanocode-digest",
  "nanocode-sync",
+ "nanocode-sys",
  "tracing",
 ]
 
@@ -534,7 +528,6 @@ dependencies = [
 name = "nanocode-backend-claude"
 version = "0.7.0"
 dependencies = [
- "base64",
  "futures-util",
  "http",
  "libc",
@@ -551,6 +544,7 @@ dependencies = [
  "nanocode-process",
  "nanocode-process-contracts",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-contracts",
  "nanocode-tool-host",
  "nanocode-tools",
@@ -566,7 +560,6 @@ dependencies = [
 name = "nanocode-backend-claude-client"
 version = "0.7.0"
 dependencies = [
- "base64",
  "bytes",
  "futures-util",
  "http",
@@ -577,6 +570,7 @@ dependencies = [
  "nanocode-http",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
  "serde",
  "serde_json",
@@ -590,13 +584,13 @@ dependencies = [
 name = "nanocode-backend-claude-tools"
 version = "0.7.0"
 dependencies = [
- "base64",
  "libc",
  "nanocode-home",
  "nanocode-image",
  "nanocode-jpeg",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tools",
  "serde",
  "serde_json",
@@ -607,7 +601,6 @@ dependencies = [
 name = "nanocode-backend-codex"
 version = "0.7.0"
 dependencies = [
- "base64",
  "futures-util",
  "http",
  "libc",
@@ -624,6 +617,7 @@ dependencies = [
  "nanocode-process",
  "nanocode-process-contracts",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
  "nanocode-tool-host",
  "nanocode-tools",
@@ -638,7 +632,6 @@ dependencies = [
 name = "nanocode-backend-codex-client"
 version = "0.7.0"
 dependencies = [
- "base64",
  "futures-util",
  "http",
  "memchr",
@@ -651,6 +644,7 @@ dependencies = [
  "nanocode-image",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
  "nanocode-types",
  "nanocode-websocket",
@@ -733,11 +727,11 @@ dependencies = [
 name = "nanocode-code-mode-engine"
 version = "0.7.0"
 dependencies = [
- "base64",
  "djs-embed",
  "nanocode-digest",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-contracts",
  "serde",
  "serde_json",
@@ -756,7 +750,6 @@ dependencies = [
 name = "nanocode-computer"
 version = "0.7.0"
 dependencies = [
- "base64",
  "core-foundation",
  "core-foundation-sys",
  "futures-util",
@@ -776,8 +769,8 @@ dependencies = [
 name = "nanocode-computer-repl"
 version = "0.7.0"
 dependencies = [
- "base64",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tool-contracts",
  "nanocode-types",
  "serde",
@@ -819,11 +812,11 @@ dependencies = [
 name = "nanocode-durability-core"
 version = "0.7.0"
 dependencies = [
- "base64",
  "futures-util",
  "nanocode-digest",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "serde",
  "serde_json",
 ]
@@ -846,7 +839,6 @@ dependencies = [
 name = "nanocode-http"
 version = "0.7.0"
 dependencies = [
- "base64",
  "bytes",
  "futures-util",
  "http",
@@ -854,6 +846,7 @@ dependencies = [
  "nanocode-compression",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
  "nanocode-zstd",
  "serde",
@@ -867,7 +860,6 @@ dependencies = [
 name = "nanocode-image"
 version = "0.7.0"
 dependencies = [
- "base64",
  "memchr",
  "nanocode-compression",
  "nanocode-digest",
@@ -876,6 +868,7 @@ dependencies = [
  "nanocode-jpeg",
  "nanocode-png",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-types-core",
  "nanocode-webp",
  "tokio",
@@ -897,10 +890,10 @@ dependencies = [
 name = "nanocode-mcp"
 version = "0.7.0"
 dependencies = [
- "base64",
  "memchr",
  "nanocode-digest",
  "nanocode-sync",
+ "nanocode-sys",
  "serde",
  "serde_json",
  "tokio",
@@ -1049,7 +1042,6 @@ dependencies = [
 name = "nanocode-sandbox"
 version = "0.7.0"
 dependencies = [
- "base64",
  "bytes",
  "futures-util",
  "http",
@@ -1073,9 +1065,9 @@ dependencies = [
 name = "nanocode-schema"
 version = "0.7.0"
 dependencies = [
- "base64",
  "idna",
  "memchr",
+ "nanocode-sys",
  "serde",
  "serde_json",
  "url",
@@ -1130,11 +1122,11 @@ dependencies = [
 name = "nanocode-store-sql"
 version = "0.7.0"
 dependencies = [
- "base64",
  "nanocode-digest",
  "nanocode-durability-core",
  "nanocode-platform",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
  "nanocode-zstd",
  "rustls",
@@ -1249,7 +1241,6 @@ dependencies = [
 name = "nanocode-tool-runtime"
 version = "0.7.0"
 dependencies = [
- "base64",
  "futures-util",
  "http",
  "nanocode-code-mode",
@@ -1258,6 +1249,7 @@ dependencies = [
  "nanocode-platform",
  "nanocode-process",
  "nanocode-sync",
+ "nanocode-sys",
  "nanocode-tls",
  "nanocode-tool-host",
  "nanocode-tool-provider",
@@ -1306,10 +1298,10 @@ dependencies = [
 name = "nanocode-turnlog"
 version = "0.7.0"
 dependencies = [
- "base64",
  "nanocode-compression",
  "nanocode-durability-core",
  "nanocode-sync",
+ "nanocode-sys",
  "serde",
  "serde_json",
 ]
@@ -1348,12 +1340,12 @@ dependencies = [
 name = "nanocode-websocket"
 version = "0.7.0"
 dependencies = [
- "base64",
  "futures-util",
  "http",
  "httparse",
  "nanocode-digest",
  "nanocode-platform",
+ "nanocode-sys",
  "tokio",
  "tokio-rustls",
 ]

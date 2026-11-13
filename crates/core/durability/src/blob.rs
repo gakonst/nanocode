@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nanocode_platform::{MaybeSend, MaybeSync};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 
 use crate::{StoreError, StoreFuture};
 

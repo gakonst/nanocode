@@ -13,7 +13,6 @@ use crate::client::{
 use nanocode_digest::Sha256;
 
 use super::context::is_contextual_user_message;
-use base64::Engine as _;
 
 #[path = "compaction_estimate.rs"]
 mod estimate;
@@ -473,9 +472,7 @@ fn original_image_bytes_estimate(image_url: &str) -> Option<usize> {
     let key = Sha256::digest(image_url.as_bytes());
     let estimate = || {
         let payload = base64_image_payload(image_url)?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(payload)
-            .ok()?;
+        let bytes = nanocode_sys::base64::STANDARD.decode(payload).ok()?;
 
         let (width, height) = nanocode_image::dimensions(&bytes)?;
         let patches_wide = width.div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);

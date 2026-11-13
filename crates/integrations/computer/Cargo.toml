@@ -12,11 +12,11 @@ description = "Computer use for agents: one computer tool over macOS accessibili
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-base64.workspace = true
 nanocode-computer-repl.workspace = true
 nanocode-mcp.workspace = true
 nanocode-mcp-tools.workspace = true
 nanocode-sync.workspace = true
+nanocode-sys.workspace = true
 nanocode-tool-contracts.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt", "sync", "time"] }

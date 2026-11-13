@@ -15,7 +15,6 @@ description = "Run a command confined to read-only paths, one writable directory
 include = ["src/**", "Cargo.toml"]
 
 [target.'cfg(unix)'.dependencies]
-base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 http.workspace = true

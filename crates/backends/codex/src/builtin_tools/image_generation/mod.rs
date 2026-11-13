@@ -1,4 +1,3 @@
-use base64::Engine as _;
 use std::{
     fmt::Display,
     future::Future,
@@ -436,7 +435,7 @@ where
     F: FnOnce(PathBuf, Vec<u8>) -> Fut,
     Fut: Future<Output = Result<PathBuf, String>>,
 {
-    let bytes = base64::engine::general_purpose::STANDARD
+    let bytes = nanocode_sys::base64::STANDARD
         .decode(result.trim().as_bytes())
         .map_err(|_| format!("generated image was not valid base64: {BASE64_ERROR}"))?;
     write(artifact_path(save_root, session_id, call_id), bytes).await

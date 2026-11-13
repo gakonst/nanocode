@@ -4,10 +4,7 @@ use std::{
     ops::RangeInclusive,
 };
 
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use nanocode_sys::base64::{STANDARD, URL_SAFE_NO_PAD};
 use nanocode_digest::Sha256;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;

@@ -1,5 +1,5 @@
 use crate::tools::{ImageSource, SessionEnvironment, ToolOutput, ToolResultBlock};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use serde_json::{Value, json};
 use std::{
     fs::File,

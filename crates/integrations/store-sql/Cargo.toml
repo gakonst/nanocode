@@ -12,11 +12,11 @@ repository.workspace = true
 description = "Postgres hosts for Nanocode's SQL stores over its own Postgres wire-protocol client"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-base64.workspace = true
 nanocode-digest.workspace = true
 nanocode-durability-core.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
+nanocode-sys.workspace = true
 nanocode-tls.workspace = true
 nanocode-zstd.workspace = true
 rustls.workspace = true

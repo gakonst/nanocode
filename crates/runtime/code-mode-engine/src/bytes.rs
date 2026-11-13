@@ -10,10 +10,7 @@ use std::{
 
 use nanocode_sync::{Atom, Slot};
 
-use base64::{
-    Engine as _, alphabet,
-    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
-};
+use nanocode_sys::base64::{Alphabet, DecodePadding, Engine};
 use djs_embed::{ErrorKind, HostCall, Throw};
 use nanocode_platform::Instant;
 
@@ -26,12 +23,7 @@ struct Buffer {
 
 static BUFFERS: OnceLock<Atom<BTreeMap<u64, Arc<Buffer>>>> = OnceLock::new();
 const BASE64_ERROR: &str = "Base64Error";
-const FORGIVING: GeneralPurpose = GeneralPurpose::new(
-    &alphabet::STANDARD,
-    GeneralPurposeConfig::new()
-        .with_decode_allow_trailing_bits(true)
-        .with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
+const FORGIVING: Engine = Engine::new(Alphabet::Standard, true, DecodePadding::Indifferent, true);
 const UNCLAIMED: Duration = Duration::from_secs(600);
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
@@ -159,7 +151,7 @@ pub(crate) fn host_call(
         ),
         ENCODE => Ok(Reply::Bytes(source(call, 0, 1, 2)?.into_owned())),
         TO_BASE64 => Ok(Reply::Text(Cow::Owned(
-            base64::engine::general_purpose::STANDARD.encode(view(call, 0, 1, 2)?),
+            nanocode_sys::base64::STANDARD.encode(view(call, 0, 1, 2)?),
         ))),
         FROM_BASE64 => {
             let mut clean = crate::cell::text(call, 0)?

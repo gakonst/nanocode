@@ -1,5 +1,5 @@
 use crate::postgres::PgError;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use nanocode_digest::Sha256;
 use nanocode_sync::SwapOption;
 use std::sync::Arc;

@@ -1,4 +1,3 @@
-use base64::Engine as _;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -188,7 +187,7 @@ impl HostImageGeneration {
             })?
             .mime_type();
         let mut url = format!("data:{mime};base64,");
-        base64::engine::general_purpose::STANDARD.encode_string(&bytes, &mut url);
+        nanocode_sys::base64::STANDARD.encode_string(&bytes, &mut url);
         Ok(url)
     }
 }

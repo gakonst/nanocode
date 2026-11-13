@@ -8,7 +8,7 @@ use crate::egress::{
     tls::Tls,
     wire::{Credential, Secret},
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use bytes::Bytes;
 use http::{
     Method, StatusCode, Uri,

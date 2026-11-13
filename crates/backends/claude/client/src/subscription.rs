@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use nanocode_sys::base64::URL_SAFE_NO_PAD;
 use http::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use nanocode_digest::Sha256;
 use nanocode_platform::UNIX_EPOCH;

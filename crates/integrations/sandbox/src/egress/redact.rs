@@ -1,5 +1,5 @@
 use crate::egress::wire::Secret;
-use base64::{Engine, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use bytes::Bytes;
 use futures_util::stream::unfold;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};

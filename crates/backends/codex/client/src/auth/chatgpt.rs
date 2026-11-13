@@ -12,9 +12,9 @@ use super::{
     OpenAiAuth, OpenAiAuthError, OpenAiAuthFuture, OpenAiAuthMode, OpenAiAuthSnapshot,
     OpenAiAuthSource,
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use nanocode_digest::Sha256;
 use nanocode_sync::{SingleFlight, Swap};
+use nanocode_sys::base64::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},

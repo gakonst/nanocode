@@ -8,7 +8,7 @@ use crate::{
     Button, Chord, Key,
     keys::x11::{ALT_L, CONTROL_L, SHIFT_L, SUPER_L, keysym},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use std::{collections::HashMap, thread, time::Duration};
 
 pub type Rect = (i32, i32, i32, i32);

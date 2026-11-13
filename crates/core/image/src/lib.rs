@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use nanocode_sys::base64::STANDARD;
 use nanocode_sync::Swap;
 mod bmp;
 mod decode;
@@ -90,7 +90,7 @@ fn encode_data_url(mime: &str, bytes: &[u8]) -> String {
 }
 
 const fn encoded_length(bytes: usize) -> usize {
-    base64::encoded_len(bytes, true).expect("base64 length of an in-memory buffer fits in usize")
+    nanocode_sys::base64::encoded_length(bytes, true).expect("base64 length of an in-memory buffer fits in usize")
 }
 
 struct ImageMetadata {

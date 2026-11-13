@@ -7,9 +7,9 @@ use std::{
     },
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use nanocode_platform::UNIX_EPOCH;
 use nanocode_sync::SingleFlight;
+use nanocode_sys::base64::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::{

@@ -114,7 +114,6 @@ nanocode-tool-contracts = { version = "0.7.0", path = "crates/core/tool-contract
 nanocode-store-jsonl = { version = "0.7.0", path = "crates/integrations/store-jsonl" }
 libc = "0.2"
 log = { version = "0.4.33", default-features = false }
-base64 = "0.22.1"
 memchr = "2.8.3"
 mimalloc = { version = "0.1.52", default-features = false }
 futures-util = { version = "0.3.31", default-features = false, features = ["async-await", "sink", "std"] }

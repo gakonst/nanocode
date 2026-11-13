@@ -1,4 +1,3 @@
-use base64::Engine as _;
 use serde_json::{Value, json};
 use std::future::Future;
 
@@ -75,7 +74,7 @@ where
         if piece["offset"] != bytes.len() {
             return Err(ReadError::Changed("unexpected offset"));
         }
-        let data = base64::engine::general_purpose::STANDARD
+        let data = nanocode_sys::base64::STANDARD
             .decode(piece["data"].as_str().unwrap_or_default())
             .map_err(|_| ReadError::Changed("chunk is not base64"))?;
         if data.is_empty() && bytes.len() as u64 != size {

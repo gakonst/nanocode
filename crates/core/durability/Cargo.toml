@@ -11,11 +11,11 @@ autotests = false
 autobenches = false
 
 [dependencies]
-base64.workspace = true
 nanocode-digest.workspace = true
 futures-util.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
+nanocode-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

@@ -15,12 +15,12 @@ futures-util.workspace = true
 http.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-base64.workspace = true
 bytes.workspace = true
 httparse.workspace = true
 nanocode-compression.workspace = true
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true
+nanocode-sys.workspace = true
 nanocode-tls.workspace = true
 nanocode-zstd.workspace = true
 serde.workspace = true

@@ -2,9 +2,9 @@ use std::{
     collections::VecDeque, env, future::Future, io, net::SocketAddr, sync::Arc, time::Duration,
 };
 
-use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use nanocode_sync::{Duplex, SwapOption};
+use nanocode_sys::base64::STANDARD;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,

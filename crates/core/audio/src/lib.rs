@@ -5,7 +5,6 @@ mod mpeg;
 mod ogg;
 mod wav;
 
-use base64::Engine as _;
 use nanocode_digest::Sha1;
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -88,7 +87,7 @@ fn audio_duration_seconds(audio_url: &str) -> Option<f64> {
         return None;
     }
 
-    let bytes = match base64::engine::general_purpose::STANDARD.decode(payload) {
+    let bytes = match nanocode_sys::base64::STANDARD.decode(payload) {
         Ok(bytes) => bytes,
         Err(_) => {
             tracing::trace!(

@@ -11,12 +11,12 @@ autotests = false
 autobenches = false
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-base64.workspace = true
 futures-util.workspace = true
 http.workspace = true
 httparse.workspace = true
 nanocode-digest.workspace = true
 nanocode-platform.workspace = true
+nanocode-sys.workspace = true
 tokio = { workspace = true, features = ["io-util", "net"] }
 tokio-rustls.workspace = true
 

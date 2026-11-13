@@ -98,9 +98,17 @@ fn ycbcr(
     if width < CONVERSION_PIXELS && padded_width > CONVERSION_PIXELS {
         return Err(JpegError::LayoutOutOfBounds);
     }
-    let luma = &samples[0][..width];
-    let blue = &samples[1][..width];
-    let red = &samples[2][..width];
+    let converted = nanocode_sys::jpeg::ycbcr_to_rgb(
+        &samples[0][..width],
+        &samples[1][..width],
+        &samples[2][..width],
+        target,
+    );
+    let luma = &samples[0][converted..width];
+    let blue = &samples[1][converted..width];
+    let red = &samples[2][converted..width];
+    let target = &mut target[converted * 3..];
+    let width = width - converted;
     let blocks = width / CONVERSION_PIXELS * CONVERSION_PIXELS;
     let (target_blocks, target_rest) = target.split_at_mut(blocks * 3);
     for (index, block) in target_blocks

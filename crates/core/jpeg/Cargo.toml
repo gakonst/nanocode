@@ -10,6 +10,9 @@ description = "Baseline and progressive JPEG decoder and baseline JPEG encoder"
 autotests = false
 autobenches = false
 
+[dependencies]
+nanocode-sys.workspace = true
+
 [lints]
 workspace = true
 

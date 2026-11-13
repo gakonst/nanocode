@@ -878,6 +878,9 @@ dependencies = [
 [[package]]
 name = "nanocode-jpeg"
 version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
 
 [[package]]
 name = "nanocode-machine"

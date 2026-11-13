@@ -10,6 +10,7 @@ mod atomic;
 pub mod base64;
 pub mod crc32;
 mod inline;
+pub mod jpeg;
 #[cfg(any(unix, windows))]
 mod random;
 pub mod sha1;

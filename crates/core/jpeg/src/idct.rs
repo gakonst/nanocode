@@ -25,13 +25,17 @@ pub(crate) fn transform(
     }
     if coefficients[1..]
         .iter()
-        .all(|&coefficient| coefficient == 0)
+        .fold(0, |combined, &coefficient| combined | coefficient)
+        == 0
     {
         let value = (coefficients[0].wrapping_add(4 + 1024) >> 3).clamp(0, 255) as i16;
         for row in 0..BLOCK_ROWS {
             let start = position + row * stride;
             output[start..start + 8].fill(value);
         }
+        return Ok(());
+    }
+    if nanocode_sys::jpeg::inverse_dct(coefficients, output, position, stride) {
         return Ok(());
     }
     let mut columns = [0_i32; 64];

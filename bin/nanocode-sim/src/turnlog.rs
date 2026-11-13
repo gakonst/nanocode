@@ -7,7 +7,7 @@ use std::{
 use futures_util::FutureExt;
 use nanocode_durability_core::{StoreError, StoreFuture};
 use nanocode_turnlog::{
-    EffectClass, LogHost, Outcome as LogOutcome, Point as LogPoint, Record as LogRecord,
+    EffectClass, LogHost, Outcome as LogOutcome, Phase, Point as LogPoint, Record as LogRecord,
     Status as LogStatus, TurnLog,
 };
 use serde_json::value::{RawValue, to_raw_value};
@@ -82,6 +82,8 @@ pub struct TurnLogPolicy {
     ratio: usize,
     protections: Protections,
     restarting: BTreeMap<String, String>,
+    retain: Option<usize>,
+    retention: Option<usize>,
     unsealed: BTreeSet<String>,
 }
 
@@ -91,6 +93,8 @@ impl TurnLogPolicy {
         protections: Protections,
         limit: Option<usize>,
         ratio: usize,
+        retain: Option<usize>,
+        retention: Option<usize>,
     ) -> Self {
         Self {
             host: Arc::new(SimHost(disk)),
@@ -99,6 +103,8 @@ impl TurnLogPolicy {
             ratio,
             protections,
             restarting: BTreeMap::new(),
+            retain,
+            retention,
             unsealed: BTreeSet::new(),
         }
     }
@@ -106,6 +112,7 @@ impl TurnLogPolicy {
     fn log(&mut self, scope: &str) -> &TurnLog {
         if !self.logs.contains_key(scope) {
             let log = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)))
+                .retain_finished(self.retain)
                 .row_limit(self.limit)
                 .snapshot_ratio(self.ratio);
             self.logs.insert(scope.to_owned(), log);
@@ -271,6 +278,7 @@ impl TurnDurability for TurnLogPolicy {
 
     fn load(&mut self, _log: &mut dyn Log, scope: &str) -> ScopeState {
         let log = refused(ready(TurnLog::open(Arc::clone(&self.host), scope)))
+            .retain_finished(self.retain)
             .row_limit(self.limit)
             .snapshot_ratio(self.ratio);
         let state = ready(log.read(|fold| {
@@ -320,6 +328,18 @@ impl TurnDurability for TurnLogPolicy {
             state: scope.to_owned(),
         }));
         let seq = refused(ready(lease.commit(log_point)));
+        if let Some(keep) = self.retention {
+            let finished = lease
+                .fold()
+                .turns()
+                .iter()
+                .filter(|turn| matches!(turn.phase, Phase::Finished { .. }))
+                .count();
+            assert!(
+                finished <= keep,
+                "{finished} finished turns stay in the fold past a retention of {keep}"
+            );
+        }
         drop(lease);
         self.unsealed.remove(scope);
         let after = ready(log.stats());

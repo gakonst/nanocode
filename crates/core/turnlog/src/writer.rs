@@ -36,6 +36,7 @@ pub struct Stats {
     pub plain_bytes: u64,
     pub progress: u64,
     pub recoveries: u64,
+    pub retired: u64,
     pub row_bytes: u64,
     pub snapshot_bytes: u64,
     pub snapshots: u64,
@@ -137,6 +138,7 @@ pub struct TurnLog {
     host: Arc<dyn LogHost>,
     limit: Option<usize>,
     ratio: usize,
+    retain: Option<usize>,
     scope: Arc<str>,
     writer: Owned<Writer>,
 }
@@ -145,6 +147,7 @@ pub struct Lease<'a> {
     host: &'a dyn LogHost,
     limit: Option<usize>,
     ratio: usize,
+    retain: Option<usize>,
     scope: &'a str,
     writer: Held<'a, Writer>,
 }
@@ -195,6 +198,7 @@ impl TurnLog {
             host,
             limit: None,
             ratio: 2,
+            retain: None,
             scope,
             writer: Owned::new(Writer {
                 buffer: Vec::new(),
@@ -221,6 +225,12 @@ impl TurnLog {
     }
 
     #[must_use]
+    pub const fn retain_finished(mut self, keep: Option<usize>) -> Self {
+        self.retain = keep;
+        self
+    }
+
+    #[must_use]
     pub const fn row_limit(mut self, limit: Option<usize>) -> Self {
         self.limit = limit;
         self
@@ -236,6 +246,7 @@ impl TurnLog {
             host: &*self.host,
             limit: self.limit,
             ratio: self.ratio,
+            retain: self.retain,
             scope: &self.scope,
             writer: self.writer.acquire().await,
         }
@@ -425,6 +436,9 @@ impl Lease<'_> {
         }
         writer.buffer.clear();
         writer.floor = None;
+        if let Some(keep) = self.retain {
+            writer.stats.retired += writer.fold.retire(keep) as u64;
+        }
         writer.stats.parts += stored.len() as u64 - 1;
         writer.stats.plain_bytes += plain.len() as u64;
         match snapshot {

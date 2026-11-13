@@ -43,6 +43,7 @@ pub struct Policy {
     pub effects: Effects,
     pub max_row_bytes: Option<usize>,
     pub restarts: u64,
+    pub retain_finished: Option<usize>,
     pub snapshot_ratio: usize,
 }
 
@@ -236,6 +237,7 @@ impl OneLog {
     ) -> Result<Arc<Self>, StoreError> {
         let log = nanocode_turnlog::TurnLog::open(host, scope)
             .await?
+            .retain_finished(policy.retain_finished)
             .row_limit(policy.max_row_bytes)
             .snapshot_ratio(policy.snapshot_ratio);
         let recovering = log

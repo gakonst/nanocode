@@ -265,6 +265,42 @@ impl Fold {
         garbage.len()
     }
 
+    fn drop_turns(&mut self, drop: impl Fn(&Turn) -> bool) {
+        let models = &mut self.models;
+        self.turns.retain(|turn| {
+            let gone = drop(turn);
+            if gone {
+                models.remove(&turn.id);
+            }
+            !gone
+        });
+        self.index = self
+            .turns
+            .iter()
+            .enumerate()
+            .map(|(position, turn)| (turn.id.clone(), position))
+            .collect();
+    }
+
+    pub(crate) fn retire(&mut self, keep: usize) -> usize {
+        let mut finished = self
+            .turns
+            .iter()
+            .filter_map(|turn| match turn.phase {
+                Phase::Finished { last, .. } => Some(last),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let excess = finished.len().saturating_sub(keep);
+        if excess == 0 {
+            return 0;
+        }
+        finished.sort_unstable();
+        let cutoff = finished[excess - 1];
+        self.drop_turns(|turn| matches!(turn.phase, Phase::Finished { last, .. } if last <= cutoff));
+        excess
+    }
+
     pub(crate) fn seal(&mut self, row: u64, keep: u64) {
         if let Some(segment) = self.sealed(keep) {
             self.segments.push(segment);
@@ -348,8 +384,11 @@ impl Fold {
                 prompt,
                 turn,
             } => {
-                if self.index.contains_key(turn) {
-                    return Err(invalid(format!("turn {turn} was admitted twice")));
+                if let Some(existing) = self.turn(turn) {
+                    if !matches!(existing.phase, Phase::Finished { .. }) {
+                        return Err(invalid(format!("turn {turn} was admitted twice")));
+                    }
+                    self.drop_turns(|old| old.id == *turn);
                 }
                 self.index.insert(turn.clone(), self.turns.len());
                 self.turns.push(Turn {

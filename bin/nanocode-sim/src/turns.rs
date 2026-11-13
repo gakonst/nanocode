@@ -59,18 +59,20 @@ pub enum TurnMutation {
     GateReleasesEarly,
     IdempotentReportedUnknown,
     RecoverySkipsClientless,
+    RetireSkipped,
     SealSkipped,
     TickNotAtomic,
 }
 
 impl TurnMutation {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::None,
         Self::DurableSeqBeforeCommit,
         Self::FinishBeforeRow,
         Self::GateReleasesEarly,
         Self::IdempotentReportedUnknown,
         Self::RecoverySkipsClientless,
+        Self::RetireSkipped,
         Self::SealSkipped,
         Self::TickNotAtomic,
     ];
@@ -89,6 +91,7 @@ impl TurnMutation {
             Self::GateReleasesEarly => "gate_releases_early",
             Self::IdempotentReportedUnknown => "idempotent_reported_unknown",
             Self::RecoverySkipsClientless => "recovery_skips_clientless",
+            Self::RetireSkipped => "retire_skipped",
             Self::SealSkipped => "seal_skipped",
             Self::TickNotAtomic => "tick_not_atomic",
         }
@@ -128,6 +131,7 @@ impl Invariant {
 pub struct TurnOptions {
     pub calm: bool,
     pub long: Option<u64>,
+    pub retain: Option<usize>,
     pub snapshot_ratio: usize,
     pub mutation: TurnMutation,
     pub policy: PolicyKind,
@@ -1102,6 +1106,12 @@ impl Sim {
                 self.options.protections,
                 self.options.row_limit,
                 self.options.snapshot_ratio,
+                if self.options.mutation == TurnMutation::RetireSkipped {
+                    None
+                } else {
+                    self.options.retain
+                },
+                self.options.retain,
             )),
         };
         let mut object = Object {

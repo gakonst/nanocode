@@ -55,7 +55,7 @@ type Caught = BTreeMap<Invariant, (u64, u64, (u64, u64))>;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K]\n       runtime: [--store memory|kv] [--calm]",
+        "usage: nanocode-sim --tidy | (--seed S | --seeds A..B) [--scenario store|agents|turns|runtime] [--ops N] [--twice] [--mutation {}] [--records content|slots] [--verbose]\n       turns: [--mutation {}] [--without {}]... [--live-seqs temporary|floor|gap|reuse] [--calm] [--policy reference|turnlog] [--row-limit BYTES] [--long TURNS] [--snapshot-ratio K] [--retain TURNS]\n       runtime: [--store memory|kv] [--calm]",
         Mutation::names(),
         TurnMutation::names(),
         onelog::PROTECTIONS.join("|")
@@ -85,6 +85,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
     let mut turns = TurnOptions {
         calm: false,
         long: None,
+        retain: None,
         snapshot_ratio: 2,
         mutation: TurnMutation::None,
         policy: PolicyKind::Reference,
@@ -104,6 +105,7 @@ fn parse_args(args: &[String]) -> Option<Args> {
             "--row-limit" => turns.row_limit = Some(rest.next()?.parse().ok()?),
             "--long" => turns.long = Some(rest.next()?.parse().ok()?),
             "--snapshot-ratio" => turns.snapshot_ratio = rest.next()?.parse().ok()?,
+            "--retain" => turns.retain = Some(rest.next()?.parse().ok()?),
             "--without" => turns.protections = turns.protections.without(rest.next()?)?,
             "--live-seqs" => turns.protections.live_seqs = LiveSeqs::parse(rest.next()?)?,
             "--seed" | "--seeds" => seeds = Some(parse_seeds(rest.next()?)?),
@@ -180,6 +182,9 @@ fn replay(seed: u64, args: &Args) -> String {
         }
         if args.turns.snapshot_ratio != 2 {
             command.push_str(&format!(" --snapshot-ratio {}", args.turns.snapshot_ratio));
+        }
+        if let Some(keep) = args.turns.retain {
+            command.push_str(&format!(" --retain {keep}"));
         }
         for name in args.turns.protections.off() {
             command.push_str(" --without ");

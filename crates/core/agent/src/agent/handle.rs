@@ -743,6 +743,17 @@ impl Agent {
         }
     }
 
+    #[doc(hidden)]
+    pub fn requests_settled(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut admitted: Vec<Arc<Admitted>> = self.requests.0.load().values().cloned().collect();
+        admitted.sort_by_key(|admitted| admitted.key.0);
+        async move {
+            for admitted in admitted {
+                admitted.settled.wait().await;
+            }
+        }
+    }
+
     #[must_use]
     pub fn turn_controls(&self) -> Vec<(String, TurnControl)> {
         let mut turns: Vec<_> = self

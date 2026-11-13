@@ -774,13 +774,25 @@ impl NoticeOutcome {
                 drop(steered);
                 Self::of_turn(turn.result().await)
             }
-            PromptRoute::Steered => match parent.upgrade() {
-                Some(parent) if parent.turn_controls().is_empty() => {
-                    drop(steered);
-                    Self::of_receipt(parent.steer_receipt(request_id, prompt).await)
+            PromptRoute::Steered => {
+                let mut steered = steered;
+                loop {
+                    let Some(agent) = parent.upgrade() else {
+                        return steered.await.unwrap_or(Self::Stopped);
+                    };
+                    if agent.turn_controls().is_empty() {
+                        drop(steered);
+                        return Self::of_receipt(agent.steer_receipt(request_id, prompt).await);
+                    }
+                    let settled = agent.requests_settled();
+                    drop(agent);
+                    tokio::select! {
+                        biased;
+                        outcome = &mut steered => return outcome.unwrap_or(Self::Stopped),
+                        () = settled => {}
+                    }
                 }
-                _ => steered.await.unwrap_or(Self::Stopped),
-            },
+            }
         }
     }
 

@@ -108,7 +108,7 @@ pub fn held() -> Option<i64> {
 
 fn halt(vm: &VirtualMachine) -> PyBaseExceptionRef {
     let stop = vm.new_exception_empty(vm.ctx.exceptions.system_exit.to_owned());
-    *vm.stopped.borrow_mut() = Some(stop.clone());
+    drop(vm.stopped.replace(Some(stop.clone())));
     vm.fuel.set(0);
     stop
 }

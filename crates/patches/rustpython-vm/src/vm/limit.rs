@@ -82,7 +82,7 @@ impl VirtualMachine {
                 Ok(())
             }
             Err(stop) => {
-                *self.stopped.borrow_mut() = Some(stop.clone());
+                drop(self.stopped.replace(Some(stop.clone())));
                 Err(stop)
             }
         }
@@ -110,7 +110,7 @@ impl VirtualMachine {
             return Ok(());
         };
         limiter.reserve(self, bytes).inspect_err(|stop| {
-            *self.stopped.borrow_mut() = Some(stop.clone());
+            drop(self.stopped.replace(Some(stop.clone())));
             self.fuel.set(0);
         })
     }
@@ -118,10 +118,11 @@ impl VirtualMachine {
     /// Sets or removes the budget and forgets an earlier refusal. With a limiter the
     /// first step asks it for fuel.
     pub fn set_limiter(&self, limiter: Option<PyRc<dyn Limiter>>) {
-        self.stopped.borrow_mut().take();
+        let earlier = self.stopped.take();
         self.fuel
             .set(if limiter.is_some() { 0 } else { u64::MAX });
         *self.limiter.borrow_mut() = limiter;
+        drop(earlier);
     }
 }
 

@@ -225,8 +225,16 @@ impl<E: BashExecutor> ClaudeBash<E> {
                 message,
             } => {
                 return Ok(json!({
-                    "task_id": task_id, "status": "running", "background": true,
-                    "output_file": output_file, "message": message,
+                    "stdout": format!("{message}\n"),
+                    "stderr": "",
+                    "exit_code": null,
+                    "interrupted": false,
+                    "truncated": false,
+                    "background": true,
+                    "status": "running",
+                    "task_id": task_id,
+                    "output_file": output_file,
+                    "message": message,
                 })
                 .to_string());
             }
@@ -238,7 +246,12 @@ impl<E: BashExecutor> ClaudeBash<E> {
             "stderr": stderr,
             "exit_code": result.exit_code,
             "interrupted": false,
-            "truncated": result.truncated || stdout_cut || stderr_cut
+            "truncated": result.truncated || stdout_cut || stderr_cut,
+            "background": false,
+            "status": "completed",
+            "task_id": null,
+            "output_file": null,
+            "message": null,
         })
         .to_string())
     }

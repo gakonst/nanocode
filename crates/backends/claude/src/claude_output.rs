@@ -34,10 +34,7 @@ pub(super) fn host_schema(name: &str) -> Value {
     match name {
         "Read" => read(json!({"type": "array", "items": image(), "minItems": 1, "maxItems": 1})),
         "Bash" => bash(json!({"type": "null"})),
-        "TaskOutput" => task_output(
-            json!({"enum": ["failed", "killed"]}),
-            json!({"enum": ["completed", "failed", "killed"]}),
-        ),
+        "TaskOutput" => task_output(),
         _ => schema(name),
     }
 }
@@ -59,33 +56,31 @@ fn image() -> Value {
 }
 
 fn bash(output_file: Value) -> Value {
-    json!({"oneOf": [
-        {"type": "object", "properties": {
-            "stdout": {"type": "string"}, "stderr": {"type": "string"},
-            "exit_code": {"type": "integer"}, "interrupted": {"const": false}, "truncated": {"type": "boolean"}
-        }, "required": ["stdout", "stderr", "exit_code", "interrupted", "truncated"], "additionalProperties": false},
-        {"type": "object", "properties": {
-            "task_id": {"type": "string"}, "status": {"const": "running"}, "background": {"const": true},
-            "output_file": output_file, "message": {"type": "string"}
-        }, "required": ["task_id", "status", "background", "output_file", "message"], "additionalProperties": false}
-    ]})
+    json!({"type": "object", "properties": {
+        "stdout": {"type": "string", "description": "What the command printed; for a command still running in the background, the line that says so, with its task and where its output goes."},
+        "stderr": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"], "description": "null while the command is still running in the background."},
+        "interrupted": {"const": false},
+        "truncated": {"type": "boolean"},
+        "background": {"type": "boolean", "description": "true when the command passed its timeout or was started with run_in_background, and is still running."},
+        "status": {"enum": ["completed", "running"]},
+        "task_id": {"type": ["string", "null"]},
+        "output_file": output_file,
+        "message": {"type": ["string", "null"]}
+    }, "required": ["stdout", "stderr", "exit_code", "interrupted", "truncated", "background", "status", "task_id", "output_file", "message"], "additionalProperties": false})
 }
 
-fn task_output(error_status: Value, result_status: Value) -> Value {
+fn task_output() -> Value {
     json!({
         "description": "Nano SDK extension for session-owned Bash tasks. Task outcomes are returned as values; invalid tool calls reject.",
-        "oneOf": [
-            {"type": "object", "properties": {
-                "task_id": {"type": "string"}, "status": {"const": "running"}
-            }, "required": ["task_id", "status"], "additionalProperties": false},
-            {"type": "object", "properties": {
-                "task_id": {"type": "string"}, "status": error_status, "error": {"type": "string"}
-            }, "required": ["task_id", "status", "error"], "additionalProperties": false},
-            {"type": "object", "properties": {
-                "task_id": {"type": "string"}, "status": result_status,
-                "stdout": {"type": "string"}, "stderr": {"type": "string"},
-                "exit_code": {"type": "integer"}, "truncated": {"type": "boolean"}
-            }, "required": ["task_id", "status", "stdout", "stderr", "exit_code", "truncated"], "additionalProperties": false}
-        ]
+        "type": "object", "properties": {
+            "task_id": {"type": "string"},
+            "status": {"enum": ["running", "completed", "failed", "killed"]},
+            "stdout": {"type": "string", "description": "What the task printed; while it is still running, the line that says so."},
+            "stderr": {"type": "string", "description": "What the task printed to stderr; for a task that failed without a result, its error."},
+            "exit_code": {"type": ["integer", "null"], "description": "null while the task is running, and when it ended without a result."},
+            "truncated": {"type": "boolean"},
+            "error": {"type": ["string", "null"]}
+        }, "required": ["task_id", "status", "stdout", "stderr", "exit_code", "truncated", "error"], "additionalProperties": false
     })
 }

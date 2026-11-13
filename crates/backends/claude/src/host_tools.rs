@@ -382,8 +382,24 @@ impl HostTaskTool {
                 .await;
         }
         Ok(match &*job.result.get() {
-            None => json!({"task_id": id, "status": "running"}),
-            Some(Err(error)) => json!({"task_id": id, "status": job.status(), "error": error}),
+            None => json!({
+                "task_id": id,
+                "status": "running",
+                "stdout": format!("Task {id} is still running.\n"),
+                "stderr": "",
+                "exit_code": null,
+                "truncated": false,
+                "error": null,
+            }),
+            Some(Err(error)) => json!({
+                "task_id": id,
+                "status": job.status(),
+                "stdout": "",
+                "stderr": format!("{error}\n"),
+                "exit_code": null,
+                "truncated": false,
+                "error": error,
+            }),
             Some(Ok(result)) => json!({
                 "task_id": id,
                 "status": job.status(),
@@ -391,6 +407,7 @@ impl HostTaskTool {
                 "stderr": result.stderr,
                 "exit_code": result.exit_code,
                 "truncated": result.truncated,
+                "error": null,
             }),
         })
     }

@@ -13,6 +13,7 @@ const NODE_ITEM_SLOTS: usize = NODE_ITEMS_MAX + 1;
 const NODE_CHILD_SLOTS: usize = NODE_ITEM_SLOTS + 1;
 const HEIGHT_MAX: usize = usize::BITS as usize;
 const BRANCHLESS_SEARCH_ITEM_BYTES_MAX: usize = 16;
+const SEARCH_STEPS: u32 = usize::BITS - NODE_ITEM_SLOTS.leading_zeros();
 
 const _: () = assert!(2 * NODE_ITEMS_MIN <= NODE_ITEMS_MAX);
 const _: () = assert!(NODE_CHILD_SLOTS <= u8::MAX as usize);
@@ -95,9 +96,29 @@ fn unique_branch<T: Clone>(branch: &mut Arc<Branch<T>>) -> &mut Branch<T> {
     unique
 }
 
+const fn is_plain<T>() -> bool {
+    !std::mem::needs_drop::<T>() && size_of::<T>() <= BRANCHLESS_SEARCH_ITEM_BYTES_MAX
+}
+
+fn count_below<T>(entries: &[T], mut order: impl FnMut(&T) -> Ordering) -> usize {
+    assert!(entries.len() <= NODE_ITEM_SLOTS);
+    let mut below = 0;
+    for shift in (0..SEARCH_STEPS).rev() {
+        let probe = below + (1 << shift);
+        let inside = probe <= entries.len();
+        let less = inside && order(&entries[probe.min(entries.len()) - 1]).is_lt();
+        below = std::hint::select_unpredictable(less, probe, below);
+    }
+    below
+}
+
 fn search<T>(entries: &[T], mut order: impl FnMut(&T) -> Ordering) -> Result<usize, usize> {
-    if !std::mem::needs_drop::<T>() && size_of::<T>() <= BRANCHLESS_SEARCH_ITEM_BYTES_MAX {
-        return entries.binary_search_by(order);
+    if is_plain::<T>() {
+        let below = count_below(entries, &mut order);
+        return match entries.get(below).map(&mut order) {
+            Some(Ordering::Equal) => Ok(below),
+            _ => Err(below),
+        };
     }
     let mut low = 0;
     let mut high = entries.len();
@@ -127,6 +148,13 @@ pub(crate) enum Place {
 
 pub(crate) trait Locate<T> {
     fn locate(&mut self, entries: &Entries<T>) -> Place;
+
+    fn pick<'a>(&mut self, entries: &'a Entries<T>) -> Option<&'a T> {
+        match self.locate(entries) {
+            Place::Found(index) => Some(&entries[index]),
+            Place::Below(_) => None,
+        }
+    }
 }
 
 pub(crate) trait Slot<T> {
@@ -170,6 +198,19 @@ where
             Ok(index) => Place::Found(index),
             Err(index) => Place::Below(index),
         }
+    }
+
+    fn pick<'a>(&mut self, entries: &'a Entries<T>) -> Option<&'a T> {
+        if !is_plain::<T>() {
+            return search(entries, |item| (self.project)(item).borrow().cmp(self.key))
+                .ok()
+                .map(|index| &entries[index]);
+        }
+        let last = entries.len().checked_sub(1)?;
+        let below = count_below(entries, |item| (self.project)(item).borrow().cmp(self.key));
+        let item = &entries[below.min(last)];
+        let found = (self.project)(item).borrow().cmp(self.key).is_eq();
+        std::hint::select_unpredictable(found, Some(item), None)
     }
 }
 
@@ -584,12 +625,7 @@ impl<T> Tree<T> {
         let mut link = self.root.as_ref()?;
         for _ in 0..HEIGHT_MAX {
             match link {
-                Link::Leaf(leaf) => {
-                    return match locate.locate(&leaf.entries) {
-                        Place::Found(index) => Some(&leaf.entries[index]),
-                        Place::Below(_) => None,
-                    };
-                }
+                Link::Leaf(leaf) => return locate.pick(&leaf.entries),
                 Link::Branch(branch) => match locate.locate(&branch.entries) {
                     Place::Found(index) => return Some(&branch.entries[index]),
                     Place::Below(index) => link = child(&branch.children, index),

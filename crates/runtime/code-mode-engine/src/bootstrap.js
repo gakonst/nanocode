@@ -467,26 +467,30 @@
     const stored = new Map();
     const storedWrites = new Map();
     const declaredTools = Object.create(null);
-    const stopped = new Promise((resolve) => {
-      stopCell = resolve;
-    });
-    const finish = async (promise) => {
-      try {
-        await new Promise((resolve, reject) => {
-          promise.then(resolve, reject);
-          stopped.then(resolve);
-        });
-      } catch (error) {
-        if (error !== EXIT) throw error;
-      }
-      await new Promise((resolve) => {
-        settle = resolve;
-        nativeSettled();
-      });
+    let ended = false;
+    let threw = false;
+    let thrown;
+    const end = () => {
+      if (ended) return;
+      ended = true;
+      nativeSettled();
     };
+    const finish = (promise) => new Promise((resolve) => {
+      settle = resolve;
+      stopCell = end;
+      promise.then(end, (error) => {
+        if (error === EXIT) return end();
+        if (ended) return;
+        ended = true;
+        threw = true;
+        thrown = error;
+        resolve();
+      });
+    });
+    const done = jsonStringify({ type: "done", stored: {} });
     const written = () => storedWrites.size ? Object.fromEntries(storedWrites) : {};
     const terminal = () => failure === undefined
-      ? jsonStringify({ type: "done", stored: written() })
+      ? storedWrites.size ? jsonStringify({ type: "done", stored: written() }) : done
       : jsonStringify({ type: "error", message: failure, stored: written() });
     const invokeTool = (name, input, host = false) => {
       const encodedInput = input === undefined ? "null" : jsonStringify(input);
@@ -614,6 +618,7 @@
         }
         const script = new AsyncFunction(source);
         await finish(script());
+        if (threw) throw thrown;
         return terminal();
       } catch (error) {
         return jsonStringify({

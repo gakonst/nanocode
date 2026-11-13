@@ -78,6 +78,13 @@ pub fn follows_harness(route: Route, model: &ModelSelection) -> bool {
             .is_none_or(|model| !Model::ALL.contains(&model))
 }
 
+fn native_model(model: &ModelSelection) -> bool {
+    model.as_claude().is_some()
+        || model
+            .as_codex()
+            .is_some_and(|model| Model::ALL.contains(&model))
+}
+
 fn model_limit(name: &str) -> Result<Option<u64>> {
     match std::env::var(name) {
         Ok(value) => value
@@ -659,6 +666,7 @@ impl Host {
                 Some(Route::Boundless) => boundless.clone(),
                 _ => None,
             })
+            .direct_tools_for(|request| !native_model(&request.model))
             .configure(move |builder| {
                 let builder = match context_window {
                     Some(tokens) => builder.context_window_tokens(tokens),
@@ -682,6 +690,7 @@ impl Host {
                 .clone()
                 .filter(|_| route(request) == Some(Route::Tempo))
         })
+        .direct_tools_for(|request| !native_model(&request.model))
         .headless(config.headless)
         .configure(move |builder| {
             let builder = match max_output {

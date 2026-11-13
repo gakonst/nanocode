@@ -10,12 +10,14 @@ use nanocode_agent_core::{
 use std::sync::Arc;
 type Hook = Arc<dyn Fn(CodexBuilder) -> Result<CodexBuilder> + Send + Sync>;
 type Route = Arc<dyn Fn(&HarnessRequest) -> Option<OpenAi> + Send + Sync>;
+type Direct = Arc<dyn Fn(&HarnessRequest) -> bool + Send + Sync>;
 #[derive(Clone)]
 pub struct CodexHarness {
     client: OpenAi,
     settings: Settings,
     configure: Option<Hook>,
     client_for: Option<Route>,
+    direct_tools_for: Option<Direct>,
 }
 
 impl CodexHarness {
@@ -26,6 +28,7 @@ impl CodexHarness {
             settings: Settings::default(),
             configure: None,
             client_for: None,
+            direct_tools_for: None,
         }
     }
 
@@ -71,6 +74,15 @@ impl CodexHarness {
         F: Fn(&HarnessRequest) -> Option<OpenAi> + Send + Sync + 'static,
     {
         self.client_for = Some(Arc::new(client_for));
+        self
+    }
+
+    #[must_use]
+    pub fn direct_tools_for<F>(mut self, direct_tools_for: F) -> Self
+    where
+        F: Fn(&HarnessRequest) -> bool + Send + Sync + 'static,
+    {
+        self.direct_tools_for = Some(Arc::new(direct_tools_for));
         self
     }
 }
@@ -120,6 +132,10 @@ impl RuntimeBackend for CodexHarness {
             .unwrap_or_else(|| self.client.clone());
         let settings = settings.or(&self.settings.clone().or(&defaults));
         let configure = self.configure.clone();
+        let direct = self
+            .direct_tools_for
+            .as_ref()
+            .is_some_and(|direct_tools_for| direct_tools_for(&spec));
         Box::pin(async move {
             let remote = settings
                 .tools
@@ -204,6 +220,10 @@ impl RuntimeBackend for CodexHarness {
                             .chain(shared.iter().cloned()),
                     )?;
                     let builder = selected.into_builder();
+                    let builder = match direct && !remote {
+                        true => builder.exposure(nanocode_tool_host::ToolExposure::DirectOnly),
+                        false => builder,
+                    };
                     #[cfg(not(target_family = "wasm"))]
                     let builder = providers.iter().fold(builder, |builder, provider| {
                         builder.shared_provider(provider.clone())

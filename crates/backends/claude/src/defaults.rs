@@ -123,6 +123,7 @@ pub fn install_default_tools_with_executor(
         executor,
         &[],
         false,
+        false,
     )
 }
 
@@ -137,6 +138,7 @@ pub(crate) fn install_default_tools_with_providers(
     executor: Arc<dyn nanocode_process_contracts::ForegroundExecutor>,
     providers: &[Arc<dyn nanocode_tool_host::runtime::DynamicToolProvider>],
     headless: bool,
+    direct: bool,
 ) -> Result<crate::ClaudeTools> {
     let jobs = Arc::new(crate::claude_bash::Jobs::with_subagents(&additive));
     let selected = match selected {
@@ -170,9 +172,15 @@ pub(crate) fn install_default_tools_with_providers(
             None => selected,
         }
     };
+    let builder = match direct {
+        true => selected
+            .into_builder()
+            .exposure(nanocode_tool_host::ToolExposure::DirectOnly),
+        false => selected.into_builder(),
+    };
     let mut selected = providers
         .iter()
-        .fold(selected.into_builder(), |builder, provider| {
+        .fold(builder, |builder, provider| {
             builder.shared_provider(provider.clone())
         })
         .build()

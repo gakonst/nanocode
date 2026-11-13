@@ -12,12 +12,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 type Hook = Arc<dyn Fn(ClaudeBuilder) -> Result<ClaudeBuilder> + Send + Sync>;
 type Route = Arc<dyn Fn(&HarnessRequest) -> Option<ClaudeClient> + Send + Sync>;
+type Direct = Arc<dyn Fn(&HarnessRequest) -> bool + Send + Sync>;
 #[derive(Clone)]
 pub struct ClaudeHarness {
     client: ClaudeClient,
     settings: Settings,
     configure: Option<Hook>,
     client_for: Option<Route>,
+    direct_tools_for: Option<Direct>,
     headless: bool,
 }
 impl ClaudeHarness {
@@ -28,6 +30,7 @@ impl ClaudeHarness {
             settings: Settings::default(),
             configure: None,
             client_for: None,
+            direct_tools_for: None,
             headless: false,
         }
     }
@@ -82,6 +85,15 @@ impl ClaudeHarness {
         self.client_for = Some(Arc::new(client_for));
         self
     }
+
+    #[must_use]
+    pub fn direct_tools_for<F>(mut self, direct_tools_for: F) -> Self
+    where
+        F: Fn(&HarnessRequest) -> bool + Send + Sync + 'static,
+    {
+        self.direct_tools_for = Some(Arc::new(direct_tools_for));
+        self
+    }
 }
 impl From<ClaudeClient> for ClaudeHarness {
     fn from(client: ClaudeClient) -> Self {
@@ -128,6 +140,10 @@ impl RuntimeBackend for ClaudeHarness {
             .unwrap_or_else(|| self.client.clone());
         let settings = settings.or(&self.settings.clone().or(&defaults));
         let configure = self.configure.clone();
+        let direct = self
+            .direct_tools_for
+            .as_ref()
+            .is_some_and(|direct_tools_for| direct_tools_for(&spec));
         #[cfg(not(target_family = "wasm"))]
         let headless = self.headless;
         Box::pin(async move {
@@ -214,6 +230,7 @@ impl RuntimeBackend for ClaudeHarness {
                         services.process_executors().foreground(),
                         &providers,
                         headless,
+                        direct && !remote,
                     )
                 }
                 #[cfg(target_family = "wasm")]
@@ -221,7 +238,7 @@ impl RuntimeBackend for ClaudeHarness {
                     claude_tools(root.clone(), &handle, selected, additive)
                 }
             });
-            builder = builder.code_only(cfg!(not(target_family = "wasm")) || remote);
+            builder = builder.code_only((cfg!(not(target_family = "wasm")) && !direct) || remote);
             if let Some(checkpoint) = spec.checkpoint {
                 builder = builder.resume(checkpoint)?;
             }

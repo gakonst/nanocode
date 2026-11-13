@@ -2277,6 +2277,10 @@ impl ClaudeClient {
                         match event {
                             Ok(StreamEvent::Other | StreamEvent::Ping) => continue,
                             Ok(StreamEvent::MessageStop) => {
+                                let mut response = state.response;
+                                nanocode_platform::spawn(async move {
+                                    while let Some(Ok(_)) = response.next().await {}
+                                });
                                 return Some((Ok(StreamEvent::MessageStop), None));
                             }
                             Err(error) => {

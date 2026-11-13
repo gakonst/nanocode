@@ -698,13 +698,25 @@ impl Tools {
                     .iter()
                     .map(|provider| provider.catalog_revision()),
             )
+            .chain(self.embedded_catalog_revision())
             .collect()
     }
 
     #[must_use]
     #[cfg(target_family = "wasm")]
-    pub const fn catalog_revision(&self) -> Option<Vec<u64>> {
-        None
+    pub fn catalog_revision(&self) -> Option<Vec<u64>> {
+        self.embedded_catalog_revision().into_iter().collect()
+    }
+
+    fn embedded_catalog_revision(&self) -> Option<Option<u64>> {
+        let host = self.embedded_host.as_ref()?;
+        Some(self.embedded_session_id.as_deref().and_then(|session_id| {
+            let definitions = host.tool_definitions(session_id).ok()?;
+            let encoded = serde_json::to_vec(&definitions).ok()?;
+            let mut hasher = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&encoded, &mut hasher);
+            Some(std::hash::Hasher::finish(&hasher))
+        }))
     }
 
     #[must_use]

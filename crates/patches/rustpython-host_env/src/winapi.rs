@@ -292,7 +292,7 @@ pub fn create_process(
 }
 
 pub fn create_junction(src: &Path, dst: &Path) -> io::Result<()> {
-    junction::create(src, dst)
+    nanocode_sys::junction::create(src, dst)
 }
 
 pub fn build_environment_block(

@@ -121,13 +121,13 @@ version = "0.23.39"
 features = ["aws_lc_rs"]
 default-features = false
 
-[target."cfg(windows)".dependencies.junction]
-version = "2.0.0"
-
 [target."cfg(windows)".dependencies.memchr]
 version = "2.8.1"
 features = ["alloc"]
 default-features = false
+
+[target."cfg(windows)".dependencies.nanocode-sys]
+path = "../../core/sys"
 
 [target."cfg(windows)".dependencies.schannel]
 version = "0.1.29"

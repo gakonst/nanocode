@@ -27,6 +27,8 @@ pub mod utf8;
 pub mod unix;
 #[cfg(windows)]
 pub mod certificate_store;
+#[cfg(windows)]
+pub mod junction;
 #[cfg(target_os = "macos")]
 pub mod trust_settings;
 pub mod webp;

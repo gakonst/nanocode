@@ -331,6 +331,9 @@ fn with_cut_notice(stream: &str, text: &str, cut: bool, kept: Option<(&str, u64)
 fn leading_sleep(command: &str) -> Option<String> {
     let command = command.trim();
     let end = command.find(['&', '|', ';', '\n']).unwrap_or(command.len());
+    if command[end..].starts_with('&') && !command[end..].starts_with("&&") {
+        return None;
+    }
     let seconds = command[..end].trim().strip_prefix("sleep")?;
     if !seconds.starts_with(char::is_whitespace) {
         return None;

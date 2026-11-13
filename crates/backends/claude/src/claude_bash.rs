@@ -424,13 +424,6 @@ fn whole_duration(milliseconds: u64) -> String {
         (hours, minutes) => format!("{hours}h {minutes}m"),
     }
 }
-fn sleeps(command: &str) -> bool {
-    command
-        .trim_start()
-        .split(|ch: char| ch.is_whitespace() || ";&|()".contains(ch))
-        .next()
-        == Some("sleep")
-}
 #[derive(Clone, Copy)]
 enum Watch {
     Notified,
@@ -830,16 +823,6 @@ impl BashExecutor for LocalBash {
                             result.map(BashExecution::Completed)
                         }
                     };
-                }
-                Err(_) if sleeps(&job.command) => {
-                    job.abort.abort();
-                    job.finished.wait().await;
-                    self.jobs.forget(&id);
-                    discard(&job);
-                    return Err(format!(
-                        "Bash command timed out after {}s",
-                        timeout.as_secs_f64().round().max(1.0)
-                    ));
                 }
                 Err(_) => {
                     let _ = arm.send(Duration::from_millis(DEFAULT_BACKGROUND_TIMEOUT_MS));

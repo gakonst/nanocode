@@ -55,6 +55,7 @@ pub struct Dfa {
     context_mask: u8,
     start_anchored: StateId,
     start_unanchored: StateId,
+    specialize_start: bool,
     capacity: usize,
 }
 
@@ -211,7 +212,13 @@ fn look_holds(look: Look, left: u8, right: u8) -> Option<bool> {
 }
 
 impl Dfa {
-    pub fn new(nfa: &Nfa, kind: Kind, line_terminator: u8, capacity: usize) -> Dfa {
+    pub fn new(
+        nfa: &Nfa,
+        kind: Kind,
+        line_terminator: u8,
+        capacity: usize,
+        specialize_start: bool,
+    ) -> Dfa {
         let context_mask = context_mask(nfa.look_set);
         let mut boundaries = [false; 256];
         let mut mark = |start: u8, end: u8| {
@@ -261,6 +268,7 @@ impl Dfa {
             context_mask,
             start_anchored: nfa.start_anchored,
             start_unanchored: nfa.start_unanchored,
+            specialize_start,
             capacity,
         }
     }
@@ -333,7 +341,8 @@ impl Dfa {
         if record.matched {
             tagged |= TAG_MATCH;
         }
-        if !record.matched
+        if self.specialize_start
+            && !record.matched
             && record.seeds_len == 1
             && cache.seeds[record.seeds_start as usize] == self.start_unanchored
             && self.start_unanchored != self.start_anchored

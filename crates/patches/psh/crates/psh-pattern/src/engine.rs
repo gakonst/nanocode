@@ -69,20 +69,22 @@ impl Engine {
                 size_limit,
             },
         )?;
+        let prefilter =
+            literal::prefix_prefilter(hir).or_else(|| literal::first_byte_prefilter(hir));
         let forward = Dfa::new(
             &nfa,
             Kind::LeftmostFirst,
             config.line_terminator,
             config.dfa_size_limit,
+            prefilter.is_some(),
         );
         let reverse = Dfa::new(
             &reverse_nfa,
             Kind::All,
             config.line_terminator,
             config.dfa_size_limit,
+            false,
         );
-        let prefilter =
-            literal::prefix_prefilter(hir).or_else(|| literal::first_byte_prefilter(hir));
         let literal = literal::pure_literal(hir).map(|bytes| {
             let len = bytes.len();
             (memmem::Finder::new(&bytes).into_owned(), len)

@@ -155,8 +155,11 @@ impl ChatGateway {
     pub(crate) fn http_client() -> reqwest::Client {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .default_headers(nanocode_http::accept_encoding(
+                reqwest::header::HeaderMap::new(),
+            ))
             .build()
-            .unwrap_or_default()
+            .unwrap_or_else(|_| nanocode_http::client())
     }
 
     #[must_use]
@@ -275,6 +278,7 @@ impl ChatGateway {
             .send();
         let response = stall(self.stall_timeout, pending)
             .await?
+            .map(nanocode_http::decode_flate_response)
             .map_err(map_http_error)?;
         let status = response.status();
         if !status.is_success() {

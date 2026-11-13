@@ -7,7 +7,10 @@ use nanocode_compression::{
 };
 use nanocode_zstd::{BlockHeader, BlockType, FrameHeader, StreamingDecoder, parse_frame_header};
 
-use crate::brotli;
+use crate::{
+    brotli,
+    flate::{self, FlateCoding},
+};
 
 pub fn zstd_stream<S, B, E>(source: S) -> impl Stream<Item = io::Result<Vec<u8>>>
 where
@@ -204,10 +207,39 @@ pub fn gzip(bytes: &[u8], level: u32) -> io::Result<Vec<u8>> {
     Ok(encoded)
 }
 
-pub fn decode_response(mut response: reqwest::Response) -> reqwest::Response {
-    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
-    use reqwest::ResponseBuilderExt;
+const ACCEPTED_ENCODINGS: &str = "gzip,deflate";
 
+#[must_use]
+pub fn accept_encoding(mut headers: http::HeaderMap) -> http::HeaderMap {
+    if let http::header::Entry::Vacant(entry) = headers.entry(http::header::ACCEPT_ENCODING) {
+        entry.insert(http::HeaderValue::from_static(ACCEPTED_ENCODINGS));
+    }
+    headers
+}
+
+#[must_use]
+pub fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .default_headers(accept_encoding(http::HeaderMap::new()))
+        .build()
+        .expect("the default HTTP client builds")
+}
+
+pub fn decode_flate_response(response: reqwest::Response) -> reqwest::Response {
+    match FlateCoding::from_headers(response.headers()) {
+        Some(coding) => replace_body(response, |response| {
+            reqwest::Body::wrap_stream(flate::stream(coding, response.bytes_stream()))
+        }),
+        None => response,
+    }
+}
+
+pub fn decode_response(response: reqwest::Response) -> reqwest::Response {
+    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+
+    if FlateCoding::from_headers(response.headers()).is_some() {
+        return decode_flate_response(response);
+    }
     let mut encodings = response.headers().get_all(CONTENT_ENCODING).iter();
     let Some(encoding) = encodings.next() else {
         return response;
@@ -227,6 +259,20 @@ pub fn decode_response(mut response: reqwest::Response) -> reqwest::Response {
     {
         return response;
     }
+    replace_body(response, |response| match encoding {
+        "zstd" => reqwest::Body::wrap_stream(zstd_stream(response.bytes_stream())),
+        "br" => reqwest::Body::wrap_stream(brotli::stream(response.bytes_stream())),
+        _ => unreachable!("encoding is selected above"),
+    })
+}
+
+fn replace_body(
+    mut response: reqwest::Response,
+    body: impl FnOnce(reqwest::Response) -> reqwest::Body,
+) -> reqwest::Response {
+    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+    use reqwest::ResponseBuilderExt;
+
     let url = response.url().clone();
     let status = response.status();
     let version = response.version();
@@ -234,11 +280,7 @@ pub fn decode_response(mut response: reqwest::Response) -> reqwest::Response {
     headers.remove(CONTENT_ENCODING);
     headers.remove(CONTENT_LENGTH);
     let extensions = std::mem::take(response.extensions_mut());
-    let body = match encoding {
-        "zstd" => reqwest::Body::wrap_stream(zstd_stream(response.bytes_stream())),
-        "br" => reqwest::Body::wrap_stream(brotli::stream(response.bytes_stream())),
-        _ => unreachable!("encoding is selected above"),
-    };
+    let body = body(response);
     let mut decoded = http::Response::builder()
         .url(url)
         .body(body)

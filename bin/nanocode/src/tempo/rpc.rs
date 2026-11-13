@@ -185,7 +185,7 @@ impl Drop for Queued {
 impl Rpc {
     pub(crate) fn new(client: Option<&reqwest::Client>, url: Url) -> Self {
         Self {
-            client: client.cloned().unwrap_or_default(),
+            client: client.cloned().unwrap_or_else(nanocode_http::client),
             url,
             queued: Arc::default(),
             ids: Arc::default(),
@@ -200,6 +200,7 @@ impl Rpc {
             .body(body.to_vec())
             .send()
             .await
+            .map(nanocode_http::decode_flate_response)
             .map_err(|error| RpcFault::Transport(error.to_string()))?;
         let status = response.status();
         let retry_after = response

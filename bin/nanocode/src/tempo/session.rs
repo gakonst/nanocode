@@ -537,6 +537,9 @@ impl SessionProvider {
     fn hint_client() -> Result<reqwest::Client, Fault> {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .default_headers(nanocode_http::accept_encoding(
+                reqwest::header::HeaderMap::new(),
+            ))
             .build()
             .map_err(http("failed to build the session hint client"))
     }
@@ -548,7 +551,11 @@ impl SessionProvider {
     ) -> Result<reqwest::Response, Fault> {
         let client = Self::hint_client()?;
         with_management_timeout(self.management_timeout, context, async {
-            request(&client).send().await.map_err(http(context))
+            request(&client)
+                .send()
+                .await
+                .map(nanocode_http::decode_flate_response)
+                .map_err(http(context))
         })
         .await
     }
@@ -1929,7 +1936,7 @@ impl SessionProvider {
         channel_id: Hash,
     ) -> Result<reqwest::Response, Fault> {
         let error = match tokio::time::timeout(self.management_timeout, request.send()).await {
-            Ok(Ok(response)) => return Ok(response),
+            Ok(Ok(response)) => return Ok(nanocode_http::decode_flate_response(response)),
             Ok(Err(error)) if error.is_connect() => {
                 return Err(Fault::http(format!("{context}: {error}")));
             }
@@ -1964,7 +1971,11 @@ impl SessionProvider {
             credential.authorization()?,
         );
         with_management_timeout(self.management_timeout, context, async {
-            request.send().await.map_err(http(context))
+            request
+                .send()
+                .await
+                .map(nanocode_http::decode_flate_response)
+                .map_err(http(context))
         })
         .await
     }

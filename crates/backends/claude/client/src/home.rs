@@ -152,6 +152,7 @@ impl ClaudeSubscriptionHost for HomeHost {
             let response = builder
                 .send()
                 .await
+                .map(nanocode_http::decode_flate_response)
                 .map_err(|_| ClaudeSubscriptionHostError)?;
             let status = response.status().as_u16();
             let body = response
@@ -177,7 +178,7 @@ impl ClaudeSubscription {
         Self::new(
             Arc::new(HomeHost {
                 path: home.nanocode_home().join(FILE),
-                http: reqwest::Client::new(),
+                http: nanocode_http::client(),
             }),
             KEY,
             ClaudeSubscriptionConfig::default(),

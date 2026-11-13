@@ -382,6 +382,9 @@ impl Payments {
         }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .default_headers(nanocode_http::accept_encoding(
+                reqwest::header::HeaderMap::new(),
+            ))
             .build()
             .map_err(|error| error.to_string())?;
         Ok(self
@@ -1283,7 +1286,8 @@ async fn list(
         client
             .get(url)
             .send()
-            .await?
+            .await
+            .map(nanocode_http::decode_flate_response)?
             .error_for_status()?
             .bytes()
             .await
@@ -1611,7 +1615,7 @@ pub(crate) async fn close(closing: Closing) {
     if sessions.is_empty() {
         return;
     }
-    let client = reqwest::Client::new();
+    let client = nanocode_http::client();
     for (session, url) in sessions.iter() {
         close_session(&client, session, url).await;
     }
@@ -1665,7 +1669,8 @@ async fn balance(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(call.to_string())
             .send()
-            .await?
+            .await
+            .map(nanocode_http::decode_flate_response)?
             .error_for_status()?
             .bytes()
             .await

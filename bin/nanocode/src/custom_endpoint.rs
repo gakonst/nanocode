@@ -59,13 +59,14 @@ fn fetch_models(url: &str, key: Option<&str>) -> Result<Vec<String>, String> {
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let mut request = reqwest::Client::new().get(url).timeout(LIST_TIMEOUT);
+        let mut request = nanocode_http::client().get(url).timeout(LIST_TIMEOUT);
         if let Some(key) = key {
             request = request.bearer_auth(key);
         }
         let response = request
             .send()
             .await
+            .map(nanocode_http::decode_flate_response)
             .map_err(|error| format!("failed to list models from {url}: {error}"))?;
         let status = response.status();
         if !status.is_success() {

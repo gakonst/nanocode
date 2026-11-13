@@ -82,7 +82,9 @@ pub fn tool_runtime(
                         save_root: workspace.to_path_buf(),
                         http_layer: config.http_layer.clone(),
                     }),
-                tools.remote_http_client().unwrap_or_default(),
+                tools
+                    .remote_http_client()
+                    .unwrap_or_else(nanocode_http::client),
             )
         } else {
             Vec::new()

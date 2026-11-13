@@ -311,6 +311,7 @@ impl Payer {
             None => post(client)
                 .send()
                 .await
+                .map(nanocode_http::decode_flate_response)
                 .map_err(|error| Fault::Http(format!("preconnect probe failed: {error}")))?,
         };
         Ok(protocol::response_challenges(response.headers())

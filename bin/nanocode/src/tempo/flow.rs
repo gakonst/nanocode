@@ -122,6 +122,7 @@ impl Exchange for reqwest::Client {
     async fn send(&mut self, request: Request) -> Result<Response, HttpFault> {
         self.execute(request)
             .await
+            .map(nanocode_http::decode_flate_response)
             .map_err(|error| HttpFault::Request(error.without_url().to_string()))
     }
 }

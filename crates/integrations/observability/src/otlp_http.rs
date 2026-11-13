@@ -26,6 +26,7 @@ const HEADER_SEPARATOR: char = ',';
 const HEADER_ASSIGNMENT: char = '=';
 const PERCENT: char = '%';
 const PERCENT_ENCODED_DIGITS: usize = 2;
+const DECODE_FAILURE: &str = "error decoding response body";
 const HEX_RADIX: u32 = 16;
 const ALREADY_SHUT_DOWN: &str = "Exporter already shutdown";
 
@@ -92,7 +93,10 @@ struct Http {
 
 impl Http {
     fn build(signal: &Signal, endpoint: &str) -> Result<Self, OtlpError> {
-        let client = Client::new();
+        let client = Client::builder()
+            .default_headers(nanocode_http::accept_encoding(HeaderMap::new()))
+            .build()
+            .expect("the default blocking HTTP client builds");
         let url = http::Uri::from_str(endpoint)
             .map_err(|error| OtlpError::Endpoint {
                 endpoint: endpoint.to_owned(),
@@ -114,18 +118,28 @@ impl Http {
 
     fn post(&self, body: Vec<u8>) -> Exported {
         self.body_bytes.store(body.len(), Ordering::Relaxed);
-        self.client
+        let response = self
+            .client
             .post(&self.url)
             .headers(self.headers.clone())
             .body(body)
             .send()
             .and_then(Response::error_for_status)
-            .and_then(Response::bytes)
-            .map(drop)
-            .map_err(|error| {
-                ExportError::InternalFailure(format!("HTTP export failed: {}", error.without_url()))
-            })
+            .map_err(export_failure)?;
+        let coding = nanocode_http::FlateCoding::from_headers(response.headers());
+        let body = response.bytes().map_err(export_failure)?;
+        coding.map_or(Ok(()), |coding| {
+            nanocode_http::decode_body(coding, &body)
+                .map(drop)
+                .map_err(|_| {
+                    ExportError::InternalFailure(format!("HTTP export failed: {DECODE_FAILURE}"))
+                })
+        })
     }
+}
+
+fn export_failure(error: reqwest::Error) -> ExportError {
+    ExportError::InternalFailure(format!("HTTP export failed: {}", error.without_url()))
 }
 
 fn compression(signal: &Signal) -> Result<(), OtlpError> {

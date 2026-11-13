@@ -20,6 +20,7 @@ rustdoc-args = ["-D", "warnings"]
 nanocode-arguments.workspace = true
 http.workspace = true
 log.workspace = true
+nanocode-http.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 nanocode-platform.workspace = true
 nanocode-sync.workspace = true

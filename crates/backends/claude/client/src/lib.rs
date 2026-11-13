@@ -1617,6 +1617,9 @@ impl ClaudeClient {
         let http = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(idle_timeout)
+            .default_headers(nanocode_http::accept_encoding(
+                reqwest::header::HeaderMap::new(),
+            ))
             .build()?;
         let endpoint = format!("{}/messages", base_url.trim_end_matches('/'));
         Ok(Self::new(http, endpoint, api_key))

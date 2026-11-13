@@ -669,6 +669,7 @@ async fn hydrate_personal_access_token(
         .bearer_auth(access_token)
         .send()
         .await
+        .map(nanocode_http::decode_flate_response)
         .map_err(|error| ChatGptAuthError::AccessTokenMetadata(error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
@@ -777,6 +778,7 @@ impl ManagedAuthInner {
             })
             .send()
             .await
+            .map(nanocode_http::decode_flate_response)
             .map_err(|error| OpenAiAuthError::Refresh(Arc::from(error.to_string())))?;
         let status = response.status();
         let body = response
@@ -1203,6 +1205,9 @@ fn auth_client() -> Result<reqwest::Client, ChatGptAuthError> {
     crate::client::transport::install_default_rustls_crypto_provider();
     reqwest::Client::builder()
         .timeout(AUTH_REQUEST_TIMEOUT)
+        .default_headers(nanocode_http::accept_encoding(
+            reqwest::header::HeaderMap::new(),
+        ))
         .build()
         .map_err(|error| ChatGptAuthError::TokenExchange(error.to_string()))
 }
@@ -1305,6 +1310,7 @@ async fn exchange_code(
         .body(body)
         .send()
         .await
+        .map(nanocode_http::decode_flate_response)
         .map_err(|error| ChatGptAuthError::TokenExchange(error.to_string()))?;
     let status = response.status();
     let bytes = response

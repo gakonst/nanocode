@@ -452,7 +452,7 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, McpServ
         .redirect(nanocode_mcp_http::same_origin_redirect_policy(
             replays_plaintext_proxy_credentials,
         ))
-        .default_headers(default_headers)
+        .default_headers(nanocode_http::accept_encoding(default_headers))
         .build()
         .map_err(|error| format!("failed to build MCP HTTP client: {error}"))?;
     if let Some(bearer) = bearer {

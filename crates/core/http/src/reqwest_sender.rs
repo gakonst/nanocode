@@ -24,6 +24,7 @@ impl Sender for ReqwestSender<'_> {
                 .body(request.body)
                 .send()
                 .await
+                .map(crate::decode_flate_response)
                 .map_err(reqwest_error)?;
             let status = response.status();
             let headers = response.headers().clone();
@@ -85,7 +86,11 @@ pub async fn bounded_text(
     request: reqwest::RequestBuilder,
     limit: usize,
 ) -> Result<(u16, String), BoundedError> {
-    let mut response = request.send().await.map_err(BoundedError::Http)?;
+    let mut response = request
+        .send()
+        .await
+        .map(crate::decode_flate_response)
+        .map_err(BoundedError::Http)?;
     let status = response.status().as_u16();
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(BoundedError::Http)? {
@@ -106,7 +111,11 @@ pub async fn execute(
     request: reqwest::Request,
 ) -> Result<reqwest::Response, Error> {
     let Some(layer) = layer else {
-        return client.execute(request).await.map_err(reqwest_error);
+        return client
+            .execute(request)
+            .await
+            .map(crate::decode_flate_response)
+            .map_err(reqwest_error);
     };
     let url = request.url().clone();
     let sent = Request {

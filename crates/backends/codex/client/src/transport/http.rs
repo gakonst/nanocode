@@ -216,6 +216,7 @@ impl ResponsesHttp {
         }
         let response = idle(self.client.execute(request))
             .await?
+            .map(nanocode_http::decode_flate_response)
             .map_err(map_http_error)?;
         let status = response.status();
         if !status.is_success() {

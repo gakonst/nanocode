@@ -115,7 +115,7 @@ impl ClaudeTokenSource for FederatedToken {
 impl ClaudeClient {
     pub fn workload_identity(identity: ClaudeWorkloadIdentity) -> Self {
         nanocode_tls::install_default_rustls_crypto_provider();
-        Self::federated(reqwest::Client::new(), ANTHROPIC_API_URL, identity)
+        Self::federated(nanocode_http::client(), ANTHROPIC_API_URL, identity)
     }
 
     pub fn messages_api_federated(
@@ -128,6 +128,9 @@ impl ClaudeClient {
         let http = reqwest::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(idle_timeout)
+            .default_headers(nanocode_http::accept_encoding(
+                reqwest::header::HeaderMap::new(),
+            ))
             .build()?;
         Ok(Self::federated(http, base_url, identity))
     }

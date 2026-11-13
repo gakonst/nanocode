@@ -27,7 +27,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-reqwest = { workspace = true, features = ["stream", "gzip", "deflate"] }
+reqwest = { workspace = true, features = ["stream"] }
 bytes = "1.9"
 tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt-multi-thread"] }
 nanocode-tls.workspace = true

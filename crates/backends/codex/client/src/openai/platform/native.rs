@@ -52,7 +52,7 @@ impl FactoryPlatform {
     ) -> DefaultResponsesService {
         ResponsesService::standard_with_http_client_and_max_attempts(
             config,
-            self.http_client.get_or_init(reqwest::Client::new).clone(),
+            self.http_client.get_or_init(nanocode_http::client).clone(),
             max_attempts,
         )
     }

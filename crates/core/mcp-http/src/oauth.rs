@@ -696,6 +696,7 @@ async fn initialize_challenge(
         .body(body.to_string())
         .send()
         .await
+        .map(nanocode_http::decode_flate_response)
         .inspect_err(|error| {
             tracing::debug!(
                 "unauthenticated MCP initialize probe failed: {}",
@@ -1414,6 +1415,9 @@ pub fn http_client(
         .redirect(reqwest::redirect::Policy::none())
         .https_only(https_only)
         .timeout(timeout)
+        .default_headers(nanocode_http::accept_encoding(
+            reqwest::header::HeaderMap::new(),
+        ))
         .build()
 }
 
@@ -1433,7 +1437,7 @@ fn oauth_http_client(headers: BTreeMap<String, SecretSource>) -> Result<reqwest:
         resolved.contains_key(reqwest::header::PROXY_AUTHORIZATION);
     nanocode_tls::install_default_rustls_crypto_provider();
     reqwest::Client::builder()
-        .default_headers(resolved)
+        .default_headers(nanocode_http::accept_encoding(resolved))
         .pool_max_idle_per_host(0)
         .redirect(crate::same_origin_redirect_policy(
             replays_plaintext_proxy_credentials,

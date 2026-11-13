@@ -1,3 +1,5 @@
+use nanocode_sys::crc32::Crc32Instructions;
+
 const CRC32_POLYNOMIAL: u32 = 0xEDB8_8320;
 const CRC32_TABLES: usize = 16;
 const BYTE_VALUES: usize = 256;
@@ -40,7 +42,15 @@ const fn crc32_tables() -> [[u32; BYTE_VALUES]; CRC32_TABLES] {
     tables
 }
 
+#[inline]
 pub fn crc32(start: u32, data: &[u8]) -> u32 {
+    match Crc32Instructions::detect() {
+        Some(instructions) => instructions.update(start, data),
+        None => crc32_table(start, data),
+    }
+}
+
+fn crc32_table(start: u32, data: &[u8]) -> u32 {
     let mut crc = !start;
     let (blocks, rest) = data.as_chunks::<CRC32_TABLES>();
     for block in blocks {

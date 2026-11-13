@@ -933,6 +933,9 @@ dependencies = [
 [[package]]
 name = "nanocode-compression"
 version = "0.7.0"
+dependencies = [
+ "nanocode-sys",
+]
 
 [[package]]
 name = "nanocode-computer"

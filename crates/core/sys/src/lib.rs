@@ -5,6 +5,7 @@ pub mod apple;
 #[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
 pub mod security;
 mod atomic;
+pub mod crc32;
 mod inline;
 #[cfg(any(unix, windows))]
 mod random;

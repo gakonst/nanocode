@@ -10,6 +10,9 @@ description = "LZ4 block, DEFLATE, bzip2 and xz codecs for the embedded Python"
 autotests = false
 autobenches = false
 
+[dependencies]
+nanocode-sys.workspace = true
+
 [lints]
 workspace = true
 

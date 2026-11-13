@@ -255,6 +255,9 @@ pub fn decompress_with_size(input: &[u8]) -> Result<Vec<u8>, Lz4Error> {
         return Err(Lz4Error::MissingSizePrefix);
     };
     let expected = usize::try_from(u32::from_le_bytes(*prefix)).expect("a u32 fits in usize");
+    if let Some(output) = nanocode_sys::lz4::decompress_block(block, expected) {
+        return Ok(output);
+    }
     let mut output = alloc::vec![0; expected];
     let written = decompress_block(block, &mut output)?;
     if written != expected {

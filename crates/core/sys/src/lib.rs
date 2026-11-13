@@ -9,6 +9,7 @@ pub mod security;
 mod atomic;
 pub mod base64;
 pub mod crc32;
+pub mod lz4;
 mod inline;
 pub mod jpeg;
 #[cfg(any(unix, windows))]

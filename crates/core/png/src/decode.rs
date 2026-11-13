@@ -1111,10 +1111,16 @@ impl Expand {
                 alpha,
                 bit_depth,
             } => {
-                let channels = if *alpha { RGBA_BYTES } else { RGB_BYTES };
-                unpack(raw, output, channels, *bit_depth, |index, pixel| {
-                    pixel.copy_from_slice(&entries[usize::from(index)][..channels]);
-                });
+                if *alpha {
+                    unpack::<RGBA_BYTES>(raw, output, *bit_depth, |index, pixel| {
+                        *pixel = entries[usize::from(index)];
+                    });
+                } else {
+                    unpack::<RGB_BYTES>(raw, output, *bit_depth, |index, pixel| {
+                        let [red, green, blue, _] = entries[usize::from(index)];
+                        *pixel = [red, green, blue];
+                    });
+                }
             }
             Self::Gray {
                 bit_depth,
@@ -1122,10 +1128,10 @@ impl Expand {
             } => {
                 let scale = u8::MAX / (((1u16 << bit_depth) - 1) as u8);
                 match transparent {
-                    None => unpack(raw, output, 1, *bit_depth, |value, pixel| {
+                    None => unpack::<1>(raw, output, *bit_depth, |value, pixel| {
                         pixel[0] = value * scale
                     }),
-                    Some(key) => unpack(raw, output, 2, *bit_depth, |value, pixel| {
+                    Some(key) => unpack::<2>(raw, output, *bit_depth, |value, pixel| {
                         pixel[1] = if value == *key { TRANSPARENT } else { OPAQUE };
                         pixel[0] = value * scale;
                     }),
@@ -1135,44 +1141,61 @@ impl Expand {
                 sample_bytes,
                 channels,
                 key,
-            } => {
-                let pixel_bytes = sample_bytes * channels;
-                for (source, target) in raw
-                    .chunks_exact(pixel_bytes)
-                    .zip(output.chunks_exact_mut(pixel_bytes + sample_bytes))
-                {
-                    target[..pixel_bytes].copy_from_slice(source);
-                    let alpha = if source == key.as_slice() {
-                        TRANSPARENT
-                    } else {
-                        OPAQUE
-                    };
-                    target[pixel_bytes..].fill(alpha);
-                }
-            }
+            } => match (sample_bytes, channels) {
+                (1, 1) => keyed::<1, 2>(raw, output, key),
+                (2, 1) => keyed::<2, 4>(raw, output, key),
+                (1, 3) => keyed::<3, 4>(raw, output, key),
+                (2, 3) => keyed::<6, 8>(raw, output, key),
+                (sample_bytes, channels) => unreachable!(
+                    "a tRNS key is on 8 or 16-bit gray or RGB, not {channels} channels of {sample_bytes} bytes"
+                ),
+            },
         }
     }
 }
 
-fn unpack(
+fn unpack<const CHANNELS: usize>(
     input: &[u8],
     output: &mut [u8],
-    channels: usize,
     bit_depth: u8,
-    mut store: impl FnMut(u8, &mut [u8]),
+    mut store: impl FnMut(u8, &mut [u8; CHANNELS]),
 ) {
+    let pixels = output.as_chunks_mut::<CHANNELS>().0;
     if bit_depth == 8 {
-        for (&value, pixel) in input.iter().zip(output.chunks_exact_mut(channels)) {
+        for (&value, pixel) in input.iter().zip(pixels) {
             store(value, pixel);
         }
         return;
     }
+    assert!(bit_depth.is_power_of_two());
+    assert!(bit_depth < 8);
     let mask = ((1u16 << bit_depth) - 1) as u8;
-    let per_byte = usize::from(8 / bit_depth);
-    for (index, pixel) in output.chunks_exact_mut(channels).enumerate() {
-        let byte = input[index / per_byte];
-        let shift = 8 - bit_depth as usize * (index % per_byte + 1);
+    let depth_bits = bit_depth.trailing_zeros();
+    let index_bits = u8::BITS.trailing_zeros() - depth_bits;
+    let lane_mask = (1usize << index_bits) - 1;
+    for (index, pixel) in pixels.iter_mut().enumerate() {
+        let byte = input[index >> index_bits];
+        let shift = 8 - (((index & lane_mask) + 1) << depth_bits);
         store((byte >> shift) & mask, pixel);
+    }
+}
+
+fn keyed<const PIXEL: usize, const OUTPUT: usize>(raw: &[u8], output: &mut [u8], key: &[u8]) {
+    assert!(OUTPUT > PIXEL);
+    let key = <[u8; PIXEL]>::try_from(key).ok();
+    for (source, target) in raw
+        .as_chunks::<PIXEL>()
+        .0
+        .iter()
+        .zip(output.as_chunks_mut::<OUTPUT>().0)
+    {
+        target[..PIXEL].copy_from_slice(source);
+        let alpha = if Some(*source) == key {
+            TRANSPARENT
+        } else {
+            OPAQUE
+        };
+        target[PIXEL..].fill(alpha);
     }
 }
 

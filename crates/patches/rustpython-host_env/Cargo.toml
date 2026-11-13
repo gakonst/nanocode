@@ -49,9 +49,6 @@ ssl = []
 name = "rustpython_host_env"
 path = "src/lib.rs"
 
-[dependencies.bitflags]
-version = "2.11.0"
-
 [dependencies.der]
 version = "0.8"
 features = [

@@ -10,6 +10,9 @@ description = "SHA-1, SHA-2, BLAKE3 and XXH64 digests"
 autotests = false
 autobenches = false
 
+[dependencies]
+nanocode-sys.workspace = true
+
 [lints]
 workspace = true
 

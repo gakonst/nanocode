@@ -8,6 +8,7 @@ mod atomic;
 mod inline;
 #[cfg(any(unix, windows))]
 mod random;
+pub mod sha256;
 mod swap;
 #[cfg(unix)]
 pub mod unix;

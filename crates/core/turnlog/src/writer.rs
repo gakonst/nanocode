@@ -191,7 +191,12 @@ impl TurnLog {
             fold.load(row.seq, &row.plain)?;
             history.extend(row.plain.as_bytes());
         }
-        let collected = fold.collect() as u64;
+        let collected = if host.holds_values() {
+            fold.hold_values();
+            0
+        } else {
+            fold.collect() as u64
+        };
         fold.reopen(EVENT_GAP);
         let floor = Some(fold.last_event());
         Ok(Self {
@@ -254,6 +259,31 @@ impl TurnLog {
 
     pub async fn read<R>(&self, read: impl FnOnce(&Fold) -> R) -> R {
         read(&self.writer.acquire().await.fold)
+    }
+
+    pub async fn stored(&self, keys: &[String]) -> Result<Vec<Option<String>>, StoreError> {
+        let writer = self.writer.acquire().await;
+        let mut found = keys
+            .iter()
+            .map(|key| writer.fold.stored(key).map(str::to_owned))
+            .collect::<Vec<_>>();
+        if !writer.fold.holds_values() {
+            return Ok(found);
+        }
+        let (positions, missing): (Vec<usize>, Vec<String>) = keys
+            .iter()
+            .enumerate()
+            .filter(|(position, key)| found[*position].is_none() && Fold::content(key))
+            .map(|(position, key)| (position, key.clone()))
+            .unzip();
+        if missing.is_empty() {
+            return Ok(found);
+        }
+        let read = self.host.values(&self.scope, &missing).await?;
+        for (position, value) in positions.into_iter().zip(read) {
+            found[position] = value;
+        }
+        Ok(found)
     }
 
     pub async fn stats(&self) -> Stats {
@@ -363,10 +393,13 @@ impl Lease<'_> {
             })
             .collect::<Vec<_>>();
         let floor = writer.floor.map(|seq| Record::Floor { seq });
+        let values = writer.fold.held_values();
         let plain = crate::encode(
             &floor
                 .iter()
-                .chain(&writer.buffer)
+                .chain(writer.buffer.iter().filter(|record| {
+                    !matches!(record, Record::Stored { key, .. } if writer.fold.holds_values() && Fold::content(key))
+                }))
                 .cloned()
                 .collect::<Vec<_>>(),
         )?;
@@ -427,8 +460,11 @@ impl Lease<'_> {
             })
             .collect::<Vec<_>>();
         let bytes = stored.iter().map(|(_, body)| body.len()).sum::<usize>();
-        self.host.append(self.scope, &stored).await?;
+        self.host
+            .append_values(self.scope, &values, &stored)
+            .await?;
         let writer = &mut *self.writer;
+        writer.fold.release_values(&values);
         writer.next = seq + stored.len() as u64;
         writer.fold.committed(seq);
         for turn in &recovered {

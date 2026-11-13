@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nanocode_durability_core::{Sql, SqlStatement, StoreError, StoreFuture};
+use nanocode_durability_core::{Sql, SqlAccess, SqlStatement, StoreError, StoreFuture};
 use nanocode_sync::Atom;
 
 pub trait LogHost: Send + Sync {
@@ -21,6 +21,35 @@ pub trait LogHost: Send + Sync {
         scope: &'a str,
         rows: &'a [(u64, String)],
     ) -> StoreFuture<'a, Result<(), StoreError>>;
+
+    fn holds_values(&self) -> bool {
+        false
+    }
+
+    fn values<'a>(
+        &'a self,
+        _scope: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        let missing = vec![None; keys.len()];
+        Box::pin(async move { Ok(missing) })
+    }
+
+    fn append_values<'a>(
+        &'a self,
+        scope: &'a str,
+        values: &'a [(String, String)],
+        rows: &'a [(u64, String)],
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        if values.is_empty() {
+            return self.append(scope, rows);
+        }
+        Box::pin(async move {
+            Err(StoreError::NotCommitted(
+                "this turn log host holds no values".to_owned(),
+            ))
+        })
+    }
 }
 
 type Dialects = [&'static str; 2];
@@ -28,6 +57,18 @@ type Dialects = [&'static str; 2];
 const CREATE: Dialects = [
     "CREATE TABLE IF NOT EXISTS nanocode_log (scope TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (scope, seq)) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS nanocode_log (scope TEXT NOT NULL, seq BIGINT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (scope, seq))",
+];
+const CREATE_VALUES: Dialects = [
+    "CREATE TABLE IF NOT EXISTS nanocode_log_values (scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope, key)) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS nanocode_log_values (scope TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (scope, key))",
+];
+const VALUE: Dialects = [
+    "SELECT value FROM nanocode_log_values WHERE scope = ?1 AND key = ?2",
+    "SELECT value FROM nanocode_log_values WHERE scope = $1::text AND key = $2::text",
+];
+const PUT_VALUE: Dialects = [
+    "INSERT INTO nanocode_log_values (scope, key, value) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+    "INSERT INTO nanocode_log_values (scope, key, value) VALUES ($1::text, $2::text, $3::text) ON CONFLICT DO NOTHING",
 ];
 const LOAD: Dialects = [
     "SELECT CAST(seq AS TEXT), body FROM nanocode_log WHERE scope = ?1 AND seq >= COALESCE((SELECT MAX(seq) FROM nanocode_log WHERE scope = ?1 AND substr(body, 1, 1) = 's'), 0) ORDER BY seq",
@@ -105,12 +146,16 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                     params: Vec::new(),
                 },
                 SqlStatement {
+                    sql: self.pick(&CREATE_VALUES),
+                    params: Vec::new(),
+                },
+                SqlStatement {
                     sql: self.pick(&LOAD),
                     params: vec![scope],
                 },
             ];
             let rows = self.host.transaction("turn_log_load", &statements).await?;
-            rows.get(1)
+            rows.get(2)
                 .ok_or_else(|| invalid("load returned no result"))?
                 .iter()
                 .map(|cells| row(cells))
@@ -135,6 +180,81 @@ impl<H: Sql + Send + Sync + ?Sized> LogHost for SqlLog<H> {
                     sql: self.pick(&APPEND),
                     params: vec![scope, seq, body],
                 })
+                .collect::<Vec<_>>();
+            self.host
+                .transaction("turn_log_append", &statements)
+                .await
+                .map(drop)
+        })
+    }
+
+    fn holds_values(&self) -> bool {
+        true
+    }
+
+    fn values<'a>(
+        &'a self,
+        scope: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            let statements = keys
+                .iter()
+                .map(|key| SqlStatement {
+                    sql: self.pick(&VALUE),
+                    params: vec![scope, key],
+                })
+                .collect::<Vec<_>>();
+            let found = self
+                .host
+                .run(SqlAccess::Read, "turn_log_values", &statements)
+                .await?;
+            if found.len() != keys.len() {
+                return Err(invalid(format!(
+                    "{} value results for {} keys",
+                    found.len(),
+                    keys.len()
+                )));
+            }
+            found
+                .into_iter()
+                .map(|rows| match rows.as_slice() {
+                    [] => Ok(None),
+                    [cells] => match cells.as_slice() {
+                        [Some(value)] => Ok(Some(value.clone())),
+                        _ => Err(invalid(format!("{} value cells", cells.len()))),
+                    },
+                    _ => Err(invalid(format!("{} rows for one value", rows.len()))),
+                })
+                .collect()
+        })
+    }
+
+    fn append_values<'a>(
+        &'a self,
+        scope: &'a str,
+        values: &'a [(String, String)],
+        rows: &'a [(u64, String)],
+    ) -> StoreFuture<'a, Result<(), StoreError>> {
+        Box::pin(async move {
+            let seqs = rows
+                .iter()
+                .map(|(seq, _)| seq.to_string())
+                .collect::<Vec<_>>();
+            let statements = values
+                .iter()
+                .map(|(key, value)| SqlStatement {
+                    sql: self.pick(&PUT_VALUE),
+                    params: vec![scope, key, value],
+                })
+                .chain(
+                    rows.iter()
+                        .zip(&seqs)
+                        .map(|((_, body), seq)| SqlStatement {
+                            sql: self.pick(&APPEND),
+                            params: vec![scope, seq, body],
+                        }),
+                )
                 .collect::<Vec<_>>();
             self.host
                 .transaction("turn_log_append", &statements)

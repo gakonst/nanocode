@@ -1267,8 +1267,10 @@ impl StateStore for OneLogStore {
             Ok(self
                 .0
                 .log
-                .read(|fold| fold.stored(&stored_key(state_id, key)).map(str::to_owned))
-                .await)
+                .stored(&[stored_key(state_id, key)])
+                .await?
+                .pop()
+                .flatten())
         })
     }
 
@@ -1278,15 +1280,11 @@ impl StateStore for OneLogStore {
         keys: &'a [String],
     ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
         Box::pin(async move {
-            Ok(self
-                .0
-                .log
-                .read(|fold| {
-                    keys.iter()
-                        .map(|key| fold.stored(&stored_key(state_id, key)).map(str::to_owned))
-                        .collect()
-                })
-                .await)
+            let keys = keys
+                .iter()
+                .map(|key| stored_key(state_id, key))
+                .collect::<Vec<_>>();
+            self.0.log.stored(&keys).await
         })
     }
 

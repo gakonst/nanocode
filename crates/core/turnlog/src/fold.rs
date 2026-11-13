@@ -85,6 +85,7 @@ pub struct Fold {
     checkpoints: BTreeMap<String, Checkpoint>,
     ends: u64,
     events: Vec<Event>,
+    held: bool,
     hosts: BTreeMap<String, Box<RawValue>>,
     index: BTreeMap<String, usize>,
     last_event: u64,
@@ -323,6 +324,38 @@ impl Fold {
     #[must_use]
     pub fn stored(&self, key: &str) -> Option<&str> {
         self.stored.get(key).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn content(key: &str) -> bool {
+        key.split_once('\n')
+            .is_some_and(|(_, content)| content.starts_with("b3:"))
+    }
+
+    pub(crate) const fn hold_values(&mut self) {
+        self.held = true;
+    }
+
+    #[must_use]
+    pub const fn holds_values(&self) -> bool {
+        self.held
+    }
+
+    pub(crate) fn held_values(&self) -> Vec<(String, String)> {
+        if !self.held {
+            return Vec::new();
+        }
+        self.stored
+            .iter()
+            .filter(|(key, _)| Self::content(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    pub(crate) fn release_values(&mut self, values: &[(String, String)]) {
+        for (key, _) in values {
+            self.stored.remove(key);
+        }
     }
 
     #[must_use]
@@ -610,6 +643,9 @@ impl Fold {
             });
         }
         for (key, value) in &self.stored {
+            if self.held && Self::content(key) {
+                continue;
+            }
             records.push(Record::Stored {
                 key: key.clone(),
                 value: value.clone(),

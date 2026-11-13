@@ -42,7 +42,7 @@ nanocode-http.workspace = true
 nanocode-process.workspace = true
 nanocode-tls.workspace = true
 reqwest.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

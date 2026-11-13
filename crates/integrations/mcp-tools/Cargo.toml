@@ -33,7 +33,7 @@ nanocode-tls.workspace = true
 nanocode-tool-provider.workspace = true
 nanocode-process.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
-tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "time"] }
 
 [lints]
 workspace = true

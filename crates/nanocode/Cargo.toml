@@ -31,13 +31,15 @@ nanocode-turnlog.workspace = true
 nanocode-code-mode = { path = "../runtime/code-mode", version = "0.7.0"   }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-serde_json.workspace = true
-nanocode-home.workspace = true
-tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net", "fs"] }
 nanocode-computer = { workspace = true, optional = true }
 nanocode-store-jsonl.workspace = true
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+serde_json.workspace = true
+nanocode-home.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 libc.workspace = true
 
 [features]

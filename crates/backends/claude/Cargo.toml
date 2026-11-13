@@ -40,7 +40,7 @@ libc.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocode-process.workspace = true
-tokio = { workspace = true, features = ["fs", "process", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["fs"] }
 
 [lints]
 workspace = true

@@ -17,25 +17,97 @@ cfg_select! {
 }
 
 #[cfg(not(feature = "compiler"))]
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum CompileErrorType {
     #[cfg(feature = "codegen")]
-    #[error(transparent)]
-    Codegen(#[from] super::codegen::error::CodegenErrorType),
+    Codegen(super::codegen::error::CodegenErrorType),
     #[cfg(feature = "parser")]
-    #[error(transparent)]
-    Parse(#[from] super::parser::ParseErrorType),
+    Parse(super::parser::ParseErrorType),
+}
+
+#[cfg(all(not(feature = "compiler"), feature = "codegen"))]
+impl From<super::codegen::error::CodegenErrorType> for CompileErrorType {
+    fn from(error: super::codegen::error::CodegenErrorType) -> Self {
+        Self::Codegen(error)
+    }
+}
+
+#[cfg(all(not(feature = "compiler"), feature = "parser"))]
+impl From<super::parser::ParseErrorType> for CompileErrorType {
+    fn from(error: super::parser::ParseErrorType) -> Self {
+        Self::Parse(error)
+    }
 }
 
 #[cfg(not(feature = "compiler"))]
-#[derive(Debug, thiserror::Error)]
+impl core::fmt::Display for CompileErrorType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            #[cfg(feature = "codegen")]
+            Self::Codegen(ref error) => core::fmt::Display::fmt(error, f),
+            #[cfg(feature = "parser")]
+            Self::Parse(ref error) => core::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+#[cfg(not(feature = "compiler"))]
+impl std::error::Error for CompileErrorType {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            #[cfg(feature = "codegen")]
+            Self::Codegen(ref error) => std::error::Error::source(error),
+            #[cfg(feature = "parser")]
+            Self::Parse(ref error) => std::error::Error::source(error),
+        }
+    }
+}
+
+#[cfg(not(feature = "compiler"))]
+#[derive(Debug)]
 pub enum CompileError {
     #[cfg(feature = "codegen")]
-    #[error(transparent)]
-    Codegen(#[from] super::codegen::error::CodegenError),
+    Codegen(super::codegen::error::CodegenError),
     #[cfg(feature = "parser")]
-    #[error(transparent)]
-    Parse(#[from] super::parser::ParseError),
+    Parse(super::parser::ParseError),
+}
+
+#[cfg(all(not(feature = "compiler"), feature = "codegen"))]
+impl From<super::codegen::error::CodegenError> for CompileError {
+    fn from(error: super::codegen::error::CodegenError) -> Self {
+        Self::Codegen(error)
+    }
+}
+
+#[cfg(all(not(feature = "compiler"), feature = "parser"))]
+impl From<super::parser::ParseError> for CompileError {
+    fn from(error: super::parser::ParseError) -> Self {
+        Self::Parse(error)
+    }
+}
+
+#[cfg(not(feature = "compiler"))]
+impl core::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            #[cfg(feature = "codegen")]
+            Self::Codegen(ref error) => core::fmt::Display::fmt(error, f),
+            #[cfg(feature = "parser")]
+            Self::Parse(ref error) => core::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+#[cfg(not(feature = "compiler"))]
+impl std::error::Error for CompileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            #[cfg(feature = "codegen")]
+            Self::Codegen(ref error) => std::error::Error::source(error),
+            #[cfg(feature = "parser")]
+            Self::Parse(ref error) => std::error::Error::source(error),
+        }
+    }
 }
 
 #[cfg(any(feature = "parser", feature = "codegen"))]

@@ -10,23 +10,38 @@ use crate::{
 use nanocode_numeric::ToPrimitive;
 use rustpython_jit::{AbiValue, Args, CompiledCode, JitArgumentError, JitType};
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub(super) enum ArgsError {
-    #[error("wrong number of arguments passed")]
     WrongNumberOfArgs,
-    #[error("argument passed multiple times")]
     ArgPassedMultipleTimes,
-    #[error("not a keyword argument")]
     NotAKeywordArg,
-    #[error("not all arguments passed")]
     NotAllArgsPassed,
-    #[error("integer can't fit into a machine integer")]
     IntOverflow,
-    #[error("type can't be used in a jit function")]
     NonJitType,
-    #[error("{0}")]
-    JitError(#[from] JitArgumentError),
+    JitError(JitArgumentError),
 }
+
+impl From<JitArgumentError> for ArgsError {
+    fn from(error: JitArgumentError) -> Self {
+        Self::JitError(error)
+    }
+}
+
+impl core::fmt::Display for ArgsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::WrongNumberOfArgs => f.write_str("wrong number of arguments passed"),
+            Self::ArgPassedMultipleTimes => f.write_str("argument passed multiple times"),
+            Self::NotAKeywordArg => f.write_str("not a keyword argument"),
+            Self::NotAllArgsPassed => f.write_str("not all arguments passed"),
+            Self::IntOverflow => f.write_str("integer can't fit into a machine integer"),
+            Self::NonJitType => f.write_str("type can't be used in a jit function"),
+            Self::JitError(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ArgsError {}
 
 impl ToPyObject for AbiValue {
     fn to_pyobject(self, vm: &VirtualMachine) -> PyObjectRef {

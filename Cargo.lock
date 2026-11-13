@@ -2807,7 +2807,6 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-unicode",
  "rustpython-wtf8",
- "thiserror",
 ]
 
 [[package]]
@@ -2835,7 +2834,6 @@ dependencies = [
  "rustpython-ruff_python_parser",
  "rustpython-ruff_source_file",
  "rustpython-ruff_text_size",
- "thiserror",
 ]
 
 [[package]]
@@ -2918,7 +2916,6 @@ dependencies = [
  "rustpython-ruff_python_trivia",
  "rustpython-ruff_source_file",
  "rustpython-ruff_text_size",
- "thiserror",
 ]
 
 [[package]]
@@ -3023,7 +3020,6 @@ dependencies = [
  "rustpython-ruff_text_size",
  "rustpython-sre_engine",
  "rustpython-unicode",
- "thiserror",
  "widestring",
 ]
 

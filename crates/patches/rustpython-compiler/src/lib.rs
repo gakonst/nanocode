@@ -6,7 +6,6 @@ use ruff_python_parser::ParseErrorType;
 use ruff_source_file::{PositionEncoding, SourceFile, SourceFileBuilder, SourceLocation};
 use ruff_text_size::{Ranged, TextSize, TextSlice};
 use rustpython_codegen::{compile, symboltable};
-use thiserror::Error;
 
 pub use rustpython_codegen::compile::CompileOpts;
 pub use rustpython_compiler_core::{Mode, bytecode::CodeObject};
@@ -17,17 +16,44 @@ pub use ruff_python_parser as parser;
 pub use rustpython_codegen as codegen;
 pub use rustpython_compiler_core as core;
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum CompileErrorType {
-    #[error(transparent)]
-    Codegen(#[from] codegen::error::CodegenErrorType),
-    #[error(transparent)]
-    Parse(#[from] ParseErrorType),
+    Codegen(codegen::error::CodegenErrorType),
+    Parse(ParseErrorType),
 }
 
-#[derive(Error, Debug)]
+impl From<codegen::error::CodegenErrorType> for CompileErrorType {
+    fn from(error: codegen::error::CodegenErrorType) -> Self {
+        Self::Codegen(error)
+    }
+}
+
+impl From<ParseErrorType> for CompileErrorType {
+    fn from(error: ParseErrorType) -> Self {
+        Self::Parse(error)
+    }
+}
+
+impl ::core::fmt::Display for CompileErrorType {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        match self {
+            Self::Codegen(error) => ::core::fmt::Display::fmt(error, f),
+            Self::Parse(error) => ::core::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for CompileErrorType {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codegen(error) => std::error::Error::source(error),
+            Self::Parse(error) => std::error::Error::source(error),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ParseError {
-    #[source]
     pub error: ParseErrorType,
     pub raw_location: ruff_text_size::TextRange,
     pub location: SourceLocation,
@@ -39,18 +65,52 @@ pub struct ParseError {
     pub is_unclosed_string: bool,
 }
 
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 impl ::core::fmt::Display for ParseError {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         self.error.fmt(f)
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum CompileError {
-    #[error(transparent)]
-    Codegen(#[from] codegen::error::CodegenError),
-    #[error(transparent)]
-    Parse(#[from] ParseError),
+    Codegen(codegen::error::CodegenError),
+    Parse(ParseError),
+}
+
+impl From<codegen::error::CodegenError> for CompileError {
+    fn from(error: codegen::error::CodegenError) -> Self {
+        Self::Codegen(error)
+    }
+}
+
+impl From<ParseError> for CompileError {
+    fn from(error: ParseError) -> Self {
+        Self::Parse(error)
+    }
+}
+
+impl ::core::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        match self {
+            Self::Codegen(error) => ::core::fmt::Display::fmt(error, f),
+            Self::Parse(error) => ::core::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for CompileError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Codegen(error) => std::error::Error::source(error),
+            Self::Parse(error) => std::error::Error::source(error),
+        }
+    }
 }
 
 impl CompileError {

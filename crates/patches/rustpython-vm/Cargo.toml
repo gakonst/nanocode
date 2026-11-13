@@ -188,9 +188,6 @@ optional = true
 default-features = false
 package = "serde_core"
 
-[dependencies.thiserror]
-version = "2.0"
-
 [build-dependencies.nanocode-platform]
 path = "../../core/platform"
 

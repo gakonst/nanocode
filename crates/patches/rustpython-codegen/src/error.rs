@@ -1,17 +1,21 @@
 use alloc::fmt;
 use core::fmt::Display;
 use rustpython_compiler_core::SourceLocation;
-use thiserror::Error;
 
 // pub type CodegenError = rustpython_parser_core::source_code::LocatedError<CodegenErrorType>;
 
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub struct CodegenError {
     pub location: Option<SourceLocation>,
     pub end_location: Option<SourceLocation>,
-    #[source]
     pub error: CodegenErrorType,
     pub source_path: String,
+}
+
+impl core::error::Error for CodegenError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 impl fmt::Display for CodegenError {

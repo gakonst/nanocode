@@ -77,9 +77,6 @@ optional = true
 version = "1.0.113"
 optional = true
 
-[dependencies.thiserror]
-version = "2.0.0"
-
 [lints.clippy]
 char_lit_as_u8 = "allow"
 collapsible_else_if = "allow"

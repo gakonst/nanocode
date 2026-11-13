@@ -127,14 +127,36 @@ impl fmt::Display for PythonVersion {
     }
 }
 
-#[derive(thiserror::Error, Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PythonVersionDeserializationError {
-    #[error("Invalid python version `{0}`: expected `major.minor`")]
     WrongPeriodNumber(Box<str>),
-    #[error("Invalid major version `{0}`: {1}")]
-    InvalidMajorVersion(Box<str>, #[source] std::num::ParseIntError),
-    #[error("Invalid minor version `{0}`: {1}")]
-    InvalidMinorVersion(Box<str>, #[source] std::num::ParseIntError),
+    InvalidMajorVersion(Box<str>, std::num::ParseIntError),
+    InvalidMinorVersion(Box<str>, std::num::ParseIntError),
+}
+
+impl std::fmt::Display for PythonVersionDeserializationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongPeriodNumber(version) => {
+                write!(f, "Invalid python version `{version}`: expected `major.minor`")
+            }
+            Self::InvalidMajorVersion(version, error) => {
+                write!(f, "Invalid major version `{version}`: {error}")
+            }
+            Self::InvalidMinorVersion(version, error) => {
+                write!(f, "Invalid minor version `{version}`: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PythonVersionDeserializationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::WrongPeriodNumber(_) => None,
+            Self::InvalidMajorVersion(_, error) | Self::InvalidMinorVersion(_, error) => Some(error),
+        }
+    }
 }
 
 impl TryFrom<(&str, &str)> for PythonVersion {

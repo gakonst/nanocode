@@ -3,7 +3,7 @@ use std::ops::Range;
 use memchr::memmem;
 
 use super::parse::{Node, Parsed};
-use super::set::CodePointSet;
+use super::set::{Class, CodePointSet};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LoopFields {
@@ -20,11 +20,7 @@ pub(super) enum Instruction {
     Char(u32),
     Literal(Box<[u8]>),
     CharSet(Box<[u32]>),
-    Bracket {
-        invert: bool,
-        ascii: u128,
-        set: CodePointSet,
-    },
+    Bracket(Box<Class>),
     MatchAny,
     MatchAnyExceptLineTerminator,
     StartOfLine {
@@ -796,11 +792,7 @@ impl Emitter {
             Node::Char(c) => Instruction::Char(*c),
             Node::CharSet(set) if set.is_empty() => Instruction::Fail,
             Node::CharSet(set) => Instruction::CharSet(set.clone().into_boxed_slice()),
-            Node::Bracket { invert, set } => Instruction::Bracket {
-                invert: *invert,
-                ascii: set.ascii_mask(),
-                set: set.clone(),
-            },
+            Node::Bracket { invert, set } => Instruction::Bracket(Box::new(Class::new(*invert, set))),
             Node::MatchAny => Instruction::MatchAny,
             Node::MatchAnyExceptLineTerminator => Instruction::MatchAnyExceptLineTerminator,
             Node::StartOfLine { multiline } => Instruction::StartOfLine {

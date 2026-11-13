@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use super::properties::{
     CASE_FOLDS, PROPERTY_RANGES, TABLE_OFFSETS, binary_property, general_category, script,
 };
@@ -110,65 +112,82 @@ fn table_contains(table: usize, code_point: u32) -> bool {
     low < TABLE_OFFSETS[table + 1] as usize && read_word(PROPERTY_RANGES, low * 2) <= code_point
 }
 
-fn fold_count() -> usize {
+fn decode_folds(source_first: bool) -> Box<[(u32, u32)]> {
     assert_eq!(CASE_FOLDS.len() % PAIR_BYTES, 0);
-    CASE_FOLDS.len() / PAIR_BYTES
+    let mut pairs: Vec<(u32, u32)> = (0..CASE_FOLDS.len() / PAIR_BYTES)
+        .map(|index| {
+            let source = read_word(CASE_FOLDS, index * 2);
+            let target = read_word(CASE_FOLDS, index * 2 + 1);
+            if source_first {
+                (source, target)
+            } else {
+                (target, source)
+            }
+        })
+        .collect();
+    pairs.sort_unstable();
+    pairs.into_boxed_slice()
 }
 
-fn fold_pair(index: usize) -> (u32, u32) {
-    (
-        read_word(CASE_FOLDS, index * 2),
-        read_word(CASE_FOLDS, index * 2 + 1),
-    )
+static FOLDS_BY_SOURCE: LazyLock<Box<[(u32, u32)]>> = LazyLock::new(|| decode_folds(true));
+static FOLDS_BY_TARGET: LazyLock<Box<[(u32, u32)]>> = LazyLock::new(|| decode_folds(false));
+
+fn keyed_between(pairs: &[(u32, u32)], first: u32, last: u32) -> &[(u32, u32)] {
+    let start = pairs.partition_point(|&(key, _)| key < first);
+    let end = pairs.partition_point(|&(key, _)| key <= last);
+    &pairs[start..end]
+}
+
+fn sources_folding_into(first: u32, last: u32) -> impl Iterator<Item = u32> {
+    keyed_between(&FOLDS_BY_TARGET, first, last)
+        .iter()
+        .map(|&(_, source)| source)
+}
+
+fn singletons(mut code_points: Vec<u32>) -> CodePointSet {
+    code_points.sort_unstable();
+    code_points.dedup();
+    let intervals: Vec<Interval> = code_points
+        .into_iter()
+        .map(|code_point| Interval::new(code_point, code_point))
+        .collect();
+    CodePointSet::from_intervals(&intervals)
 }
 
 pub(super) fn fold(code_point: u32) -> u32 {
-    let mut low = 0;
-    let mut high = fold_count();
-    while low < high {
-        let middle = low + (high - low) / 2;
-        let (source, target) = fold_pair(middle);
-        if source == code_point {
-            return target;
-        }
-        if source < code_point {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
+    match keyed_between(&FOLDS_BY_SOURCE, code_point, code_point) {
+        [] => code_point,
+        [(_, target)] => *target,
+        _ => unreachable!("a code point folds to one target"),
     }
-    code_point
 }
 
 pub(super) fn unfold(code_point: u32) -> Vec<u32> {
     let folded = fold(code_point);
     let mut unfolded = vec![code_point, folded];
-    for index in 0..fold_count() {
-        let (source, target) = fold_pair(index);
-        if target == folded {
-            unfolded.push(source);
-        }
-    }
+    unfolded.extend(sources_folding_into(folded, folded));
     unfolded.sort_unstable();
     unfolded.dedup();
     unfolded
 }
 
 pub(super) fn add_case_variants(set: &CodePointSet) -> CodePointSet {
+    let mut targets = Vec::new();
+    for interval in set.intervals() {
+        targets.extend(
+            keyed_between(&FOLDS_BY_SOURCE, interval.first, interval.last)
+                .iter()
+                .map(|&(_, target)| target),
+        );
+    }
     let mut folded = set.clone();
-    for index in 0..fold_count() {
-        let (source, target) = fold_pair(index);
-        if set.contains(source) {
-            folded.add_one(target);
-        }
+    folded.add_set(&singletons(targets));
+    let mut sources = Vec::new();
+    for interval in folded.intervals() {
+        sources.extend(sources_folding_into(interval.first, interval.last));
     }
-    let mut result = folded.clone();
-    for index in 0..fold_count() {
-        let (source, target) = fold_pair(index);
-        if folded.contains(target) {
-            result.add_one(source);
-        }
-    }
+    let mut result = folded;
+    result.add_set(&singletons(sources));
     result
 }
 

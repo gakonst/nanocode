@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use super::program::{BYTE_VALUES, Instruction, LoopFields, Program, Start};
-use super::set::{ASCII_LAST, CodePointSet};
+use super::set::ASCII_LAST;
 use super::unicode;
 
 #[derive(Clone, Copy, Debug)]
@@ -186,15 +186,6 @@ fn single_matches(instruction: &Instruction, c: u32) -> bool {
     }
 }
 
-fn bracket_contains(invert: bool, ascii: u128, set: &CodePointSet, c: u32) -> bool {
-    let contained = if c <= ASCII_LAST {
-        ascii & (1 << c) != 0
-    } else {
-        set.contains(c)
-    };
-    contained != invert
-}
-
 impl Machine<'_> {
     fn peek_left(&self, position: usize) -> Option<u32> {
         self.read(position, false).map(|(c, _)| c)
@@ -249,9 +240,7 @@ impl Machine<'_> {
         let (c, next) = self.read(position, forward)?;
         let matched = match instruction {
             Instruction::CharSet(set) => set.contains(&c),
-            Instruction::Bracket { invert, ascii, set } => {
-                bracket_contains(*invert, *ascii, set, c)
-            }
+            Instruction::Bracket(class) => class.contains(c),
             _ => single_matches(instruction, c),
         };
         matched.then_some(next)
@@ -282,7 +271,7 @@ impl Machine<'_> {
         let next_ip = match instruction {
             Instruction::Char(_)
             | Instruction::CharSet(_)
-            | Instruction::Bracket { .. }
+            | Instruction::Bracket(_)
             | Instruction::MatchAny
             | Instruction::MatchAnyExceptLineTerminator => {
                 match self.match_one(instruction, *position, forward) {
@@ -594,10 +583,8 @@ impl Machine<'_> {
             Instruction::CharSet(set) => {
                 self.repeat_while(position, count, forward, |c| set.contains(&c))
             }
-            Instruction::Bracket { invert, ascii, set } => {
-                self.repeat_while(position, count, forward, |c| {
-                    bracket_contains(*invert, *ascii, set, c)
-                })
+            Instruction::Bracket(class) => {
+                self.repeat_while(position, count, forward, |c| class.contains(c))
             }
             Instruction::MatchAny => self.repeat_while(position, count, forward, |_| true),
             _ => self.repeat_while(position, count, forward, |c| single_matches(matcher, c)),
@@ -683,7 +670,7 @@ impl Machine<'_> {
             instruction,
             Instruction::Char(_)
                 | Instruction::CharSet(_)
-                | Instruction::Bracket { .. }
+                | Instruction::Bracket(_)
                 | Instruction::MatchAny
                 | Instruction::MatchAnyExceptLineTerminator
         ) && self.match_one(instruction, position, forward).is_none()

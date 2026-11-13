@@ -116,7 +116,7 @@ pub fn tool_runtime(
 pub fn handlers(
     web: Option<WebSearchConfig>,
     image: Option<ImageGenerationConfig>,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
 ) -> Vec<std::sync::Arc<dyn Tool>> {
     let mut tools: Vec<std::sync::Arc<dyn Tool>> = Vec::new();
     if let Some(config) = web {

@@ -214,3 +214,42 @@ impl Fields {
         Some(UNIX_EPOCH + Duration::from_secs(seconds))
     }
 }
+
+pub fn format_http_date(time: SystemTime) -> Option<String> {
+    let seconds = time.duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let seconds_per_day = SECONDS_PER_MINUTE * MINUTES_PER_HOUR * HOURS_PER_DAY;
+    let mut days = seconds / seconds_per_day;
+    let second_of_day = seconds % seconds_per_day;
+    let weekday = WEEKDAYS[usize::try_from((days + EPOCH_WEEKDAY) % DAYS_PER_WEEK).ok()?];
+    let mut year = YEAR_MIN;
+    loop {
+        let year_days = DAYS_PER_YEAR + u64::from(is_leap_year(year));
+        if days < year_days {
+            break;
+        }
+        days -= year_days;
+        year += 1;
+        if year > YEAR_MAX {
+            return None;
+        }
+    }
+    let mut month = 0;
+    loop {
+        let leap_day = u64::from(is_leap_year(year) && month + 1 == usize::from(FEBRUARY));
+        let month_days = u64::from(MONTH_DAYS[month]) + leap_day;
+        if days < month_days {
+            break;
+        }
+        days -= month_days;
+        month += 1;
+    }
+    let hour = second_of_day / (SECONDS_PER_MINUTE * MINUTES_PER_HOUR);
+    let minute = second_of_day / SECONDS_PER_MINUTE % MINUTES_PER_HOUR;
+    let second = second_of_day % SECONDS_PER_MINUTE;
+    Some(format!(
+        "{}, {:02} {} {year} {hour:02}:{minute:02}:{second:02} GMT",
+        std::str::from_utf8(weekday).ok()?,
+        days + 1,
+        std::str::from_utf8(MONTHS[month]).ok()?,
+    ))
+}

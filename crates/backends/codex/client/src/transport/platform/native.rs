@@ -16,7 +16,7 @@ pub(crate) struct ServicePlatform {
 }
 
 impl ServicePlatform {
-    pub(crate) fn with_http_client(config: &ModelConfig, client: reqwest::Client) -> Self {
+    pub(crate) fn with_http_client(config: &ModelConfig, client: nanocode_http::Client) -> Self {
         Self {
             http: ResponsesHttp::new(
                 client,

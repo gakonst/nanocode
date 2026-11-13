@@ -1,26 +1,21 @@
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::fmt::Display;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use http_body_util::combinators::UnsyncBoxBody;
-use http_body_util::{BodyExt, Empty, Full};
-use hyper::body::{Bytes, Incoming};
-use hyper::header::{
-    CONNECTION, CONTENT_TYPE, HOST, HeaderName, HeaderValue, PROXY_AUTHENTICATE,
+use bytes::Bytes;
+use futures_util::StreamExt;
+use http::uri::Authority;
+use nanocode_http::Url;
+use nanocode_http::header::{
+    CONNECTION, CONTENT_TYPE, HOST, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHENTICATE,
     PROXY_AUTHORIZATION,
 };
-use hyper::http::uri::Authority;
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
-use hyper::upgrade::Upgraded;
-use hyper::{HeaderMap, Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use nanocode_http::server::{self, Outgoing, Reply, Upgraded};
+use nanocode_http::{Method, StatusCode};
 use nanocode_sync::Atom;
-use reqwest::Url;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::rustls::crypto::CryptoProvider;
@@ -32,8 +27,6 @@ use super::flow::{DEFAULT_MAX_PAYMENT_RETRIES, FlowError, Policy, send_with_exch
 use super::identity::{Identity, Proved};
 use super::provider::PaymentProvider;
 use super::x509::{self, CertificateFault, Issuer, KeyPair};
-
-type Body = UnsyncBoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
 type Providers<P> = Box<dyn Fn(&Url) -> Result<P, String> + Send + Sync>;
 
@@ -179,13 +172,9 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
             let _runtime = runtime.enter();
             tokio::net::TcpListener::from_std(self.listener)?
         };
-        let client = reqwest::Client::builder()
+        let client = nanocode_http::Client::builder()
             .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_gzip()
-            .no_brotli()
-            .no_zstd()
-            .no_deflate()
+            .redirect(nanocode_http::redirect::Policy::none())
             .build()
             .map_err(|error| {
                 Fault::http(format!("failed to build the proxy's HTTP client: {error}"))
@@ -214,14 +203,12 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
                         };
                         let proxy = proxy.clone();
                         tokio::spawn(async move {
-                            let service = service_fn(move |request| {
-                                let proxy = proxy.clone();
-                                async move { Ok::<_, Infallible>(proxy.handle(request).await) }
-                            });
-                            let _ = http1::Builder::new()
-                                .serve_connection(TokioIo::new(stream), service)
-                                .with_upgrades()
-                                .await;
+                            let _ = server::serve(
+                                Box::new(stream),
+                                server::Options::default(),
+                                move |request| proxy.clone().handle(request),
+                            )
+                            .await;
                         });
                     }
                 })
@@ -232,7 +219,8 @@ impl<P: PaymentProvider + 'static> ForwardProxy<P> {
 
 fn token() -> Result<String, Fault> {
     let mut random = [0u8; TOKEN_BYTES];
-    nanocode_platform::fill_random(&mut random).map_err(|error| Fault::Internal(error.to_string()))?;
+    nanocode_platform::fill_random(&mut random)
+        .map_err(|error| Fault::Internal(error.to_string()))?;
     Ok(nanocode::platform::Uuid::from_random_bytes(random)
         .simple()
         .to_string())
@@ -252,7 +240,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 struct Proxy<P> {
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     policy: Policy,
     events: Events,
     authorization: HeaderValue,
@@ -263,9 +251,9 @@ struct Proxy<P> {
 }
 
 impl<P: PaymentProvider + 'static> Proxy<P> {
-    async fn handle(self: Arc<Self>, mut request: Request<Incoming>) -> Response<Body> {
+    async fn handle(self: Arc<Self>, mut request: server::Request) -> Reply {
         let authorized = request
-            .headers()
+            .headers
             .get(PROXY_AUTHORIZATION)
             .is_some_and(|value| constant_time_eq(value.as_bytes(), self.authorization.as_bytes()));
         if !authorized {
@@ -273,14 +261,14 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
                 StatusCode::PROXY_AUTHENTICATION_REQUIRED,
                 "proxy authentication required",
             );
-            response.headers_mut().insert(
+            response.headers.insert(
                 PROXY_AUTHENTICATE,
                 HeaderValue::from_static(PROXY_CHALLENGE),
             );
             return response;
         }
-        if request.method() != Method::CONNECT {
-            return match Url::parse(&request.uri().to_string()) {
+        if request.method != Method::CONNECT {
+            return match Url::parse(&request.target) {
                 Ok(url) if url.scheme() == "http" => self.forward(request, url).await,
                 _ => respond(
                     StatusCode::BAD_REQUEST,
@@ -288,10 +276,11 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
                 ),
             };
         }
-        let Some(authority) = request.uri().authority().cloned() else {
+        let (Ok(authority), Some(upgrade)) =
+            (request.target.parse::<Authority>(), request.upgrade.take())
+        else {
             return respond(StatusCode::BAD_REQUEST, "CONNECT needs host:port");
         };
-        let upgrade = hyper::upgrade::on(&mut request);
         let intercept =
             Url::parse(&format!("https://{authority}/")).is_ok_and(|url| self.policy.allows(&url));
         if intercept {
@@ -300,18 +289,16 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
                     self.intercept(upgraded, authority).await;
                 }
             });
-            return Response::new(empty());
+            return Reply::empty();
         }
         match tokio::net::TcpStream::connect(authority.as_str()).await {
             Ok(mut server) => {
                 tokio::spawn(async move {
-                    if let Ok(upgraded) = upgrade.await {
-                        let _ =
-                            tokio::io::copy_bidirectional(&mut TokioIo::new(upgraded), &mut server)
-                                .await;
+                    if let Ok(mut upgraded) = upgrade.await {
+                        let _ = tokio::io::copy_bidirectional(&mut upgraded, &mut server).await;
                     }
                 });
-                Response::new(empty())
+                Reply::empty()
             }
             Err(error) => respond(StatusCode::BAD_GATEWAY, &format!("{authority}: {error}")),
         }
@@ -325,54 +312,48 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
         let Ok(config) = self.authority.server_config(host) else {
             return;
         };
-        let Ok(stream) = TlsAcceptor::from(config)
-            .accept(TokioIo::new(upgraded))
-            .await
-        else {
+        let Ok(stream) = TlsAcceptor::from(config).accept(upgraded).await else {
             return;
         };
-        let service = service_fn(move |request: Request<Incoming>| {
-            let proxy = self.clone();
-            let url = request
-                .uri()
-                .path_and_query()
-                .map_or("/", |path| path.as_str())
-                .to_owned();
-            let url = Url::parse(&format!("https://{authority}{url}"));
-            async move {
-                Ok::<_, Infallible>(match url {
-                    Ok(url) => proxy.forward(request, url).await,
-                    Err(error) => respond(StatusCode::BAD_REQUEST, &error.to_string()),
-                })
-            }
-        });
-        let _ = http1::Builder::new()
-            .serve_connection(TokioIo::new(stream), service)
-            .await;
+        let _ = server::serve(
+            Box::new(stream),
+            server::Options::default(),
+            move |request: server::Request| {
+                let proxy = self.clone();
+                let url = Url::parse(&format!("https://{authority}{}", request.target));
+                async move {
+                    match url {
+                        Ok(url) => proxy.forward(request, url).await,
+                        Err(error) => respond(StatusCode::BAD_REQUEST, &error.to_string()),
+                    }
+                }
+            },
+        )
+        .await;
     }
 
-    async fn forward(&self, request: Request<Incoming>, url: Url) -> Response<Body> {
+    async fn forward(&self, request: server::Request, url: Url) -> Reply {
         match self.pay(request, url).await {
             Ok(response) => response,
             Err((status, message)) => respond(status, &message),
         }
     }
 
-    async fn pay(
-        &self,
-        request: Request<Incoming>,
-        url: Url,
-    ) -> Result<Response<Body>, (StatusCode, String)> {
-        let (mut parts, body) = request.into_parts();
+    async fn pay(&self, request: server::Request, url: Url) -> Result<Reply, (StatusCode, String)> {
+        let server::Request {
+            method,
+            mut headers,
+            body,
+            ..
+        } = request;
         let body = body
             .collect()
             .await
-            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?
-            .to_bytes();
-        strip_hop_by_hop(&mut parts.headers);
-        parts.headers.remove(HOST);
-        let mut forwarded = reqwest::Request::new(parts.method, url.clone());
-        *forwarded.headers_mut() = parts.headers;
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+        strip_hop_by_hop(&mut headers);
+        headers.remove(HOST);
+        let mut forwarded = nanocode_http::Request::new(method, url.clone());
+        *forwarded.headers_mut() = headers;
         *forwarded.body_mut() = Some(body.into());
         let provider = match self.policy.allows(&url) {
             true => Some(
@@ -412,24 +393,30 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with(EVENT_STREAM));
-        let mut response = Response::<reqwest::Body>::from(response);
-        strip_hop_by_hop(response.headers_mut());
-        *response.version_mut() = parts.version;
-        Ok(match provider.filter(|_| stream) {
-            Some(provider) => response.map(|body| self.answer_events(body, provider, url)),
-            None => response.map(|body| body.map_err(Into::into).boxed_unsync()),
-        })
+        let status = response.status();
+        let mut headers = response.headers().clone();
+        strip_hop_by_hop(&mut headers);
+        let body = response.bytes_stream();
+        let body = match provider.filter(|_| stream) {
+            Some(provider) => self.answer_events(body, provider, url),
+            None => body.map(|chunk| chunk.map_err(Into::into)).boxed(),
+        };
+        let mut reply = Reply::new(status, Outgoing::Stream(body));
+        reply.headers = headers;
+        Ok(reply)
     }
 
-    fn answer_events(&self, body: reqwest::Body, provider: P, url: Url) -> Body {
+    fn answer_events(
+        &self,
+        body: futures_util::stream::BoxStream<'static, nanocode_http::Result<Bytes>>,
+        provider: P,
+        url: Url,
+    ) -> server::BodyStream {
         let client = self.client.clone();
         let mut stream = ServerSentEvents::default();
-        body.map_frame(move |frame| {
-            for (name, data) in frame
-                .data_ref()
-                .map(|data| stream.push(data))
-                .unwrap_or_default()
-            {
+        body.map(move |chunk| {
+            let chunk = chunk?;
+            for (name, data) in stream.push(&chunk) {
                 let Some(work) = provider.stream_event(&client, url.as_str(), &name, &data) else {
                     continue;
                 };
@@ -437,10 +424,9 @@ impl<P: PaymentProvider + 'static> Proxy<P> {
                     let _ = work.await;
                 });
             }
-            frame
+            Ok(chunk)
         })
-        .map_err(Into::into)
-        .boxed_unsync()
+        .boxed()
     }
 
     fn provider(&self, url: &Url) -> Result<P, String> {
@@ -562,16 +548,6 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-fn respond(status: StatusCode, message: &str) -> Response<Body> {
-    let mut response = Response::new(
-        Full::new(Bytes::from(format!("{message}\n")))
-            .map_err(|never| match never {})
-            .boxed_unsync(),
-    );
-    *response.status_mut() = status;
-    response
-}
-
-fn empty() -> Body {
-    Empty::new().map_err(|never| match never {}).boxed_unsync()
+fn respond(status: StatusCode, message: &str) -> Reply {
+    Reply::new(status, Outgoing::Full(Bytes::from(format!("{message}\n"))))
 }

@@ -12,7 +12,6 @@ use nanocode::{
     tools::mcp::{McpPaymentManagement, McpPaymentProvider, McpPendingPayment, McpServer},
 };
 use nanocode_sync::{Atom, Signal, SingleFlight};
-use reqwest::ResponseBuilderExt;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -159,9 +158,9 @@ impl Layer for Mpp {
     ) -> BoxFuture<'a, std::result::Result<layer::Response, layer::Error>> {
         Box::pin(async move {
             self.preconnect(&request.body).await;
-            let url = reqwest::Url::parse(&request.url)
+            let url = nanocode_http::Url::parse(&request.url)
                 .map_err(|error| layer::Error::new(error.to_string()).unsent(true))?;
-            let mut paid = reqwest::Request::new(request.method, url);
+            let mut paid = nanocode_http::Request::new(request.method, url);
             *paid.headers_mut() = request.headers;
             *paid.body_mut() = Some(request.body.into());
             let mut exchange = Proved {
@@ -228,40 +227,39 @@ impl EventHook for StreamPayments {
 
 struct NextExchange<'a> {
     next: Next<'a>,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     body: Option<layer::Body>,
 }
 
 impl Exchange for NextExchange<'_> {
     type Error = layer::Error;
 
-    fn http_client(&self) -> Option<reqwest::Client> {
+    fn http_client(&self) -> Option<nanocode_http::Client> {
         Some(self.client.clone())
     }
 
     async fn send(
         &mut self,
-        request: reqwest::Request,
-    ) -> std::result::Result<reqwest::Response, layer::Error> {
+        request: nanocode_http::Request,
+    ) -> std::result::Result<nanocode_http::Response, layer::Error> {
         let sent = layer::Request {
             method: request.method().clone(),
             url: request.url().to_string(),
             headers: request.headers().clone(),
             body: request
                 .body()
-                .and_then(reqwest::Body::as_bytes)
+                .and_then(nanocode_http::Body::as_bytes)
                 .map(<[u8]>::to_vec)
                 .unwrap_or_default(),
         };
         let (status, headers, body, _) = self.next.send(sent).await?.into_parts();
         self.body = Some(body);
-        let mut response = http::Response::builder()
-            .status(status)
-            .url(request.url().clone())
-            .body(reqwest::Body::from(Vec::new()))
-            .map_err(|error| layer::Error::new(error.to_string()))?;
-        *response.headers_mut() = headers;
-        Ok(response.into())
+        Ok(nanocode_http::Response::from_stream(
+            status,
+            headers,
+            request.url().clone(),
+            futures_util::stream::empty(),
+        ))
     }
 }
 
@@ -269,7 +267,7 @@ type Listeners = Atom<Vec<UnboundedSender<String>>>;
 
 #[derive(Clone)]
 struct Payments {
-    client: Arc<Atom<Option<reqwest::Client>>>,
+    client: Arc<Atom<Option<nanocode_http::Client>>>,
     ledger: Arc<Atom<Ledger>>,
     listeners: Arc<Listeners>,
     events: Events,
@@ -334,7 +332,7 @@ impl Service {
 }
 
 struct Paid<'a> {
-    url: &'a reqwest::Url,
+    url: &'a nanocode_http::Url,
     challenge: &'a Challenge,
     amount: u128,
     funding: Option<&'a str>,
@@ -391,14 +389,14 @@ impl Payments {
         }
     }
 
-    fn client(&self) -> std::result::Result<reqwest::Client, String> {
+    fn client(&self) -> std::result::Result<nanocode_http::Client, String> {
         if let Some(client) = self.client.read(Clone::clone) {
             return Ok(client);
         }
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+        let client = nanocode_http::Client::builder()
+            .redirect(nanocode_http::redirect::Policy::none())
             .default_headers(nanocode_http::accept_encoding(
-                reqwest::header::HeaderMap::new(),
+                nanocode_http::header::HeaderMap::new(),
             ))
             .build()
             .map_err(|error| error.to_string())?;
@@ -407,7 +405,7 @@ impl Payments {
             .update(|slot| slot.get_or_insert_with(|| client.clone()).clone()))
     }
 
-    fn wallet(&self, url: &reqwest::Url, terms: &Terms) -> Wallet {
+    fn wallet(&self, url: &nanocode_http::Url, terms: &Terms) -> Wallet {
         let origin = url.origin().ascii_serialization();
         self.wallets.update(|wallets| {
             wallets
@@ -446,7 +444,12 @@ impl Payments {
         })?)
     }
 
-    fn sessions(&self, wallet: &Payer, service: &reqwest::Url, terms: &Terms) -> Result<Payer> {
+    fn sessions(
+        &self,
+        wallet: &Payer,
+        service: &nanocode_http::Url,
+        terms: &Terms,
+    ) -> Result<Payer> {
         let origin = service.origin().ascii_serialization();
         let origin = match &terms.variant {
             Some(variant) => format!("{origin}~{variant}"),
@@ -494,7 +497,7 @@ impl Payments {
     }
 
     fn mcp(&self, url: &str, terms: &Terms) -> Result<McpServer> {
-        let url: reqwest::Url = url.parse()?;
+        let url: nanocode_http::Url = url.parse()?;
         Ok(
             McpServer::http(url.as_str()).payment_provider(Arc::new(McpPayments {
                 wallet: self.wallet(&url, terms),
@@ -640,7 +643,7 @@ impl Ledger {
         ))
     }
 
-    fn update(&mut self, url: &reqwest::Url, change: i128) {
+    fn update(&mut self, url: &nanocode_http::Url, change: i128) {
         let Some(service) = url.host_str().and_then(|host| self.services.get_mut(host)) else {
             return;
         };
@@ -672,7 +675,7 @@ impl Ledger {
 
 struct McpPayments {
     wallet: Wallet,
-    url: reqwest::Url,
+    url: nanocode_http::Url,
 }
 
 #[derive(Clone, Copy)]
@@ -737,7 +740,7 @@ impl Terms {
 
 #[derive(Clone)]
 struct Wallet {
-    url: reqwest::Url,
+    url: nanocode_http::Url,
     terms: Terms,
     payments: Payments,
     loaded: Arc<Atom<Option<Payer>>>,
@@ -944,7 +947,7 @@ impl PaymentProvider for Wallet {
 
     fn stream_event(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         name: &str,
         data: &str,
@@ -1077,7 +1080,7 @@ struct McpPending {
     payment: McpPayment<Wallet>,
     credential: Value,
     receipt: Option<Value>,
-    url: reqwest::Url,
+    url: nanocode_http::Url,
 }
 
 impl McpPendingPayment for McpPending {
@@ -1295,7 +1298,7 @@ impl Listing {
 }
 
 async fn list(
-    client: &reqwest::Client,
+    client: &nanocode_http::Client,
     url: &str,
     read: Read,
 ) -> std::result::Result<Vec<Offer>, String> {
@@ -1400,7 +1403,7 @@ impl Tempo {
     fn new(payments: &Payments, args: &GatewayArgs, identity: Arc<Identity>) -> Result<Self> {
         let terms = Terms::tempo(args)?;
         let wallet = payments.wallet(
-            &reqwest::Url::parse(&format!("{TEMPO_GATEWAY}/v1"))?,
+            &nanocode_http::Url::parse(&format!("{TEMPO_GATEWAY}/v1"))?,
             &terms,
         );
         let unsponsored = Terms {
@@ -1411,7 +1414,7 @@ impl Tempo {
             ..terms
         };
         let boundless = Mpp::new(
-            payments.wallet(&reqwest::Url::parse(BOUNDLESS)?, &unsponsored),
+            payments.wallet(&nanocode_http::Url::parse(BOUNDLESS)?, &unsponsored),
             (format!("{BOUNDLESS}/responses"), None),
         )
         .identified(identity.clone());
@@ -1646,8 +1649,8 @@ pub(crate) async fn close(closing: Closing) {
     }
 }
 
-async fn close_session(client: &reqwest::Client, session: &SessionProvider, url: &str) {
-    let host = reqwest::Url::parse(url)
+async fn close_session(client: &nanocode_http::Client, session: &SessionProvider, url: &str) {
+    let host = nanocode_http::Url::parse(url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_owned))
         .unwrap_or_else(|| url.to_owned());
@@ -1674,7 +1677,7 @@ async fn close_session(client: &reqwest::Client, session: &SessionProvider, url:
 }
 
 async fn balance(
-    client: &reqwest::Client,
+    client: &nanocode_http::Client,
     token: &str,
     account: Address,
 ) -> std::result::Result<U256, String> {
@@ -1691,7 +1694,7 @@ async fn balance(
     let reading = async {
         client
             .post(DEFAULT_RPC_URL)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(nanocode_http::header::CONTENT_TYPE, "application/json")
             .body(call.to_string())
             .send()
             .await
@@ -1779,7 +1782,11 @@ fn tool_deposit(args: &GatewayArgs) -> u128 {
 fn paid_origins() -> Result<Vec<String>> {
     let mut origins = vec![TEMPO_SERVICES.to_owned()];
     for url in [GATEWAY, MERCATOR] {
-        origins.push(reqwest::Url::parse(url)?.origin().ascii_serialization());
+        origins.push(
+            nanocode_http::Url::parse(url)?
+                .origin()
+                .ascii_serialization(),
+        );
     }
     Ok(origins)
 }

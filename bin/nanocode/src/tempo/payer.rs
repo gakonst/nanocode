@@ -49,7 +49,7 @@ pub(crate) struct Payer {
 }
 
 fn http_origin(url: &str) -> Option<String> {
-    reqwest::Url::parse(url)
+    nanocode_http::Url::parse(url)
         .ok()
         .filter(|url| matches!(url.scheme(), "http" | "https"))
         .map(|url| url.origin().ascii_serialization())
@@ -250,7 +250,7 @@ impl Payer {
 
     pub(crate) async fn preconnect(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         body: String,
     ) -> Result<(), Fault> {
@@ -284,15 +284,15 @@ impl Payer {
 
     async fn probe(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         body: String,
         hint: Option<(&str, &SessionProvider)>,
     ) -> Result<Vec<Challenge>, Fault> {
-        let post = |client: &reqwest::Client| {
+        let post = |client: &nanocode_http::Client| {
             client
                 .post(url)
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .header(nanocode_http::header::CONTENT_TYPE, "application/json")
                 .body(body)
         };
         let response = match hint {
@@ -548,7 +548,7 @@ impl PaymentProvider for Payer {
 
     fn stream_event(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         name: &str,
         data: &str,

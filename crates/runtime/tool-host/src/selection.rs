@@ -188,7 +188,7 @@ pub struct Tools {
     #[cfg(not(target_family = "wasm"))]
     backend: Option<Arc<str>>,
     #[cfg(not(target_family = "wasm"))]
-    remote_http_client: Option<reqwest::Client>,
+    remote_http_client: Option<nanocode_http::Client>,
     pub(crate) registered: Vec<RegisteredTool>,
     #[cfg(not(target_family = "wasm"))]
     pub(super) provider_direct: Vec<Arc<dyn Tool>>,
@@ -666,7 +666,7 @@ impl Tools {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    pub fn remote_http_client(&self) -> Option<reqwest::Client> {
+    pub fn remote_http_client(&self) -> Option<nanocode_http::Client> {
         self.remote_http_client.clone()
     }
 
@@ -999,7 +999,7 @@ impl ToolsBuilder {
 
     #[must_use]
     #[cfg(not(target_family = "wasm"))]
-    pub fn remote_http_client(mut self, client: reqwest::Client) -> Self {
+    pub fn remote_http_client(mut self, client: nanocode_http::Client) -> Self {
         self.tools.remote_http_client = Some(client);
         self
     }

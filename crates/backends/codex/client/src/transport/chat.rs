@@ -152,11 +152,11 @@ impl ChatGateway {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    pub(crate) fn http_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+    pub(crate) fn http_client() -> nanocode_http::Client {
+        nanocode_http::Client::builder()
+            .redirect(nanocode_http::redirect::Policy::none())
             .default_headers(nanocode_http::accept_encoding(
-                reqwest::header::HeaderMap::new(),
+                nanocode_http::header::HeaderMap::new(),
             ))
             .build()
             .unwrap_or_else(|_| nanocode_http::client())
@@ -254,7 +254,7 @@ impl ChatGateway {
     #[cfg(not(target_family = "wasm"))]
     pub(crate) async fn send(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         api_base_url: &str,
         auth: &OpenAiAuthSnapshot,
         request: &str,
@@ -1421,7 +1421,7 @@ struct LiveItem {
 
 enum ChatBody {
     #[cfg(not(target_family = "wasm"))]
-    Http(reqwest::Response),
+    Http(nanocode_http::Response),
     Host(Box<dyn HostHttpBody>),
 }
 

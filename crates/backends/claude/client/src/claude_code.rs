@@ -4,7 +4,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use reqwest::header::HeaderValue;
+use nanocode_http::header::HeaderValue;
 use serde_json::{Value, json};
 use tracing::Instrument as _;
 
@@ -24,7 +24,7 @@ const LOCK_FILE: &str = ".nanocode-oauth-refresh.lock";
 
 #[derive(Clone)]
 struct ClaudeCodeLogin {
-    http: reqwest::Client,
+    http: nanocode_http::Client,
 }
 
 fn nfc(path: &std::ffi::OsStr) -> String {

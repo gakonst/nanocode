@@ -4,32 +4,27 @@ use crate::egress::{
     audit::{Audit, Kind, Reporting},
     authority::Authority,
     lookup::{Caching, Client, Lookups, Purpose, Verdict},
-    redact::{self, Failed, Injecting},
+    redact::{self, Injecting},
     tls::Tls,
     wire::{Credential, Secret},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
-use hyper::{
-    Error, Method, Request, Response, StatusCode, Uri,
-    body::Incoming,
-    client::conn::http1::handshake,
+use http::{
+    Method, StatusCode, Uri,
     header::{self, HeaderMap, HeaderValue},
-    http::uri::Authority as UriAuthority,
-    rt::{Read, Write},
-    server::conn::http1::Builder,
-    service::{HttpService, service_fn},
-    upgrade::{OnUpgrade, Upgraded, on},
+    uri::Authority as UriAuthority,
 };
-use hyper_util::rt::{TokioIo, TokioTimer};
-use nanocode_sync::{Atom, pipe};
+use nanocode_http::{
+    server::{self, Incoming, OnUpgrade, Outgoing, Reply, Upgraded},
+    wire::WireError,
+};
+use nanocode_sync::{Atom, Duplex, pipe};
 use rustls::pki_types::ServerName;
 use std::{
     any::Any,
     collections::HashMap,
-    convert::Infallible,
-    error, io,
+    io,
     io::ErrorKind,
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -49,8 +44,7 @@ const HOP: &str = "connection keep-alive proxy-authenticate proxy-authorization 
 
 pub type Slot = Arc<dyn Any + Send + Sync>;
 
-type Body = BoxBody<Bytes, Failed>;
-type Refusal = Box<Response<Body>>;
+type Refusal = Box<Reply>;
 
 pub enum Identity {
     Fixed(Credential),
@@ -187,11 +181,13 @@ impl<A: Authority> Proxy<A> {
         T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let proxy = Arc::clone(&self);
-        let service = service_fn(move |request| {
-            Arc::clone(&proxy).handle(request, Arc::clone(&slot), source)
-        });
-        if let Err(error) = self.served(TokioIo::new(stream), service).await
-            && !error.is_incomplete_message()
+        let served = self
+            .served(stream, move |request| {
+                Arc::clone(&proxy).handle(request, Arc::clone(&slot), source)
+            })
+            .await;
+        if let Err(error) = served
+            && !matches!(error, WireError::Closed { .. } | WireError::Truncated)
         {
             warn!("egress connection: {error}");
         }
@@ -276,29 +272,31 @@ impl<A: Authority> Proxy<A> {
 
     async fn handle(
         self: Arc<Self>,
-        request: Request<Incoming>,
+        request: server::Request,
         slot: Slot,
         source: IpAddr,
-    ) -> Result<Response<Body>, Infallible> {
-        let connect = request.method() == Method::CONNECT;
-        let mut client = self.client(request.headers(), source, Purpose::Route).await;
+    ) -> Reply {
+        let connect = request.method == Method::CONNECT;
+        let mut client = self.client(&request.headers, source, Purpose::Route).await;
         if let Ok(known) = &client
             && connect
-            && let Some(host) = request.uri().host()
-            && known.pattern(&host.to_ascii_lowercase()).is_none()
+            && let Ok(authority) = request.target.parse::<UriAuthority>()
+            && known
+                .pattern(&authority.host().to_ascii_lowercase())
+                .is_none()
         {
             client = self
-                .client(request.headers(), source, Purpose::Recheck)
+                .client(&request.headers, source, Purpose::Recheck)
                 .await;
         }
-        Ok(match client {
+        match client {
             Err(response) => *response,
             Ok(client) if connect => self.connect(client, request, slot).await,
             Ok(client) => self
                 .plain(&client, request, slot)
                 .await
                 .unwrap_or_else(|response| *response),
-        })
+        }
     }
 
     async fn dial(&self, host: &str, port: u16) -> Result<TcpStream, Refusal> {
@@ -380,26 +378,28 @@ impl<A: Authority> Proxy<A> {
     async fn connect(
         self: Arc<Self>,
         client: Arc<Client>,
-        request: Request<Incoming>,
+        mut request: server::Request,
         slot: Slot,
-    ) -> Response<Body> {
-        let Some(authority) = request.uri().authority().cloned() else {
+    ) -> Reply {
+        let (Ok(authority), Some(upgrade)) = (
+            request.target.parse::<UriAuthority>(),
+            request.upgrade.take(),
+        ) else {
             return text(StatusCode::BAD_REQUEST, "CONNECT needs host:port.");
         };
         let (host, port) = (host_of(&authority), authority.port_u16().unwrap_or(443));
         if let Err(response) = self.allowed(&host) {
             return *response;
         }
-        let empty = || Response::new(Empty::new().map_err(|never| match never {}).boxed());
         if self.intercepts(&client, &host, port) {
             self.count(&client, &host, port, Kind::Intercepted);
             spawn(async move {
-                match on(request).await {
+                match upgrade.await {
                     Ok(upgraded) => self.intercept(client, host, port, upgraded, slot).await,
                     Err(error) => warn!("egress upgrade: {error}"),
                 }
             });
-            return empty();
+            return Reply::empty();
         }
         let upstream = match self.dial(&host, port).await {
             Ok(upstream) => upstream,
@@ -411,13 +411,13 @@ impl<A: Authority> Proxy<A> {
         self.count(&client, &host, port, Kind::Tunneled);
         let idle = self.rules.limits.idle_tunnel;
         spawn(async move {
-            match on(request).await {
-                Ok(upgraded) => pipe(TokioIo::new(upgraded), upstream, idle).await,
+            match upgrade.await {
+                Ok(upgraded) => pipe(upgraded, upstream, idle).await,
                 Err(error) => warn!("egress upgrade: {error}"),
             }
             drop(slot);
         });
-        empty()
+        Reply::empty()
     }
 
     async fn intercept(
@@ -434,11 +434,23 @@ impl<A: Authority> Proxy<A> {
                 return error!("egress certificate for {host} failed: {error:#}");
             }
         };
-        let accept = TlsAcceptor::from(config).accept(TokioIo::new(upgraded));
+        let accept = TlsAcceptor::from(config).accept(upgraded);
         let error = match timeout(self.rules.limits.connect, accept).await {
             Ok(Ok(tls)) => {
-                let service = Arc::clone(&self).service(Arc::clone(&client), host, port, slot);
-                return drop(self.served(TokioIo::new(tls), service).await);
+                let proxy = Arc::clone(&self);
+                let served = self.served(tls, move |request| {
+                    let (proxy, client, host, slot) = (
+                        Arc::clone(&proxy),
+                        Arc::clone(&client),
+                        host.clone(),
+                        Arc::clone(&slot),
+                    );
+                    async move {
+                        let response = proxy.forward(&client, &host, port, request, slot).await;
+                        response.unwrap_or_else(|response| *response)
+                    }
+                });
+                return drop(served.await);
             }
             Ok(Err(error)) => error.to_string(),
             Err(_) => "no handshake in time".to_owned(),
@@ -447,35 +459,14 @@ impl<A: Authority> Proxy<A> {
         info!(%name, "egress TLS from {name} for {host}: {error}");
     }
 
-    fn service(
-        self: Arc<Self>,
-        client: Arc<Client>,
-        host: String,
-        port: u16,
-        slot: Slot,
-    ) -> impl HttpService<Incoming, ResBody = Body, Future: Send> + Send {
-        service_fn(move |request| {
-            let (proxy, client, host, slot) = (
-                Arc::clone(&self),
-                Arc::clone(&client),
-                host.clone(),
-                Arc::clone(&slot),
-            );
-            async move {
-                let response = proxy.forward(&client, &host, port, request, slot).await;
-                Ok::<_, Infallible>(response.unwrap_or_else(|response| *response))
-            }
-        })
-    }
-
     async fn forward(
         &self,
         client: &Client,
         host: &str,
         port: u16,
-        request: Request<Incoming>,
+        request: server::Request,
         slot: Slot,
-    ) -> Result<Response<Body>, Refusal> {
+    ) -> Result<Reply, Refusal> {
         let client = match self
             .lookups
             .resolve(&client.credential, Purpose::Inject)
@@ -489,7 +480,7 @@ impl<A: Authority> Proxy<A> {
             Verdict::Unreachable => return Err(self.unreachable()),
         };
         let (upgrade, mut request) = outgoing(request)?;
-        let headers = request.headers_mut();
+        let headers = &mut request.headers;
         headers.insert(
             header::ACCEPT_ENCODING,
             HeaderValue::from_static("identity"),
@@ -516,17 +507,20 @@ impl<A: Authority> Proxy<A> {
                 )
             })?;
         let sealed = injecting == Injecting::Set && !bound.is_empty();
-        let response = self.send(TokioIo::new(tls), request).await?;
+        let response = self.send(tls, request).await?;
         Ok(self.relay(response, upgrade, Some(pairs), slot, sealed))
     }
 
     async fn plain(
         &self,
         client: &Client,
-        request: Request<Incoming>,
+        request: server::Request,
         slot: Slot,
-    ) -> Result<Response<Body>, Refusal> {
-        let uri = request.uri().clone();
+    ) -> Result<Reply, Refusal> {
+        let uri = request
+            .target
+            .parse::<Uri>()
+            .map_err(|_| refuse(StatusCode::BAD_REQUEST, "Invalid request target."))?;
         let (Some("http"), Some(authority)) = (uri.scheme_str(), uri.authority()) else {
             let message = "Send HTTPS through CONNECT and plain HTTP as an absolute URL.";
             return Err(refuse(StatusCode::BAD_REQUEST, message));
@@ -542,7 +536,7 @@ impl<A: Authority> Proxy<A> {
         self.count(client, &host, port, kind);
         let stream = dialed?;
         let (upgrade, request) = outgoing(request)?;
-        let response = self.send(TokioIo::new(stream), request).await?;
+        let response = self.send(stream, request).await?;
         Ok(self.relay(response, upgrade, None, slot, false))
     }
 
@@ -553,9 +547,7 @@ impl<A: Authority> Proxy<A> {
             texts.needs_credential,
         );
         if let Ok(realm) = HeaderValue::from_str(texts.realm) {
-            response
-                .headers_mut()
-                .insert(header::PROXY_AUTHENTICATE, realm);
+            response.headers.insert(header::PROXY_AUTHENTICATE, realm);
         }
         Box::new(response)
     }
@@ -564,35 +556,38 @@ impl<A: Authority> Proxy<A> {
         refuse(StatusCode::BAD_GATEWAY, self.rules.texts.unreachable)
     }
 
-    fn served<S: HttpService<Incoming, ResBody = Body>, T>(
+    fn served<T, H, F>(
         &self,
         io: T,
-        service: S,
-    ) -> impl Future<Output = hyper::Result<()>> + use<S, T, A>
+        handler: H,
+    ) -> impl Future<Output = Result<(), WireError>> + use<T, H, F, A>
     where
-        T: Read + Write + Unpin + Send + 'static,
-        S::Future: Send + 'static,
-        S::Error: Into<Box<dyn error::Error + Send + Sync>>,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        H: FnMut(server::Request) -> F,
+        F: Future<Output = Reply>,
     {
-        Builder::new()
-            .timer(TokioTimer::new())
-            .header_read_timeout(self.rules.limits.idle_headers)
-            .serve_connection(io, service)
-            .with_upgrades()
+        let options = server::Options {
+            header_read_timeout: Some(self.rules.limits.idle_headers),
+        };
+        server::serve(Box::new(io), options, handler)
     }
 
-    async fn send<T>(
+    async fn send<T: Duplex + 'static>(
         &self,
         io: T,
-        request: Request<Incoming>,
-    ) -> Result<Response<Incoming>, Refusal>
-    where
-        T: Read + Write + Unpin + Send + 'static,
-    {
-        let failed = |error: Error| refuse(StatusCode::BAD_GATEWAY, &format!("upstream: {error}"));
-        let (mut sender, connection) = handshake(io).await.map_err(failed)?;
-        spawn(async move { drop(connection.with_upgrades().await) });
-        let answer = timeout(self.rules.limits.idle_tunnel, sender.send_request(request))
+        request: Forwarded,
+    ) -> Result<server::Exchanged, Refusal> {
+        let failed =
+            |error: WireError| refuse(StatusCode::BAD_GATEWAY, &format!("upstream: {error}"));
+        let exchange = server::send(
+            Box::new(io),
+            &request.method,
+            &request.target,
+            request.headers,
+            request.body,
+            request.length,
+        );
+        let answer = timeout(self.rules.limits.idle_tunnel, exchange)
             .await
             .map_err(|_| {
                 refuse(
@@ -605,50 +600,56 @@ impl<A: Authority> Proxy<A> {
 
     fn relay(
         &self,
-        mut response: Response<Incoming>,
-        client: OnUpgrade,
+        response: server::Exchanged,
+        client: Option<OnUpgrade>,
         pairs: Option<redact::Redactions>,
         slot: Slot,
         sealed: bool,
-    ) -> Response<Body> {
+    ) -> Reply {
+        let server::Exchanged { head, body } = response;
+        let (status, mut reason, mut headers) = (head.status, head.reason, head.headers);
         let pairs = pairs.filter(|pairs| !pairs.is_empty());
-        let coding = response.headers().get(header::CONTENT_ENCODING);
+        let coding = headers.get(header::CONTENT_ENCODING);
         let compressed = pairs.is_some()
             && coding.is_some_and(|coding| !coding.as_bytes().eq_ignore_ascii_case(b"identity"));
-        let upgraded = response.status() == StatusCode::SWITCHING_PROTOCOLS;
+        let upgraded = status == StatusCode::SWITCHING_PROTOCOLS;
         if compressed || (sealed && upgraded) {
             return text(StatusCode::BAD_GATEWAY, self.rules.texts.compressed);
         }
         if let Some(pairs) = &pairs {
-            redact::headers(response.headers_mut(), pairs);
-            redact::reason(response.extensions_mut(), pairs);
+            redact::headers(&mut headers, pairs);
+            redact::reason(&mut reason, pairs);
         }
         let idle = self.rules.limits.idle_tunnel;
-        if upgraded {
-            let upstream = on(&mut response);
+        let body = if upgraded {
+            let upstream = body.into_upgraded();
             spawn(async move {
-                if let (Ok(client), Ok(upstream)) = (client.await, upstream.await) {
-                    pipe(TokioIo::new(client), TokioIo::new(upstream), idle).await;
+                if let (Some(client), Some(upstream)) = (client, upstream)
+                    && let Ok(client) = client.await
+                {
+                    pipe(client, upstream, idle).await;
                 }
                 drop(slot);
             });
+            Outgoing::Empty
         } else {
-            strip_hop(response.headers_mut(), false);
-        }
-        if pairs.is_some() {
-            response.headers_mut().remove(header::CONTENT_LENGTH);
-        }
-        let pairs = pairs.unwrap_or_default();
-        response.map(|inner| redact::body(inner, pairs, idle))
+            strip_hop(&mut headers, false);
+            if pairs.is_some() {
+                headers.remove(header::CONTENT_LENGTH);
+            }
+            Outgoing::Stream(redact::body(body, pairs.unwrap_or_default(), idle))
+        };
+        let mut reply = Reply::new(status, body);
+        reply.reason = reason;
+        reply.headers = headers;
+        reply
     }
 }
 
-fn text(status: StatusCode, message: &str) -> Response<Body> {
-    let body = Full::new(Bytes::from(format!("{message}\n")));
-    let mut response = Response::new(body.map_err(|never| match never {}).boxed());
-    *response.status_mut() = status;
+fn text(status: StatusCode, message: &str) -> Reply {
+    let mut response = Reply::new(status, Outgoing::Full(Bytes::from(format!("{message}\n"))));
     let plain = HeaderValue::from_static("text/plain");
-    response.headers_mut().insert(header::CONTENT_TYPE, plain);
+    response.headers.insert(header::CONTENT_TYPE, plain);
     response
 }
 
@@ -672,21 +673,45 @@ fn strip_hop(headers: &mut HeaderMap, upgrade: bool) {
     }
 }
 
-fn outgoing(mut request: Request<Incoming>) -> Result<(OnUpgrade, Request<Incoming>), Refusal> {
-    let client = on(&mut request);
-    let (mut parts, body) = request.into_parts();
-    let upgrade = parts.headers.contains_key(header::UPGRADE);
-    strip_hop(&mut parts.headers, upgrade);
-    parts.uri = parts
-        .uri
-        .path_and_query()
-        .map_or("/", |p| p.as_str())
+struct Forwarded {
+    method: Method,
+    target: String,
+    headers: HeaderMap,
+    body: Incoming,
+    length: Option<u64>,
+}
+
+fn outgoing(request: server::Request) -> Result<(Option<OnUpgrade>, Forwarded), Refusal> {
+    let server::Request {
+        method,
+        target,
+        mut headers,
+        body,
+        upgrade: client,
+        ..
+    } = request;
+    let length = server::length(&headers);
+    let upgrade = headers.contains_key(header::UPGRADE);
+    strip_hop(&mut headers, upgrade);
+    let target = target
         .parse::<Uri>()
         .map_err(|error| {
             debug!(%error, "invalid request target");
             refuse(StatusCode::BAD_REQUEST, "Invalid request target.")
-        })?;
-    Ok((client, Request::from_parts(parts, body)))
+        })?
+        .path_and_query()
+        .map_or("/", |p| p.as_str())
+        .to_owned();
+    Ok((
+        client,
+        Forwarded {
+            method,
+            target,
+            headers,
+            body,
+            length,
+        },
+    ))
 }
 
 fn credential(headers: &HeaderMap) -> Option<Credential> {

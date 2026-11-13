@@ -3,9 +3,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use nanocode_http::header::{HeaderMap, HeaderValue};
+use nanocode_http::{Request, Response, StatusCode, Url};
 use nanocode_sync::{Atom, SingleFlight, Slot};
-use reqwest::header::{HeaderMap, HeaderValue};
-use reqwest::{Request, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -651,7 +651,7 @@ pub(crate) fn forget(directory: &Path, key: &str, token: &str) -> std::io::Resul
 }
 
 async fn post(
-    client: &reqwest::Client,
+    client: &nanocode_http::Client,
     issuer: &str,
     path: &str,
     body: Value,
@@ -692,7 +692,7 @@ impl<X: Exchange> Exchange for Proved<'_, X> {
         self.exchange.check_challenge(challenge)
     }
 
-    fn http_client(&self) -> Option<reqwest::Client> {
+    fn http_client(&self) -> Option<nanocode_http::Client> {
         self.exchange.http_client()
     }
 

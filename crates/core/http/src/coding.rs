@@ -218,23 +218,23 @@ pub fn accept_encoding(mut headers: http::HeaderMap) -> http::HeaderMap {
 }
 
 #[must_use]
-pub fn client() -> reqwest::Client {
-    reqwest::Client::builder()
+pub fn client() -> crate::Client {
+    crate::Client::builder()
         .default_headers(accept_encoding(http::HeaderMap::new()))
         .build()
         .expect("the default HTTP client builds")
 }
 
-pub fn decode_flate_response(response: reqwest::Response) -> reqwest::Response {
+pub fn decode_flate_response(response: crate::Response) -> crate::Response {
     match FlateCoding::from_headers(response.headers()) {
-        Some(coding) => replace_body(response, |response| {
-            reqwest::Body::wrap_stream(flate::stream(coding, response.bytes_stream()))
+        Some(coding) => replace_body(response, |body| {
+            Box::pin(decoded(flate::stream(coding, body)))
         }),
         None => response,
     }
 }
 
-pub fn decode_response(response: reqwest::Response) -> reqwest::Response {
+pub fn decode_response(response: crate::Response) -> crate::Response {
     use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
 
     if FlateCoding::from_headers(response.headers()).is_some() {
@@ -247,9 +247,9 @@ pub fn decode_response(response: reqwest::Response) -> reqwest::Response {
     if encodings.next().is_some() {
         return response;
     }
-    let encoding = match encoding.to_str().map(str::trim) {
-        Ok(value) if value.eq_ignore_ascii_case("zstd") => "zstd",
-        Ok(value) if value.eq_ignore_ascii_case("br") => "br",
+    let zstd = match encoding.to_str().map(str::trim) {
+        Ok(value) if value.eq_ignore_ascii_case("zstd") => true,
+        Ok(value) if value.eq_ignore_ascii_case("br") => false,
         _ => return response,
     };
     if response
@@ -259,35 +259,30 @@ pub fn decode_response(response: reqwest::Response) -> reqwest::Response {
     {
         return response;
     }
-    replace_body(response, |response| match encoding {
-        "zstd" => reqwest::Body::wrap_stream(zstd_stream(response.bytes_stream())),
-        "br" => reqwest::Body::wrap_stream(brotli::stream(response.bytes_stream())),
-        _ => unreachable!("encoding is selected above"),
+    replace_body(response, |body| {
+        if zstd {
+            Box::pin(decoded(zstd_stream(body)))
+        } else {
+            Box::pin(decoded(brotli::stream(body)))
+        }
     })
 }
 
-fn replace_body(
-    mut response: reqwest::Response,
-    body: impl FnOnce(reqwest::Response) -> reqwest::Body,
-) -> reqwest::Response {
-    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
-    use reqwest::ResponseBuilderExt;
+fn decoded(
+    stream: impl Stream<Item = io::Result<Vec<u8>>> + Send + 'static,
+) -> impl Stream<Item = crate::client::Result<bytes::Bytes>> + Send + 'static {
+    stream.map(|chunk| chunk.map(bytes::Bytes::from).map_err(crate::Error::body))
+}
 
-    let url = response.url().clone();
-    let status = response.status();
-    let version = response.version();
-    let mut headers = response.headers().clone();
-    headers.remove(CONTENT_ENCODING);
-    headers.remove(CONTENT_LENGTH);
-    let extensions = std::mem::take(response.extensions_mut());
-    let body = body(response);
-    let mut decoded = http::Response::builder()
-        .url(url)
-        .body(body)
-        .expect("response builder only sets a URL extension");
-    *decoded.status_mut() = status;
-    *decoded.version_mut() = version;
-    *decoded.headers_mut() = headers;
-    decoded.extensions_mut().extend(extensions);
-    decoded.into()
+fn replace_body(
+    mut response: crate::Response,
+    body: impl FnOnce(
+        futures_util::stream::BoxStream<'static, crate::client::Result<bytes::Bytes>>,
+    ) -> crate::ResponseStream,
+) -> crate::Response {
+    use http::header::{CONTENT_ENCODING, CONTENT_LENGTH};
+
+    response.headers_mut().remove(CONTENT_ENCODING);
+    response.headers_mut().remove(CONTENT_LENGTH);
+    response.map_body(body)
 }

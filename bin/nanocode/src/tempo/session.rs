@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use nanocode_http::Url;
+use nanocode_http::header::{HeaderMap, HeaderName, HeaderValue};
 use nanocode_sync::Atom;
 use nanocode_tempo::{Address, Call, SignedKeyAuthorization, U256, hex, keccak256};
-use reqwest::Url;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -157,7 +157,7 @@ pub(crate) enum PaymentHold {
 
 enum TopUpRoute<'a> {
     Http {
-        client: &'a reqwest::Client,
+        client: &'a nanocode_http::Client,
         url: &'a str,
         headers: HeaderMap,
     },
@@ -245,7 +245,7 @@ fn ensure_redirect_safe_credential_header(challenge: &Challenge) -> Result<(), F
 
 fn credential_header_name(challenge: &Challenge) -> HeaderName {
     HeaderName::from_bytes(challenge.credential_header().as_bytes())
-        .unwrap_or(reqwest::header::AUTHORIZATION)
+        .unwrap_or(nanocode_http::header::AUTHORIZATION)
 }
 
 fn authorization_value(credential: &Credential, context: &str) -> Result<HeaderValue, Fault> {
@@ -294,13 +294,13 @@ fn build_credential(
     ))
 }
 
-fn session_challenge(response: &reqwest::Response) -> Option<Challenge> {
+fn session_challenge(response: &nanocode_http::Response) -> Option<Challenge> {
     protocol::response_challenges(response.headers())
         .into_iter()
         .find(|challenge| challenge.method == METHOD_NAME && challenge.intent == INTENT_SESSION)
 }
 
-fn response_receipt(response: &reqwest::Response) -> Option<Receipt> {
+fn response_receipt(response: &nanocode_http::Response) -> Option<Receipt> {
     response
         .headers()
         .get(PAYMENT_RECEIPT_HEADER)
@@ -310,7 +310,7 @@ fn response_receipt(response: &reqwest::Response) -> Option<Receipt> {
 
 fn management_headers(mut headers: HeaderMap) -> HeaderMap {
     let connection: Vec<String> = headers
-        .get_all(reqwest::header::CONNECTION)
+        .get_all(nanocode_http::header::CONNECTION)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(',').map(|name| name.trim().to_owned()))
@@ -362,7 +362,7 @@ fn amount(value: &str) -> Result<u128, Fault> {
         .map_err(|error| Fault::config(format!("invalid session amount: {error}")))
 }
 
-fn http(context: &str) -> impl Fn(reqwest::Error) -> Fault + '_ {
+fn http(context: &str) -> impl Fn(nanocode_http::Error) -> Fault + '_ {
     move |error| Fault::http(format!("{context}: {error}"))
 }
 
@@ -534,11 +534,11 @@ impl SessionProvider {
             })
     }
 
-    fn hint_client() -> Result<reqwest::Client, Fault> {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+    fn hint_client() -> Result<nanocode_http::Client, Fault> {
+        nanocode_http::Client::builder()
+            .redirect(nanocode_http::redirect::Policy::none())
             .default_headers(nanocode_http::accept_encoding(
-                reqwest::header::HeaderMap::new(),
+                nanocode_http::header::HeaderMap::new(),
             ))
             .build()
             .map_err(http("failed to build the session hint client"))
@@ -546,9 +546,9 @@ impl SessionProvider {
 
     pub(crate) async fn send_hint(
         &self,
-        request: impl FnOnce(&reqwest::Client) -> reqwest::RequestBuilder,
+        request: impl FnOnce(&nanocode_http::Client) -> nanocode_http::RequestBuilder,
         context: &str,
-    ) -> Result<reqwest::Response, Fault> {
+    ) -> Result<nanocode_http::Response, Fault> {
         let client = Self::hint_client()?;
         with_management_timeout(self.management_timeout, context, async {
             request(&client)
@@ -1639,7 +1639,7 @@ impl SessionProvider {
 
     async fn top_up_with_lease(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         headers: HeaderMap,
         challenge: &Challenge,
@@ -1700,7 +1700,7 @@ impl SessionProvider {
     #[allow(clippy::too_many_arguments)]
     async fn top_up_in_background(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         headers: HeaderMap,
         challenge: &Challenge,
@@ -1813,7 +1813,7 @@ impl SessionProvider {
 
     async fn submit_top_up(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         challenge: &Challenge,
         prepared: &PreparedTopUp,
@@ -1826,7 +1826,7 @@ impl SessionProvider {
                 prepared.channel_id,
             )
             .await?;
-        if response.status() == reqwest::StatusCode::PAYMENT_REQUIRED
+        if response.status() == nanocode_http::StatusCode::PAYMENT_REQUIRED
             && let Some(fresh) = session_challenge(&response)
         {
             let (fresh_key, fresh_chain_id) = self.expected_channel_key(&fresh)?;
@@ -1931,10 +1931,10 @@ impl SessionProvider {
 
     async fn send_top_up(
         &self,
-        request: reqwest::RequestBuilder,
+        request: nanocode_http::RequestBuilder,
         context: &str,
         channel_id: Hash,
-    ) -> Result<reqwest::Response, Fault> {
+    ) -> Result<nanocode_http::Response, Fault> {
         let error = match tokio::time::timeout(self.management_timeout, request.send()).await {
             Ok(Ok(response)) => return Ok(nanocode_http::decode_flate_response(response)),
             Ok(Err(error)) if error.is_connect() => {
@@ -1949,7 +1949,7 @@ impl SessionProvider {
         Err(Fault::SessionOutcomeUnknown { context: error })
     }
 
-    async fn management_body(&self, response: reqwest::Response) -> String {
+    async fn management_body(&self, response: nanocode_http::Response) -> String {
         tokio::time::timeout(self.management_timeout, response.text())
             .await
             .ok()
@@ -1959,12 +1959,12 @@ impl SessionProvider {
 
     async fn post_credential(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         challenge: &Challenge,
         credential: &Credential,
         context: &str,
-    ) -> Result<reqwest::Response, Fault> {
+    ) -> Result<nanocode_http::Response, Fault> {
         ensure_redirect_safe_credential_header(challenge)?;
         let request = client.post(url).header(
             credential_header_name(challenge),
@@ -1980,8 +1980,8 @@ impl SessionProvider {
         .await
     }
 
-    fn refreshed_challenge(response: &reqwest::Response) -> Option<Challenge> {
-        (response.status() == reqwest::StatusCode::PAYMENT_REQUIRED)
+    fn refreshed_challenge(response: &nanocode_http::Response) -> Option<Challenge> {
+        (response.status() == nanocode_http::StatusCode::PAYMENT_REQUIRED)
             .then(|| session_challenge(response))
             .flatten()
     }
@@ -1995,7 +1995,7 @@ impl SessionProvider {
 
     pub(crate) async fn send_voucher(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         channel_id: &str,
         required: u128,
@@ -2087,7 +2087,7 @@ impl SessionProvider {
 
     pub(crate) async fn close(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
     ) -> Result<Option<Receipt>, Fault> {
         self.bind_origin(url)?;
@@ -2125,8 +2125,8 @@ impl SessionProvider {
         }
         let status = response.status();
         let receipt = response_receipt(&response);
-        let native_gone =
-            status == reqwest::StatusCode::GONE && is_precompile_escrow(entry.escrow_contract);
+        let native_gone = status == nanocode_http::StatusCode::GONE
+            && is_precompile_escrow(entry.escrow_contract);
         if !status.is_success() && !native_gone {
             let body = self.management_body(response).await;
             return Err(Fault::http(format!(
@@ -2676,7 +2676,7 @@ impl SessionProvider {
 
     pub(crate) fn stream_event(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         name: &str,
         data: &str,
@@ -2825,7 +2825,7 @@ impl PaymentProvider for SessionProvider {
 
     fn stream_event(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         name: &str,
         data: &str,

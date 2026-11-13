@@ -1,8 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use reqwest::Url;
-use reqwest::header::HeaderMap;
+use nanocode_http::Url;
+use nanocode_http::header::HeaderMap;
 
 use super::error::Fault;
 use super::protocol::{Challenge, Credential, Receipt};
@@ -23,7 +23,7 @@ pub(crate) trait ManagementTransport: Send + Sync {
 pub(crate) struct PaymentContext {
     pub(crate) url: Url,
     pub(crate) headers: HeaderMap,
-    pub(crate) http_client: Option<reqwest::Client>,
+    pub(crate) http_client: Option<nanocode_http::Client>,
 }
 
 pub(crate) trait PaymentProvider: Clone + Send + Sync {
@@ -80,7 +80,7 @@ pub(crate) trait PaymentProvider: Clone + Send + Sync {
 
     fn stream_event(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
         url: &str,
         name: &str,
         data: &str,

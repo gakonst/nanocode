@@ -111,7 +111,7 @@ struct SessionState {
 
 enum Client {
     #[cfg(not(target_family = "wasm"))]
-    Reqwest(reqwest::Client),
+    Reqwest(nanocode_http::Client),
     Sender {
         sender: Arc<dyn Sender>,
         headers: HeaderMap,
@@ -264,7 +264,7 @@ fn stop_tasks(tasks: Tasks) {
 #[cfg(not(target_family = "wasm"))]
 pub fn spawn(
     url: String,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     auth: HttpAuth,
     outgoing: Outgoing,
     inbound: Inbound,
@@ -275,7 +275,7 @@ pub fn spawn(
 #[cfg(not(target_family = "wasm"))]
 pub fn spawn_with_options(
     url: String,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     auth: HttpAuth,
     options: HttpOptions,
     outgoing: Outgoing,
@@ -439,7 +439,7 @@ fn is_mime(content_type: Option<&str>, mime: &str) -> bool {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn client_error(error: &reqwest::Error) -> TransportError {
+fn client_error(error: &nanocode_http::Error) -> TransportError {
     let message = format!("Client error: {}", crate::error_chain(error));
     if error.is_connect() || error.is_builder() {
         TransportError::unsent(message)
@@ -480,7 +480,7 @@ fn challenge_error(response: &Reply) -> Option<TransportError> {
 
 impl Reply {
     #[cfg(not(target_family = "wasm"))]
-    fn from_reqwest(response: reqwest::Response) -> Self {
+    fn from_client(response: nanocode_http::Response) -> Self {
         let status = response.status();
         let headers = response.headers().clone();
         let body = futures_util::stream::unfold(response, |mut response| async move {
@@ -546,7 +546,7 @@ impl Client {
                     .await
                     .map(nanocode_http::decode_response)
                     .map_err(|error| client_error(&error))?;
-                Ok(Reply::from_reqwest(response))
+                Ok(Reply::from_client(response))
             }
             Self::Sender {
                 sender,

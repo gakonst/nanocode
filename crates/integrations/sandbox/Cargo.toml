@@ -18,9 +18,8 @@ include = ["src/**", "Cargo.toml"]
 base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
-http-body-util.workspace = true
-hyper = { workspace = true, features = ["client", "http1", "server"] }
-hyper-util = { workspace = true, features = ["tokio"] }
+http.workspace = true
+nanocode-http.workspace = true
 nanocode-sync.workspace = true
 nanocode-x509.workspace = true
 ring.workspace = true

@@ -1,13 +1,11 @@
 use crate::egress::wire::Secret;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
-use futures_util::StreamExt;
 use futures_util::stream::unfold;
-use http_body_util::{BodyExt, BodyStream, StreamBody, combinators::BoxBody};
-use hyper::{
-    body::{Frame, Incoming},
-    ext::ReasonPhrase,
-    header::{self, HeaderMap, HeaderName, HeaderValue},
+use http::header::{self, HeaderMap, HeaderName, HeaderValue};
+use nanocode_http::{
+    server::{BodyStream, Incoming},
+    wire::WireError,
 };
 use std::{cmp::Reverse, error::Error, fmt, sync::Arc, time::Duration};
 use tokio::time::timeout;
@@ -174,7 +172,7 @@ impl Masker {
 #[derive(Debug)]
 pub enum Failed {
     Quiet,
-    Host(hyper::Error),
+    Host(WireError),
 }
 
 impl fmt::Display for Failed {
@@ -291,38 +289,32 @@ pub(crate) fn headers(headers: &mut HeaderMap, pairs: &Redactions) {
     }
 }
 
-pub(crate) fn reason(extensions: &mut hyper::http::Extensions, pairs: &Redactions) {
-    let Some(reason) = extensions.get::<ReasonPhrase>() else {
+pub(crate) fn reason(reason: &mut Option<String>, pairs: &Redactions) {
+    let Some(text) = reason.as_deref() else {
         return;
     };
-    let redacted = pairs.redact(reason.as_bytes());
-    if redacted == reason.as_bytes() {
+    let redacted = pairs.redact(text.as_bytes());
+    if redacted == text.as_bytes() {
         return;
     }
-    match ReasonPhrase::try_from(redacted) {
-        Ok(clean) => {
-            extensions.insert(clean);
-        }
-        Err(_) => {
-            extensions.remove::<ReasonPhrase>();
-        }
-    }
+    let printable = redacted
+        .iter()
+        .all(|byte| matches!(byte, b'\t' | b' ' | b'!'..=b'~' | 0x80..));
+    *reason = String::from_utf8(redacted).ok().filter(|_| printable);
 }
 
 #[derive(Default)]
 struct Tail {
-    stream: Option<BodyStream<Incoming>>,
+    stream: Option<Incoming>,
     masker: Masker,
-    trailers: Option<Frame<Bytes>>,
 }
 
-pub(crate) fn body(inner: Incoming, pairs: Redactions, idle: Duration) -> BoxBody<Bytes, Failed> {
+pub(crate) fn body(inner: Incoming, pairs: Redactions, idle: Duration) -> BodyStream {
     let start = Tail {
-        stream: Some(BodyStream::new(inner)),
+        stream: Some(inner),
         masker: Masker::replacing(pairs.clone()),
-        trailers: None,
     };
-    let frames = unfold(start, move |mut tail: Tail| {
+    let chunks = unfold(start, move |mut tail: Tail| {
         let pairs = pairs.clone();
         async move {
             loop {
@@ -330,40 +322,34 @@ pub(crate) fn body(inner: Incoming, pairs: Redactions, idle: Duration) -> BoxBod
                     let carry = tail.masker.finish();
                     if !carry.is_empty() {
                         let rest = Bytes::from(pairs.redact(&carry));
-                        return Some((Ok(Frame::data(rest)), tail));
+                        return Some((Ok(rest), tail));
                     }
-                    return tail.trailers.take().map(|frame| (Ok(frame), tail));
+                    return None;
                 };
-                let next = timeout(idle, StreamExt::next(inner)).await;
-                let Ok(next) = next else {
-                    return Some((Err(Failed::Quiet), Tail::default()));
+                let Ok(next) = timeout(idle, inner.chunk()).await else {
+                    return Some((Err(Failed::Quiet.into()), Tail::default()));
                 };
-                let data = match next.map(|f| f.map(Frame::into_data)) {
-                    None => {
+                let data = match next {
+                    Ok(None) => {
                         tail.stream = None;
                         continue;
                     }
-                    Some(Err(error)) => {
-                        return Some((Err(Failed::Host(error)), Tail::default()));
+                    Err(error) => {
+                        return Some((Err(Failed::Host(error).into()), Tail::default()));
                     }
-                    Some(Ok(Err(frame))) => {
-                        tail.stream = None;
-                        tail.trailers = Some(frame);
-                        continue;
-                    }
-                    Some(Ok(Ok(data))) => data,
+                    Ok(Some(data)) => data,
                 };
                 if pairs.is_empty() {
-                    return Some((Ok(Frame::data(data)), tail));
+                    return Some((Ok(data), tail));
                 }
                 let out = tail.masker.push(&data);
                 if !out.is_empty() {
-                    return Some((Ok(Frame::data(Bytes::from(out))), tail));
+                    return Some((Ok(Bytes::from(out)), tail));
                 }
             }
         }
     });
-    BodyExt::boxed(StreamBody::new(frames))
+    Box::pin(chunks)
 }
 
 fn swap(text: &str, secrets: &[&Secret], prefix: &str) -> Option<String> {

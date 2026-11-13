@@ -269,7 +269,7 @@ struct StoredOAuthConnect<'a> {
     server_name: &'a str,
     server: &'a McpServer,
     url: &'a str,
-    http_client: reqwest::Client,
+    http_client: nanocode_http::Client,
     store: Arc<dyn McpOAuthStore>,
     metadata: Arc<OAuthMetadataCache>,
     parent: &'a Span,
@@ -444,7 +444,7 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, McpServ
     streamable_http::validate_custom_headers(default_headers.keys())?;
     let replays_plaintext_proxy_credentials = default_headers.contains_key(PROXY_AUTHORIZATION);
     nanocode_tls::install_default_rustls_crypto_provider();
-    let mut http_client = reqwest::Client::builder();
+    let mut http_client = nanocode_http::Client::builder();
     if !server.http.reuse_connections {
         http_client = http_client.pool_max_idle_per_host(0);
     }
@@ -490,7 +490,7 @@ async fn connect_http(input: HttpConnect<'_>) -> Result<ConnectedServer, McpServ
 async fn connect_http_session(
     server: &McpServer,
     url: &str,
-    http_client: reqwest::Client,
+    http_client: nanocode_http::Client,
     auth: HttpAuth,
     parent: &Span,
 ) -> Result<Session, McpServerError> {

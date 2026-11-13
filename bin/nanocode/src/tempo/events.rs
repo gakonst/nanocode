@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use nanocode_http::Url;
 use nanocode_sync::Atom;
-use reqwest::Url;
 
 use super::protocol::{Challenge, Receipt};
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use reqwest::Url;
+use nanocode_http::Url;
 use serde_json::{Value, json};
 
 const MAX_RATE_LIMIT_RETRIES: u32 = 20;
@@ -168,7 +168,7 @@ fn retry_after(message: &str) -> Option<Duration> {
 
 #[derive(Clone)]
 pub(crate) struct Rpc {
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     url: Url,
     queued: Arc<AtomicU32>,
     ids: Arc<AtomicU64>,
@@ -183,7 +183,7 @@ impl Drop for Queued {
 }
 
 impl Rpc {
-    pub(crate) fn new(client: Option<&reqwest::Client>, url: Url) -> Self {
+    pub(crate) fn new(client: Option<&nanocode_http::Client>, url: Url) -> Self {
         Self {
             client: client.cloned().unwrap_or_else(nanocode_http::client),
             url,
@@ -196,7 +196,7 @@ impl Rpc {
         let response = self
             .client
             .post(self.url.clone())
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(nanocode_http::header::CONTENT_TYPE, "application/json")
             .body(body.to_vec())
             .send()
             .await
@@ -205,7 +205,7 @@ impl Rpc {
         let status = response.status();
         let retry_after = response
             .headers()
-            .get(reqwest::header::RETRY_AFTER)
+            .get(nanocode_http::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(Duration::from_secs);

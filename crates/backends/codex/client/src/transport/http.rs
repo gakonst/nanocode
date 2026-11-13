@@ -54,10 +54,13 @@ fn stream_stalled() -> ResponsesError {
 #[derive(Clone)]
 pub(crate) struct ResponsesHttp {
     #[cfg(not(target_family = "wasm"))]
-    client: reqwest::Client,
+    client: nanocode_http::Client,
 
     #[cfg(not(target_family = "wasm"))]
-    chat_gateway: Option<(std::sync::Arc<super::chat::ChatGateway>, reqwest::Client)>,
+    chat_gateway: Option<(
+        std::sync::Arc<super::chat::ChatGateway>,
+        nanocode_http::Client,
+    )>,
     #[cfg(target_family = "wasm")]
     chat_gateway: Option<std::sync::Arc<super::chat::ChatGateway>>,
     #[cfg(not(target_family = "wasm"))]
@@ -82,7 +85,7 @@ pub(crate) struct SseStream {
 
 enum SseBody {
     #[cfg(not(target_family = "wasm"))]
-    Reqwest(reqwest::Response),
+    Reqwest(nanocode_http::Response),
     #[cfg(not(target_family = "wasm"))]
     Layered(layer::Body),
     Host(Box<dyn HostHttpBody>),
@@ -102,7 +105,7 @@ pub(crate) struct HttpMetadata {
 #[cfg(not(target_family = "wasm"))]
 impl ResponsesHttp {
     pub(crate) fn new(
-        client: reqwest::Client,
+        client: nanocode_http::Client,
         host: Option<std::sync::Arc<dyn HostTransport>>,
         chat_gateway: Option<std::sync::Arc<super::chat::ChatGateway>>,
         gateway: Option<std::sync::Arc<super::ResponsesGateway>>,
@@ -254,7 +257,7 @@ impl ResponsesHttp {
     async fn send_layered(
         &self,
         layer: &dyn layer::Layer,
-        request: reqwest::Request,
+        request: nanocode_http::Request,
     ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
         let request = layer::Request {
             method: request.method().clone(),
@@ -262,11 +265,11 @@ impl ResponsesHttp {
             headers: request.headers().clone(),
             body: request
                 .body()
-                .and_then(reqwest::Body::as_bytes)
+                .and_then(nanocode_http::Body::as_bytes)
                 .map(<[u8]>::to_vec)
                 .unwrap_or_default(),
         };
-        let sender = nanocode_http::ReqwestSender::new(&self.client);
+        let sender = nanocode_http::ClientSender::new(&self.client);
         let response = idle(layer.send(request, layer::Next::new(&sender)))
             .await?
             .map_err(map_layer_error)?;
@@ -566,7 +569,7 @@ fn encode_error(error: &dyn std::error::Error) -> ResponsesError {
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub(super) fn map_http_error(error: reqwest::Error) -> ResponsesError {
+pub(super) fn map_http_error(error: nanocode_http::Error) -> ResponsesError {
     ResponsesError::HttpRequest {
         retryable: nanocode_http::retryable(&error),
         timeout: error.is_timeout(),

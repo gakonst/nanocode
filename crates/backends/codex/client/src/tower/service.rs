@@ -257,7 +257,7 @@ impl ResponsesService {
     #[must_use]
     pub(crate) fn new_with_http_client(
         config: Arc<ModelConfig>,
-        http_client: reqwest::Client,
+        http_client: nanocode_http::Client,
     ) -> Self {
         let platform = platform::ServicePlatform::with_http_client(&config, http_client);
         Self {
@@ -289,7 +289,7 @@ impl ResponsesService {
     #[must_use]
     pub(crate) fn standard_with_http_client_and_max_attempts(
         config: Arc<ModelConfig>,
-        http_client: reqwest::Client,
+        http_client: nanocode_http::Client,
         max_attempts: NonZeroU32,
     ) -> DefaultResponsesService {
         let service = Self::new_with_http_client(Arc::clone(&config), http_client)

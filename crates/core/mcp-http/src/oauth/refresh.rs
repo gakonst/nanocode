@@ -335,7 +335,7 @@ impl OAuthRuntime {
 
     async fn current_metadata(
         &self,
-        base_url: &reqwest::Url,
+        base_url: &nanocode_http::Url,
         latest: &McpOAuthCredentials,
     ) -> Result<nanocode_mcp::oauth::AuthorizationMetadata, String> {
         let policy = super::DiscoveryPolicy::default();

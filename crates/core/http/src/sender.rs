@@ -1,20 +1,19 @@
 use futures_util::TryStreamExt;
-use reqwest::ResponseBuilderExt;
 
 use crate::layer::{self, BoxFuture, Error, Layer, Next, Request, Response, Sender};
 
-pub struct ReqwestSender<'a> {
-    client: &'a reqwest::Client,
+pub struct ClientSender<'a> {
+    client: &'a crate::Client,
 }
 
-impl<'a> ReqwestSender<'a> {
+impl<'a> ClientSender<'a> {
     #[must_use]
-    pub const fn new(client: &'a reqwest::Client) -> Self {
+    pub const fn new(client: &'a crate::Client) -> Self {
         Self { client }
     }
 }
 
-impl Sender for ReqwestSender<'_> {
+impl Sender for ClientSender<'_> {
     fn send(&self, request: Request) -> BoxFuture<'_, Result<Response, Error>> {
         Box::pin(async move {
             let response = self
@@ -25,7 +24,7 @@ impl Sender for ReqwestSender<'_> {
                 .send()
                 .await
                 .map(crate::decode_flate_response)
-                .map_err(reqwest_error)?;
+                .map_err(client_error)?;
             let status = response.status();
             let headers = response.headers().clone();
             Ok(Response::new(
@@ -35,7 +34,7 @@ impl Sender for ReqwestSender<'_> {
                     response
                         .bytes_stream()
                         .map_ok(Vec::from)
-                        .map_err(reqwest_error),
+                        .map_err(client_error),
                 ),
             ))
         })
@@ -43,11 +42,11 @@ impl Sender for ReqwestSender<'_> {
 }
 
 #[must_use]
-pub fn retryable(error: &reqwest::Error) -> bool {
+pub fn retryable(error: &crate::Error) -> bool {
     error.is_connect() || error.is_body() || error.is_request() || error.is_decode()
 }
 
-pub fn reqwest_error(error: reqwest::Error) -> Error {
+pub fn client_error(error: crate::Error) -> Error {
     let mut detail = error.to_string();
     let mut source = std::error::Error::source(&error);
     while let Some(cause) = source {
@@ -64,7 +63,7 @@ pub fn reqwest_error(error: reqwest::Error) -> Error {
 #[derive(Debug)]
 pub enum BoundedError {
     Method(http::method::InvalidMethod),
-    Http(reqwest::Error),
+    Http(crate::Error),
     Over(usize),
     Text(std::string::FromUtf8Error),
 }
@@ -83,7 +82,7 @@ impl std::fmt::Display for BoundedError {
 impl std::error::Error for BoundedError {}
 
 pub async fn bounded_text(
-    request: reqwest::RequestBuilder,
+    request: crate::RequestBuilder,
     limit: usize,
 ) -> Result<(u16, String), BoundedError> {
     let mut response = request
@@ -106,16 +105,16 @@ pub async fn bounded_text(
 }
 
 pub async fn execute(
-    client: &reqwest::Client,
+    client: &crate::Client,
     layer: Option<&dyn Layer>,
-    request: reqwest::Request,
-) -> Result<reqwest::Response, Error> {
+    request: crate::Request,
+) -> Result<crate::Response, Error> {
     let Some(layer) = layer else {
         return client
             .execute(request)
             .await
             .map(crate::decode_flate_response)
-            .map_err(reqwest_error);
+            .map_err(client_error);
     };
     let url = request.url().clone();
     let sent = Request {
@@ -124,19 +123,19 @@ pub async fn execute(
         headers: request.headers().clone(),
         body: request
             .body()
-            .and_then(reqwest::Body::as_bytes)
+            .and_then(crate::Body::as_bytes)
             .map(<[u8]>::to_vec)
             .unwrap_or_default(),
     };
     let (status, headers, body, _) = layer
-        .send(sent, Next::new(&ReqwestSender::new(client)))
+        .send(sent, Next::new(&ClientSender::new(client)))
         .await?
         .into_parts();
-    let mut response = http::Response::builder()
-        .status(status)
-        .url(url)
-        .body(reqwest::Body::wrap_stream(body))
-        .map_err(|error| layer::Error::new(error.to_string()))?;
-    *response.headers_mut() = headers;
-    Ok(reqwest::Response::from(response))
+    Ok(crate::Response::from_stream(
+        status,
+        headers,
+        url,
+        body.map_ok(bytes::Bytes::from)
+            .map_err(|error| crate::Error::body(layer::Error::new(error.detail()))),
+    ))
 }

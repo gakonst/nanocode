@@ -14,7 +14,9 @@ mod turn_log;
 pub use handoff::{
     Base, Missing, ResumeError, Settled, Unresumable, base_checkpoint, settle_pending,
 };
-pub use one_log::{OneLog, OneLogJournals, OneLogStore, Policy};
+#[cfg(not(target_family = "wasm"))]
+pub use one_log::OneLogJournals;
+pub use one_log::{OneLog, OneLogStore, Policy};
 pub use router::{
     CheckpointFormats, Harness, HarnessBuilder, HarnessRequest, NoFormats, session_store,
 };

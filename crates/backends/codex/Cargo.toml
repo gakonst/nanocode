@@ -41,7 +41,6 @@ tracing.workspace = true
 nanocode-http.workspace = true
 nanocode-process.workspace = true
 nanocode-tls.workspace = true
-reqwest.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]

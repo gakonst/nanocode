@@ -5,8 +5,8 @@ pub(crate) mod wire;
 use std::time::Duration;
 
 use crate::client::auth::{OpenAiAuth, OpenAiAuthError, OpenAiAuthMode, OpenAiAuthSnapshot};
+use nanocode_http::header::{AUTHORIZATION, USER_AGENT};
 use nanocode_tools::ToolDefinition;
-use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde_json::json;
 use tokio::time::{sleep, timeout};
 
@@ -25,14 +25,14 @@ const TOOL_TIMEOUT: Duration = Duration::from_secs(45);
 const RETRY_DELAY: Duration = Duration::from_millis(200);
 
 pub struct WebSearchHandler {
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     endpoint: String,
     auth: OpenAiAuth,
     http_layer: Option<std::sync::Arc<dyn nanocode_http::layer::Layer>>,
 }
 
 impl WebSearchHandler {
-    pub fn with_client(config: WebSearchConfig, client: reqwest::Client) -> Self {
+    pub fn with_client(config: WebSearchConfig, client: nanocode_http::Client) -> Self {
         Self {
             client,
             endpoint: config.endpoint,
@@ -122,14 +122,14 @@ impl WebSearchHandler {
     async fn send(
         &self,
         request: &SearchRequest<'_>,
-    ) -> Result<(reqwest::StatusCode, Vec<u8>), RequestFailure> {
+    ) -> Result<(nanocode_http::StatusCode, Vec<u8>), RequestFailure> {
         let auth = self
             .auth
             .snapshot()
             .await
             .map_err(|error| auth_failure(&error))?;
         let response = self.send_authorized(request, &auth).await?;
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+        if response.status() == nanocode_http::StatusCode::UNAUTHORIZED
             && auth.mode() == OpenAiAuthMode::ChatGpt
         {
             self.auth
@@ -155,7 +155,7 @@ impl WebSearchHandler {
         &self,
         body: &SearchRequest<'_>,
         auth: &OpenAiAuthSnapshot,
-    ) -> Result<reqwest::Response, RequestFailure> {
+    ) -> Result<nanocode_http::Response, RequestFailure> {
         let mut request = self
             .client
             .post(&self.endpoint)
@@ -181,9 +181,9 @@ impl WebSearchHandler {
 
     async fn read_response(
         &self,
-        response: reqwest::Response,
+        response: nanocode_http::Response,
         used: &[&OpenAiAuthSnapshot],
-    ) -> Result<(reqwest::StatusCode, Vec<u8>), RequestFailure> {
+    ) -> Result<(nanocode_http::StatusCode, Vec<u8>), RequestFailure> {
         let status = response.status();
         let body = read_response_body(response).await.map_err(|mut failure| {
             failure.retryable |= status.is_server_error();
@@ -263,7 +263,9 @@ struct RequestFailure {
     retryable: bool,
 }
 
-async fn read_response_body(mut response: reqwest::Response) -> Result<Vec<u8>, RequestFailure> {
+async fn read_response_body(
+    mut response: nanocode_http::Response,
+) -> Result<Vec<u8>, RequestFailure> {
     if response
         .content_length()
         .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)

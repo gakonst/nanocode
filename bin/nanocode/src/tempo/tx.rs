@@ -124,7 +124,7 @@ pub(crate) const fn machine_swapper(chain_id: u64) -> Option<Address> {
     }
 }
 
-pub(crate) fn settlement_rpc_url(chain_id: u64) -> Result<reqwest::Url, Fault> {
+pub(crate) fn settlement_rpc_url(chain_id: u64) -> Result<nanocode_http::Url, Fault> {
     let network = TempoNetwork::from_chain_id(chain_id).ok_or_else(|| {
         Fault::config(format!(
             "unknown chain ID {chain_id}: configure an explicit settlement RPC URL"

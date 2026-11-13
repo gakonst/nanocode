@@ -34,8 +34,8 @@ pub fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 #[must_use]
 pub fn same_origin_redirect_policy(
     replays_plaintext_proxy_credentials: bool,
-) -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(move |attempt| {
+) -> nanocode_http::redirect::Policy {
+    nanocode_http::redirect::Policy::custom(move |attempt| {
         let Some(original) = attempt.previous().first() else {
             return attempt.error("MCP HTTP redirect has no original request URL");
         };

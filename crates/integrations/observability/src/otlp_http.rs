@@ -4,7 +4,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use reqwest::{
+use nanocode_http::{
     blocking::{Client, Response},
     header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT},
 };
@@ -138,7 +138,7 @@ impl Http {
     }
 }
 
-fn export_failure(error: reqwest::Error) -> ExportError {
+fn export_failure(error: nanocode_http::Error) -> ExportError {
     ExportError::InternalFailure(format!("HTTP export failed: {}", error.without_url()))
 }
 
@@ -215,11 +215,7 @@ pub struct SpanExporter {
 }
 
 impl SpanExporter {
-    pub fn build(
-        endpoint: &str,
-        resource: &Resource,
-        scope: &Scope,
-    ) -> Result<Self, OtlpError> {
+    pub fn build(endpoint: &str, resource: &Resource, scope: &Scope) -> Result<Self, OtlpError> {
         Ok(Self {
             http: Http::build(&TRACES, endpoint)?,
             origin: protobuf::Origin::of(resource, scope),

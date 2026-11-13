@@ -24,7 +24,6 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
 };
-use tokio_util::sync::{CancellationToken, DropGuard};
 
 #[derive(Clone, Copy)]
 pub struct SocketPolicy {
@@ -44,18 +43,18 @@ impl SocketPolicy {
 
 #[derive(Clone)]
 pub(crate) struct SocketShutdown {
-    token: CancellationToken,
+    token: Arc<Signal>,
     reason: Arc<Atom<Option<&'static str>>>,
 }
 
 impl SocketShutdown {
     pub(crate) fn close(&self) {
-        self.token.cancel();
+        self.token.fire();
     }
 
     pub(crate) fn reject(&self, reason: &'static str) {
         self.reason.set(Some(reason));
-        self.token.cancel();
+        self.token.fire();
     }
 
     pub(crate) fn revoke(&self) {
@@ -64,6 +63,14 @@ impl SocketShutdown {
 }
 
 use super::RemoteFrame as Frame;
+
+struct FireOnDrop(Arc<Signal>);
+
+impl Drop for FireOnDrop {
+    fn drop(&mut self) {
+        self.0.fire();
+    }
+}
 
 pub struct SocketTransport {
     client: RemoteClient,
@@ -78,7 +85,7 @@ pub struct SocketTransport {
     version: Option<String>,
     host: Option<HandHostInfo>,
     shutdown: SocketShutdown,
-    _shutdown: DropGuard,
+    _shutdown: FireOnDrop,
 }
 
 #[must_use]
@@ -718,7 +725,7 @@ impl SocketTransport {
         })?;
         let (sink, socket) = socket.split();
         let shutdown = SocketShutdown {
-            token: CancellationToken::new(),
+            token: Arc::new(Signal::new()),
             reason: Arc::default(),
         };
         let (wire, writer) = writer(
@@ -763,7 +770,7 @@ impl SocketTransport {
             tools_only,
             version,
             host,
-            _shutdown: shutdown.token.clone().drop_guard(),
+            _shutdown: FireOnDrop(Arc::clone(&shutdown.token)),
             shutdown,
         })
     }
@@ -779,7 +786,7 @@ struct SocketLink<S> {
     wire: Atom<Option<mpsc::UnboundedSender<String>>>,
     liveness: Arc<Liveness>,
     window: Duration,
-    stopped: CancellationToken,
+    stopped: Arc<Signal>,
     max_frame_bytes: usize,
     tool_selection: bool,
     caches_local_tools: bool,
@@ -848,7 +855,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> RemoteLink for SocketLi
             };
             let received = tokio::select! {
                 biased;
-                () = self.stopped.cancelled() => Received::Stopped,
+                () = self.stopped.wait() => Received::Stopped,
                 result = &mut task.0 => Received::Written(result),
                 frame = read(socket, &self.liveness) => Received::Frame(frame),
                 () = self.liveness.watch(self.window) => Received::Unresponsive,

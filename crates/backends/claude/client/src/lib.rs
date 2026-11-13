@@ -1612,13 +1612,13 @@ impl ClaudeClient {
         api_key: impl Into<String>,
         connect_timeout: Duration,
         idle_timeout: Duration,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, nanocode_http::Error> {
         nanocode_tls::install_default_rustls_crypto_provider();
-        let http = reqwest::Client::builder()
+        let http = nanocode_http::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(idle_timeout)
             .default_headers(nanocode_http::accept_encoding(
-                reqwest::header::HeaderMap::new(),
+                nanocode_http::header::HeaderMap::new(),
             ))
             .build()?;
         let endpoint = format!("{}/messages", base_url.trim_end_matches('/'));

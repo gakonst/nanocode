@@ -6,7 +6,7 @@ pub use host::{
 pub use nanocode_http::layer::{self, Layer};
 
 #[cfg(not(target_family = "wasm"))]
-pub type HttpClient = reqwest::Client;
+pub type HttpClient = nanocode_http::Client;
 #[cfg(target_family = "wasm")]
 pub use host::HttpClient;
 
@@ -50,9 +50,9 @@ pub(crate) async fn post(
             http::header::CONTENT_ENCODING,
             http::HeaderValue::from_static("gzip"),
         );
-        reqwest::Body::from(encoded)
+        nanocode_http::Body::from(encoded)
     } else {
-        reqwest::Body::from(bytes::Bytes::from_owner(SharedBody(body)))
+        nanocode_http::Body::from(bytes::Bytes::from_owner(SharedBody(body)))
     };
     let request = client
         .post(endpoint)
@@ -61,9 +61,9 @@ pub(crate) async fn post(
         .header("content-type", "application/json")
         .body(body)
         .build()
-        .map_err(reqwest_error)?;
+        .map_err(client_error)?;
     let Some(layer) = layer else {
-        return send_reqwest(client, request)
+        return send_client(client, request)
             .await
             .map(HttpResponse::from_layer)
             .map_err(HttpError::from);
@@ -74,21 +74,21 @@ pub(crate) async fn post(
         headers: request.headers().clone(),
         body: request
             .body()
-            .and_then(reqwest::Body::as_bytes)
+            .and_then(nanocode_http::Body::as_bytes)
             .map(<[u8]>::to_vec)
             .unwrap_or_default(),
     };
     layer
-        .send(request, layer::Next::new(&ReqwestSender { client }))
+        .send(request, layer::Next::new(&ClientSender { client }))
         .await
         .map(HttpResponse::from_layer)
         .map_err(HttpError::from)
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn send_reqwest(
+async fn send_client(
     client: &HttpClient,
-    request: reqwest::Request,
+    request: nanocode_http::Request,
 ) -> Result<layer::Response, layer::Error> {
     use futures_util::TryStreamExt;
 
@@ -106,7 +106,7 @@ async fn send_reqwest(
         (sent, _) => sent,
     }
     .map(nanocode_http::decode_response)
-    .map_err(|error| layer::Error::from(reqwest_error(error)))?;
+    .map_err(|error| layer::Error::from(client_error(error)))?;
     let status = response.status();
     let headers = std::mem::take(response.headers_mut());
     Ok(layer::Response::new(
@@ -116,18 +116,18 @@ async fn send_reqwest(
             response
                 .bytes_stream()
                 .map_ok(Vec::from)
-                .map_err(|error| layer::Error::from(reqwest_error(error))),
+                .map_err(|error| layer::Error::from(client_error(error))),
         ),
     ))
 }
 
 #[cfg(not(target_family = "wasm"))]
-struct ReqwestSender<'a> {
+struct ClientSender<'a> {
     client: &'a HttpClient,
 }
 
 #[cfg(not(target_family = "wasm"))]
-impl layer::Sender for ReqwestSender<'_> {
+impl layer::Sender for ClientSender<'_> {
     fn send(
         &self,
         request: layer::Request,
@@ -139,8 +139,8 @@ impl layer::Sender for ReqwestSender<'_> {
                 .headers(request.headers)
                 .body(request.body)
                 .build()
-                .map_err(|error| layer::Error::from(reqwest_error(error)))?;
-            send_reqwest(self.client, request).await
+                .map_err(|error| layer::Error::from(client_error(error)))?;
+            send_client(self.client, request).await
         })
     }
 }
@@ -181,7 +181,7 @@ fn encode_error(error: &dyn std::error::Error) -> HttpError {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn reqwest_error(error: reqwest::Error) -> HttpError {
+fn client_error(error: nanocode_http::Error) -> HttpError {
     let mut detail = error.to_string();
     let mut source = std::error::Error::source(&error);
     while let Some(cause) = source {

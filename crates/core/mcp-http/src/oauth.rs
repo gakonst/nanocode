@@ -5,13 +5,13 @@ use std::{
 };
 
 use http::{HeaderName, HeaderValue};
+use nanocode_http::{StatusCode, Url};
 use nanocode_mcp::oauth::{
     AuthorizationCallback, AuthorizationMetadata, AuthorizationUrl, ClientAuthentication,
     ClientRegistrationRequest, ClientRegistrationResponse, DISCOVERY_PROTOCOL_VERSION,
     OFFLINE_ACCESS, PKCE_VERIFIER_BYTES, Pkce, ProtectedResourceMetadata, STATE_BYTES, TokenError,
     TokenRequest, TokenResponse, WwwAuthenticate,
 };
-use reqwest::{StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
@@ -314,7 +314,7 @@ pub struct OAuthRuntime {
     server_name: String,
     server_url: String,
     base_url: Option<Url>,
-    http: reqwest::Client,
+    http: nanocode_http::Client,
     store: Arc<dyn McpOAuthStore>,
     credentials: SwapOption<McpOAuthCredentials>,
     settled: SwapOption<String>,
@@ -324,7 +324,7 @@ impl OAuthRuntime {
     pub fn stored(
         server_name: impl Into<String>,
         server_url: impl Into<String>,
-        http: reqwest::Client,
+        http: nanocode_http::Client,
         store: Arc<dyn McpOAuthStore>,
         credentials: McpOAuthCredentials,
     ) -> Result<Arc<Self>, String> {
@@ -491,7 +491,7 @@ fn validate_authorization_server_endpoints(
 pub fn transport_from_credentials<'call>(
     server_name: &'call str,
     server_url: &'call str,
-    http_client: reqwest::Client,
+    http_client: nanocode_http::Client,
     store: Arc<dyn McpOAuthStore>,
     credentials: McpOAuthCredentials,
     metadata_cache: &'call OAuthMetadataCache,
@@ -550,11 +550,11 @@ pub(crate) struct Discovery {
 
 struct DiscoveryResponse {
     status: StatusCode,
-    headers: reqwest::header::HeaderMap,
+    headers: nanocode_http::header::HeaderMap,
     body: Vec<u8>,
 }
 
-async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+async fn read_limited(mut response: nanocode_http::Response) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     while let Some(chunk) = response
         .chunk()
@@ -571,7 +571,10 @@ async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, String
     Ok(body)
 }
 
-async fn discovery_get(http: &reqwest::Client, url: &Url) -> Result<DiscoveryResponse, String> {
+async fn discovery_get(
+    http: &nanocode_http::Client,
+    url: &Url,
+) -> Result<DiscoveryResponse, String> {
     let failed = |error: String| {
         format!("Metadata error: OAuth metadata discovery failed for {url}\n  Caused by: {error}")
     };
@@ -602,7 +605,7 @@ async fn discovery_get(http: &reqwest::Client, url: &Url) -> Result<DiscoveryRes
 }
 
 pub(crate) async fn discover(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     base_url: &Url,
     policy: &DiscoveryPolicy,
 ) -> Result<Discovery, String> {
@@ -645,12 +648,12 @@ pub(crate) async fn discover(
 }
 
 fn challenged_resource_metadata_url(
-    headers: &reqwest::header::HeaderMap,
+    headers: &nanocode_http::header::HeaderMap,
     base_url: &Url,
     scopes_without_resource_metadata: bool,
     challenge_scopes: &mut Vec<String>,
 ) -> Option<Url> {
-    for value in headers.get_all(reqwest::header::WWW_AUTHENTICATE) {
+    for value in headers.get_all(nanocode_http::header::WWW_AUTHENTICATE) {
         let Ok(value) = value.to_str() else {
             continue;
         };
@@ -670,7 +673,7 @@ fn challenged_resource_metadata_url(
 }
 
 async fn initialize_challenge(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     base_url: &Url,
     policy: &DiscoveryPolicy,
     challenge_scopes: &mut Vec<String>,
@@ -688,10 +691,10 @@ async fn initialize_challenge(
     let response = http
         .post(base_url.as_str())
         .header(
-            reqwest::header::ACCEPT,
+            nanocode_http::header::ACCEPT,
             "application/json, text/event-stream",
         )
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(nanocode_http::header::CONTENT_TYPE, "application/json")
         .header("MCP-Protocol-Version", DISCOVERY_PROTOCOL_VERSION)
         .body(body.to_string())
         .send()
@@ -716,7 +719,7 @@ async fn initialize_challenge(
 }
 
 async fn discover_resource_metadata_url(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     base_url: &Url,
     policy: &DiscoveryPolicy,
     challenge_scopes: &mut Vec<String>,
@@ -750,7 +753,7 @@ async fn discover_resource_metadata_url(
 }
 
 async fn discover_from_resource_metadata(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     base_url: &Url,
     resource_metadata_url: &Url,
     policy: &DiscoveryPolicy,
@@ -809,7 +812,7 @@ async fn discover_from_resource_metadata(
 }
 
 async fn discover_authorization_server(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     base_url: &Url,
 ) -> Result<Option<AuthorizationMetadata>, String> {
     for url in nanocode_mcp::oauth::authorization_server_metadata_urls(base_url) {
@@ -821,7 +824,7 @@ async fn discover_authorization_server(
 }
 
 async fn fetch_authorization_metadata(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     url: &Url,
 ) -> Result<Option<AuthorizationMetadata>, String> {
     let response = discovery_get(http, url).await?;
@@ -872,14 +875,14 @@ impl OAuthServer {
 }
 
 pub async fn discover_server(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     server_url: &Url,
 ) -> Result<OAuthServer, String> {
     discover_server_with(http, server_url, &DiscoveryPolicy::default()).await
 }
 
 pub async fn discover_server_with(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     server_url: &Url,
     policy: &DiscoveryPolicy,
 ) -> Result<OAuthServer, String> {
@@ -902,12 +905,15 @@ pub async fn discover_server_with(
     })
 }
 
-pub async fn discover_issuer(http: &reqwest::Client, issuer: &Url) -> Result<OAuthServer, String> {
+pub async fn discover_issuer(
+    http: &nanocode_http::Client,
+    issuer: &Url,
+) -> Result<OAuthServer, String> {
     discover_issuer_with(http, issuer, &DiscoveryPolicy::default()).await
 }
 
 pub async fn discover_issuer_with(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     issuer: &Url,
     policy: &DiscoveryPolicy,
 ) -> Result<OAuthServer, String> {
@@ -926,20 +932,20 @@ pub async fn discover_issuer_with(
 }
 
 async fn send_token_endpoint_request(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     endpoint: &str,
     request: TokenRequest,
 ) -> Result<(u16, Option<String>, Vec<u8>), TokenError> {
     let mut builder = http
         .post(endpoint)
-        .header(reqwest::header::ACCEPT, "application/json")
+        .header(nanocode_http::header::ACCEPT, "application/json")
         .header(
-            reqwest::header::CONTENT_TYPE,
+            nanocode_http::header::CONTENT_TYPE,
             "application/x-www-form-urlencoded",
         )
         .body(request.body);
     if let Some(authorization) = request.authorization {
-        builder = builder.header(reqwest::header::AUTHORIZATION, authorization);
+        builder = builder.header(nanocode_http::header::AUTHORIZATION, authorization);
     }
     let response = builder
         .send()
@@ -951,7 +957,7 @@ async fn send_token_endpoint_request(
     let status = response.status().as_u16();
     let content_type = response
         .headers()
-        .get(reqwest::header::CONTENT_TYPE)
+        .get(nanocode_http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
     let body = read_limited(response)
@@ -961,7 +967,7 @@ async fn send_token_endpoint_request(
 }
 
 pub async fn token_endpoint_request(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     endpoint: &str,
     request: TokenRequest,
 ) -> Result<TokenResponse, TokenError> {
@@ -970,7 +976,7 @@ pub async fn token_endpoint_request(
 }
 
 pub async fn revoke_token(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     endpoint: &str,
     request: TokenRequest,
 ) -> Result<(), TokenError> {
@@ -979,7 +985,7 @@ pub async fn revoke_token(
 }
 
 pub async fn revoke_sign_in(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     endpoint: &str,
     client: &ClientAuthentication,
     access_token: &str,
@@ -1058,7 +1064,7 @@ impl WebLogin<'_> {
 impl PendingWebLogin {
     pub async fn complete(
         &self,
-        http: &reqwest::Client,
+        http: &nanocode_http::Client,
         client: &ClientAuthentication,
         callback: &AuthorizationCallback,
     ) -> Result<TokenResponse, TokenError> {
@@ -1101,7 +1107,7 @@ pub(crate) struct LoginSession {
 
 impl LoginSession {
     async fn start(
-        http: &reqwest::Client,
+        http: &nanocode_http::Client,
         base_url: &Url,
         discovery: Discovery,
         redirect_uri: &str,
@@ -1144,7 +1150,7 @@ impl LoginSession {
 
     async fn exchange(
         &self,
-        http: &reqwest::Client,
+        http: &nanocode_http::Client,
         callback: &str,
     ) -> Result<TokenResponse, String> {
         let callback = Url::parse(callback).map_err(|error| format!("URL parse error: {error}"))?;
@@ -1157,7 +1163,7 @@ impl LoginSession {
 }
 
 pub async fn register_web_client(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     metadata: &AuthorizationMetadata,
     client_name: &str,
     redirect_uri: &str,
@@ -1181,7 +1187,7 @@ pub async fn register_web_client(
 }
 
 async fn register_client(
-    http: &reqwest::Client,
+    http: &nanocode_http::Client,
     metadata: &AuthorizationMetadata,
     request: &ClientRegistrationRequest,
 ) -> Result<ClientAuthentication, String> {
@@ -1193,7 +1199,7 @@ async fn register_client(
         serde_json::to_vec(request).map_err(|error| format!("Registration failed: {error}"))?;
     let response = http
         .post(endpoint)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(nanocode_http::header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
         .await
@@ -1314,7 +1320,7 @@ pub fn begin_login(
 
 async fn complete_login(
     listener: TcpListener,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     session: LoginSession,
     authorization_issuer: Option<String>,
     store: Arc<dyn McpOAuthStore>,
@@ -1402,27 +1408,29 @@ async fn complete_login(
     saved
 }
 
-pub type HttpClient = reqwest::Client;
+pub type HttpClient = nanocode_http::Client;
 
 pub fn http_client(
     user_agent: &str,
     https_only: bool,
     timeout: Duration,
-) -> reqwest::Result<HttpClient> {
+) -> nanocode_http::Result<HttpClient> {
     nanocode_tls::install_default_rustls_crypto_provider();
-    reqwest::Client::builder()
+    nanocode_http::Client::builder()
         .user_agent(user_agent)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(nanocode_http::redirect::Policy::none())
         .https_only(https_only)
         .timeout(timeout)
         .default_headers(nanocode_http::accept_encoding(
-            reqwest::header::HeaderMap::new(),
+            nanocode_http::header::HeaderMap::new(),
         ))
         .build()
 }
 
-fn oauth_http_client(headers: BTreeMap<String, SecretSource>) -> Result<reqwest::Client, String> {
-    let mut resolved = reqwest::header::HeaderMap::with_capacity(headers.len());
+fn oauth_http_client(
+    headers: BTreeMap<String, SecretSource>,
+) -> Result<nanocode_http::Client, String> {
+    let mut resolved = nanocode_http::header::HeaderMap::with_capacity(headers.len());
     for (name, source) in headers {
         let name = name
             .parse::<HeaderName>()
@@ -1434,9 +1442,9 @@ fn oauth_http_client(headers: BTreeMap<String, SecretSource>) -> Result<reqwest:
         resolved.insert(name, value);
     }
     let replays_plaintext_proxy_credentials =
-        resolved.contains_key(reqwest::header::PROXY_AUTHORIZATION);
+        resolved.contains_key(nanocode_http::header::PROXY_AUTHORIZATION);
     nanocode_tls::install_default_rustls_crypto_provider();
-    reqwest::Client::builder()
+    nanocode_http::Client::builder()
         .default_headers(nanocode_http::accept_encoding(resolved))
         .pool_max_idle_per_host(0)
         .redirect(crate::same_origin_redirect_policy(
@@ -1476,7 +1484,7 @@ async fn receive_callback(listener: TcpListener, redirect_uri: &str) -> Result<S
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .ok_or_else(|| "MCP OAuth callback did not contain a request target".to_owned())?;
-    let base = reqwest::Url::parse(redirect_uri)
+    let base = nanocode_http::Url::parse(redirect_uri)
         .map_err(|error| format!("invalid MCP OAuth redirect URI: {error}"))?;
     let callback = base
         .join(target)

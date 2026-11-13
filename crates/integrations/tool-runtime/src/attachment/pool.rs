@@ -18,6 +18,7 @@ use std::{
     time::Duration,
 };
 
+use nanocode_sync::Signal;
 use nanocode_sync::{Atom, Ordered, Slot};
 use nanocode_websocket::{
     CloseCode, CloseFrame, Message,
@@ -28,7 +29,6 @@ use tokio::{
     sync::{mpsc, watch},
     task::{AbortHandle, JoinHandle, JoinSet},
 };
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct Runner {
@@ -304,7 +304,7 @@ struct Entry {
     mode: RemoteMode,
     status: watch::Sender<RunnerStatus>,
     connection: Slot<RunnerConnection>,
-    cancel: CancellationToken,
+    cancel: Arc<Signal>,
     monitor: Slot<AbortHandle>,
     identity: Arc<()>,
     active: AtomicBool,
@@ -312,7 +312,7 @@ struct Entry {
 }
 impl Drop for Entry {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        self.cancel.fire();
         if let Some(monitor) = self.monitor.take() {
             monitor.abort();
         }
@@ -435,7 +435,7 @@ impl RunnerPool {
             state
                 .servers
                 .iter()
-                .filter(|server| !server.cancel.is_cancelled())
+                .filter(|server| !server.cancel.is_fired())
                 .map(|inner| RunnerServer {
                     inner: inner.clone(),
                 })
@@ -466,9 +466,10 @@ impl RunnerPool {
         let admissible = |state: &PoolState| {
             validate_registration(state, &config.name, config.mode)?;
             if config.mode == RemoteMode::Replace
-                && state.servers.iter().any(|server| {
-                    server.mode == RemoteMode::Replace && !server.cancel.is_cancelled()
-                })
+                && state
+                    .servers
+                    .iter()
+                    .any(|server| server.mode == RemoteMode::Replace && !server.cancel.is_fired())
             {
                 return Err(AttachmentError::Catalog(
                     "a replacement listener is already configured".into(),
@@ -502,7 +503,7 @@ impl RunnerPool {
             mode: config.mode,
             status,
             connection: Slot::new(Some(connection)),
-            cancel: CancellationToken::new(),
+            cancel: Arc::new(Signal::new()),
             monitor: Slot::new(Some(monitor)),
             identity,
             active: AtomicBool::new(true),
@@ -871,7 +872,7 @@ impl RunnerPool {
             info.status = RunnerStatus::Disconnected;
             Ok((entry, vec![RunnerEvent::StatusChanged { info }]))
         })?;
-        entry.cancel.cancel();
+        entry.cancel.fire();
         if let Some(monitor) = entry.monitor.take() {
             monitor.abort();
         }
@@ -905,7 +906,7 @@ impl RunnerPool {
                 )
             });
             for inner in &servers {
-                inner.cancel.cancel();
+                inner.cancel.fire();
             }
             let executors = executors
                 .iter()
@@ -964,9 +965,7 @@ impl RunnerPool {
                 state
                     .servers
                     .iter()
-                    .find(|server| {
-                        server.mode == RemoteMode::Replace && !server.cancel.is_cancelled()
-                    })
+                    .find(|server| server.mode == RemoteMode::Replace && !server.cancel.is_fired())
                     .map(|_| "incoming replacement runner".into())
             })
     }
@@ -998,7 +997,7 @@ impl RunnerPool {
                 ));
             }
             let endpoint = format!("ws://{address}/");
-            let cancel = CancellationToken::new();
+            let cancel = Arc::new(Signal::new());
             let weak = Arc::downgrade(&self.inner);
             let admissible = |state: &PoolState| {
                 if state.closed {
@@ -1010,7 +1009,7 @@ impl RunnerPool {
                         .values()
                         .any(|entry| entry.mode == RemoteMode::Replace)
                         || state.servers.iter().any(|server| {
-                            server.mode == RemoteMode::Replace && !server.cancel.is_cancelled()
+                            server.mode == RemoteMode::Replace && !server.cancel.is_fired()
                         }))
                 {
                     return Err(AttachmentError::Catalog(
@@ -1372,14 +1371,14 @@ pub struct RunnerServer {
 struct ServerInner {
     endpoint: String,
     token: String,
-    cancel: CancellationToken,
+    cancel: Arc<Signal>,
     task: Slot<JoinHandle<()>>,
     pool: Weak<PoolInner>,
     mode: RemoteMode,
 }
 impl Drop for ServerInner {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        self.cancel.fire();
         if let Some(task) = self.task.take() {
             task.abort();
         }
@@ -1396,7 +1395,7 @@ impl RunnerServer {
         &'call self,
     ) -> futures_util::future::BoxFuture<'call, Result<(), AttachmentError>> {
         Box::pin(async move {
-            self.inner.cancel.cancel();
+            self.inner.cancel.fire();
             if let Some(task) = self.inner.task.take() {
                 task.await.map_err(error)?;
             }
@@ -1438,12 +1437,12 @@ async fn accept(
     timeout: Option<Duration>,
     mode: RemoteMode,
     workspace: Option<PathBuf>,
-    cancel: CancellationToken,
+    cancel: Arc<Signal>,
 ) {
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => { connections.shutdown().await; return },
+            _ = cancel.wait() => { connections.shutdown().await; return },
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let pool = pool.clone(); let token = token.clone(); let endpoint = endpoint.clone(); let workspace = workspace.clone();
@@ -1578,7 +1577,7 @@ async fn incoming(
         let existing = pool.state.read(|state| {
             admissible(state)?;
             Ok::<_, AttachmentError>(match state.runners.get(&name) {
-                Some(entry) if !entry.cancel.is_cancelled() => Some(entry.remote.clone()),
+                Some(entry) if !entry.cancel.is_fired() => Some(entry.remote.clone()),
                 _ => None,
             })
         })?;
@@ -1591,7 +1590,7 @@ async fn incoming(
         }
 
         let status = watch::channel(RunnerStatus::Connecting).0;
-        let cancel = CancellationToken::new();
+        let cancel = Arc::new(Signal::new());
         let identity = Arc::new(());
         let monitor = monitor(
             Arc::downgrade(&pool),
@@ -1638,7 +1637,7 @@ async fn incoming(
             return Err(error);
         }
     };
-    let (result, cancelled) = tokio::select! { biased; _ = cancel.cancelled() => (Ok(()), true), result = remote.serve_catalog(first, &mut frames) => (result, false) };
+    let (result, cancelled) = tokio::select! { biased; _ = cancel.wait() => (Ok(()), true), result = remote.serve_catalog(first, &mut frames) => (result, false) };
     if cancelled {
         let _ = frames
             .get_mut()

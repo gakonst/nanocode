@@ -780,7 +780,7 @@ impl FileChannelStore {
         let request_url = options
             .request_url
             .unwrap_or_else(|| options.namespace.clone());
-        let origin = reqwest::Url::parse(&request_url)
+        let origin = nanocode_http::Url::parse(&request_url)
             .map(|url| url.origin().ascii_serialization())
             .unwrap_or_else(|_| options.namespace.clone());
         let store = FileStore {

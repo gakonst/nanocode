@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::client::auth::{OpenAiAuth, OpenAiAuthMode, OpenAiAuthSnapshot};
+use nanocode_http::header::{AUTHORIZATION, USER_AGENT};
 use nanocode_tools::ToolDefinition;
-use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::Serialize;
 
 use super::{
@@ -15,7 +15,7 @@ use super::{
 };
 
 pub struct ImageGenerationHandler {
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     generation_endpoint: String,
     edit_endpoint: String,
     auth: OpenAiAuth,
@@ -24,7 +24,7 @@ pub struct ImageGenerationHandler {
 }
 
 impl ImageGenerationHandler {
-    pub fn with_client(config: ImageGenerationConfig, client: reqwest::Client) -> Self {
+    pub fn with_client(config: ImageGenerationConfig, client: nanocode_http::Client) -> Self {
         let api_base_url = config.api_base_url.trim_end_matches('/');
         Self {
             client,
@@ -89,7 +89,7 @@ impl ImageGenerationHandler {
             .await
             .map_err(|error| error.to_string())?;
         let response = self.send_authorized(endpoint, request, &auth).await?;
-        let response = if response.status() == reqwest::StatusCode::UNAUTHORIZED
+        let response = if response.status() == nanocode_http::StatusCode::UNAUTHORIZED
             && auth.mode() == OpenAiAuthMode::ChatGpt
         {
             self.auth
@@ -130,7 +130,7 @@ impl ImageGenerationHandler {
         endpoint: &str,
         body: &R,
         auth: &OpenAiAuthSnapshot,
-    ) -> Result<reqwest::Response, String> {
+    ) -> Result<nanocode_http::Response, String> {
         let mut request = self
             .client
             .post(endpoint)

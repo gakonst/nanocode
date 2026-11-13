@@ -31,7 +31,7 @@ impl StandardServiceFactory {
 
     #[cfg(not(target_family = "wasm"))]
     #[doc(hidden)]
-    pub fn set_http_client(&mut self, client: reqwest::Client) {
+    pub fn set_http_client(&mut self, client: nanocode_http::Client) {
         self.platform.set_http_client(client);
     }
 }

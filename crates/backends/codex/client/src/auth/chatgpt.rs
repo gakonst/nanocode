@@ -128,7 +128,7 @@ pub struct ChatGptLogin {
     code_verifier: String,
     auth_file: PathBuf,
     listener: TcpListener,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
 }
 
 impl fmt::Debug for ChatGptLogin {
@@ -479,7 +479,7 @@ struct ManagedChatGptAuth {
 struct ManagedAuthInner {
     auth_file: PathBuf,
     issuer: Arc<str>,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     state: Swap<ManagedState>,
     refreshing: SingleFlight<Result<(), OpenAiAuthError>>,
 }
@@ -552,7 +552,7 @@ struct PersonalAccessTokenMetadata {
 
 struct PersonalAccessTokenAuth {
     access_token: Arc<str>,
-    client: reqwest::Client,
+    client: nanocode_http::Client,
     whoami_endpoint: Arc<str>,
     status: tokio::sync::OnceCell<ChatGptAuthStatus>,
 }
@@ -660,7 +660,7 @@ fn personal_access_token_from_document(
 }
 
 async fn hydrate_personal_access_token(
-    client: &reqwest::Client,
+    client: &nanocode_http::Client,
     endpoint: &str,
     access_token: &str,
 ) -> Result<ChatGptAuthStatus, ChatGptAuthError> {
@@ -787,7 +787,7 @@ impl ManagedAuthInner {
             .map_err(|error| OpenAiAuthError::Refresh(Arc::from(error.to_string())))?;
         if !status.is_success() {
             let code = refresh_error_code(&body);
-            let permanent = status == reqwest::StatusCode::UNAUTHORIZED
+            let permanent = status == nanocode_http::StatusCode::UNAUTHORIZED
                 || matches!(
                     code.as_deref(),
                     Some(
@@ -1201,12 +1201,12 @@ fn auth_store_error(error: &ChatGptAuthError) -> OpenAiAuthError {
     OpenAiAuthError::Unavailable(Arc::from(error.to_string()))
 }
 
-fn auth_client() -> Result<reqwest::Client, ChatGptAuthError> {
+fn auth_client() -> Result<nanocode_http::Client, ChatGptAuthError> {
     crate::client::transport::install_default_rustls_crypto_provider();
-    reqwest::Client::builder()
+    nanocode_http::Client::builder()
         .timeout(AUTH_REQUEST_TIMEOUT)
         .default_headers(nanocode_http::accept_encoding(
-            reqwest::header::HeaderMap::new(),
+            nanocode_http::header::HeaderMap::new(),
         ))
         .build()
         .map_err(|error| ChatGptAuthError::TokenExchange(error.to_string()))
@@ -1291,7 +1291,7 @@ fn authorize_url(
 }
 
 async fn exchange_code(
-    client: &reqwest::Client,
+    client: &nanocode_http::Client,
     issuer: &str,
     code: &str,
     redirect_uri: &str,

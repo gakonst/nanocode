@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::fmt::{self, Display};
 use std::future::Future;
 
-use reqwest::header::{AUTHORIZATION, HOST, HeaderName, HeaderValue};
-use reqwest::{Method, Request, Response, StatusCode, Url};
+use nanocode_http::header::{AUTHORIZATION, HOST, HeaderName, HeaderValue};
+use nanocode_http::{Method, Request, Response, StatusCode, Url};
 
 use super::error::Fault;
 use super::events::{Events, PaymentResponse};
@@ -104,7 +104,7 @@ pub(crate) trait Exchange: Send {
         }
     }
 
-    fn http_client(&self) -> Option<reqwest::Client>;
+    fn http_client(&self) -> Option<nanocode_http::Client>;
 
     fn send(
         &mut self,
@@ -112,10 +112,10 @@ pub(crate) trait Exchange: Send {
     ) -> impl Future<Output = Result<Response, Self::Error>> + Send;
 }
 
-impl Exchange for reqwest::Client {
+impl Exchange for nanocode_http::Client {
     type Error = HttpFault;
 
-    fn http_client(&self) -> Option<reqwest::Client> {
+    fn http_client(&self) -> Option<nanocode_http::Client> {
         Some(self.clone())
     }
 
@@ -205,7 +205,7 @@ fn same_resource(a: &Url, b: &Url) -> bool {
 pub(crate) fn cross_realm_proof(
     challenge: &Challenge,
     url: &Url,
-    headers: &reqwest::header::HeaderMap,
+    headers: &nanocode_http::header::HeaderMap,
 ) -> bool {
     let requested = headers
         .get(HOST)
@@ -438,7 +438,7 @@ impl<P: PaymentProvider> Flow<'_, P> {
             }
             let values: Vec<&[u8]> = response
                 .headers()
-                .get_all(reqwest::header::WWW_AUTHENTICATE)
+                .get_all(nanocode_http::header::WWW_AUTHENTICATE)
                 .iter()
                 .map(HeaderValue::as_bytes)
                 .collect();

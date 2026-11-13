@@ -38,7 +38,7 @@ struct Entry {
 
 struct HomeHost {
     path: PathBuf,
-    http: reqwest::Client,
+    http: nanocode_http::Client,
 }
 
 impl HomeHost {
@@ -137,7 +137,7 @@ impl ClaudeSubscriptionHost for HomeHost {
     ) -> ClaudeAuthFuture<'_, Result<ClaudeSubscriptionHttpResponse, ClaudeSubscriptionHostError>>
     {
         Box::pin(async move {
-            let method = reqwest::Method::from_bytes(request.method().as_bytes())
+            let method = nanocode_http::Method::from_bytes(request.method().as_bytes())
                 .map_err(|_| ClaudeSubscriptionHostError)?;
             let mut builder = self
                 .http
@@ -146,7 +146,7 @@ impl ClaudeSubscriptionHost for HomeHost {
                 .timeout(Duration::from_millis(request.timeout_millis()));
             if !request.body().is_empty() {
                 builder = builder
-                    .header(reqwest::header::CONTENT_TYPE, request.content_type())
+                    .header(nanocode_http::header::CONTENT_TYPE, request.content_type())
                     .body(request.body().to_owned());
             }
             let response = builder

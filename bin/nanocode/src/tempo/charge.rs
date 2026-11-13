@@ -1287,6 +1287,6 @@ pub(crate) fn funded_by(challenge: &Challenge, currency: Address) -> bool {
     }
 }
 
-pub(crate) fn settlement_rpc_url(chain_id: u64) -> Result<reqwest::Url, Fault> {
+pub(crate) fn settlement_rpc_url(chain_id: u64) -> Result<nanocode_http::Url, Fault> {
     tx::settlement_rpc_url(chain_id)
 }

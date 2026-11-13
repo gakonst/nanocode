@@ -684,12 +684,12 @@ pub(crate) fn challenges<'a>(values: impl IntoIterator<Item = &'a [u8]>) -> Vec<
     found
 }
 
-pub(crate) fn response_challenges(headers: &reqwest::header::HeaderMap) -> Vec<Challenge> {
+pub(crate) fn response_challenges(headers: &nanocode_http::header::HeaderMap) -> Vec<Challenge> {
     challenges(
         headers
-            .get_all(reqwest::header::WWW_AUTHENTICATE)
+            .get_all(nanocode_http::header::WWW_AUTHENTICATE)
             .iter()
-            .map(reqwest::header::HeaderValue::as_bytes),
+            .map(nanocode_http::header::HeaderValue::as_bytes),
     )
 }
 

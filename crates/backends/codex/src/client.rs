@@ -306,7 +306,7 @@ impl OpenAiBuilder<StandardServiceFactory> {
 
     #[cfg(not(target_family = "wasm"))]
     #[must_use]
-    pub fn http_client(mut self, client: reqwest::Client) -> Self {
+    pub fn http_client(mut self, client: nanocode_http::Client) -> Self {
         self.factory.set_http_client(client);
         self
     }

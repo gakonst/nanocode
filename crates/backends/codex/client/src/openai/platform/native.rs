@@ -9,7 +9,7 @@ use crate::client::{
 
 #[derive(Clone, Default)]
 pub(crate) struct FactoryPlatform {
-    http_client: Arc<OnceLock<reqwest::Client>>,
+    http_client: Arc<OnceLock<nanocode_http::Client>>,
 }
 
 impl FactoryPlatform {
@@ -17,7 +17,7 @@ impl FactoryPlatform {
         Self::default()
     }
 
-    pub(crate) fn set_http_client(&mut self, client: reqwest::Client) {
+    pub(crate) fn set_http_client(&mut self, client: nanocode_http::Client) {
         self.http_client = Arc::new(OnceLock::from(client));
     }
 

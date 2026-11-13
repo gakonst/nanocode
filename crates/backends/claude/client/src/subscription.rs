@@ -108,9 +108,9 @@ pub struct ClaudeSubscriptionHttpResponse {
 impl ClaudeSubscriptionHttpRequest {
     pub async fn send(
         &self,
-        client: &reqwest::Client,
+        client: &nanocode_http::Client,
     ) -> std::result::Result<ClaudeSubscriptionHttpResponse, nanocode_http::BoundedError> {
-        let method = reqwest::Method::from_bytes(self.method.as_bytes())
+        let method = nanocode_http::Method::from_bytes(self.method.as_bytes())
             .map_err(nanocode_http::BoundedError::Method)?;
         let request = client
             .request(method, &self.url)

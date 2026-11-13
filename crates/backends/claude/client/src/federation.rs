@@ -25,7 +25,7 @@ pub struct ClaudeWorkloadIdentity {
 }
 
 struct FederatedToken {
-    http: reqwest::Client,
+    http: nanocode_http::Client,
     token_url: String,
     identity: ClaudeWorkloadIdentity,
 }
@@ -123,19 +123,23 @@ impl ClaudeClient {
         identity: ClaudeWorkloadIdentity,
         connect_timeout: Duration,
         idle_timeout: Duration,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, nanocode_http::Error> {
         nanocode_tls::install_default_rustls_crypto_provider();
-        let http = reqwest::Client::builder()
+        let http = nanocode_http::Client::builder()
             .connect_timeout(connect_timeout)
             .read_timeout(idle_timeout)
             .default_headers(nanocode_http::accept_encoding(
-                reqwest::header::HeaderMap::new(),
+                nanocode_http::header::HeaderMap::new(),
             ))
             .build()?;
         Ok(Self::federated(http, base_url, identity))
     }
 
-    fn federated(http: reqwest::Client, base_url: &str, identity: ClaudeWorkloadIdentity) -> Self {
+    fn federated(
+        http: nanocode_http::Client,
+        base_url: &str,
+        identity: ClaudeWorkloadIdentity,
+    ) -> Self {
         let auth = identity.auth(http.clone(), base_url);
         Self::with_auth_provider(
             http,
@@ -147,7 +151,7 @@ impl ClaudeClient {
 
 impl ClaudeWorkloadIdentity {
     #[must_use]
-    pub fn auth(self, http: reqwest::Client, base_url: &str) -> RefreshingClaudeAuth {
+    pub fn auth(self, http: nanocode_http::Client, base_url: &str) -> RefreshingClaudeAuth {
         let token = FederatedToken {
             http,
             token_url: format!("{}/oauth/token", base_url.trim_end_matches('/')),

@@ -1,5 +1,5 @@
 use crate::egress::{
-    certificate::{self, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, Validity},
+    certificate::{self, ExtendedKeyUsagePurpose, Issuer, KeyPair, Validity},
     wire::Ca,
 };
 use nanocode_sync::Atom;
@@ -113,20 +113,19 @@ impl Tls {
         )
     }
 
-    pub fn from_ca(
-        ca: &Ca,
-        names: &[(DnType, &str)],
-        roots: RootCertStore,
-        leaves: Leaves,
-    ) -> Result<Self, BadCa> {
+    pub fn from_ca(ca: &Ca, roots: RootCertStore, leaves: Leaves) -> Result<Self, BadCa> {
         let key = KeyPair::from_pem(&ca.key).map_err(|cause| BadCa {
             what: "the egress CA's key",
             cause: Box::new(cause),
         })?;
-        Self::signed_by(Issuer::new(names, key), &ca.cert, roots, leaves).map_err(|cause| BadCa {
+        let bad = |cause: io::Error| BadCa {
             what: "the egress CA",
             cause: Box::new(cause),
-        })
+        };
+        let ca_der = CertificateDer::from_pem_slice(ca.cert.as_bytes())
+            .map_err(|cause| bad(other(cause)))?;
+        let issuer = Issuer::from_certificate(&ca_der, key).map_err(bad)?;
+        Self::issuing(issuer, ca_der, ca.cert.clone(), roots, leaves).map_err(bad)
     }
 
     pub fn signed_by(

@@ -464,3 +464,146 @@ pub fn pem(label: &str, der: &[u8], line_ending: &str) -> String {
     );
     pem
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Malformed(pub &'static str);
+
+impl std::fmt::Display for Malformed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for Malformed {}
+
+struct Element<'a> {
+    tag: u8,
+    content: &'a [u8],
+    whole: &'a [u8],
+}
+
+struct Reader<'a> {
+    rest: &'a [u8],
+}
+
+impl<'a> Reader<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { rest: bytes }
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.rest.is_empty()
+    }
+
+    fn next(&mut self) -> Result<Element<'a>, Malformed> {
+        let truncated = Malformed("a DER element is truncated");
+        let (&tag, after_tag) = self.rest.split_first().ok_or(truncated)?;
+        let (&first, mut after_length) = after_tag.split_first().ok_or(truncated)?;
+        let length = if first & LONG_LENGTH_FLAG == 0 {
+            usize::from(first)
+        } else {
+            let count = usize::from(first & !LONG_LENGTH_FLAG);
+            if count == 0 || count > size_of::<usize>() {
+                return Err(Malformed("a DER length is indefinite or too long"));
+            }
+            let (digits, rest) = after_length.split_at_checked(count).ok_or(truncated)?;
+            after_length = rest;
+            digits.iter().fold(0usize, |length, digit| {
+                length << u8::BITS | usize::from(*digit)
+            })
+        };
+        let (content, rest) = after_length.split_at_checked(length).ok_or(truncated)?;
+        let whole_length = self.rest.len() - rest.len();
+        let whole = &self.rest[..whole_length];
+        self.rest = rest;
+        Ok(Element {
+            tag,
+            content,
+            whole,
+        })
+    }
+
+    fn expect(&mut self, tag: u8, what: &'static str) -> Result<Element<'a>, Malformed> {
+        let element = self.next()?;
+        if element.tag != tag {
+            return Err(Malformed(what));
+        }
+        Ok(element)
+    }
+}
+
+pub struct Parsed<'a> {
+    pub subject: &'a [u8],
+    pub subject_public_key_info: &'a [u8],
+    pub subject_key_identifier: Option<&'a [u8]>,
+}
+
+pub fn parse_certificate(der: &[u8]) -> Result<Parsed<'_>, Malformed> {
+    let mut outer = Reader::new(der);
+    let certificate = outer.expect(TAG_SEQUENCE, "a certificate is not a sequence")?;
+    if !outer.is_empty() {
+        return Err(Malformed("a certificate is followed by other bytes"));
+    }
+    let mut fields = Reader::new(certificate.content);
+    let to_be_signed = fields.expect(TAG_SEQUENCE, "a certificate's body is not a sequence")?;
+    let mut body = Reader::new(to_be_signed.content);
+    let mut field = body.next()?;
+    if field.tag == TAG_EXPLICIT_0 {
+        field = body.next()?;
+    }
+    if field.tag != TAG_INTEGER {
+        return Err(Malformed("a certificate's serial is not an integer"));
+    }
+    body.expect(
+        TAG_SEQUENCE,
+        "a certificate's signature algorithm is not a sequence",
+    )?;
+    body.expect(TAG_SEQUENCE, "a certificate's issuer is not a name")?;
+    body.expect(TAG_SEQUENCE, "a certificate's validity is not a sequence")?;
+    let subject = body.expect(TAG_SEQUENCE, "a certificate's subject is not a name")?;
+    let key = body.expect(TAG_SEQUENCE, "a certificate's public key is not a sequence")?;
+    let mut subject_key_identifier = None;
+    while !body.is_empty() {
+        let field = body.next()?;
+        if field.tag == TAG_EXPLICIT_3 {
+            subject_key_identifier = find_subject_key_identifier(field.content)?;
+        }
+    }
+    Ok(Parsed {
+        subject: subject.whole,
+        subject_public_key_info: key.whole,
+        subject_key_identifier,
+    })
+}
+
+fn find_subject_key_identifier(extensions: &[u8]) -> Result<Option<&[u8]>, Malformed> {
+    let wanted = object_identifier(oid::SUBJECT_KEY_IDENTIFIER);
+    let mut outer = Reader::new(extensions);
+    let list = outer.expect(
+        TAG_SEQUENCE,
+        "a certificate's extensions are not a sequence",
+    )?;
+    let mut list = Reader::new(list.content);
+    while !list.is_empty() {
+        let extension = list.expect(TAG_SEQUENCE, "a certificate extension is not a sequence")?;
+        let mut parts = Reader::new(extension.content);
+        let identifier = parts.expect(TAG_OID, "a certificate extension has no identifier")?;
+        if identifier.whole != wanted.as_slice() {
+            continue;
+        }
+        let mut value = parts.next()?;
+        if value.tag == TAG_BOOLEAN {
+            value = parts.next()?;
+        }
+        if value.tag != TAG_OCTET_STRING {
+            return Err(Malformed("a subject key identifier extension has no value"));
+        }
+        let mut inner = Reader::new(value.content);
+        let identifier = inner.expect(
+            TAG_OCTET_STRING,
+            "a subject key identifier is not an octet string",
+        )?;
+        return Ok(Some(identifier.content));
+    }
+    Ok(None)
+}

@@ -190,6 +190,7 @@ impl KeyPair {
 pub struct Issuer {
     key: KeyPair,
     name: Vec<u8>,
+    key_identifier: Vec<u8>,
 }
 
 fn name(names: &[(DnType, &str)]) -> Vec<u8> {
@@ -258,9 +259,29 @@ fn certificate(
 impl Issuer {
     pub fn new(names: &[(DnType, &str)], key: KeyPair) -> Self {
         Self {
+            key_identifier: key.key_identifier(),
             key,
             name: name(names),
         }
+    }
+
+    pub fn from_certificate(der: &[u8], key: KeyPair) -> io::Result<Self> {
+        let parsed = x509::parse_certificate(der)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if parsed.subject_public_key_info != key.public_key_info.as_slice() {
+            return Err(invalid(
+                "the key does not match the certificate's public key",
+            ));
+        }
+        let key_identifier = match parsed.subject_key_identifier {
+            Some(identifier) => identifier.to_vec(),
+            None => key.key_identifier(),
+        };
+        Ok(Self {
+            key,
+            name: parsed.subject.to_vec(),
+            key_identifier,
+        })
     }
 
     pub(crate) fn self_signed(common_name: &str) -> io::Result<(Self, Vec<u8>)> {
@@ -269,7 +290,7 @@ impl Issuer {
         let usages = key_usage::KEY_CERT_SIGN | key_usage::CRL_SIGN | key_usage::DIGITAL_SIGNATURE;
         let extensions = [
             x509::key_usage(usages),
-            x509::subject_key_identifier(&issuer.key.key_identifier()),
+            x509::subject_key_identifier(&issuer.key_identifier),
             x509::basic_constraints(Some(Some(AUTHORITY_PATH_LENGTH))),
         ];
         let der = certificate(
@@ -295,7 +316,7 @@ impl Issuer {
             Err(_) => return Err(invalid("a certificate's DNS name is not ASCII")),
         };
         let mut extensions = vec![
-            x509::authority_key_identifier(&self.key.key_identifier()),
+            x509::authority_key_identifier(&self.key_identifier),
             x509::subject_alt_name(&[alternative], false),
         ];
         if !usages.is_empty() {

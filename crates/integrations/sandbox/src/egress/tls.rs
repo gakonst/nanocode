@@ -1,9 +1,8 @@
-use crate::egress::wire::Ca;
-use nanocode_sync::Atom;
-use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
+use crate::egress::{
+    certificate::{self, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, Validity},
+    wire::Ca,
 };
+use nanocode_sync::Atom;
 use rustls::{
     ClientConfig, RootCertStore, ServerConfig,
     crypto::CryptoProvider,
@@ -44,7 +43,7 @@ pub struct Lifetime {
 type Minted = HashMap<String, (Instant, Arc<ServerConfig>)>;
 
 pub struct Tls {
-    issuer: Issuer<'static, KeyPair>,
+    issuer: Issuer,
     ca_der: CertificateDer<'static>,
     ca_pem: String,
     upstream: Arc<ClientConfig>,
@@ -103,20 +102,12 @@ impl Tls {
     }
 
     pub fn with_roots(name: &str, roots: RootCertStore) -> io::Result<Self> {
-        let key = KeyPair::generate().map_err(other)?;
-        let mut params = CertificateParams::default();
-        params.distinguished_name.push(DnType::CommonName, name);
-        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-        params.key_usages = vec![
-            KeyUsagePurpose::KeyCertSign,
-            KeyUsagePurpose::CrlSign,
-            KeyUsagePurpose::DigitalSignature,
-        ];
-        let certificate = params.self_signed(&key).map_err(other)?;
+        let (issuer, der) = Issuer::self_signed(name)?;
+        let pem = certificate::pem(&der);
         Self::issuing(
-            Issuer::new(params, key),
-            certificate.der().clone(),
-            certificate.pem(),
+            issuer,
+            CertificateDer::from(der),
+            pem,
             roots,
             Leaves::default(),
         )
@@ -132,22 +123,14 @@ impl Tls {
             what: "the egress CA's key",
             cause: Box::new(cause),
         })?;
-        let mut name = DistinguishedName::new();
-        for (kind, value) in names {
-            name.push(kind.clone(), *value);
-        }
-        let mut params = CertificateParams::default();
-        params.distinguished_name = name;
-        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-        Self::signed_by(Issuer::new(params, key), &ca.cert, roots, leaves).map_err(|cause| BadCa {
+        Self::signed_by(Issuer::new(names, key), &ca.cert, roots, leaves).map_err(|cause| BadCa {
             what: "the egress CA",
             cause: Box::new(cause),
         })
     }
 
     pub fn signed_by(
-        issuer: Issuer<'static, KeyPair>,
+        issuer: Issuer,
         ca_pem: &str,
         roots: RootCertStore,
         leaves: Leaves,
@@ -157,7 +140,7 @@ impl Tls {
     }
 
     fn issuing(
-        issuer: Issuer<'static, KeyPair>,
+        issuer: Issuer,
         ca_der: CertificateDer<'static>,
         ca_pem: String,
         roots: RootCertStore,
@@ -204,23 +187,23 @@ impl Tls {
         if let Some(config) = self.minted.read(|minted| self.cached(minted, host)) {
             return Ok(config);
         }
-        let key = KeyPair::generate().map_err(other)?;
-        let mut params = CertificateParams::new(vec![host.to_owned()]).map_err(other)?;
-        params.distinguished_name.push(DnType::CommonName, host);
-        params.extended_key_usages.clone_from(&self.leaves.usages);
-        params.use_authority_key_identifier_extension = true;
-        if let Some(lifetime) = self.leaves.lifetime {
-            let now = SystemTime::now();
-            params.not_before = (now - lifetime.backdated).into();
-            params.not_after = (now + lifetime.valid).into();
-        }
-        let leaf = params.signed_by(&key, &self.issuer).map_err(other)?;
+        let validity = match self.leaves.lifetime {
+            Some(lifetime) => {
+                let now = SystemTime::now();
+                Some(Validity::between(
+                    now - lifetime.backdated,
+                    now + lifetime.valid,
+                )?)
+            }
+            None => None,
+        };
+        let (leaf, key) = self.issuer.leaf(host, &self.leaves.usages, validity)?;
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
         let mut config = ServerConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
             .map_err(other)?
             .with_no_client_auth()
-            .with_single_cert(vec![leaf.der().clone(), self.ca_der.clone()], key)
+            .with_single_cert(vec![CertificateDer::from(leaf), self.ca_der.clone()], key)
             .map_err(other)?;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         let config = Arc::new(config);

@@ -1,0 +1,22 @@
+[package]
+name = "nanocode-x509"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "A DER writer and the X.509 certificate pieces Nanocode signs"
+autotests = false
+autobenches = false
+
+[dependencies]
+nanocode-platform.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+test = false
+doctest = false
+bench = false

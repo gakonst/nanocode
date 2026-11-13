@@ -43,6 +43,7 @@ members = [
     "crates/core/gif",
     "crates/core/audio",
     "crates/core/tls",
+    "crates/core/x509",
     "crates/core/websocket",
     "crates/core/machine",
     "crates/core/sync",
@@ -159,7 +160,7 @@ nanocode-code-mode-engine = { version = "0.7.0", path = "crates/runtime/code-mod
 nanocode-tools-macros = { version = "0.7.0", path = "crates/core/tools-macros" }
 proc-macro2 = "1.0.106"
 quote = "1.0.46"
-rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+ring = { version = "0.17.14", default-features = false, features = ["alloc"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23.45", default-features = false, features = ["std"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
@@ -179,6 +180,7 @@ unicode-normalization = { path = "crates/core/unicode-normalization" }
 url = "2.5.7"
 nanocode-zstd = { version = "0.7.0", path = "crates/core/zstd" }
 nanocode-digest = { version = "0.7.0", path = "crates/core/digest" }
+nanocode-x509 = { version = "0.7.0", path = "crates/core/x509" }
 nanocode-compression = { version = "0.7.0", path = "crates/core/compression" }
 nanocode-png = { version = "0.7.0", path = "crates/core/png" }
 nanocode-gif = { version = "0.7.0", path = "crates/core/gif" }
